@@ -1,8 +1,10 @@
 // A small pool of geometry Workers for building many parts in PARALLEL — used by
-// the Assembly view, where every part in a session is meshed at once. The main
-// editor keeps its single long-lived `engineWorker` (see engine.ts); this pool
-// is a separate, disposable set of workers so a burst of assembly builds never
-// contends with — or recycles — the interactive editor's engine.
+// the Assembly view (every part in a session meshed at once) and by multi-part
+// exports (baking each selected part's mesh concurrently, sized via
+// `setEnginePoolSize`). The main editor keeps its single long-lived
+// `engineWorker` (see engine.ts); this pool is a separate, disposable set of
+// workers so a burst of parallel builds never contends with — or recycles — the
+// interactive editor's engine. Both consumers `disposeEnginePool()` when done.
 //
 // It intentionally speaks only the `execute` slice of the Worker protocol (no
 // STEP export, simplify, imports side-channels, or progressive preview): the
@@ -29,6 +31,10 @@ export interface PoolBuildRequest {
   imports?: ImportedMesh[];
   /** SCAD companion files (MEMFS path → source). */
   companionFiles?: Record<string, string>;
+  /** Fired the moment a free worker picks this job up off the queue (i.e. the
+   *  part actually starts meshing, as opposed to waiting behind others). Lets a
+   *  per-part progress UI flip a row from "queued" to "rendering". */
+  onStart?: () => void;
 }
 
 export interface PoolBuildResult {
@@ -37,6 +43,9 @@ export interface PoolBuildResult {
   paramsSchema: import('./params').ParamSpec[] | undefined;
   labelMap: Map<string, Set<number>> | undefined;
   labelColors: Map<string, [number, number, number]> | undefined;
+  /** Code-declared `api.paint.*` ops (the model-colour underlay), passed through
+   *  so a pool-baked export can paint the same colours the single-worker path does. */
+  paintOps: import('./types').MeshResult['paintOps'];
   renderOnly: boolean;
 }
 
@@ -65,9 +74,24 @@ let callCounter = 0;
 let respawns = 0;
 function maxRespawns(): number { return targetPoolSize() * 2 + 2; }
 
-/** How many workers to run — config, clamped to available cores and ≥ 1. */
+// When set, overrides the config-driven pool size — used by the multi-part
+// export flow, which wants a bigger burst (its own `exportPoolSize` knob) than
+// the Assembly view's default. Reset to null when the burst is done so a later
+// Assembly build falls back to `assemblyPoolSize`.
+let sizeOverride: number | null = null;
+
+/** Override the desired worker count until the next {@link setEnginePoolSize}(null).
+ *  Only affects workers spawned *after* this call; existing workers aren't torn
+ *  down (nor added) here — pair a size-up with a fresh `buildInPool` burst and a
+ *  size-down with `disposeEnginePool()`. */
+export function setEnginePoolSize(n: number | null): void {
+  sizeOverride = n == null ? null : Math.max(1, Math.floor(n));
+}
+
+/** How many workers to run — config (or the export override), clamped to
+ *  available cores and ≥ 1. */
 function targetPoolSize(): number {
-  const want = getConfig().renderer.assemblyPoolSize;
+  const want = sizeOverride ?? getConfig().renderer.assemblyPoolSize;
   const cores = navigator.hardwareConcurrency || 4;
   return Math.max(1, Math.min(want, cores - 1));
 }
@@ -161,6 +185,7 @@ function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
     paramsSchema: (msg.paramsSchema as PoolBuildResult['paramsSchema']) ?? undefined,
     labelMap: labelMapEntries ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)])) : undefined,
     labelColors: labelColorEntries && labelColorEntries.length > 0 ? new Map(labelColorEntries) : undefined,
+    paintOps: (msg.paintOps as PoolBuildResult['paintOps']) ?? undefined,
     renderOnly: !!msg.renderOnly,
   });
   pump();
@@ -181,6 +206,9 @@ function dispatch(pw: PoolWorker, job: Job): void {
   const callId = `pool-${++callCounter}`;
   pw.busy = true;
   pw.inflight.set(callId, job);
+  // The job left the queue for a real worker — a per-part progress UI reads this
+  // as "rendering started". Guarded so a throwing callback can't wedge dispatch.
+  try { job.req.onStart?.(); } catch { /* progress callback must not break dispatch */ }
   const { code, lang, params, imports, companionFiles } = job.req;
   const wireImports = (imports ?? []).map(m => ({
     id: m.id, filename: m.filename, format: m.format,
@@ -220,4 +248,7 @@ export function disposeEnginePool(): void {
   for (const job of queue.splice(0)) job.reject(err);
   workers = [];
   respawns = 0;
+  // Drop any export-time size override so the next consumer (e.g. Assembly)
+  // sizes from its own config again.
+  sizeOverride = null;
 }

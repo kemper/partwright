@@ -219,7 +219,9 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startExportProgress } from './ui/exportProgressModal';
+import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -3991,21 +3993,28 @@ async function main() {
    *  (`version.geometryData.colorRegions`) — using the same resolver + compositor
    *  the live editor uses, so nothing is silently dropped. Returns null when the
    *  part has no version or produced no usable mesh. */
-  async function bakeColoredMeshForPart(partId: string, name: string): Promise<{ name: string; mesh: MeshData } | null> {
+  async function bakeColoredMeshForPart(
+    partId: string,
+    name: string,
+    opts: { onStart?: () => void } = {},
+  ): Promise<{ name: string; mesh: MeshData } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
       return { name, mesh: coloredMeshForExport(currentMeshData) };
     }
     const version = await getLatestVersion(partId);
     if (!version) return null;
     const lang = effectiveVersionLanguage(version, getState().session);
-    const saved = getActiveImports();
-    let result;
-    try {
-      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      result = await executeCodeAsync(version.code, lang);
-    } finally {
-      setActiveImports(saved);
-    }
+    // Bake off-editor through the geometry Worker POOL so a multi-part export can
+    // build several parts at once. Imports/companions are passed EXPLICITLY per
+    // build (never the shared setActiveImports global) so concurrent bakes can't
+    // race each other's imports. onStart fires when a worker picks this part up.
+    const result = await buildInPool({
+      code: version.code,
+      lang,
+      imports: (version.importedMeshes ?? []) as ImportedMesh[],
+      companionFiles: version.companionFiles,
+      onStart: opts.onStart,
+    });
     if (!result || result.error || !result.mesh) return null;
     const mesh = result.mesh;
 
@@ -4054,6 +4063,57 @@ async function main() {
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
     return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+  }
+
+  /** One part slated for a multi-part export bake. */
+  interface ExportBakePart { id: string; name: string; group?: string }
+
+  /**
+   * Bake several parts' coloured meshes concurrently through the geometry Worker
+   * pool. Order-preserving — the returned `baked` array follows `parts` order
+   * (with no-geometry parts dropped) so grid layout / naming stay deterministic.
+   *
+   * The pool is sized from `renderer.exportPoolSize` (clamped to cores − 1 and the
+   * part count) and torn down when the batch settles, so we don't hold N WASM
+   * heaps resident after the export. `onStatus` reports each part's
+   * queued → rendering → done/failed transitions for the per-part progress UI;
+   * `cancel.cancelled` is polled to bail out early (the caller disposes the pool
+   * to abort in-flight bakes). A single part failing never fails the batch.
+   */
+  async function bakePartsParallel(
+    parts: ExportBakePart[],
+    opts: {
+      onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
+      cancel?: { cancelled: boolean };
+    } = {},
+  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+    const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
+    setEnginePoolSize(desired);
+    const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+    try {
+      await Promise.all(parts.map(async (part, i) => {
+        if (opts.cancel?.cancelled) return;
+        try {
+          const result = await bakeColoredMeshForPart(part.id, part.name, {
+            onStart: () => { if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'rendering'); },
+          });
+          if (opts.cancel?.cancelled) return;
+          if (result) {
+            slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+            opts.onStatus?.(part.id, 'done');
+          } else {
+            opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
+          }
+        } catch {
+          // A build error / pool teardown (incl. cancel) rejects the bake. Only
+          // surface it as a failure when the user didn't cancel.
+          if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'failed');
+        }
+      }));
+    } finally {
+      disposeEnginePool();
+    }
+    return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -4787,24 +4847,27 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    // Cancellable between parts (Escape or the modal's Cancel button flips the
-    // flag); each per-part bake is atomic, so we stop at the next part boundary.
-    let cancelled = false;
-    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: 'Preparing 3MF…',
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData; group?: string }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        if (cancelled) break;
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (cancelled) break;
-        if (result) baked.push({ ...result, ...(part.group ? { group: part.group } : {}) });
-      }
-      if (cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      updateProgress(job, 1, 'Writing 3MF…');
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle('Writing 3MF…');
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, {
@@ -4813,13 +4876,13 @@ async function main() {
         plateLayout: selected.plateLayout,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4848,34 +4911,37 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    // Cancellable between parts (Escape or the modal's Cancel button flips the
-    // flag); each per-part bake is atomic, so we stop at the next part boundary.
-    let cancelled = false;
-    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: `Preparing ${formatTag}…`,
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        if (cancelled) break;
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (cancelled) break;
-        if (result) baked.push(result);
-      }
-      if (cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
-      updateProgress(job, 1, `Writing ${formatTag}…`);
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle(`Writing ${formatTag}…`);
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4895,13 +4961,14 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `Unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push(result);
+      bakeParts.push({ id: part.id, name: part.name });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     return { baked };
   }
@@ -4988,13 +5055,14 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData; group?: string }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push({ ...result, ...(part.group ? { group: part.group } : {}) });
+      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
