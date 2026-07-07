@@ -82,4 +82,52 @@ test.describe('convert to code (reconstruction)', () => {
 
     await page.screenshot({ path: 'test-results/reconstruct-golden.png' });
   });
+
+  test('STL import offers the convert-to-code panel with threshold controls', async ({ page }) => {
+    test.setTimeout(240_000);
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as any).partwright?.runAndSave);
+
+    // Build a small solid and export its STL bytes to feed the file input.
+    const stlB64 = await page.evaluate(async () => {
+      const pw = (window as any).partwright;
+      for (let i = 0; i < 60; i++) {
+        const p = await pw.runAndSave('return api.Manifold.cube([1,1,1], true);', 'probe', {});
+        if (p && !p.error && p.version) break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      await pw.runAndSave('return api.Manifold.sphere(7, 32);', 'stl source', {});
+      const stl = await pw.exportSTLData();
+      return stl.base64 as string;
+    });
+
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'ask-probe.stl',
+      mimeType: 'model/stl',
+      buffer: Buffer.from(stlB64, 'base64'),
+    });
+    // Real work exists in the session → the import-target modal appears first.
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+    await dialog.getByRole('button', { name: /new part/i }).click();
+
+    // The post-import ask is the same settings panel the Tools pill opens:
+    // context line, quality presets, derived threshold placeholders.
+    await expect(page.getByText('Imported ask-probe.stl as a mesh')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('button', { name: 'Keep mesh only' })).toBeVisible();
+    await page.getByText('Advanced thresholds').click();
+    await expect(page.locator('[data-convert-field="step"]')).toHaveAttribute('placeholder', /\d/);
+    await expect(page.getByText(/levelSet samples — build ~/)).toBeVisible();
+
+    // Convert at draft — the part's code becomes the self-contained remake.
+    await page.getByRole('button', { name: 'Draft' }).click();
+    await page.getByRole('button', { name: 'Convert', exact: true }).click();
+    await expect(page.getByText(/Converted to code — mean deviation/)).toBeVisible({ timeout: 120_000 });
+    const code = await page.evaluate(() => (window as any).partwright.getCode() as string);
+    expect(code).toContain('Manifold.levelSet');
+    expect(code).not.toContain('api.imports');
+  });
 });

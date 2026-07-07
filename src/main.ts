@@ -147,6 +147,7 @@ import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
+import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
@@ -4144,6 +4145,21 @@ async function main() {
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
+    const placed = await placeImportedMeshInner(parsed, filename);
+    // Post-import ask: offer to rebuild a fresh STL import as editable code,
+    // with the same settings panel the Tools pill opens. Interactive path only
+    // (importMeshData / console imports stay prompt-free for agents); render-
+    // only meshes skip it — their slices don't close, so conversion would fail.
+    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) {
+      openConvertToCodeModal(partwrightAPI as unknown as Parameters<typeof openConvertToCodeModal>[0], {
+        context: `Imported ${filename} as a mesh. Convert it to smooth, editable code?`,
+        cancelLabel: 'Keep mesh only',
+      });
+    }
+    return placed;
+  }
+
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string): Promise<boolean> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -5826,7 +5842,6 @@ async function main() {
     // palette is the flat, searchable index of everything (keeps grouping cheap
     // for discoverability). Each fires the existing overlay button by id; click()
     // works even while the button sits inside a collapsed popover.
-    { id: 'convert-to-code', title: 'Convert model to code (reconstruct)', hint: 'Tools', keywords: 'reconstruct reverse engineer mesh stl import smooth remake parametric convert code', run: () => { void partwrightAPI.convertToCode(); }, enabled: () => currentMeshData !== null && getActiveLanguage() === 'manifold-js' },
     { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => document.getElementById('measure-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => document.getElementById('clip-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => document.getElementById('paint-toggle')?.click(), enabled: viewportToolEnabled },
@@ -15611,6 +15626,7 @@ async function main() {
   initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
+  initConvertToCodeUI(partwrightAPI as unknown as Parameters<typeof initConvertToCodeUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
   initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
 
