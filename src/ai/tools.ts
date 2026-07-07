@@ -1332,6 +1332,55 @@ Returns { ok, stats, metrics, version } or { error }.`,
     },
   },
   {
+    name: 'profileModel',
+    description: `MEASURE the shape of an imported mesh (default) or the current model: sweeps cross-sections along each axis, fits primitives to every section, and merges steady fits into runs — a run of circular sections IS a measured cylinder ("circle r≈2.31 from z=8.1..14.0"), a run of rect sections IS a measured box. Organic/multi-blob regions are reported as such.
+
+**When to use:** FIRST step of any reconstruction — it hands you the semantic skeleton (which features are true primitives, with measured dimensions) without guessing from renders. Pass axis+at for one detailed section including hole/bore circle fits (e.g. measure a chimney bore).
+
+Returns { ok, measured, bbox, axes: [{axis, runs: [{kind, from, to, circle?, rect?, meanHoles?, sampleHoles?}]}] } or { error }. Each fit carries rmsRel — near zero means the fit is real.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Imported-mesh index (default 0).', minimum: 0 },
+        source: { type: 'string', enum: ['import', 'model'], description: "What to measure. Default: the import (falls back to the current model when none)." },
+        sectionsPerAxis: { type: 'integer', description: 'Sections per axis (default 48; more = finer runs, slower).', minimum: 8, maximum: 256 },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'With `at`: probe ONE section in detail instead of sweeping.' },
+        at: { type: 'number', description: 'Coordinate along `axis` for the single-section probe.' },
+      },
+    },
+  },
+  {
+    name: 'compareToImport',
+    description: `Voxel symmetric-difference between the current model and an imported mesh: volume IoU plus LOCALIZED findings — every disagreement blob signed ('excess' = your model has material the target lacks, 'missing' = the reverse), sized, and positioned (centroid, bbox, relCentroid 0..1 within the target).
+
+**When to use:** when evalAgainstImport's scalar says something is off and you need to know WHAT and WHERE. Each finding is actionable: a compact 'missing' blob is a feature you haven't modeled; a thin-skin blob is a surface offset. Slower than evalAgainstImport.
+
+Returns { ok, volumeIoU, excessVolume, missingVolume, findings: [{id, sign, volume, centroid, bbox, relCentroid, extent, thickness, classification, hint}] } or { error }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Imported-mesh index (default 0).', minimum: 0 },
+        maxFindings: { type: 'integer', description: 'Cap on reported findings (default 12).', minimum: 1, maximum: 64 },
+      },
+    },
+  },
+  {
+    name: 'fitInscribed',
+    description: `Find the largest axis-aligned box or Z-axis cylinder that fits entirely INSIDE an imported mesh (default) or the current model — measured from a voxel occupancy grid. Returns the primitive's dimensions and the fraction of the mesh volume it covers.
+
+**When to use:** to give a reconstruction a clean primitive core (model the inscribed primitive exactly, union a section-interpolated remainder around it), or to read a feature's true inner dimensions. A high volumeFraction (>0.6) means the shape is mostly that primitive.
+
+Returns { ok, measured, kind, center, size|r/z0/z1, volume, volumeFraction } or { error }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['box', 'cylinder'], description: "Primitive to fit (default 'box'; cylinder is Z-axis)." },
+        index: { type: 'integer', description: 'Imported-mesh index (default 0).', minimum: 0 },
+        source: { type: 'string', enum: ['import', 'model'], description: 'What to measure (default: the import).' },
+      },
+    },
+  },
+  {
     name: 'scaleModel',
     description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
 
@@ -1547,6 +1596,8 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
+  // Idempotent reconstruction measurements
+  'evalAgainstImport', 'profileModel', 'compareToImport', 'fitInscribed',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -2222,6 +2273,15 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         input.index as number | undefined,
         input.samples !== undefined ? { samples: input.samples as number } : undefined,
       );
+    case 'profileModel':
+      return api.profileModel(input);
+    case 'compareToImport':
+      return api.compareToImport(
+        input.index as number | undefined,
+        input.maxFindings !== undefined ? { maxFindings: input.maxFindings as number } : undefined,
+      );
+    case 'fitInscribed':
+      return api.fitInscribed(input);
     case 'scaleModel':
       return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { mode: input.mode as 'auto' | 'parametric' | 'bake' | undefined, preserveColor: input.preserveColor as boolean | undefined });
     case 'placeModel':

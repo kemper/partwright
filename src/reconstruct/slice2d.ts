@@ -181,6 +181,205 @@ export function pointInPolygon(u: number, v: number, points: Float64Array): bool
   return inside;
 }
 
+export interface ContourStatsResult {
+  area: number;
+  perimeter: number;
+  centroid: [number, number];
+  bboxMin: [number, number];
+  bboxMax: [number, number];
+}
+
+export function contourStats(contour: { points: Float64Array; area?: number }): ContourStatsResult {
+  const { points } = contour;
+  const n = points.length / 2;
+  let perimeter = 0,
+    cu = 0,
+    cv = 0;
+  let minU = Infinity,
+    maxU = -Infinity,
+    minV = Infinity,
+    maxV = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    perimeter += Math.hypot(points[j * 2] - points[i * 2], points[j * 2 + 1] - points[i * 2 + 1]);
+    cu += points[i * 2];
+    cv += points[i * 2 + 1];
+    if (points[i * 2] < minU) minU = points[i * 2];
+    if (points[i * 2] > maxU) maxU = points[i * 2];
+    if (points[i * 2 + 1] < minV) minV = points[i * 2 + 1];
+    if (points[i * 2 + 1] > maxV) maxV = points[i * 2 + 1];
+  }
+  return {
+    area: contour.area ?? Math.abs(polygonSignedArea(points)),
+    perimeter,
+    centroid: [cu / n, cv / n],
+    bboxMin: [minU, minV],
+    bboxMax: [maxU, maxV],
+  };
+}
+
+export interface CircleFit {
+  cx: number;
+  cy: number;
+  r: number;
+  /** RMS point-to-circle residual — the honesty signal: near-zero means the
+   *  contour IS a circle; compare against r (e.g. rms < 0.02·r). */
+  rmsResidual: number;
+}
+
+/** Kåsa algebraic circle fit: minimizes Σ(x²+y² − 2ax − 2by − c)². */
+export function fitCircle2D(points: Float64Array): CircleFit {
+  const n = points.length / 2;
+  let Suu = 0, Suv = 0, Svv = 0, Su = 0, Sv = 0;
+  let Suq = 0, Svq = 0, Sq = 0;
+  for (let i = 0; i < n; i++) {
+    const u = points[i * 2],
+      v = points[i * 2 + 1];
+    const q = u * u + v * v;
+    Suu += u * u; Suv += u * v; Svv += v * v;
+    Su += u; Sv += v;
+    Suq += u * q; Svq += v * q; Sq += q;
+  }
+  const A: [number, number, number][] = [
+    [Suu, Suv, Su],
+    [Suv, Svv, Sv],
+    [Su, Sv, n],
+  ];
+  const x = solve3(A, [Suq, Svq, Sq]);
+  if (!x) return { cx: 0, cy: 0, r: 0, rmsResidual: Infinity };
+  const cx = x[0] / 2,
+    cy = x[1] / 2;
+  const r = Math.sqrt(Math.max(0, x[2] + cx * cx + cy * cy));
+  let ss = 0;
+  for (let i = 0; i < n; i++) {
+    const d = Math.hypot(points[i * 2] - cx, points[i * 2 + 1] - cy) - r;
+    ss += d * d;
+  }
+  return { cx, cy, r, rmsResidual: Math.sqrt(ss / n) };
+}
+
+function solve3(A: [number, number, number][], b: number[]): number[] | null {
+  const m = [
+    [A[0][0], A[0][1], A[0][2], b[0]],
+    [A[1][0], A[1][1], A[1][2], b[1]],
+    [A[2][0], A[2][1], A[2][2], b[2]],
+  ];
+  for (let col = 0; col < 3; col++) {
+    let piv = col;
+    for (let r = col + 1; r < 3; r++) if (Math.abs(m[r][col]) > Math.abs(m[piv][col])) piv = r;
+    if (Math.abs(m[piv][col]) < 1e-12) return null;
+    [m[col], m[piv]] = [m[piv], m[col]];
+    for (let r = 0; r < 3; r++) {
+      if (r === col) continue;
+      const f = m[r][col] / m[col][col];
+      for (let c = col; c < 4; c++) m[r][c] -= f * m[col][c];
+    }
+  }
+  return [m[0][3] / m[0][0], m[1][3] / m[1][1], m[2][3] / m[2][2]];
+}
+
+/** Signed distance from a point to a rounded-rect outline centered at origin,
+ *  half-extents (hw, hh), corner radius r (the standard 2D SDF). */
+function roundedRectSdf(u: number, v: number, hw: number, hh: number, r: number): number {
+  const qx = Math.abs(u) - (hw - r);
+  const qy = Math.abs(v) - (hh - r);
+  const ox = Math.max(qx, 0),
+    oy = Math.max(qy, 0);
+  return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - r;
+}
+
+export interface RoundedRectFit {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  angleDeg: number;
+  cornerR: number;
+  /** RMS |sdf| residual — approximate by design; the honesty signal. */
+  rmsResidual: number;
+}
+
+/** Approximate rounded-rect fit: tries angle 0 and the PCA angle of the
+ *  points; extents from the rotated bbox; corner radius by 1D scan minimizing
+ *  RMS |sdf|. */
+export function fitRoundedRect2D(points: Float64Array): RoundedRectFit {
+  const n = points.length / 2;
+  let cu = 0,
+    cv = 0;
+  for (let i = 0; i < n; i++) {
+    cu += points[i * 2];
+    cv += points[i * 2 + 1];
+  }
+  cu /= n;
+  cv /= n;
+  let sxx = 0,
+    sxy = 0,
+    syy = 0;
+  for (let i = 0; i < n; i++) {
+    const du = points[i * 2] - cu,
+      dv = points[i * 2 + 1] - cv;
+    sxx += du * du;
+    sxy += du * dv;
+    syy += dv * dv;
+  }
+  const pcaAngle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+
+  let best: RoundedRectFit | null = null;
+  for (const angle of [0, pcaAngle]) {
+    const ca = Math.cos(-angle),
+      sa = Math.sin(-angle);
+    const rot = new Float64Array(n * 2);
+    let minU = Infinity,
+      maxU = -Infinity,
+      minV = Infinity,
+      maxV = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const du = points[i * 2] - cu,
+        dv = points[i * 2 + 1] - cv;
+      const u = du * ca - dv * sa,
+        v = du * sa + dv * ca;
+      rot[i * 2] = u;
+      rot[i * 2 + 1] = v;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const hw = (maxU - minU) / 2,
+      hh = (maxV - minV) / 2;
+    const ou = (maxU + minU) / 2,
+      ov = (maxV + minV) / 2;
+    const rMax = Math.min(hw, hh);
+    let bestR = 0,
+      bestRms = Infinity;
+    for (let step = 0; step <= 24; step++) {
+      const r = (rMax * step) / 24;
+      let ss = 0;
+      for (let i = 0; i < n; i++) {
+        const d = roundedRectSdf(rot[i * 2] - ou, rot[i * 2 + 1] - ov, hw, hh, r);
+        ss += d * d;
+      }
+      const rms = Math.sqrt(ss / n);
+      if (rms < bestRms) {
+        bestRms = rms;
+        bestR = r;
+      }
+    }
+    if (!best || bestRms < best.rmsResidual) {
+      best = {
+        cx: cu + ou * Math.cos(angle) - ov * Math.sin(angle),
+        cy: cv + ou * Math.sin(angle) + ov * Math.cos(angle),
+        w: hw * 2,
+        h: hh * 2,
+        angleDeg: (angle * 180) / Math.PI,
+        cornerR: bestR,
+        rmsResidual: bestRms,
+      };
+    }
+  }
+  return best as RoundedRectFit;
+}
+
 /**
  * Douglas-Peucker for a CLOSED polygon: split at the two mutually farthest
  * points, simplify each open half, rejoin.

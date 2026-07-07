@@ -240,6 +240,9 @@ await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' 
 partwright.importImageAsVoxels(imageUrl, opts?) // Image (data:/URL) -> colored voxel session. See /ai/voxel.md
 await partwright.convertToCode(opts?) // Rebuild the current model (e.g. an STL import) as smooth, import-free, EDITABLE code; saves a version + reports chamfer/hausdorff vs the source. See /ai/reconstruction.md
 await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: current model vs imported mesh i (how faithful is the remake?). See /ai/reconstruction.md
+await partwright.profileModel(opts?)  // Sweep sections + fit primitives: measured cylinder/box runs of an import or the model (the semantic skeleton). See /ai/reconstruction.md
+await partwright.compareToImport(i?, opts?) // Voxel diff vs import i: volume IoU + localized excess/missing findings (what is wrong, WHERE). See /ai/reconstruction.md
+await partwright.fitInscribed(opts?)  // Largest box/z-cylinder that fits INSIDE a mesh + volume fraction (measured primitive core). See /ai/reconstruction.md
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
