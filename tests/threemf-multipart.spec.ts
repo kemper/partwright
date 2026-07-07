@@ -272,6 +272,94 @@ test.describe('multi-part 3MF export', () => {
     expect(cols.yRows).toBe(2); // 2 rows
   });
 
+  test('plateLayout controls how parts distribute across Bambu plates', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    // 4 parts, two of them sharing a group ("A"), the other two ungrouped. The
+    // three layout modes should produce distinct plate counts + placements.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string, group?: string) => ({
+        name, ...(group ? { group } : {}),
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = [
+        makePart('a1', 'A'), makePart('a2', 'A'), makePart('loose1'), makePart('loose2'),
+      ];
+      const decode = (built: { blob: Blob }) =>
+        built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const plateCount = (t: string) => (t.match(/<plate>/g) ?? []).length;
+      // Distinct <item> X translations = distinct plate/sub-grid columns occupied.
+      const distinctXs = (t: string) => new Set(
+        [...t.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+          .map(m => Number(m[1].trim().split(/\s+/)[9]).toFixed(2)),
+      ).size;
+
+      const sep = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'separate' }));
+      const grid = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid' }));
+      const group = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'group' }));
+      const dflt = await decode(build3MFProject(parts, { bambu: true })); // default = separate
+      return {
+        sepPlates: plateCount(sep), gridPlates: plateCount(grid), groupPlates: plateCount(group),
+        dfltPlates: plateCount(dflt),
+        gridDistinctXs: distinctXs(grid),
+      };
+    });
+
+    // separate → one plate per part; default matches separate.
+    expect(out.sepPlates).toBe(4);
+    expect(out.dfltPlates).toBe(4);
+    // grid → all four on ONE plate (but still spread out in a sub-grid, so >1 column).
+    expect(out.gridPlates).toBe(1);
+    expect(out.gridDistinctXs).toBeGreaterThan(1);
+    // group → group A (2 parts) + two ungrouped singletons = 3 plates.
+    expect(out.groupPlates).toBe(3);
+  });
+
+  test('packed layout keeps a big-part+small-parts mix within the plate footprint', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    // The reported bug: one large part + several small ones in a packed layout
+    // ballooned the whole grid off the plate (old uniform-max-pitch grid). With
+    // shelf packing, all parts must sit inside a single plate cell's bed footprint.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      // A part is a single triangle sized w×d (X width, Y depth).
+      const makePart = (name: string, w: number, d: number) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, w, 0, 0, 0, d, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = [
+        makePart('big', 180, 180),
+        makePart('s1', 15, 15), makePart('s2', 15, 15),
+        makePart('s3', 15, 15), makePart('s4', 15, 15),
+      ];
+      // H2C bed is 330×320; packed onto one plate they should all fit.
+      const built = build3MFProject(parts, { bambu: true, plateLayout: 'grid' });
+      const text = await built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const plates = (text.match(/<plate>/g) ?? []).length;
+      // Item translation is the part CENTRE minus its own centroid; the packed
+      // centres all live within one bed footprint, so the centre X spread must be
+      // well under the plate stride (396 for H2C) — proof they didn't balloon out.
+      const txs = [...text.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+        .map(m => Number(m[1].trim().split(/\s+/)[9]));
+      const spanX = Math.max(...txs) - Math.min(...txs);
+      return { plates, spanX, count: txs.length };
+    });
+
+    expect(out.count).toBe(5);
+    expect(out.plates).toBe(1);           // all five packed onto ONE plate
+    expect(out.spanX).toBeLessThan(330);  // centres stay within the H2C bed width (no balloon)
+  });
+
   test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForTimeout(3000);

@@ -164,6 +164,116 @@ export interface PartExport {
   name: string;
   /** The part's mesh. `triColors` (if present) drives the per-triangle colour. */
   mesh: MeshData;
+  /** Group name (from `Part.group`). Only consulted by the Bambu `'group'` plate
+   *  layout, which puts each group's parts on a shared plate. Absent ⇒ ungrouped. */
+  group?: string;
+}
+
+/**
+ * How the Bambu/Orca export distributes parts across build plates:
+ *   - `'separate'` — one part per plate (the original behaviour, and the default).
+ *   - `'grid'` — every part on a SINGLE plate, arranged in a sub-grid.
+ *   - `'group'` — parts sharing a `group` share a plate (sub-grid arranged); each
+ *     ungrouped part gets its own plate. Handy once a collection has 30+ parts and
+ *     one-plate-per-part becomes unwieldy.
+ * Ignored in generic mode (which always grids into one inline model).
+ */
+export type BambuPlateLayout = 'separate' | 'grid' | 'group';
+export const BAMBU_PLATE_LAYOUTS: BambuPlateLayout[] = ['separate', 'grid', 'group'];
+/** True when `v` is a valid {@link BambuPlateLayout} (for API-boundary validation). */
+export function isBambuPlateLayout(v: string): v is BambuPlateLayout {
+  return (BAMBU_PLATE_LAYOUTS as string[]).includes(v);
+}
+
+/**
+ * Group part indices into logical "bins" per the layout mode — the sets of parts
+ * ALLOWED to share a plate. Returns a list of bins, each a list of part indices in
+ * input order (never empty for N>0). A bin still gets shelf-packed into one OR MORE
+ * physical plates by {@link packPlates} (a large `'group'`/`'grid'` bin spills onto
+ * extra plates rather than off the bed). Pure + exported so the grouping decision
+ * is unit-testable without the builder.
+ */
+export function assignBambuPlates(groups: (string | undefined)[], layout: BambuPlateLayout): number[][] {
+  const n = groups.length;
+  if (n === 0) return [];
+  if (layout === 'grid') return [Array.from({ length: n }, (_, i) => i)];
+  if (layout === 'group') {
+    // Parts sharing a (trimmed, non-empty) group name land in one bin at the
+    // group's first appearance; ungrouped parts each get their own bin. The
+    // reference pushed into `bins` on first sight collects later members too, so
+    // non-contiguous group members still share one bin (mirrors buildPartTree).
+    const bins: number[][] = [];
+    const byGroup = new Map<string, number[]>();
+    for (let i = 0; i < n; i++) {
+      const g = groups[i]?.trim();
+      if (!g) { bins.push([i]); continue; }
+      let arr = byGroup.get(g);
+      if (!arr) { arr = []; byGroup.set(g, arr); bins.push(arr); }
+      arr.push(i);
+    }
+    return bins;
+  }
+  // 'separate' (default): one part per bin (→ one part per plate).
+  return Array.from({ length: n }, (_, i) => [i]);
+}
+
+/** One packed physical plate: its member part indices + each member's CENTRE
+ *  position within the bed ([0,bedW] × [0,bedH]). */
+export interface PackedPlate {
+  members: number[];
+  centers: { cx: number; cy: number }[];
+}
+
+/**
+ * Shelf-pack a bin of parts into one or more plates of `bedW × bedH`, using each
+ * part's ACTUAL footprint (not a uniform max-pitch grid — that's the bug that let a
+ * single large part balloon the layout off the plate). Parts are placed left→right
+ * into shelves (rows); when the next part won't fit the current shelf it starts a
+ * new one, and a shelf that would exceed the bed depth starts a NEW PLATE. Each
+ * plate's used area is centred on the bed. A part larger than the whole bed is still
+ * placed alone (nothing packs better — a genuine "too big for this printer" case).
+ *
+ * `footprint(k)` returns the part's `{ w, d }` (X width, Y depth) in mm; `gap` is the
+ * spacing left between footprints. Pure + exported for unit testing.
+ */
+export function packPlates(
+  members: number[],
+  footprint: (k: number) => { w: number; d: number },
+  bedW: number,
+  bedH: number,
+  gap: number,
+): PackedPlate[] {
+  // First-fit-decreasing by depth packs tidier shelves; tie-break on index for
+  // determinism. Sorting only reorders placement, never which parts share a plate.
+  const ordered = [...members].sort((a, b) => footprint(b).d - footprint(a).d || a - b);
+  const plates: PackedPlate[] = [];
+  let cur: { k: number; x: number; y: number; w: number; d: number }[] = [];
+  let shelfY = 0, shelfH = 0, cursorX = 0;
+  const flush = () => {
+    if (cur.length === 0) return;
+    // Centre the packed bounding box on the bed (never push a part off the near edge).
+    const usedW = Math.max(...cur.map(e => e.x + e.w));
+    const usedH = Math.max(...cur.map(e => e.y + e.d));
+    const offX = Math.max(0, (bedW - usedW) / 2);
+    const offY = Math.max(0, (bedH - usedH) / 2);
+    plates.push({
+      members: cur.map(e => e.k),
+      centers: cur.map(e => ({ cx: offX + e.x + e.w / 2, cy: offY + e.y + e.d / 2 })),
+    });
+    cur = []; shelfY = 0; shelfH = 0; cursorX = 0;
+  };
+  for (const k of ordered) {
+    const { w, d } = footprint(k);
+    // Wrap to a new shelf if this part won't fit on the current one.
+    if (cursorX > 0 && cursorX + w > bedW) { shelfY += shelfH + gap; cursorX = 0; shelfH = 0; }
+    // Start a new plate if the shelf would run past the bed depth (keep a lone part).
+    if (cur.length > 0 && shelfY + d > bedH) flush();
+    cur.push({ k, x: cursorX, y: shelfY, w, d });
+    cursorX += w + gap;
+    shelfH = Math.max(shelfH, d);
+  }
+  flush();
+  return plates;
 }
 
 export interface Build3MFProjectOptions {
@@ -183,8 +293,12 @@ export interface Build3MFProjectOptions {
   /** Build-plate size `[x, y]` mm — reserved for future per-bed tuning of the
    *  generic grid. (Bambu plate placement uses the validated fixed grid below.) */
   bedSize?: [number, number];
-  /** Gap (mm) between parts in the GENERIC grid layout. Default 10. */
+  /** Gap (mm) between parts in the GENERIC grid layout — and between parts that
+   *  share a plate in the Bambu `'grid'` / `'group'` layouts. Default 10. */
   gridGapMm?: number;
+  /** How the Bambu/Orca export distributes parts across plates. Default
+   *  `'separate'` (one part per plate). Ignored in generic mode. */
+  plateLayout?: BambuPlateLayout;
 }
 
 const CORE_NS = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
@@ -406,8 +520,9 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     ? `    <m:colorgroup id="${colorGroupId}">\n${materialColors.map(h => `      <m:color color="${h.toUpperCase()}FF" />`).join('\n')}\n    </m:colorgroup>`
     : '';
 
+  const plates = assignBambuPlates(parts.map(p => p.group), opts.plateLayout ?? 'separate');
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament))
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), plates, gridGap)
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -493,13 +608,40 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, bins: number[][], gap: number): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
-  const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
   const strideX = bedW * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_x (width·1.2)
   const strideY = bedH * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_y (depth·1.2)
+
+  // Shelf-pack each logical bin (from the layout mode) into one OR MORE physical
+  // plates sized to the actual bed. This is what keeps parts ON the plate: a bin
+  // whose parts don't all fit spills onto extra plates instead of spreading off the
+  // bed (the old uniform-pitch grid ballooned when one part was large). A
+  // one-part bin (the default 'separate' layout) centres it on the plate exactly as
+  // before, so that path is unchanged.
+  const footprint = (k: number) => ({ w: prepared[k].width, d: prepared[k].depth });
+  const physicalPlates: PackedPlate[] = [];
+  for (const bin of bins) physicalPlates.push(...packPlates(bin, footprint, bedW, bedH, gap));
+
+  const gridCols = plateGridCols(physicalPlates.length);  // ⌈√(#plates)⌉ to match Bambu's plate grid
+
+  // World transform (tx, ty) per part index: its physical plate's cell corner PLUS
+  // the part's packed centre within the bed. Bambu assigns objects to plates by
+  // world position (the plate-grid cell a footprint falls in), so each part lands in
+  // its plate's cell. tz (=-minZ) is applied per part below.
+  const partTx = new Array<number>(prepared.length).fill(0);
+  const partTy = new Array<number>(prepared.length).fill(0);
+  physicalPlates.forEach((plate, plateIdx) => {
+    const pcol = plateIdx % gridCols, prow = Math.floor(plateIdx / gridCols);
+    const cornerX = pcol * strideX;     // plate cell corner (bed spans [corner, corner+bed])
+    const cornerY = -prow * strideY;
+    plate.members.forEach((k, j) => {
+      partTx[k] = cornerX + plate.centers[j].cx;
+      partTy[k] = cornerY + plate.centers[j].cy;
+    });
+  });
 
   // Bambu mode: each object's base colour is its `extruder` (dominant AMS slot,
   // 1..3), and per-triangle paint_color (built in build3MFProject) colours regions
@@ -560,14 +702,13 @@ ${p.trianglesBambu.join('\n')}
    </components>
   </object>`);
 
-    // Place each part at the CENTRE of its plate cell: cell-corner origin
-    // (col·strideX, −row·strideY) plus half the bed, so the part sits dead-centre
-    // on the plate Bambu lays out for that index. The Z translation is -minZ:
-    // moves the part so its bottom (minZ) lands exactly at Z=0 (the bed). Works for
-    // both centered meshes (minZ<0) and non-centered (minZ=0, e.g. Manifold.cylinder).
-    const col = i % gridCols, row = Math.floor(i / gridCols);
-    const tx = bedW / 2 + col * strideX;
-    const ty = bedH / 2 - row * strideY;
+    // World position of this part, precomputed from its plate cell + sub-grid slot
+    // (see partTx/partTy above). For the default one-part-per-plate layout this is
+    // the plate-cell centre, unchanged. The Z translation is -minZ: moves the part
+    // so its bottom (minZ) lands exactly at Z=0 (the bed). Works for both centered
+    // meshes (minZ<0) and non-centered (minZ=0, e.g. Manifold.cylinder).
+    const tx = partTx[i];
+    const ty = partTy[i];
     const tz = -p.minZ;  // lift bottom to Z=0
     buildItems.push(`  <item objectid="${wrapperId}" p:UUID="${itemUuid}" transform="1 0 0 0 1 0 0 0 1 ${fmtCoord(tx - p.cx)} ${fmtCoord(ty - p.cy)} ${fmtCoord(tz)}" printable="1"/>`);
 
@@ -598,34 +739,40 @@ ${p.trianglesBambu.join('\n')}
     </part>
   </object>`);
 
-    // identify_id: stable integer per object instance (reference uses arbitrary values;
-    // we use a simple deterministic value: 100 + wrapperId * 10 + i).
-    const identifyId = 100 + wrapperId * 10 + i;
-    // filament_maps / filament_volume_maps: ONE entry per filament (= N), indexed by
-    // filament — a short array here is another way load_files reads past the end. The
-    // values are the filament→nozzle hint; with "Auto For Flush" Bambu recomputes the
-    // assignment, so we map all to nozzle 1 (valid) at length N.
-    const filamentMaps = Array(filamentCount).fill('1').join(' ');
-    const filamentVolMaps = Array(filamentCount).fill('0').join(' ');
-    // NOTE: plater_name MUST be empty — a non-empty value makes Bambu/Orca's
-    // project loader reject the file (load fails, single plate).
+    // assemble_item: assembly view transform. Z = -minZ matches the item
+    // transform so the assembly view mirrors the plate layout.
+    assembleItems.push(`   <assemble_item object_id="${wrapperId}" instance_id="0" transform="1 0 0 0 1 0 0 0 1 ${fmtCoord(tx - p.cx)} ${fmtCoord(ty - p.cy)} ${fmtCoord(tz)}" offset="0 0 0" />`);
+  });
+
+  // One <plate> per physical plate, each carrying a <model_instance> for every
+  // object packed onto it. filament_maps / filament_volume_maps hold ONE entry per
+  // filament (= filamentCount), indexed by filament — a short array is another way
+  // Bambu's load_files reads past the end. With "Auto For Flush" Bambu recomputes
+  // the assignment, so we map all to nozzle 1 (valid). plater_name MUST stay empty —
+  // a non-empty value makes Bambu/Orca's loader reject the file.
+  const filamentMaps = Array(filamentCount).fill('1').join(' ');
+  const filamentVolMaps = Array(filamentCount).fill('0').join(' ');
+  physicalPlates.forEach((plate, plateIdx) => {
+    const instances = plate.members.map(k => {
+      const wrapperId = 2 * (k + 1);
+      // identify_id: stable integer per object instance (reference uses arbitrary
+      // values; we use a simple deterministic value: 100 + wrapperId * 10 + k).
+      const identifyId = 100 + wrapperId * 10 + k;
+      return `    <model_instance>
+      <metadata key="object_id" value="${wrapperId}"/>
+      <metadata key="instance_id" value="0"/>
+      <metadata key="identify_id" value="${identifyId}"/>
+    </model_instance>`;
+    }).join('\n');
     settingsPlates.push(`  <plate>
-    <metadata key="plater_id" value="${partNum}"/>
+    <metadata key="plater_id" value="${plateIdx + 1}"/>
     <metadata key="plater_name" value=""/>
     <metadata key="locked" value="false"/>
     <metadata key="filament_map_mode" value="Auto For Flush"/>
     <metadata key="filament_maps" value="${filamentMaps}"/>
     <metadata key="filament_volume_maps" value="${filamentVolMaps}"/>
-    <model_instance>
-      <metadata key="object_id" value="${wrapperId}"/>
-      <metadata key="instance_id" value="0"/>
-      <metadata key="identify_id" value="${identifyId}"/>
-    </model_instance>
+${instances}
   </plate>`);
-
-    // assemble_item: assembly view transform. Z = -minZ matches the item
-    // transform so the assembly view mirrors the plate layout.
-    assembleItems.push(`   <assemble_item object_id="${wrapperId}" instance_id="0" transform="1 0 0 0 1 0 0 0 1 ${fmtCoord(tx - p.cx)} ${fmtCoord(ty - p.cy)} ${fmtCoord(tz)}" offset="0 0 0" />`);
   });
 
   const today = new Date().toISOString().slice(0, 10);
