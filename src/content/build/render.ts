@@ -265,7 +265,12 @@ function catalogTileHtml(tile: BuiltTile): string {
   const paramChip = tile.hasParams
     ? '<span class="font-semibold border rounded px-1 text-violet-300 border-violet-400/30" title="Exposes adjustable parameters">🎛 Parametric</span>'
     : '';
-  const print = printTestedBadge(tile.entry.printTested);
+  const print = printTestedBadge({
+    printTested: tile.entry.printTested,
+    note: tile.entry.printTestedNote,
+    testedVersion: tile.entry.printTestedVersion,
+    latestVersion: tile.versionCount,
+  });
   const printChip = `<span class="font-semibold border rounded px-1 ${print.classes}" title="${escAttr(print.title)}">${esc(print.label)}</span>`;
   const versions = tile.versionCount > 0
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`

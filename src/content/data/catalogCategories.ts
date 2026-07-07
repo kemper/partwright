@@ -77,6 +77,16 @@ export interface CatalogManifestEntry {
    *  flip to `true` only once a real print exists. Drives the print-tested tile
    *  badge so users can tell verified-printable models from unproven ones. */
   printTested?: boolean;
+  /** Curator's note about the physical print — quality, caveats, how it came
+   *  out — surfaced in the badge's hover tooltip so users get the honest story,
+   *  not just a green check. Only meaningful when `printTested` is true. */
+  printTestedNote?: string;
+  /** The version index (1-based, matching a version's `index`) that was actually
+   *  printed and verified. When the entry later gains newer versions
+   *  (latest > this), the badge flags the print as stale/needing re-verification
+   *  so a re-bake can't silently invalidate the "tested" claim. Only meaningful
+   *  when `printTested` is true; omit to assert only that *a* print exists. */
+  printTestedVersion?: number;
 }
 
 /** Badge describing whether a catalog entry has been verified print-tested.
@@ -85,36 +95,91 @@ export interface CatalogManifestEntry {
 export interface PrintTestedBadge {
   /** True once the model has a verified physical print. */
   tested: boolean;
+  /** True when the print was verified against an older version than the latest
+   *  (tested at vN but the model has since advanced) — the "re-test me" state. */
+  stale: boolean;
   /** Short chip label. */
   label: string;
   /** Tailwind text + border colour classes. */
   classes: string;
-  /** Full-text tooltip. */
+  /** Full-text tooltip — the curator's note plus the tested-version provenance. */
   title: string;
   /** Tokens folded into the tile's search haystack so the state is findable
-   *  (`verified` for tested, `untested` for not-yet-tested). */
+   *  (`verified` for tested, `untested` for not-yet-tested, plus `outdated` for
+   *  a stale print). */
   search: string;
 }
 
-export function printTestedBadge(printTested: boolean | undefined): PrintTestedBadge {
-  return printTested
-    ? {
-        tested: true,
-        label: '✓ Print-tested',
-        classes: 'text-emerald-300 border-emerald-400/40',
-        title: 'Verified — this model has been physically 3D-printed successfully.',
-        search: 'print-tested verified',
-      }
-    : {
-        tested: false,
-        label: 'Untested',
-        classes: 'text-zinc-500 border-zinc-600/70',
-        title: 'Not print-tested yet — this model has not been verified with a physical print.',
-        // Just `untested` — avoid any token containing the `print-tested`
-        // substring, so searching "print-tested" surfaces only verified tiles
-        // (the filter matches substrings, see catalogFilter.ts).
-        search: 'untested',
-      };
+export interface PrintTestedInput {
+  /** Whether a verified physical print exists. */
+  printTested?: boolean;
+  /** Curator's free-text note about the print (quality, caveats). */
+  note?: string;
+  /** Version index (1-based) that was actually printed and verified. */
+  testedVersion?: number;
+  /** The entry's current latest version index — compared against `testedVersion`
+   *  to detect that the model has advanced since it was tested. */
+  latestVersion?: number;
+}
+
+/** Describe a catalog entry's print-tested status as a renderable chip. Pure
+ *  (label + Tailwind classes + tooltip + search tokens) so both the static
+ *  pre-renderer and the in-app overlay render an identical chip.
+ *
+ *  Three states: untested (default), verified-current (green), and
+ *  verified-but-stale (amber — tested at an older version than the latest, so
+ *  the model has changed since and the print claim needs re-checking). */
+export function printTestedBadge(input: PrintTestedInput | undefined = {}): PrintTestedBadge {
+  const { printTested, note, testedVersion, latestVersion } = input;
+  if (!printTested) {
+    return {
+      tested: false,
+      stale: false,
+      label: 'Untested',
+      classes: 'text-zinc-500 border-zinc-600/70',
+      title: 'Not print-tested yet — this model has not been verified with a physical print.',
+      // Just `untested` — avoid any token containing the `print-tested`
+      // substring, so searching "print-tested" surfaces only verified tiles
+      // (the filter matches substrings, see catalogFilter.ts).
+      search: 'untested',
+    };
+  }
+
+  const stale =
+    typeof testedVersion === 'number' &&
+    typeof latestVersion === 'number' &&
+    latestVersion > testedVersion;
+
+  // The tooltip leads with the curator's note (the honest, per-model story) and
+  // falls back to a generic verified line. The version provenance is appended so
+  // hovering always says *which* version was proven.
+  const lead = note?.trim() || 'Verified — this model has been physically 3D-printed successfully.';
+  let provenance = '';
+  if (typeof testedVersion === 'number') {
+    provenance = stale
+      ? ` Tested at version ${testedVersion}; the model has since been updated to version ${latestVersion} and has not been re-verified.`
+      : ` Verified at version ${testedVersion}.`;
+  }
+  const title = `${lead}${provenance}`;
+
+  if (stale) {
+    return {
+      tested: true,
+      stale: true,
+      label: `✓ Print-tested (v${testedVersion})`,
+      classes: 'text-amber-300 border-amber-400/40',
+      title,
+      search: 'print-tested verified outdated re-test',
+    };
+  }
+  return {
+    tested: true,
+    stale: false,
+    label: '✓ Print-tested',
+    classes: 'text-emerald-300 border-emerald-400/40',
+    title,
+    search: 'print-tested verified',
+  };
 }
 
 /** The catalog is sectioned so each tile's reason for being here is obvious.

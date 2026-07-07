@@ -72,7 +72,7 @@ test.describe('Catalog page (static)', () => {
     await expect(fidget).toContainText('Spiral Fidget Cone');
   });
 
-  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
+  test('every tile carries a print-tested status chip', async ({ page }) => {
     await gotoCatalog(page);
 
     const tiles = page.locator('main a[data-catalog-tile]');
@@ -85,13 +85,22 @@ test.describe('Catalog page (static)', () => {
       await expect(chips).toHaveCount(1);
     }
 
-    // With nothing marked print-tested yet, every chip reads "Untested".
-    await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+    // The two states partition every tile: (# verified) + (# untested) == tileCount.
+    const testedCount = await page.locator('main a[data-catalog-tile] span:has-text("Print-tested")').count();
+    const untestedCount = await page.locator('main a[data-catalog-tile] span:has-text("Untested")').count();
+    expect(testedCount + untestedCount).toBe(tileCount);
+    // At least one entry is marked print-tested (the curated verified set).
+    expect(testedCount).toBeGreaterThan(0);
 
-    // The status is searchable: filtering on "untested" keeps the untested tiles.
+    // A verified entry's chip carries its curator note in the hover tooltip.
+    const manor = page.locator('main a[data-catalog-tile]', { hasText: 'Country Manor Estate' });
+    await expect(manor.locator('span:has-text("Print-tested")')).toHaveAttribute('title', /really cleanly/i);
+
+    // The status is searchable: filtering on "untested" keeps only untested tiles.
     const search = page.locator('[data-catalog-search]');
     await search.fill('untested');
-    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+    const visible = await page.locator('main a[data-catalog-tile]:not(.hidden)').count();
+    expect(visible).toBe(untestedCount);
     await search.fill('');
   });
 

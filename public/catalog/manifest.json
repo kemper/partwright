@@ -307,6 +307,9 @@
    "file": "sdf_organic_creature.partwright.json",
    "language": "manifold-js",
    "description": "A smooth-blended creature built entirely from SDF primitives \u2014 showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model.",
+   "printTested": true,
+   "printTestedNote": "Printed successfully \u2014 the smooth-blended SDF body comes off the bed clean.",
+   "printTestedVersion": 2,
    "tags": [
     "figures"
    ]
@@ -658,6 +661,9 @@
    "file": "country_manor_estate.partwright.json",
    "language": "manifold-js",
    "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola \u2014 self-colored via labeled regions for multi-color prints.",
+   "printTested": true,
+   "printTestedNote": "Printed and the quality comes out really cleanly \u2014 the labeled regions separate crisply for a multi-color print.",
+   "printTestedVersion": 1,
    "tags": [
     "buildings"
    ]
@@ -851,6 +857,9 @@
    "language": "manifold-js",
    "description": "Print-in-place bolt & nut \u2014 a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
    "group": "fidget-toys",
+   "printTested": true,
+   "printTestedNote": "Printed and works as a fidget, but the surface finish is coarser than a hand-modeled fidget you'd download \u2014 good, not premium.",
+   "printTestedVersion": 1,
    "tags": [
     "fidgets",
     "mechanical"

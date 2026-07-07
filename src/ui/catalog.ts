@@ -325,7 +325,12 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   tile.dataset.catalogTile = '';
   tile.dataset.language = language;
   tile.dataset.themes = tags.join(' ');
-  const print = printTestedBadge(loaded.manifest.printTested);
+  const print = printTestedBadge({
+    printTested: loaded.manifest.printTested,
+    note: loaded.manifest.printTestedNote,
+    testedVersion: loaded.manifest.printTestedVersion,
+    latestVersion: loaded.payload?.versions?.length ?? 0,
+  });
   tile.dataset.search = [
     loaded.manifest.name,
     loaded.manifest.description ?? '',
