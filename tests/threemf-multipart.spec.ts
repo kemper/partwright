@@ -371,6 +371,91 @@ test.describe('multi-part 3MF export', () => {
     expect(out.spanX).toBeLessThan(330);  // centres stay within the H2C bed width (no balloon)
   });
 
+  test('packStrategy shapes how parts sharing a plate are arranged', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    // Four equal 40×40 parts packed onto ONE plate (plateLayout 'grid'). The three
+    // packing strategies must produce distinct arrangements: 'grid' a compact 2×2
+    // square, 'horizontal' a single full-width row, 'vertical' a single column.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string, w: number, d: number) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, w, 0, 0, 0, d, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = Array.from({ length: 4 }, (_, i) => makePart('p' + i, 40, 40));
+      const decode = (built: { blob: Blob }) =>
+        built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      // Item translation X (index 9) and Y (index 10); count the distinct values.
+      const axisCounts = (t: string) => {
+        const items = [...t.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+          .map(m => m[1].trim().split(/\s+/));
+        const xs = new Set(items.map(i => Number(i[9]).toFixed(2)));
+        const ys = new Set(items.map(i => Number(i[10]).toFixed(2)));
+        return { nx: xs.size, ny: ys.size, n: items.length };
+      };
+      const grid = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'grid' })));
+      const horiz = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'horizontal' })));
+      const vert = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'vertical' })));
+      const dflt = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid' })));
+      return { grid, horiz, vert, dflt };
+    });
+
+    // grid (default) → compact 2×2: 2 distinct X, 2 distinct Y.
+    expect(out.grid).toEqual({ nx: 2, ny: 2, n: 4 });
+    expect(out.dflt).toEqual(out.grid); // 'grid' is the default when omitted
+    // horizontal → one full-width row: 4 distinct X, 1 Y.
+    expect(out.horiz).toEqual({ nx: 4, ny: 1, n: 4 });
+    // vertical → one full-depth column: 1 X, 4 distinct Y.
+    expect(out.vert).toEqual({ nx: 1, ny: 4, n: 4 });
+  });
+
+  test('generic 3MF part picker shows the packing pane on the right', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(4000);
+
+    // Build a 2-part session so the generic "3MF" export opens the part picker.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.runAndSave('return api.Manifold.cube([10,10,10], true);', 'box');
+      await pw.createPart('Pyramid');
+      await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'pyramid');
+    });
+    await page.waitForTimeout(1500);
+
+    // Trigger the GENERIC 3MF export (not the Bambu one).
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('3MF', { exact: true }).click();
+
+    const modal = page.getByRole('dialog');
+    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    // Packing radios present; NO Bambu Studio settings (that's the Bambu export).
+    await expect(modal.getByText('Packing', { exact: true })).toBeVisible();
+    await expect(modal.getByText('Centered grid')).toBeVisible();
+    await expect(modal.getByText(/Bambu Studio settings/i)).toHaveCount(0);
+
+    // Two-pane layout: the Packing heading sits to the RIGHT of the part-list header.
+    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const packBox = await modal.getByText('Packing', { exact: true }).boundingBox();
+    expect(listBox).not.toBeNull();
+    expect(packBox).not.toBeNull();
+    expect(packBox!.x).toBeGreaterThan(listBox!.x + listBox!.width);
+
+    // Pick "Vertical columns" and export; the download should still fire.
+    await modal.getByText('Vertical columns').click();
+    await modal.getByRole('button', { name: /select all/i }).click();
+    const downloadPromise = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
+    await modal.getByRole('button', { name: /export/i }).click();
+    const download = await downloadPromise;
+    expect(download).not.toBeNull();
+    expect(download!.suggestedFilename()).toMatch(/\.3mf$/);
+  });
+
   test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForTimeout(3000);

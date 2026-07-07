@@ -186,6 +186,29 @@ export function isBambuPlateLayout(v: string): v is BambuPlateLayout {
 }
 
 /**
+ * How parts that SHARE a plate (or the whole generic model) are arranged — the
+ * spatial packing strategy, orthogonal to {@link BambuPlateLayout} (which decides
+ * WHICH parts share a plate):
+ *   - `'grid'` — a compact, roughly-square cluster CENTRED on the plate (the
+ *     default). Keeps parts toward the middle of the bed, away from the far
+ *     left/right edges that aren't always printable on wide beds like the H2C.
+ *   - `'horizontal'` — fill left→right across the full bed width, wrapping to new
+ *     rows (spreads parts horizontally).
+ *   - `'vertical'` — fill front→back down the full bed depth, wrapping to new
+ *     columns (spreads parts vertically).
+ * Applies to BOTH the Bambu project export (within each plate) and the generic
+ * multi-object 3MF (the single inline model). For the Bambu `'separate'` plate
+ * layout it's a no-op (one part per plate is always centred).
+ */
+export type PackStrategy = 'grid' | 'horizontal' | 'vertical';
+export const PACK_STRATEGIES: PackStrategy[] = ['grid', 'horizontal', 'vertical'];
+export const DEFAULT_PACK_STRATEGY: PackStrategy = 'grid';
+/** True when `v` is a valid {@link PackStrategy} (for API-boundary validation). */
+export function isPackStrategy(v: string): v is PackStrategy {
+  return (PACK_STRATEGIES as string[]).includes(v);
+}
+
+/**
  * Group part indices into logical "bins" per the layout mode — the sets of parts
  * ALLOWED to share a plate. Returns a list of bins, each a list of part indices in
  * input order (never empty for N>0). A bin still gets shelf-packed into one OR MORE
@@ -224,14 +247,107 @@ export interface PackedPlate {
   centers: { cx: number; cy: number }[];
 }
 
+/** One part placed within a page: index + top-left corner + footprint (all in mm). */
+interface PlacedPart { k: number; x: number; y: number; w: number; d: number; }
+
+/**
+ * Shelf-pack members into PAGES using each part's ACTUAL footprint. Parts are laid
+ * left→right along X up to `rowLimit` (wrapping to a new shelf/row when the next part
+ * won't fit), and shelves stack along Y up to `pageLimit` (a shelf that would run
+ * past `pageLimit` starts a NEW PAGE). Coordinates are relative to each page's
+ * top-left origin. A part wider/deeper than the limits is still placed alone (nothing
+ * packs better — a genuine "too big" case). `pageLimit = Infinity` yields a single
+ * unbounded page. Pure helper shared by every {@link PackStrategy}.
+ */
+function shelfPack(
+  members: number[],
+  footprint: (k: number) => { w: number; d: number },
+  rowLimit: number,
+  pageLimit: number,
+  gap: number,
+): PlacedPart[][] {
+  // First-fit-decreasing by depth packs tidier shelves; tie-break on index for
+  // determinism. Sorting only reorders placement, never which parts share a page.
+  const ordered = [...members].sort((a, b) => footprint(b).d - footprint(a).d || a - b);
+  const pages: PlacedPart[][] = [];
+  let cur: PlacedPart[] = [];
+  let shelfY = 0, shelfH = 0, cursorX = 0;
+  const flush = () => {
+    if (cur.length === 0) return;
+    pages.push(cur);
+    cur = []; shelfY = 0; shelfH = 0; cursorX = 0;
+  };
+  for (const k of ordered) {
+    const { w, d } = footprint(k);
+    // Wrap to a new shelf if this part won't fit the current row's length limit.
+    if (cursorX > 0 && cursorX + w > rowLimit) { shelfY += shelfH + gap; cursorX = 0; shelfH = 0; }
+    // Start a new page if the shelf would run past the page's depth limit (keep a lone part).
+    if (cur.length > 0 && shelfY + d > pageLimit) flush();
+    cur.push({ k, x: cursorX, y: shelfY, w, d });
+    cursorX += w + gap;
+    shelfH = Math.max(shelfH, d);
+  }
+  flush();
+  return pages;
+}
+
+/** Row-length limit for the compact `'grid'` strategy: the side of a square with the
+ *  parts' combined (gap-padded) footprint area, clamped to at least the widest part
+ *  and at most `maxW`. Wrapping rows at this width yields a roughly-square cluster
+ *  (rather than one full-bed-width strip) which then centres tightly on the bed. */
+function compactRowLimit(members: number[], footprint: (k: number) => { w: number; d: number }, gap: number, maxW: number): number {
+  let area = 0, widest = 0;
+  for (const k of members) { const { w, d } = footprint(k); area += (w + gap) * (d + gap); widest = Math.max(widest, w); }
+  return Math.max(widest, Math.min(maxW, Math.sqrt(area)));
+}
+
+/**
+ * Arrange members into pages per the packing `strategy`, each page fitting within
+ * `bedW × bedH` (pass `Infinity` for an unbounded single page). Returns pages of
+ * placements relative to each page's top-left origin, in real (X=width, Y=depth)
+ * coordinates. `'vertical'` is implemented by transposing the axes through
+ * {@link shelfPack} then swapping coordinates back, so all three strategies share one
+ * packer.
+ */
+function arrangePages(
+  members: number[],
+  footprint: (k: number) => { w: number; d: number },
+  bedW: number,
+  bedH: number,
+  gap: number,
+  strategy: PackStrategy,
+): PlacedPart[][] {
+  if (strategy === 'vertical') {
+    // Fill down Y first, wrap to new columns across X: pack in transposed space
+    // (swap w↔d and bed dims) then swap each placement's coords back.
+    const fpT = (k: number) => { const f = footprint(k); return { w: f.d, d: f.w }; };
+    const pages = shelfPack(members, fpT, bedH, bedW, gap);
+    return pages.map(pg => pg.map(p => ({ k: p.k, x: p.y, y: p.x, w: p.d, d: p.w })));
+  }
+  const rowLimit = strategy === 'grid' ? compactRowLimit(members, footprint, gap, bedW) : bedW;
+  return shelfPack(members, footprint, rowLimit, bedH, gap);
+}
+
+/** Centre a page's used bounding box on a `bedW × bedH` bed → member indices + centres. */
+function centerOnBed(page: PlacedPart[], bedW: number, bedH: number): PackedPlate {
+  const usedW = Math.max(...page.map(e => e.x + e.w));
+  const usedH = Math.max(...page.map(e => e.y + e.d));
+  const offX = Math.max(0, (bedW - usedW) / 2);
+  const offY = Math.max(0, (bedH - usedH) / 2);
+  return {
+    members: page.map(e => e.k),
+    centers: page.map(e => ({ cx: offX + e.x + e.w / 2, cy: offY + e.y + e.d / 2 })),
+  };
+}
+
 /**
  * Shelf-pack a bin of parts into one or more plates of `bedW × bedH`, using each
  * part's ACTUAL footprint (not a uniform max-pitch grid — that's the bug that let a
- * single large part balloon the layout off the plate). Parts are placed left→right
- * into shelves (rows); when the next part won't fit the current shelf it starts a
- * new one, and a shelf that would exceed the bed depth starts a NEW PLATE. Each
- * plate's used area is centred on the bed. A part larger than the whole bed is still
- * placed alone (nothing packs better — a genuine "too big for this printer" case).
+ * single large part balloon the layout off the plate). The `strategy` shapes the
+ * arrangement: `'grid'` (default) clusters parts compactly in the CENTRE of the bed;
+ * `'horizontal'` fills full-width rows; `'vertical'` fills full-depth columns. A bin
+ * that doesn't fit spills onto additional plates; each plate's used area is centred
+ * on the bed, so a part is never pushed off the near edge.
  *
  * `footprint(k)` returns the part's `{ w, d }` (X width, Y depth) in mm; `gap` is the
  * spacing left between footprints. Pure + exported for unit testing.
@@ -242,38 +358,9 @@ export function packPlates(
   bedW: number,
   bedH: number,
   gap: number,
+  strategy: PackStrategy = DEFAULT_PACK_STRATEGY,
 ): PackedPlate[] {
-  // First-fit-decreasing by depth packs tidier shelves; tie-break on index for
-  // determinism. Sorting only reorders placement, never which parts share a plate.
-  const ordered = [...members].sort((a, b) => footprint(b).d - footprint(a).d || a - b);
-  const plates: PackedPlate[] = [];
-  let cur: { k: number; x: number; y: number; w: number; d: number }[] = [];
-  let shelfY = 0, shelfH = 0, cursorX = 0;
-  const flush = () => {
-    if (cur.length === 0) return;
-    // Centre the packed bounding box on the bed (never push a part off the near edge).
-    const usedW = Math.max(...cur.map(e => e.x + e.w));
-    const usedH = Math.max(...cur.map(e => e.y + e.d));
-    const offX = Math.max(0, (bedW - usedW) / 2);
-    const offY = Math.max(0, (bedH - usedH) / 2);
-    plates.push({
-      members: cur.map(e => e.k),
-      centers: cur.map(e => ({ cx: offX + e.x + e.w / 2, cy: offY + e.y + e.d / 2 })),
-    });
-    cur = []; shelfY = 0; shelfH = 0; cursorX = 0;
-  };
-  for (const k of ordered) {
-    const { w, d } = footprint(k);
-    // Wrap to a new shelf if this part won't fit on the current one.
-    if (cursorX > 0 && cursorX + w > bedW) { shelfY += shelfH + gap; cursorX = 0; shelfH = 0; }
-    // Start a new plate if the shelf would run past the bed depth (keep a lone part).
-    if (cur.length > 0 && shelfY + d > bedH) flush();
-    cur.push({ k, x: cursorX, y: shelfY, w, d });
-    cursorX += w + gap;
-    shelfH = Math.max(shelfH, d);
-  }
-  flush();
-  return plates;
+  return arrangePages(members, footprint, bedW, bedH, gap, strategy).map(page => centerOnBed(page, bedW, bedH));
 }
 
 export interface Build3MFProjectOptions {
@@ -299,6 +386,10 @@ export interface Build3MFProjectOptions {
   /** How the Bambu/Orca export distributes parts across plates. Default
    *  `'separate'` (one part per plate). Ignored in generic mode. */
   plateLayout?: BambuPlateLayout;
+  /** How parts that share a plate (Bambu) or the single generic model are spatially
+   *  arranged. Default `'grid'` (a compact cluster centred on the bed). See
+   *  {@link PackStrategy}. */
+  packStrategy?: PackStrategy;
 }
 
 const CORE_NS = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
@@ -520,19 +611,29 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     ? `    <m:colorgroup id="${colorGroupId}">\n${materialColors.map(h => `      <m:color color="${h.toUpperCase()}FF" />`).join('\n')}\n    </m:colorgroup>`
     : '';
 
+  const packStrategy = opts.packStrategy ?? DEFAULT_PACK_STRATEGY;
   const plates = assignBambuPlates(parts.map(p => p.group), opts.plateLayout ?? 'separate');
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), plates, gridGap)
-    : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap);
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), plates, gridGap, packStrategy)
+    : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap, packStrategy);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
   return { blob: new Blob([built], { type: mimeType }), filename: getExportFilename('3mf', opts.customName), mimeType };
 }
 
-// ── Generic: single inline model, parts grid-arranged ─────────────────────
-function buildGenericPackage(prepared: PreparedPart[], colorgroupXml: string, anyColour: boolean, _cgid: number, gridGap: number): Uint8Array {
+// ── Generic: single inline model, parts arranged per the packing strategy ──
+// The generic 3MF has no build plate, so the strategy just shapes the shared grid:
+//   - 'grid'       → ⌈√N⌉ columns (a compact, roughly-square centred block)
+//   - 'horizontal' → N columns (a single left→right row)
+//   - 'vertical'   → 1 column (a single front→back stack)
+// A uniform max-footprint pitch keeps every cell non-overlapping (no bed to balloon
+// off, so the pitch that was a bug for Bambu is fine here). The block is centred on
+// the origin.
+function buildGenericPackage(prepared: PreparedPart[], colorgroupXml: string, anyColour: boolean, _cgid: number, gridGap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): Uint8Array {
   const N = prepared.length;
-  const cols = Math.ceil(Math.sqrt(N));
+  const cols = packStrategy === 'horizontal' ? N
+    : packStrategy === 'vertical' ? 1
+      : Math.ceil(Math.sqrt(N));
   const rows = Math.ceil(N / cols);
   const pitch = Math.max(1, ...prepared.map(p => Math.max(p.width, p.depth))) + gridGap;
 
@@ -608,7 +709,7 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, bins: number[][], gap: number): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, bins: number[][], gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
@@ -623,7 +724,7 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], p
   // before, so that path is unchanged.
   const footprint = (k: number) => ({ w: prepared[k].width, d: prepared[k].depth });
   const physicalPlates: PackedPlate[] = [];
-  for (const bin of bins) physicalPlates.push(...packPlates(bin, footprint, bedW, bedH, gap));
+  for (const bin of bins) physicalPlates.push(...packPlates(bin, footprint, bedW, bedH, gap, packStrategy));
 
   const gridCols = plateGridCols(physicalPlates.length);  // ⌈√(#plates)⌉ to match Bambu's plate grid
 
