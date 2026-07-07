@@ -4769,16 +4769,22 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
+    // Cancellable between parts (Escape or the modal's Cancel button flips the
+    // flag); each per-part bake is atomic, so we stop at the next part boundary.
+    let cancelled = false;
+    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
     try {
       const baked: { name: string; mesh: MeshData; group?: string }[] = [];
       for (let i = 0; i < selectedIds.length; i++) {
+        if (cancelled) break;
         const part = byId.get(selectedIds[i]);
         if (!part) continue;
         updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (cancelled) break;
         if (result) baked.push({ ...result, ...(part.group ? { group: part.group } : {}) });
       }
+      if (cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       updateProgress(job, 1, 'Writing 3MF…');
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
@@ -4824,16 +4830,22 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
+    // Cancellable between parts (Escape or the modal's Cancel button flips the
+    // flag); each per-part bake is atomic, so we stop at the next part boundary.
+    let cancelled = false;
+    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
       for (let i = 0; i < selectedIds.length; i++) {
+        if (cancelled) break;
         const part = byId.get(selectedIds[i]);
         if (!part) continue;
         updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (cancelled) break;
         if (result) baked.push(result);
       }
+      if (cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       updateProgress(job, 1, `Writing ${formatTag}…`);
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
