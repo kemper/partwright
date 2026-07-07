@@ -73,6 +73,21 @@ function ensureMount(): void {
     document.head.appendChild(style);
   }
 
+  // Escape cancels the in-flight job when the modal is up and the job is
+  // cancellable — parity with the on-screen Cancel button. Registered once on
+  // the singleton mount (never torn down, so no removeEventListener needed) in
+  // the capture phase so this top-most modal wins Escape over anything beneath
+  // it. No-op (and passes the key through) when hidden or non-cancellable.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!visibleSignal.value) return;
+    const cancel = currentJob?.onCancel;
+    if (!cancel) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancel();
+  }, true);
+
   render(<ProgressOverlay />, mountRoot);
 }
 
