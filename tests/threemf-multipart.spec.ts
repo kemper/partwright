@@ -174,6 +174,17 @@ test.describe('multi-part 3MF export', () => {
     // The Bambu export shows the printer/nozzle/filament dropdowns (not the generic).
     await expect(modal.getByText(/Bambu Studio settings/i)).toBeVisible();
     await expect(modal.locator('select')).toHaveCount(3);
+
+    // Two-pane layout: the options sit in an always-visible RIGHT-HAND pane
+    // beside the part list, not stacked below it. Assert the "Bambu Studio
+    // settings" heading is horizontally to the right of the part-list header
+    // (its left edge starts past the list header's right edge) at desktop width.
+    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const optsBox = await modal.getByText(/Bambu Studio settings/i).boundingBox();
+    expect(listBox).not.toBeNull();
+    expect(optsBox).not.toBeNull();
+    expect(optsBox!.x).toBeGreaterThan(listBox!.x + listBox!.width);
+
     // Pick a single-nozzle printer to exercise the override path through the modal.
     await modal.locator('select').first().selectOption('p1s');
 

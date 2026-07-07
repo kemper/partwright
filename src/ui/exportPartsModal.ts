@@ -73,6 +73,10 @@ export function showExportPartsModal(
     const shell = createModalShell({
       title,
       scrollable: true,
+      // Bambu exports show an always-visible options pane beside the part list,
+      // so the modal is wider (and side-by-side on desktop). Other formats keep
+      // the default single-column width.
+      ...(bambu ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
       onClose: () => {
         document.removeEventListener('keydown', onEnter);
         for (const url of objectUrls) URL.revokeObjectURL(url);
@@ -85,6 +89,25 @@ export function showExportPartsModal(
     sub.textContent = description;
     shell.body.appendChild(sub);
 
+    // For Bambu, split the body into two panes: the part-list selector on the
+    // left and an always-visible options pane on the right (stacked on mobile,
+    // side-by-side on desktop). Other formats stay single-column. `listParent`
+    // and `optionsParent` point at the right containers for each layout.
+    let optionsParent: HTMLElement = shell.body;
+    let listParent: HTMLElement = shell.body;
+    if (bambu) {
+      const panes = document.createElement('div');
+      panes.className = 'flex flex-col sm:flex-row gap-4 sm:gap-5 flex-1 min-h-0 mt-1';
+      const leftCol = document.createElement('div');
+      leftCol.className = 'flex flex-col gap-1 min-w-0 sm:flex-1 sm:min-h-0 sm:overflow-y-auto';
+      const rightCol = document.createElement('div');
+      rightCol.className = 'flex flex-col gap-1 sm:w-64 shrink-0 sm:border-l sm:border-zinc-700 sm:pl-5 sm:min-h-0 sm:overflow-y-auto';
+      panes.append(leftCol, rightCol);
+      shell.body.appendChild(panes);
+      listParent = leftCol;
+      optionsParent = rightCol;
+    }
+
     // Header row with the count + select-all toggle.
     const head = document.createElement('div');
     head.className = 'flex items-center justify-between mt-1';
@@ -94,11 +117,11 @@ export function showExportPartsModal(
     toggleAll.type = 'button';
     toggleAll.className = 'text-[10px] text-blue-400 hover:text-blue-300';
     head.append(heading, toggleAll);
-    shell.body.appendChild(head);
+    listParent.appendChild(head);
 
     const list = document.createElement('div');
     list.className = 'flex flex-col gap-1 mt-1';
-    shell.body.appendChild(list);
+    listParent.appendChild(list);
 
     // The checkboxes ARE the selection state (source of truth for selectedIds).
     const checks: HTMLInputElement[] = [];
@@ -212,12 +235,12 @@ export function showExportPartsModal(
     if (bambu) {
       const mkSelect = (label: string, choices: { value: string; label: string }[], def: string): HTMLSelectElement => {
         const wrap = document.createElement('label');
-        wrap.className = 'flex items-center justify-between gap-3 mt-2';
+        wrap.className = 'flex flex-col gap-1 mt-2';
         const lbl = document.createElement('span');
         lbl.className = 'text-[11px] text-zinc-300';
         lbl.textContent = label;
         const sel = document.createElement('select');
-        sel.className = 'flex-1 max-w-[60%] bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 px-2 py-1 cursor-pointer';
+        sel.className = 'w-full bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 px-2 py-1 cursor-pointer';
         for (const c of choices) {
           const o = document.createElement('option');
           o.value = c.value; o.textContent = c.label;
@@ -225,16 +248,13 @@ export function showExportPartsModal(
           sel.appendChild(o);
         }
         wrap.append(lbl, sel);
-        shell.body.appendChild(wrap);
+        optionsParent.appendChild(wrap);
         return sel;
       };
-      const div = document.createElement('div');
-      div.className = 'mt-3 pt-3 border-t border-zinc-700';
       const h = document.createElement('div');
-      h.className = 'text-[11px] text-zinc-400 mb-1';
+      h.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-400 mb-0.5';
       h.textContent = 'Bambu Studio settings';
-      div.appendChild(h);
-      shell.body.appendChild(div);
+      optionsParent.appendChild(h);
       printerSel = mkSelect('Printer', bambu.printers.map(p => ({ value: p.id, label: p.label })), bambu.defaultPrinter);
       nozzleSel = mkSelect('Nozzle', bambu.nozzles.map(n => ({ value: n, label: `${n} mm` })), bambu.defaultNozzle);
       filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), bambu.defaultFilament);
@@ -244,9 +264,9 @@ export function showExportPartsModal(
       // option only appears when the session actually has groups (else it's a no-op
       // that behaves like "separate"). Radios drive `plateLayout`.
       const layoutWrap = document.createElement('div');
-      layoutWrap.className = 'mt-3 pt-3 border-t border-zinc-700';
+      layoutWrap.className = 'mt-4 pt-3 border-t border-zinc-700';
       const layoutHead = document.createElement('div');
-      layoutHead.className = 'text-[11px] text-zinc-400 mb-1.5';
+      layoutHead.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-400 mb-1.5';
       layoutHead.textContent = 'Plate layout';
       layoutWrap.appendChild(layoutHead);
 
@@ -279,7 +299,7 @@ export function showExportPartsModal(
         row.append(radio, text);
         layoutWrap.appendChild(row);
       }
-      shell.body.appendChild(layoutWrap);
+      optionsParent.appendChild(layoutWrap);
     }
 
     const cancelBtn = document.createElement('button');
