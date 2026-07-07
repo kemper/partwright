@@ -10,7 +10,8 @@
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
-import { buildPartTree } from './partTree';
+import { buildPartTree, groupNames } from './partTree';
+import type { BambuPlateLayout } from '../export/threemfProject';
 
 export interface ExportPartChoice {
   id: string;
@@ -32,12 +33,15 @@ export interface ExportPartsBambuOptions {
   defaultFilament: string;
 }
 
-/** Modal result: the chosen part ids plus (for Bambu) the printer/nozzle/filament. */
+/** Modal result: the chosen part ids plus (for Bambu) the printer/nozzle/filament
+ *  and the plate layout. */
 export interface ExportPartsResult {
   partIds: string[];
   printer?: string;
   nozzle?: string;
   filament?: string;
+  /** Bambu only — how selected parts are distributed across build plates. */
+  plateLayout?: BambuPlateLayout;
 }
 
 export interface ExportPartsModalOptions {
@@ -202,6 +206,9 @@ export function showExportPartsModal(
     let printerSel: HTMLSelectElement | null = null;
     let nozzleSel: HTMLSelectElement | null = null;
     let filamentSel: HTMLSelectElement | null = null;
+    // Selected plate layout (Bambu only). Default: one part per plate.
+    let plateLayout: BambuPlateLayout = 'separate';
+    const hasGroups = groupNames(parts).length > 0;
     if (bambu) {
       const mkSelect = (label: string, choices: { value: string; label: string }[], def: string): HTMLSelectElement => {
         const wrap = document.createElement('label');
@@ -231,6 +238,48 @@ export function showExportPartsModal(
       printerSel = mkSelect('Printer', bambu.printers.map(p => ({ value: p.id, label: p.label })), bambu.defaultPrinter);
       nozzleSel = mkSelect('Nozzle', bambu.nozzles.map(n => ({ value: n, label: `${n} mm` })), bambu.defaultNozzle);
       filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), bambu.defaultFilament);
+
+      // ── Plate layout: how the selected parts spread across build plates ──
+      // Each option is a labelled radio with a one-line hint. The "group per plate"
+      // option only appears when the session actually has groups (else it's a no-op
+      // that behaves like "separate"). Radios drive `plateLayout`.
+      const layoutWrap = document.createElement('div');
+      layoutWrap.className = 'mt-3 pt-3 border-t border-zinc-700';
+      const layoutHead = document.createElement('div');
+      layoutHead.className = 'text-[11px] text-zinc-400 mb-1.5';
+      layoutHead.textContent = 'Plate layout';
+      layoutWrap.appendChild(layoutHead);
+
+      const layoutOpts: { value: BambuPlateLayout; label: string; hint: string }[] = [
+        { value: 'separate', label: 'Separate plates', hint: 'One part per build plate.' },
+        { value: 'grid', label: 'Packed together', hint: 'All parts packed to fit the plate, spilling onto more plates as needed.' },
+      ];
+      if (hasGroups) {
+        layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group packed onto its own plate(s); ungrouped parts print separately.' });
+      }
+      for (const opt of layoutOpts) {
+        const row = document.createElement('label');
+        row.className = 'flex items-start gap-2 py-1 px-2 -mx-2 rounded cursor-pointer hover:bg-zinc-700/30';
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'bambu-plate-layout';
+        radio.value = opt.value;
+        radio.checked = opt.value === plateLayout;
+        radio.className = 'mt-0.5 w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
+        radio.addEventListener('change', () => { if (radio.checked) plateLayout = opt.value; });
+        const text = document.createElement('div');
+        text.className = 'flex-1 min-w-0';
+        const lbl = document.createElement('div');
+        lbl.className = 'text-xs text-zinc-200';
+        lbl.textContent = opt.label;
+        const hint = document.createElement('div');
+        hint.className = 'text-[10px] text-zinc-500 leading-snug';
+        hint.textContent = opt.hint;
+        text.append(lbl, hint);
+        row.append(radio, text);
+        layoutWrap.appendChild(row);
+      }
+      shell.body.appendChild(layoutWrap);
     }
 
     const cancelBtn = document.createElement('button');
@@ -266,6 +315,7 @@ export function showExportPartsModal(
         printer: printerSel?.value,
         nozzle: nozzleSel?.value,
         filament: filamentSel?.value,
+        ...(bambu ? { plateLayout } : {}),
       };
       shell.close();
     }

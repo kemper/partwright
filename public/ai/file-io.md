@@ -34,15 +34,19 @@ Each call also adds the export to the Recent Exports inbox so the user can re-do
 
 ## Multi-part 3MF — bundle several parts into one file
 
-`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament? })` bundles several Session Parts into **one** 3MF. Two modes:
+`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout? })` bundles several Session Parts into **one** 3MF. Two modes:
 
-- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: each part on its **own build plate**, painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
+- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: parts distributed across build plates (see `plateLayout`), painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
 - **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
 
 In Bambu mode you can pick the target machine (these match the export modal's dropdowns):
 - **`printer`** — dual-nozzle: `"h2c"` (default), `"h2d"`, `"h2dpro"`, `"x2d"`; single-nozzle: `"h2s"`, `"a2l"`, `"x1c"`, `"x1e"`, `"x1"`, `"p1s"`, `"p1p"`, `"p2s"`, `"a1"`, `"a1mini"`. Sets the printer profile + bed + process so Bambu opens it natively without converting.
 - **`nozzle`** — `"0.2"` | `"0.4"` (default) | `"0.6"` | `"0.8"`.
 - **`filament`** — `"pla"` (default) | `"petg"` | `"abs"` | `"asa"` | `"tpu"` | `"pc"`. One material for all colours; sets the filament type + temps.
+- **`plateLayout`** — how selected parts spread across build plates. `"grid"` / `"group"` **shelf-pack** parts by their real footprint into the printer's bed, spilling onto extra plates when they don't all fit (so nothing lands off the plate):
+  - `"separate"` (default) — **one part per plate**. Best for a handful of parts; unwieldy past ~30.
+  - `"grid"` — **all parts packed together**, filling each plate before starting the next. Best for many small parts you want to print in as few jobs as possible.
+  - `"group"` — **each part group packed onto its own plate(s)** (parts sharing a `group`; ungrouped parts print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
 
 ```js
 // Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
@@ -52,11 +56,17 @@ await partwright.export3MFParts()
 // Target a P1S with a 0.6 nozzle in PETG:
 await partwright.export3MFParts(undefined, "tree", { printer: "p1s", nozzle: "0.6", filament: "petg" })
 
+// All parts packed onto ONE plate (grid) — good for many small parts:
+await partwright.export3MFParts(undefined, "tray", { plateLayout: "grid" })
+
+// One plate per group (30-part collection organised into groups):
+await partwright.export3MFParts(undefined, "collection", { plateLayout: "group" })
+
 // Specific parts as a generic multi-object 3MF (ids from listParts()):
 await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
 ```
 
-Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places each part on its plate using your configured **bed size** (printer settings) for the plate stride. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
+Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places parts on plates using your configured **bed size** (printer settings) for the plate stride, and arranges multiple parts sharing a plate (`"grid"` / `"group"`) in a sub-grid within the bed. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
 
 `export3MFParts` triggers a browser download; **`export3MFPartsData(partIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, parts }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
 
