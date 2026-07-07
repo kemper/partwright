@@ -67,7 +67,7 @@ export const SUBDOC_NAMES_LIST = [
   'print-fit',
 ] as const;
 
-const ALL_TOOLS: ToolDefinition[] = [
+export const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
     description: 'Returns the editor\'s current modeling language: "manifold-js", "scad", "replicad", or "voxel". The per-turn system suffix already includes this, but call when in doubt or after a tool sequence that might have switched it.',
@@ -1537,6 +1537,12 @@ const ALWAYS_AVAILABLE = new Set([
   'deletePart',
   'assertPaint',
   'sliceAtZVisual',
+  // Reconstruction measurements — pure reads over the mesh/import, no
+  // mutation, so they're always available (like query/probeRay).
+  'evalAgainstImport',
+  'profileModel',
+  'compareToImport',
+  'fitInscribed',
   'paintInCylinder',
   'checkPrintability',
   'getPrinterSettings',
@@ -1575,6 +1581,8 @@ const PLAN_MODE_TOOLS = new Set([
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
+  // Reconstruction measurements — pure reads, safe while planning
+  'evalAgainstImport', 'profileModel', 'compareToImport', 'fitInscribed',
 ]);
 
 /** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
