@@ -23,11 +23,12 @@ These tactics are distilled from the headless inverse-CAD loop that converged
   voxel occupancy grid, with the volume fraction it covers. A high fraction
   (>0.6) says the shape is mostly that primitive: model it exactly and wrap
   the remainder. Also a direct reader of inner feature dimensions.
-- **`compareToImport(index?, {maxFindings?})`** — voxel symmetric-difference
+- **`compareToImport(index?, {res?, maxFindings?})`** — voxel symmetric-difference
   with LOCALIZED findings: every disagreement blob signed (`excess` = your
   model has material the target lacks; `missing` = the reverse), sized, and
   positioned (centroid, bbox, `relCentroid` 0..1 within the target, a
-  thin-skin vs compact-feature classification). This turns "hausdorff 1.9"
+  thin-skin vs compact-feature classification; `res` overrides the grid
+  resolution, console API only). This turns "hausdorff 1.9"
   into "missing compact feature at [12,0,−5], extent 4×3×2" — fix code
   without a visual roundtrip. Use after evalAgainstImport flags a problem.
 - **`convertToCode({quality?, step?, edge?})`** — deterministic baseline.

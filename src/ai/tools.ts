@@ -1337,7 +1337,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
 
 **When to use:** FIRST step of any reconstruction — it hands you the semantic skeleton (which features are true primitives, with measured dimensions) without guessing from renders. Pass axis+at for one detailed section including hole/bore circle fits (e.g. measure a chimney bore).
 
-Returns { ok, measured, bbox, axes: [{axis, runs: [{kind, from, to, circle?, rect?, meanHoles?, sampleHoles?}]}] } or { error }. Each fit carries rmsRel — near zero means the fit is real.`,
+Returns { ok, measured, bbox, axes: [{axis, runs: [{kind, from, to, circle?, rect?, meanHoles?, sampleHoles?}]}] } or { error }. With axis+at it instead returns one section probe: { ok, measured, at, kind, outerCount, holeCount, outer, circle, rect, holes }. Each fit carries rmsRel/rmsResidual — near zero means the fit is real.`,
     input_schema: {
       type: 'object',
       properties: {
