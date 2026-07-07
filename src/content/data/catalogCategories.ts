@@ -79,6 +79,21 @@ export function printStatusOf(printTested: boolean | undefined): CatalogPrintSta
   return printTested ? 'tested' : 'untested';
 }
 
+/** The entry's current latest version *number* — the highest version `index`,
+ *  NOT the version-array length. These differ for multi-part entries, where the
+ *  array holds one entry per part (each at its own index) rather than a linear
+ *  history: a 37-part kit whose parts are all at index 1 has a latest version of
+ *  1, not 37. This is the value compared against `printTestedVersion` for
+ *  staleness, so it must reflect revision depth, not part count. Falls back to
+ *  the length when no indices are present. */
+export function latestVersionIndex(versions: { index?: number }[]): number {
+  let max = 0;
+  for (const v of versions) {
+    if (typeof v.index === 'number' && v.index > max) max = v.index;
+  }
+  return max || versions.length;
+}
+
 /** Count how many of `entries` fall into each print status. Pure; shared by
  *  both catalog surfaces so their status pills (and counts) stay identical. */
 export function printStatusCounts(entries: { printTested?: boolean }[]): Map<CatalogPrintStatus, number> {

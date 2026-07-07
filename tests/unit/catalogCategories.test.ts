@@ -3,6 +3,7 @@ import {
   printTestedBadge,
   printStatusOf,
   printStatusCounts,
+  latestVersionIndex,
 } from '../../src/content/data/catalogCategories';
 
 describe('printTestedBadge', () => {
@@ -112,5 +113,31 @@ describe('printStatusCounts', () => {
     const counts = printStatusCounts([{ printTested: false }, {}]);
     expect(counts.has('tested')).toBe(false);
     expect(counts.get('untested')).toBe(2);
+  });
+});
+
+describe('latestVersionIndex', () => {
+  it('returns the highest version index (linear history)', () => {
+    expect(latestVersionIndex([{ index: 1 }, { index: 2 }, { index: 3 }])).toBe(3);
+  });
+
+  it('uses revision depth, not array length, for a multi-part kit', () => {
+    // A 37-part kit whose parts are all at index 1 has a latest *version* of 1,
+    // even though the array holds 37 entries — the trap that would falsely flag
+    // a print tested at v1 as stale (37 > 1).
+    const parts = Array.from({ length: 37 }, () => ({ index: 1 }));
+    expect(latestVersionIndex(parts)).toBe(1);
+  });
+
+  it('falls back to the array length when no indices are present', () => {
+    expect(latestVersionIndex([{}, {}])).toBe(2);
+    expect(latestVersionIndex([])).toBe(0);
+  });
+
+  it('keeps a print tested at the deepest index from reading as stale', () => {
+    // Regression guard: dummy13-style kit, tested at v1, must not be stale.
+    const parts = Array.from({ length: 37 }, () => ({ index: 1 }));
+    const badge = printTestedBadge({ printTested: true, testedVersion: 1, latestVersion: latestVersionIndex(parts) });
+    expect(badge.stale).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ import {
   printTestedBadge,
   printStatusOf,
   printStatusCounts,
+  latestVersionIndex,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
   CATALOG_PRINT_STATUSES,
@@ -359,7 +360,7 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
     printTested: loaded.manifest.printTested,
     note: loaded.manifest.printTestedNote,
     testedVersion: loaded.manifest.printTestedVersion,
-    latestVersion: loaded.payload?.versions?.length ?? 0,
+    latestVersion: latestVersionIndex(loaded.payload?.versions ?? []),
   });
   tile.dataset.search = [
     loaded.manifest.name,

@@ -17,6 +17,7 @@ import {
   printTestedBadge,
   printStatusOf,
   printStatusCounts,
+  latestVersionIndex,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
   CATALOG_PRINT_STATUSES,
@@ -170,6 +171,9 @@ interface BuiltTile {
   entry: CatalogManifestEntry;
   language: CatalogLanguage;
   versionCount: number;
+  /** Highest version index (revision depth) — drives print-tested staleness.
+   *  Differs from versionCount for multi-part entries; see latestVersionIndex. */
+  latestVersion: number;
   hasParams: boolean;
   category: CategoryId;
 }
@@ -241,21 +245,23 @@ function loadCatalogTiles(): BuiltTile[] {
   for (const entry of entries) {
     let language: CatalogLanguage = entry.language ?? 'manifold-js';
     let versionCount = 0;
+    let latestVersion = 0;
     let code = '';
     try {
       const payload = JSON.parse(readFileSync(resolve(catalogDir, entry.file), 'utf8')) as {
         session?: { language?: CatalogLanguage };
-        versions?: { code?: string }[];
+        versions?: { code?: string; index?: number }[];
       };
       language = payload.session?.language ?? language;
       const versions = payload.versions ?? [];
       versionCount = versions.length;
+      latestVersion = latestVersionIndex(versions);
       code = versions.map((v) => v.code ?? '').join('\n');
     } catch {
       // Keep the entry with manifest-only info; it still links + categorizes.
     }
     const { hasParams, isSDF } = deriveCharacteristics(entry.id, code);
-    tiles.push({ entry, language, versionCount, hasParams, category: categorizeOf({ hasParams, isSDF, language, group: entry.group }) });
+    tiles.push({ entry, language, versionCount, latestVersion, hasParams, category: categorizeOf({ hasParams, isSDF, language, group: entry.group }) });
   }
   return tiles;
 }
@@ -272,7 +278,7 @@ function catalogTileHtml(tile: BuiltTile): string {
     printTested: tile.entry.printTested,
     note: tile.entry.printTestedNote,
     testedVersion: tile.entry.printTestedVersion,
-    latestVersion: tile.versionCount,
+    latestVersion: tile.latestVersion,
   });
   const printChip = `<span class="font-semibold border rounded px-1 ${print.classes}" title="${escAttr(print.title)}">${esc(print.label)}</span>`;
   const versions = tile.versionCount > 0
