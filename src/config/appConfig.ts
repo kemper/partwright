@@ -201,6 +201,12 @@ export interface AppConfig {
     filamentMatchThreshold: number;
     /** Confidence score below which the filament swap guide shows a warning (0–1). */
     filamentConfidenceWarnThreshold: number;
+    /** levelSet cell budget for convertToCode at 'standard' quality — the
+     *  mesh→code speed/smoothness knob ('draft' = ×0.25, 'fine' = ×4). */
+    reconstructCellBudget: number;
+    /** Surface samples per mesh for convertToCode / evalAgainstImport
+     *  chamfer+hausdorff reports (more = tighter noise floor, slower). */
+    reconstructEvalSamples: number;
   };
   ui: {
     /** How long toast notifications stay on screen (ms). */
@@ -365,6 +371,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     remoteFetchTimeoutMs: 15_000,
     filamentMatchThreshold: 0.18,
     filamentConfidenceWarnThreshold: 0.9,
+    reconstructCellBudget: 6_000_000,
+    reconstructEvalSamples: 4000,
   },
   ui: {
     toastDurationMs: 2200,

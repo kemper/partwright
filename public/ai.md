@@ -168,6 +168,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
 | `spending` | To understand the user's compute budget and what each mode enforces or advises. |
 | `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
+| `reconstruction` | Before converting an imported mesh into editable code (`convertToCode` / `evalAgainstImport` / the /reconstruct workflow) — how to read the chamfer/hausdorff metrics, the noise floor, and the measured refinement tactics. |
 
 ## Common agent mistakes
 
@@ -237,6 +238,8 @@ partwright.getModule()         // Raw manifold-3d WASM module
 partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'
 await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the prev draft, restores the other
 partwright.importImageAsVoxels(imageUrl, opts?) // Image (data:/URL) -> colored voxel session. See /ai/voxel.md
+await partwright.convertToCode(opts?) // Rebuild the current model (e.g. an STL import) as smooth, import-free, EDITABLE code; saves a version + reports chamfer/hausdorff vs the source. See /ai/reconstruction.md
+await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: current model vs imported mesh i (how faithful is the remake?). See /ai/reconstruction.md
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
