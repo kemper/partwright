@@ -16,12 +16,12 @@ import {
   printStatusOf,
   printStatusCounts,
   latestVersionIndex,
+  PRINT_TESTED_SECTION,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
   CATALOG_PRINT_STATUSES,
   themeCounts,
   type CategoryId,
-  type CategoryDef,
   type CatalogManifestEntry,
   type CatalogLanguage,
 } from '../content/data/catalogCategories';
@@ -193,6 +193,13 @@ export async function createCatalogPage(
     else buckets.set(cat, [entry]);
   }
 
+  // Additive Print-Tested showcase pinned to the top — every verified entry,
+  // also still shown in its home category below. Only when at least one exists.
+  const testedEntries = loaded.filter((entry) => entry.manifest.printTested);
+  if (testedEntries.length > 0) {
+    body.appendChild(renderCategorySection(PRINT_TESTED_SECTION, testedEntries, callbacks));
+  }
+
   for (const def of CATEGORIES) {
     const entries = buckets.get(def.id);
     if (!entries || entries.length === 0) continue;
@@ -312,8 +319,10 @@ function buildControls(loaded: LoadedEntry[]): HTMLElement {
   return wrap;
 }
 
-/** Render one titled, blurbed category section with its own tile grid. */
-function renderCategorySection(def: CategoryDef, entries: LoadedEntry[], callbacks: CatalogCallbacks): HTMLElement {
+/** Render one titled, blurbed section with its own tile grid. Accepts any
+ *  `{id,title,blurb}` — the engine/curated categories and the additive
+ *  Print-Tested showcase both flow through here. */
+function renderCategorySection(def: { id: string; title: string; blurb: string }, entries: LoadedEntry[], callbacks: CatalogCallbacks): HTMLElement {
   const section = document.createElement('section');
   section.className = 'mb-10';
   section.dataset.category = def.id;

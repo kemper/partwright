@@ -18,6 +18,7 @@ import {
   printStatusOf,
   printStatusCounts,
   latestVersionIndex,
+  PRINT_TESTED_SECTION,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
   CATALOG_PRINT_STATUSES,
@@ -320,18 +321,28 @@ function catalogBody(): string {
   if (tiles.length === 0) {
     return `${intro}<p class="text-zinc-500 text-sm">Catalog is loading — open the <a href="/editor" class="text-blue-400 hover:underline">editor</a> to browse models.</p>`;
   }
-  const sections = CATEGORIES.map((def) => {
-    const inCat = tiles.filter((t) => t.category === def.id);
+  const sectionHtml = (id: string, title: string, blurb: string, inCat: BuiltTile[]): string => {
     if (inCat.length === 0) return '';
-    return `<section class="mb-10" data-category="${def.id}">
+    return `<section class="mb-10" data-category="${escAttr(id)}">
   <div class="flex items-baseline gap-2">
-    <h2 class="text-lg font-semibold text-zinc-100">${esc(def.title)}</h2>
+    <h2 class="text-lg font-semibold text-zinc-100">${esc(title)}</h2>
     <span class="text-xs text-zinc-500 tabular-nums" data-catalog-count>${inCat.length}</span>
   </div>
-  <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(def.blurb)}</p>
+  <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(blurb)}</p>
   <div class="grid gap-4" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">${inCat.map(catalogTileHtml).join('')}</div>
 </section>`;
-  }).join('');
+  };
+  // Additive Print-Tested showcase pinned to the top — every verified entry,
+  // also still shown in its home category below. Only when at least one exists.
+  const testedSection = sectionHtml(
+    PRINT_TESTED_SECTION.id,
+    PRINT_TESTED_SECTION.title,
+    PRINT_TESTED_SECTION.blurb,
+    tiles.filter((t) => t.entry.printTested),
+  );
+  const sections = testedSection + CATEGORIES.map((def) =>
+    sectionHtml(def.id, def.title, def.blurb, tiles.filter((t) => t.category === def.id)),
+  ).join('');
   const empty = '<div data-catalog-empty class="hidden text-center py-12 text-zinc-500 text-sm">No models match your search and filters.</div>';
   const jsonLd = jsonLdScript({
     '@context': 'https://schema.org',

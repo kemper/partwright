@@ -245,6 +245,17 @@ export interface CategoryDef {
   blurb: string;
 }
 
+/** A showcase section pinned to the TOP of the catalog listing every
+ *  print-tested model. Unlike the mutually-exclusive engine/curated categories,
+ *  this one is *additive*: a tested entry appears here AND in its home category
+ *  below. Rendered only when at least one tested entry exists. Its `id` is a
+ *  free section id (not a `CategoryId`) — it never participates in bucketing. */
+export const PRINT_TESTED_SECTION = {
+  id: 'print-tested',
+  title: 'Print-Tested',
+  blurb: 'Models verified with a real 3D print — hover the ✓ badge on a tile for how each one came out. Each also appears in its category below.',
+} as const;
+
 export const CATEGORIES: CategoryDef[] = [
   { id: 'fidget-toys', title: 'Fidget Toys', blurb: 'Twisty, spinny, squishy desk toys — popular 3D-print fidgets you can print and tweak. Spans every engine.' },
   { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.fasteners and api.joints helpers.' },
