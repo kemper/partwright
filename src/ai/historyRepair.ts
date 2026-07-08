@@ -9,8 +9,14 @@
 // *persisted* history keeps tripping the 400 on every turn until the stored
 // messages themselves are fixed. This module operates on the persisted
 // ChatMessage[] so the repair can be written back to IndexedDB and the chat
-// becomes sendable again — the backing logic for the explicit "Repair tool
-// history" action and the reliable-rewind guard.
+// becomes sendable again. It backs three things in the panel:
+//   - the automatic repair-before-every-send at the runTurnWithStallRetry choke
+//     point, so a normal send AND the Retry / Keep-going buttons self-heal an
+//     interrupted turn instead of looping on the same 400;
+//   - the explicit "Repair tool history" action (error-bubble button + /repair);
+//   - the reliable-rewind / post-compaction guards.
+// isToolHistoryMismatchError classifies the provider 400 text so the manual
+// affordance surfaces for exactly this failure class.
 //
 // Pure logic (no DOM, no IndexedDB) so it lives in the fast unit tier
 // (tests/unit/historyRepair.test.ts). generateId is a pure id factory.
@@ -160,4 +166,28 @@ export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
  *  affordance. */
 export function hasOrphanedToolCalls(history: ChatMessage[]): boolean {
   return repairToolHistory(history).changed;
+}
+
+/** Recognize the provider 400 that tool-history repair fixes: a tool_use with
+ *  no matching tool_result (or the mirror — a tool_result with no tool_use).
+ *  Every hosted provider phrases it differently, so match on the stable
+ *  fragments each one uses. Drives the error-bubble "Repair history" affordance
+ *  so it appears for exactly this failure class even when the persisted history
+ *  looks clean to `hasOrphanedToolCalls` (e.g. the orphan was only manufactured
+ *  in the per-provider request transform). Pure string check — no history
+ *  needed. */
+export function isToolHistoryMismatchError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    // Anthropic: "`tool_use` ids were found without `tool_result` blocks..."
+    (m.includes('tool_use') && m.includes('tool_result')) ||
+    // Anthropic mirror: "unexpected `tool_use_id`: ..."
+    m.includes('tool_use_id') ||
+    // OpenAI: "...tool_call_ids did not have response messages: ..."
+    m.includes('tool_call_id') ||
+    m.includes('did not have response') ||
+    // OpenAI mirror: "messages with role 'tool' must be a response to a
+    // preceding message with 'tool_calls'."
+    (m.includes("role 'tool'") && m.includes('tool_calls'))
+  );
 }
