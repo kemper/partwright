@@ -4012,7 +4012,12 @@ async function main() {
       code: version.code,
       lang,
       imports: (version.importedMeshes ?? []) as ImportedMesh[],
-      companionFiles: version.companionFiles,
+      // Prefer the version's own companion files (schema ≥ 1.10). Pre-1.10 SCAD
+      // versions saved none, so fall back to the live session set — matching the
+      // old executeCodeAsync path, which read getCompanionFiles() when no explicit
+      // set was passed. Without this, an old SCAD part with `include <lib>` would
+      // build with no companions, fail, and be silently dropped from the export.
+      companionFiles: version.companionFiles ?? getCompanionFiles(),
       onStart: opts.onStart,
     });
     if (!result || result.error || !result.mesh) return null;
@@ -4068,6 +4073,14 @@ async function main() {
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
 
+  // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
+  // process-wide singleton and each batch sizes + disposes it, so two concurrent
+  // bakes would tear down each other's workers — silently truncating an export.
+  // The UI export flows are modal (can't overlap), but the console/AI twins
+  // (exportOBJParts / export3MFParts / …) can be fired concurrently; this chain
+  // makes a second bake wait for the first instead of colliding.
+  let exportBakeMutex: Promise<void> = Promise.resolve();
+
   /**
    * Bake several parts' coloured meshes concurrently through the geometry Worker
    * pool. Order-preserving — the returned `baked` array follows `parts` order
@@ -4079,6 +4092,9 @@ async function main() {
    * queued → rendering → done/failed transitions for the per-part progress UI;
    * `cancel.cancelled` is polled to bail out early (the caller disposes the pool
    * to abort in-flight bakes). A single part failing never fails the batch.
+   *
+   * Concurrent calls are serialized via `exportBakeMutex` so two exports never
+   * share — and dispose — the singleton pool at once.
    */
   async function bakePartsParallel(
     parts: ExportBakePart[],
@@ -4087,33 +4103,43 @@ async function main() {
       cancel?: { cancelled: boolean };
     } = {},
   ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
-    const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
-    setEnginePoolSize(desired);
-    const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+    // Wait for any in-flight export bake, then claim the pool for this one.
+    const prior = exportBakeMutex;
+    let release!: () => void;
+    exportBakeMutex = new Promise<void>((r) => { release = r; });
+    await prior.catch(() => { /* a prior bake's failure must not block this one */ });
+
     try {
-      await Promise.all(parts.map(async (part, i) => {
-        if (opts.cancel?.cancelled) return;
-        try {
-          const result = await bakeColoredMeshForPart(part.id, part.name, {
-            onStart: () => { if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'rendering'); },
-          });
+      const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
+      setEnginePoolSize(desired);
+      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      try {
+        await Promise.all(parts.map(async (part, i) => {
           if (opts.cancel?.cancelled) return;
-          if (result) {
-            slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
-            opts.onStatus?.(part.id, 'done');
-          } else {
-            opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
+          try {
+            const result = await bakeColoredMeshForPart(part.id, part.name, {
+              onStart: () => { if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'rendering'); },
+            });
+            if (opts.cancel?.cancelled) return;
+            if (result) {
+              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              opts.onStatus?.(part.id, 'done');
+            } else {
+              opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
+            }
+          } catch {
+            // A build error / pool teardown (incl. cancel) rejects the bake. Only
+            // surface it as a failure when the user didn't cancel.
+            if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'failed');
           }
-        } catch {
-          // A build error / pool teardown (incl. cancel) rejects the bake. Only
-          // surface it as a failure when the user didn't cancel.
-          if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'failed');
-        }
-      }));
+        }));
+      } finally {
+        disposeEnginePool();
+      }
+      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
     } finally {
-      disposeEnginePool();
+      release();
     }
-    return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
