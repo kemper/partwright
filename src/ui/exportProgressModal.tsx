@@ -134,6 +134,16 @@ function ExportProgressOverlay() {
   const settled = st.rows.filter(r => r.status === 'done' || r.status === 'failed').length;
   const pct = total > 0 ? Math.round((settled / total) * 100) : 0;
 
+  // Keep the still-working parts at the top (rendering first, then queued) and
+  // let settled ones sink below, so the active rows stay in view on a big export.
+  // Stable within a rank (tie-break on original order) so rows don't churn; the
+  // row `key` is the part id, so Preact moves the DOM node rather than rebuild it.
+  const RANK: Record<ExportPartStatus, number> = { rendering: 0, queued: 1, done: 2, failed: 2 };
+  const orderedRows = st.rows
+    .map((row, i) => ({ row, i }))
+    .sort((a, b) => (RANK[a.row.status] - RANK[b.row.status]) || (a.i - b.i))
+    .map(x => x.row);
+
   return (
     <div
       id="export-progress-modal"
@@ -153,7 +163,7 @@ function ExportProgressOverlay() {
           <div style={`height:100%;background:#60a5fa;width:${pct}%;transition:width 150ms ease-out;`} />
         </div>
         <div style="overflow-y:auto;flex:1;min-height:0;margin:0 -4px;padding:0 4px;">
-          {st.rows.map(row => <PartRow key={row.id} row={row} />)}
+          {orderedRows.map(row => <PartRow key={row.id} row={row} />)}
         </div>
         {st.onCancel && (
           <div style="display:flex;justify-content:flex-end;margin-top:14px;">
