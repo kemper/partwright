@@ -862,6 +862,27 @@ export function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.computeVertexNormals();
+  } else if (mesh.flatShade) {
+    // Low-poly flat shading with no per-triangle colors: unindex (each triangle
+    // gets its own 3 vertices) so computeVertexNormals() produces per-face
+    // normals — hard facet edges instead of smooth averaging. This is the same
+    // unindexed layout the coloured path above uses, minus the colour attribute
+    // (a coloured mesh is already flat-shaded by that branch).
+    const numTri = mesh.numTri;
+    const positions = new Float32Array(numTri * 3 * 3);
+    const { vertProperties, triVerts, numProp } = mesh;
+    for (let t = 0; t < numTri; t++) {
+      const v0 = triVerts[t * 3];
+      const v1 = triVerts[t * 3 + 1];
+      const v2 = triVerts[t * 3 + 2];
+      for (let c = 0; c < 3; c++) {
+        positions[t * 9 + c] = vertProperties[v0 * numProp + c];
+        positions[t * 9 + 3 + c] = vertProperties[v1 * numProp + c];
+        positions[t * 9 + 6 + c] = vertProperties[v2 * numProp + c];
+      }
+    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
   } else {
     // No colors — use indexed geometry (original path)
     const positions = new Float32Array(mesh.numVert * 3);

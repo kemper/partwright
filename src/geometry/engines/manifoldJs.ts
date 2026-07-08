@@ -7,6 +7,7 @@ import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
+import { decimateToTriangleBudget, decimateToTolerance, type DecimatableManifold } from './lowPolyOp';
 import { createGeom2dNamespace } from '../geom2d';
 import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
@@ -623,6 +624,59 @@ export const manifoldJsEngine: Engine = {
     // identically.
     const paramCapture = createParamCapture(paramOverrides);
 
+    // Low-poly: decimate a shape to a coarse, deliberately-faceted triangle
+    // count and (by default) tag the render for flat/faceted shading. Set true
+    // by any `api.lowPoly(..., { flatShade })` call this run; folded into the
+    // returned mesh's `flatShade` render hint below. Not persisted — re-derived
+    // from the code on every run.
+    let lowPolyFlatShade = false;
+    /** `api.lowPoly(shape, opts)` — crystallize a (usually smooth SDF) Manifold
+     *  into a low-poly, flat-shaded form. Targets a triangle BUDGET by default
+     *  (even facet size across the whole surface), which is what stylized
+     *  low-poly art wants — not a raw uniform edge length. Returns a Manifold so
+     *  it drops straight into a `return`. See /ai/lowpoly.md. */
+    const lowPoly = (shape: unknown, opts: unknown = {}): unknown => {
+      const s = shape as Partial<DecimatableManifold> & { boundingBox?: () => { min: number[]; max: number[] } };
+      if (!s || typeof s.simplify !== 'function' || typeof s.numTri !== 'function' || typeof s.boundingBox !== 'function') {
+        throw new Error('api.lowPoly(shape, opts): the first argument must be a Manifold. Example: return api.lowPoly(body.build({ edgeLength: 1 }), { targetTriangles: 800 }).');
+      }
+      if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+        throw new Error('api.lowPoly(shape, opts): opts must be a plain object, e.g. { targetTriangles: 800, flatShade: true }.');
+      }
+      const { targetTriangles, facetSize, flatShade } = opts as Record<string, unknown>;
+      for (const key of Object.keys(opts as object)) {
+        if (key !== 'targetTriangles' && key !== 'facetSize' && key !== 'flatShade') {
+          throw new Error(`api.lowPoly: unknown option "${key}". Valid options: targetTriangles, facetSize, flatShade.`);
+        }
+      }
+      if (targetTriangles !== undefined && facetSize !== undefined) {
+        throw new Error('api.lowPoly: pass either targetTriangles OR facetSize, not both (targetTriangles gives more even facets and is preferred).');
+      }
+      const wantFlat = flatShade === undefined ? true : flatShade;
+      if (typeof wantFlat !== 'boolean') throw new Error('api.lowPoly: flatShade must be a boolean.');
+
+      const shapeD = s as DecimatableManifold;
+      let out;
+      if (facetSize !== undefined) {
+        if (typeof facetSize !== 'number' || !(facetSize > 0)) {
+          throw new Error('api.lowPoly: facetSize must be a positive number (the target facet edge length).');
+        }
+        out = decimateToTolerance(shapeD, facetSize);
+      } else {
+        const target = targetTriangles === undefined ? 800 : targetTriangles;
+        if (typeof target !== 'number' || !Number.isFinite(target) || target < 4) {
+          throw new Error('api.lowPoly: targetTriangles must be a number ≥ 4.');
+        }
+        const bbox = s.boundingBox!();
+        const diag = Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]);
+        out = decimateToTriangleBudget(shapeD, target, diag * 0.5);
+      }
+      if (wantFlat) lowPolyFlatShade = true;
+      // out === null ⇒ nothing to reduce (already at/below target, or the
+      // tolerance collapsed it): keep the input shape, which still renders flat.
+      return out ? out.manifold : shape;
+    };
+
     const api = {
       Manifold,
       CrossSection,
@@ -680,6 +734,7 @@ export const manifoldJsEngine: Engine = {
       labeledUnion,
       paint,
       surface,
+      lowPoly,
       imports,
       renderMesh,
     };
@@ -803,6 +858,7 @@ export const manifoldJsEngine: Engine = {
           mergeToVert: mesh.mergeToVert,
           runIndex: mesh.runIndex,
           runOriginalID: mesh.runOriginalID,
+          ...(lowPolyFlatShade ? { flatShade: true } : {}),
         },
         manifold: renderOnly ? null : result,
         error: null,
