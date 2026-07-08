@@ -13,11 +13,15 @@ import {
   categorizeOf,
   deriveCharacteristics as deriveTraits,
   printTestedBadge,
+  printStatusOf,
+  printStatusCounts,
+  latestVersionIndex,
+  PRINT_TESTED_SECTION,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
+  CATALOG_PRINT_STATUSES,
   themeCounts,
   type CategoryId,
-  type CategoryDef,
   type CatalogManifestEntry,
   type CatalogLanguage,
 } from '../content/data/catalogCategories';
@@ -189,6 +193,13 @@ export async function createCatalogPage(
     else buckets.set(cat, [entry]);
   }
 
+  // Additive Print-Tested showcase pinned to the top — every verified entry,
+  // also still shown in its home category below. Only when at least one exists.
+  const testedEntries = loaded.filter((entry) => entry.manifest.printTested);
+  if (testedEntries.length > 0) {
+    body.appendChild(renderCategorySection(PRINT_TESTED_SECTION, testedEntries, callbacks));
+  }
+
   for (const def of CATEGORIES) {
     const entries = buckets.get(def.id);
     if (!entries || entries.length === 0) continue;
@@ -279,11 +290,39 @@ function buildControls(loaded: LoadedEntry[]): HTMLElement {
     wrap.appendChild(themeRow);
   }
 
+  // Print-status filter pills — verified-print vs not-yet-tested. Coloured to
+  // match the tile chips (emerald for tested, muted for untested). Rendered only
+  // when both statuses are present, so a fully-untested catalog shows no facet.
+  const sCounts = printStatusCounts(loaded.map((entry) => entry.manifest));
+  const presentStatuses = CATALOG_PRINT_STATUSES.filter((s) => sCounts.has(s.id));
+  if (presentStatuses.length > 1) {
+    const statusRow = document.createElement('div');
+    statusRow.className = 'flex items-center gap-2 flex-wrap';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-500 mr-1';
+    label.textContent = 'Print status:';
+    statusRow.appendChild(label);
+
+    for (const status of presentStatuses) {
+      const badge = printTestedBadge({ printTested: status.id === 'tested' });
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.dataset.catalogStatus = status.id;
+      pill.setAttribute('aria-pressed', 'false');
+      pill.className = `px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${badge.classes}`;
+      pill.textContent = `${status.label} ${sCounts.get(status.id) ?? 0}`;
+      statusRow.appendChild(pill);
+    }
+    wrap.appendChild(statusRow);
+  }
+
   return wrap;
 }
 
-/** Render one titled, blurbed category section with its own tile grid. */
-function renderCategorySection(def: CategoryDef, entries: LoadedEntry[], callbacks: CatalogCallbacks): HTMLElement {
+/** Render one titled, blurbed section with its own tile grid. Accepts any
+ *  `{id,title,blurb}` — the engine/curated categories and the additive
+ *  Print-Tested showcase both flow through here. */
+function renderCategorySection(def: { id: string; title: string; blurb: string }, entries: LoadedEntry[], callbacks: CatalogCallbacks): HTMLElement {
   const section = document.createElement('section');
   section.className = 'mb-10';
   section.dataset.category = def.id;
@@ -325,7 +364,13 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   tile.dataset.catalogTile = '';
   tile.dataset.language = language;
   tile.dataset.themes = tags.join(' ');
-  const print = printTestedBadge(loaded.manifest.printTested);
+  tile.dataset.status = printStatusOf(loaded.manifest.printTested);
+  const print = printTestedBadge({
+    printTested: loaded.manifest.printTested,
+    note: loaded.manifest.printTestedNote,
+    testedVersion: loaded.manifest.printTestedVersion,
+    latestVersion: latestVersionIndex(loaded.payload?.versions ?? []),
+  });
   tile.dataset.search = [
     loaded.manifest.name,
     loaded.manifest.description ?? '',

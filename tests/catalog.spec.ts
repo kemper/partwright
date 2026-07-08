@@ -20,11 +20,12 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(8);
+    await expect(sections).toHaveCount(9);
 
-    // Curated groups lead (fidget-toys, then print-fit); engine-derived categories follow.
+    // The additive Print-Tested showcase leads; then curated groups (fidget-toys,
+    // print-fit); then the engine-derived categories.
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['fidget-toys', 'print-fit', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
+    expect(ids).toEqual(['print-tested', 'fidget-toys', 'print-fit', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {
@@ -46,23 +47,27 @@ test.describe('Catalog page (static)', () => {
 
     await expect(customizable.locator('span:has-text("Parametric")')).toHaveCount(tileCount);
     // Every customizable tile is parametric. Parametric badges may also appear in
-    // curated groups (fidget-toys, print-fit), but nowhere else — so the
-    // page-wide badge total equals the customizable + curated-group badge counts.
+    // curated groups (fidget-toys, print-fit) and in the additive Print-Tested
+    // showcase (which duplicates tested tiles), but nowhere else — so the
+    // page-wide badge total equals those sections' badge counts combined.
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     const fidgetBadges = await fidget.locator('span:has-text("Parametric")').count();
     const printFit = page.locator('main section[data-category="print-fit"]');
     const printFitBadges = await printFit.locator('span:has-text("Parametric")').count();
+    const tested = page.locator('main section[data-category="print-tested"]');
+    const testedBadges = await tested.locator('span:has-text("Parametric")').count();
     const totalBadges = await page.locator('main span:has-text("Parametric")').count();
-    expect(totalBadges).toBe(tileCount + fidgetBadges + printFitBadges);
+    expect(totalBadges).toBe(tileCount + fidgetBadges + printFitBadges + testedBadges);
 
     await expect(customizable).toContainText('Layer Cake');
   });
 
-  test('the curated Fidget Toys group leads the catalog and holds the mechanical fidget(s)', async ({ page }) => {
+  test('the curated Fidget Toys group leads the categories and holds the mechanical fidget(s)', async ({ page }) => {
     await gotoCatalog(page);
 
+    // The Print-Tested showcase is pinned first; fidget-toys leads the real categories.
     const sections = page.locator('main section[data-category]');
-    await expect(sections.first()).toHaveAttribute('data-category', 'fidget-toys');
+    await expect(sections.nth(1)).toHaveAttribute('data-category', 'fidget-toys');
 
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     await expect(fidget.locator('h2')).toHaveText('Fidget Toys');
@@ -72,7 +77,7 @@ test.describe('Catalog page (static)', () => {
     await expect(fidget).toContainText('Spiral Fidget Cone');
   });
 
-  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
+  test('every tile carries a print-tested status chip', async ({ page }) => {
     await gotoCatalog(page);
 
     const tiles = page.locator('main a[data-catalog-tile]');
@@ -85,14 +90,71 @@ test.describe('Catalog page (static)', () => {
       await expect(chips).toHaveCount(1);
     }
 
-    // With nothing marked print-tested yet, every chip reads "Untested".
-    await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+    // The two states partition every tile: (# verified) + (# untested) == tileCount.
+    const testedCount = await page.locator('main a[data-catalog-tile] span:has-text("Print-tested")').count();
+    const untestedCount = await page.locator('main a[data-catalog-tile] span:has-text("Untested")').count();
+    expect(testedCount + untestedCount).toBe(tileCount);
+    // At least one entry is marked print-tested (the curated verified set).
+    expect(testedCount).toBeGreaterThan(0);
 
-    // The status is searchable: filtering on "untested" keeps the untested tiles.
+    // A verified entry's chip carries its curator note in the hover tooltip.
+    // (Tested entries appear twice — the top showcase + their home category — so
+    // scope to the first match.)
+    const manor = page.locator('main a[data-catalog-tile]', { hasText: 'Country Manor Estate' }).first();
+    await expect(manor.locator('span:has-text("Print-tested")')).toHaveAttribute('title', /really cleanly/i);
+
+    // The status is searchable: filtering on "untested" keeps only untested tiles.
     const search = page.locator('[data-catalog-search]');
     await search.fill('untested');
-    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+    const visible = await page.locator('main a[data-catalog-tile]:not(.hidden)').count();
+    expect(visible).toBe(untestedCount);
     await search.fill('');
+  });
+
+  test('a Print-Tested showcase leads the catalog, duplicating tested entries above their home category', async ({ page }) => {
+    await gotoCatalog(page);
+
+    // The first section is the additive Print-Tested showcase.
+    const first = page.locator('main section[data-category]').first();
+    await expect(first).toHaveAttribute('data-category', 'print-tested');
+    await expect(first.locator('h2')).toHaveText('Print-Tested');
+
+    // It holds exactly the verified entries — every tile in it is tested.
+    const showcaseTiles = first.locator('div.grid > a[data-catalog-tile]');
+    const showcaseCount = await showcaseTiles.count();
+    expect(showcaseCount).toBeGreaterThan(0);
+    for (const tile of await showcaseTiles.all()) {
+      await expect(tile).toHaveAttribute('data-status', 'tested');
+    }
+
+    // A tested entry is ALSO shown in its home category below — so it appears in
+    // at least two sections (the showcase + its category).
+    const manorEverywhere = page.locator('main a[data-catalog-tile]', { hasText: 'Country Manor Estate' });
+    expect(await manorEverywhere.count()).toBeGreaterThanOrEqual(2);
+    // One of those is inside the showcase, at least one is not.
+    expect(await first.locator('a[data-catalog-tile]', { hasText: 'Country Manor Estate' }).count()).toBe(1);
+  });
+
+  test('print-status filter pill narrows to tested (or untested) tiles', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const tiles = page.locator('main a[data-catalog-tile]');
+    const tileCount = await tiles.count();
+    const testedCount = await page.locator('main a[data-catalog-tile] span:has-text("Print-tested")').count();
+
+    // The "✓ Print-tested" pill filters the whole catalog down to verified tiles.
+    const testedPill = page.locator('[data-catalog-status="tested"]');
+    await expect(testedPill).toBeVisible();
+    await testedPill.click();
+    const visibleTested = page.locator('main a[data-catalog-tile]:not(.hidden)');
+    await expect(visibleTested).toHaveCount(testedCount);
+    for (const tile of await visibleTested.all()) {
+      await expect(tile).toHaveAttribute('data-status', 'tested');
+    }
+
+    // Clicking it again clears the facet — back to the full catalog.
+    await testedPill.click();
+    await expect(page.locator('main a[data-catalog-tile]:not(.hidden)')).toHaveCount(tileCount);
   });
 
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {

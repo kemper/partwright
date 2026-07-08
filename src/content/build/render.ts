@@ -15,8 +15,13 @@ import {
   categorizeOf,
   deriveCharacteristics,
   printTestedBadge,
+  printStatusOf,
+  printStatusCounts,
+  latestVersionIndex,
+  PRINT_TESTED_SECTION,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
+  CATALOG_PRINT_STATUSES,
   themeCounts,
   type CategoryId,
   type CatalogLanguage,
@@ -167,6 +172,9 @@ interface BuiltTile {
   entry: CatalogManifestEntry;
   language: CatalogLanguage;
   versionCount: number;
+  /** Highest version index (revision depth) — drives print-tested staleness.
+   *  Differs from versionCount for multi-part entries; see latestVersionIndex. */
+  latestVersion: number;
   hasParams: boolean;
   category: CategoryId;
 }
@@ -238,21 +246,23 @@ function loadCatalogTiles(): BuiltTile[] {
   for (const entry of entries) {
     let language: CatalogLanguage = entry.language ?? 'manifold-js';
     let versionCount = 0;
+    let latestVersion = 0;
     let code = '';
     try {
       const payload = JSON.parse(readFileSync(resolve(catalogDir, entry.file), 'utf8')) as {
         session?: { language?: CatalogLanguage };
-        versions?: { code?: string }[];
+        versions?: { code?: string; index?: number }[];
       };
       language = payload.session?.language ?? language;
       const versions = payload.versions ?? [];
       versionCount = versions.length;
+      latestVersion = latestVersionIndex(versions);
       code = versions.map((v) => v.code ?? '').join('\n');
     } catch {
       // Keep the entry with manifest-only info; it still links + categorizes.
     }
     const { hasParams, isSDF } = deriveCharacteristics(entry.id, code);
-    tiles.push({ entry, language, versionCount, hasParams, category: categorizeOf({ hasParams, isSDF, language, group: entry.group }) });
+    tiles.push({ entry, language, versionCount, latestVersion, hasParams, category: categorizeOf({ hasParams, isSDF, language, group: entry.group }) });
   }
   return tiles;
 }
@@ -265,7 +275,12 @@ function catalogTileHtml(tile: BuiltTile): string {
   const paramChip = tile.hasParams
     ? '<span class="font-semibold border rounded px-1 text-violet-300 border-violet-400/30" title="Exposes adjustable parameters">🎛 Parametric</span>'
     : '';
-  const print = printTestedBadge(tile.entry.printTested);
+  const print = printTestedBadge({
+    printTested: tile.entry.printTested,
+    note: tile.entry.printTestedNote,
+    testedVersion: tile.entry.printTestedVersion,
+    latestVersion: tile.latestVersion,
+  });
   const printChip = `<span class="font-semibold border rounded px-1 ${print.classes}" title="${escAttr(print.title)}">${esc(print.label)}</span>`;
   const versions = tile.versionCount > 0
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
@@ -279,7 +294,7 @@ function catalogTileHtml(tile: BuiltTile): string {
   const thumbImg = thumbSrc
     ? `<img src="${escAttr(thumbSrc)}" alt="${escAttr(tile.entry.name)}" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-contain" />`
     : '';
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-themes="${escAttr(tags.join(' '))}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-themes="${escAttr(tags.join(' '))}" data-status="${escAttr(printStatusOf(tile.entry.printTested))}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
     ${thumbImg}
@@ -306,18 +321,28 @@ function catalogBody(): string {
   if (tiles.length === 0) {
     return `${intro}<p class="text-zinc-500 text-sm">Catalog is loading — open the <a href="/editor" class="text-blue-400 hover:underline">editor</a> to browse models.</p>`;
   }
-  const sections = CATEGORIES.map((def) => {
-    const inCat = tiles.filter((t) => t.category === def.id);
+  const sectionHtml = (id: string, title: string, blurb: string, inCat: BuiltTile[]): string => {
     if (inCat.length === 0) return '';
-    return `<section class="mb-10" data-category="${def.id}">
+    return `<section class="mb-10" data-category="${escAttr(id)}">
   <div class="flex items-baseline gap-2">
-    <h2 class="text-lg font-semibold text-zinc-100">${esc(def.title)}</h2>
+    <h2 class="text-lg font-semibold text-zinc-100">${esc(title)}</h2>
     <span class="text-xs text-zinc-500 tabular-nums" data-catalog-count>${inCat.length}</span>
   </div>
-  <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(def.blurb)}</p>
+  <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(blurb)}</p>
   <div class="grid gap-4" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">${inCat.map(catalogTileHtml).join('')}</div>
 </section>`;
-  }).join('');
+  };
+  // Additive Print-Tested showcase pinned to the top — every verified entry,
+  // also still shown in its home category below. Only when at least one exists.
+  const testedSection = sectionHtml(
+    PRINT_TESTED_SECTION.id,
+    PRINT_TESTED_SECTION.title,
+    PRINT_TESTED_SECTION.blurb,
+    tiles.filter((t) => t.entry.printTested),
+  );
+  const sections = testedSection + CATEGORIES.map((def) =>
+    sectionHtml(def.id, def.title, def.blurb, tiles.filter((t) => t.category === def.id)),
+  ).join('');
   const empty = '<div data-catalog-empty class="hidden text-center py-12 text-zinc-500 text-sm">No models match your search and filters.</div>';
   const jsonLd = jsonLdScript({
     '@context': 'https://schema.org',
@@ -368,10 +393,23 @@ function catalogControlsHtml(tiles: BuiltTile[]): string {
   </div>`
     : '';
 
+  const sCounts = printStatusCounts(tiles.map((t) => t.entry));
+  const presentStatuses = CATALOG_PRINT_STATUSES.filter((s) => sCounts.has(s.id));
+  const statusPills = presentStatuses.length > 1
+    ? `<div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs text-zinc-500 mr-1">Print status:</span>
+    ${presentStatuses.map((s) => {
+      const badge = printTestedBadge({ printTested: s.id === 'tested' });
+      return `<button type="button" data-catalog-status="${escAttr(s.id)}" aria-pressed="false" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${badge.classes}" title="Filter to ${escAttr(s.label)} models">${esc(s.label)} ${sCounts.get(s.id) ?? 0}</button>`;
+    }).join('')}
+  </div>`
+    : '';
+
   return `<div class="mb-8 flex flex-col gap-3">
   <input type="search" data-catalog-search placeholder="Search the catalog…" aria-label="Search the catalog" class="w-full max-w-md bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500 transition-colors" />
   ${langPills}
   ${themePills}
+  ${statusPills}
 </div>`;
 }
 

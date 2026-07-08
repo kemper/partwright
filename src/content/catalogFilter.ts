@@ -1,8 +1,8 @@
 // Shared, dependency-free catalog filtering behavior. Drives live search plus
-// two independent filter facets — a language toggle and a content-theme toggle
-// — over already-rendered catalog tiles, by reading a small set of `data-*`
-// hooks rather than any app state. Both catalog surfaces emit the same contract
-// and call `wireCatalogFilter`:
+// three independent filter facets — a language toggle, a content-theme toggle,
+// and a print-status toggle — over already-rendered catalog tiles, by reading a
+// small set of `data-*` hooks rather than any app state. Both catalog surfaces
+// emit the same contract and call `wireCatalogFilter`:
 //   - the static /catalog page (src/content/build/render.ts → catalogEntry.ts)
 //   - the in-editor SPA overlay (src/ui/catalog.ts)
 //
@@ -16,16 +16,18 @@
 // pills unselected = the full catalog; selecting one language focuses on it.
 //
 // Data contract:
-//   [data-catalog-search]            — the search <input>
-//   [data-catalog-pill="<language>"] — a language toggle button (aria-pressed)
-//   [data-catalog-theme="<themeId>"] — a content-theme toggle button (aria-pressed)
-//   section[data-category]           — a category section
-//     [data-catalog-count]           — element whose text is the visible count
-//     [data-catalog-tile]            — a tile, carrying:
-//        data-language="<language>"  — its resolved language
-//        data-themes="<id id ...>"   — its space-separated theme tags (may be empty)
-//        data-search="<haystack>"    — lowercase name + desc + id + label + tags
-//   [data-catalog-empty]             — "no results" element (toggled hidden)
+//   [data-catalog-search]             — the search <input>
+//   [data-catalog-pill="<language>"]  — a language toggle button (aria-pressed)
+//   [data-catalog-theme="<themeId>"]  — a content-theme toggle button (aria-pressed)
+//   [data-catalog-status="<status>"]  — a print-status toggle button (aria-pressed)
+//   section[data-category]            — a category section
+//     [data-catalog-count]            — element whose text is the visible count
+//     [data-catalog-tile]             — a tile, carrying:
+//        data-language="<language>"   — its resolved language
+//        data-themes="<id id ...>"    — its space-separated theme tags (may be empty)
+//        data-status="<status>"       — its print status ("tested" | "untested")
+//        data-search="<haystack>"     — lowercase name + desc + id + label + tags
+//   [data-catalog-empty]              — "no results" element (toggled hidden)
 
 /** Classes toggled on a pill to mark it an ACTIVE (selected) filter. */
 const PILL_SELECTED_CLASSES = ['ring-2', 'ring-inset', 'ring-teal-400'];
@@ -38,13 +40,15 @@ export function wireCatalogFilter(root: ParentNode): void {
   const search = root.querySelector<HTMLInputElement>('[data-catalog-search]');
   const langPills = Array.from(root.querySelectorAll<HTMLElement>('[data-catalog-pill]'));
   const themePills = Array.from(root.querySelectorAll<HTMLElement>('[data-catalog-theme]'));
+  const statusPills = Array.from(root.querySelectorAll<HTMLElement>('[data-catalog-status]'));
   const sections = Array.from(root.querySelectorAll<HTMLElement>('section[data-category]'));
   const empty = root.querySelector<HTMLElement>('[data-catalog-empty]');
-  if (!search && langPills.length === 0 && themePills.length === 0) return;
+  if (!search && langPills.length === 0 && themePills.length === 0 && statusPills.length === 0) return;
 
   // Selected values per facet. Empty set = "no constraint" (show all).
   const selectedLangs = new Set<string>();
   const selectedThemes = new Set<string>();
+  const selectedStatus = new Set<string>();
 
   const apply = (): void => {
     const tokens = (search?.value ?? '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -55,10 +59,12 @@ export function wireCatalogFilter(root: ParentNode): void {
       for (const tile of tiles) {
         const lang = tile.getAttribute('data-language') ?? '';
         const themes = (tile.getAttribute('data-themes') ?? '').split(/\s+/).filter(Boolean);
+        const status = tile.getAttribute('data-status') ?? '';
         const haystack = tile.getAttribute('data-search') ?? '';
         const langOk = selectedLangs.size === 0 || selectedLangs.has(lang);
         const themeOk = selectedThemes.size === 0 || themes.some((t) => selectedThemes.has(t));
-        const show = langOk && themeOk && tokens.every((t) => haystack.includes(t));
+        const statusOk = selectedStatus.size === 0 || selectedStatus.has(status);
+        const show = langOk && themeOk && statusOk && tokens.every((t) => haystack.includes(t));
         tile.classList.toggle('hidden', !show);
         if (show) visible++;
       }
@@ -103,6 +109,7 @@ export function wireCatalogFilter(root: ParentNode): void {
 
   wireFacet(langPills, 'data-catalog-pill', selectedLangs, 'models');
   wireFacet(themePills, 'data-catalog-theme', selectedThemes, '');
+  wireFacet(statusPills, 'data-catalog-status', selectedStatus, 'models');
 
   search?.addEventListener('input', apply);
   apply();
