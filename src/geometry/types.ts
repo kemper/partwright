@@ -80,6 +80,20 @@ export interface MeshResult {
    *  paintByLabel("X") would fail" warning without forcing the caller to
    *  diff the labelMap themselves. Absent / undefined when nothing was lost. */
   lostLabels?: string[];
+  /** Timing breakdown for OpenSCAD's label-aware AMF path. Present only when
+   *  SCAD source uses `label(...)`. `compileMs` is the OpenSCAD AMF export;
+   *  `parseMs` is AMF parsing; `regionImportMs` measures each AMF object's
+   *  Manifold.ofMesh/asOriginal import by resolved label or generated object
+   *  name; `composeMs` is Manifold.compose; `labelResolveMs` is labelMap
+   *  reconstruction from runOriginalID. */
+  scadTimings?: {
+    compileMs: number;
+    parseMs: number;
+    regionImportMs: { name: string; ms: number; triangleCount: number }[];
+    composeMs: number;
+    labelResolveMs: number;
+    totalMs: number;
+  };
   /** Customizer parameter schema captured from `api.params({...})` calls in the
    *  model code this run. Plain serializable data — drives the Parameters panel
    *  and tells callers which knobs (and value ranges) the model exposes. Absent

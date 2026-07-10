@@ -544,6 +544,10 @@ let lastVoxelCount: number | undefined;
  *  trust it over the mesh `componentCount`, which over-reports voxel models
  *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
 let lastVoxelPieceCount: number | undefined;
+/** Label-aware OpenSCAD timing breakdown for the most recent run. Surfaced in
+ *  geometry-data so agents can see whether AMF export, parsing, per-region
+ *  import, compose, or label resolution dominated a labelled SCAD render. */
+let lastScadTimings: MeshResult['scadTimings'] | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -879,6 +883,9 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   // componentCount over-reports them (enclosed cavities, edge/corner touches).
   if (lastVoxelPieceCount !== undefined) {
     data.voxelPieceCount = lastVoxelPieceCount;
+  }
+  if (lastScadTimings !== undefined) {
+    data.scadTimings = lastScadTimings;
   }
   return data;
 }
@@ -16889,6 +16896,7 @@ async function main() {
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
+    lastScadTimings = result.scadTimings;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
