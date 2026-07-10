@@ -416,6 +416,8 @@ async function runLabelAwareAsync(
   labelScan: ReturnType<typeof scanScadLabels>,
   defines: string[],
 ): Promise<MeshResult> {
+  const totalStart = performance.now();
+  const compileStart = performance.now();
   const exitCode = instance.callMain([
     '--enable=manifold',
     '--enable=lazy-union',
@@ -425,6 +427,7 @@ async function runLabelAwareAsync(
     '-o', '/out.amf',
     '/in.scad',
   ]);
+  const compileMs = Math.round(performance.now() - compileStart);
 
   if (exitCode !== 0) {
     const error = `OpenSCAD exited with code ${exitCode}\n${shiftErrorLines(formatStderr(stderr))}`;
@@ -441,7 +444,9 @@ async function runLabelAwareAsync(
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
   }
 
+  const parseStart = performance.now();
   const objects = parseAmfObjects(amfText);
+  const parseMs = Math.round(performance.now() - parseStart);
   if (objects.length === 0) {
     const error = `OpenSCAD produced empty AMF output.\n${shiftErrorLines(formatStderr(stderr))}`;
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -471,11 +476,19 @@ async function runLabelAwareAsync(
   // array — the same provenance channel manifold-js labels ride on.
   const labelRegistry = new Map<number, string>();
   const originals: any[] = [];
+  const regionImportMs: { name: string; ms: number; triangleCount: number }[] = [];
   for (let i = 0; i < objects.length; i++) {
     let m: any;
+    const regionName = names[i] ?? `object_${i + 1}`;
+    const importStart = performance.now();
     try {
       m = module.Manifold.ofMesh(objects[i]);
     } catch {
+      regionImportMs.push({
+        name: regionName,
+        ms: Math.round(performance.now() - importStart),
+        triangleCount: objects[i].numTri,
+      });
       // Skip non-manifold components rather than failing the whole render.
       // Tell the user if the dropped component was labelled — silently losing
       // a name they're trying to paint by would be confusing.
@@ -488,6 +501,11 @@ async function runLabelAwareAsync(
       continue;
     }
     const original = m.asOriginal();
+    regionImportMs.push({
+      name: regionName,
+      ms: Math.round(performance.now() - importStart),
+      triangleCount: objects[i].numTri,
+    });
     const id = original.originalID();
     if (typeof id === 'number' && id >= 0 && names[i]) {
       labelRegistry.set(id, names[i] as string);
@@ -501,12 +519,16 @@ async function runLabelAwareAsync(
   }
 
   // Manifold.compose([single]) is a no-op identity, so guard the common case.
+  const composeStart = performance.now();
   const composed = originals.length === 1
     ? originals[0]
     : module.Manifold.compose(originals);
+  const composeMs = Math.round(performance.now() - composeStart);
 
   const canonical = canonicalMeshOf(composed);
+  const labelResolveStart = performance.now();
   const labelMap = resolveLabelMap(canonical, labelRegistry);
+  const labelResolveMs = Math.round(performance.now() - labelResolveStart);
   // Diff what the scanner SAW in source against what made it into labelMap.
   // De-dupe and drop names the labelMap delivered so paintByLabel actually
   // works on them. The leftovers are "the user wrote it but can't paint it."
@@ -563,6 +585,14 @@ async function runLabelAwareAsync(
     labelMap,
     lostLabels,
     diagnostics: diagnostics.length > 0 ? diagnostics : undefined,
+    scadTimings: {
+      compileMs,
+      parseMs,
+      regionImportMs,
+      composeMs,
+      labelResolveMs,
+      totalMs: Math.round(performance.now() - totalStart),
+    },
   };
 }
 

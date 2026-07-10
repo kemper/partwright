@@ -372,6 +372,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
+      scadTimings: (msg.scadTimings as MeshResult['scadTimings']) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
       voxelPieceCount: msg.voxelPieceCount as number | undefined,
