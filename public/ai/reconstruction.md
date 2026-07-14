@@ -7,6 +7,30 @@ These tactics are distilled from the headless inverse-CAD loop that converged
 
 ## The tools
 
+- **`profileModel({index?, source?, sectionsPerAxis?, axis?, at?})`** — the
+  measurement instrument, and the FIRST call of any reconstruction. Sweeps
+  cross-sections along every axis, fits a circle and a rounded-rect to each
+  section's outer contour, and merges steady fits into runs: a run of
+  circular sections at constant radius IS a measured cylinder ("circle
+  r≈2.31 from z=8.1..14.0"); a run of rect sections IS a measured box. Each
+  fit carries `rmsRel` (residual / feature size) — near zero means the fit
+  is real, not wishful. `axis`+`at` probes ONE section in full detail,
+  including circle fits of holes (measure a bore directly). Organic and
+  multi-blob regions are reported as such: those are where the
+  section-interpolation baseline is the right tool.
+- **`fitInscribed({kind?, index?, source?})`** — the largest axis-aligned
+  box or Z-axis cylinder that fits entirely INSIDE the mesh, measured from a
+  voxel occupancy grid, with the volume fraction it covers. A high fraction
+  (>0.6) says the shape is mostly that primitive: model it exactly and wrap
+  the remainder. Also a direct reader of inner feature dimensions.
+- **`compareToImport(index?, {res?, maxFindings?})`** — voxel symmetric-difference
+  with LOCALIZED findings: every disagreement blob signed (`excess` = your
+  model has material the target lacks; `missing` = the reverse), sized, and
+  positioned (centroid, bbox, `relCentroid` 0..1 within the target, a
+  thin-skin vs compact-feature classification; `res` overrides the grid
+  resolution, console API only). This turns "hausdorff 1.9"
+  into "missing compact feature at [12,0,−5], extent 4×3×2" — fix code
+  without a visual roundtrip. Use after evalAgainstImport flags a problem.
 - **`convertToCode({quality?, step?, edge?})`** — deterministic baseline.
   Slices the current model into measured Z-sections and rebuilds it as a
   smooth `Manifold.levelSet` interpolation of their 2D signed-distance
@@ -63,13 +87,30 @@ These tactics are distilled from the headless inverse-CAD loop that converged
   than stacking corrections. Log baseline and final metrics with
   `addSessionNote('[MEASUREMENT] …')`.
 
+## The objective — semantic structure, not just fidelity
+
+The deterministic baseline is already near the fidelity metrics' ceiling on
+most meshes, so "chamfer is low" is the STARTING line, not the finish. Your
+added value is code a person can edit: every recognizable feature modeled as
+a primitive at its MEASURED dimensions (named constants or `api.params`),
+section-interpolation kept only where the profile says the shape is
+genuinely organic. If the whole model profiles organic (a sculpt, a
+figurine), say so — the baseline IS the right answer there, and forcing
+primitives onto it makes the code worse, not better.
+
 ## Workflow
 
-1. `convertToCode()` → note baseline `metrics` and `stats`.
-2. Judge: numbers near the noise floor AND renders that match the import's
-   silhouette/holes/proportions → you may already be done.
-3. Refine only what the evidence justifies (resolution vs missed feature vs
-   semantic replacement, per the table above).
-4. `evalAgainstImport()` after every change; revert regressions.
-5. Report the final chamfer/hausdorff to the user in plain language
-   ("mean deviation X, worst point Y, sampling floor Z").
+1. **Measure**: `profileModel()` (+ `fitInscribed()` when a primitive core
+   seems plausible) → record the discovered skeleton in a session note.
+2. **Baseline**: `convertToCode()` → note `metrics`; this is the fidelity
+   bar the semantic version must match, and the source of levelSet sections
+   you can reuse for organic runs.
+3. **Rebuild semantically** where measurements justify it: primitives at
+   profiled dimensions, holes from the profile's hole fits, booleans between
+   them; keep the section stack for organic runs.
+4. **Verify every change**: `evalAgainstImport()` for the scalar;
+   `compareToImport()` when a number regresses and you need WHAT/WHERE.
+   Revert regressions with `loadVersion` — never stack guesses.
+5. Report both dimensions of the result: fidelity ("mean deviation X, floor
+   Z") and structure ("hull = sections, chimney = cylinder r 2.3, cabin =
+   rounded box 12×8, all dimensioned").

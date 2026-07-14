@@ -133,7 +133,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { toTriangleSoup } from './reconstruct/meshComponents';
-import { generateCodeInWorker, evaluateInWorker } from './reconstruct/reconstructClient';
+import { generateCodeInWorker, evaluateInWorker, profileInWorker, compareInWorker, inscribedInWorker } from './reconstruct/reconstructClient';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { engraveInWorker } from './surface/engraveWorkerClient';
@@ -9490,6 +9490,27 @@ async function main() {
   }
 
   // === Expose window.partwright console API ===
+  /** Resolve the mesh a reconstruction measurement runs against: imported
+   *  mesh `index` by default, or the current model with source:'model' (also
+   *  the fallback when the session holds no imports). */
+  function resolveReconstructSource(
+    index: number | undefined,
+    source: 'import' | 'model' | undefined,
+  ): { soup: ReturnType<typeof toTriangleSoup>; label: string } | { error: string } {
+    const imports = getActiveImports();
+    const useModel = source === 'model' || (source === undefined && imports.length === 0);
+    if (useModel) {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      return { soup: toTriangleSoup(currentMeshData), label: 'current model' };
+    }
+    if (imports.length === 0) return { error: 'No imported meshes in this session (pass {source: "model"} to measure the current model)' };
+    const i = index ?? 0;
+    if (!Number.isInteger(i) || i < 0 || i >= imports.length) {
+      return { error: `import index must be an integer in 0..${imports.length - 1} (got ${String(index)})` };
+    }
+    return { soup: toTriangleSoup(imports[i]), label: imports[i].filename };
+  }
+
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
      *  color-clearing modifier, or offer "preserve colors"). */
@@ -10089,6 +10110,79 @@ async function main() {
         }
         const metrics = await evaluateInWorker(toTriangleSoup(imports[i]), toTriangleSoup(currentMeshData), samples ?? getConfig().import.reconstructEvalSamples);
         return { ok: true, importIndex: i, filename: imports[i].filename, ...metrics };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Measure the shape of an imported mesh (default) or the current model:
+     *  sweep cross-sections along each axis, fit primitives (circle /
+     *  rounded-rect) to every section, and merge steady fits into RUNS — a
+     *  run of circular sections IS a measured cylinder, a run of rect
+     *  sections IS a measured box. Pass {axis, at} for one detailed section
+     *  (including hole/bore circle fits). This is how an agent finds where
+     *  primitives fit without guessing from renders. */
+    async profileModel(opts?: { index?: number; source?: 'import' | 'model'; sectionsPerAxis?: number; axis?: 'x' | 'y' | 'z'; at?: number }) {
+      try {
+        const src = resolveReconstructSource(opts?.index, opts?.source);
+        if ('error' in src) return { error: `profileModel: ${src.error}` };
+        const n = opts?.sectionsPerAxis;
+        if (n !== undefined && (!Number.isInteger(n) || n < 8 || n > 256)) {
+          return { error: `profileModel: sectionsPerAxis must be an integer in 8..256 (got ${String(n)})` };
+        }
+        if (opts?.axis !== undefined && !['x', 'y', 'z'].includes(opts.axis)) {
+          return { error: `profileModel: axis must be 'x'|'y'|'z' (got ${String(opts.axis)})` };
+        }
+        if (opts?.at !== undefined && (typeof opts.at !== 'number' || !Number.isFinite(opts.at))) {
+          return { error: `profileModel: at must be a finite number (got ${String(opts.at)})` };
+        }
+        if ((opts?.axis === undefined) !== (opts?.at === undefined)) {
+          return { error: 'profileModel: axis and at must be passed together (a targeted single-section probe)' };
+        }
+        const result = await profileInWorker(src.soup, {
+          sectionsPerAxis: n,
+          axis: opts?.axis,
+          at: opts?.at,
+        });
+        return { ok: true, measured: src.label, ...result };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Voxel symmetric-difference between the current model and imported mesh
+     *  `index`: volume IoU plus LOCALIZED findings — each disagreement blob
+     *  signed (excess/missing), sized, and positioned (centroid, bbox,
+     *  relative position in the target). Turns "how far off" into "what is
+     *  wrong, where". Slower than evalAgainstImport; use it when the scalar
+     *  metrics say something is off and you need to find it. */
+    async compareToImport(index?: number, opts?: { res?: number; maxFindings?: number }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const imports = getActiveImports();
+        if (imports.length === 0) return { error: 'compareToImport: no imported meshes in this session' };
+        const i = index ?? 0;
+        if (!Number.isInteger(i) || i < 0 || i >= imports.length) {
+          return { error: `compareToImport: index must be an integer in 0..${imports.length - 1} (got ${String(index)})` };
+        }
+        if (opts?.res !== undefined && (typeof opts.res !== 'number' || !Number.isFinite(opts.res) || opts.res <= 0)) {
+          return { error: `compareToImport: res must be a positive number (got ${String(opts.res)})` };
+        }
+        if (opts?.maxFindings !== undefined && (!Number.isInteger(opts.maxFindings) || opts.maxFindings < 1 || opts.maxFindings > 64)) {
+          return { error: `compareToImport: maxFindings must be an integer in 1..64 (got ${String(opts.maxFindings)})` };
+        }
+        const report = await compareInWorker(toTriangleSoup(imports[i]), toTriangleSoup(currentMeshData), opts);
+        const { grid, ...rest } = report;
+        return { ok: true, importIndex: i, filename: imports[i].filename, gridRes: grid.res, ...rest };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** The largest axis-aligned box or Z-axis cylinder that fits entirely
+     *  INSIDE an imported mesh (default) or the current model — measured from
+     *  a voxel occupancy grid, with the achieved volume fraction. Use the
+     *  result as clean primitive core geometry (union it with a
+     *  section-interpolated remainder) or as measured feature dimensions. */
+    async fitInscribed(opts?: { kind?: 'box' | 'cylinder'; index?: number; source?: 'import' | 'model' }) {
+      try {
+        const kind = opts?.kind ?? 'box';
+        if (!['box', 'cylinder'].includes(kind)) return { error: `fitInscribed: kind must be 'box'|'cylinder' (got ${String(opts?.kind)})` };
+        const src = resolveReconstructSource(opts?.index, opts?.source);
+        if ('error' in src) return { error: `fitInscribed: ${src.error}` };
+        const result = await inscribedInWorker(src.soup, kind);
+        return { ok: true, measured: src.label, ...result };
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
@@ -15759,6 +15853,9 @@ async function main() {
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
         'convertToCode':   { signature: "await convertToCode({quality?, step?, edge?, dpTol?, samples?}) -- Rebuild the current model (e.g. an STL import) as smooth, import-free, editable code; saves a version and reports chamfer/hausdorff vs the source", docs: '/ai/reconstruction.md' },
         'evalAgainstImport': { signature: 'await evalAgainstImport(index?, {samples?}) -- Chamfer/hausdorff report of the current model vs imported mesh index (how faithful is the remake?)', docs: '/ai/reconstruction.md' },
+        'profileModel':    { signature: "await profileModel({index?, source?, sectionsPerAxis?, axis?, at?}) -- Sweep cross-sections + fit primitives: measured cylinder/box runs (or one detailed section via axis+at) of an import or the current model", docs: '/ai/reconstruction.md' },
+        'compareToImport': { signature: 'await compareToImport(index?, {res?, maxFindings?}) -- Voxel diff vs an import: volume IoU + localized excess/missing findings (what is wrong, WHERE)', docs: '/ai/reconstruction.md' },
+        'fitInscribed':    { signature: "await fitInscribed({kind?, index?, source?}) -- Largest box or z-cylinder that fits INSIDE a mesh, with volume fraction (measured primitive core)", docs: '/ai/reconstruction.md' },
         'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
         'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)

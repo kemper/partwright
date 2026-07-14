@@ -4,9 +4,12 @@
 // is the only true interrupt), settled-guarded handlers. Requests are
 // serialized per Worker; the app only issues one reconstruction at a time.
 
-import type { TriangleSoup } from './slice2d';
+import type { SliceAxis, TriangleSoup } from './slice2d';
 import type { ReconstructionResult, SectionCodeOptions } from './sectionCode';
 import type { MeshDistanceReport } from './meshDistance';
+import type { MeshProfile, ProfileOptions, SectionProbe } from './profileMesh';
+import type { VoxelDiffOptions, VoxelDiffReport } from './voxelDiff';
+import type { InscribedBox, InscribedCylinder, InscribedOptions } from './inscribed';
 
 export class ReconstructAbortError extends Error {
   constructor() {
@@ -87,6 +90,44 @@ export function generateCodeInWorker(
   ctl?: ReconstructRunControl,
 ): Promise<ReconstructionResult> {
   return request<ReconstructionResult>({ type: 'generate', triangles: soup.triangles, opts }, [], ctl);
+}
+
+/** Multi-axis primitive-fit profile (or one targeted section when axis+at
+ *  are set). Buffers are copied. */
+export function profileInWorker(
+  soup: TriangleSoup,
+  opts: Omit<ProfileOptions, 'onProgress'> & { axis?: SliceAxis; at?: number },
+  ctl?: ReconstructRunControl,
+): Promise<MeshProfile | SectionProbe> {
+  return request<MeshProfile | SectionProbe>({ type: 'profile', triangles: soup.triangles, opts }, [], ctl);
+}
+
+/** Voxel symmetric-difference with localized findings; buffers are copied. */
+export function compareInWorker(
+  target: TriangleSoup,
+  candidate: TriangleSoup,
+  opts?: VoxelDiffOptions,
+  ctl?: ReconstructRunControl,
+): Promise<VoxelDiffReport> {
+  return request<VoxelDiffReport>(
+    { type: 'compare', targetTriangles: target.triangles, candidateTriangles: candidate.triangles, opts },
+    [],
+    ctl,
+  );
+}
+
+/** Largest inscribed box / z-cylinder inside the soup; buffer is copied. */
+export function inscribedInWorker(
+  soup: TriangleSoup,
+  kind: 'box' | 'cylinder',
+  opts?: InscribedOptions,
+  ctl?: ReconstructRunControl,
+): Promise<InscribedBox | InscribedCylinder> {
+  return request<InscribedBox | InscribedCylinder>(
+    { type: 'inscribed', triangles: soup.triangles, kind, opts },
+    [],
+    ctl,
+  );
 }
 
 /** Chamfer/hausdorff report between two soups; buffers are copied. */
