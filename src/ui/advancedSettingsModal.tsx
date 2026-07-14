@@ -26,6 +26,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     import: { ...c.import },
     ui: { ...c.ui },
     geometry: { ...c.geometry },
+    sync: { ...c.sync },
   };
 }
 
@@ -1068,6 +1069,28 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.workerPanelRefreshMs}
           min={200} max={10_000} integer
           onChange={v => set('ui', 'workerPanelRefreshMs', v)}
+        />
+      </Section>
+
+      <Section title="Backup sync">
+        <div class="text-[10px] text-zinc-500 leading-snug">Timing for the local-folder / Google Drive auto-backup. Connect a target from the toolbar's Export menu → “Backup &amp; sync…”.</div>
+        <Field
+          label="Change debounce"
+          unit="ms"
+          tooltip="How long to wait after the last edit before writing the session backup file. A larger value coalesces bursts of rapid saves into a single write; a smaller value backs up sooner."
+          defaultValue={APP_CONFIG_DEFAULTS.sync.debounceMs}
+          value={c.sync.debounceMs}
+          min={200} max={30_000} integer
+          onChange={v => set('sync', 'debounceMs', v)}
+        />
+        <Field
+          label="Drive token expiry margin"
+          unit="ms"
+          tooltip="Safety margin subtracted from a Google Drive access token's reported lifetime, so it is refreshed slightly before it actually lapses and no request goes out with an about-to-expire token."
+          defaultValue={APP_CONFIG_DEFAULTS.sync.driveTokenExpirySkewMs}
+          value={c.sync.driveTokenExpirySkewMs}
+          min={0} max={300_000} integer
+          onChange={v => set('sync', 'driveTokenExpirySkewMs', v)}
         />
       </Section>
 

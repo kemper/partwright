@@ -5,7 +5,7 @@ import { downloadBlob } from './download';
 import type { BuiltExport } from './gltf';
 
 /** Sanitize a session name into a filename-safe slug. Falls back to "session". */
-function slugify(name: string): string {
+export function slugify(name: string): string {
   const slug = name
     .replace(/[^a-zA-Z0-9_-]+/g, '_')
     .replace(/_{2,}/g, '_')

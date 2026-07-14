@@ -317,6 +317,19 @@ import {
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
+import {
+  processDriveAuthReturn,
+  initSyncManager,
+  getSyncStatuses,
+  backupAllSessions as backupAllSyncSessions,
+  connectDrive as connectDriveSync,
+  disconnectLocal as disconnectLocalSync,
+  disconnectDriveTarget as disconnectDriveSync,
+  listBackups as listSyncBackups,
+  readBackup as readSyncBackup,
+} from './sync/syncManager';
+import type { SyncTargetId } from './sync/syncTypes';
+import { showSyncModal } from './ui/syncModal';
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -2342,6 +2355,15 @@ async function main() {
   // Install global error/warning capture as early as possible so nothing
   // slips through before the rest of the app is ready.
   errorLog.install();
+
+  // Finish a Google Drive OAuth redirect BEFORE anything reads the URL for
+  // routing: capture the token from the `#access_token` hash, strip it, and
+  // restore the page the user was on when they clicked Connect. No-op on a
+  // normal load.
+  {
+    const driveReturnUrl = processDriveAuthReturn();
+    if (driveReturnUrl) window.history.replaceState(null, '', driveReturnUrl);
+  }
 
   // Apply persisted theme before any UI renders
   initTheme();
@@ -5382,6 +5404,7 @@ async function main() {
     },
     onShareLink: () => { void actionShareLink(); },
     onPublish: () => { void actionPublish(); },
+    onOpenSync: () => { showSyncModal(importSessionPayload); },
     onExportRawCode: () => {
       exportRawCode(getValue(), getActiveLanguage());
     },
@@ -8346,6 +8369,9 @@ async function main() {
   // session in another window, and coordinate single-writer leadership.
   initSessionTabSync();
   initSessionLeader();
+  // Reconstruct external backup-sync target status (linked local folder / Drive)
+  // and subscribe to session changes so edits auto-write to connected targets.
+  void initSyncManager();
   // Reflect single-writer ownership across the whole editor surface: the
   // non-owner tab becomes a read-only viewer (editor + paint + run + save
   // disabled, with a "Take over" banner).
@@ -10604,6 +10630,67 @@ async function main() {
       if (!validated) return { error: 'importSessionData(data): payload missing partwright/mainifold brand, session, or any of versions[]/chat[]/notes[]' };
       const result = await importSessionPayload(validated);
       return { sessionId: result.sessionId };
+    },
+
+    // ── External backup sync (local folder / Google Drive) ──────────────────
+
+    /** Open the Backup & sync modal. This is the gesture-friendly entry for
+     *  connecting a local folder (the disk picker needs a user click) or Google
+     *  Drive. */
+    openSyncSettings() { showSyncModal(importSessionPayload); return { ok: true }; },
+
+    /** Current status of both backup targets (phase, label, last backup time,
+     *  last error, whether the target is available in this browser/deploy). */
+    syncStatus() { return getSyncStatuses(); },
+
+    /** Start the Google Drive OAuth redirect flow (navigates to Google, returns
+     *  to the editor). No-op error if Drive isn't configured on this deploy. */
+    connectDrive() {
+      try { connectDriveSync(); return { ok: true }; }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Disconnect a backup target ('local' | 'drive'). Files already written are
+     *  left in place. */
+    async disconnectSync(target: SyncTargetId) {
+      const check = guard(() => assertEnum(target, ['local', 'drive'], 'disconnectSync(target)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (target === 'local') await disconnectLocalSync();
+      else await disconnectDriveSync();
+      return { ok: true };
+    },
+
+    /** Push a full snapshot of every stored session to the connected target(s).
+     *  Returns the number written. */
+    async backupAllSessions() {
+      const n = await backupAllSyncSessions();
+      return { ok: true, count: n };
+    },
+
+    /** List the session backups present in a target ('local' | 'drive'). Each
+     *  entry has `{ key, name, target }`; pass `key` to restoreFromSync. */
+    async listSyncBackups(target: SyncTargetId) {
+      const check = guard(() => assertEnum(target, ['local', 'drive'], 'listSyncBackups(target)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      try { return { backups: await listSyncBackups(target) }; }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Restore (import) a session from a backup file by its key (filename for
+     *  'local', Drive file id for 'drive'). */
+    async restoreFromSync(target: SyncTargetId, key: string) {
+      const check = guard(() => {
+        assertEnum(target, ['local', 'drive'], 'restoreFromSync(target)');
+        assertString(key, 'restoreFromSync(key)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      try {
+        const data = await readSyncBackup(target, key);
+        const validated = validateSessionPayload(data);
+        if (!validated) return { error: 'restoreFromSync: backup file is not a valid session payload' };
+        const result = await importSessionPayload(validated);
+        return { sessionId: result.sessionId };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
     /**
@@ -15676,6 +15763,14 @@ async function main() {
         'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
         'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
         'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
+        // External backup sync — local folder / Google Drive
+        'openSyncSettings': { signature: 'openSyncSettings() -- Open the Backup & sync modal (connect a local folder / Google Drive)', docs: '/ai/file-io.md' },
+        'syncStatus':      { signature: 'syncStatus() -- Status of both backup targets {local, drive}: phase, label, lastSyncAt, lastError, available', docs: '/ai/file-io.md' },
+        'connectDrive':    { signature: 'connectDrive() -- Begin the Google Drive OAuth redirect (navigates to Google)', docs: '/ai/file-io.md' },
+        'disconnectSync':  { signature: 'await disconnectSync(target) -- Forget a backup target ("local"|"drive"); files on disk/Drive are kept', docs: '/ai/file-io.md' },
+        'backupAllSessions': { signature: 'await backupAllSessions() -- Write a full snapshot of every session to connected target(s) -> {count}', docs: '/ai/file-io.md' },
+        'listSyncBackups': { signature: 'await listSyncBackups(target) -- List backups in a target ("local"|"drive") -> {backups:[{key,name,target}]}', docs: '/ai/file-io.md' },
+        'restoreFromSync': { signature: 'await restoreFromSync(target, key) -- Import a session from a backup (key=filename|drive id) -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },

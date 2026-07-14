@@ -146,3 +146,24 @@ partwright.publish('makerworld')  // preselect MakerWorld
 ```
 
 None of these platforms expose a public *upload* API a browser app can call, so Partwright **cannot post the model for the user**. The flow instead **prepares** the publish: it downloads a single **ZIP** containing the model file (in the platform's preferred format — Bambu/Orca 3MF for MakerWorld, generic 3MF for Printables, STL for Thingiverse/Thangs), a rendered `cover.png`, and a `details.txt` (also copied to the clipboard), then opens the platform's site — the user signs in, hits its Upload button, drops the files, and pastes. The modal also has an **"✨ Auto-populate with AI"** button (enabled only when an AI model is connected — otherwise disabled with a "connect an AI model first" tooltip) that reviews the session's code, geometry stats, notes, recent AI chat, and a 4-iso snapshot to draft the title/description/tags via the active provider. Bundling into one ZIP avoids the browser's "open multiple files?" prompt that several separate downloads trigger. Every platform's direct upload route is auth-gated and unreliable (404/500/login bounce), so each target opens a stable landing page rather than a fragile deep link. Returns `{ error }` if there's no geometry or the platform id is unknown.
+
+## Backup & sync — local folder / Google Drive
+
+Sessions can auto-save to a copy **outside the browser**, on every change: a folder on the user's own computer and/or a `partwright` folder in their Google Drive. This is a one-way **backup** (the active session is written on each change) plus explicit **restore** — not a bidirectional live sync, so there's no merge/conflict step.
+
+```js
+partwright.openSyncSettings()        // open the Backup & sync modal (connect a target — the disk
+                                     // picker needs a real click, so this modal is the entry point)
+partwright.syncStatus()
+// -> { local: {phase, label, lastSyncAt, lastError, available},
+//      drive: {phase, ...} }        // phase: disconnected|connected|syncing|needs-reconnect|error
+
+partwright.connectDrive()            // begin the Google Drive OAuth redirect (navigates to Google)
+await partwright.backupAllSessions() // push a full snapshot of EVERY session -> { count }
+await partwright.listSyncBackups('local')      // -> { backups: [{ key, name, target }] }
+await partwright.restoreFromSync('drive', key) // import a session from a backup -> { sessionId }
+await partwright.disconnectSync('local')       // forget a target; files already written stay
+```
+
+- **Local folder** uses the File System Access API — **Chrome/Edge desktop only**. Unsupported browsers (Firefox/Safari) fall back to manual export/import. A linked folder needs a one-click permission re-grant after a page reload (`phase: 'needs-reconnect'`).
+- **Google Drive** uses the minimal `drive.file` scope: the app can see **only** the files it creates, in a visible `partwright` folder — nothing else in the user's Drive. Requires a Google client id configured for the deployment (`VITE_GOOGLE_CLIENT_ID`); when unset, Drive sync reports as unavailable. Access is client-side only (no backend); the token lives ~1h in memory, after which the user reconnects.

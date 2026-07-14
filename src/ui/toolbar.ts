@@ -40,6 +40,9 @@ export interface ToolbarCallbacks {
   /** "Publish to a print site…" — open the assisted-publish modal
    *  (Printables / MakerWorld / Thingiverse / Thangs). */
   onPublish: () => void;
+  /** "Backup & sync…" — open the modal to connect a local folder / Google Drive
+   *  that sessions auto-save to on every change. */
+  onOpenSync: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Open the "Import from URL…" modal (share link or remote file URL). */
@@ -688,10 +691,20 @@ export function createToolbar(
     callbacks.onPublish();
   });
 
+  const syncOpt = createDescribedItem(
+    'Backup & sync…',
+    'Auto-save your sessions to a folder on this computer or your Google Drive — a copy outside the browser, updated on every change.',
+  );
+  syncOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onOpenSync();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
   dropdown.appendChild(shareOpt);
   dropdown.appendChild(publishOpt);
+  dropdown.appendChild(syncOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createMenuDivider();

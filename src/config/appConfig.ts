@@ -299,6 +299,16 @@ export interface AppConfig {
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
   };
+  sync: {
+    /** Debounce (ms) after the last session/version change before the external
+     *  backup (local folder / Google Drive) is written, so a burst of rapid
+     *  edits coalesces into one file write instead of many. */
+    debounceMs: number;
+    /** Safety margin (ms) subtracted from a Google Drive access token's
+     *  reported lifetime, so a token is treated as expired slightly early and
+     *  we never issue a request with a token that lapses mid-flight. */
+    driveTokenExpirySkewMs: number;
+  };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
@@ -405,6 +415,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+  },
+  sync: {
+    debounceMs: 1500,
+    driveTokenExpirySkewMs: 60_000,
   },
 };
 
