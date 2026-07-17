@@ -494,14 +494,16 @@ The only exceptions are values that are truly structural constants (array indice
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
 
-### Editing `src/main.ts` — NUL-byte zones
+### Editing `src/main.ts` — NUL-byte zones and scope boundaries
 
 `src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
 
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
+- **The `Grep` tool has no `-a`/binary-override flag and will silently truncate or skip the file** — for any search targeting `main.ts`, go straight to `Bash` with `grep -an` or `rg -a` rather than trying the `Grep` tool first.
 - **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
 
-If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
+If a search on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Multiple independent sessions have each spent turns re-discovering this.
+
+`main.ts` also splits helpers across **two scopes that look interchangeable but aren't**: plain module-scope functions (top-level `function`/`const`), and helpers nested *inside* the app's setup function (most tool-close/select/mode helpers, e.g. `selectPart`). A new helper that needs to call both console-API surface code and setup-local helpers can't just be added at module scope if its dependencies live in the setup closure — check where its neighbors (e.g. sibling `select*`/`*Chrome` functions) are actually defined before writing it, or you'll end up rewriting it as a module-var assigned from inside setup (the `applyAssemblyChrome` pattern) after the fact.
 
 ### Agent Tooling & Static Analysis
 
@@ -558,7 +560,7 @@ Every commit that changes non-prompt files must also stage a sanitized **prompt 
 
 There is **one** messaging system; use it, don't invent parallel ones. Every error, warning, or notice a user sees must also land in the central **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) so there's a durable, reviewable record — the on-screen surface is transient, the log is the history.
 
-- **Transient notifications → `showToast` (`src/ui/toast.ts`).** A toast is the standard bottom-center, fades-away message for save/export confirmations, action feedback, and recoverable failures. Every `showToast` is **automatically mirrored** into the Diagnostic Log, so you don't capture separately for toasts. Variant maps to log level: `warn` → `'warn'`; `success`/`neutral` → `'info'` (routine activity, recorded but kept out of the unseen-error badge). Pass `{ log: false }` only for the rare toast that must stay screen-only, and `{ source }` to tag the subsystem (`'import'`, `'export'`, …).
+- **Transient notifications → `showToast` (`src/ui/toast.ts`).** A toast is the standard bottom-center, fades-away message for save/export confirmations, action feedback, and recoverable failures. Signature is `showToast(message, opts?)` — **`opts` is always one options object**, e.g. `showToast('Saved', { variant: 'success' })`, never a bare second `variant` argument. Every `showToast` is **automatically mirrored** into the Diagnostic Log, so you don't capture separately for toasts. Variant maps to log level: `warn` → `'warn'`; `success`/`neutral` → `'info'` (routine activity, recorded but kept out of the unseen-error badge). Pass `{ log: false }` only for the rare toast that must stay screen-only, and `{ source }` to tag the subsystem (`'import'`, `'export'`, …).
 - **Variant semantics.** `success` = it worked; `neutral` = informational/in-progress; `warn` = something went wrong or was blocked. Pick by meaning, not color. Don't hand-roll `position:fixed` message nodes — route through `showToast`.
 - **Failures that don't toast → `errorLog.capture({ level, source, message, detail })` directly** with an explicit `source` tag. Anything caught in a `catch` that the user won't otherwise see (Worker/engine failures, background tasks) belongs in the log even when there's no toast.
 - **Persistent status ≠ transient notification.** Standing indicators that reflect *current* state — e.g. the viewport **printability pill** (`printabilityIndicatorEl` in `src/main.ts`), which stays up while the live model has print-blocking structural issues — are *status*, not toasts. They persist until the underlying state changes and must not be implemented as (or mistaken for) fading messages. Give them a `title` so users understand what they are.
