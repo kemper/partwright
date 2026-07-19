@@ -285,7 +285,10 @@ function installPublicFetchShim() {
   globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input?.url;
     if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
-      const file = join(publicDir, url.replace(/[?#].*$/, ''));
+      const file = resolve(publicDir, '.' + url.replace(/[?#].*$/, ''));
+      if (!file.startsWith(publicDir)) {
+        throw new Error(`fetch shim: refusing path outside public/: ${url}`);
+      }
       const data = await readFile(file);
       return new Response(data, { status: 200 });
     }

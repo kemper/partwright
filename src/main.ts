@@ -10350,11 +10350,18 @@ async function main() {
       // Decompose on the main thread; extract plain meshes then free the WASM pieces.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pieces: any[] = currentManifold.decompose();
+      // Carry the painted/model colors onto each decomposed piece (nearest-
+      // centroid, same as the export paths) so the exploded video stays colored.
+      const coloredSrc = coloredMeshForExport(currentMeshData);
       const parts: ExplodePart[] = pieces.map((p) => {
         const bb = p.boundingBox();
         const m = p.getMesh();
+        let mesh: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+        if (coloredSrc.triColors && coloredSrc.triColors.length >= coloredSrc.numTri * 3) {
+          mesh = carryColorsToMesh(coloredSrc, mesh);
+        }
         return {
-          mesh: { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp },
+          mesh,
           center: [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2] as [number, number, number],
         };
       });

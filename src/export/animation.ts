@@ -52,7 +52,7 @@ async function recordCanvas(
   recorder.start(250);
   animate(() => {
     // A short grace frame so the last painted frame lands in the stream.
-    setTimeout(() => { try { recorder.stop(); } catch { /* already stopped */ } stream.getTracks().forEach(t => t.stop()); }, 120);
+    setTimeout(() => { try { recorder.stop(); } catch { /* already stopped */ } }, 120);
   });
   // Watchdog: never hang forever if rAF stalls (hidden tab).
   const watchdog = setTimeout(() => { try { recorder.stop(); } catch { /* ok */ } }, (seconds + 10) * 1000);
@@ -60,6 +60,9 @@ async function recordCanvas(
     return await done;
   } finally {
     clearTimeout(watchdog);
+    // Tear the capture stream down on EVERY exit path (success, recorder
+    // error, watchdog) — a leaked capture track keeps grabbing the canvas.
+    stream.getTracks().forEach(t => t.stop());
   }
 }
 
@@ -129,6 +132,13 @@ export function makeExplodedMeshBuilder(parts: ExplodePart[]): (k: number) => Me
   let totalVerts = 0, totalTris = 0;
   for (const p of parts) { totalVerts += p.mesh.numVert; totalTris += p.mesh.numTri; }
   const numProp = parts[0]?.mesh.numProp ?? 3;
+  // The concatenation below assumes one shared vertex stride; decompose()
+  // output always agrees, but fail loudly rather than corrupt if it doesn't.
+  for (const p of parts) {
+    if (p.mesh.numProp !== numProp) {
+      throw new AnimationExportError(`Exploded view: parts disagree on vertex stride (numProp ${p.mesh.numProp} vs ${numProp}).`);
+    }
+  }
   const vertProperties = new Float32Array(totalVerts * numProp);
   const triVerts = new Uint32Array(totalTris * 3);
   const hasColors = parts.every(p => p.mesh.triColors && p.mesh.triColors.length >= p.mesh.numTri * 3);
