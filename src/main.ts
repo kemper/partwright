@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -79,6 +79,7 @@ import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { recordTurntable, recordExplode, recordParamSweep, downloadAnimation, AnimationExportError, type ExplodePart, type ParamSweepFrame } from './export/animation';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { openPublishModal } from './ui/publishModal';
@@ -4736,6 +4737,19 @@ async function main() {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
     }
   };
+  // Animation exports: record the live viewport into a downloadable video.
+  const actionExportTurntable = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording turntable\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportTurntable();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
+  const actionExportExplode = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording exploded view\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportExplode();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
   const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
@@ -5928,6 +5942,8 @@ async function main() {
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-turntable', title: 'Export turntable video', hint: 'Export', keywords: 'animation video webm spin record', run: () => { void actionExportTurntable(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-explode', title: 'Export exploded-view video', hint: 'Export', keywords: 'animation video webm explode assembly record', run: () => { void actionExportExplode(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
@@ -10306,6 +10322,90 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('OBJ');
       exportOBJ(fileExportMesh(true)!, filename);
+    },
+
+    /** Record the camera orbiting the model once and download the video. */
+    async exportTurntable(opts?: { seconds?: number; revolutions?: number }) {
+      assertObject(opts, 'exportTurntable(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportTurntable opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.revolutions, 'exportTurntable opts.revolutions', { optional: true, min: 0.25, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      try {
+        const blob = await recordTurntable({ seconds: opts?.seconds, revolutions: opts?.revolutions });
+        const filename = downloadAnimation(blob, 'turntable');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Turntable recording failed' };
+      }
+    },
+
+    /** Record an exploded-view video: components ease apart, hold, reassemble. */
+    async exportExplode(opts?: { seconds?: number; spread?: number }) {
+      assertObject(opts, 'exportExplode(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportExplode opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.spread, 'exportExplode opts.spread', { optional: true, min: 0.1, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!currentManifold) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
+      // Decompose on the main thread; extract plain meshes then free the WASM pieces.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pieces: any[] = currentManifold.decompose();
+      const parts: ExplodePart[] = pieces.map((p) => {
+        const bb = p.boundingBox();
+        const m = p.getMesh();
+        return {
+          mesh: { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp },
+          center: [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2] as [number, number, number],
+        };
+      });
+      pieces.forEach((p) => { try { p.delete(); } catch { /* ok */ } });
+      try {
+        const blob = await recordExplode(parts, { seconds: opts?.seconds, spread: opts?.spread });
+        const filename = downloadAnimation(blob, 'explode');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        const msg = e instanceof AnimationExportError ? e.message : e instanceof Error ? e.message : 'Exploded-view recording failed';
+        return { error: msg };
+      } finally {
+        // Restore the live mesh (the recording swapped exploded frames in).
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
+    },
+
+    /** Animate a Customizer parameter across a range and download the video.
+     *  Precomputes one mesh per step (manifold-js sessions only), then records
+     *  a smooth ping-pong playback. */
+    async exportParamSweep(param: string, from: number, to: number, opts?: { steps?: number; seconds?: number; pingPong?: boolean }) {
+      assertString(param, 'exportParamSweep(param)');
+      assertNumber(from, 'exportParamSweep(from)');
+      assertNumber(to, 'exportParamSweep(to)');
+      assertObject(opts, 'exportParamSweep(opts)', { optional: true });
+      assertNumber(opts?.steps, 'exportParamSweep opts.steps', { optional: true, min: 2, max: 120 });
+      assertNumber(opts?.seconds, 'exportParamSweep opts.seconds', { optional: true, min: 1, max: 60 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'exportParamSweep runs the model per frame \u2014 only manifold-js sessions are supported.' };
+      const steps = Math.round(opts?.steps ?? 12);
+      const code = getValue();
+      const frames: ParamSweepFrame[] = [];
+      for (let i = 0; i < steps; i++) {
+        const value = from + (to - from) * (i / (steps - 1));
+        const r = executeCode(code, undefined, { [param]: value });
+        if (r.error || !r.mesh) {
+          return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
+        }
+        frames.push({ value, mesh: r.mesh });
+      }
+      try {
+        const blob = await recordParamSweep(frames, { seconds: opts?.seconds, pingPong: opts?.pingPong });
+        const filename = downloadAnimation(blob, `sweep-${param}`);
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Parameter-sweep recording failed' };
+      } finally {
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
     },
 
     /** Export current model as 3MF download. Optional filename override. */
@@ -15658,6 +15758,9 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'exportTurntable': { signature: 'await exportTurntable({seconds?, revolutions?}) -- Record the camera orbiting the model and download a turntable video (.webm) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
@@ -17032,6 +17135,11 @@ async function main() {
         }
       }
       setModelColorRegions(modelColorDecls);
+
+      // Viewport shading material declared in code (api.material) — apply it,
+      // or clear back to the studio default when this run declared none.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setMaterialOverride((result.materialSpec as any) ?? null);
 
       // Apply any existing color regions to the mesh. Refining regions —
       // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:

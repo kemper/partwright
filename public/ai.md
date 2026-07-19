@@ -120,6 +120,14 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
+| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
+| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
+| Text / relief wrapped around a cylinder (mug, ring, vase) | `api.wrapAround(flatShape, {radius})` -> `/ai/deform.md` | (not available) | (mesh-only) |
+| Bend / twist / taper an existing mesh | `api.bend/twist/taper(shape, {…})` -> `/ai/deform.md` | `linear_extrude(twist=, scale=)` at build time | (mesh-only) |
+| Strip / rail following a 3D path | `api.alongCurve(shape, points)` -> `/ai/deform.md` (or `Curves.sweep` to build from a profile) | BOSL2 `path_sweep()` | (use manifold-js) |
+| Spikes / studs / scales / rivets scattered over a surface | `api.scatter(target, instance, {count, seed})` -> `/ai/deform.md` | (build manually) | (mesh-only) |
+| Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
+| Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
 
@@ -163,6 +171,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
 | `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
+| `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten` (declarative brush nudges), `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
@@ -293,6 +302,10 @@ partwright.exportSTL()         // Download STL ("                               
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
 partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
+// Animation videos (record the live viewport -> .webm download; tab must stay visible). See /ai/deform.md.
+await partwright.exportTurntable({seconds?, revolutions?})        // camera orbits the model -> {ok, filename}
+await partwright.exportExplode({seconds?, spread?})               // components fly apart + reassemble (multi-component models)
+await partwright.exportParamSweep(param, from, to, {steps?, seconds?, pingPong?})  // Customizer param morph (manifold-js)
 // Agent-friendly variants -- bytes return inline, no file dialog. See /ai/file-io.md.
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
@@ -693,6 +706,26 @@ api.spiralPattern(shape, count, {anglePerCopy, risePerCopy, axis?, center?})
    // The "staircase / screw / spring" case — each copy gets both a rotation
    // AND an axial translation. Steps + helical fins + threaded rod profile
    // all fall under this one.
+
+api.scatter(target, instance, {count, seed?, alignToNormal?, spin?, scale?, offset?, minSpacing?, where?})
+   // Seeded instances across target's surface, normal-aligned. Returns the
+   // union of the instances only — add to the base yourself. See /ai/deform.md.
+```
+
+**Deform / round / weld / sculpt** — Blender-parity mesh-shaping verbs; full reference in **[/ai/deform.md](/ai/deform.md)**:
+
+```
+api.wrapAround(shape, {radius, axis?, angleOffset?})   // wrap a flat shape around a cylinder (text on mugs)
+api.bend(shape, {angle})                               // X extent → arc in the XY plane
+api.twist(shape, {degrees, axis?})                     // rotation grows linearly along the axis
+api.taper(shape, {scaleTop, scaleBottom?, axis?})      // linear cross-section scale along the axis
+api.alongCurve(shape, points, {up?})                   // X extent follows a 3D polyline (parallel-transport frame)
+api.round(m, {radius, mode?, resolution?})             // fillet EVERY edge (convex + concave) of any solid
+api.smoothWeld(a, b, {radius})                         // smoothUnion for plain meshes (also takes an array)
+api.sculpt.grab(m, {at, radius, offset})               // drag the surface near a point
+api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = dent)
+api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
+api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.

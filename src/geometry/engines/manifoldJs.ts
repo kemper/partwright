@@ -14,11 +14,13 @@ import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
+import { createSculptOps } from '../sculpt';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
 import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
+import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -79,6 +81,8 @@ let threadsNamespace: any = null;
 let enclosureNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let knurlNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let sculptNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -226,6 +230,7 @@ export const manifoldJsEngine: Engine = {
       // standoff bores), so it's built after fastenersNamespace above.
       enclosureNamespace = createEnclosureNamespace(mod, { fasteners: fastenersNamespace });
       knurlNamespace = createKnurlNamespace(mod);
+      sculptNamespace = createSculptOps(mod);
       // Publish the fully-built module only after every namespace is ready, so
       // a concurrent caller that sees `manifoldModule` set never observes a
       // half-initialised set of namespaces.
@@ -288,6 +293,13 @@ export const manifoldJsEngine: Engine = {
     // overlap, in declaration order. Cleared on every run.
     const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
     let paintSeq = 0;
+
+    // Viewport material declared in code via `api.material(...)` — a shading
+    // preset (brass/glass/…) applied by the main thread's viewport after the
+    // run. Recorded, not baked: geometry and exports are untouched, and because
+    // it lives in the code it re-applies on every run/load with no schema
+    // change. Last call wins. Cleared on every run.
+    let materialSpec: MaterialSpec | null = null;
 
     // Surface textures declared in code via `api.surface.*` (fuzzy / knit / cable
     // / waffle / fur / woven / voronoi / smooth). Like `api.paint.*`, these do
@@ -474,6 +486,7 @@ export const manifoldJsEngine: Engine = {
        *  `api.paint.pattern({ pattern, colors, scope, scale, axis, warp, coverage, seed })`
        *   - pattern: 'stripes' (tabby/tiger/zebra/brindle) | 'spots' (leopard/dalmatian)
        *              | 'patches' (calico/cow/tortie) | 'gradient' (siamese points)
+       *              | 'checker' (3D checkerboard by cell parity)
        *   - colors:  [base, mark, third?] — hex or [r,g,b]; ≥2 required
        *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model */
       pattern(opts: unknown): void {
@@ -591,6 +604,50 @@ export const manifoldJsEngine: Engine = {
       },
     };
 
+    // === api.material — declare the viewport shading material in code ===
+    const material = (nameOrOpts: unknown): void => {
+      const usage = `api.material(preset | { preset?, color?, metalness?, roughness?, clearcoat?, transmission?, opacity? }) — presets: ${MATERIAL_PRESET_NAMES.join(', ')}`;
+      let spec: MaterialSpec;
+      if (typeof nameOrOpts === 'string') {
+        if (!isMaterialPresetName(nameOrOpts)) {
+          throw new Error(`api.material: unknown preset "${nameOrOpts}". ${usage}`);
+        }
+        spec = { preset: nameOrOpts };
+      } else if (nameOrOpts && typeof nameOrOpts === 'object' && !Array.isArray(nameOrOpts)) {
+        const o = nameOrOpts as Record<string, unknown>;
+        const { preset, color, metalness, roughness, clearcoat, transmission, opacity, ...rest } = o;
+        const unknownKeys = Object.keys(rest);
+        if (unknownKeys.length > 0) {
+          throw new Error(`api.material: unknown key(s) ${unknownKeys.map(k => `"${k}"`).join(', ')}. ${usage}`);
+        }
+        spec = {};
+        if (preset !== undefined) {
+          if (!isMaterialPresetName(preset)) throw new Error(`api.material: unknown preset "${String(preset)}". ${usage}`);
+          spec.preset = preset;
+        }
+        if (color !== undefined) {
+          const rgb = parseLabelColor(color);
+          if (!rgb) throw new Error('api.material color: expected a hex string like "#b87333" or an [r,g,b] array of three numbers in 0..1.');
+          spec.color = rgb;
+        }
+        const unit = (v: unknown, name: string): number => {
+          if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) {
+            throw new Error(`api.material ${name}: expected a number in 0..1.`);
+          }
+          return v;
+        };
+        if (metalness !== undefined) spec.metalness = unit(metalness, 'metalness');
+        if (roughness !== undefined) spec.roughness = unit(roughness, 'roughness');
+        if (clearcoat !== undefined) spec.clearcoat = unit(clearcoat, 'clearcoat');
+        if (transmission !== undefined) spec.transmission = unit(transmission, 'transmission');
+        if (opacity !== undefined) spec.opacity = unit(opacity, 'opacity');
+        if (Object.keys(spec).length === 0) throw new Error(`api.material: options object is empty. ${usage}`);
+      } else {
+        throw new Error(`api.material: expected a preset name or an options object. ${usage}`);
+      }
+      materialSpec = spec;
+    };
+
     // Imported meshes (STL etc.) attached to the active version are exposed as
     // `api.imports[i]` — each entry is shaped to pass straight into
     // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
@@ -667,6 +724,18 @@ export const manifoldJsEngine: Engine = {
       linearPattern: meshOpsNamespace.linearPattern,
       circularPattern: meshOpsNamespace.circularPattern,
       spiralPattern: meshOpsNamespace.spiralPattern,
+      // Surface scatter + named deforms + SDF rounding/welding (Blender-parity
+      // verbs — see /ai/deform.md):
+      scatter: meshOpsNamespace.scatter,
+      wrapAround: meshOpsNamespace.wrapAround,
+      bend: meshOpsNamespace.bend,
+      twist: meshOpsNamespace.twist,
+      taper: meshOpsNamespace.taper,
+      alongCurve: meshOpsNamespace.alongCurve,
+      round: meshOpsNamespace.round,
+      smoothWeld: meshOpsNamespace.smoothWeld,
+      // Declarative sculpt nudges (grab / inflate / flatten):
+      sculpt: sculptNamespace,
       // Robust booleans + heal:
       expectUnion: meshOpsNamespace.expectUnion,
       expectDifference: meshOpsNamespace.expectDifference,
@@ -680,6 +749,7 @@ export const manifoldJsEngine: Engine = {
       labeledUnion,
       paint,
       surface,
+      material,
       imports,
       renderMesh,
     };
@@ -810,6 +880,7 @@ export const manifoldJsEngine: Engine = {
         labelColors: labelColors.size > 0 ? labelColors : undefined,
         paintOps: paintOps.length > 0 ? paintOps : undefined,
         surfaceOps: surfaceOps.length > 0 ? surfaceOps : undefined,
+        materialSpec: materialSpec ?? undefined,
         paramsSchema: paramCapture.collectSchema(),
         renderOnly,
       };
