@@ -525,6 +525,20 @@
     "maxGenus": null,
     "requiredLabels": []
    }
+  },
+  "rounded-dice": {
+   "source": "examples/rounded_dice.js",
+   "gates": {
+    "maxGenus": null,
+    "requiredLabels": []
+   }
+  },
+  "welded-duck": {
+   "source": "examples/welded_duck.js",
+   "gates": {
+    "maxGenus": null,
+    "requiredLabels": []
+   }
   }
  }
 }

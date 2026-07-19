@@ -1587,6 +1587,28 @@
     "decor",
     "kit"
    ]
+  },
+  {
+   "id": "rounded-dice",
+   "name": "Casino-Rounded D6",
+   "file": "rounded_dice.partwright.json",
+   "language": "manifold-js",
+   "description": "A six-sided die with every edge and corner uniformly filleted by the new api.round — standard Western pip layout (opposite faces sum to 7), white body with painted black pips.",
+   "tags": [
+    "games",
+    "toys"
+   ]
+  },
+  {
+   "id": "welded-duck",
+   "name": "Smooth Rubber Duck",
+   "file": "welded_duck.partwright.json",
+   "language": "manifold-js",
+   "description": "A classic bathtub duck built from plain spheres blended seamlessly with the new api.smoothWeld, its bill and tail shaped by api.sculpt nudges — yellow body, orange bill, black eyes.",
+   "tags": [
+    "toys",
+    "figures"
+   ]
   }
  ]
 }
