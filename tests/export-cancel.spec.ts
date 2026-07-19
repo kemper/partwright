@@ -61,20 +61,19 @@ test.describe('export progress modal is cancellable', () => {
     await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); localStorage.setItem('editor-auto-format', 'false'); } catch { /* ignore */ } });
     await openEditor(page);
 
-    // 0-delay so the modal renders immediately, and record whether the Cancel
-    // button ever appears while the bake loop runs (it renders for at least one
-    // frame between the async per-part bakes). Only the UI picker flow shows the
-    // "Preparing …" modal — the console twins bake without it.
+    // Record whether the per-part export progress modal's Cancel button ever
+    // appears while the bake runs (it renders for at least one frame while the
+    // parts bake through the Worker pool). Only the UI picker flow shows the
+    // per-part progress modal — the console twins bake without it.
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      pw.__setProgressModalDelay(0);
       (await import('/src/geometry/units.ts')).setUnits('mm');
 
       const w = window as unknown as { __exportCancelSeen: boolean };
       w.__exportCancelSeen = false;
       const obs = new MutationObserver(() => {
-        if (document.querySelector('[data-testid="progress-modal-cancel"]')) w.__exportCancelSeen = true;
+        if (document.querySelector('[data-testid="export-progress-cancel"]')) w.__exportCancelSeen = true;
       });
       obs.observe(document.body, { childList: true, subtree: true, attributes: true });
 
