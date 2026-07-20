@@ -34,6 +34,13 @@ vase = api.twist(vase, { degrees: 120, axis: 'z' });
 // ...then flare it: narrower at the base, wider at the rim.
 vase = api.taper(vase, { scaleBottom: 0.85, scaleTop: 1.25, axis: 'z' });
 
+// The twist stretches triangles tangentially, and the checker assigns ONE
+// color per triangle (centroid test) - long stretched slivers turn cell
+// boundaries into jagged teeth. A post-deform refine pass splits exactly the
+// stretched edges back to ~1 unit, so the painted boundary tracks the true
+// cell edge far more closely (at ~2.5x the triangle count).
+vase = vase.refineToLength(1.0);
+
 // Two-tone 3D checkerboard over the whole surface (inside and out) — each
 // triangle stays one flat color, so it's multi-material-printable as-is.
 api.paint.pattern({

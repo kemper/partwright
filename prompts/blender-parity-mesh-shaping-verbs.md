@@ -84,3 +84,17 @@ Key decisions:
   tripped over; fixed in the preview path rather than worked around.
 - Showcase models were authored by parallel model-sculpt subagents against the
   new APIs, then baked into the catalog with the dev server up.
+
+## Follow-up (2026-07-20)
+
+User inspected the Twisted Checker Vase up close: checker cell boundaries were
+badly jagged, and skewed cells read as "missing" pattern in places. Diagnosis:
+the twist stretches triangles tangentially and the pattern assigns one color
+per triangle (centroid test), so stretched slivers become long teeth at cell
+boundaries; headless verification confirmed coverage is complete (all 129k
+triangles patterned — nothing actually unpainted; the pale patches are rim
+lighting + world-space cell skew). Model-level fix shipped: a post-deform
+`refineToLength(1.0)` pass splits exactly the stretched edges (129k → 211k
+tris, still under budget) — boundaries now track the true cell edge closely.
+The structural fix (pattern-boundary-aware subdivision in the paint layer) is
+tracked on #928.
