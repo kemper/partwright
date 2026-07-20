@@ -125,3 +125,16 @@ retros/inbox/2026-07-20-catalog-refresh-agent-feedback.md. Notable decisions:
   and established the `round(mode:'concave')` seam-softening pattern; doc
   fixes shipped for three agent-reported traps (circularPattern radius+center,
   paint.slab one-sided band, thin-shell round radius, npm --silent for JSON).
+
+## Follow-up (2026-07-20, D6 pip quality)
+
+User flagged the Casino-Rounded D6's pips as still poorly painted (the
+paint.box selectors read as jagged squares — the documented trade-off wasn't
+good enough). Replaced paint entirely with the D20's inlay technique: each
+carved recess is refilled with a slightly-oversized labeled sphere clipped to
+the original die surface (`sphere.intersect(rounded)`), so the pip is a FLUSH
+circular fill whose color boundary is exact boolean geometry — matching how
+real casino "birdseye" dice are made. Also sized pips up to real-die
+proportions (~16% of face width) and dropped the refine(3) paint workaround
+(169k → 22k tris). Lesson for #928's paint items: when a paint region
+coincides with carved geometry, labeled inlay geometry beats any selector.

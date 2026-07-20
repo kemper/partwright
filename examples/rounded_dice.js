@@ -18,8 +18,8 @@ const rounded = api.round(cube, { radius: FILLET, resolution: 220 });
 // 2. Pip layout — standard Western D6: opposite faces sum to 7,
 //    pip dots arranged on a 3x3 grid per face.
 // ---------------------------------------------------------------
-const PIP_R = 1.5;   // pip sphere radius
-const DEPTH = 1.0;   // desired max dimple depth below the flat face
+const PIP_R = 2.2;   // pip sphere radius
+const DEPTH = 1.2;   // recess depth (flush-filled; with PIP_R sets the visible pip circle ~2.0r)
 const SPACING = 6;   // grid half-spacing (keeps pips well clear of the fillet)
 
 // Local 3x3 grid positions (du, dv) on a face.
@@ -70,37 +70,23 @@ for (const face of FACES) {
 
 let body = rounded.subtract(pipCutter);
 
-// Refine before painting: round()'s remeshed surface has coarse, unevenly
-// sized triangles, and api.paint.box selects by triangle centroid against
-// the CURRENT triangulation (no smoothing option in-code) — painting
-// straight onto that coarse mesh bleeds color onto oversized neighboring
-// triangles (fan-bleed). Refining first shrinks triangles near each pip so
-// the box selection hugs the recess instead of spilling past it.
-body = body.refine(3);
-
 // ---------------------------------------------------------------
-// 3. Paint — white body, black pip recesses. Rounding discards labels, so
-//    label/paint happens on this final shape, after carving.
+// 3. Pips as labeled INLAY geometry — not paint. Each recess is refilled
+//    with a slightly larger sphere clipped to the original die surface, so
+//    the pip is a flush circular fill (real casino "birdseye" dice are
+//    flush-filled) whose color boundary is exact boolean geometry — a
+//    perfect circle — rather than a per-triangle paint.box selection (the
+//    old approach, which read as jagged squares). The oversize (+0.15)
+//    guarantees volumetric overlap with the recess wall so everything
+//    fuses into one printable solid; labels survive the union, so this
+//    also slices as a clean two-material print.
 // ---------------------------------------------------------------
-body = api.label(body, 'body', { color: '#f2f0e8' });
-
-// api.paint.box has no smoothing option, so it selects whole triangles by
-// centroid against the refined mesh. Size the box's half-extent to the FULL
-// pip sphere radius (not just the surface hole radius) — a box that stops
-// at the hole radius clips the sphere's deepest point (the pole, at
-// center - n*PIP_R), leaving the fan of triangles right at the bottom of
-// the dimple unpainted (a tiny white pinhole at the center of every pip).
-// A cube of half-side PIP_R fully contains the sphere in every direction;
-// the mesh is refined enough that the small margin beyond the surface hole
-// stays sub-pixel.
-const boxHalf = PIP_R * 1.05;
-for (let i = 0; i < pipCenters.length; i++) {
-  const c = pipCenters[i];
-  api.paint.box({
-    min: [c[0] - boxHalf, c[1] - boxHalf, c[2] - boxHalf],
-    max: [c[0] + boxHalf, c[1] + boxHalf, c[2] + boxHalf],
-    color: '#1a1a1a',
-  });
+let inlays = null;
+for (const c of pipCenters) {
+  const s = Manifold.sphere(PIP_R + 0.15, 32).translate(c).intersect(rounded);
+  inlays = inlays ? inlays.add(s) : s;
 }
 
-return body;
+body = api.label(body, 'body', { color: '#f2f0e8' });
+const pips = api.label(inlays, 'pips', { color: '#1a1a1a' });
+return api.expectUnion([body, pips], { expectComponents: 1 });
