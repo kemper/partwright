@@ -14,6 +14,7 @@ sessions.)
 | A bar/strip curved into an arc | `api.bend(shape, { angle })` |
 | A twisted column / drill-bit look | `api.twist(shape, { degrees })` |
 | Pyramid/taper toward one end | `api.taper(shape, { scaleTop })` |
+| Barrel / vase bulge (non-linear profile along the axis) | `Curves.loft` over profiles (see /ai/curves.md) — taper is linear-only |
 | A strip following a 3D path | `api.alongCurve(shape, points)` |
 | Spikes / studs / rivets / scales all over a surface | `api.scatter(target, instance, { count })` |
 | "Round every sharp edge" on any solid | `api.round(m, { radius })` |
@@ -88,8 +89,11 @@ return api.round(booleanResult, {
 
 The mesh analogue of BOSL2 `rounding=` / Blender Bevel, built as morphological
 opening+closing of a signed-distance lattice, remeshed via `levelSet`. Facts to
-respect: features thinner than `2·radius` are smoothed **away**; the output is
-a remeshed surface (labels/paint regions on the input do NOT carry through —
+respect: features thinner than `2·radius` are smoothed **away** — and in
+practice a flat face starts visibly bulging into a pill well before that limit,
+so on a shape with one thin dimension keep the radius under ~1/4 of the
+thinnest extent (a 5-unit-thick shell wants radius ≲ 1.2, not 1.8); the output
+is a remeshed surface (labels/paint regions on the input do NOT carry through —
 round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.

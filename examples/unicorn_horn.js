@@ -10,5 +10,8 @@ const horn = sdf.tube(
 ).label('horn');
 
 const model = horn.build({ edgeLength: 0.45 });
-api.paint.label({ label: 'horn', color: '#e9d27a' });
+api.paint.label({ label: 'horn', color: '#e9c25a' });
+// Golden horn: metallic viewport shading (presentation only — geometry,
+// exports and the baked thumbnail are untouched).
+api.material('gold');
 return model;

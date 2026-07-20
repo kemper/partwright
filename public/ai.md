@@ -609,7 +609,7 @@ Beyond labels, you can declare **geometric** paint right in the model code with 
 ```js
 const { Manifold } = api;
 const part = Manifold.cube([30, 30, 30], true).refine(16);   // refine so selectors have fine triangles
-api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal)
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal); band is ONE-SIDED: [offset, offset+thickness], NOT centered on offset
 api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] }); // axis-aligned box
 api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) shell
 api.paint.label('body', '#888');   // recolor an existing api.label(...) region
@@ -701,6 +701,10 @@ api.circularPattern(shape, count, {axis?, angle?, center?, radius?})
    // radius: shortcut — pushes shape outward by `radius` BEFORE rotating
    //   (so you write `circularPattern(stud, 8, {radius: 25})` instead of
    //   pre-translating the stud yourself).
+   // FOOTGUN: the radius push is measured from the WORLD ORIGIN, not from
+   //   `center` — combining `radius` with a custom `center` produces a ring
+   //   in the wrong place. With a custom center, pre-position the shape in
+   //   world space yourself and let the pattern do rotation only.
 
 api.spiralPattern(shape, count, {anglePerCopy, risePerCopy, axis?, center?})
    // The "staircase / screw / spring" case — each copy gets both a rotation

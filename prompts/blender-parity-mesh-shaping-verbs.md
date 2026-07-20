@@ -98,3 +98,30 @@ lighting + world-space cell skew). Model-level fix shipped: a post-deform
 tris, still under budget) — boundaries now track the true cell edge closely.
 The structural fix (pattern-boundary-aware subdivision in the paint layer) is
 tracked on #928.
+
+## Follow-up (2026-07-20, catalog refresh #929)
+
+User approved the catalog audit and asked for all 16 flagged entries to be
+fixed with the new verbs, subagent-driven, with agent retro feedback captured.
+14 model-sculpt agents ran in two waves (plus two direct gold-material edits);
+each returned a structured retro, aggregated in
+retros/inbox/2026-07-20-catalog-refresh-agent-feedback.md. Notable decisions:
+
+- Ten entries had no examples/ source (code only in their baked JSON) — their
+  code was extracted to gitignored .plans/catalog-refresh/ and re-baked from
+  there, matching how those entries already live (code-in-JSON only).
+- Two regressions were caught in final QC by diffing old vs new bakes: the
+  christmas-tree entry's STORED code had drifted from examples/ (the stored
+  variant was self-colouring; the example was an uncolored twin) — fixed by
+  merging the agent's scatter improvement into the colored code and making
+  that the example, healing the drift; and retro-rocket's face-picked teal
+  porthole lived in stored colorRegions, which source re-bakes discard —
+  restored by carrying the region into the new JSON and refreshing the
+  thumbnail with catalog-fix-thumbnails.cjs (which preserves regions).
+- The royal-crown re-bake ballooned 81KB→3MB because the new bake persisted
+  its computed surfaceTexture; stripped post-bake to keep the catalog payload
+  lean (the code recomputes the texture on open, as the original entry did).
+- Rocket-ship's agent found a latent extrude(scaleTop=0) knife-edge fin bug
+  and established the `round(mode:'concave')` seam-softening pattern; doc
+  fixes shipped for three agent-reported traps (circularPattern radius+center,
+  paint.slab one-sided band, thin-shell round radius, npm --silent for JSON).
