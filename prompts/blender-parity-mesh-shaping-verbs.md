@@ -138,3 +138,13 @@ real casino "birdseye" dice are made. Also sized pips up to real-die
 proportions (~16% of face width) and dropped the refine(3) paint workaround
 (169k → 22k tris). Lesson for #928's paint items: when a paint region
 coincides with carved geometry, labeled inlay geometry beats any selector.
+
+## Follow-up (2026-07-20, D6 body waviness)
+
+User then flagged lumps on the die BODY: api.round's lattice error reads as
+gentle pillowing on large flat mirror-shaded faces. Fixed by switching the
+convex body to the exact construction — Manifold.hull of eight corner
+spheres (flat faces perfectly flat, fillets exactly cylindrical, 22k → 3k
+tris). deform.md now documents the boundary: hull for convex rounded
+boxes/prisms, api.round for shapes with no exact construction (booleans,
+imports, organic forms). Flat-face waviness itself noted on #928.

@@ -11,8 +11,18 @@ const SIZE = 24;
 const H = SIZE / 2;
 const FILLET = 2.4; // casino-die style: generously rounded but pips stay legible
 
-const cube = Manifold.cube([SIZE, SIZE, SIZE], true);
-const rounded = api.round(cube, { radius: FILLET, resolution: 220 });
+// EXACT rounded cube: the convex hull of eight corner spheres gives perfectly
+// flat faces and perfectly cylindrical/spherical fillets. (api.round's SDF
+// lattice is the tool for NON-convex shapes — boolean results, organic forms —
+// but its ~voxel-scale field error reads as gentle waviness on large flat
+// mirror-shaded faces; for a convex primitive like this, the hull is exact.)
+const c = H - FILLET;
+const corners = [];
+for (const dx of [-c, c])
+  for (const dy of [-c, c])
+    for (const dz of [-c, c])
+      corners.push(Manifold.sphere(FILLET, 48).translate([dx, dy, dz]));
+const rounded = Manifold.hull(corners);
 
 // ---------------------------------------------------------------
 // 2. Pip layout — standard Western D6: opposite faces sum to 7,

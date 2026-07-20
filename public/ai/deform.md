@@ -98,6 +98,14 @@ round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
 
+**Convex shapes have an exact alternative — use it.** The lattice's ~voxel
+error reads as gentle waviness/pillowing on large flat mirror-shaded faces
+(a die body showed it clearly). For a convex rounded box/prism, build the
+EXACT shape instead: `Manifold.hull` of corner spheres (flat faces stay
+perfectly flat, edge fillets are perfectly cylindrical — and far fewer
+triangles). Reserve `api.round` for shapes with no exact construction:
+boolean results, imports, organic/non-convex forms.
+
 ## smoothWeld — smoothUnion for plain meshes
 
 ```js
