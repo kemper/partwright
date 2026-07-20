@@ -148,3 +148,17 @@ spheres (flat faces perfectly flat, fillets exactly cylindrical, 22k → 3k
 tris). deform.md now documents the boundary: hull for convex rounded
 boxes/prisms, api.round for shapes with no exact construction (booleans,
 imports, organic forms). Flat-face waviness itself noted on #928.
+
+## Follow-up (2026-07-20, handheld-console likeness overhaul)
+
+User: "completely upgrade the nintendo gameboy — the button, grill, etc are
+all off." A model-sculpt agent rebuilt the entry against a detailed DMG
+reference spec: hull-of-corner-spheres body with the asymmetric larger
+bottom-right radius, correct bezel/LCD/LED, cross D-pad, diagonal A/B,
+tilted Start/Select pills, six diagonal grill slots. The agent also found a
+pre-existing bug in the original entry (the bezel label painted 0 triangles
+because a congruent volume was re-added over an already-fused body — labels
+on volumetric subsets silently resolve to nothing) and distilled the rule:
+label each piece once when built, union once; never layer labeled duplicates
+for coloring. A "label is a volumetric subset of earlier geometry" preview
+warning is the corresponding #928 ask. No brand text/logos added.

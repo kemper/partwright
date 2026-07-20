@@ -96,7 +96,7 @@
    "name": "Handheld Console",
    "file": "handheld_console.partwright.json",
    "language": "manifold-js",
-   "description": "Game Boy-style handheld with a green screen, D-pad, action buttons, and speaker grille.",
+   "description": "A classic gray-brick handheld with the authentic layout: charcoal screen bezel with olive LCD and red power LED, burgundy cross D-pad, diagonal A/B buttons, tilted Start/Select pills, six diagonal speaker-grill slots, and the iconic larger bottom-right corner radius (exact sphere-hull body).",
    "tags": [
     "games"
    ]
