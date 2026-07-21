@@ -76,6 +76,12 @@ export interface MeshResult {
    *  the code instead of being baked into `api.imports[0]`. Plain serializable.
    *  Absent when no `api.surface.*` ran this turn. */
   surfaceOps?: SurfaceOp[];
+  /** Viewport material declared in code via `api.material(...)` — a shading
+   *  preset/override the main thread's viewport applies after the run. Plain
+   *  serializable (`MaterialSpec` from renderer/materialSpec, kept `unknown`
+   *  here so the geometry layer doesn't depend on the renderer's types).
+   *  Geometry and exports are untouched. Absent when no `api.material` ran. */
+  materialSpec?: unknown;
   /** True when the user code returned an `api.renderMesh(...)` proxy — the
    *  mesh isn't manifold (or wasn't validated as one) and the main thread
    *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */

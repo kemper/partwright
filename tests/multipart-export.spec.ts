@@ -175,6 +175,35 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
     expect(download!.suggestedFilename()).toMatch(/\.(obj|zip)$/);
   });
 
+  test('concurrent console exports each bundle ALL parts (shared pool not torn down mid-bake)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(4000);
+
+    // Two multi-part exports fired at once share the singleton geometry pool.
+    // Without serialization, whichever finishes first disposes the pool and
+    // rejects the other's in-flight bakes — silently truncating its file. The
+    // export-bake mutex must make them run one-after-another so BOTH bundle all 4.
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.runAndSave('return api.Manifold.cube([12,12,12], true);', 'a');
+      await pw.createPart('B'); await pw.runAndSave('return api.Manifold.cube([10,10,10], true);', 'b');
+      await pw.createPart('C'); await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'c');
+      await pw.createPart('D'); await pw.runAndSave('return api.Manifold.cube([6,6,6], true);', 'd');
+      const [obj, stl, glb] = await Promise.all([
+        pw.exportOBJPartsData(undefined, 'concurrent-obj'),
+        pw.exportSTLPartsData(undefined, 'concurrent-stl'),
+        pw.exportGLBPartsData(undefined, 'concurrent-glb'),
+      ]);
+      return { obj, stl, glb };
+    });
+
+    for (const r of [out.obj, out.stl, out.glb]) {
+      expect((r as { error?: string }).error).toBeUndefined();
+      expect((r as { parts: number }).parts).toBe(4);
+    }
+  });
+
   test('export part picker lists parts by group and toggles whole groups', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForFunction(

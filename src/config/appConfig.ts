@@ -178,6 +178,11 @@ export interface AppConfig {
      *  memory for fill speed; clamped to (hardwareConcurrency − 1) at runtime.
      *  1 ⇒ builds are serialized (still progressive). */
     assemblyPoolSize: number;
+    /** Max concurrent geometry Workers a multi-part export spawns to bake parts
+     *  in parallel. Each worker boots its own manifold-3d WASM, so this trades
+     *  memory for export speed; clamped at runtime to both (hardwareConcurrency −
+     *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
+    exportPoolSize: number;
     /** Spacing between Assembly-grid cells as a fraction of the largest part's
      *  footprint (0.25 ⇒ a quarter-cell gutter). */
     assemblyGridGutter: number;
@@ -360,6 +365,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
+    exportPoolSize: 8,
     assemblyGridGutter: 0.18,
   },
   import: {

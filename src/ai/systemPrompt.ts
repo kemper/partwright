@@ -363,6 +363,7 @@ Available tools you'll use most:
   gears (api.gears.* involute spur gears / meshing pairs / racks),
   threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
+  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge / smoothWeld plain meshes / sculpt nudges / api.material viewport shading / turntable & explode video export),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),
   annotations (when the user has drawn on the model).

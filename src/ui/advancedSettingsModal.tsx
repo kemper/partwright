@@ -533,6 +533,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'assemblyPoolSize', v)}
         />
         <Field
+          label="Export build workers"
+          hint="Parts a multi-part export bakes in parallel. Clamped to CPU cores − 1 and the part count."
+          tooltip="A multi-part export (3MF / OBJ / STL / GLB) re-runs each part's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes parts one at a time. Clamped at runtime to your CPU core count minus one and to the number of parts you're exporting."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.exportPoolSize}
+          value={c.renderer.exportPoolSize}
+          min={1} max={16} integer
+          onChange={v => set('renderer', 'exportPoolSize', v)}
+        />
+        <Field
           label="Assembly grid gutter"
           unit="× cell"
           hint="Spacing between parts in the Assembly grid, as a fraction of the largest part."

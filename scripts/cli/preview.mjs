@@ -9,7 +9,9 @@
 // (flat shading, model-declared label colors only — see docs/headless-cli.md).
 import { createServer } from 'vite';
 import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { dirname, basename, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
 import { checkRequireLabels } from './gates.mjs';
@@ -270,12 +272,37 @@ export async function runPreview(file, { params = {}, lang = 'manifold-js', pale
   }
 }
 
+// Under Node SSR there is no dev server, so browser-style root-relative asset
+// fetches (`fetch('/openscad-libs/fonts/…')` from api.text's font preload)
+// have no origin to resolve against. Serve them straight from `public/` —
+// the same files the dev server would return. Installed once, globally.
+let fetchShimInstalled = false;
+function installPublicFetchShim() {
+  if (fetchShimInstalled) return;
+  fetchShimInstalled = true;
+  const realFetch = globalThis.fetch;
+  const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../public');
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input?.url;
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')) {
+      const file = resolve(publicDir, '.' + url.replace(/[?#].*$/, ''));
+      if (!file.startsWith(publicDir)) {
+        throw new Error(`fetch shim: refusing path outside public/: ${url}`);
+      }
+      const data = await readFile(file);
+      return new Response(data, { status: 200 });
+    }
+    return realFetch(input, init);
+  };
+}
+
 // Long-lived variant for callers that run MANY previews (the parameter
 // optimizer): boot the Vite SSR server + engine module once, then each
 // preview() pays only the model build (~50-300ms) instead of ~2s of server
 // startup. Caller must close().
 export async function createPreviewSession() {
   const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  installPublicFetchShim();
   const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
   return {
     preview: (code, { params = {}, lang = 'manifold-js', palette = undefined } = {}) =>

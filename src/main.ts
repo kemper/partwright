@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -79,6 +79,7 @@ import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { recordTurntable, recordExplode, recordParamSweep, downloadAnimation, AnimationExportError, type ExplodePart, type ParamSweepFrame } from './export/animation';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { openPublishModal } from './ui/publishModal';
@@ -219,7 +220,9 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startExportProgress } from './ui/exportProgressModal';
+import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -3991,21 +3994,33 @@ async function main() {
    *  (`version.geometryData.colorRegions`) — using the same resolver + compositor
    *  the live editor uses, so nothing is silently dropped. Returns null when the
    *  part has no version or produced no usable mesh. */
-  async function bakeColoredMeshForPart(partId: string, name: string): Promise<{ name: string; mesh: MeshData } | null> {
+  async function bakeColoredMeshForPart(
+    partId: string,
+    name: string,
+    opts: { onStart?: () => void } = {},
+  ): Promise<{ name: string; mesh: MeshData } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
       return { name, mesh: coloredMeshForExport(currentMeshData) };
     }
     const version = await getLatestVersion(partId);
     if (!version) return null;
     const lang = effectiveVersionLanguage(version, getState().session);
-    const saved = getActiveImports();
-    let result;
-    try {
-      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      result = await executeCodeAsync(version.code, lang);
-    } finally {
-      setActiveImports(saved);
-    }
+    // Bake off-editor through the geometry Worker POOL so a multi-part export can
+    // build several parts at once. Imports/companions are passed EXPLICITLY per
+    // build (never the shared setActiveImports global) so concurrent bakes can't
+    // race each other's imports. onStart fires when a worker picks this part up.
+    const result = await buildInPool({
+      code: version.code,
+      lang,
+      imports: (version.importedMeshes ?? []) as ImportedMesh[],
+      // Prefer the version's own companion files (schema ≥ 1.10). Pre-1.10 SCAD
+      // versions saved none, so fall back to the live session set — matching the
+      // old executeCodeAsync path, which read getCompanionFiles() when no explicit
+      // set was passed. Without this, an old SCAD part with `include <lib>` would
+      // build with no companions, fail, and be silently dropped from the export.
+      companionFiles: version.companionFiles ?? getCompanionFiles(),
+      onStart: opts.onStart,
+    });
     if (!result || result.error || !result.mesh) return null;
     const mesh = result.mesh;
 
@@ -4054,6 +4069,78 @@ async function main() {
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
     return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+  }
+
+  /** One part slated for a multi-part export bake. */
+  interface ExportBakePart { id: string; name: string; group?: string }
+
+  // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
+  // process-wide singleton and each batch sizes + disposes it, so two concurrent
+  // bakes would tear down each other's workers — silently truncating an export.
+  // The UI export flows are modal (can't overlap), but the console/AI twins
+  // (exportOBJParts / export3MFParts / …) can be fired concurrently; this chain
+  // makes a second bake wait for the first instead of colliding.
+  let exportBakeMutex: Promise<void> = Promise.resolve();
+
+  /**
+   * Bake several parts' coloured meshes concurrently through the geometry Worker
+   * pool. Order-preserving — the returned `baked` array follows `parts` order
+   * (with no-geometry parts dropped) so grid layout / naming stay deterministic.
+   *
+   * The pool is sized from `renderer.exportPoolSize` (clamped to cores − 1 and the
+   * part count) and torn down when the batch settles, so we don't hold N WASM
+   * heaps resident after the export. `onStatus` reports each part's
+   * queued → rendering → done/failed transitions for the per-part progress UI;
+   * `cancel.cancelled` is polled to bail out early (the caller disposes the pool
+   * to abort in-flight bakes). A single part failing never fails the batch.
+   *
+   * Concurrent calls are serialized via `exportBakeMutex` so two exports never
+   * share — and dispose — the singleton pool at once.
+   */
+  async function bakePartsParallel(
+    parts: ExportBakePart[],
+    opts: {
+      onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
+      cancel?: { cancelled: boolean };
+    } = {},
+  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+    // Wait for any in-flight export bake, then claim the pool for this one.
+    const prior = exportBakeMutex;
+    let release!: () => void;
+    exportBakeMutex = new Promise<void>((r) => { release = r; });
+    await prior.catch(() => { /* a prior bake's failure must not block this one */ });
+
+    try {
+      const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
+      setEnginePoolSize(desired);
+      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      try {
+        await Promise.all(parts.map(async (part, i) => {
+          if (opts.cancel?.cancelled) return;
+          try {
+            const result = await bakeColoredMeshForPart(part.id, part.name, {
+              onStart: () => { if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'rendering'); },
+            });
+            if (opts.cancel?.cancelled) return;
+            if (result) {
+              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              opts.onStatus?.(part.id, 'done');
+            } else {
+              opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
+            }
+          } catch {
+            // A build error / pool teardown (incl. cancel) rejects the bake. Only
+            // surface it as a failure when the user didn't cancel.
+            if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'failed');
+          }
+        }));
+      } finally {
+        disposeEnginePool();
+      }
+      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
+    } finally {
+      release();
+    }
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -4736,6 +4823,19 @@ async function main() {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
     }
   };
+  // Animation exports: record the live viewport into a downloadable video.
+  const actionExportTurntable = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording turntable\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportTurntable();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
+  const actionExportExplode = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording exploded view\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportExplode();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
   const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
@@ -4790,24 +4890,27 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    // Cancellable between parts (Escape or the modal's Cancel button flips the
-    // flag); each per-part bake is atomic, so we stop at the next part boundary.
-    let cancelled = false;
-    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: 'Preparing 3MF…',
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData; group?: string }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        if (cancelled) break;
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (cancelled) break;
-        if (result) baked.push({ ...result, ...(part.group ? { group: part.group } : {}) });
-      }
-      if (cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      updateProgress(job, 1, 'Writing 3MF…');
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle('Writing 3MF…');
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, {
@@ -4816,13 +4919,13 @@ async function main() {
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4851,34 +4954,37 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    // Cancellable between parts (Escape or the modal's Cancel button flips the
-    // flag); each per-part bake is atomic, so we stop at the next part boundary.
-    let cancelled = false;
-    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…', onCancel: () => { cancelled = true; } });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: `Preparing ${formatTag}…`,
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        if (cancelled) break;
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (cancelled) break;
-        if (result) baked.push(result);
-      }
-      if (cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
-      updateProgress(job, 1, `Writing ${formatTag}…`);
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle(`Writing ${formatTag}…`);
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4898,13 +5004,14 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `Unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push(result);
+      bakeParts.push({ id: part.id, name: part.name });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     return { baked };
   }
@@ -4995,13 +5102,14 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData; group?: string }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push({ ...result, ...(part.group ? { group: part.group } : {}) });
+      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
@@ -5928,6 +6036,8 @@ async function main() {
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-turntable', title: 'Export turntable video', hint: 'Export', keywords: 'animation video webm spin record', run: () => { void actionExportTurntable(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-explode', title: 'Export exploded-view video', hint: 'Export', keywords: 'animation video webm explode assembly record', run: () => { void actionExportExplode(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
@@ -10306,6 +10416,97 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('OBJ');
       exportOBJ(fileExportMesh(true)!, filename);
+    },
+
+    /** Record the camera orbiting the model once and download the video. */
+    async exportTurntable(opts?: { seconds?: number; revolutions?: number }) {
+      assertObject(opts, 'exportTurntable(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportTurntable opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.revolutions, 'exportTurntable opts.revolutions', { optional: true, min: 0.25, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      try {
+        const blob = await recordTurntable({ seconds: opts?.seconds, revolutions: opts?.revolutions });
+        const filename = downloadAnimation(blob, 'turntable');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Turntable recording failed' };
+      }
+    },
+
+    /** Record an exploded-view video: components ease apart, hold, reassemble. */
+    async exportExplode(opts?: { seconds?: number; spread?: number }) {
+      assertObject(opts, 'exportExplode(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportExplode opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.spread, 'exportExplode opts.spread', { optional: true, min: 0.1, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!currentManifold) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
+      // Decompose on the main thread; extract plain meshes then free the WASM pieces.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pieces: any[] = currentManifold.decompose();
+      // Carry the painted/model colors onto each decomposed piece (nearest-
+      // centroid, same as the export paths) so the exploded video stays colored.
+      const coloredSrc = coloredMeshForExport(currentMeshData);
+      const parts: ExplodePart[] = pieces.map((p) => {
+        const bb = p.boundingBox();
+        const m = p.getMesh();
+        let mesh: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+        if (coloredSrc.triColors && coloredSrc.triColors.length >= coloredSrc.numTri * 3) {
+          mesh = carryColorsToMesh(coloredSrc, mesh);
+        }
+        return {
+          mesh,
+          center: [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2] as [number, number, number],
+        };
+      });
+      pieces.forEach((p) => { try { p.delete(); } catch { /* ok */ } });
+      try {
+        const blob = await recordExplode(parts, { seconds: opts?.seconds, spread: opts?.spread });
+        const filename = downloadAnimation(blob, 'explode');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        const msg = e instanceof AnimationExportError ? e.message : e instanceof Error ? e.message : 'Exploded-view recording failed';
+        return { error: msg };
+      } finally {
+        // Restore the live mesh (the recording swapped exploded frames in).
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
+    },
+
+    /** Animate a Customizer parameter across a range and download the video.
+     *  Precomputes one mesh per step (manifold-js sessions only), then records
+     *  a smooth ping-pong playback. */
+    async exportParamSweep(param: string, from: number, to: number, opts?: { steps?: number; seconds?: number; pingPong?: boolean }) {
+      assertString(param, 'exportParamSweep(param)');
+      assertNumber(from, 'exportParamSweep(from)');
+      assertNumber(to, 'exportParamSweep(to)');
+      assertObject(opts, 'exportParamSweep(opts)', { optional: true });
+      assertNumber(opts?.steps, 'exportParamSweep opts.steps', { optional: true, min: 2, max: 120 });
+      assertNumber(opts?.seconds, 'exportParamSweep opts.seconds', { optional: true, min: 1, max: 60 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'exportParamSweep runs the model per frame \u2014 only manifold-js sessions are supported.' };
+      const steps = Math.round(opts?.steps ?? 12);
+      const code = getValue();
+      const frames: ParamSweepFrame[] = [];
+      for (let i = 0; i < steps; i++) {
+        const value = from + (to - from) * (i / (steps - 1));
+        const r = executeCode(code, undefined, { [param]: value });
+        if (r.error || !r.mesh) {
+          return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
+        }
+        frames.push({ value, mesh: r.mesh });
+      }
+      try {
+        const blob = await recordParamSweep(frames, { seconds: opts?.seconds, pingPong: opts?.pingPong });
+        const filename = downloadAnimation(blob, `sweep-${param}`);
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Parameter-sweep recording failed' };
+      } finally {
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
     },
 
     /** Export current model as 3MF download. Optional filename override. */
@@ -15658,6 +15859,9 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'exportTurntable': { signature: 'await exportTurntable({seconds?, revolutions?}) -- Record the camera orbiting the model and download a turntable video (.webm) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
@@ -17032,6 +17236,11 @@ async function main() {
         }
       }
       setModelColorRegions(modelColorDecls);
+
+      // Viewport shading material declared in code (api.material) — apply it,
+      // or clear back to the studio default when this run declared none.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setMaterialOverride((result.materialSpec as any) ?? null);
 
       // Apply any existing color regions to the mesh. Refining regions —
       // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:

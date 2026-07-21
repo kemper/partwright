@@ -40,7 +40,7 @@ export async function preloadTextFonts(): Promise<void> {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
     const variants = Object.keys(FONT_FILES) as FontVariant[];
-    const [opentype, ...buffers] = await Promise.all([
+    const [opentypeMod, ...buffers] = await Promise.all([
       import('opentype.js'),
       ...variants.map(async (v) => {
         const r = await fetch(`${FONTS_PREFIX}/${FONT_FILES[v]}`);
@@ -48,6 +48,10 @@ export async function preloadTextFonts(): Promise<void> {
         return r.arrayBuffer();
       }),
     ]);
+    // Vite's browser interop puts parse on the namespace; Node SSR keeps the
+    // CJS module on `.default`. Accept either so headless preview works too.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opentype = typeof (opentypeMod as any).parse === 'function' ? opentypeMod : (opentypeMod as any).default;
     for (let i = 0; i < variants.length; i++) {
       fontCache.set(variants[i], opentype.parse(buffers[i]));
     }
