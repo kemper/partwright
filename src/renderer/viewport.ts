@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
 import { createWireframeMaterial } from './materials';
 import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
+import { resolveMaterialSpec, type MaterialSpec } from './materialSpec';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
@@ -215,6 +216,83 @@ export function setStudioLighting(on: boolean): void {
 
 export function isStudioLighting(): boolean { return studioLightingOn; }
 export function onStudioLightingChange(fn: (on: boolean) => void): void { studioLightingListeners.push(fn); }
+
+// === Model material override (api.material in code) ===
+// A MaterialSpec declared by the run (preset like 'brass'/'glass' + optional
+// PBR overrides). Applied to the solid material on every updateMesh; cleared
+// (null) when the run declared none, restoring the studio default. Painted
+// models keep their vertex colors — the spec's metal/rough/clearcoat still
+// applies, so "painted + brass" reads as colored metal.
+let materialOverride: MaterialSpec | null = null;
+
+export function setMaterialOverride(spec: MaterialSpec | null): void {
+  const next = spec ? resolveMaterialSpec(spec) : null;
+  if (JSON.stringify(next) === JSON.stringify(materialOverride)) return;
+  materialOverride = next;
+  // Restyle the live solid mesh in place (cheap — no geometry rebuild).
+  const solid = meshGroup?.children.find(c => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap');
+  if (solid instanceof THREE.Mesh && solid.material instanceof THREE.Material) {
+    const hasColors = solid.geometry.hasAttribute('color');
+    const fresh = buildSolidMaterial(hasColors);
+    if (clippingEnabled) fresh.clippingPlanes = [clipPlane];
+    solid.material.dispose();
+    solid.material = fresh;
+    needsRender = true;
+  }
+}
+
+export function getMaterialOverride(): MaterialSpec | null {
+  return materialOverride;
+}
+
+/** The solid model material for the current studio preset + any api.material
+ *  override. Physical (clearcoat/transmission-capable) when the override needs
+ *  it; plain standard otherwise. */
+function buildSolidMaterial(hasColors: boolean): THREE.MeshStandardMaterial {
+  const base = createStudioMaterial(studioPreset, hasColors);
+  const o = materialOverride;
+  if (!o) return base;
+  const needsPhysical = (o.clearcoat ?? 0) > 0 || (o.transmission ?? 0) > 0;
+  const mat = needsPhysical
+    ? new THREE.MeshPhysicalMaterial({
+        color: base.color,
+        roughness: base.roughness,
+        metalness: base.metalness,
+        side: base.side,
+        vertexColors: base.vertexColors,
+      })
+    : base;
+  if (needsPhysical) base.dispose();
+  if (o.color && !hasColors) mat.color.setRGB(o.color[0], o.color[1], o.color[2]);
+  if (o.metalness !== undefined) mat.metalness = o.metalness;
+  if (o.roughness !== undefined) mat.roughness = o.roughness;
+  // Metals take nearly all their color from the environment map, and the studio
+  // presets keep env intensity low (0.32 dark / 0.45 light) for the matte
+  // default look — at that level brass reads almost black. Boost the env
+  // contribution per-material, scaled by how metallic the override is, so the
+  // studio backdrop/floor stay untouched.
+  if (mat.metalness > 0.3) mat.envMapIntensity = 1 + 2.5 * mat.metalness;
+  // No environment at all (software rasterizer skips the PMREM bake, or the
+  // Light toggle is off) → a fully-metallic surface has nothing to reflect and
+  // renders black. Clamp metalness so the direct lights still show the color.
+  if (mat.metalness > 0.5 && (!studioEnvAllowed || !studioLightingOn)) mat.metalness = 0.5;
+  if (mat instanceof THREE.MeshPhysicalMaterial) {
+    if (o.clearcoat !== undefined) {
+      mat.clearcoat = o.clearcoat;
+      mat.clearcoatRoughness = 0.12;
+    }
+    if (o.transmission !== undefined) {
+      mat.transmission = o.transmission;
+      mat.ior = 1.5;
+      mat.thickness = 1.5;
+    }
+  }
+  if (o.opacity !== undefined && o.opacity < 1) {
+    mat.transparent = true;
+    mat.opacity = o.opacity;
+  }
+  return mat;
+}
 
 // Mesh edge (wireframe) overlay visibility. Hidden by default so the model
 // reads cleanly; paint mode forces it on (see paintMode.ts) and the viewport
@@ -561,7 +639,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   const geometry = meshGLToBufferGeometry(meshData);
   const hasColors = geometry.hasAttribute('color');
 
-  const solidMat = createStudioMaterial(studioPreset, hasColors);
+  const solidMat = buildSolidMaterial(hasColors);
   const wireMat = createWireframeMaterial();
 
   // Apply clipping planes to materials

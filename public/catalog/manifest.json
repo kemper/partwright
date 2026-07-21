@@ -96,7 +96,7 @@
    "name": "Handheld Console",
    "file": "handheld_console.partwright.json",
    "language": "manifold-js",
-   "description": "Game Boy-style handheld with a green screen, D-pad, action buttons, and speaker grille.",
+   "description": "A classic gray-brick handheld with the authentic layout: charcoal screen bezel with olive LCD and red power LED, burgundy cross D-pad, diagonal A/B buttons, tilted Start/Select pills, six diagonal speaker-grill slots, and the iconic larger bottom-right corner radius (exact sphere-hull body).",
    "tags": [
     "games"
    ]
@@ -1554,6 +1554,60 @@
     "boat",
     "benchmark",
     "calibration"
+   ]
+  },
+  {
+   "id": "spike-ball-grip",
+   "name": "Spiky Massage Ball",
+   "file": "spike_ball_grip.partwright.json",
+   "language": "manifold-js",
+   "description": "A teal sphere bristling with ~170 rounded-tip mint spikes \u2014 placed with the new api.scatter (seeded instance-on-surface) and fused into one printable solid.",
+   "tags": [
+    "toys",
+    "fidgets"
+   ]
+  },
+  {
+   "id": "checker-twist-vase",
+   "name": "Twisted Checker Vase",
+   "file": "checker_twist_vase.partwright.json",
+   "language": "manifold-js",
+   "description": "A hollow rounded-square vessel spiraled 120\u00b0 with api.twist, flared with api.taper, and finished in a two-tone 3D checkerboard via the new 'checker' paint pattern.",
+   "tags": [
+    "decor"
+   ]
+  },
+  {
+   "id": "wrapped-name-mug",
+   "name": "Personalized Mug",
+   "file": "wrapped_name_mug.partwright.json",
+   "language": "manifold-js",
+   "description": "A hollow mug with a customizable name embossed around the body via the new api.wrapAround \u2014 edit the word in the Customizer \u2014 plus a printable D-shaped handle.",
+   "tags": [
+    "decor",
+    "kit"
+   ]
+  },
+  {
+   "id": "rounded-dice",
+   "name": "Casino-Rounded D6",
+   "file": "rounded_dice.partwright.json",
+   "language": "manifold-js",
+   "description": "A six-sided die with an exact sphere-hull rounded body and flush two-material pips \u2014 each pip is a labeled inlay fill (real casino dice style) with a perfectly circular color boundary.",
+   "tags": [
+    "games",
+    "toys"
+   ]
+  },
+  {
+   "id": "welded-duck",
+   "name": "Smooth Rubber Duck",
+   "file": "welded_duck.partwright.json",
+   "language": "manifold-js",
+   "description": "A classic bathtub duck built from plain spheres blended seamlessly with the new api.smoothWeld, its bill and tail shaped by api.sculpt nudges \u2014 yellow body, orange bill, black eyes.",
+   "tags": [
+    "toys",
+    "figures"
    ]
   }
  ]
