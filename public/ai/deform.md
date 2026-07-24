@@ -77,6 +77,15 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset`:** it's measured along the surface normal, not a fraction of
+the instance — a negative offset smaller than the instance's own half-thickness
+at the anchor point leaves it barely kissing the surface (fuses badly or not at
+all); much larger than that buries it invisibly. Start near
+`-0.5 * instanceThicknessAtBase` and adjust from a rendered view, not blind math.
+If `where` excludes regions that a later boolean carves away, scatter onto the
+**already-cut** solid — sampling a surface that gets removed later leaves
+anchors on geometry that no longer exists.
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -106,6 +115,11 @@ perfectly flat, edge fillets are perfectly cylindrical — and far fewer
 triangles). Reserve `api.round` for shapes with no exact construction:
 boolean results, imports, organic/non-convex forms.
 
+**`mode: 'concave'` is the retrofit tool for CSG assemblies.** It fills only
+seams/creases (leaving the convex silhouette untouched) and is far more robust
+than `'both'`/`smoothWeld` on shapes with acute swept corners, which erode
+away at *any* radius under `'both'`.
+
 ## smoothWeld — smoothUnion for plain meshes
 
 ```js
@@ -115,6 +129,13 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
 caveats as `round` (remeshed output, labels don't carry through).
+
+**`smoothWeld`/`round` lattice the whole input bbox** — welding a thin fin
+onto a large body forces a lattice over the entire assembly, not just the
+seam. For a large body + small attachment, weld **locally**: clip both parts
+to a tight box around the seam, `smoothWeld` just that pair, then union the
+welded chunk back with the untouched remainders (give the remainder cut a
+small overlap with the welded piece so the reassembly boolean stays clean).
 
 ## Sculpt — declarative brush nudges
 
