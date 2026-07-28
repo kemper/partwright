@@ -239,6 +239,8 @@ npm run model:preview -- model.js --views front,iso,back        # pick/reorder n
 
 > **Voxel models: trust `voxelPieceCount`, not `componentCount`, for "is this one printable piece?"** `componentCount` comes from the meshed solid and over-reports voxel grids — an enclosed cavity counts as a second component, and voxels touching only at an edge/corner split apart. The stats also carry `voxelPieceCount`, a face-connected (6-neighbour) BFS over the grid that matches what actually fuses on an FDM plate. A one-piece hollow voxel shell reports `componentCount: 2` but `voxelPieceCount: 1`.
 
+> **Self-touching / degenerate meshes make `decompose()` and genus non-deterministic — canonicalize before trusting either.** Mesh genus and solid genus are different quantities and diverge exactly when surfaces touch themselves (an open-hand mesh can be surface-genus 0 but solid-genus 1), and debris can be topologically fused to a real part through degenerate shared vertices, making `decompose()`-based component filtering flip-flop run to run. Run `Mesh.merge()` + `ofMesh` canonicalization **before** any decompose-based filtering or component count you intend to gate on.
+
 `model:preview` can do that island inspection for you:
 
 ```bash
@@ -503,10 +505,10 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 
 `src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
 
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
+- **`grep`/`rg` silently truncate results** or skip the file — and the dedicated `Grep` tool has no `-a` flag to reach for. Use the **Bash tool** directly with `grep -an` or `rg -a` for any search targeting `main.ts`.
 - **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
 
-If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
+If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Four independent sessions have each spent 4+ turns re-discovering this.
 
 ### Agent Tooling & Static Analysis
 
