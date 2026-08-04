@@ -503,7 +503,7 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 
 `src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
 
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
+- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`. **The dedicated `Grep` tool doesn't accept a `-a` flag at all** (it'll error or ignore it) — for `main.ts` searches, go straight to `Bash` with `grep -an` (or `rg -a`), don't try the `Grep` tool first.
 - **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
 
 If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
