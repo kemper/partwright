@@ -77,6 +77,19 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset` against the instance's own thickness is the part that bites.**
+`offset` is a translation along the normal, not a fraction — it has no idea how
+thick your instance is. Two first-pass buries are common: a spot/sprinkle
+whose *whole* thickness is smaller than a small negative offset (fully
+submerged, invisible), and a spike/stud that floats because a positive offset
+exceeds its base radius. Work from the instance's own bbox, not a guessed
+constant: `const t = api.bbox(spike).size[2]` (its height along local +Z before
+placement), then pick `offset` as a **fraction of `t`**, not an absolute unit —
+`offset: -0.15 * t` seats it just below the surface for a solid fuse,
+`offset: -0.02 * t` keeps it nearly flush ("proud"), and `offset: 0` sits the
+instance's origin exactly on the surface (only safe when the instance's own
+geometry — e.g. a hemisphere — already tapers to zero at its base).
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -98,6 +111,12 @@ round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
 
+**Rule of thumb for a "machined" look on an otherwise-unconstrained edge:**
+`radius ≈ 4–6%` of the edge's own length reads as a deliberate chamfer without
+softening the silhouette; that's usually well inside the thin-feature ceiling
+above, but check the ceiling first on any part with a slab or fin thinner than
+the edge is long — it wins when the two disagree.
+
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces
 (a die body showed it clearly). For a convex rounded box/prism, build the
@@ -115,6 +134,17 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
 caveats as `round` (remeshed output, labels don't carry through).
+
+**Both `round` and `smoothWeld` lattice the whole input bbox** — welding a thin
+fin to a large body forces the expensive morphology pass over the *entire*
+model just to fillet one small seam. There's no `region`/bbox scope on the ops
+yet (tracked below); until there is, the workaround is a manual **local weld**:
+clip both parts down to a tight box around just the seam (`part.intersect(box)`
+with a box slightly larger than the fillet radius), `smoothWeld` that small pair,
+then union the welded seam back with the untouched remainders of each part
+(clipped to the box's *complement* so there's no double geometry). Costs one
+extra pair of clip booleans but keeps the lattice pass — and its triangle
+count — local to the seam.
 
 ## Sculpt — declarative brush nudges
 
