@@ -41,6 +41,7 @@ import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
 import { getCapabilities } from './catalog';
 import { getConfig } from '../config/appConfig';
+import { repairToolHistory } from './historyRepair';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const CHAT_URL = `${OPENAI_BASE}/chat/completions`;
@@ -411,8 +412,13 @@ async function consumeResponsesStream(
  *  text + images), `function_call` items (the model's tool calls), and
  *  `function_call_output` items (tool results), all linked by `call_id`. */
 function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) —
+  // so what the button detects and what the send repairs can't diverge.
+  const repaired = repairToolHistory(history).messages;
   const out: ResponsesInputItem[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'assistant') {
       const text = collectAssistantText(msg.blocks);
       if (text.length > 0) {
@@ -428,13 +434,18 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
       }
     } else {
       // Tool results come BEFORE any new user text, mirroring the order the
-      // model emitted the calls.
+      // model emitted the calls. Emit EVERY function_call_output contiguously
+      // first, THEN the image side-messages: function_call_output takes a
+      // string `output`, so a rendered result's image rides on a following
+      // user message — but interleaving that message between the outputs
+      // breaks tool_use/tool_result adjacency for a strict backend (an
+      // OpenAI-compatible gateway proxying to a provider that enforces it),
+      // which then 400s. Keeping the outputs contiguous avoids that.
+      const imageItems: ResponsesInputItem[] = [];
       for (const r of msg.toolResults ?? []) {
         out.push({ type: 'function_call_output', call_id: r.toolUseId, output: r.content });
         if (r.image) {
-          // function_call_output takes a string `output`, so surface the
-          // image on a following user message.
-          out.push({
+          imageItems.push({
             type: 'message',
             role: 'user',
             content: [
@@ -444,6 +455,7 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
           });
         }
       }
+      out.push(...imageItems);
       const content = buildResponsesUserContent(msg.blocks);
       if (content) out.push({ type: 'message', role: 'user', content });
     }
@@ -713,8 +725,13 @@ function mapChatStopReason(reason: string): string {
 }
 
 function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) —
+  // so what the button detects and what the send repairs can't diverge.
+  const repaired = repairToolHistory(history).messages;
   const out: OpenAIMessage[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'assistant') {
       const text = collectAssistantText(msg.blocks);
       const calls = msg.toolCalls ?? [];
@@ -729,13 +746,21 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
       }
       if (am.content || am.tool_calls) out.push(am);
     } else {
-      // Tool results come BEFORE any new user text per OpenAI's rules.
+      // Tool results come BEFORE any new user text per OpenAI's rules. Emit
+      // EVERY `tool` message contiguously first, THEN the image side-messages:
+      // OpenAI's `tool` role can't carry an image block, so a rendered result
+      // (renderView) surfaces its image on a following `user` message — but
+      // interleaving that message between the `tool` messages breaks
+      // tool_use/tool_result adjacency for a strict backend (an OpenAI-
+      // compatible gateway proxying to a provider that enforces it, e.g.
+      // Claude — the `toolu_`-prefixed-id case in #913/#914), which then 400s
+      // with "tool_use ids were found without tool_result blocks immediately
+      // after". Keeping the `tool` block contiguous avoids that.
+      const imageMsgs: OpenAIMessage[] = [];
       for (const r of msg.toolResults ?? []) {
         out.push({ role: 'tool', tool_call_id: r.toolUseId, content: r.content });
         if (r.image) {
-          // OpenAI's tool role doesn't accept image blocks directly, so we
-          // surface the image on a user message right after.
-          out.push({
+          imageMsgs.push({
             role: 'user',
             content: [
               { type: 'text', text: `(tool result image for ${r.toolUseId})` },
@@ -744,6 +769,7 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
           });
         }
       }
+      out.push(...imageMsgs);
       const content = buildChatUserContent(msg.blocks);
       if (content !== null) out.push({ role: 'user', content });
     }
