@@ -77,6 +77,14 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset` against the instance's own thickness** is worth doing with a
+real number, not by eye: for an instance whose thickness along the surface
+normal is `t`, start at `offset ≈ -0.5 · t` (sinks the instance in by its own
+half-thickness so the union fuses without swallowing it) and adjust from a
+render — under-negative leaves a visible gap/seam, over-negative buries the
+whole instance. Guessing `offset` without this relationship has fully buried
+instances (spots, sprinkles, stones) on the first try more than once.
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -97,6 +105,10 @@ is a remeshed surface (labels/paint regions on the input do NOT carry through �
 round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
+
+For an aesthetic (non-structural) fillet with no thin-feature constraint, a
+good starting default is **radius ≈ 4–6% of the relevant edge length** — a
+"machined" look without hunting for the failure threshold above.
 
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces
