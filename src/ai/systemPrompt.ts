@@ -42,9 +42,12 @@ worked figure recipe and the smooth-blend vocabulary).
 Do NOT assemble an organic figure from a union of constant-radius spheres,
 cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
 limbs, visible ball joints) no matter how you tune it, and it is the single
-most common way these models fail. The ONLY time you skip SDF for an organic
-subject is when the user explicitly asks for a different medium — voxel /
-pixel-art / Minecraft look, low-poly / faceted, or a flat relief / keychain.
+most common way these models fail. This holds EVEN FOR A LOW-POLY / FACETED
+request: build the smooth SDF form first, then crystallize it in one call with
+api.lowPoly(shape, { targetTriangles }) — do NOT reach for primitive soup to
+fake facets (call readDoc("lowpoly") FIRST). The ONLY time you skip SDF for an
+organic subject is when the user explicitly asks for a voxel / pixel-art /
+Minecraft look, or a flat relief / keychain.
 Treat "model this person / animal" as the SDF trigger the same way "exact
 fillet" triggers BREP. You do not need the user to say "use SDF" — choose it
 yourself from the first version.
@@ -218,7 +221,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     // soup" by default produces a good figure the moment the user says "use
     // SDF" on the next turn. This line replicates that nudge so the user
     // doesn't have to. Harmless on non-organic tasks (it self-scopes).
-    'Organic subjects (a person, child, animal, creature, bust — any soft / anatomical body) → DEFAULT TO SDF: api.sdf capsule limbs + ellipsoid masses welded with smoothUnion (call readDoc("sdf") first). Do NOT build them from a union of primitive spheres/capsules ("primitive soup" looks wrong no matter how you tune it) unless the user explicitly asked for voxel / low-poly / relief. Choose SDF yourself from the first version — "model this person/animal" triggers SDF the way "exact fillet" triggers BREP.',
+    'Organic subjects (a person, child, animal, creature, bust — any soft / anatomical body) → DEFAULT TO SDF: api.sdf capsule limbs + ellipsoid masses welded with smoothUnion (call readDoc("sdf") first). Do NOT build them from a union of primitive spheres/capsules ("primitive soup" looks wrong no matter how you tune it) unless the user explicitly asked for voxel / relief. For a LOW-POLY / FACETED request, still build the SDF form, then crystallize it with api.lowPoly(shape, { targetTriangles }) — readDoc("lowpoly") first; do NOT use primitive soup to fake facets. Choose SDF yourself from the first version — "model this person/animal" triggers SDF the way "exact fillet" triggers BREP.',
     '',
     // Positive, explicit capability list. The user can flip these toggles
     // mid-conversation; this suffix is regenerated every turn, so it is the

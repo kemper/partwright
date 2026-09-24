@@ -8,6 +8,14 @@ export interface MeshData {
   numTri: number;
   numProp: number;
   triColors?: Uint8Array; // numTri * 3 (RGB per triangle), optional
+  /** Render hint: draw this mesh flat-faceted (per-face normals, hard facet
+   *  edges) instead of smooth-shaded — the low-poly look. Set by the
+   *  manifold-js sandbox when model code calls `api.lowPoly(shape, { flatShade })`.
+   *  A render-only flag, re-derived from the code on every run (never persisted
+   *  in the session schema — like `renderOnly`). The viewport already flat-
+   *  shades any coloured mesh (it unindexes per triangle); this extends that to
+   *  an unpainted low-poly mesh. */
+  flatShade?: boolean;
   mergeFromVert?: Uint32Array; // vertex merge pairs from manifold-3d (for export dedup)
   mergeToVert?: Uint32Array;
   /** Per-triangle-run provenance from manifold-3d, used to resolve
