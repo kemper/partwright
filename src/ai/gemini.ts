@@ -93,6 +93,15 @@ export async function listModels(apiKey: string): Promise<{ id: string; label: s
   return out;
 }
 
+/** Billable output tokens for a Gemini response. `candidatesTokenCount`
+ *  excludes the model's thinking, which Google reports separately as
+ *  `thoughtsTokenCount` and bills at the output rate — so a thinking model's
+ *  real output bill is the sum. Omitting it under-reported every thinking
+ *  turn. */
+function geminiOutputTokens(meta: { candidatesTokenCount?: number; thoughtsTokenCount?: number } | undefined): number {
+  return (meta?.candidatesTokenCount ?? 0) + (meta?.thoughtsTokenCount ?? 0);
+}
+
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
   /** Thought-summary deltas (Gemini 3 thinking models). Routed to the
@@ -297,7 +306,7 @@ async function consumeGeminiStream(
         const cached = payload.usageMetadata.cachedContentTokenCount ?? 0;
         usage = {
           inputTokens: Math.max(0, totalIn - cached),
-          outputTokens: payload.usageMetadata.candidatesTokenCount ?? 0,
+          outputTokens: geminiOutputTokens(payload.usageMetadata),
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: cached,
         };
@@ -601,7 +610,7 @@ export async function summarize(
   const cached = data.usageMetadata?.cachedContentTokenCount ?? 0;
   const usage: TurnUsage = {
     inputTokens: Math.max(0, totalIn - cached),
-    outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    outputTokens: geminiOutputTokens(data.usageMetadata),
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: cached,
   };

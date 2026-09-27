@@ -6,7 +6,7 @@
 
 import { describe, test, expect } from 'vitest';
 import { turnCostUsd, formatUsd } from '../../src/ai/cost';
-import { getPricing, getModelOptions } from '../../src/ai/catalog';
+import { getPricing, getModelOptions, getFamilyPricing } from '../../src/ai/catalog';
 
 describe('turnCostUsd no-double-count contract', () => {
   // The bug we're guarding against: OpenAI / Gemini provider files used to
@@ -88,6 +88,58 @@ describe('known-model pricing for out-of-snapshot compaction models', () => {
     });
     // cacheRead $0.075 per 1M.
     expect(cost).toBeCloseTo(0.075, 6);
+  });
+});
+
+describe('family pricing for ids newer than the snapshot', () => {
+  // The bug we're guarding against: a deployed build's snapshot predates a
+  // model the user picked from the live "Load models from your key" list
+  // (production shipped without `gemini-3.8-flash`). The catalog miss fell
+  // through to the Sonnet-tier FALLBACK_PRICING ($3/$15), reporting a Flash
+  // session at ~4× its real Google bill. An unknown id in a recognizable
+  // family now borrows the newest same-family catalog price.
+  const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+  const newestFlash = () => getModelOptions('gemini')
+    .find((o) => /(^|-)flash($|-)/.test(o.id) && !/lite|image|live|audio|tts/.test(o.id) && getPricing('gemini', o.id));
+
+  test('unknown gemini flash id is priced like the newest catalog flash', () => {
+    const donor = newestFlash();
+    if (!donor) return; // tolerate a snapshot without a flash model
+    const p = getPricing('gemini', donor.id)!;
+    const cost = turnCostUsd('gemini', 'gemini-99.9-flash', usage);
+    expect(cost).toBeCloseTo(p.input + p.output, 6);
+    expect(cost).toBeLessThan(turnCostUsd('gemini', 'totally-unknown-model-xyz', usage));
+  });
+
+  test('flash-lite does not borrow full-flash pricing (and vice versa)', () => {
+    const lite = getFamilyPricing('gemini', 'gemini-99.9-flash-lite');
+    const flash = getFamilyPricing('gemini', 'gemini-99.9-flash');
+    if (!lite || !flash) return;
+    expect(lite.output).toBeLessThan(flash.output);
+  });
+
+  test('specialty variants and family-less ids fall through', () => {
+    expect(getFamilyPricing('gemini', 'gemini-99.9-flash-image')).toBeNull();
+    expect(getFamilyPricing('gemini', 'gemini-99.9-flash-live-preview')).toBeNull();
+    expect(getFamilyPricing('openai', 'totally-made-up-id')).toBeNull();
+    // `flashy` is not the `flash` family — tokens match whole segments only.
+    expect(getFamilyPricing('gemini', 'gemini-flashy')).toBeNull();
+  });
+
+  test('unknown anthropic haiku id is priced as haiku, not the Sonnet fallback', () => {
+    const cost = turnCostUsd('anthropic', 'claude-haiku-9-9', usage);
+    expect(cost).toBeLessThan(18);
+  });
+});
+
+describe('pinned compaction-model pricing', () => {
+  // gemini-2.5-flash-lite (Gemini's compaction model) had already aged out of
+  // the snapshot, so every Gemini /compact was priced at $3/$15 — ~30× over.
+  test('gemini-2.5-flash-lite priced at $0.10 / $0.40', () => {
+    const cost = turnCostUsd('gemini', 'gemini-2.5-flash-lite', {
+      inputTokens: 1_000_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+    });
+    expect(cost).toBeCloseTo(0.5, 6);
   });
 });
 

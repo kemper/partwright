@@ -236,6 +236,49 @@ export function getPricing(provider: Provider, modelId: string): CatalogPricing 
   return getCatalogModel(provider, modelId)?.pricing ?? null;
 }
 
+/** Tier/family tokens per provider, most specific first — `flash-lite` must
+ *  win over `flash`, `mini` over the unsuffixed base. An id's family is the
+ *  first token that appears in it as a whole `-`/`.`/`_`-delimited segment. */
+const FAMILY_TOKENS: Record<Exclude<Provider, 'local' | 'custom'>, string[]> = {
+  gemini: ['flash-lite', 'flash', 'pro'],
+  anthropic: ['haiku', 'sonnet', 'opus'],
+  openai: ['nano', 'mini'],
+};
+
+/** Specialty variants whose pricing isn't representative of their family's
+ *  chat model (image output, realtime audio, agent harnesses). Never used as
+ *  a family-pricing donor. */
+const SPECIALTY_VARIANT = /image|live|audio|tts|realtime|computer-use|customtools|deep-research/i;
+
+function familyOf(provider: Provider, modelId: string): string | null {
+  if (provider === 'local' || provider === 'custom') return null;
+  for (const token of FAMILY_TOKENS[provider]) {
+    const re = new RegExp(`(^|[-._])${token}($|[-._])`, 'i');
+    if (re.test(modelId)) return token;
+  }
+  return null;
+}
+
+/** Pricing borrowed from the newest priced catalog model in the same family
+ *  (e.g. an unknown `gemini-3.9-flash` → the newest `*-flash` in the
+ *  snapshot). Covers ids that shipped after the deployed build's snapshot was
+ *  taken — the live "Load models from your key" list surfaces them long
+ *  before a release refreshes the catalog — so the cost meter lands in the
+ *  right price bracket instead of the flat median fallback, which over-reports
+ *  a Flash model ~4×. Returns null when the id has no recognizable family, is
+ *  itself a specialty variant, or the family has no priced donor. */
+export function getFamilyPricing(provider: Provider, modelId: string): CatalogPricing | null {
+  const prov = rawProvider(provider);
+  const family = familyOf(provider, modelId);
+  if (!prov || !family || SPECIALTY_VARIANT.test(modelId)) return null;
+  let best: { date: string; cost: RawCost } | null = null;
+  for (const [id, m] of Object.entries(prov.models)) {
+    if (!m.cost || SPECIALTY_VARIANT.test(id) || familyOf(provider, id) !== family) continue;
+    if (!best || m.release_date > best.date) best = { date: m.release_date, cost: m.cost };
+  }
+  return best ? toPricing(best.cost) ?? null : null;
+}
+
 export function getCapabilities(provider: Provider, modelId: string): CatalogCapabilities | null {
   return getCatalogModel(provider, modelId)?.capabilities ?? null;
 }

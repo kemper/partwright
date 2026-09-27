@@ -8,8 +8,13 @@
 // Cache costs use the catalog's explicit `cache_read` / `cache_write` rates
 // when present; otherwise we estimate at the historical Anthropic ratios
 // (10% / 125% of input) since that's the only provider that meters cache
-// separately for the cost meter. OpenAI applies its cache discount server-
-// side, and Gemini's streaming endpoint surfaces no cache metric at all.
+// separately for the cost meter. OpenAI and Gemini report the cached subset
+// of the prompt (`cached_tokens` / `cachedContentTokenCount`), which the
+// provider files split out as `cacheReadInputTokens`.
+//
+// Ids missing from the snapshot resolve in order: KNOWN_MODEL_PRICING (pinned
+// out-of-window ids) → family pricing (newest catalog sibling, for ids newer
+// than the deployed snapshot) → FALLBACK_PRICING.
 //
 // Tiered pricing (Gemini's >200k context bracket) is picked per-turn based
 // on the actual input-token count for the turn — see pricingTierFor().
@@ -20,7 +25,7 @@
 
 import type { TurnUsage } from './types';
 import type { Provider } from './types';
-import { getPricing, pricingTierFor, type CatalogPricing } from './catalog';
+import { getFamilyPricing, getPricing, pricingTierFor, type CatalogPricing } from './catalog';
 
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
@@ -32,16 +37,20 @@ const FALLBACK_PRICING: CatalogPricing = { input: 3.0, output: 15.0 };
 
 /** Explicit prices for known cheap models the build-time catalog snapshot
  *  doesn't carry (it's filtered to the last year of releases, so an
- *  older-but-still-used id like `gpt-4o-mini` drops out). Without these, a
- *  catalog miss falls through to the Sonnet-tier `FALLBACK_PRICING`
- *  ($3/$15 per 1M) and over-reports cost ~5–40×. Compaction's per-provider
- *  cheap model (`COMPACTION_MODEL` in compaction.ts) is the main caller that
- *  hit this — its `gemini-2.5-flash-lite` / `claude-haiku-4-5` ids are in the
- *  snapshot, but `gpt-4o-mini` is not. Keyed `provider/model`; rates are USD
- *  per 1M tokens. */
+ *  older-but-still-used id drops out). Without these, a catalog miss falls
+ *  through to family pricing (a newer, pricier sibling) or the Sonnet-tier
+ *  `FALLBACK_PRICING` ($3/$15 per 1M) and over-reports cost ~5–40×.
+ *  Compaction's per-provider cheap model (`COMPACTION_MODEL` in
+ *  compaction.ts) is the main caller: all three of its ids are pinned here so
+ *  the summarize cost stays right as they age out of the snapshot window.
+ *  Keyed `provider/model`; rates are USD per 1M tokens. */
 const KNOWN_MODEL_PRICING: Record<string, CatalogPricing> = {
   // gpt-4o-mini: $0.15 in / $0.60 out, cached input $0.075.
   'openai/gpt-4o-mini': { input: 0.15, output: 0.6, cacheRead: 0.075 },
+  // gemini-2.5-flash-lite: $0.10 in / $0.40 out, cached input $0.01.
+  'gemini/gemini-2.5-flash-lite': { input: 0.1, output: 0.4, cacheRead: 0.01 },
+  // claude-haiku-4-5: $1 in / $5 out, cache read $0.10 / write $1.25.
+  'anthropic/claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 };
 
 function pricingFor(provider: string, model: string): CatalogPricing | null {
@@ -58,6 +67,12 @@ function pricingFor(provider: string, model: string): CatalogPricing | null {
   // fallback, so the cost meter doesn't massively over-report them.
   const known = KNOWN_MODEL_PRICING[`${provider}/${model}`];
   if (known) return known;
+  // A newer id than the deployed snapshot (e.g. `gemini-3.8-flash` picked
+  // from the live model list) — price it like the newest catalog model of
+  // the same family rather than the flat median, which put a Flash session
+  // at ~4× its real bill.
+  const family = getFamilyPricing(provider as Provider, model);
+  if (family) return family;
   // Hosted provider but unknown id — use the median fallback rather than
   // reporting $0, so the cost meter is conservative on novel snapshots.
   if (provider === 'anthropic' || provider === 'openai' || provider === 'gemini') {
