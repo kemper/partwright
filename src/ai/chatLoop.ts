@@ -391,6 +391,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           systemSuffix: toggleSuffix(toggles),
           history: sentHistory,
           tools,
+          thinking: toggles.thinking,
         }, streamCallbacks, signal);
       } else {
         if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');
