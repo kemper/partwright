@@ -10,6 +10,7 @@ import { gatherReviewContext, runReview, type ReviewContext } from '../ai/review
 import { ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, providerLabel, loadSettings } from '../ai/settings';
 import { getKey } from '../ai/db';
 import { formatUsd, estimateTurnCostUsd } from '../ai/cost';
+import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showAiSettingsModal } from './aiSettingsModal';
@@ -195,7 +196,9 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
     const est = estimateTurnCostUsd(provider, model, 0, tokens, 200);
     costText = (provider === 'local' || provider === 'custom')
       ? 'Self-hosted model: free at the API level.'
-      : `Estimated cost: ~${formatUsd(est)}`;
+      : est === null
+        ? 'Estimated cost: unknown — no pricing data for this model.'
+        : `Estimated cost: ~${formatUsd(est)}`;
   }
 
   return (
@@ -273,6 +276,7 @@ function ReviewFooter(props: {
       return;
     }
     if (!context) return;
+    if (!(await confirmUnpricedModel(provider, model))) return;
     state.value = { ...state.value, running: true, runError: null };
     try {
       const result = await runReview({

@@ -260,6 +260,9 @@ export interface ChatMessage {
   usage?: TurnUsage;
   /** Estimated USD cost for this turn (assistant only). */
   costUsd?: number;
+  /** True when the turn ran on a model with no known pricing, so `costUsd`
+   *  is absent and the transcript shows "cost unknown" (assistant only). */
+  costUnknown?: boolean;
   createdAt: number;
   /** Sequence ordinal — monotonically increases per session. Restored
    *  ordering uses this rather than createdAt to avoid clock-skew jitter. */

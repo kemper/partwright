@@ -13,11 +13,12 @@ import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
-import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
+import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { confirmDialog } from './dialogs';
+import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -1703,7 +1704,13 @@ function renderCostMeter(): void {
   costMeterEl.appendChild(sep);
 
   const session = document.createElement('span');
-  session.textContent = `session: ${formatUsd(cost)}`;
+  // Turns on an unpriced model add nothing to `cost`, so the total is a
+  // floor, not the bill — say so rather than under-report silently.
+  const unpricedTurns = state.history.filter(m => m.costUnknown).length;
+  session.textContent = unpricedTurns > 0 ? `session: ≥${formatUsd(cost)}` : `session: ${formatUsd(cost)}`;
+  if (unpricedTurns > 0) {
+    session.title = `${unpricedTurns} turn(s) ran on a model with no known pricing and aren't included. Check your provider's billing console for actual charges.`;
+  }
   costMeterEl.appendChild(session);
 
   const sep2 = document.createElement('span');
@@ -1712,7 +1719,8 @@ function renderCostMeter(): void {
   costMeterEl.appendChild(sep2);
 
   const next = document.createElement('span');
-  next.textContent = `next turn ~${formatUsd(turnEst)}`;
+  next.textContent = turnEst === null ? 'next turn: cost unknown' : `next turn ~${formatUsd(turnEst)}`;
+  if (turnEst === null) next.title = `No pricing data for "${model}" — the $ spend cap can't track this model.`;
   costMeterEl.appendChild(next);
 }
 
@@ -2189,11 +2197,12 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     }
   }
 
-  if (msg.role === 'assistant' && (msg.costUsd !== undefined || msg.durationMs !== undefined)) {
+  if (msg.role === 'assistant' && (msg.costUsd !== undefined || msg.costUnknown || msg.durationMs !== undefined)) {
     const meta = document.createElement('div');
     meta.className = 'text-[10px] text-zinc-600';
     const parts: string[] = [];
     if (msg.costUsd !== undefined) parts.push(formatUsd(msg.costUsd));
+    else if (msg.costUnknown) parts.push('cost unknown');
     if (msg.usage) parts.push(`${msg.usage.outputTokens}t out`);
     if (msg.durationMs !== undefined) {
       parts.push(formatDuration(msg.durationMs));
@@ -3041,6 +3050,16 @@ async function preflightTurn(
       return PREFLIGHT_ABORT;
     }
     apiKey = key.apiKey;
+    // No real pricing for this model (e.g. newer than the deployed catalog)
+    // → the cost meter and $ cap can't track it; ask before spending.
+    const model = activeModel(settings.toggles);
+    if (model && !hasKnownPricing(provider, model)) {
+      if (!(await confirmUnpricedModel(provider, model))) {
+        setTransientStatus(`Not sent — "${model}" has no known pricing. Pick a priced model or authorize it to continue.`);
+        return PREFLIGHT_ABORT;
+      }
+      setTransientStatus('');
+    }
   } else {
     if (!settings.toggles.localModel) {
       void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } });
@@ -3359,10 +3378,13 @@ interface TurnOutcome {
   reason: TurnOutcomeReason;
   detail?: string;
   iterations: number;
+  /** The turn ran on a model with no known pricing — show "cost unknown"
+   *  rather than the $0 its unpriced iterations summed to. */
+  costUnknown?: boolean;
 }
 
 function formatTurnOutcome(o: TurnOutcome): string {
-  const cost = formatUsd(o.totalCostUsd);
+  const cost = o.costUnknown ? 'cost unknown' : formatUsd(o.totalCostUsd);
   const iters = `${o.iterations} iter`;
   const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
   switch (o.reason) {
@@ -3659,7 +3681,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
           void maybeAutoCompact();
         }
-        lastTurnOutcome = info;
+        lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
       },
     });
     } catch (err) {

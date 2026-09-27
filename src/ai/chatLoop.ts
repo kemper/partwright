@@ -462,7 +462,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       requestSummary,
     });
 
-    const turnCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    // null = the model has no known pricing (the user authorized it anyway
+    // in the panel's preflight) — recorded as "cost unknown", never $0.
+    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    const turnCost = pricedCost ?? 0;
     totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
@@ -493,7 +496,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // undefined for every other provider.
       thinkingBlocks: result.thinkingBlocks && result.thinkingBlocks.length > 0 ? result.thinkingBlocks : undefined,
       usage: result.usage,
-      costUsd: turnCost,
+      ...(pricedCost === null ? { costUnknown: true } : { costUsd: pricedCost }),
       createdAt: Date.now(),
       seq: seqStart + 1 + iter * 2,
       durationMs,

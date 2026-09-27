@@ -65,7 +65,8 @@ export interface ReviewRequest {
 export interface ReviewResult {
   text: string;
   usage: TurnUsage;
-  costUsd: number;
+  /** null when the reviewer model has no known pricing. */
+  costUsd: number | null;
   message: ChatMessage;
 }
 
@@ -126,7 +127,9 @@ export async function runReview(
     requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
   });
 
-  const costUsd = turnCostUsd(req.provider, req.model, usage);
+  // null = the reviewer model has no known pricing (the modal asked the
+  // user to authorize it); surfaced as "cost unknown", never $0.
+  const pricedCost = turnCostUsd(req.provider, req.model, usage);
 
   onProgress?.('persisting');
   const reviewDurationMs = Math.round(performance.now() - t0);
@@ -136,7 +139,7 @@ export async function runReview(
     role: 'assistant',
     blocks: [{ type: 'review', provider: req.provider, model: req.model, text: text || '(empty review)' }],
     usage,
-    costUsd,
+    ...(pricedCost === null ? { costUnknown: true } : { costUsd: pricedCost }),
     createdAt: Date.now(),
     durationMs: reviewDurationMs,
     // Reviews insert into the live chat AFTER all current messages.
@@ -150,7 +153,7 @@ export async function runReview(
     await tryWriteSessionNote(req.provider, req.model, text);
   }
 
-  return { text, usage, costUsd, message: reviewMsg };
+  return { text, usage, costUsd: pricedCost, message: reviewMsg };
 }
 
 function formatReviewPrompt(ctx: ReviewContext): string {
