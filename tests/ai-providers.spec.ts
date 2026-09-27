@@ -1323,6 +1323,51 @@ test.describe('Capability suffix', () => {
     expect(Array.isArray(sent.body.messages)).toBe(true);
     expect(sent.body.max_completion_tokens).toBeGreaterThan(0);
     expect(sent.body.reasoning_effort).toBeUndefined();
+    // Thinking omitted (= off) → no reasoning-visibility request either.
+    expect(sent.body.include_reasoning).toBeUndefined();
+  });
+
+  // Thinking models behind a bridge like CLIProxyAPI (Claude Opus/Sonnet 5,
+  // Codex) reason silently unless asked to show it, and stream any reasoning
+  // as `reasoning_content`. Dropping those deltas left the stall watchdog
+  // starved for the whole thinking phase, so every turn timed out.
+  test('Custom endpoint requests + streams reasoning_content to the thinking channel when Thinking is on', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const custom = await import('/src/ai/custom.ts');
+      const bodies: Record<string, unknown>[] = [];
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        bodies.push(JSON.parse(String(init?.body ?? '{}')));
+        const body = [
+          'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"Plan the "},"finish_reason":null}]}',
+          'data: {"choices":[{"delta":{"reasoning":"base."},"finish_reason":null}]}',
+          'data: {"choices":[{"delta":{"content":"Done"},"finish_reason":null}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+          'data: [DONE]',
+          '',
+        ].join('\n\n');
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      const thoughts: string[] = [];
+      try {
+        const spec = { apiKey: '', baseUrl: 'http://localhost:8317/v1', model: 'claude-opus-5', systemPrompt: 'sys', systemSuffix: '', history: [] as never[], tools: [] };
+        const on = await custom.streamTurn({ ...spec, thinking: 'high' }, { onThinking: d => thoughts.push(d) });
+        await custom.streamTurn({ ...spec, thinking: 'off' });
+        return { text: on.text, thinking: on.thinking, thoughts, bodies };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.thoughts).toEqual(['Plan the ', 'base.']);
+    expect(out.thinking).toBe('Plan the base.');
+    expect(out.text).toBe('Done');
+    expect(out.bodies[0].include_reasoning).toBe(true);
+    // Visibility only — never a depth request the server might reject.
+    expect(out.bodies[0].reasoning_effort).toBeUndefined();
+    expect(out.bodies[1].include_reasoning).toBeUndefined();
   });
 
   test('Custom listModels hits /models with auth when keyed, and does not filter ids', async ({ page }) => {

@@ -152,6 +152,10 @@ export async function listModels(apiKey: string): Promise<{ id: string; label: s
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;
+  /** Reasoning deltas from an OpenAI-compatible server that streams them as
+   *  `delta.reasoning_content` / `delta.reasoning` (CLIProxyAPI, vLLM,
+   *  llama.cpp, DeepSeek, OpenRouter). OpenAI proper never sends these. */
+  onThinking?: (delta: string) => void;
 }
 
 export interface StreamResult {
@@ -159,9 +163,9 @@ export interface StreamResult {
   toolCalls: PersistedToolCall[];
   stopReason: string;
   usage: TurnUsage;
-  /** Reasoning text if surfaced. Unused for OpenAI (reasoning models hide
-   *  their chain of thought); present so chatLoop reads `result.thinking`
-   *  uniformly across providers. */
+  /** Reasoning text if surfaced. OpenAI proper hides reasoning-model chain
+   *  of thought, so this is only populated by OpenAI-compatible servers that
+   *  stream `reasoning_content` (the Custom provider's audience). */
   thinking?: string;
   /** Anthropic-only thinking-block replay payload — always undefined here.
    *  Declared so chatLoop can read `result.thinkingBlocks` across the
@@ -190,6 +194,11 @@ export interface OpenaiRequestSpec {
    *  so a model id that happens to match the reasoning sniff (e.g. a model
    *  the user named "o3-local") must NOT be routed to Responses. */
   forceChatCompletions?: boolean;
+  /** Chat Completions only: send `include_reasoning: true` so an
+   *  OpenAI-compatible server streams the model's reasoning as
+   *  `reasoning_content` deltas instead of thinking silently. Set by the
+   *  custom provider when the Thinking toggle is on — see custom.ts. */
+  includeReasoning?: boolean;
 }
 
 /** Route per model: reasoning models go to the Responses API (gpt-5.5+
@@ -570,6 +579,7 @@ async function streamTurnChat(
   // reasoning model would have been dispatched to the Responses path.)
   const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
   if (effort) body.reasoning_effort = effort;
+  if (spec.includeReasoning) body.include_reasoning = true;
 
   let res: Response;
   try {
@@ -608,6 +618,7 @@ async function consumeChatStream(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   let collectedText = '';
+  let collectedThinking = '';
   // Keyed by a stable string per tool call, in emission order (`toolOrder`).
   // OpenAI proper always sends a numeric `index` that disambiguates parallel
   // calls and threads streamed argument fragments to the right call. Some
@@ -648,6 +659,17 @@ async function consumeChatStream(
       const choice = payload.choices?.[0];
       if (!choice) continue;
       const delta = choice.delta ?? {};
+      // Reasoning deltas (non-standard but widespread: `reasoning_content`
+      // from CLIProxyAPI/vLLM/llama.cpp/DeepSeek, `reasoning` from
+      // OpenRouter/Ollama). Forwarding them is what keeps the stall watchdog
+      // fed while a thinking model reasons before its first answer token —
+      // dropping them made every long thinking phase look like a dead stream.
+      const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+        : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      if (reasoning.length > 0) {
+        collectedThinking += reasoning;
+        callbacks.onThinking?.(reasoning);
+      }
       if (typeof delta.content === 'string' && delta.content.length > 0) {
         collectedText += delta.content;
         callbacks.onText?.(delta.content);
@@ -677,7 +699,7 @@ async function consumeChatStream(
       if (choice.finish_reason) stopReason = mapChatStopReason(choice.finish_reason);
     }
   } catch (err) {
-    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage };
+    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage, thinking: collectedThinking || undefined };
     throw err;
   }
 
@@ -701,7 +723,7 @@ async function consumeChatStream(
   // the Responses ('end_turn' default) and Gemini ('unknown'→'end_turn') paths.
   if (stopReason === 'unknown' && collectedText.length > 0) stopReason = 'end_turn';
 
-  return { text: collectedText, toolCalls, stopReason, usage };
+  return { text: collectedText, toolCalls, stopReason, usage, thinking: collectedThinking || undefined };
 }
 
 function mapChatStopReason(reason: string): string {

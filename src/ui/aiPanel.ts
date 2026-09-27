@@ -1622,7 +1622,7 @@ function renderToggleStrip(): void {
   // reproduces the pre-feature behavior. No effect on local models.
   const thinkSel = document.createElement('select');
   thinkSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
+  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort; on a Custom endpoint any level above Off asks the server to stream the model reasoning. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
   for (const opt of THINKING_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;
