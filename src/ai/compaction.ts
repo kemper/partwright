@@ -152,7 +152,9 @@ export async function proposeCompaction(
       const r = await summarizer(apiKey, compactionModel, COMPACTION_SYSTEM, prompt);
       text = r.text;
       usage = r.usage;
-      costUsd = turnCostUsd(ctx.toggles.provider, compactionModel, usage);
+      // COMPACTION_MODEL ids are all pinned in cost.ts's KNOWN_MODEL_PRICING,
+      // so this is always priced; `?? 0` only satisfies the nullable type.
+      costUsd = turnCostUsd(ctx.toggles.provider, compactionModel, usage) ?? 0;
     }
   } catch (err) {
     recordEvent({
