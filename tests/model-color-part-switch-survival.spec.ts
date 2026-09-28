@@ -12,6 +12,7 @@
 // paint) for every load path, so no branch can forget to apply them.
 
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 
 interface API {
   listParts: () => { id: string; name: string }[];
@@ -24,9 +25,21 @@ interface API {
   saveVersion: (label?: string) => Promise<unknown>;
 }
 
+// The parts-list row click handler is fire-and-forget (`void cb.onSelectPart`),
+// so poll for the active part to actually flip before proceeding — the real
+// (if partial) completion signal. Callers that then assert on rendered colors
+// additionally poll those colors directly (via expect.poll), since currentPart
+// flips before loadPartIntoEditor's color restore finishes.
 async function clickPart(page: Page, id: string) {
   await page.locator(`#parts-list [data-part-id="${id}"]`).click();
-  await page.waitForTimeout(2000);
+  await waitFor(
+    () => page.evaluate(
+      (pid) => (window as unknown as { partwright: { listParts: () => { id: string; isCurrent?: boolean }[] } }).partwright
+        .listParts().find((p) => p.id === pid)?.isCurrent === true,
+      id,
+    ),
+    { timeout: 10_000, message: 'the part row click to register' },
+  );
 }
 
 // Vertices in the displayed solid mesh whose color is NOT the default blue.
@@ -82,17 +95,19 @@ test('in-code model colors survive a part switch round-trip', async ({ page }) =
     () => !!(window as unknown as { partwright?: { createPart?: unknown } }).partwright?.createPart,
     { timeout: 25_000 },
   );
-  await page.waitForTimeout(2500);
-
   // The tree declares its colors in code, so it renders colored from load.
-  expect(await coloredVerts(page), 'colored verts on initial load').toBeGreaterThan(0);
+  // Poll for it directly (the catalog bake + first render) instead of
+  // sleeping a guess before sampling once.
+  await expect.poll(() => coloredVerts(page), { timeout: 15_000, message: 'colored verts on initial load' }).toBeGreaterThan(0);
   const treeId = await page.evaluate(() => (window as unknown as { partwright: API }).partwright.listParts()[0].id);
 
   // Add a couple of fresh parts (the user's flow), then switch away and back.
+  // "+" is fire-and-forget (see part-unload-paint.spec.ts's waitForPartChange
+  // note), so poll the part count instead of sleeping.
   await page.locator('#btn-add-part').click();
-  await page.waitForTimeout(1200);
+  await waitFor(() => page.evaluate(() => (window as unknown as { partwright: API }).partwright.listParts().length === 2), { timeout: 10_000, message: '2 parts to exist' });
   await page.locator('#btn-add-part').click();
-  await page.waitForTimeout(1200);
+  await waitFor(() => page.evaluate(() => (window as unknown as { partwright: API }).partwright.listParts().length === 3), { timeout: 10_000, message: '3 parts to exist' });
   const otherId = await page.evaluate(
     (tid) => (window as unknown as { partwright: API }).partwright.listParts().find((p) => p.id !== tid)!.id,
     treeId,
@@ -101,7 +116,11 @@ test('in-code model colors survive a part switch round-trip', async ({ page }) =
   await clickPart(page, otherId);
   await clickPart(page, treeId);
 
-  expect(await coloredVerts(page), 'colored verts after returning to the model-colored part').toBeGreaterThan(0);
+  // clickPart only confirms the active-part flip; the color restore
+  // (loadPartIntoEditor → rehydrateColorRegions) can still be settling, so
+  // poll the actual rendered colors — the real completion signal, and
+  // literally the condition under test.
+  await expect.poll(() => coloredVerts(page), { timeout: 15_000, message: 'colored verts after returning to the model-colored part' }).toBeGreaterThan(0);
 });
 
 // The hardest case the unified color path must hold: a part with BOTH an
@@ -139,14 +158,18 @@ test('model color + a subdividing user stroke both survive a part switch', async
     return { idA: parts.find((p) => p.name !== 'PartB')!.id, idB: parts.find((p) => p.name === 'PartB')!.id };
   });
 
-  await page.waitForTimeout(800);
+  // Every step above (createSession/runAndSave/saveVersion/createPart) is
+  // awaited inside the evaluate() call, and paintStroke resolves its region
+  // synchronously (the agent-API path bypasses the async Worker reconcile —
+  // see reconcilePaintedGeometryAsync's doc comment in main.ts), so no extra
+  // settle margin is needed before switching parts.
 
   // Switch away and back — cache-hit restore of the model+stroke part.
   await clickPart(page, idB);
   await clickPart(page, idA);
 
-  const greenVerts = await vertsNear(page, green);
-  const redVerts = await vertsNear(page, red);
-  expect(greenVerts, 'model (green) color after round-trip').toBeGreaterThan(0);
-  expect(redVerts, 'user stroke (red) color after round-trip').toBeGreaterThan(0);
+  // clickPart only confirms the active-part flip; poll the actual rendered
+  // colors (the real completion signal for the color-restore path under test).
+  await expect.poll(() => vertsNear(page, green), { timeout: 15_000, message: 'model (green) color after round-trip' }).toBeGreaterThan(0);
+  await expect.poll(() => vertsNear(page, red), { timeout: 15_000, message: 'user stroke (red) color after round-trip' }).toBeGreaterThan(0);
 });

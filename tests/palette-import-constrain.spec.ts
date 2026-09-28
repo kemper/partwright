@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { waitForEditorReady } from './helpers/aiPanel';
 
 // Golden path for "constrain colours to filament palette" in the two image
 // import flows (voxel + relief). Each opens the modal programmatically with a
@@ -10,7 +11,7 @@ test.beforeEach(async ({ page }) => {
 
 test('voxel import: constrain to palette swaps the reduction picker for filament swatches', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForTimeout(4000);
+  await waitForEditorReady(page);
   await page.evaluate(async () => {
     const c = document.createElement('canvas');
     c.width = 24; c.height = 24;
@@ -40,7 +41,7 @@ test('voxel import: constrain to palette swaps the reduction picker for filament
 
 test('relief import: colour tiles default to the filament palette, and it can be toggled off', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForTimeout(4000);
+  await waitForEditorReady(page);
   await page.evaluate(async () => {
     const c = document.createElement('canvas');
     c.width = 24; c.height = 24;
@@ -52,7 +53,6 @@ test('relief import: colour tiles default to the filament palette, and it can be
     const m = await import('/src/ui/reliefImportModal.ts');
     m.openReliefImportModal({ aiAvailable: false, initialFile: file, onCreate() {} });
   });
-  await page.waitForTimeout(1200);
 
   const constrain = page.getByText('Use filament palette colours');
   await expect(constrain).toBeVisible();

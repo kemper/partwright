@@ -49,3 +49,10 @@ once labelled construction shipped.
 `clearColors()` after it. The helper's doc comment now lists the state a fresh
 goto resets but the API equivalents don't. Tests that toggle the paint panel
 with no symmetric teardown (and all of paint-camera-passthrough) stay per-test.
+
+**Fixed sleeps → condition waits** (11 files, ~150 s of sleeps; only one
+150 ms margin kept): waits target the real signal, e.g. engine ready, the
+part id flipping after the fire-and-forget "+" click, `waitForPaint()` for
+subdivision, `session.workCamera` landing, or version counts. Post-save-modal
+version counts are read through read-only `db.ts` `listVersions` because
+polling via `changePart()` raced the app's own background save loop.
