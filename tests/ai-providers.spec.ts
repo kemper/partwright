@@ -782,15 +782,16 @@ test.describe('Multi-provider AI', () => {
     expect(result.inputs).toEqual([{ view: 'front' }, { q: 'volume' }]);
   });
 
-  test('Anthropic sends the thinking param with budget when enabled, omits it when off', async ({ page }) => {
-    // Off must reproduce the pre-feature request exactly (no `thinking`
-    // field); a non-off level enables extended thinking with budget_tokens
-    // and floats max_tokens above the budget (the API requires >).
+  test('Anthropic sends budget_tokens only to older models; Claude 4.7+ get adaptive thinking + effort', async ({ page }) => {
+    // Haiku 4.5 (budget model): Off sends no `thinking` field; a level
+    // enables extended thinking with budget_tokens and floats max_tokens above
+    // the budget (the API requires >). Opus 4.7+ REJECT budget_tokens, so they
+    // get adaptive thinking + output_config.effort + a visible summary.
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const a = await import('/src/ai/anthropic.ts');
-      const bodies: Record<string, { thinking?: unknown; max_tokens?: number }> = {};
+      const bodies: Record<string, { thinking?: unknown; max_tokens?: number; output_config?: { effort?: string } }> = {};
       const origFetch = window.fetch;
       // A minimal but complete Anthropic SSE stream so finalMessage()
       // resolves cleanly. The body is captured before any parsing, so the
@@ -816,7 +817,7 @@ test.describe('Multi-provider AI', () => {
         '',
         '',
       ].join('\n');
-      async function run(level: string, key: string) {
+      async function run(level: string, key: string, model = 'claude-haiku-4-5') {
         a.resetClient();
         // @ts-expect-error test stub
         window.fetch = async (_input: unknown, init: { body?: string }) => {
@@ -825,18 +826,34 @@ test.describe('Multi-provider AI', () => {
         };
         try {
           await a.streamTurn({
-            apiKey: 'k', model: 'claude-haiku-4-5', systemPrompt: 'sys', systemSuffix: '',
+            apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '',
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: level as any,
           });
         } catch { /* body already captured; parsing differences are irrelevant here */ }
       }
-      try { await run('off', 'off'); await run('medium', 'medium'); } finally { window.fetch = origFetch; }
+      try {
+        await run('off', 'off');
+        await run('medium', 'medium');
+        await run('xhigh', 'opus47', 'claude-opus-4-7');
+        await run('off', 'opus47Off', 'claude-opus-4-7');
+        await run('off', 'opus55Off', 'claude-opus-5-5');
+      } finally { window.fetch = origFetch; }
       return bodies;
     });
     expect(out.off.thinking).toBeUndefined();
+    expect(out.off.output_config).toBeUndefined();
     expect(out.medium.thinking).toEqual({ type: 'enabled', budget_tokens: 8192 });
     expect(out.medium.max_tokens as number).toBeGreaterThan(8192);
+    // Opus 4.7: never budget_tokens; adaptive + effort, summary visible, and a
+    // max_tokens ceiling big enough for the thinking to fit.
+    expect(out.opus47.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(out.opus47.output_config).toEqual({ effort: 'xhigh' });
+    expect(out.opus47.max_tokens as number).toBeGreaterThanOrEqual(32768);
+    expect(out.opus47Off.thinking).toEqual({ type: 'disabled' });
+    // Opus 5.5 can't disable thinking — Off is the lowest effort instead.
+    expect(out.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(out.opus55Off.output_config).toEqual({ effort: 'low' });
   });
 
   test('Anthropic replays signed thinking blocks before tool_use during tool use', async ({ page }) => {
@@ -898,16 +915,18 @@ test.describe('Multi-provider AI', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await gemini.streamTurn({ apiKey: 'k', model: 'gemini-3.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: level as any });
       }
-      try { await run('off', 'off'); await run('high', 'high'); } finally { window.fetch = origFetch; }
+      try { await run('off', 'off'); await run('high', 'high'); await run('default', 'default'); } finally { window.fetch = origFetch; }
       return bodies;
     });
+    // Default: thoughts shown, the model picks its own budget.
+    expect(out.default.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
     expect(out.off.generationConfig.thinkingConfig.includeThoughts).toBe(false);
     expect(out.off.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
     expect(out.high.generationConfig.thinkingConfig.includeThoughts).toBe(true);
     expect(out.high.generationConfig.thinkingConfig.thinkingBudget).toBeGreaterThan(0);
   });
 
-  test('OpenAI sends reasoning.effort only for reasoning models + non-off levels', async ({ page }) => {
+  test('OpenAI maps the thinking level to reasoning.effort on reasoning models only', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
@@ -928,14 +947,19 @@ test.describe('Multi-provider AI', () => {
       try {
         await run('gpt-5.5', 'high', 'reasoningHigh');
         await run('gpt-5.5', 'off', 'reasoningOff');
+        await run('gpt-5.5', 'default', 'reasoningDefault');
+        await run('gpt-5.5', 'max', 'reasoningMax');
         await run('gpt-4o', 'high', 'chatHigh');
       } finally { window.fetch = origFetch; }
       return bodies;
     });
-    // Reasoning model on the Responses path: `reasoning.effort` set when on,
-    // omitted when off.
+    // Reasoning model on the Responses path. Reasoning models always reason,
+    // so Off is the lowest universal effort; Default omits the field; Max
+    // clamps to the model's highest (gpt-5.5 tops out at xhigh).
     expect(out.reasoningHigh.reasoning.effort).toBe('high');
-    expect(out.reasoningOff.reasoning).toBeUndefined();
+    expect(out.reasoningOff.reasoning.effort).toBe('low');
+    expect(out.reasoningDefault.reasoning).toBeUndefined();
+    expect(out.reasoningMax.reasoning.effort).toBe('xhigh');
     // Non-reasoning model on the Chat Completions path: never carries a
     // reasoning request in either spelling, even at thinking=high.
     expect(out.chatHigh.reasoning).toBeUndefined();
@@ -955,11 +979,14 @@ test.describe('Multi-provider AI', () => {
     await expect(thinkSel).toBeVisible();
     // Thinking now ships on by default (the standard preset uses 'high').
     await expect(thinkSel).toHaveValue('high');
-    await thinkSel.selectOption('off');
+    // Every level is offered, in order.
+    const values = await thinkSel.locator('option').evaluateAll(opts => opts.map(o => (o as HTMLOptionElement).value));
+    expect(values).toEqual(['off', 'default', 'low', 'medium', 'high', 'xhigh', 'max']);
+    await thinkSel.selectOption('xhigh');
     const stored = await page.evaluate(() =>
       JSON.parse(localStorage.getItem('partwright-ai-settings-v1') || '{}').toggles?.thinking,
     );
-    expect(stored).toBe('off');
+    expect(stored).toBe('xhigh');
   });
 
   test('settings modal has a tab per provider', async ({ page }) => {

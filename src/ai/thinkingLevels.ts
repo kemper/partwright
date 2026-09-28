@@ -1,0 +1,189 @@
+// Pure, dependency-free mapping from the shared Thinking level (the 🧠 pill)
+// to each hosted provider's wire format. Lives apart from the provider
+// transports so the unit tier can pin every model-family × level combination
+// without a browser (tests/unit/thinkingLevels.test.ts).
+//
+// The levels:
+//   off      — thinking disabled where the model allows it; on models that
+//              always think (Claude Opus 5.x, Fable, Mythos; OpenAI reasoning
+//              models) the lowest effort instead.
+//   default  — send nothing about depth; the model/provider default applies.
+//   low … max — an explicit effort, clamped to the nearest level the model
+//              supports (e.g. xhigh → high on Claude 4.6 / older OpenAI).
+
+import type { ThinkingLevel } from './types';
+
+// ---------------------------------------------------------------------------
+// Anthropic
+// ---------------------------------------------------------------------------
+
+/** How a Claude model accepts thinking configuration.
+ *  - `budget`: pre-4.6 models (Haiku 4.5, Sonnet/Opus 4.5 and older) —
+ *    `thinking: {type: 'enabled', budget_tokens}` is the only way to think.
+ *  - `adaptive46`: Opus/Sonnet 4.6 — adaptive thinking + effort low…max
+ *    (no xhigh); thinking off unless requested; thinking shown by default.
+ *  - `adaptive`: Opus 4.7/4.8, Sonnet 5 — adaptive + effort low…max incl.
+ *    xhigh; `budget_tokens` is REJECTED (400); thinking hidden by default.
+ *    Sonnet 5 thinks when `thinking` is omitted; Opus 4.7/4.8 don't.
+ *  - `alwaysOn`: Opus 5.x, Fable, Mythos — think by default (Opus 5.5 /
+ *    Fable / Mythos can't be disabled at all), effort is the only control;
+ *    thinking hidden by default. */
+export type AnthropicThinkingFamily = 'budget' | 'adaptive46' | 'adaptive' | 'alwaysOn';
+
+const CLAUDE_ID = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?/;
+
+function parseClaudeId(model: string): { tier: string; major: number; minor: number } | null {
+  const m = CLAUDE_ID.exec(model.trim().toLowerCase());
+  if (!m) return null; // unknown / legacy naming (claude-3-5-sonnet-…)
+  // A dated snapshot suffix (…-4-20250514) is not a minor version.
+  const minorRaw = m[3] !== undefined ? Number(m[3]) : 0;
+  return { tier: m[1], major: Number(m[2]), minor: minorRaw >= 100 ? 0 : minorRaw };
+}
+
+export function anthropicThinkingFamily(model: string): AnthropicThinkingFamily {
+  const id = parseClaudeId(model);
+  if (!id) return 'budget';
+  const { tier, major, minor } = id;
+  if (tier === 'fable' || tier === 'mythos') return 'alwaysOn';
+  if (tier === 'opus' && major >= 5) return 'alwaysOn';
+  if (major >= 5) return 'adaptive'; // Sonnet 5+, a future Haiku 5+
+  if (major === 4 && minor >= 7) return 'adaptive';
+  if (major === 4 && minor === 6 && tier !== 'haiku') return 'adaptive46';
+  return 'budget';
+}
+
+/** Anthropic `output_config.effort` values. */
+export type AnthropicEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface AnthropicThinkingBudgets {
+  low: number;
+  medium: number;
+  high: number;
+}
+
+export interface AnthropicThinkingPlan {
+  /** Value for the request's `thinking` field; undefined = omit it. */
+  thinking?:
+    | { type: 'enabled'; budget_tokens: number }
+    | { type: 'adaptive'; display?: 'summarized' }
+    | { type: 'disabled' };
+  /** Value for `output_config.effort`; undefined = omit it. */
+  effort?: AnthropicEffort;
+  /** True when the model will think on this request. Drives thinking-block
+   *  replay (tool loops 400 without it) and the output-token ceiling. */
+  active: boolean;
+  /** `budget_tokens` sent, or 0. Callers keep `max_tokens` above it. */
+  budgetTokens: number;
+}
+
+function clampAnthropicEffort(level: 'low' | 'medium' | 'high' | 'xhigh' | 'max', family: AnthropicThinkingFamily): AnthropicEffort {
+  // Claude 4.6 has no xhigh — round down to high (the cheaper neighbour).
+  if (family === 'adaptive46' && level === 'xhigh') return 'high';
+  return level;
+}
+
+/** Map a Thinking level onto an Anthropic request for `model`. */
+export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budgets: AnthropicThinkingBudgets): AnthropicThinkingPlan {
+  const family = anthropicThinkingFamily(model);
+
+  if (family === 'budget') {
+    if (level === 'off' || level === 'default') return { active: false, budgetTokens: 0 };
+    // xhigh / max clamp to the high budget: older models cap output at
+    // 32k–64k tokens, so a bigger budget risks a max_tokens 400.
+    const budget = level === 'low' ? budgets.low : level === 'medium' ? budgets.medium : budgets.high;
+    return { thinking: { type: 'enabled', budget_tokens: budget }, active: true, budgetTokens: budget };
+  }
+
+  // 4.7+ hide thinking by default ("omitted"): the stream is silent until the
+  // answer, which the stall watchdog reads as a dead connection and the user
+  // sees as an empty thinking box. Ask for the summary whenever thinking runs.
+  // (4.6 already defaults to summarized; `display` is left off there.)
+  const adaptive = family === 'adaptive46'
+    ? { type: 'adaptive' as const }
+    : { type: 'adaptive' as const, display: 'summarized' as const };
+
+  if (level === 'off') {
+    // Always-on models: thinking can't be (reliably) disabled — Opus 5.5 /
+    // Fable reject it, and Opus 5 with thinking disabled can leak tool calls
+    // into visible text. The documented cheap path is adaptive at low effort.
+    if (family === 'alwaysOn') return { thinking: adaptive, effort: 'low', active: true, budgetTokens: 0 };
+    return { thinking: { type: 'disabled' }, active: false, budgetTokens: 0 };
+  }
+  if (level === 'default') {
+    // No depth override. Models that think when `thinking` is omitted still
+    // get the adaptive block so their reasoning is visible (same behaviour,
+    // summary on); the rest keep their default of not thinking.
+    // (Sonnet 5+ runs adaptive when `thinking` is omitted; Opus 4.7/4.8 don't.)
+    const thinksByDefault = family === 'alwaysOn' || (family === 'adaptive' && (parseClaudeId(model)?.major ?? 0) >= 5);
+    return thinksByDefault ? { thinking: adaptive, active: true, budgetTokens: 0 } : { active: false, budgetTokens: 0 };
+  }
+  return { thinking: adaptive, effort: clampAnthropicEffort(level, family), active: true, budgetTokens: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI (reasoning models: gpt-5 family, o-series)
+// ---------------------------------------------------------------------------
+
+/** gpt-5.N minor version (0 for plain gpt-5 / gpt-5-mini), or null for
+ *  non-gpt-5 models (o-series). */
+function gpt5Minor(model: string): number | null {
+  const m = /^gpt-5(?:\.(\d+))?(?![\d.])/.exec(model.trim().toLowerCase());
+  if (!m) return null;
+  return m[1] !== undefined ? Number(m[1]) : 0;
+}
+
+/** Map a Thinking level onto OpenAI `reasoning.effort` / `reasoning_effort`
+ *  for a reasoning model. null = omit the field (provider default). Every
+ *  reasoning model accepts low/medium/high; xhigh arrived with gpt-5.2 and
+ *  max with gpt-5.6, so higher asks clamp down on older models. OpenAI
+ *  reasoning models always reason, so Off is the lowest universal effort. */
+export function openaiReasoningEffort(model: string, level: ThinkingLevel): string | null {
+  if (level === 'default') return null;
+  if (level === 'off') return 'low';
+  if (level === 'low' || level === 'medium' || level === 'high') return level;
+  const minor = gpt5Minor(model);
+  const hasXhigh = minor !== null && minor >= 2;
+  const hasMax = minor !== null && minor >= 6;
+  if (level === 'max' && hasMax) return 'max';
+  if (hasXhigh) return 'xhigh';
+  return 'high';
+}
+
+// ---------------------------------------------------------------------------
+// Custom (OpenAI-compatible endpoint, e.g. CLIProxyAPI)
+// ---------------------------------------------------------------------------
+
+/** Extra Chat Completions fields for the Custom provider.
+ *  `include_reasoning` (visibility only — unknown-field servers ignore it) is
+ *  sent whenever thinking isn't Off. `reasoning_effort` is sent only when the
+ *  user opted in (Custom tab), since some servers (Ollama) map it to
+ *  "think" and error on non-thinking models; the level passes through as-is
+ *  (CLIProxyAPI clamps it per model and maps 'none' to disabled). */
+export function customReasoningFields(level: ThinkingLevel, sendEffort: boolean): { include_reasoning?: true; reasoning_effort?: string } {
+  const out: { include_reasoning?: true; reasoning_effort?: string } = {};
+  if (level !== 'off') out.include_reasoning = true;
+  if (sendEffort && level !== 'default') out.reasoning_effort = level === 'off' ? 'none' : level;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Gemini
+// ---------------------------------------------------------------------------
+
+export interface GeminiThinkingBudgets {
+  low: number;
+  medium: number;
+  high: number;
+}
+
+/** Map a Thinking level onto Gemini `generationConfig.thinkingConfig`.
+ *  'off' only hides thoughts — it deliberately does NOT force
+ *  `thinkingBudget: 0` (Gemini 3 / 2.5 Pro reject a zero budget). 'default'
+ *  shows thoughts and lets the model pick its own (dynamic) budget. Gemini
+ *  tops out at "high", so xhigh/max use the high budget. */
+export function geminiThinkingConfig(level: ThinkingLevel, budgets: GeminiThinkingBudgets): Record<string, unknown> {
+  if (level === 'off') return { includeThoughts: false };
+  if (level === 'default') return { includeThoughts: true };
+  const budget = level === 'low' ? budgets.low : level === 'medium' ? budgets.medium : budgets.high;
+  return { includeThoughts: true, thinkingBudget: budget };
+}

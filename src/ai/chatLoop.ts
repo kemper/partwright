@@ -10,7 +10,7 @@
 // otherwise agnostic to which one is in play.
 
 import { generateId } from '../storage/db';
-import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
+import { streamTurn, buildApiMessages, anthropicThinkingActive, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
 import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
@@ -336,10 +336,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     try {
       if (toggles.provider === 'anthropic') {
         if (!apiKey) throw new Error('Anthropic API key is required.');
-        // Replay captured thinking blocks only when thinking is on for this
-        // turn — required so the tool-use loop doesn't 400 on a tool_use that
-        // isn't preceded by its signed thinking block.
-        const apiMessages = buildApiMessages(sentHistory, { replayThinking: toggles.thinking !== 'off' });
+        // Replay captured thinking blocks whenever the model will think on
+        // this turn (which, on always-thinking models, includes Off) —
+        // required so the tool-use loop doesn't 400 on a tool_use that isn't
+        // preceded by its signed thinking block.
+        const apiMessages = buildApiMessages(sentHistory, { replayThinking: anthropicThinkingActive(toggles.anthropicModel, toggles.thinking) });
         result = await streamTurn({
           apiKey,
           model: toggles.anthropicModel,
@@ -392,6 +393,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
+          sendReasoningEffort: toggles.customReasoningEffort,
         }, streamCallbacks, signal);
       } else {
         if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');

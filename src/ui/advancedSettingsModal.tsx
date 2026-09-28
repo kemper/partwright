@@ -359,7 +359,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — thinking budgets">
-        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens).</div>
+        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Only older Claude models (Haiku 4.5, Sonnet/Opus 4.5 and earlier) use these — Claude 4.6+ use adaptive thinking with an effort level instead. XHigh and Max use the High budget.</div>
         <Field
           label="Anthropic — Low"
           unit="tokens"
@@ -436,6 +436,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.maxOutputTokensAnthropic}
           min={1024} max={200_000} integer
           onChange={v => set('ai', 'maxOutputTokensAnthropic', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value sent to Anthropic when a Claude 4.6+ model runs adaptive thinking (any Thinking level above Off, or a model that always thinks). Thinking tokens count against this ceiling and adaptive thinking has no separate budget, so it must be large — too low and high-effort turns stop mid-thought. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinking}
+          value={c.ai.maxOutputTokensAnthropicThinking}
+          min={4096} max={128_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinking', v)}
         />
         <Field
           label="OpenAI max output tokens"

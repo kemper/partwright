@@ -39,6 +39,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
+import { openaiReasoningEffort } from './thinkingLevels';
 import { getCapabilities } from './catalog';
 import { getConfig } from '../config/appConfig';
 import { repairToolHistory } from './historyRepair';
@@ -72,16 +73,15 @@ function isReasoningModel(model: string): boolean {
   return /^(gpt-5|o1|o3|o4)/i.test(model);
 }
 
-/** Map the shared thinking level to OpenAI's reasoning `effort`. 'off'
- *  returns null so the `reasoning` field is omitted entirely — leaving the
- *  provider default in place. 'low'/'medium'/'high' map straight through
- *  (all three are valid effort values on every reasoning model).
+/** Map the shared thinking level to OpenAI's reasoning `effort` (see
+ *  openaiReasoningEffort in thinkingLevels.ts: Off → the lowest universal
+ *  effort, Default → omitted, XHigh/Max clamp to what the model supports).
  *  Non-reasoning models always return null. Note: OpenAI hides
  *  reasoning-model chain-of-thought, so this controls cost/quality but
  *  never surfaces a thinking box. */
 function reasoningEffort(model: string, level: ChatToggles['thinking']): string | null {
-  if (level === 'off' || !isReasoningModel(model)) return null;
-  return level;
+  if (!isReasoningModel(model)) return null;
+  return openaiReasoningEffort(model, level);
 }
 
 /** When `apiKey` is empty/whitespace we omit the Authorization header
@@ -183,8 +183,9 @@ export interface OpenaiRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
-  /** Extended-thinking level → reasoning `effort` (reasoning models only).
-   *  'off' (default) omits the reasoning request. */
+  /** Thinking level → reasoning `effort` (reasoning models only; mapping in
+   *  thinkingLevels.ts). Omitted = no reasoning request at all — the custom
+   *  provider relies on this so arbitrary servers never get the field. */
   thinking?: ChatToggles['thinking'];
   /** Override the OpenAI base URL. Set by the custom provider to target a
    *  self-hosted OpenAI-compatible server. Omitted (undefined) for OpenAI. */
@@ -195,11 +196,11 @@ export interface OpenaiRequestSpec {
    *  so a model id that happens to match the reasoning sniff (e.g. a model
    *  the user named "o3-local") must NOT be routed to Responses. */
   forceChatCompletions?: boolean;
-  /** Chat Completions only: send `include_reasoning: true` so an
-   *  OpenAI-compatible server streams the model's reasoning as
-   *  `reasoning_content` deltas instead of thinking silently. Set by the
-   *  custom provider when the Thinking toggle is on — see custom.ts. */
-  includeReasoning?: boolean;
+  /** Chat Completions only: extra top-level body fields. The custom provider
+   *  uses it for `include_reasoning` (so an OpenAI-compatible server streams
+   *  the model's reasoning as `reasoning_content` deltas instead of thinking
+   *  silently) and the opt-in `reasoning_effort` — see custom.ts. */
+  extraChatFields?: Record<string, unknown>;
 }
 
 /** Route per model: reasoning models go to the Responses API (gpt-5.5+
@@ -275,7 +276,7 @@ async function streamTurnResponses(
   if (tools.length > 0) body.tools = tools;
   // `reasoning.effort` only for non-'off' levels (every model routed here is
   // a reasoning model).
-  const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
+  const effort = (spec.thinking ? reasoningEffort(spec.model, spec.thinking) : null);
   if (effort) body.reasoning = { effort };
 
   let res: Response;
@@ -589,9 +590,9 @@ async function streamTurnChat(
   // Non-reasoning models route here, so reasoningEffort() returns null and no
   // reasoning_effort is sent — exactly the pre-feature request shape. (A
   // reasoning model would have been dispatched to the Responses path.)
-  const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
+  const effort = (spec.thinking ? reasoningEffort(spec.model, spec.thinking) : null);
   if (effort) body.reasoning_effort = effort;
-  if (spec.includeReasoning) body.include_reasoning = true;
+  if (spec.extraChatFields) Object.assign(body, spec.extraChatFields);
 
   let res: Response;
   try {

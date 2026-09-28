@@ -34,6 +34,7 @@ import {
   setOpenaiModel,
   setGeminiModel,
   setCustomModel,
+  setCustomReasoningEffort,
   setCustomModels,
   setCustomBaseUrl,
   DEFAULT_CUSTOM_BASE_URL,
@@ -745,6 +746,23 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
           </div>
         )}
         <span class="text-[10px] text-zinc-500">Use <strong>Fetch models</strong> above to list what the endpoint serves, or type the id directly.</span>
+      </Section>
+      <Divider />
+      <Section label="Reasoning">
+        <label class="flex items-start gap-2 text-xs text-zinc-300">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            data-testid="custom-reasoning-effort"
+            checked={settings.toggles.customReasoningEffort}
+            onChange={e => {
+              setSettings(setCustomReasoningEffort(loadSettings(), (e.currentTarget as HTMLInputElement).checked));
+              cb.onChange();
+            }}
+          />
+          {/* eslint-disable-next-line react/no-danger */}
+          <span dangerouslySetInnerHTML={{ __html: '<strong class="text-zinc-200">Send the Thinking level as <code>reasoning_effort</code>.</strong> <span class="text-zinc-400">Lets the 🧠 pill control reasoning depth through the endpoint (Off → <code>none</code>, Default → not sent). Turn on for CLIProxyAPI or vLLM; leave off for Ollama, which rejects it on models that don’t think. Either way, any level above Off asks the endpoint to stream the model’s reasoning.</span>' }} />
+        </label>
       </Section>
       <Divider />
       <Section label="API key (optional)">

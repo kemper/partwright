@@ -18,17 +18,25 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
+import { anthropicThinkingPlan, type AnthropicThinkingPlan } from './thinkingLevels';
 
-/** Map the shared thinking level to Anthropic `budget_tokens`. 0 means
- *  thinking is disabled and no `thinking` param is sent — byte-identical to
- *  the pre-feature request. Budgets must be ≥1024 and strictly less than
- *  `max_tokens`; streamTurn raises max_tokens to guarantee the latter. */
-function getThinkingBudget(level: ChatToggles['thinking']): number {
-  if (level === 'off') return 0;
+/** Resolve the Thinking level into this model's request shape (adaptive
+ *  thinking + effort on Claude 4.6+, `budget_tokens` on older models — see
+ *  thinkingLevels.ts). Budgets come from the user's app config. */
+function thinkingPlan(model: string, level: ChatToggles['thinking']): AnthropicThinkingPlan {
   const cfg = getConfig().ai;
-  if (level === 'low') return cfg.thinkingBudgetAnthropicLow;
-  if (level === 'medium') return cfg.thinkingBudgetAnthropicMedium;
-  return cfg.thinkingBudgetAnthropicHigh;
+  return anthropicThinkingPlan(model, level, {
+    low: cfg.thinkingBudgetAnthropicLow,
+    medium: cfg.thinkingBudgetAnthropicMedium,
+    high: cfg.thinkingBudgetAnthropicHigh,
+  });
+}
+
+/** Whether `model` will think on a request at `level` — i.e. whether prior
+ *  thinking blocks must be replayed (a thinking-enabled tool loop 400s when
+ *  the tool_use isn't preceded by its signed thinking block). */
+export function anthropicThinkingActive(model: string, level: ChatToggles['thinking']): boolean {
+  return thinkingPlan(model, level).active;
 }
 
 let cachedClient: Anthropic | null = null;
@@ -143,11 +151,11 @@ export interface RequestSpec {
   tools: ToolDefinition[];
   /** Hard ceiling on output tokens for this turn. We default to 8K — large
    *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. When thinking is enabled this is raised
-   *  automatically so it stays above the thinking budget. */
+   *  HTTP timeouts on browsers. When the model thinks this is raised
+   *  automatically (above the budget, or to the adaptive-thinking ceiling). */
   maxTokens?: number;
-  /** Extended-thinking level. 'off' (default) sends no `thinking` param.
-   *  Low/Med/High enable it with an increasing token budget. */
+  /** Thinking level (see thinkingLevels.ts for the per-model mapping).
+   *  Omitted = 'off'. */
   thinking?: ChatToggles['thinking'];
 }
 
@@ -157,14 +165,18 @@ export async function streamTurn(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const client = getClient(spec.apiKey);
-  const budget = getThinkingBudget(spec.thinking ?? 'off');
+  const plan = thinkingPlan(spec.model, spec.thinking ?? 'off');
   const cfg = getConfig().ai;
-  // The API requires max_tokens > budget_tokens, so when thinking is on we
-  // float the ceiling above the budget. When it's off, the configured default
-  // is untouched.
-  const max_tokens = budget > 0
-    ? Math.max(spec.maxTokens ?? cfg.maxOutputTokensAnthropic, budget + cfg.answerHeadroomTokens)
-    : spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
+  // Thinking tokens count against max_tokens. With a fixed budget the API
+  // requires max_tokens > budget_tokens, so float the ceiling above it;
+  // adaptive thinking has no budget, so use the (larger) thinking ceiling.
+  // When the model won't think, the configured default is untouched.
+  const baseMax = spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
+  const max_tokens = plan.budgetTokens > 0
+    ? Math.max(baseMax, plan.budgetTokens + cfg.answerHeadroomTokens)
+    : plan.active
+      ? Math.max(baseMax, cfg.maxOutputTokensAnthropicThinking)
+      : baseMax;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small
@@ -199,11 +211,11 @@ export async function streamTurn(
   // API to return malformed_function_call if the model tries to use a tool
   // it remembers from earlier turns in the conversation.
   if (tools.length > 0) params.tools = tools;
-  // Only attach the thinking config when enabled — omitting it entirely keeps
-  // the request (and the prompt cache) identical to the pre-feature path.
-  if (budget > 0) {
-    params.thinking = { type: 'enabled', budget_tokens: budget };
-  }
+  // Attach only what the plan asks for — an omitted field keeps the model's
+  // own default (e.g. Haiku at 'off' sends neither, matching the
+  // pre-feature request).
+  if (plan.thinking) params.thinking = plan.thinking;
+  if (plan.effort) params.output_config = { effort: plan.effort };
   const stream = client.messages.stream(params);
 
   // Mirror text deltas into a local buffer so we still have the partial
