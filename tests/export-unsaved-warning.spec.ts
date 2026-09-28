@@ -127,6 +127,9 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
   );
   expect(widgetVersionsAfter).toBe(widgetVersionsBefore + 1);
 
+  // Negative check: give a wrongly-fired export a bounded window to toast
+  // before asserting it never did.
+  await page.waitForTimeout(1500);
   await expect(
     page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
   ).toHaveCount(0);

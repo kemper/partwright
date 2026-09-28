@@ -5,6 +5,9 @@ export interface SharedEditorOptions {
   path?: string;
   /** Extra init script(s) run before any page script, after the tour is suppressed. */
   initScript?: () => void;
+  /** For non-editor routes (e.g. the static /catalog page, which has no
+   *  window.partwright): wait for this selector instead of the editor engine. */
+  readySelector?: string;
 }
 
 /** Boot ONE editor page to share across every test in a spec file.
@@ -55,6 +58,10 @@ export async function openSharedEditor(
   await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   if (options.initScript) await page.addInitScript(options.initScript);
   await page.goto(options.path ?? '/editor');
+  if (options.readySelector) {
+    await page.waitForSelector(options.readySelector, { timeout: 20_000 });
+    return page;
+  }
   await page.waitForSelector('text=Ready', { timeout: 20_000 });
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,

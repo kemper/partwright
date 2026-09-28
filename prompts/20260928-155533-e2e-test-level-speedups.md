@@ -58,3 +58,21 @@ version counts are read through read-only `db.ts` `listVersions` because
 polling via `changePart()` raced the app's own background save loop.
 
 **Close-out**: retro at retros/inbox/*-e2e-suite-speedup.md; leftovers (timings refresh + automation, Vite watch-ignore for worktrees, fake-indexeddb, reset primitives for brep/voxel-studio/stl-import) filed as #974.
+
+**Review-pass fixes** (a work-reviewer found two tests that could no longer
+fail for the bug they guard):
+- Negative checks got their observation windows back: the version-switch
+  camera check waits 800 ms, longer than the 300 ms auto-run debounce it
+  guards. "Save current part only" and the export-warning toast check each
+  hold 1.5 s before asserting nothing else happened.
+- Shared-page files clear paint wherever a test's premise is "no user paint"
+  (model-declared-color export, render-edge-modes, …), because `pw.run()`
+  keeps existing paint.
+- Mixed files wrap their shared tests in a describe that owns
+  beforeAll/afterAll, so the shared editor is closed before the per-test UI
+  tests start (never two WASM pages alive, which is why workers: 1).
+- Back-to-back part-row clicks keep a bounded settle, since selectPart's
+  tail exposes no completion signal; an idle hook is tracked in #974.
+- Also fixed a pre-existing race CI surfaced in paint-controls-extended
+  (evaluating `partwright.run` right after "Ready", before the API exists),
+  and refreshed tests/e2e-timings.json from this PR's CI run.

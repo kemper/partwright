@@ -8,10 +8,10 @@
 import { test, expect, type Page } from 'playwright/test';
 import { openSharedEditor } from './helpers/sharedPage';
 
-// Every test here just runs window.partwright.run/listLabels/paintByLabel and
-// asserts on the result — nothing persists between tests that matters (labels
-// are reset to the current run's set each time) — so the file shares one
-// booted editor instead of paying a fresh page + WASM boot per test.
+// Every test clears paint, then runs window.partwright.run/listLabels/
+// paintByLabel and asserts on the result (labels reset to the current run's
+// set each time; paint is cleared explicitly since pw.run() keeps it), so the
+// file shares one booted editor instead of paying a fresh page + WASM boot.
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
   page = await openSharedEditor(browser, testInfo);
@@ -30,6 +30,7 @@ test.describe('labelled construction', () => {
     const ran = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       const r = await pw.run(`
         const { Manifold } = api;
         const head = api.label(Manifold.sphere(20, 64), 'head');
@@ -84,6 +85,7 @@ test.describe('labelled construction', () => {
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([10, 10, 10]);');
     });
     const labels = await page.evaluate(async () => {
@@ -106,6 +108,7 @@ test.describe('labelled construction', () => {
     const ran = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       return pw.run(`
         const { Manifold } = api;
         return api.labeledUnion([

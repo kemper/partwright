@@ -33,110 +33,115 @@ async function resetCube(page: Page, dims: [number, number, number] = [20, 20, 1
 }
 
 let page: Page;
-test.beforeAll(async ({ browser }, testInfo) => {
-  page = await openSharedEditor(browser, testInfo);
-});
-test.afterAll(async () => {
-  await page?.context().close();
-});
-
-test.describe('airbrush', () => {
-  test('paintAirbrush sprays a region, subdivides for speckle, light by default', async () => {
-    await resetCube(page);
-    const out = await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      const before = pw.getMesh().numTri;
-      const r = pw.paintAirbrush({ points: [[0, 0, 5]], radius: 5, seed: 1, color: [0.9, 0.2, 0.2] });
-      return { r, before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
-    });
-    expect(out.r.error).toBeFalsy();
-    expect(out.r.strength).toBe(0.4);              // light spackle by default
-    expect(out.r.triangles).toBeGreaterThan(0);
-    expect(out.after).toBeGreaterThan(out.before); // feather refined for fine speckle
-    expect(out.regions).toBe(1);
+// The shared page lives only inside this describe, so it is closed before the
+// per-test UI describes run (never two WASM editor pages alive at once —
+// the reason playwright.config.ts pins workers: 1).
+test.describe('airbrush — shared page', () => {
+  test.beforeAll(async ({ browser }, testInfo) => {
+    page = await openSharedEditor(browser, testInfo);
+  });
+  test.afterAll(async () => {
+    await page?.context().close();
   });
 
-  test('higher strength covers strictly more (fixed seed → superset, non-flaky)', async () => {
-    await resetCube(page);
-    const out = await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      const spray = (strength: number) => {
-        pw.clearColors();
-        return pw.paintAirbrush({ points: [[0, 0, 5]], radius: 5, strength, softness: 0.5, seed: 1, maxEdge: 0.2, color: [1, 0, 0] }).triangles;
-      };
-      return { light: spray(0.3), heavy: spray(0.9) };
+  test.describe('airbrush', () => {
+    test('paintAirbrush sprays a region, subdivides for speckle, light by default', async () => {
+      await resetCube(page);
+      const out = await page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        const before = pw.getMesh().numTri;
+        const r = pw.paintAirbrush({ points: [[0, 0, 5]], radius: 5, seed: 1, color: [0.9, 0.2, 0.2] });
+        return { r, before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
+      });
+      expect(out.r.error).toBeFalsy();
+      expect(out.r.strength).toBe(0.4);              // light spackle by default
+      expect(out.r.triangles).toBeGreaterThan(0);
+      expect(out.after).toBeGreaterThan(out.before); // feather refined for fine speckle
+      expect(out.regions).toBe(1);
     });
-    expect(out.light).toBeGreaterThan(0);
-    expect(out.heavy).toBeGreaterThan(out.light);
-  });
 
-  test('spray stays on the surface: slab gated by depth, geodesic by connectivity', async () => {
-    await resetCube(page);
-    const out = await page.evaluate(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      // Thin plate: top z=1, bottom z=-1 (2 units thick). A radius-6 spray at the
-      // top centre must stay on the top — the bottom is the back of the wall.
-      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
-      const minZ = (opts: Record<string, unknown>) => {
-        pw.clearColors();
-        pw.paintAirbrush({ points: [[0, 0, 1]], radius: 6, strength: 1, softness: 0.5, seed: 1, color: [1, 0, 0], ...opts });
-        return pw.listRegions()[0].bbox.min[2];
-      };
-      return {
-        slabShallow: minZ({ surface: 'slab', depth: 0.5 }), // hugs the top face
-        slabDeep: minZ({ surface: 'slab', depth: 5 }),      // depth > plate → reaches back
-        geodesic: minZ({ surface: 'geodesic' }),            // follows the surface, no depth
-      };
+    test('higher strength covers strictly more (fixed seed → superset, non-flaky)', async () => {
+      await resetCube(page);
+      const out = await page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        const spray = (strength: number) => {
+          pw.clearColors();
+          return pw.paintAirbrush({ points: [[0, 0, 5]], radius: 5, strength, softness: 0.5, seed: 1, maxEdge: 0.2, color: [1, 0, 0] }).triangles;
+        };
+        return { light: spray(0.3), heavy: spray(0.9) };
+      });
+      expect(out.light).toBeGreaterThan(0);
+      expect(out.heavy).toBeGreaterThan(out.light);
     });
-    expect(out.slabShallow).toBeGreaterThan(0); // shallow slab spray stayed on the top
-    expect(out.geodesic).toBeGreaterThan(0);    // geodesic spray never bled through
-    expect(out.slabDeep).toBeLessThan(0);       // a deep slab is the gate that lets it through
-  });
 
-  test('the speckle is deterministic across save + reload', async () => {
-    await resetCube(page);
-    const out = await page.evaluate(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      await pw.createSession('airbrush-persist');
-      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
-      pw.paintAirbrush({ points: [[0, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 3, maxEdge: 0.3, color: [0.2, 0.7, 1] });
-      const paintedColored = pw.listRegions()[0].triangles;
-      const sv = await pw.runAndSave(pw.getCode(), 'airbrush-v');
-      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
-      await pw.loadVersion({ index: sv.version.index });
-      return { paintedColored, reloadedColored: pw.listRegions()[0]?.triangles ?? 0, regions: pw.listRegions().length };
+    test('spray stays on the surface: slab gated by depth, geodesic by connectivity', async () => {
+      await resetCube(page);
+      const out = await page.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        // Thin plate: top z=1, bottom z=-1 (2 units thick). A radius-6 spray at the
+        // top centre must stay on the top — the bottom is the back of the wall.
+        await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+        const minZ = (opts: Record<string, unknown>) => {
+          pw.clearColors();
+          pw.paintAirbrush({ points: [[0, 0, 1]], radius: 6, strength: 1, softness: 0.5, seed: 1, color: [1, 0, 0], ...opts });
+          return pw.listRegions()[0].bbox.min[2];
+        };
+        return {
+          slabShallow: minZ({ surface: 'slab', depth: 0.5 }), // hugs the top face
+          slabDeep: minZ({ surface: 'slab', depth: 5 }),      // depth > plate → reaches back
+          geodesic: minZ({ surface: 'geodesic' }),            // follows the surface, no depth
+        };
+      });
+      expect(out.slabShallow).toBeGreaterThan(0); // shallow slab spray stayed on the top
+      expect(out.geodesic).toBeGreaterThan(0);    // geodesic spray never bled through
+      expect(out.slabDeep).toBeLessThan(0);       // a deep slab is the gate that lets it through
     });
-    expect(out.paintedColored).toBeGreaterThan(0);
-    expect(out.reloadedColored).toBe(out.paintedColored); // same speckle reproduced
-    expect(out.regions).toBe(1);
-  });
 
-  test('overlapping sprays survive save + reload identically (multi-stroke determinism)', async () => {
-    await resetCube(page);
-    const out = await page.evaluate(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      await pw.createSession('airbrush-multi');
-      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
-      // Two overlapping sprays — the second appends onto the mesh the first
-      // already refined; reload replays both from the base. The dither keys off
-      // refined centroids, so both paths must converge.
-      pw.paintAirbrush({ points: [[-3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 2, maxEdge: 0.3, color: [1, 0, 0] });
-      pw.paintAirbrush({ points: [[3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 3, maxEdge: 0.3, color: [0, 0, 1] });
-      const live = pw.listRegions().map((r: { triangles: number }) => r.triangles);
-      const sv = await pw.runAndSave(pw.getCode(), 'multi-v');
-      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
-      await pw.loadVersion({ index: sv.version.index });
-      return { live, reloaded: pw.listRegions().map((r: { triangles: number }) => r.triangles) };
+    test('the speckle is deterministic across save + reload', async () => {
+      await resetCube(page);
+      const out = await page.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        await pw.createSession('airbrush-persist');
+        await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+        pw.paintAirbrush({ points: [[0, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 3, maxEdge: 0.3, color: [0.2, 0.7, 1] });
+        const paintedColored = pw.listRegions()[0].triangles;
+        const sv = await pw.runAndSave(pw.getCode(), 'airbrush-v');
+        await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+        await pw.loadVersion({ index: sv.version.index });
+        return { paintedColored, reloadedColored: pw.listRegions()[0]?.triangles ?? 0, regions: pw.listRegions().length };
+      });
+      expect(out.paintedColored).toBeGreaterThan(0);
+      expect(out.reloadedColored).toBe(out.paintedColored); // same speckle reproduced
+      expect(out.regions).toBe(1);
     });
-    expect(out.live.length).toBe(2);
-    expect(out.live[0]).toBeGreaterThan(0);
-    expect(out.live[1]).toBeGreaterThan(0);
-    expect(out.reloaded).toEqual(out.live); // both sprays reproduce exactly on reload
+
+    test('overlapping sprays survive save + reload identically (multi-stroke determinism)', async () => {
+      await resetCube(page);
+      const out = await page.evaluate(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        await pw.createSession('airbrush-multi');
+        await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+        // Two overlapping sprays — the second appends onto the mesh the first
+        // already refined; reload replays both from the base. The dither keys off
+        // refined centroids, so both paths must converge.
+        pw.paintAirbrush({ points: [[-3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 2, maxEdge: 0.3, color: [1, 0, 0] });
+        pw.paintAirbrush({ points: [[3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 3, maxEdge: 0.3, color: [0, 0, 1] });
+        const live = pw.listRegions().map((r: { triangles: number }) => r.triangles);
+        const sv = await pw.runAndSave(pw.getCode(), 'multi-v');
+        await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+        await pw.loadVersion({ index: sv.version.index });
+        return { live, reloaded: pw.listRegions().map((r: { triangles: number }) => r.triangles) };
+      });
+      expect(out.live.length).toBe(2);
+      expect(out.live[0]).toBeGreaterThan(0);
+      expect(out.live[1]).toBeGreaterThan(0);
+      expect(out.reloaded).toEqual(out.live); // both sprays reproduce exactly on reload
+    });
   });
 });
 

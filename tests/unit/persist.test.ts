@@ -11,8 +11,14 @@
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
+// Each test overrides navigator.storage; put the original descriptor back so
+// nothing leaks past this file even if vitest's isolation settings change.
+const originalStorage = Object.getOwnPropertyDescriptor(navigator, 'storage');
+
 afterEach(() => {
   vi.resetModules();
+  if (originalStorage) Object.defineProperty(navigator, 'storage', originalStorage);
+  else delete (navigator as { storage?: unknown }).storage;
 });
 
 describe('Persistent storage', () => {

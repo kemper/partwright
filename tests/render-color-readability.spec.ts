@@ -67,9 +67,9 @@ async function decodeAndSample(page: import('playwright/test').Page, dataUrl: st
   }, dataUrl);
 }
 
-// Each test starts fresh with its own pw.run(...) call and checks the
-// rendered PNG — no state persists between tests that matters — so the file
-// shares one booted editor instead of paying a fresh page + WASM boot per test.
+// Each test clears paint and runs its own model before checking the rendered
+// PNG (pw.run() keeps existing paint), so the file shares one booted editor
+// instead of paying a fresh page + WASM boot per test.
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
   page = await openSharedEditor(browser, testInfo);
@@ -83,6 +83,7 @@ test.describe('render-color readability', () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.sphere(10, 32);');
       return pw.renderView({ elevation: 30, azimuth: 0, ortho: false, size: 240 });
     });
@@ -107,6 +108,7 @@ test.describe('render-color readability', () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 11] }, color: [1, 0, 0] });
       return pw.renderView({ elevation: 90, azimuth: 0, ortho: true, size: 240 });
@@ -127,6 +129,7 @@ test.describe('render-color readability', () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 11] }, color: [1, 0, 0] }); // top: red
       pw.paintInBox({ box: { min: [9, -12, -12], max: [11, 12, 12] }, color: [0, 0.7, 0] }); // +X: green

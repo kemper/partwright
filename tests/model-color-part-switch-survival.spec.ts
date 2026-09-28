@@ -26,8 +26,7 @@ interface API {
 }
 
 // The parts-list row click handler is fire-and-forget (`void cb.onSelectPart`),
-// so poll for the active part to actually flip before proceeding — the real
-// (if partial) completion signal. Callers that then assert on rendered colors
+// so poll for the active part to actually flip, then settle (see below). Callers that then assert on rendered colors
 // additionally poll those colors directly (via expect.poll), since currentPart
 // flips before loadPartIntoEditor's color restore finishes.
 async function clickPart(page: Page, id: string) {
@@ -40,6 +39,12 @@ async function clickPart(page: Page, id: string) {
     ),
     { timeout: 10_000, message: 'the part row click to register' },
   );
+  // isCurrent flips inside changePart, but selectPart's tail (seedStarter,
+  // attachment restore, restoreDraftIfNewer) is still running and exposes no
+  // completion signal. Hold a bounded settle so two back-to-back switches
+  // can't interleave (seedStarter drops paint state). Replace with a real
+  // part-load idle signal once one exists (kemper/partwright#974).
+  await page.waitForTimeout(750);
 }
 
 // Vertices in the displayed solid mesh whose color is NOT the default blue.

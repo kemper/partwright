@@ -111,16 +111,18 @@ test.describe('viewport camera persistence', () => {
     // Sanity: we actually moved off the default ~45°/35° framing.
     expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
 
-    // Switch to the earlier version. loadVersion's setValue synchronously
-    // cancels any pending debounced auto-run (see codeEditor.ts setValue), so
-    // there's no later re-render to wait out — just a small margin for the
-    // evaluate() round-trip to fully settle in the page.
+    // Switch to the earlier version. The regression this guards is the
+    // debounced auto-run (300 ms, codeEditor.ts) firing after loadVersion's
+    // programmatic setValue and snapping the camera — so this is a NEGATIVE
+    // check that needs an observation window longer than that debounce plus a
+    // render. Don't shrink it on the assumption that setValue cancels the
+    // debounce: that cancel is exactly what's under test.
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const versions = await pw.listVersions();
       await pw.loadVersion({ index: versions[0].index });
     });
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(800);
 
     const after = await camera(page);
     expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(2);

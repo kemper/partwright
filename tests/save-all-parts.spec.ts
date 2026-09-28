@@ -250,7 +250,13 @@ test.describe('Multi-part save', () => {
     await expect(dialog).toBeVisible({ timeout: 5_000 });
     await dialog.getByRole('button', { name: 'Save current part only' }).click();
 
-    const counts = await waitForVersionCounts(page, { 'Part 1': 2, Bracket: 1, Spacer: 1 });
+    await waitForVersionCounts(page, { 'Part 1': 2, Bracket: 1, Spacer: 1 });
+    // Negative check: a regression that ALSO saved the other parts would save
+    // the current part first and the others hundreds of ms later (the
+    // saveSelectedParts loop selects each part in turn), so the poll above can
+    // return before they land. Hold a bounded window, then re-read.
+    await page.waitForTimeout(1500);
+    const counts = await readVersionCountsByName(page);
     // Only Part 1 (the current part) gained a version; the others stay at v1.
     expect(counts['Part 1']).toBe(2);
     expect(counts['Bracket']).toBe(1);

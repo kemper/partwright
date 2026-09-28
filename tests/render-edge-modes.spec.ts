@@ -37,9 +37,10 @@ async function meanBrightness(page: import('playwright/test').Page, dataUrl: str
   }, dataUrl);
 }
 
-// Each test starts fresh with its own pw.run(...) call and checks the
-// rendered PNG — no state persists between tests that matters — so the file
-// shares one booted editor instead of paying a fresh page + WASM boot per test.
+// Each test clears paint and runs its own model before checking the rendered
+// PNG (a painted mesh switches the default edge mode, and pw.run() keeps
+// existing paint), so the file shares one booted editor instead of paying a
+// fresh page + WASM boot per test.
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
   page = await openSharedEditor(browser, testInfo);
@@ -56,6 +57,7 @@ test.describe('render edge modes', () => {
     const urls = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20,20,20], true).add(api.Manifold.cylinder(34, 7, 7, 96, true));');
       const view = { elevation: 30, azimuth: 35, ortho: false, size: 320 } as const;
       return {
@@ -94,6 +96,7 @@ test.describe('render edge modes', () => {
     const urls = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20,20,20], true).add(api.Manifold.cylinder(34, 7, 7, 96, true));');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 18] }, color: [1, 0, 0] });
       const view = { elevation: 30, azimuth: 35, ortho: false, size: 320 } as const;
@@ -121,6 +124,7 @@ test.describe('render edge modes', () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([10,10,10], true);');
       try {
         await pw.renderViews({ edges: 'sketch' });

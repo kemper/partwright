@@ -9,9 +9,10 @@
 import { test, expect, type Page } from 'playwright/test';
 import { openSharedEditor } from './helpers/sharedPage';
 
-// Both tests create their own fresh session via createSession() before
-// running (the second test also resets the engine language, since the first
-// test ends on a voxel run and createSession() doesn't reset it), so the file
+// Both tests create their own fresh session via createSession() and clear
+// paint before running (createSession() keeps live paint regions and the
+// engine language — the second test resets the language since the first
+// ends on a voxel run), so the file
 // shares one booted editor instead of paying a fresh page + WASM boot per test.
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
@@ -37,6 +38,7 @@ test.describe('thumbnail camera pin', () => {
       `;
 
       await pw.createSession('thumb-camera-spec');
+      pw.clearColors();
       await pw.runAndSave(code, 'default-iso', {});
       const e0 = await pw.exportSession(undefined, { includeThumbnails: true });
       const t0 = e0.versions[e0.versions.length - 1].thumbnail as string;
@@ -97,6 +99,7 @@ test.describe('thumbnail camera pin', () => {
       // so this test's manifold-js code actually runs on the manifold-js engine.
       await pw.setActiveLanguage('manifold-js');
       await pw.createSession('current-capture-spec');
+      pw.clearColors();
       await pw.runAndSave('return api.Manifold.cube([20,20,20], true);', 'box', {});
       // Freshly-run framing is the iso 3/4 view from the +X/−Y corner; capturing
       // it maps straight through to the iso default (azimuth 45, elevation ~35)

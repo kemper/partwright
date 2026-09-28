@@ -17,10 +17,10 @@ const PARAM_COLOR_MODEL = `const { Manifold } = api;
 const p = api.params({ accent: { type: 'color', default: '#00ff00', label: 'Accent' } });
 return api.label(Manifold.cube([20, 20, 20], true), 'body', { color: p.accent });`;
 
-// Each test runs its own pw.run(code) and asserts on the result. No test
-// paints anything until the third one, and by then the model was just
-// re-run with fresh code, so the file shares one booted editor instead of
-// paying a fresh page + WASM boot per test.
+// Each test runs its own pw.run(code) and asserts on the result, so the file
+// shares one booted editor instead of paying a fresh page + WASM boot per
+// test. pw.run() re-resolves existing user paint rather than clearing it, so
+// tests whose premise is "no manual paint" call clearColors() first.
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
   page = await openSharedEditor(browser, testInfo);
@@ -85,6 +85,7 @@ test.describe('Model-declared color', () => {
     const res = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run(code);
       const beforeRegions = pw.listRegions().length;
       const paint = pw.paintByLabel({ label: 'body', color: [0, 0, 0] });
@@ -106,10 +107,13 @@ test.describe('Model-declared color', () => {
     const out = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run(code); // model-declared colors, NO manual paint
+      const userRegions = pw.listRegions().length;
       const obj = await pw.exportOBJData();
       const tmf = await pw.export3MFData();
       return {
+        userRegions,
         objMime: obj.mimeType as string,
         objFile: obj.filename as string,
         objColored: !!obj.base64 && obj.text === undefined,
@@ -119,7 +123,9 @@ test.describe('Model-declared color', () => {
 
     // With colors declared in code and no manual paint, OBJ must export the
     // colored bundle (.obj + .mtl ZIP) — the regression the export gate used to
-    // miss was emitting a plain, uncolored .obj here.
+    // miss was emitting a plain, uncolored .obj here. Pin the premise: any
+    // leftover user paint would make the export colored for the wrong reason.
+    expect(out.userRegions).toBe(0);
     expect(out.objMime).toBe('application/zip');
     expect(out.objFile.endsWith('.zip')).toBe(true);
     expect(out.objColored).toBe(true);
