@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import * as anthropic from '../../src/ai/anthropic';
+import { getLimits } from '../../src/ai/catalog';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -142,6 +143,34 @@ describe('Anthropic thinking config', () => {
     // edited; see ai-history-caching.spec.ts.)
     expect(bodies.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(bodies.opus55Off.output_config).toEqual({ effort: 'low' });
+  });
+
+  test('plain turns default to a 32k ceiling, and every ceiling is capped at the model output limit', async () => {
+    // Opus 4.8 at Off runs without thinking, so it gets the plain default.
+    // A caller-supplied ceiling above Haiku 4.5's output limit is clamped
+    // down to that limit (the API 400s above it).
+    const bodies: Record<string, { max_tokens?: number }> = {};
+    async function run(key: string, model: string, maxTokens?: number) {
+      anthropic.resetClient();
+      vi.stubGlobal('fetch', async (_input: unknown, init: { body?: string }) => {
+        bodies[key] = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(new Blob([SSE]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      });
+      try {
+        await anthropic.streamTurn({
+          apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '', maxTokens,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: 'off',
+        });
+      } catch { /* body already captured */ }
+    }
+    await run('opus48', 'claude-opus-4-8');
+    await run('haikuHuge', 'claude-haiku-4-5', 500_000);
+    const haikuLimit = getLimits('anthropic', 'claude-haiku-4-5')?.output;
+
+    expect(bodies.opus48.max_tokens).toBe(32768);
+    expect(haikuLimit).toBeGreaterThan(0);
+    expect(bodies.haikuHuge.max_tokens).toBe(haikuLimit);
   });
 
   test('uses adaptive thinking + effort on adaptive-only models and self-heals a thinking-shape 400', async () => {
