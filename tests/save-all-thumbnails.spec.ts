@@ -10,6 +10,7 @@
 // screen.
 
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 async function openEditor(page: Page) {
@@ -30,21 +31,40 @@ test('Save-all gives each freshly-created part its own thumbnail', async ({ page
 
   // Create several parts via the + button with no edits — pure starter
   // geometry. Starters rotate through distinct, self-colored primitives, so
-  // each part's thumbnail should differ.
+  // each part's thumbnail should differ. "+" is fire-and-forget, so poll the
+  // part count instead of sleeping past a guess.
   for (let i = 0; i < 4; i++) {
     await page.locator('#btn-add-part').click();
-    await page.waitForTimeout(900);
+    await waitFor(
+      () => page.evaluate((n) => (window as any).partwright.listParts().length === n, i + 2),
+      { timeout: 10_000, message: `${i + 2} parts to exist` },
+    );
   }
 
   // Save everything at once via the modal.
   await page.keyboard.press('ControlOrMeta+s');
-  await page.waitForTimeout(800);
   const dialog = page.getByRole('dialog');
+  // The modal may or may not appear depending on part state; wait briefly for
+  // it rather than sleeping a fixed guess before checking.
+  await dialog.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => {});
   if (await dialog.isVisible().catch(() => false)) {
     const saveAll = dialog.getByRole('button', { name: 'Save all' });
     if (await saveAll.isVisible().catch(() => false)) await saveAll.click();
     else await dialog.getByRole('button', { name: /save/i }).first().click();
-    await page.waitForTimeout(4000);
+    // The modal closes the instant the button is clicked (before the async
+    // save loop runs), so poll for every part to actually gain a saved
+    // version (a direct, read-only db.ts read — see save-all-parts.spec.ts
+    // for why this avoids partwright.changePart()-based polling here).
+    await waitFor(
+      () => page.evaluate(async () => {
+        const pw = (window as any).partwright;
+        const db = await import('/src/storage/db.ts');
+        const parts = pw.listParts();
+        const counts = await Promise.all(parts.map((p: any) => (db as any).getVersionCount(p.id)));
+        return counts.every((n: number) => n >= 1) ? counts : null;
+      }),
+      { timeout: 15_000, message: 'every part to gain a saved version' },
+    );
   }
 
   // Hash each part's saved thumbnail bytes; rotating starters ⇒ all distinct.

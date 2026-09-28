@@ -12,7 +12,8 @@
 // default tracking 'crease' (and clearly differing from 'wireframe') is the
 // behavioral guard for the change.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 async function meanBrightness(page: import('playwright/test').Page, dataUrl: string): Promise<number> {
   return page.evaluate(async (url: string) => {
@@ -36,17 +37,27 @@ async function meanBrightness(page: import('playwright/test').Page, dataUrl: str
   }, dataUrl);
 }
 
-test.describe('render edge modes', () => {
-  test('uncolored renders default to crease edges, not the full wireframe', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
+// Each test clears paint and runs its own model before checking the rendered
+// PNG (a painted mesh switches the default edge mode, and pw.run() keeps
+// existing paint), so the file shares one booted editor instead of paying a
+// fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('render edge modes', () => {
+  test('uncolored renders default to crease edges, not the full wireframe', async () => {
     // A cube fused with a many-segment cylinder: the cube contributes hard
     // 90° corners (crease edges), the cylinder a curved surface whose facet
     // edges only the full wireframe should draw.
     const urls = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20,20,20], true).add(api.Manifold.cylinder(34, 7, 7, 96, true));');
       const view = { elevation: 30, azimuth: 35, ortho: false, size: 320 } as const;
       return {
@@ -79,15 +90,13 @@ test.describe('render edge modes', () => {
     ).toBeLessThan(Math.abs(def - wire));
   });
 
-  test('painted meshes keep a clean (no-overlay) default', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('painted meshes keep a clean (no-overlay) default', async () => {
     // Paint the cube, then the default render must have no overlay; forcing
     // wireframe must visibly add ink even over paint.
     const urls = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20,20,20], true).add(api.Manifold.cylinder(34, 7, 7, 96, true));');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 18] }, color: [1, 0, 0] });
       const view = { elevation: 30, azimuth: 35, ortho: false, size: 320 } as const;
@@ -111,13 +120,11 @@ test.describe('render edge modes', () => {
     expect(wire, `explicit wireframe should still draw over paint — ${ctx}`).toBeLessThan(none - 0.005);
   });
 
-  test('renderViews rejects an unknown edges value', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('renderViews rejects an unknown edges value', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([10,10,10], true);');
       try {
         await pw.renderViews({ edges: 'sketch' });
