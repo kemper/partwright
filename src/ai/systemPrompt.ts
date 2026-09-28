@@ -62,7 +62,7 @@ live source of truth and OVERRIDES anything said earlier in this
 conversation: if it shows a capability as ON — paint included — use it even
 if it was off earlier, and never tell the user it is disabled.
 
-When a tool result shows "Tool call was interrupted and did not complete," do
+When a tool result says the call "did not complete" or was interrupted, do
 NOT assume it failed — the call may have completed just before the stream was
 cut. Verify with getSessionContext() (includes currentCode + version list)
 and getGeometryData() before re-running, so you don't create a duplicate

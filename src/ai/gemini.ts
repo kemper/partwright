@@ -426,12 +426,11 @@ function mapStopReason(reason: string): string {
 }
 
 function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
-  // Pair any orphaned tool calls with synthetic error results first. Unlike
-  // anthropic.ts (sanitizeToolUse) and openai.ts (sanitizeChatToolMessages),
-  // Gemini had no repair pass, so an assistant turn whose functionCall lacked a
-  // following functionResponse (an interrupted/timed-out tool round) produced a
-  // malformed history. repairToolHistory injects the missing results so the
-  // synthetic functionResponse parts are emitted below.
+  // Canonicalize the tool_use/tool_result invariant first — the shared
+  // repairToolHistory every provider builder runs (see #914). It pairs an
+  // orphaned functionCall (interrupted/timed-out tool round) with a synthetic
+  // error result, emitted as a functionResponse below, and strips a
+  // functionResponse whose call was dropped by compaction.
   const history = repairToolHistory(rawHistory).messages;
   const out: GeminiContent[] = [];
   for (const msg of history) {
