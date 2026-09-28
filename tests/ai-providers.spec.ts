@@ -901,6 +901,59 @@ test.describe('Multi-provider AI', () => {
     expect(out.healedStop).toBe('end_turn');
   });
 
+  test('Anthropic Off sends low effort on always-thinking models and caps max_tokens at the model limit', async ({ page }) => {
+    // Opus 5.x/Fable think even with `thinking` omitted, so Off maps to the
+    // lowest effort; Opus 4.8 genuinely runs without thinking, so Off stays a
+    // bare request. max_tokens defaults to 32K and never exceeds the model's
+    // catalog output limit (the API 400s above it).
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const a = await import('/src/ai/anthropic.ts');
+      const { getLimits } = await import('/src/ai/catalog.ts');
+      const origFetch = window.fetch;
+      const SSE = [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+        '',
+      ].join('\n');
+      const bodies: Record<string, Record<string, unknown>> = {};
+      async function run(key: string, model: string, maxTokens?: number) {
+        a.resetClient();
+        // @ts-expect-error test stub
+        window.fetch = async (_i: unknown, init: { body?: string }) => {
+          bodies[key] = JSON.parse(String(init?.body ?? '{}'));
+          return new Response(new Blob([SSE]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        };
+        await a.streamTurn({
+          apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '', maxTokens,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: 'off',
+        });
+      }
+      try {
+        await run('opus55', 'claude-opus-5-5');
+        await run('opus48', 'claude-opus-4-8');
+        await run('haikuHuge', 'claude-haiku-4-5', 500_000);
+      } finally { window.fetch = origFetch; }
+      return { bodies, haikuLimit: getLimits('anthropic', 'claude-haiku-4-5')?.output };
+    });
+    expect(out.bodies.opus55.thinking).toBeUndefined();
+    expect(out.bodies.opus55.output_config).toEqual({ effort: 'low' });
+    expect(out.bodies.opus55.max_tokens).toBe(32768);
+    expect(out.bodies.opus48.thinking).toBeUndefined();
+    expect(out.bodies.opus48.output_config).toBeUndefined();
+    expect(out.haikuLimit).toBeGreaterThan(0);
+    expect(out.bodies.haikuHuge.max_tokens).toBe(out.haikuLimit);
+  });
+
   test('Anthropic replays signed thinking blocks before tool_use during tool use', async ({ page }) => {
     // The riskiest invariant: when thinking is on, an assistant turn that
     // contains a tool_use must lead with its signed thinking block, or the

@@ -40,6 +40,19 @@ export function resolveAnthropicThinkingMode(modelId: string): AnthropicThinking
   return LEGACY_BUDGET_MODEL.test(modelId) ? 'budget' : 'adaptive';
 }
 
+/** True when the model reasons even with the `thinking` param omitted — so
+ *  the pill's Off can't turn thinking off. Omitting it runs adaptive thinking
+ *  on Opus 5.x, Sonnet 5 and Fable (Opus 5.5 / Fable 400 on an explicit
+ *  `{type:'disabled'}`), but means no thinking on the 4.x adaptive models
+ *  (4.6–4.8). Unknown newer families are assumed to think by default, like
+ *  every family since Claude 5. */
+export function anthropicThinksWhenOff(
+  modelId: string,
+  mode: AnthropicThinkingMode = resolveAnthropicThinkingMode(modelId),
+): boolean {
+  return mode === 'adaptive' && !/^claude-(?:opus|sonnet|haiku)-4(?:-|$)/.test(modelId);
+}
+
 /** Remember the shape the API told us to use for this model, for the rest of
  *  the page session. */
 export function learnAnthropicThinkingMode(modelId: string, mode: AnthropicThinkingMode): void {

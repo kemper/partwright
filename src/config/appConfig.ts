@@ -48,7 +48,10 @@ export interface AppConfig {
     /** Output token headroom reserved for the answer above the Anthropic
      *  thinking budget. The API requires max_tokens > budget_tokens. */
     answerHeadroomTokens: number;
-    /** Default max output tokens for Anthropic stream turns. */
+    /** Default max output tokens for Anthropic stream turns. A per-response
+     *  runaway guard, not a budget — only generated tokens are billed. Sized
+     *  for models that think even with the pill Off (Opus 5.x, Fable), whose
+     *  reasoning shares this ceiling with the answer and any tool-call input. */
     maxOutputTokensAnthropic: number;
     /** Default max output tokens for OpenAI stream turns (Responses + Chat). */
     maxOutputTokensOpenai: number;
@@ -323,7 +326,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thinkingBudgetGeminiMedium: 8192,
     thinkingBudgetGeminiHigh: 24576,
     answerHeadroomTokens: 8192,
-    maxOutputTokensAnthropic: 8192,
+    maxOutputTokensAnthropic: 32768,
     maxOutputTokensOpenai: 8192,
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,

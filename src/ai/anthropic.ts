@@ -5,6 +5,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getConfig } from '../config/appConfig';
+import { getLimits } from './catalog';
 import type {
   ChatBlock,
   ChatMessage,
@@ -20,6 +21,7 @@ import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
 import {
   anthropicEffort,
+  anthropicThinksWhenOff,
   learnAnthropicThinkingMode,
   resolveAnthropicThinkingMode,
   thinkingModeFromError,
@@ -150,10 +152,11 @@ export interface RequestSpec {
    *  results). */
   apiMessages: Anthropic.MessageParam[];
   tools: ToolDefinition[];
-  /** Hard ceiling on output tokens for this turn. We default to 8K — large
-   *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. When thinking is enabled this is raised
-   *  automatically so it stays above the thinking budget. */
+  /** Hard ceiling on output tokens for this turn. Defaults to
+   *  `maxOutputTokensAnthropic` (32K) — room for reasoning plus a large
+   *  tool call; streaming keeps a high ceiling clear of HTTP timeouts. When
+   *  thinking is enabled this is raised automatically so it stays above the
+   *  thinking budget, and it's capped at the model's catalog output limit. */
   maxTokens?: number;
   /** Extended-thinking level. 'off' (default) sends no `thinking` param.
    *  Low/Med/High enable it — as an increasing token budget on older models,
@@ -162,9 +165,10 @@ export interface RequestSpec {
   thinking?: ChatToggles['thinking'];
 }
 
-/** (Re)attach the thinking config for the model's accepted shape. Adds
- *  nothing when thinking is off — omitting it keeps the request (and the
- *  prompt cache) identical to the pre-feature path. */
+/** (Re)attach the thinking config for the model's accepted shape. With
+ *  thinking off it adds nothing — keeping the request (and the prompt cache)
+ *  identical to the pre-feature path — except on models that think anyway,
+ *  which get `effort: 'low'`. */
 function applyThinking(
   params: Anthropic.MessageStreamParams,
   level: ChatToggles['thinking'],
@@ -173,7 +177,13 @@ function applyThinking(
 ): void {
   delete params.thinking;
   delete params.output_config;
-  if (level === 'off' || budget <= 0) return;
+  if (level === 'off' || budget <= 0) {
+    // Models that think regardless of the param get the lowest effort instead
+    // — the closest thing to Off (Anthropic advises low effort over disabling
+    // thinking on these models).
+    if (anthropicThinksWhenOff(String(params.model), mode)) params.output_config = { effort: 'low' };
+    return;
+  }
   if (mode === 'budget') {
     params.thinking = { type: 'enabled', budget_tokens: budget };
     return;
@@ -195,10 +205,13 @@ export async function streamTurn(
   const cfg = getConfig().ai;
   // The API requires max_tokens > budget_tokens, so when thinking is on we
   // float the ceiling above the budget. When it's off, the configured default
-  // is untouched.
-  const max_tokens = budget > 0
+  // is untouched. Either way, never ask for more than the model can emit (the
+  // API 400s on that) — unless the cap would undercut the thinking budget.
+  const requested = budget > 0
     ? Math.max(spec.maxTokens ?? cfg.maxOutputTokensAnthropic, budget + cfg.answerHeadroomTokens)
     : spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
+  const modelCap = getLimits('anthropic', String(spec.model))?.output;
+  const max_tokens = modelCap && modelCap > budget ? Math.min(requested, modelCap) : requested;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small

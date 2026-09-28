@@ -11,6 +11,7 @@
 
 import { generateId } from '../storage/db';
 import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
+import { anthropicThinksWhenOff } from './anthropicThinking';
 import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
@@ -336,10 +337,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     try {
       if (toggles.provider === 'anthropic') {
         if (!apiKey) throw new Error('Anthropic API key is required.');
-        // Replay captured thinking blocks only when thinking is on for this
-        // turn — required so the tool-use loop doesn't 400 on a tool_use that
-        // isn't preceded by its signed thinking block.
-        const apiMessages = buildApiMessages(sentHistory, { replayThinking: toggles.thinking !== 'off' });
+        // Replay captured thinking blocks whenever the model is thinking this
+        // turn — the pill is on, or the model thinks even with it Off (Opus
+        // 5.x/Fable). Required so the tool-use loop doesn't 400 on a tool_use
+        // that isn't preceded by its signed thinking block, and so preserved-
+        // thinking models keep their reasoning chain.
+        const replayThinking = toggles.thinking !== 'off' || anthropicThinksWhenOff(toggles.anthropicModel);
+        const apiMessages = buildApiMessages(sentHistory, { replayThinking });
         result = await streamTurn({
           apiKey,
           model: toggles.anthropicModel,

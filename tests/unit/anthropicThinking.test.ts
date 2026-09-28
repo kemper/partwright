@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import {
   anthropicEffort,
+  anthropicThinksWhenOff,
   learnAnthropicThinkingMode,
   resetLearnedThinkingModes,
   resolveAnthropicThinkingMode,
@@ -42,6 +43,17 @@ describe('resolveAnthropicThinkingMode', () => {
   test('a learned override beats the catalog and the heuristic', () => {
     learnAnthropicThinkingMode('claude-haiku-4-5', 'adaptive');
     expect(resolveAnthropicThinkingMode('claude-haiku-4-5')).toBe('adaptive');
+  });
+});
+
+describe('anthropicThinksWhenOff', () => {
+  test('Claude 5-era models think with the param omitted; 4.x and budget models do not', () => {
+    for (const id of ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-opus-6']) {
+      expect(anthropicThinksWhenOff(id), id).toBe(true);
+    }
+    for (const id of ['claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-3-7-sonnet-latest']) {
+      expect(anthropicThinksWhenOff(id), id).toBe(false);
+    }
   });
 });
 

@@ -431,7 +431,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Anthropic max output tokens"
           unit="tokens"
-          tooltip="The max_tokens value sent to Anthropic's API on every turn. This is the total output ceiling including any thinking tokens. If you've set a High thinking budget above this value, the API will error — raise both together."
+          tooltip="The max_tokens value sent to Anthropic's API on every turn — the ceiling on one response, including any thinking tokens. You're billed only for tokens actually generated, so this guards against runaway responses rather than setting a budget. With thinking on it's raised automatically above the thinking budget; it's also capped at the model's own output limit."
           defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropic}
           value={c.ai.maxOutputTokensAnthropic}
           min={1024} max={200_000} integer
