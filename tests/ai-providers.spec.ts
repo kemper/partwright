@@ -66,11 +66,14 @@ test.describe('Multi-provider AI', () => {
     await expect(thinkSel).toBeVisible();
     // Thinking now ships on by default (the standard preset uses 'high').
     await expect(thinkSel).toHaveValue('high');
-    await thinkSel.selectOption('off');
+    // Every level is offered, in order.
+    const values = await thinkSel.locator('option').evaluateAll(opts => opts.map(o => (o as HTMLOptionElement).value));
+    expect(values).toEqual(['off', 'default', 'low', 'medium', 'high', 'xhigh', 'max']);
+    await thinkSel.selectOption('xhigh');
     const stored = await page.evaluate(() =>
       JSON.parse(localStorage.getItem('partwright-ai-settings-v1') || '{}').toggles?.thinking,
     );
-    expect(stored).toBe('off');
+    expect(stored).toBe('xhigh');
   });
 
   test('settings modal has a tab per provider', async ({ page }) => {

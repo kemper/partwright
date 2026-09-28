@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import {
-  anthropicEffort,
+  anthropicCannotDisable,
+  anthropicEffortLevels,
+  learnAnthropicCannotDisable,
   learnAnthropicThinkingMode,
   resetLearnedThinkingModes,
   resolveAnthropicThinkingMode,
   thinkingModeFromError,
 } from '../../src/ai/anthropicThinking';
 import { getCapabilities, getModelOptions } from '../../src/ai/catalog';
+import { anthropicThinkingPlan } from '../../src/ai/thinkingLevels';
+import { THINKING_LEVELS } from '../../src/ai/types';
 
 afterEach(() => resetLearnedThinkingModes());
 
@@ -60,13 +64,29 @@ describe('catalog thinking coverage', () => {
     expect(gaps).toEqual([]);
   });
 
-  test('adaptive models accept every effort level the thinking pill sends', () => {
+  test('adaptive models are only ever sent an effort level they list', () => {
+    const budgets = { low: 2048, medium: 8192, high: 16384 };
     for (const { id } of getModelOptions('anthropic')) {
-      if (resolveAnthropicThinkingMode(id) !== 'adaptive') continue;
-      for (const level of ['low', 'medium', 'high'] as const) {
-        expect(anthropicEffort(id, level), `${id} ${level}`).toBe(level);
+      const mode = resolveAnthropicThinkingMode(id);
+      if (mode !== 'adaptive') continue;
+      const effortLevels = anthropicEffortLevels(id);
+      for (const level of Object.keys(THINKING_LEVELS) as (keyof typeof THINKING_LEVELS)[]) {
+        const plan = anthropicThinkingPlan(id, level, budgets, { mode, effortLevels });
+        if (plan.effort && effortLevels) expect(effortLevels, `${id} ${level}`).toContain(plan.effort);
+        expect(plan.thinking?.type, `${id} ${level}`).not.toBe('enabled');
       }
     }
+  });
+
+  test('a model learned to reject "disabled" runs Off at its lowest effort', () => {
+    expect(anthropicCannotDisable('claude-sonnet-5')).toBe(false);
+    learnAnthropicCannotDisable('claude-sonnet-5');
+    expect(anthropicCannotDisable('claude-sonnet-5')).toBe(true);
+    const plan = anthropicThinkingPlan('claude-sonnet-5', 'off', { low: 1, medium: 1, high: 1 }, {
+      mode: 'adaptive', effortLevels: anthropicEffortLevels('claude-sonnet-5'), cannotDisable: true,
+    });
+    expect(plan.thinking?.type).toBe('adaptive');
+    expect(plan.effort).toBe('low');
   });
 });
 

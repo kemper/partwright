@@ -2,7 +2,7 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
@@ -99,7 +99,7 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
  *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
 export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -146,7 +146,9 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 3,
     maxIterations: 'ultra',
     maxSpend: 'high',
-    thinking: 'high',
+    // XHigh is what Anthropic recommends for agentic work on newer Claude
+    // models; providers/models without it fall back to High.
+    thinking: 'xhigh',
     autoResume: true,
     planFirst: false,
     printOptimized: true,
@@ -163,6 +165,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   customModel: '',
   customModels: [],
   customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
+  customReasoningEffort: false,
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -222,6 +225,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     customModel: t.customModel,
     customModels: [...t.customModels],
     customBaseUrl: t.customBaseUrl,
+    customReasoningEffort: t.customReasoningEffort,
   };
 }
 
@@ -320,6 +324,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       customModel: settings.toggles.customModel,
       customModels: settings.toggles.customModels,
       customBaseUrl: settings.toggles.customBaseUrl,
+      customReasoningEffort: settings.toggles.customReasoningEffort,
     },
   };
 }
@@ -458,6 +463,14 @@ export function setCustomModels(settings: AiSettings, models: string[]): AiSetti
   };
 }
 
+/** Custom provider: whether to send the Thinking level as `reasoning_effort`. */
+export function setCustomReasoningEffort(settings: AiSettings, enabled: boolean): AiSettings {
+  return {
+    ...settings,
+    toggles: { ...settings.toggles, customReasoningEffort: enabled },
+  };
+}
+
 /** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
 export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
   return {
@@ -474,7 +487,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
     maxIterations: partial.maxIterations ?? settings.toggles.maxIterations,
     maxSpend: partial.maxSpend ?? settings.toggles.maxSpend,
-    thinking: partial.thinking ?? settings.toggles.thinking,
+    thinking: parseThinkingLevel(partial.thinking) ?? settings.toggles.thinking,
     autoResume: partial.autoResume ?? settings.toggles.autoResume,
     planFirst: partial.planFirst ?? settings.toggles.planFirst,
     printOptimized: partial.printOptimized ?? settings.toggles.printOptimized,
@@ -486,6 +499,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     customModel: partial.customModel ?? settings.toggles.customModel,
     customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
+    customReasoningEffort: typeof partial.customReasoningEffort === 'boolean' ? partial.customReasoningEffort : settings.toggles.customReasoningEffort,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -565,7 +579,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
-      thinking: tgls.thinking ?? DEFAULT_SETTINGS.toggles.thinking,
+      thinking: parseThinkingLevel(tgls.thinking) ?? DEFAULT_SETTINGS.toggles.thinking,
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
       planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
       printOptimized: tgls.printOptimized ?? DEFAULT_SETTINGS.toggles.printOptimized,
@@ -579,6 +593,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
         ? tgls.customModels.filter((x): x is string => typeof x === 'string')
         : DEFAULT_SETTINGS.toggles.customModels,
       customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
+      customReasoningEffort: typeof tgls.customReasoningEffort === 'boolean' ? tgls.customReasoningEffort : DEFAULT_SETTINGS.toggles.customReasoningEffort,
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,

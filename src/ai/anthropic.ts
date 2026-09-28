@@ -19,25 +19,56 @@ import type {
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
 import {
-  anthropicEffort,
+  anthropicCannotDisable,
+  anthropicEffortLevels,
+  learnAnthropicCannotDisable,
   learnAnthropicThinkingMode,
   resolveAnthropicThinkingMode,
   thinkingModeFromError,
-  type AnthropicThinkingMode,
 } from './anthropicThinking';
+import { anthropicThinkingPlan, isDeepEffort, type AnthropicThinkingPlan } from './thinkingLevels';
 
-/** Map the shared thinking level to Anthropic `budget_tokens`. 0 means
- *  thinking is disabled and no `thinking` param is sent — byte-identical to
- *  the pre-feature request. Budgets must be ≥1024 and strictly less than
- *  `max_tokens`; streamTurn raises max_tokens to guarantee the latter. On
- *  adaptive-thinking models the budget isn't sent, but still sizes the
- *  max_tokens floor so the model has comparable room to reason. */
-function getThinkingBudget(level: ChatToggles['thinking']): number {
-  if (level === 'off') return 0;
+/** Resolve the Thinking level into this model's request shape. Which shape
+ *  the model accepts (budget_tokens vs adaptive + effort) and its effort
+ *  levels come from anthropicThinking.ts (a shape learned from the API's own
+ *  400, then the catalog snapshot, then a name heuristic); what each level
+ *  MEANS for that shape lives in thinkingLevels.ts. Budgets come from the
+ *  user's app config. */
+function thinkingPlan(model: string, level: ChatToggles['thinking']): AnthropicThinkingPlan {
   const cfg = getConfig().ai;
-  if (level === 'low') return cfg.thinkingBudgetAnthropicLow;
-  if (level === 'medium') return cfg.thinkingBudgetAnthropicMedium;
-  return cfg.thinkingBudgetAnthropicHigh;
+  return anthropicThinkingPlan(model, level, {
+    low: cfg.thinkingBudgetAnthropicLow,
+    medium: cfg.thinkingBudgetAnthropicMedium,
+    high: cfg.thinkingBudgetAnthropicHigh,
+  }, {
+    mode: resolveAnthropicThinkingMode(model),
+    effortLevels: anthropicEffortLevels(model),
+    cannotDisable: anthropicCannotDisable(model),
+  });
+}
+
+/** Whether `model` will think on a request at `level` — i.e. whether prior
+ *  thinking blocks must be replayed (a thinking-enabled tool loop 400s when
+ *  the tool_use isn't preceded by its signed thinking block). */
+export function anthropicThinkingActive(model: string, level: ChatToggles['thinking']): boolean {
+  return thinkingPlan(model, level).active;
+}
+
+/** After a 400, the plan to retry with — or null when the error isn't about
+ *  the thinking shape. Learns the correction for the rest of the session:
+ *  a model that rejects `disabled` (it always thinks), or the other of the
+ *  budget / adaptive shapes. */
+function retryPlanAfter(message: string, model: string, level: ChatToggles['thinking'], plan: AnthropicThinkingPlan): AnthropicThinkingPlan | null {
+  if (!plan.thinking || !/thinking/i.test(message)) return null;
+  if (plan.thinking.type === 'disabled') {
+    if (!/disabled/i.test(message)) return null;
+    learnAnthropicCannotDisable(model);
+    return thinkingPlan(model, level);
+  }
+  const next = thinkingModeFromError(message, plan.budgetTokens > 0 ? 'budget' : 'adaptive');
+  if (!next) return null;
+  learnAnthropicThinkingMode(model, next);
+  return thinkingPlan(model, level);
 }
 
 let cachedClient: Anthropic | null = null;
@@ -152,37 +183,12 @@ export interface RequestSpec {
   tools: ToolDefinition[];
   /** Hard ceiling on output tokens for this turn. We default to 8K — large
    *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. When thinking is enabled this is raised
-   *  automatically so it stays above the thinking budget. */
+   *  HTTP timeouts on browsers. When the model thinks this is raised
+   *  automatically (above the budget, or to the adaptive-thinking ceiling). */
   maxTokens?: number;
-  /** Extended-thinking level. 'off' (default) sends no `thinking` param.
-   *  Low/Med/High enable it — as an increasing token budget on older models,
-   *  or adaptive thinking + the matching `output_config.effort` on models
-   *  that only accept that shape (see anthropicThinking.ts). */
+  /** Thinking level (see thinkingLevels.ts for the per-model mapping).
+   *  Omitted = 'off'. */
   thinking?: ChatToggles['thinking'];
-}
-
-/** (Re)attach the thinking config for the model's accepted shape. Adds
- *  nothing when thinking is off — omitting it keeps the request (and the
- *  prompt cache) identical to the pre-feature path. */
-function applyThinking(
-  params: Anthropic.MessageStreamParams,
-  level: ChatToggles['thinking'],
-  mode: AnthropicThinkingMode,
-  budget: number,
-): void {
-  delete params.thinking;
-  delete params.output_config;
-  if (level === 'off' || budget <= 0) return;
-  if (mode === 'budget') {
-    params.thinking = { type: 'enabled', budget_tokens: budget };
-    return;
-  }
-  // Newer models default `display` to 'omitted' (empty thinking text); ask
-  // for the summary so the panel's live thinking box still has content.
-  params.thinking = { type: 'adaptive', display: 'summarized' };
-  const effort = anthropicEffort(String(params.model), level);
-  if (effort) params.output_config = { effort };
 }
 
 export async function streamTurn(
@@ -191,14 +197,10 @@ export async function streamTurn(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const client = getClient(spec.apiKey);
-  const budget = getThinkingBudget(spec.thinking ?? 'off');
+  const level = spec.thinking ?? 'off';
+  const model = String(spec.model);
   const cfg = getConfig().ai;
-  // The API requires max_tokens > budget_tokens, so when thinking is on we
-  // float the ceiling above the budget. When it's off, the configured default
-  // is untouched.
-  const max_tokens = budget > 0
-    ? Math.max(spec.maxTokens ?? cfg.maxOutputTokensAnthropic, budget + cfg.answerHeadroomTokens)
-    : spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
+  const baseMax = spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small
@@ -225,7 +227,7 @@ export async function streamTurn(
 
   const params: Anthropic.MessageStreamParams = {
     model: spec.model,
-    max_tokens,
+    max_tokens: baseMax,
     system,
     messages: spec.apiMessages,
   };
@@ -233,23 +235,40 @@ export async function streamTurn(
   // API to return malformed_function_call if the model tries to use a tool
   // it remembers from earlier turns in the conversation.
   if (tools.length > 0) params.tools = tools;
-  const level = spec.thinking ?? 'off';
-  const mode = resolveAnthropicThinkingMode(String(spec.model));
-  applyThinking(params, level, mode, budget);
+  // (Re)attach the thinking config + output ceiling for a plan. Only what
+  // the plan asks for is sent — an omitted field keeps the model's own
+  // default (e.g. Haiku at 'off' sends neither, matching the pre-feature
+  // request).
+  const applyPlan = (plan: AnthropicThinkingPlan): void => {
+    delete params.thinking;
+    delete params.output_config;
+    if (plan.thinking) params.thinking = plan.thinking;
+    if (plan.effort) params.output_config = { effort: plan.effort };
+    // Thinking tokens count against max_tokens. With a fixed budget the API
+    // requires max_tokens > budget_tokens, so float the ceiling above it;
+    // adaptive thinking has no budget, so use the (larger) thinking ceiling.
+    params.max_tokens = plan.budgetTokens > 0
+      ? Math.max(baseMax, plan.budgetTokens + cfg.answerHeadroomTokens)
+      : plan.active
+        ? Math.max(baseMax, isDeepEffort(plan) ? cfg.maxOutputTokensAnthropicThinkingDeep : cfg.maxOutputTokensAnthropicThinking)
+        : baseMax;
+  };
+  const plan = thinkingPlan(model, level);
+  applyPlan(plan);
   try {
     return await runStream(client, params, callbacks, signal);
   } catch (err) {
-    // Self-heal a thinking-shape mismatch (e.g. a model newer than the catalog
-    // snapshot that rejects budget_tokens): a 400 arrives before any stream
-    // output, so switching shape and retrying once is invisible to the UI.
-    // The learned shape sticks for the rest of the session.
-    const retryMode = level !== 'off' && !signal?.aborted && err instanceof Anthropic.BadRequestError
-      ? thinkingModeFromError(err.message, mode)
+    // Self-heal a thinking-shape mismatch (a model newer than the catalog
+    // snapshot that rejects budget_tokens, or one that can't disable
+    // thinking): the 400 arrives before any stream output, so switching shape
+    // and retrying once is invisible to the UI. The correction sticks for the
+    // rest of the session.
+    const retry = !signal?.aborted && err instanceof Anthropic.BadRequestError
+      ? retryPlanAfter(err.message, model, level, plan)
       : null;
-    if (!retryMode) throw err;
-    console.info(`[anthropic] ${spec.model} rejected ${mode} thinking; retrying with ${retryMode}`);
-    learnAnthropicThinkingMode(String(spec.model), retryMode);
-    applyThinking(params, level, retryMode, budget);
+    if (!retry) throw err;
+    console.info(`[anthropic] ${model} rejected its thinking config; retrying with ${JSON.stringify(retry.thinking ?? null)}`);
+    applyPlan(retry);
     return runStream(client, params, callbacks, signal);
   }
 }

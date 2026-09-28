@@ -190,6 +190,9 @@ describe('Gemini streamTurn', () => {
     }
     await run('off', 'off');
     await run('high', 'high');
+    await run('default', 'default');
+    // Default: thoughts shown, the model picks its own budget.
+    expect(bodies.default.generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
     expect(bodies.off.generationConfig.thinkingConfig.includeThoughts).toBe(false);
     expect(bodies.off.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
     expect(bodies.high.generationConfig.thinkingConfig.includeThoughts).toBe(true);

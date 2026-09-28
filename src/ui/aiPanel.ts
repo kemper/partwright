@@ -646,7 +646,11 @@ async function applySessionAiPreference(): Promise<void> {
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
     // (no needless settings write or transcript-shifting re-render).
-    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    // Compare NORMALIZED forms: a snapshot saved before a toggles field was
+    // added lacks it, so a raw compare would never match and every window
+    // focus would rewrite settings.
+    const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
+      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
     next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
@@ -1615,14 +1619,13 @@ function renderToggleStrip(): void {
   });
   adv.appendChild(spendCap);
 
-  // Thinking level — how much the model reasons before answering. Maps
-  // per-provider to Anthropic extended-thinking budget_tokens, Gemini
-  // thinkingBudget (+ surfaced thought parts), and OpenAI reasoning_effort.
-  // Off (the default) sends no thinking request, so it's the cheapest and
-  // reproduces the pre-feature behavior. No effect on local models.
+  // Thinking level — how much the model reasons before answering. Mapped per
+  // provider + model in src/ai/thinkingLevels.ts (Anthropic adaptive thinking
+  // + effort, or budget_tokens on older Claude; OpenAI reasoning_effort;
+  // Gemini thinkingConfig). No effect on local models.
   const thinkSel = document.createElement('select');
   thinkSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort; on a Custom endpoint any level above Off asks the server to stream the model reasoning. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
+  thinkSel.title = 'Thinking: how much the model reasons before it answers. Off = no extended reasoning where the model allows it (lowest effort on models that always think). Default = let the model decide. Low → Max = increasing effort; a level the model lacks falls back to its nearest one (e.g. Gemini tops out at High). Maps to Claude adaptive thinking + effort, OpenAI reasoning_effort, and Gemini thinking budgets; on a Custom endpoint any level above Off asks the server to stream the model reasoning. High is a good default for modeling. No effect on local models.';
   for (const opt of THINKING_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;

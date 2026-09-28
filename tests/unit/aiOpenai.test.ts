@@ -283,7 +283,7 @@ describe('OpenAI Chat Completions tool-call streaming', () => {
 });
 
 describe('OpenAI thinking / reasoning effort', () => {
-  test('sends reasoning.effort only for reasoning models + non-off levels', async () => {
+  test('maps the thinking level to reasoning.effort on reasoning models only', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const bodies: Record<string, any> = {};
     async function run(model: string, level: string, key: string) {
@@ -297,12 +297,18 @@ describe('OpenAI thinking / reasoning effort', () => {
     }
     await run('gpt-5.5', 'high', 'reasoningHigh');
     await run('gpt-5.5', 'off', 'reasoningOff');
+    await run('gpt-5.5', 'default', 'reasoningDefault');
+    await run('gpt-5.5', 'max', 'reasoningMax');
     await run('gpt-4o', 'high', 'chatHigh');
 
-    // Reasoning model on the Responses path: `reasoning.effort` set when on,
-    // omitted when off.
+    // Reasoning model on the Responses path, clamped to the catalog's effort
+    // list for the model: Off → 'none' (gpt-5.5 lists it; models that don't
+    // get the provider default), Default omits the field, Max clamps to the
+    // model's highest (gpt-5.5 tops out at xhigh).
     expect(bodies.reasoningHigh.reasoning.effort).toBe('high');
-    expect(bodies.reasoningOff.reasoning).toBeUndefined();
+    expect(bodies.reasoningOff.reasoning.effort).toBe('none');
+    expect(bodies.reasoningDefault.reasoning).toBeUndefined();
+    expect(bodies.reasoningMax.reasoning.effort).toBe('xhigh');
     // Non-reasoning model on the Chat Completions path: never carries a
     // reasoning request in either spelling, even at thinking=high.
     expect(bodies.chatHigh.reasoning).toBeUndefined();

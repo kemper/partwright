@@ -37,7 +37,10 @@ export interface AppConfig {
      *  is rejected. Passed through the run_turn message so the Worker can use
      *  the user's value rather than falling back to defaults. */
     toolCallTimeoutMs: number;
-    /** Extended-thinking token budgets for Anthropic (per thinking level). */
+    /** Extended-thinking token budgets for Anthropic (per thinking level).
+     *  Only used by older Claude models (Haiku 4.5, Sonnet/Opus 4.5 and
+     *  earlier) — Claude 4.6+ use adaptive thinking + effort instead, and
+     *  4.7+ reject `budget_tokens` outright. XHigh/Max use the High budget. */
     thinkingBudgetAnthropicLow: number;
     thinkingBudgetAnthropicMedium: number;
     thinkingBudgetAnthropicHigh: number;
@@ -50,6 +53,15 @@ export interface AppConfig {
     answerHeadroomTokens: number;
     /** Default max output tokens for Anthropic stream turns. */
     maxOutputTokensAnthropic: number;
+    /** Max output tokens for Anthropic turns that run adaptive thinking
+     *  (Claude 4.6+ with a Thinking level, or models that always think).
+     *  Thinking tokens count against max_tokens and adaptive thinking has no
+     *  separate budget, so this needs to be much larger than the plain cap or
+     *  high-effort turns stop mid-thought with max_tokens. */
+    maxOutputTokensAnthropicThinking: number;
+    /** Max output tokens for adaptive-thinking turns at XHigh / Max effort,
+     *  which think longest. Every Claude 4.6+ model allows at least 64k. */
+    maxOutputTokensAnthropicThinkingDeep: number;
     /** Default max output tokens for OpenAI stream turns (Responses + Chat). */
     maxOutputTokensOpenai: number;
     /** Default max output tokens for Gemini stream turns (combined thinking +
@@ -324,6 +336,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thinkingBudgetGeminiHigh: 24576,
     answerHeadroomTokens: 8192,
     maxOutputTokensAnthropic: 8192,
+    maxOutputTokensAnthropicThinking: 32768,
+    maxOutputTokensAnthropicThinkingDeep: 64000,
     maxOutputTokensOpenai: 8192,
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,

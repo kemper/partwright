@@ -19,7 +19,6 @@
 //      is adaptive-first.
 
 import { getCapabilities } from './catalog';
-import type { ChatToggles } from './types';
 
 export type AnthropicThinkingMode = 'budget' | 'adaptive';
 
@@ -49,20 +48,26 @@ export function learnAnthropicThinkingMode(modelId: string, mode: AnthropicThink
 /** Test hook: forget every learned override. */
 export function resetLearnedThinkingModes(): void {
   learned.clear();
+  cannotDisable.clear();
 }
 
-/** Map the shared thinking level onto an `output_config.effort` value for an
- *  adaptive model. Returns undefined when the catalog lists the model's effort
- *  levels and this one isn't among them — omitting effort falls back to the
- *  model's own default rather than risking a 400. Low/medium/high are
- *  supported by every adaptive model, so unknown models get them as-is. */
-export function anthropicEffort(
-  modelId: string,
-  level: Exclude<ChatToggles['thinking'], 'off'>,
-): 'low' | 'medium' | 'high' | undefined {
-  const levels = getCapabilities('anthropic', modelId)?.effortLevels;
-  if (levels && !levels.includes(level)) return undefined;
-  return level;
+/** The model's effort levels from the catalog snapshot (e.g. Sonnet 4.6:
+ *  low/medium/high/max — no xhigh), or null when the snapshot doesn't list
+ *  them. thinkingLevels.ts clamps the pill's level to this list. */
+export function anthropicEffortLevels(modelId: string): string[] | null {
+  return getCapabilities('anthropic', modelId)?.effortLevels ?? null;
+}
+
+const cannotDisable = new Set<string>();
+
+/** Remember that this model rejected `thinking: {type: 'disabled'}` (it always
+ *  thinks — Opus 5.5 / Fable), so Off becomes its lowest effort instead. */
+export function learnAnthropicCannotDisable(modelId: string): void {
+  cannotDisable.add(modelId);
+}
+
+export function anthropicCannotDisable(modelId: string): boolean {
+  return cannotDisable.has(modelId);
 }
 
 /** Given a 400 message, return the thinking shape the API is asking for, or

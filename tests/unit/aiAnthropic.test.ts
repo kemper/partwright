@@ -100,12 +100,13 @@ describe('Anthropic thinking config', () => {
     '',
   ].join('\n');
 
-  test('sends the thinking param with budget when enabled, omits it when off', async () => {
-    // Off must reproduce the pre-feature request exactly (no `thinking`
-    // field); a non-off level enables extended thinking with budget_tokens
-    // and floats max_tokens above the budget (the API requires >).
-    const bodies: Record<string, { thinking?: unknown; max_tokens?: number }> = {};
-    async function run(level: string, key: string) {
+  test('sends budget_tokens only to older models; Claude 4.7+ get adaptive thinking + effort', async () => {
+    // Haiku 4.5 (budget model): Off sends no `thinking` field; a level
+    // enables extended thinking with budget_tokens and floats max_tokens above
+    // the budget (the API requires >). Opus 4.7+ REJECT budget_tokens, so they
+    // get adaptive thinking + output_config.effort + a visible summary.
+    const bodies: Record<string, { thinking?: unknown; max_tokens?: number; output_config?: { effort?: string } }> = {};
+    async function run(level: string, key: string, model = 'claude-haiku-4-5') {
       anthropic.resetClient();
       vi.stubGlobal('fetch', async (_input: unknown, init: { body?: string }) => {
         bodies[key] = JSON.parse(String(init?.body ?? '{}'));
@@ -113,7 +114,7 @@ describe('Anthropic thinking config', () => {
       });
       try {
         await anthropic.streamTurn({
-          apiKey: 'k', model: 'claude-haiku-4-5', systemPrompt: 'sys', systemSuffix: '',
+          apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '',
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: level as any,
         });
@@ -121,10 +122,24 @@ describe('Anthropic thinking config', () => {
     }
     await run('off', 'off');
     await run('medium', 'medium');
+    await run('xhigh', 'opus47', 'claude-opus-4-7');
+    await run('off', 'opus47Off', 'claude-opus-4-7');
+    await run('off', 'opus55Off', 'claude-opus-5-5');
 
     expect(bodies.off.thinking).toBeUndefined();
+    expect(bodies.off.output_config).toBeUndefined();
     expect(bodies.medium.thinking).toEqual({ type: 'enabled', budget_tokens: 8192 });
     expect(bodies.medium.max_tokens as number).toBeGreaterThan(8192);
+    // Opus 4.7: never budget_tokens; adaptive + effort, summary visible, and a
+    // max_tokens ceiling big enough for the thinking to fit.
+    expect(bodies.opus47.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(bodies.opus47.output_config).toEqual({ effort: 'xhigh' });
+    // XHigh gets the deep-thinking ceiling (64k by default).
+    expect(bodies.opus47.max_tokens as number).toBeGreaterThanOrEqual(64000);
+    expect(bodies.opus47Off.thinking).toEqual({ type: 'disabled' });
+    // Opus 5.5 can't disable thinking — Off is the lowest effort instead.
+    expect(bodies.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(bodies.opus55Off.output_config).toEqual({ effort: 'low' });
   });
 
   test('uses adaptive thinking + effort on adaptive-only models and self-heals a thinking-shape 400', async () => {
