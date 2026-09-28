@@ -56,3 +56,5 @@ part id flipping after the fire-and-forget "+" click, `waitForPaint()` for
 subdivision, `session.workCamera` landing, or version counts. Post-save-modal
 version counts are read through read-only `db.ts` `listVersions` because
 polling via `changePart()` raced the app's own background save loop.
+
+**Close-out**: retro at retros/inbox/*-e2e-suite-speedup.md; leftovers (timings refresh + automation, Vite watch-ignore for worktrees, fake-indexeddb, reset primitives for brep/voxel-studio/stl-import) filed as #974.
