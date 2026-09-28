@@ -12,6 +12,7 @@
 // error.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 async function waitForEngine(page: Page): Promise<void> {
   await page.waitForSelector('text=Ready', { timeout: 20_000 });
@@ -21,14 +22,22 @@ async function waitForEngine(page: Page): Promise<void> {
   );
 }
 
-test.describe('meshOps sandbox helpers', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
+// Every test in the first two describes only drives window.partwright.run /
+// runIsolated / runAndSave and asserts on the result — no persisted-state or
+// UI-flow dependence between tests — so they share one booted editor page
+// instead of paying a fresh page + WASM boot per test. The SCAD-toggle test at
+// the bottom permanently changes the session's engine language, so it stays on
+// its own per-test page (a describe block using the default `page` fixture).
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
-  test('predicates: intersects, contains, pointInside, bbox, componentBounds, volumeDelta', async ({ page }) => {
+test.describe('meshOps sandbox helpers', () => {
+  test('predicates: intersects, contains, pointInside, bbox, componentBounds, volumeDelta', async () => {
     const errMessage = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runIsolated: (code: string) => Promise<{ geometryData: { status: string; error?: string } }> } }).partwright;
       // Each `expect(cond, msg)` throws if cond is falsy, so the first failing
@@ -75,7 +84,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(errMessage, errMessage ?? 'all predicates returned expected values').toBeNull();
   });
 
-  test('alignment + patterns build the expected geometry shape', async ({ page }) => {
+  test('alignment + patterns build the expected geometry shape', async () => {
     const res = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { status: string; isManifold: boolean; triangleCount: number } }> } }).partwright;
       const code = `
@@ -108,7 +117,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(res.geometry.triangleCount).toBeGreaterThan(0);
   });
 
-  test('expectUnion throws a useful error when components mismatch', async ({ page }) => {
+  test('expectUnion throws a useful error when components mismatch', async () => {
     const errMessage = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runIsolated: (code: string) => Promise<{ geometryData: { status: string; error?: string } }> } }).partwright;
       const code = `
@@ -124,7 +133,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(errMessage).toMatch(/expected 1 component/);
   });
 
-  test('expectUnion passes when components match', async ({ page }) => {
+  test('expectUnion passes when components match', async () => {
     const res = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { status: string; componentCount: number } }> } }).partwright;
       const code = `
@@ -139,7 +148,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(res.geometry.componentCount).toBe(1);
   });
 
-  test('circularPattern.radius shortcut + alignTo("origin") + placeOn("preserve")', async ({ page }) => {
+  test('circularPattern.radius shortcut + alignTo("origin") + placeOn("preserve")', async () => {
     const res = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; componentCount: number } }> } }).partwright;
       const code = `
@@ -177,7 +186,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(res.geometry.componentCount).toBe(1);
   });
 
-  test('spiralPattern builds a helical stack', async ({ page }) => {
+  test('spiralPattern builds a helical stack', async () => {
     const res = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; triangleCount: number } }> } }).partwright;
       const code = `
@@ -196,7 +205,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(res.geometry.triangleCount).toBeGreaterThan(0);
   });
 
-  test('expectComponents standalone predicate throws with bbox detail on mismatch', async ({ page }) => {
+  test('expectComponents standalone predicate throws with bbox detail on mismatch', async () => {
     const errMessage = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runIsolated: (c: string) => Promise<{ geometryData: { error?: string } }> } }).partwright;
       const code = `
@@ -215,7 +224,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(errMessage).toMatch(/bbox=/); // bbox-per-piece dump present
   });
 
-  test('expectUnion error message includes per-piece bbox dump', async ({ page }) => {
+  test('expectUnion error message includes per-piece bbox dump', async () => {
     const errMessage = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runIsolated: (c: string) => Promise<{ geometryData: { error?: string } }> } }).partwright;
       const code = `
@@ -233,7 +242,7 @@ test.describe('meshOps sandbox helpers', () => {
     expect(errMessage).toMatch(/\[1\] vol=27\.00/);
   });
 
-  test('circularPattern with a non-axis-aligned axis produces a geometrically-correct rotation', async ({ page }) => {
+  test('circularPattern with a non-axis-aligned axis produces a geometrically-correct rotation', async () => {
     // The previous version only checked "didn't crash". This one verifies the
     // Rodrigues rotation matrix actually rotates the input into the expected
     // positions — a regression here would silently produce wrong geometry,
@@ -282,13 +291,7 @@ test.describe('meshOps sandbox helpers', () => {
 });
 
 test.describe('partwright window API: renderSection + componentBounds + pointInside + healCurrent', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
-
-  test('renderSection slices on all three axes and returns an SVG data URL', async ({ page }) => {
+  test('renderSection slices on all three axes and returns an SVG data URL', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<unknown>; renderSection: (opts: { axis: 'x' | 'y' | 'z'; offset?: number; size?: number }) => unknown } }).partwright;
       await pw.runAndSave('const { Manifold } = api; return Manifold.cube([20, 14, 10], true);', 'base');
@@ -306,7 +309,7 @@ test.describe('partwright window API: renderSection + componentBounds + pointIns
     expect(y.area).toBeCloseTo(200, 1);
   });
 
-  test('componentBounds returns per-piece bboxes sorted largest-first', async ({ page }) => {
+  test('componentBounds returns per-piece bboxes sorted largest-first', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (c: string, l?: string) => Promise<unknown>; componentBounds: () => unknown } }).partwright;
       await pw.runAndSave(
@@ -324,7 +327,7 @@ test.describe('partwright window API: renderSection + componentBounds + pointIns
     expect(comps[1].index).toBe(1);
   });
 
-  test('pointInside agrees with intuition for a centered cube', async ({ page }) => {
+  test('pointInside agrees with intuition for a centered cube', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (c: string, l?: string) => Promise<unknown>; pointInside: (p: [number, number, number]) => boolean | null } }).partwright;
       await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'cube');
@@ -337,7 +340,7 @@ test.describe('partwright window API: renderSection + componentBounds + pointIns
     expect(result).toEqual({ center: true, outsidePositive: false, outsideNegative: false });
   });
 
-  test('healCurrent returns ok=true on an already-clean cube and reports zero deltas', async ({ page }) => {
+  test('healCurrent returns ok=true on an already-clean cube and reports zero deltas', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (c: string, l?: string) => Promise<unknown>; healCurrent: () => unknown } }).partwright;
       await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'cube');
@@ -348,6 +351,18 @@ test.describe('partwright window API: renderSection + componentBounds + pointIns
     expect(Math.abs(r.volumeDelta)).toBeLessThan(0.01);
     expect(r.componentCountBefore).toBe(1);
     expect(r.componentCountAfter).toBe(1);
+  });
+
+});
+
+// This test switches the session's engine language to SCAD, which the shared
+// page never resets — it stays on the default per-test `page` fixture so it
+// gets its own fresh boot instead of contaminating the shared-page tests above.
+test.describe('partwright window API: SCAD engine parity', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
   });
 
   // Engine-agnostic check — the window-level helpers (renderSection,

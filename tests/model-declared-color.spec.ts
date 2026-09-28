@@ -6,6 +6,7 @@
 // compositing logic itself is unit-tested in tests/unit/regionsCompositing).
 
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 const COLOR_MODEL = `const { Manifold } = api;
 const body = api.label(Manifold.cube([20, 20, 20], true), 'body', { color: '#3b82f6' });
@@ -16,22 +17,20 @@ const PARAM_COLOR_MODEL = `const { Manifold } = api;
 const p = api.params({ accent: { type: 'color', default: '#00ff00', label: 'Accent' } });
 return api.label(Manifold.cube([20, 20, 20], true), 'body', { color: p.accent });`;
 
-async function waitForEngine(page: Page) {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
+// Each test runs its own pw.run(code) and asserts on the result. No test
+// paints anything until the third one, and by then the model was just
+// re-run with fresh code, so the file shares one booted editor instead of
+// paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('Model-declared color', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
-
-  test('api.label({ color }) resolves to colored regions; the editor stays editable', async ({ page }) => {
+  test('api.label({ color }) resolves to colored regions; the editor stays editable', async () => {
     const res = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -58,7 +57,7 @@ test.describe('Model-declared color', () => {
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
 
-  test('a color param drives a region color — setParams re-runs and recolors', async ({ page }) => {
+  test('a color param drives a region color — setParams re-runs and recolors', async () => {
     const out = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -82,7 +81,7 @@ test.describe('Model-declared color', () => {
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
 
-  test('manual paint composites on top of model-declared colors', async ({ page }) => {
+  test('manual paint composites on top of model-declared colors', async () => {
     const res = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -103,7 +102,7 @@ test.describe('Model-declared color', () => {
     expect(res.modelStillThere).toBe(2); // model colors persist underneath the paint
   });
 
-  test('model-declared colors flow into OBJ/3MF export (not only the live GLB scene)', async ({ page }) => {
+  test('model-declared colors flow into OBJ/3MF export (not only the live GLB scene)', async () => {
     const out = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

@@ -11,7 +11,8 @@
 // pipeline always honored vertex colors; the actual problem was
 // readability of the resulting PNG.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 interface PixelStats {
   total: number;
@@ -66,11 +67,19 @@ async function decodeAndSample(page: import('playwright/test').Page, dataUrl: st
   }, dataUrl);
 }
 
-test.describe('render-color readability', () => {
-  test('unpainted mesh silhouette is visible against the white background', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
+// Each test starts fresh with its own pw.run(...) call and checks the
+// rendered PNG — no state persists between tests that matters — so the file
+// shares one booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('render-color readability', () => {
+  test('unpainted mesh silhouette is visible against the white background', async () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -89,10 +98,7 @@ test.describe('render-color readability', () => {
     expect(pureWhiteFraction, `pure-white fraction ${pureWhiteFraction.toFixed(3)} — silhouette should NOT be invisible against the background`).toBeLessThan(0.7);
   });
 
-  test('painted-region color reads cleanly above 5% of the composite', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('painted-region color reads cleanly above 5% of the composite', async () => {
     // Paint the top face of a cube red. Render the top view ortho —
     // the painted face fills the entire tile, so most pixels in that
     // tile should be red-dominant. Without the wireframe-suppression
@@ -117,10 +123,7 @@ test.describe('render-color readability', () => {
     expect(nearBlackFraction, `near-black pixel fraction ${nearBlackFraction.toFixed(3)} — wireframe overlay should be suppressed on colored renders`).toBeLessThan(0.05);
   });
 
-  test('renderViews on a multi-color paint job preserves each color distinctly', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('renderViews on a multi-color paint job preserves each color distinctly', async () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

@@ -12,7 +12,8 @@
 // default tracking 'crease' (and clearly differing from 'wireframe') is the
 // behavioral guard for the change.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 async function meanBrightness(page: import('playwright/test').Page, dataUrl: string): Promise<number> {
   return page.evaluate(async (url: string) => {
@@ -36,11 +37,19 @@ async function meanBrightness(page: import('playwright/test').Page, dataUrl: str
   }, dataUrl);
 }
 
-test.describe('render edge modes', () => {
-  test('uncolored renders default to crease edges, not the full wireframe', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
+// Each test starts fresh with its own pw.run(...) call and checks the
+// rendered PNG — no state persists between tests that matters — so the file
+// shares one booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('render edge modes', () => {
+  test('uncolored renders default to crease edges, not the full wireframe', async () => {
     // A cube fused with a many-segment cylinder: the cube contributes hard
     // 90° corners (crease edges), the cylinder a curved surface whose facet
     // edges only the full wireframe should draw.
@@ -79,10 +88,7 @@ test.describe('render edge modes', () => {
     ).toBeLessThan(Math.abs(def - wire));
   });
 
-  test('painted meshes keep a clean (no-overlay) default', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('painted meshes keep a clean (no-overlay) default', async () => {
     // Paint the cube, then the default render must have no overlay; forcing
     // wireframe must visibly add ink even over paint.
     const urls = await page.evaluate(async () => {
@@ -111,10 +117,7 @@ test.describe('render edge modes', () => {
     expect(wire, `explicit wireframe should still draw over paint — ${ctx}`).toBeLessThan(none - 0.005);
   });
 
-  test('renderViews rejects an unknown edges value', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('renderViews rejects an unknown edges value', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

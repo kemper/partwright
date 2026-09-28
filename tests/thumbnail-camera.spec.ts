@@ -7,23 +7,22 @@
 // per-region paint summary (`colorRegions`) and the voxel `voxelCount`.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
-async function waitForEngine(page: Page) {
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { runAndSave?: unknown } }).partwright?.runAndSave,
-    { timeout: 30_000 },
-  );
-}
+// Both tests create their own fresh session via createSession() before
+// running (the second test also resets the engine language, since the first
+// test ends on a voxel run and createSession() doesn't reset it), so the file
+// shares one booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('thumbnail camera pin', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-  });
-
-  test('pins the camera, persists it, and changes the captured thumbnail', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('pins the camera, persists it, and changes the captured thumbnail', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -88,13 +87,15 @@ test.describe('thumbnail camera pin', () => {
     expect(out.voxelCount).toBe(1000);
   });
 
-  test('"current" captures the live viewport angle (default framing ≈ iso)', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('"current" captures the live viewport angle (default framing ≈ iso)', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      // The previous test ends on a voxel-language run (for its voxelCount
+      // check) and createSession() tags the new session with whatever engine
+      // is currently active rather than resetting it — switch back explicitly
+      // so this test's manifold-js code actually runs on the manifold-js engine.
+      await pw.setActiveLanguage('manifold-js');
       await pw.createSession('current-capture-spec');
       await pw.runAndSave('return api.Manifold.cube([20,20,20], true);', 'box', {});
       // Freshly-run framing is the iso 3/4 view from the +X/−Y corner; capturing

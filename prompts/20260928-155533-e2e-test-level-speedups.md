@@ -34,3 +34,12 @@ persist tests run in the unit tier with `vi.stubGlobal('fetch')` (37 tests;
 assertion count preserved). Tests that drive `chatLoop.runTurn` stay in
 Playwright: it persists through IndexedDB, and adding `fake-indexeddb` as a new
 devDependency for ~8 tests wasn't worth it in this pass.
+
+**What stayed per-test (engine batch)**: brep-integration (the replicad
+Worker's retained `lastShape` is never cleared, and one test asserts there is
+none), voxel-studio (paint mode is activated but never deactivated, and one
+test asserts "not active"), and stl-import (relies on a fresh editor buffer that
+still holds starter code, which only a real reload restores). Each of these needs
+a reset primitive that doesn't exist today, so they keep their fresh pages.
+Retired manifold-id-verify.spec.ts, whose header planned its own deletion
+once labelled construction shipped.

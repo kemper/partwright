@@ -5,18 +5,44 @@
 // client-side. Direct navigation serves the static page (dev/preview
 // middleware + Cloudflare _redirects); the editor soft-renders an in-app copy.
 
-import { test, expect, type Page } from 'playwright/test';
+import { test, expect, type Page, type Browser, type TestInfo } from 'playwright/test';
 
-async function gotoCatalog(page: Page) {
+// The /catalog route is a static, app-free page (no window.partwright) — this
+// helper mirrors tests/helpers/sharedPage.ts's openSharedEditor but for a
+// non-editor route, since openSharedEditor specifically waits for the editor
+// engine to boot.
+async function openSharedCatalog(browser: Browser, testInfo: TestInfo): Promise<Page> {
+  const use = testInfo.project.use;
+  const context = await browser.newContext({
+    baseURL: use.baseURL,
+    viewport: use.viewport,
+    deviceScaleFactor: use.deviceScaleFactor,
+    userAgent: use.userAgent,
+    hasTouch: use.hasTouch,
+    isMobile: use.isMobile,
+  });
+  const page = await context.newPage();
   await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   await page.goto('/catalog');
   await page.waitForSelector('main section[data-category]', { timeout: 20_000 });
+  return page;
 }
 
-test.describe('Catalog page (static)', () => {
-  test('is app-free with category sections in order, each with a count and blurb', async ({ page }) => {
-    await gotoCatalog(page);
+// These tests only read the static /catalog page and any filter they apply
+// (search text, language/theme pills) is cleared again before the test ends —
+// no test navigates away — so they share one booted page instead of a fresh
+// navigation per test. The tests that DO navigate away (clicking into /editor)
+// or exercise /editor stay on the default per-test `page` fixture below.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedCatalog(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('Catalog page (static)', () => {
+  test('is app-free with category sections in order, each with a count and blurb', async () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
@@ -36,9 +62,7 @@ test.describe('Catalog page (static)', () => {
     }
   });
 
-  test('the Customizable section holds the parametric models and tags them', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('the Customizable section holds the parametric models and tags them', async () => {
     const customizable = page.locator('main section[data-category="customizable"]');
     const tiles = customizable.locator('div.grid > a');
     const tileCount = await tiles.count();
@@ -58,9 +82,7 @@ test.describe('Catalog page (static)', () => {
     await expect(customizable).toContainText('Layer Cake');
   });
 
-  test('the curated Fidget Toys group leads the catalog and holds the mechanical fidget(s)', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('the curated Fidget Toys group leads the catalog and holds the mechanical fidget(s)', async () => {
     const sections = page.locator('main section[data-category]');
     await expect(sections.first()).toHaveAttribute('data-category', 'fidget-toys');
 
@@ -72,9 +94,7 @@ test.describe('Catalog page (static)', () => {
     await expect(fidget).toContainText('Spiral Fidget Cone');
   });
 
-  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('every tile carries a print-tested status chip (default: Untested)', async () => {
     const tiles = page.locator('main a[data-catalog-tile]');
     const tileCount = await tiles.count();
     expect(tileCount).toBeGreaterThan(0);
@@ -95,9 +115,7 @@ test.describe('Catalog page (static)', () => {
     await search.fill('');
   });
 
-  test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('search narrows tiles, updates section counts, and hides empty sections', async () => {
     const search = page.locator('[data-catalog-search]');
     await expect(search).toBeVisible();
     await search.fill('cube');
@@ -125,9 +143,7 @@ test.describe('Catalog page (static)', () => {
     expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(10);
   });
 
-  test('language pills are unselected by default and select to focus one language', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('language pills are unselected by default and select to focus one language', async () => {
     const scadPill = page.locator('[data-catalog-pill="scad"]');
     // Unselected by default — no language filter, every language shows.
     await expect(scadPill).toHaveAttribute('aria-pressed', 'false');
@@ -146,9 +162,7 @@ test.describe('Catalog page (static)', () => {
     expect(await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count()).toBe(jsBefore);
   });
 
-  test('a theme pill filters to entries tagged with that theme', async ({ page }) => {
-    await gotoCatalog(page);
-
+  test('a theme pill filters to entries tagged with that theme', async () => {
     const figuresPill = page.locator('[data-catalog-theme="figures"]');
     await expect(figuresPill).toHaveAttribute('aria-pressed', 'false');
     await figuresPill.click();
@@ -167,8 +181,16 @@ test.describe('Catalog page (static)', () => {
     expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(20);
   });
 
+});
+
+// These tests navigate away from /catalog (into /editor) or drive /editor
+// directly, so they stay on the default per-test `page` fixture instead of
+// the shared read-only-catalog page above.
+test.describe('Catalog page (static) — navigation', () => {
   test('a tile is a link to /editor?catalog= and imports the session on click', async ({ page }) => {
-    await gotoCatalog(page);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/catalog');
+    await page.waitForSelector('main section[data-category]', { timeout: 20_000 });
     const firstTile = page.locator('main section[data-category] div.grid > a').first();
     await expect(firstTile).toHaveAttribute('href', /^\/editor\?catalog=/);
     await firstTile.click();
