@@ -642,6 +642,112 @@ test.describe('Multi-provider AI', () => {
     expect(msgs.some(m => m.role === 'tool' && m.tool_call_id === 'call_GONE')).toBe(false);
   });
 
+  test('OpenAI (Chat Completions) keeps tool result messages contiguous when an earlier result carries an image', async ({ page }) => {
+    // Regression for #914 (repro from #913): a multi-tool turn where an earlier
+    // tool result (renderViews) carries an image. OpenAI's `tool` role can't
+    // hold an image, so it rides on a following `user` message — and if that
+    // message is interleaved between the `tool` messages, a strict backend (an
+    // OpenAI-compatible gateway proxying to Claude — the `toolu_`-id case) sees
+    // the later tool_use as no longer "immediately after" its result and 400s
+    // ("tool_use ids were found without tool_result blocks immediately after").
+    // The persisted history is CLEAN (results present + adjacent), so the
+    // Repair button correctly finds nothing — the builder is the bug. All
+    // `tool` messages must stay contiguous, with the image `user` message after.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [
+            { id: 'toolu_RENDER', name: 'renderViews', input: {} },
+            { id: 'toolu_QUERY', name: 'query', input: {} },
+          ], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [
+            { toolUseId: 'toolu_RENDER', content: 'rendered', image: { data: 'AAAA', mediaType: 'image/png', label: 'iso' } },
+            { toolUseId: 'toolu_QUERY', content: '{"volume":10}' },
+          ], createdAt: 0, seq: 1 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const sent = JSON.parse(sentBody);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msgs = sent.messages as any[];
+    const renderIdx = msgs.findIndex(m => m.role === 'tool' && m.tool_call_id === 'toolu_RENDER');
+    const queryIdx = msgs.findIndex(m => m.role === 'tool' && m.tool_call_id === 'toolu_QUERY');
+    expect(renderIdx).toBeGreaterThanOrEqual(0);
+    expect(queryIdx).toBeGreaterThanOrEqual(0);
+    // The two tool results are adjacent — nothing wedged between them.
+    expect(queryIdx).toBe(renderIdx + 1);
+    // The image rides on a user message that comes AFTER both tool results.
+    const imageIdx = msgs.findIndex(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      m => m.role === 'user' && Array.isArray(m.content) && m.content.some((b: any) => b.type === 'image_url'),
+    );
+    expect(imageIdx).toBeGreaterThan(queryIdx);
+  });
+
+  test('OpenAI (Responses) keeps function_call_output items contiguous when an earlier result carries an image', async ({ page }) => {
+    // The Responses-API twin of the contiguity fix: function_call_output takes
+    // a string `output`, so a rendered result's image rides on a following
+    // user message; it must not split the outputs.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [
+            { id: 'toolu_RENDER', name: 'renderViews', input: {} },
+            { id: 'toolu_QUERY', name: 'query', input: {} },
+          ], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [
+            { toolUseId: 'toolu_RENDER', content: 'rendered', image: { data: 'AAAA', mediaType: 'image/png', label: 'iso' } },
+            { toolUseId: 'toolu_QUERY', content: '{"volume":10}' },
+          ], createdAt: 0, seq: 1 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const sent = JSON.parse(sentBody);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = sent.input as any[];
+    const renderIdx = items.findIndex(it => it.type === 'function_call_output' && it.call_id === 'toolu_RENDER');
+    const queryIdx = items.findIndex(it => it.type === 'function_call_output' && it.call_id === 'toolu_QUERY');
+    expect(renderIdx).toBeGreaterThanOrEqual(0);
+    expect(queryIdx).toBe(renderIdx + 1);
+    const imageIdx = items.findIndex(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      it => it.type === 'message' && it.role === 'user' && Array.isArray(it.content) && it.content.some((b: any) => b.type === 'input_image'),
+    );
+    expect(imageIdx).toBeGreaterThan(queryIdx);
+  });
+
   test('OpenAI (Chat Completions) keeps tool calls distinct when an OpenAI-compatible server omits tool_calls[].index', async ({ page }) => {
     // llama.cpp/vLLM/Ollama OpenAI-compat shims frequently stream tool calls
     // without the numeric `index`. Keying buffers on `index ?? 0` collapsed

@@ -17,6 +17,7 @@ import type {
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
+import { repairToolHistory } from './historyRepair';
 
 /** Map the shared thinking level to Anthropic `budget_tokens`. 0 means
  *  thinking is disabled and no `thinking` param is sent — byte-identical to
@@ -333,8 +334,15 @@ export function buildApiMessages(
   history: ChatMessage[],
   opts: { replayThinking?: boolean } = {},
 ): Anthropic.MessageParam[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) — so
+  // what the button detects and what the send repairs can't diverge. The
+  // block-level sanitizeToolUse / stripOrphanToolResults below stay as thin,
+  // redundant backstops (no-ops on already-repaired history).
+  const repaired = repairToolHistory(history).messages;
   const out: Anthropic.MessageParam[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'user') {
       const content = userBlocksToApi(msg.blocks, msg.toolResults ?? []);
       if (content.length > 0) out.push({ role: 'user', content });
