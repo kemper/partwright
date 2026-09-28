@@ -35,6 +35,20 @@ Do NOT rewrite the code. Do NOT pretend to be the original model. Open
 with a one-line verdict ("looks correct", "close, but…", "needs rework
 because…") so the user gets the takeaway at a glance.`;
 
+/** Appended to the reviewer prompt for automatic reviews, so the panel can
+ *  decide whether the agent should act on the review (see autoReview.ts). */
+const VERDICT_INSTRUCTION = `
+
+This review runs automatically after the agent finished a task. Instead of
+the one-line verdict described above, begin your reply with exactly one line
+that is one of:
+Verdict: pass
+Verdict: minor issues
+Verdict: needs rework
+Use "pass" only when the result satisfies the request as stated. Judge the
+work against the user's request (given as the focus); ignore style
+preferences that the request didn't ask for.`;
+
 export interface ReviewContext {
   /** Active editor code. */
   code: string;
@@ -48,6 +62,9 @@ export interface ReviewContext {
   notes: string[];
   /** What the user wants the reviewer to look at. Free text. */
   focus?: string;
+  /** Images the user attached (a photo, a sketch) that the result should
+   *  match. Sent after the snapshot. */
+  references?: ImageSource[];
 }
 
 export interface ReviewRequest {
@@ -60,6 +77,10 @@ export interface ReviewRequest {
   sessionId: string;
   /** Set false to skip writing a session note. Defaults to true. */
   promoteToNote?: boolean;
+  /** Ask for a machine-readable verdict line (automatic reviews). */
+  requireVerdict?: boolean;
+  /** Cancels the review. An aborted review is never persisted. */
+  signal?: AbortSignal;
 }
 
 export interface ReviewResult {
@@ -77,6 +98,7 @@ export async function runReview(
   const userText = formatReviewPrompt(req.context);
   const blocks: ChatBlock[] = [{ type: 'text', text: userText }];
   if (req.context.snapshot) blocks.push({ type: 'image', source: req.context.snapshot });
+  for (const ref of req.context.references ?? []) blocks.push({ type: 'image', source: ref });
 
   // Single-shot ephemeral history — no tools, no recursion. The review
   // is essentially a one-prompt summarize, but going through streamTurn
@@ -101,9 +123,12 @@ export async function runReview(
       provider: req.provider,
       model: req.model,
       apiKey: req.apiKey,
-      systemPrompt: REVIEW_SYSTEM,
+      systemPrompt: req.requireVerdict ? REVIEW_SYSTEM + VERDICT_INSTRUCTION : REVIEW_SYSTEM,
       history: [ephemeral],
+      signal: req.signal,
     });
+    // An aborted stream resolves with partial text — never post that.
+    if (req.signal?.aborted) throw new DOMException('Review cancelled', 'AbortError');
     text = r.text;
     usage = r.usage;
   } catch (err) {
@@ -112,7 +137,7 @@ export async function runReview(
       durationMs: Math.round(performance.now() - t0),
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
-      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
     });
     throw err;
   }
@@ -124,7 +149,7 @@ export async function runReview(
     outputTokens: usage.outputTokens,
     cachedTokens: usage.cacheReadInputTokens,
     textPreview: text.slice(0, 200),
-    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
   });
 
   // null = the reviewer model has no known pricing (the modal asked the
@@ -184,6 +209,12 @@ function formatReviewPrompt(ctx: ReviewContext): string {
     lines.push('A 4-iso composite of the current rendered geometry is attached.');
   } else {
     lines.push('(No snapshot — no geometry currently rendered, so reason from code + stats only.)');
+  }
+  const refs = ctx.references?.length ?? 0;
+  if (refs > 0) {
+    lines.push('');
+    lines.push('=== User reference images ===');
+    lines.push(`${refs === 1 ? 'The image' : `The ${refs} images`} after the snapshot ${refs === 1 ? 'was' : 'were'} attached by the user as reference. Judge how well the result matches ${refs === 1 ? 'it' : 'them'}.`);
   }
   return lines.join('\n');
 }

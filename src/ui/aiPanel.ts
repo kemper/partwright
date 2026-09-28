@@ -21,6 +21,9 @@ import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
+import { gatherReviewContext, runReview } from '../ai/review';
+import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
+import { isModelChangingTool } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -1581,6 +1584,15 @@ function renderToggleStrip(): void {
     },
   ));
   primary.appendChild(togglePill(
+    '🔍 Review',
+    toggles.autoReview,
+    'Automatic review (this window): after a task that changed the model, a reviewer with a fresh context grades the result against your request and suggests fixes (one extra request per task). Configure the reviewer model and fix rounds in ⚙ AI Settings → Automatic review.',
+    () => {
+      applyToggleChange({ autoReview: !toggles.autoReview });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
     '📋 Plan',
     toggles.planFirst,
     'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
@@ -1997,6 +2009,9 @@ function renderPlanApprovalBar(): void {
 
 async function approvePlan(): Promise<void> {
   if (!state.pendingPlanApproval) return;
+  // The automatic review grades the built result against the ORIGINAL
+  // request, not this turn's "Plan approved" message.
+  const reviewRequest = state.pendingPlanApproval.originalText;
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
 
@@ -2014,7 +2029,7 @@ async function approvePlan(): Promise<void> {
   // the approved turn could only re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
     { type: 'text', text: 'Plan approved. Please proceed.' },
-  ]);
+  ], { reviewRequest });
 }
 
 async function rejectPlan(): Promise<void> {
@@ -3516,13 +3531,29 @@ function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<Cha
     : runTurnInWorker(input, callbacks);
 }
 
-async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
+async function runTurnWithStallRetry(
+  apiKey: string | undefined,
+  toggles: ChatToggles,
+  userBlocks: ChatBlock[],
+  opts: { reviewRequest?: string } = {},
+): Promise<void> {
   let attempt = 0;
   let lastTurnOutcome: TurnOutcome | null = null;
   // Bucket the conversation lives in as this turn begins. If the model creates
   // a session mid-turn the active bucket changes out from under us, so we
   // remember the starting bucket and re-home the chat once the turn settles.
   let turnStartBucket = state.sessionId;
+  // Automatic review: fix rounds the agent has had for THIS request, and
+  // whether auto-compaction was held back until the review posted (the two
+  // would otherwise race over state.history).
+  let autoReviewRounds = 0;
+  let deferredAutoCompact = false;
+  // What an automatic review grades against: the human request that started
+  // this run (plan approval passes the original text, since its own message
+  // is just "Plan approved"), and when the current round began (only tool
+  // calls made since then count as "changed the model").
+  let reviewRequest = opts.reviewRequest ?? requestText(userBlocks);
+  let roundStartedAt = Date.now();
   // NOTE: don't record the session's AI preference here. On turn start the
   // active model may be a *fallback* (the session's remembered model was
   // unavailable), and recording it would erase the real preference instead of
@@ -3716,7 +3747,8 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // truncation, refusal, empty final) so the user keeps full context
         // for the "Keep going" resume.
         if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
-          void maybeAutoCompact();
+          if (toggles.autoReview) deferredAutoCompact = true;
+          else void maybeAutoCompact();
         }
         lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
       },
@@ -3810,6 +3842,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       lastTurnOutcome = null;
       userBlocks = next;
       attempt = 0;
+      // A new human request: its own review, its own fix rounds.
+      autoReviewRounds = 0;
+      reviewRequest = requestText(next) || reviewRequest;
+      roundStartedAt = Date.now();
       continue;
     }
 
@@ -3821,12 +3857,157 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     if (finalOutcome && isResumableStop(finalOutcome.reason) && !state.history.some(m => m.errored)) {
       pushStopNotice(finalOutcome);
     }
+
+    // Automatic end-of-task review: a fresh-context reviewer grades the
+    // result; a non-passing verdict (with fix rounds left) is handed back to
+    // the agent as a follow-up turn.
+    if (finalOutcome && writeOwner && shouldAutoReview({
+      enabled: toggles.autoReview,
+      reason: finalOutcome.reason,
+      modelChangingToolCalls: countModelChangingCalls(state.history, roundStartedAt, isModelChangingTool),
+      planning: toggles.planFirst || state.pendingPlanApproval !== null,
+      hadError: state.history.some(m => m.errored),
+      spentUsd: totalCost(state.history),
+      spendCapUsd: SPEND_CAP_USD[toggles.maxSpend],
+    })) {
+      const reviewSession = state.sessionId;
+      const followUp = await runAutoReview(toggles, autoReviewRounds, reviewRequest || latestUserRequest(state.history));
+      showProgressFinal(formatTurnOutcome(finalOutcome));
+      if (state.sessionId !== reviewSession || !writeOwner) {
+        // The user switched sessions, or another tab took control, while the
+        // review ran. Never act on it here: the in-memory transcript still
+        // holds the old session, so reload the one now on screen.
+        if (state.sessionId !== reviewSession) {
+          await loadHistoryForCurrentSession();
+          renderTranscript();
+          renderCostMeter();
+        }
+      } else if (state.queuedBlocks.length > 0) {
+        // The human typed while the review ran — their message wins over a
+        // fix round (it may well be "stop, that's fine").
+        userBlocks = drainQueuedBlocks();
+        autoReviewRounds = 0;
+        reviewRequest = requestText(userBlocks) || reviewRequest;
+        roundStartedAt = Date.now();
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      } else if (followUp && overSpendCap(totalCost(state.history), SPEND_CAP_USD[toggles.maxSpend])) {
+        setTransientStatus('The automatic review found issues, but the session reached its $ cap — no fix round started.');
+      } else if (followUp) {
+        autoReviewRounds++;
+        userBlocks = [{ type: 'text', text: followUp }];
+        roundStartedAt = Date.now();
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      }
+    }
+    if (deferredAutoCompact) {
+      deferredAutoCompact = false;
+      void maybeAutoCompact();
+    }
     broadcastChatChanged();
     // The turn truly ended (retries/queued follow-ups `continue` above and never
     // reach here) — let the host flush anything it held back during the turn,
     // e.g. the deferred Customizer reveal.
     for (const fn of turnEndListeners) fn();
     return;
+  }
+}
+
+/** Run one automatic review of the finished task and post it to the chat.
+ *  Returns the follow-up prompt when the agent should act on it, else null.
+ *  Never throws — a failed review is reported and the turn simply ends. */
+/** Reviewer models whose unknown pricing the user declined this session, so
+ *  the confirmation doesn't pop up at the end of every task. */
+const declinedReviewers = new Set<string>();
+/** Skip reasons already shown this page load. Review is on by default, so a
+ *  Local chat (which can't be its own reviewer) would otherwise repeat the
+ *  same notice after every task. */
+const shownReviewSkips = new Set<string>();
+
+async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: string): Promise<string | null> {
+  const cfg = loadSettings().autoReview;
+  const reviewer = resolveReviewer(cfg, toggles);
+  if ('skip' in reviewer) {
+    if (!shownReviewSkips.has(reviewer.skip)) {
+      shownReviewSkips.add(reviewer.skip);
+      setTransientStatus(`Automatic review skipped: ${reviewer.skip}.`);
+    }
+    return null;
+  }
+  const reviewerKey = `${reviewer.provider}/${reviewer.model}`;
+  const unpricedSkip = 'Automatic review skipped: the reviewer model has no known pricing and wasn’t authorized — pick a priced reviewer in ⚙ AI Settings → Automatic review.';
+  if (declinedReviewers.has(reviewerKey)) {
+    setTransientStatus(unpricedSkip);
+    return null;
+  }
+  if (!(await confirmUnpricedModel(reviewer.provider, reviewer.model))) {
+    declinedReviewers.add(reviewerKey);
+    setTransientStatus(unpricedSkip);
+    return null;
+  }
+  const label = `${providerLabel(reviewer.provider)} / ${reviewer.model}`;
+  const reviewSession = state.sessionId;
+  // Run like a turn: busy (typed messages queue instead of racing the review
+  // for state.history), Stop cancels it, and a take-over by another tab
+  // (applyOwnership → stopActiveTurn) aborts it too.
+  const controller = new AbortController();
+  state.inFlight = true;
+  state.inFlightController = controller;
+  setSendButtonMode('inflight');
+  updateRewindButtons();
+  showProgress('tool', `🔍 automatic review (${label})`);
+  try {
+    const context = await gatherReviewContext();
+    if (controller.signal.aborted || state.sessionId !== reviewSession || !writeOwner) return null;
+    const result = await runReview({
+      provider: reviewer.provider,
+      model: reviewer.model,
+      context: {
+        ...context,
+        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The images the user attached anywhere in this conversation (incl.
+        // ones compaction carried forward), not the agent's own renders.
+        references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+      },
+      sessionId: reviewSession,
+      // The review is in the transcript — a session note per automatic
+      // review is clutter.
+      promoteToNote: false,
+      requireVerdict: true,
+      signal: controller.signal,
+    });
+    // Persisted under its own session either way; only show it (and act on
+    // it) if that session is still the one on screen.
+    if (state.sessionId !== reviewSession) return null;
+    state.history.push(result.message);
+    renderTranscript();
+    renderCostMeter();
+    const verdict = parseReviewVerdict(result.text);
+    if (shouldActOnReview(verdict, roundsUsed, cfg.fixRounds)) {
+      setTransientStatus(`Automatic review found issues — the agent is addressing them (round ${roundsUsed + 1} of ${cfg.fixRounds}).`);
+      return buildFixPrompt(label);
+    }
+    setTransientStatus(verdict === 'pass' ? 'Automatic review: passed.' : 'Automatic review posted to the chat.');
+    return null;
+  } catch (err) {
+    if (controller.signal.aborted) {
+      setTransientStatus('Automatic review stopped.');
+      return null;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    errorLog.capture({ level: 'warn', source: 'ai', message: `Automatic review failed: ${msg}` });
+    setTransientStatus(`Automatic review failed: ${msg}`);
+    return null;
+  } finally {
+    state.inFlight = false;
+    state.inFlightController = null;
+    setSendButtonMode('send');
+    updateRewindButtons();
   }
 }
 

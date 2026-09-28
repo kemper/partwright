@@ -54,6 +54,8 @@ export interface AiSettings {
   localContext: LocalContextSettings;
   /** Saved width of the AI chat drawer in pixels. */
   aiPanelWidth: number;
+  /** Automatic end-of-task review (see src/ai/autoReview.ts). */
+  autoReview: AutoReviewSettings;
   /** Settings-migration marker. Each one-time default change bumps
    *  SETTINGS_REV and applies to stored settings below that rev exactly
    *  once (see mergeWithDefaults). */
@@ -100,6 +102,26 @@ export interface LocalContextSettings {
 
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
 
+/** Automatic end-of-task review preferences. After a task that changed the
+ *  model ends cleanly, a reviewer with a fresh context grades the result from
+ *  the user's request, the final code, stats and renders. Whether it runs is
+ *  the per-tab `ChatToggles.autoReview` switch; these are the global
+ *  reviewer preferences. */
+export interface AutoReviewSettings {
+  /** 'same' = whatever provider/model is driving the chat. */
+  provider: Provider | 'same';
+  /** Reviewer model when `provider` isn't 'same'. */
+  model: string;
+  /** How many times the agent may act on a non-passing review before the
+   *  loop stops (0 = just post the review). */
+  fixRounds: number;
+}
+
+/** Upper bound for AutoReviewSettings.fixRounds. */
+export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
+
+const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1 };
+
 /** Current settings-migration revision (see AiSettings.settingsRev). */
 const SETTINGS_REV = 1;
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
@@ -130,6 +152,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoResume: false,
     planFirst: false,
     printOptimized: true,
+    autoReview: false,
     anthropicModel: 'claude-haiku-4-5',
   },
   standard: {
@@ -151,6 +174,10 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoResume: false,
     planFirst: false,
     printOptimized: true,
+    // A fresh-context review of each finished task (one extra request per
+    // task that changed the model). On in Standard and Full; Minimal keeps
+    // it off to minimize spend.
+    autoReview: true,
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -165,6 +192,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoResume: true,
     planFirst: false,
     printOptimized: true,
+    autoReview: true,
     anthropicModel: 'claude-opus-4-7',
   },
 };
@@ -195,6 +223,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
+  autoReview: DEFAULT_AUTO_REVIEW,
   settingsRev: SETTINGS_REV,
 };
 
@@ -235,6 +264,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     autoResume: t.autoResume,
     planFirst: t.planFirst,
     printOptimized: t.printOptimized,
+    autoReview: t.autoReview,
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
@@ -331,6 +361,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       autoResume: p.autoResume,
       planFirst: p.planFirst,
       printOptimized: p.printOptimized,
+      autoReview: settings.toggles.autoReview,
       // Presets target Anthropic, but if the user is currently on a
       // different provider, keep them on it — the preset only adjusts
       // cost/scope/views.
@@ -509,6 +540,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     autoResume: partial.autoResume ?? settings.toggles.autoResume,
     planFirst: partial.planFirst ?? settings.toggles.planFirst,
     printOptimized: partial.printOptimized ?? settings.toggles.printOptimized,
+    autoReview: typeof partial.autoReview === 'boolean' ? partial.autoReview : settings.toggles.autoReview,
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
@@ -545,6 +577,7 @@ interface LegacyAiSettings {
   customLocalModels?: CustomLocalModel[];
   localContext?: Partial<LocalContextSettings>;
   aiPanelWidth?: number;
+  autoReview?: Partial<AutoReviewSettings>;
   settingsRev?: number;
 }
 
@@ -618,6 +651,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
       planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
       printOptimized: tgls.printOptimized ?? DEFAULT_SETTINGS.toggles.printOptimized,
+      autoReview: typeof tgls.autoReview === 'boolean' ? tgls.autoReview : DEFAULT_SETTINGS.toggles.autoReview,
       provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: validLocalModel,
@@ -640,8 +674,28 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
     aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
+    autoReview: normalizeAutoReview(partial.autoReview),
     settingsRev: SETTINGS_REV,
   };
+}
+
+// Local models can't be picked as an explicit reviewer: a review prompt (full
+// code + stats + an image) overflows their small windows.
+const AUTO_REVIEW_PROVIDERS: ReadonlyArray<AutoReviewSettings['provider']> = ['same', 'anthropic', 'openai', 'gemini', 'custom'];
+
+function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): AutoReviewSettings {
+  const r = raw ?? {};
+  const rounds = typeof r.fixRounds === 'number' && Number.isFinite(r.fixRounds) ? Math.round(r.fixRounds) : DEFAULT_AUTO_REVIEW.fixRounds;
+  return {
+    provider: r.provider && AUTO_REVIEW_PROVIDERS.includes(r.provider) ? r.provider : DEFAULT_AUTO_REVIEW.provider,
+    model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
+    fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
+  };
+}
+
+/** Update the automatic-review settings (validated). */
+export function setAutoReview(settings: AiSettings, partial: Partial<AutoReviewSettings>): AiSettings {
+  return { ...settings, autoReview: normalizeAutoReview({ ...settings.autoReview, ...partial }) };
 }
 
 function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): LocalContextSettings {

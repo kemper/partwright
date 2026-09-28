@@ -28,6 +28,8 @@ export interface OneShotRequest {
   apiKey?: string;
   /** Explicit ceiling for the local provider (defaults to 2048). */
   localMaxTokens?: number;
+  /** Cancels the in-flight request (e.g. Stop during an automatic review). */
+  signal?: AbortSignal;
 }
 
 export interface OneShotResult {
@@ -49,7 +51,7 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
       // Each model's own default — Off would pin always-thinking models
       // (Opus 5.x, Fable) to low effort and disable Sonnet 5's thinking.
       thinking: 'default',
-    });
+    }, {}, req.signal);
     return { text: r.text, usage: r.usage };
   }
   if (req.provider === 'openai') {
@@ -62,7 +64,7 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
       systemSuffix: '',
       history: req.history,
       tools: [],
-    });
+    }, {}, req.signal);
     return { text: r.text, usage: r.usage };
   }
   if (req.provider === 'gemini') {
@@ -75,7 +77,7 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
       systemSuffix: '',
       history: req.history,
       tools: [],
-    });
+    }, {}, req.signal);
     return { text: r.text, usage: r.usage };
   }
   if (req.provider === 'custom') {
@@ -90,7 +92,7 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
       systemSuffix: '',
       history: req.history,
       tools: [],
-    });
+    }, {}, req.signal);
     return { text: r.text, usage: r.usage };
   }
   // local
@@ -101,6 +103,6 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
     history: req.history,
     tools: [],
     maxTokens: req.localMaxTokens ?? 2048,
-  });
+  }, {}, req.signal);
   return { text: r.text, usage: r.usage };
 }

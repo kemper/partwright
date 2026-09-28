@@ -105,6 +105,10 @@ export interface AppConfig {
      *  first) instead of dropping with the summarized turns. 0 = drop them
      *  like before. */
     compactionKeepImages: number;
+    /** Images the user attached in this conversation (newest first) that the
+     *  automatic end-of-task review sees alongside the renders, so it can
+     *  compare the result against the user's reference. 0 = renders only. */
+    reviewReferenceImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -374,6 +378,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
+    reviewReferenceImages: 4,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,

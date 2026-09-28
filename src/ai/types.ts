@@ -125,6 +125,11 @@ export interface ChatToggles {
    *  Injects prompt text only — it does not gate any tool, so it composes
    *  with every other toggle. ON by default. */
   printOptimized: boolean;
+  /** Automatic end-of-task review (🔍 pill). Lives in toggles — per tab, like
+   *  the other pills — so switching it in one window never turns on paid
+   *  reviews in another. The reviewer choice + fix rounds are global
+   *  preferences in AiSettings.autoReview. */
+  autoReview: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots
