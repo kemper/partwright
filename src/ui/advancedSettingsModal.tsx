@@ -359,7 +359,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — thinking budgets">
-        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Only older Claude models (Haiku 4.5, Sonnet/Opus 4.5 and earlier) use these — Claude 4.6+ use adaptive thinking with an effort level instead. XHigh and Max use the High budget.</div>
+        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Only models that take a fixed budget use these (Haiku 4.5, Sonnet/Opus 4.5 and earlier) — newer models (4.6+, Sonnet 5, Opus 5.x, Fable) use adaptive thinking with an effort level, sized by the thinking output ceilings below. Which shape a model takes comes from the model catalog, or is learned from the API. XHigh and Max use the High budget.</div>
         <Field
           label="Anthropic — Low"
           unit="tokens"

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clampEffort,
   anthropicThinkingFamily,
   anthropicThinkingPlan,
   customReasoningFields,
@@ -60,9 +61,9 @@ describe('anthropicThinkingPlan', () => {
     expect(anthropicThinkingPlan('claude-opus-4-7', 'default', BUDGETS)).toEqual({ active: false, budgetTokens: 0 });
   });
 
-  it('Claude 4.6: no display override, xhigh rounds down to high', () => {
+  it('Claude 4.6: summary requested like every adaptive model, xhigh rounds down to high', () => {
     expect(anthropicThinkingPlan('claude-sonnet-4-6', 'xhigh', BUDGETS)).toEqual({
-      thinking: { type: 'adaptive' }, effort: 'high', active: true, budgetTokens: 0,
+      thinking: { type: 'adaptive', display: 'summarized' }, effort: 'high', active: true, budgetTokens: 0,
     });
     expect(anthropicThinkingPlan('claude-sonnet-4-6', 'max', BUDGETS).effort).toBe('max');
   });
@@ -135,5 +136,33 @@ describe('parseThinkingLevel', () => {
     expect(parseThinkingLevel('ultra')).toBeNull();
     expect(parseThinkingLevel(undefined)).toBeNull();
     expect(parseThinkingLevel('toString')).toBeNull();
+  });
+});
+
+describe('catalog-driven clamping', () => {
+  it('clampEffort picks the nearest listed level, ties to the cheaper side', () => {
+    expect(clampEffort('xhigh', ['low', 'medium', 'high', 'max'])).toBe('high');
+    expect(clampEffort('low', ['high'])).toBe('high');
+    expect(clampEffort('max', ['medium', 'high', 'xhigh'])).toBe('xhigh');
+    expect(clampEffort('medium', ['none'])).toBeNull();
+  });
+
+  it('OpenAI uses the catalog list when present: Off → none where offered, pro models clamp', () => {
+    expect(openaiReasoningEffort('gpt-5.5', 'off', ['none', 'low', 'medium', 'high', 'xhigh'])).toBe('none');
+    expect(openaiReasoningEffort('gpt-5-pro', 'off', ['high'])).toBeNull();
+    expect(openaiReasoningEffort('gpt-5-pro', 'low', ['high'])).toBe('high');
+    expect(openaiReasoningEffort('gpt-5.2-pro', 'max', ['medium', 'high', 'xhigh'])).toBe('xhigh');
+  });
+
+  it('Anthropic: a catalog/learned shape overrides the id heuristics', () => {
+    // An unknown id the catalog says is adaptive → plain adaptive, not budget.
+    const plan = anthropicThinkingPlan('claude-newmodel', 'high', BUDGETS, { mode: 'adaptive', effortLevels: ['low', 'medium', 'high'] });
+    expect(plan.thinking?.type).toBe('adaptive');
+    expect(plan.effort).toBe('high');
+    // A learned "budget" beats an adaptive-looking id.
+    expect(anthropicThinkingPlan('claude-opus-4-7', 'high', BUDGETS, { mode: 'budget', effortLevels: null }).thinking)
+      .toEqual({ type: 'enabled', budget_tokens: 16384 });
+    // Catalog levels clamp: Sonnet 4.6 lists no xhigh.
+    expect(anthropicThinkingPlan('claude-sonnet-4-6', 'xhigh', BUDGETS, { mode: 'adaptive', effortLevels: ['low', 'medium', 'high', 'max'] }).effort).toBe('high');
   });
 });

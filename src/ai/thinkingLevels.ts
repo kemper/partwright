@@ -82,17 +82,53 @@ export function isDeepEffort(plan: AnthropicThinkingPlan): boolean {
   return plan.effort === 'xhigh' || plan.effort === 'max';
 }
 
-function clampAnthropicEffort(level: 'low' | 'medium' | 'high' | 'xhigh' | 'max', family: AnthropicThinkingFamily): AnthropicEffort {
-  // Claude 4.6 has no xhigh — round down to high (the cheaper neighbour).
-  if (family === 'adaptive46' && level === 'xhigh') return 'high';
-  return level;
+/** Canonical effort order, lowest first. */
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** Nearest level to `level` among `allowed` (a model's effort list, e.g. its
+ *  catalog `reasoning_options`); ties go to the cheaper side. null when
+ *  `allowed` holds none of the canonical levels. */
+export function clampEffort<T extends string>(level: T, allowed: readonly string[], order: readonly string[] = EFFORT_ORDER): T | null {
+  if (allowed.includes(level)) return level;
+  const want = order.indexOf(level);
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const cand of order) {
+    if (!allowed.includes(cand)) continue;
+    const dist = Math.abs(order.indexOf(cand) - want);
+    if (dist < bestDist) { best = cand; bestDist = dist; }
+  }
+  return best as T | null;
 }
 
-/** Map a Thinking level onto an Anthropic request for `model`. */
-export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budgets: AnthropicThinkingBudgets): AnthropicThinkingPlan {
-  const family = anthropicThinkingFamily(model);
+/** Levels assumed for an adaptive model the catalog doesn't describe. */
+function defaultAnthropicEfforts(family: AnthropicThinkingFamily): readonly string[] {
+  // Claude 4.6 has no xhigh (it arrived with Opus 4.7).
+  return family === 'adaptive46' ? ['low', 'medium', 'high', 'max'] : EFFORT_ORDER;
+}
 
-  if (family === 'budget') {
+/** What the caller knows about the model beyond its id: the thinking shape
+ *  it accepts (from the catalog snapshot, or learned from the API's own 400 —
+ *  see anthropicThinking.ts) and its catalog effort levels. */
+export interface AnthropicShapeHint {
+  mode: 'budget' | 'adaptive';
+  effortLevels: readonly string[] | null;
+  /** Learned from a 400: this model rejects `thinking: {type: 'disabled'}`. */
+  cannotDisable?: boolean;
+}
+
+/** Map a Thinking level onto an Anthropic request for `model`. `shape`
+ *  (catalog / learned) overrides what the id alone implies. */
+export function anthropicThinkingPlan(
+  model: string,
+  level: ThinkingLevel,
+  budgets: AnthropicThinkingBudgets,
+  shape?: AnthropicShapeHint,
+): AnthropicThinkingPlan {
+  const idFamily = anthropicThinkingFamily(model);
+  const mode = shape?.mode ?? (idFamily === 'budget' ? 'budget' : 'adaptive');
+
+  if (mode === 'budget') {
     if (level === 'off' || level === 'default') return { active: false, budgetTokens: 0 };
     // xhigh / max clamp to the high budget: older models cap output at
     // 32k–64k tokens, so a bigger budget risks a max_tokens 400.
@@ -100,19 +136,23 @@ export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budge
     return { thinking: { type: 'enabled', budget_tokens: budget }, active: true, budgetTokens: budget };
   }
 
+  // Adaptive. An id our heuristics call "budget" but the catalog / API says
+  // is adaptive is a newer model we don't know by name: plain adaptive.
+  const family: AnthropicThinkingFamily = shape?.cannotDisable ? 'alwaysOn' : idFamily === 'budget' ? 'adaptive' : idFamily;
+  const efforts = shape?.effortLevels ?? defaultAnthropicEfforts(family);
   // 4.7+ hide thinking by default ("omitted"): the stream is silent until the
   // answer, which the stall watchdog reads as a dead connection and the user
   // sees as an empty thinking box. Ask for the summary whenever thinking runs.
-  // (4.6 already defaults to summarized; `display` is left off there.)
-  const adaptive = family === 'adaptive46'
-    ? { type: 'adaptive' as const }
-    : { type: 'adaptive' as const, display: 'summarized' as const };
+  const adaptive = { type: 'adaptive' as const, display: 'summarized' as const };
 
   if (level === 'off') {
     // Always-on models: thinking can't be (reliably) disabled — Opus 5.5 /
     // Fable reject it, and Opus 5 with thinking disabled can leak tool calls
     // into visible text. The documented cheap path is adaptive at low effort.
-    if (family === 'alwaysOn') return { thinking: adaptive, effort: 'low', active: true, budgetTokens: 0 };
+    if (family === 'alwaysOn') {
+      const low = clampEffort('low', efforts);
+      return { thinking: adaptive, ...(low ? { effort: low } : {}), active: true, budgetTokens: 0 };
+    }
     return { thinking: { type: 'disabled' }, active: false, budgetTokens: 0 };
   }
   if (level === 'default') {
@@ -123,7 +163,8 @@ export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budge
     const thinksByDefault = family === 'alwaysOn' || (family === 'adaptive' && (parseClaudeId(model)?.major ?? 0) >= 5);
     return thinksByDefault ? { thinking: adaptive, active: true, budgetTokens: 0 } : { active: false, budgetTokens: 0 };
   }
-  return { thinking: adaptive, effort: clampAnthropicEffort(level, family), active: true, budgetTokens: 0 };
+  const effort = clampEffort(level, efforts);
+  return { thinking: adaptive, ...(effort ? { effort } : {}), active: true, budgetTokens: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,8 +187,16 @@ function gptVersion(model: string): { major: number; minor: number } | null {
  *  the only safe floor. Every reasoning model accepts low/medium/high; xhigh
  *  arrived with gpt-5.2 and max with gpt-5.6, so higher asks clamp down on
  *  older models. */
-export function openaiReasoningEffort(model: string, level: ThinkingLevel): string | null {
-  if (level === 'default' || level === 'off') return null;
+export function openaiReasoningEffort(model: string, level: ThinkingLevel, catalogLevels?: readonly string[] | null): string | null {
+  if (level === 'default') return null;
+  if (catalogLevels && catalogLevels.length > 0) {
+    // The catalog lists exactly what this model accepts: Off → 'none' where
+    // offered (gpt-5.1+), else the provider default; everything else clamps
+    // to the nearest listed level (gpt-5-pro takes only 'high').
+    if (level === 'off') return catalogLevels.includes('none') ? 'none' : null;
+    return clampEffort(level, catalogLevels);
+  }
+  if (level === 'off') return null;
   if (level === 'low' || level === 'medium' || level === 'high') return level;
   const v = gptVersion(model);
   const atLeast = (major: number, minor: number) => v !== null && (v.major > major || (v.major === major && v.minor >= minor));
