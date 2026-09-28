@@ -359,7 +359,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — thinking budgets">
-        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens).</div>
+        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Newer models (Opus 4.7+, Sonnet 5, Opus 5.x, Fable) use adaptive thinking + effort instead; there the budget only sizes the output ceiling.</div>
         <Field
           label="Anthropic — Low"
           unit="tokens"
