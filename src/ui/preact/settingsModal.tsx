@@ -28,6 +28,9 @@ import { showSystemPromptModal } from '../aiSystemPromptModal';
 import {
   loadSettings,
   setAutoCompactMode,
+  setAutoReview,
+  AUTO_REVIEW_MAX_FIX_ROUNDS,
+  type AutoReviewSettings,
   setLocalContext,
   setProvider,
   setAnthropicModel,
@@ -113,6 +116,8 @@ export function SettingsModalBody(props: {
       <ApiTimeoutSection cb={cb} />
       <Divider />
       <AutoCompactSection cb={cb} />
+      <Divider />
+      <AutoReviewSection cb={cb} />
     </>
   );
 }
@@ -980,6 +985,84 @@ function AutoCompactSection(props: { cb: AiSettingsCallbacks }) {
         ))}
       </div>
       <div class="text-[11px] text-zinc-500 leading-snug">{activeHint}</div>
+    </Section>
+  );
+}
+
+// === Automatic review ===
+
+const REVIEWER_PROVIDERS: AutoReviewSettings['provider'][] = ['same', 'anthropic', 'openai', 'gemini', 'custom'];
+
+function reviewerModelOptions(p: AutoReviewSettings['provider']): { id: string; label: string }[] {
+  if (p === 'anthropic') return ANTHROPIC_MODEL_OPTIONS;
+  if (p === 'openai') return OPENAI_MODEL_OPTIONS;
+  if (p === 'gemini') return GEMINI_MODEL_OPTIONS;
+  if (p === 'custom') {
+    const t = loadSettings().toggles;
+    const ids = t.customModels.length > 0 ? t.customModels : (t.customModel ? [t.customModel] : []);
+    return ids.map(id => ({ id, label: id }));
+  }
+  return [];
+}
+
+function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
+  const { cb } = props;
+  const review = settingsSignal.value.autoReview;
+  const update = (partial: Partial<AutoReviewSettings>) => { setSettings(setAutoReview(loadSettings(), partial)); cb.onChange(); };
+  const options = reviewerModelOptions(review.provider);
+  const roundLabels = ['Post only', '1 fix round', '2 fix rounds', '3 fix rounds'].slice(0, AUTO_REVIEW_MAX_FIX_ROUNDS + 1);
+
+  return (
+    <Section label="Automatic review">
+      <div
+        class="text-[11px] text-zinc-400 leading-snug"
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). Also toggled by the 🔍 Review pill in the panel.' }}
+      />
+      <div class="flex flex-wrap gap-1">
+        <Pill active={!review.enabled} label="Off" onClick={() => update({ enabled: false })} />
+        <Pill active={review.enabled} label="On" onClick={() => update({ enabled: true })} />
+      </div>
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">Reviewer</span>
+        <div class="flex items-center gap-2">
+          <select
+            class="px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100"
+            data-testid="auto-review-provider"
+            value={review.provider}
+            onChange={e => {
+              const next = (e.currentTarget as HTMLSelectElement).value as AutoReviewSettings['provider'];
+              update({ provider: next, model: next === 'same' ? '' : (reviewerModelOptions(next)[0]?.id ?? '') });
+            }}
+          >
+            {REVIEWER_PROVIDERS.map(p => (
+              <option key={p} value={p}>{p === 'same' ? 'Same model as the chat' : providerLabel(p)}</option>
+            ))}
+          </select>
+          {review.provider !== 'same' && (
+            <select
+              class="flex-1 px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100"
+              data-testid="auto-review-model"
+              value={review.model}
+              onChange={e => update({ model: (e.currentTarget as HTMLSelectElement).value })}
+            >
+              {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              {review.model && !options.some(o => o.id === review.model) && (
+                <option value={review.model}>{review.model} (custom)</option>
+              )}
+            </select>
+          )}
+        </div>
+        <span class="text-[10px] text-zinc-500">A different model gives a genuine second opinion; the same model still helps, because it reviews without its own reasoning in view.</span>
+      </label>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">When the review finds problems</span>
+        <div class="flex flex-wrap gap-1">
+          {roundLabels.map((label, n) => (
+            <Pill key={n} active={review.fixRounds === n} label={label} onClick={() => update({ fixRounds: n })} />
+          ))}
+        </div>
+        <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The iteration and $ caps still apply.</span>
+      </div>
     </Section>
   );
 }

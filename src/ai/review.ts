@@ -35,6 +35,19 @@ Do NOT rewrite the code. Do NOT pretend to be the original model. Open
 with a one-line verdict ("looks correct", "close, but…", "needs rework
 because…") so the user gets the takeaway at a glance.`;
 
+/** Appended to the reviewer prompt for automatic reviews, so the panel can
+ *  decide whether the agent should act on the review (see autoReview.ts). */
+const VERDICT_INSTRUCTION = `
+
+This review runs automatically after the agent finished a task. Begin your
+reply with exactly one line that is one of:
+Verdict: pass
+Verdict: minor issues
+Verdict: needs rework
+Use "pass" only when the result satisfies the request as stated. Judge the
+work against the user's request (given as the focus); ignore style
+preferences that the request didn't ask for.`;
+
 export interface ReviewContext {
   /** Active editor code. */
   code: string;
@@ -60,6 +73,8 @@ export interface ReviewRequest {
   sessionId: string;
   /** Set false to skip writing a session note. Defaults to true. */
   promoteToNote?: boolean;
+  /** Ask for a machine-readable verdict line (automatic reviews). */
+  requireVerdict?: boolean;
 }
 
 export interface ReviewResult {
@@ -101,7 +116,7 @@ export async function runReview(
       provider: req.provider,
       model: req.model,
       apiKey: req.apiKey,
-      systemPrompt: REVIEW_SYSTEM,
+      systemPrompt: req.requireVerdict ? REVIEW_SYSTEM + VERDICT_INSTRUCTION : REVIEW_SYSTEM,
       history: [ephemeral],
     });
     text = r.text;

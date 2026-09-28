@@ -11,7 +11,7 @@ import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAutoReview, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -21,6 +21,8 @@ import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
+import { gatherReviewContext, runReview } from '../ai/review';
+import { buildFixPrompt, latestUserRequest, parseReviewVerdict, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
 import { starterChipIdeas } from '../ideas/ideas';
@@ -1543,6 +1545,15 @@ function renderToggleStrip(): void {
     'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). OFF by default so the agent stops at each end_turn and waits when it asks a clarifying question; turn it ON to keep it working (your choice is remembered).',
     () => {
       applyToggleChange({ autoResume: !toggles.autoResume });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
+    '🔍 Review',
+    loadSettings().autoReview.enabled,
+    'Automatic review: after a task that changed the model, a reviewer with a fresh context grades the result against your request and suggests fixes (one extra request per task). Configure the reviewer model and fix rounds in ⚙ AI Settings → Automatic review.',
+    () => {
+      saveSettings(setAutoReview(loadSettings(), { enabled: !loadSettings().autoReview.enabled }));
       renderToggleStrip();
     },
   ));
@@ -3489,6 +3500,11 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
   // a session mid-turn the active bucket changes out from under us, so we
   // remember the starting bucket and re-home the chat once the turn settles.
   let turnStartBucket = state.sessionId;
+  // Automatic review: fix rounds the agent has had for THIS request, and
+  // whether auto-compaction was held back until the review posted (the two
+  // would otherwise race over state.history).
+  let autoReviewRounds = 0;
+  let deferredAutoCompact = false;
   // NOTE: don't record the session's AI preference here. On turn start the
   // active model may be a *fallback* (the session's remembered model was
   // unavailable), and recording it would erase the real preference instead of
@@ -3682,7 +3698,8 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // truncation, refusal, empty final) so the user keeps full context
         // for the "Keep going" resume.
         if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
-          void maybeAutoCompact();
+          if (loadSettings().autoReview.enabled) deferredAutoCompact = true;
+          else void maybeAutoCompact();
         }
         lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
       },
@@ -3787,12 +3804,96 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     if (finalOutcome && isResumableStop(finalOutcome.reason) && !state.history.some(m => m.errored)) {
       pushStopNotice(finalOutcome);
     }
+
+    // Automatic end-of-task review: a fresh-context reviewer grades the
+    // result; a non-passing verdict (with fix rounds left) is handed back to
+    // the agent as a follow-up turn.
+    if (finalOutcome && shouldAutoReview({
+      settings: loadSettings().autoReview,
+      reason: finalOutcome.reason,
+      toolCalls: finalOutcome.toolCalls,
+      hadError: state.history.some(m => m.errored),
+      spentUsd: totalCost(state.history),
+      spendCapUsd: SPEND_CAP_USD[toggles.maxSpend],
+    })) {
+      const followUp = await runAutoReview(toggles, autoReviewRounds);
+      showProgressFinal(formatTurnOutcome(finalOutcome));
+      if (followUp) {
+        autoReviewRounds++;
+        userBlocks = [{ type: 'text', text: followUp }];
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      }
+      // A message the user typed while the review ran queued up — send it.
+      if (state.queuedBlocks.length > 0) {
+        userBlocks = drainQueuedBlocks();
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      }
+    }
+    if (deferredAutoCompact) {
+      deferredAutoCompact = false;
+      void maybeAutoCompact();
+    }
     broadcastChatChanged();
     // The turn truly ended (retries/queued follow-ups `continue` above and never
     // reach here) — let the host flush anything it held back during the turn,
     // e.g. the deferred Customizer reveal.
     for (const fn of turnEndListeners) fn();
     return;
+  }
+}
+
+/** Run one automatic review of the finished task and post it to the chat.
+ *  Returns the follow-up prompt when the agent should act on it, else null.
+ *  Never throws — a failed review is reported and the turn simply ends. */
+async function runAutoReview(toggles: ChatToggles, roundsUsed: number): Promise<string | null> {
+  const cfg = loadSettings().autoReview;
+  const reviewer = resolveReviewer(cfg, toggles);
+  if (!reviewer) {
+    setTransientStatus('Automatic review skipped: choose a reviewer model in ⚙ AI Settings → Automatic review.');
+    return null;
+  }
+  if (!(await confirmUnpricedModel(reviewer.provider, reviewer.model))) return null;
+  const label = `${providerLabel(reviewer.provider)} / ${reviewer.model}`;
+  // Keep the panel "busy" so anything typed meanwhile queues instead of
+  // starting a turn that races the review for state.history.
+  state.inFlight = true;
+  showProgress('tool', `🔍 automatic review (${label})`);
+  try {
+    const context = await gatherReviewContext();
+    const request = latestUserRequest(state.history);
+    const result = await runReview({
+      provider: reviewer.provider,
+      model: reviewer.model,
+      context: { ...context, focus: request ? `Grade the result against the user's request: ${request}` : undefined },
+      sessionId: state.sessionId,
+      // The review is in the transcript (and, when acted on, in the
+      // follow-up turn) — a session note per automatic review is clutter.
+      promoteToNote: false,
+      requireVerdict: true,
+    });
+    state.history.push(result.message);
+    renderTranscript();
+    renderCostMeter();
+    const verdict = parseReviewVerdict(result.text);
+    if (shouldActOnReview(verdict, roundsUsed, cfg.fixRounds)) {
+      setTransientStatus(`Automatic review found issues — the agent is addressing them (round ${roundsUsed + 1} of ${cfg.fixRounds}).`);
+      return buildFixPrompt(result.text, label);
+    }
+    setTransientStatus(verdict === 'pass' ? 'Automatic review: passed.' : 'Automatic review posted to the chat.');
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    errorLog.capture({ level: 'warn', source: 'ai', message: `Automatic review failed: ${msg}` });
+    setTransientStatus(`Automatic review failed: ${msg}`);
+    return null;
+  } finally {
+    state.inFlight = false;
   }
 }
 

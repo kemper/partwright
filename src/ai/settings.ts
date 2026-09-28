@@ -54,6 +54,8 @@ export interface AiSettings {
   localContext: LocalContextSettings;
   /** Saved width of the AI chat drawer in pixels. */
   aiPanelWidth: number;
+  /** Automatic end-of-task review (see src/ai/autoReview.ts). */
+  autoReview: AutoReviewSettings;
   /** Settings-migration marker. Each one-time default change bumps
    *  SETTINGS_REV and applies to stored settings below that rev exactly
    *  once (see mergeWithDefaults). */
@@ -99,6 +101,25 @@ export interface LocalContextSettings {
 }
 
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
+
+/** Automatic end-of-task review. After a turn that did work (called tools)
+ *  ends cleanly, a reviewer with a fresh context grades the result from the
+ *  user's request, the final code, stats and renders. */
+export interface AutoReviewSettings {
+  enabled: boolean;
+  /** 'same' = whatever provider/model is driving the chat. */
+  provider: Provider | 'same';
+  /** Reviewer model when `provider` isn't 'same'. */
+  model: string;
+  /** How many times the agent may act on a non-passing review before the
+   *  loop stops (0 = just post the review). */
+  fixRounds: number;
+}
+
+/** Upper bound for AutoReviewSettings.fixRounds. */
+export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
+
+const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { enabled: false, provider: 'same', model: '', fixRounds: 1 };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
 const SETTINGS_REV = 1;
@@ -195,6 +216,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
+  autoReview: DEFAULT_AUTO_REVIEW,
   settingsRev: SETTINGS_REV,
 };
 
@@ -545,6 +567,7 @@ interface LegacyAiSettings {
   customLocalModels?: CustomLocalModel[];
   localContext?: Partial<LocalContextSettings>;
   aiPanelWidth?: number;
+  autoReview?: Partial<AutoReviewSettings>;
   settingsRev?: number;
 }
 
@@ -640,8 +663,27 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
     aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
+    autoReview: normalizeAutoReview(partial.autoReview),
     settingsRev: SETTINGS_REV,
   };
+}
+
+const AUTO_REVIEW_PROVIDERS: ReadonlyArray<AutoReviewSettings['provider']> = ['same', 'anthropic', 'openai', 'gemini', 'custom', 'local'];
+
+function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): AutoReviewSettings {
+  const r = raw ?? {};
+  const rounds = typeof r.fixRounds === 'number' && Number.isFinite(r.fixRounds) ? Math.round(r.fixRounds) : DEFAULT_AUTO_REVIEW.fixRounds;
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : DEFAULT_AUTO_REVIEW.enabled,
+    provider: r.provider && AUTO_REVIEW_PROVIDERS.includes(r.provider) ? r.provider : DEFAULT_AUTO_REVIEW.provider,
+    model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
+    fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
+  };
+}
+
+/** Update the automatic-review settings (validated). */
+export function setAutoReview(settings: AiSettings, partial: Partial<AutoReviewSettings>): AiSettings {
+  return { ...settings, autoReview: normalizeAutoReview({ ...settings.autoReview, ...partial }) };
 }
 
 function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): LocalContextSettings {
