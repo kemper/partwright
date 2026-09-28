@@ -5,9 +5,10 @@
 // brush) with geodesic available for curved/gap-separated surfaces. Driven
 // through paintAirbrush (same path as the UI spray).
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
-async function openEditor(page: import('playwright/test').Page) {
+async function openEditor(page: Page) {
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   await page.evaluate(async () => {
@@ -17,9 +18,31 @@ async function openEditor(page: import('playwright/test').Page) {
   });
 }
 
+// Shared-page equivalent of openEditor's reset. paintAirbrush is a pure
+// console API call (fully self-parameterized), but a plain pw.run() does NOT
+// clear pre-existing paint regions — it re-resolves them onto the fresh mesh
+// by design — so an explicit clearColors() after the run gives each test the
+// same "regions start at 0" guarantee a brand-new page would give it.
+async function resetCube(page: Page, dims: [number, number, number] = [20, 20, 10]) {
+  await page.evaluate(async (d) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pw = (window as any).partwright;
+    await pw.run(`const { Manifold } = api; return Manifold.cube([${d[0]}, ${d[1]}, ${d[2]}], true);`);
+    pw.clearColors();
+  }, dims);
+}
+
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
 test.describe('airbrush', () => {
-  test('paintAirbrush sprays a region, subdivides for speckle, light by default', async ({ page }) => {
-    await openEditor(page);
+  test('paintAirbrush sprays a region, subdivides for speckle, light by default', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -34,8 +57,8 @@ test.describe('airbrush', () => {
     expect(out.regions).toBe(1);
   });
 
-  test('higher strength covers strictly more (fixed seed → superset, non-flaky)', async ({ page }) => {
-    await openEditor(page);
+  test('higher strength covers strictly more (fixed seed → superset, non-flaky)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -49,8 +72,8 @@ test.describe('airbrush', () => {
     expect(out.heavy).toBeGreaterThan(out.light);
   });
 
-  test('spray stays on the surface: slab gated by depth, geodesic by connectivity', async ({ page }) => {
-    await openEditor(page);
+  test('spray stays on the surface: slab gated by depth, geodesic by connectivity', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -73,8 +96,8 @@ test.describe('airbrush', () => {
     expect(out.slabDeep).toBeLessThan(0);       // a deep slab is the gate that lets it through
   });
 
-  test('the speckle is deterministic across save + reload', async ({ page }) => {
-    await openEditor(page);
+  test('the speckle is deterministic across save + reload', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -92,8 +115,8 @@ test.describe('airbrush', () => {
     expect(out.regions).toBe(1);
   });
 
-  test('overlapping sprays survive save + reload identically (multi-stroke determinism)', async ({ page }) => {
-    await openEditor(page);
+  test('overlapping sprays survive save + reload identically (multi-stroke determinism)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -115,7 +138,13 @@ test.describe('airbrush', () => {
     expect(out.live[1]).toBeGreaterThan(0);
     expect(out.reloaded).toEqual(out.live); // both sprays reproduce exactly on reload
   });
+});
 
+// The panel-toggle checks and the interactive spray drag need to open/click
+// the paint picker panel without a symmetric teardown — safe on an isolated
+// page but not stackable on the shared one (a second "open the panel" click
+// would close a panel a prior test left open). Keep these on their own page.
+test.describe('airbrush — UI interactions', () => {
   test('the brush panel has a Spray toggle that reveals strength/softness and keeps Slab available', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');

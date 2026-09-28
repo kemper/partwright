@@ -26,6 +26,15 @@ export interface SharedEditorOptions {
  *  a test fails, Playwright tears the worker down and the next test's
  *  `beforeAll` boots a fresh page, so one failure can't poison the rest.
  *
+ *  Things a fresh `page.goto` resets that the API calls you'd reach for don't:
+ *  `createSession()` keeps the live paint regions (call `clearColors()` too)
+ *  and the active engine language (call `setActiveLanguage(...)`), a plain
+ *  `run()` re-resolves existing paint rather than clearing it, toggle buttons
+ *  (paint panel, print panel, orbit lock) flip whatever state the last test
+ *  left, and the editor buffer isn't restored to starter code. Tests that need
+ *  any of these fresh keep the per-test `{ page }` fixture in their own
+ *  `test.describe` — mixing both in one file is fine.
+ *
  *  Mirrors the project `use` options that matter for rendering (baseURL,
  *  viewport, …), since contexts created by hand don't inherit them. */
 export async function openSharedEditor(

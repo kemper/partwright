@@ -13,9 +13,10 @@
 // drives painting through paintStroke (same code path as the UI smooth brush)
 // rather than simulating a raycast mouse drag.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
-async function openEditor(page: import('playwright/test').Page) {
+async function openEditor(page: Page) {
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   await page.evaluate(async () => {
@@ -25,7 +26,31 @@ async function openEditor(page: import('playwright/test').Page) {
   });
 }
 
-test.describe('smooth paintbrush', () => {
+// Shared-page equivalent of openEditor's reset: the console paintStroke/
+// paintSlab/paintInOrientedBox APIs never read the UI brush's global
+// smooth/wrap/divisor settings (each call is fully self-parameterized with
+// its own defaults), so those don't need resetting between tests. But a
+// plain pw.run() does NOT clear existing paint regions (it re-resolves them
+// onto the fresh mesh, by design, so live-editing code keeps its paint) —
+// so an explicit clearColors() after the run is what actually gives each
+// test the "regions start at 0" guarantee a brand-new page would give it.
+async function resetCube(page: Page, dims: [number, number, number] = [10, 10, 10]) {
+  await page.evaluate(async (d) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pw = (window as any).partwright;
+    await pw.run(`const { Manifold } = api; return Manifold.cube([${d[0]}, ${d[1]}, ${d[2]}], true);`);
+    pw.clearColors();
+  }, dims);
+}
+
+// The UI-interaction tests below toggle the paint picker panel open/closed
+// and flip persistent brush-tool settings (smooth on/off, wrap angle) without
+// symmetric teardown — safe on their own isolated page (Playwright's default
+// per-test `page` fixture), but two of these toggling in sequence on ONE
+// shared page would corrupt each other (e.g. a second "open the panel" click
+// would actually close it if a prior test left it open). Keep these on their
+// own page rather than the shared one.
+test.describe('smooth paintbrush — UI interactions', () => {
   test('brush is the default tool with smoothing on and a detail slider', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
@@ -128,9 +153,26 @@ test.describe('smooth paintbrush', () => {
     expect(cfg.ok.wrapAngleDeg).toBe(120);
     expect(cfg.get.wrapAngleDeg).toBe(120);
   });
+});
 
-  test('wrap tolerance stops a stroke at a 90° edge (no wrap), 180° still wraps', async ({ page }) => {
-    await openEditor(page);
+// Everything below is pure window.partwright API: run a baseline cube,
+// paintStroke/paintSlab/paintInOrientedBox with explicit params, assert on
+// the result. No UI panel is touched and paintStroke/paintSlab/
+// paintInOrientedBox never read the UI brush's global settings, so these are
+// order-independent given the resetCube() reset (fresh base mesh + zero
+// regions) — the file shares one booted editor instead of paying a fresh
+// page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
+test.describe('smooth paintbrush', () => {
+  test('wrap tolerance stops a stroke at a 90° edge (no wrap), 180° still wraps', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -160,8 +202,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.geoWrap180).toBeLessThan(8);
   });
 
-  test('setBrushSmooth / setBrushSmoothDivisor validate, clamp, and round-trip', async ({ page }) => {
-    await openEditor(page);
+  test('setBrushSmooth / setBrushSmoothDivisor validate, clamp, and round-trip', async () => {
+    await resetCube(page);
     const result = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -182,8 +224,8 @@ test.describe('smooth paintbrush', () => {
     expect(result.cfg).toMatchObject({ smooth: true, divisor: 300 });
   });
 
-  test('paintStroke subdivides the rim and paints, keeping triangle count lean', async ({ page }) => {
-    await openEditor(page);
+  test('paintStroke subdivides the rim and paints, keeping triangle count lean', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -204,8 +246,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.regions).toBe(1);
   });
 
-  test('slab surface mode keeps paint on the picked surface (no bleed-through)', async ({ page }) => {
-    await openEditor(page);
+  test('slab surface mode keeps paint on the picked surface (no bleed-through)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -227,8 +269,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
   });
 
-  test('geodesic surface mode never bleeds through a wall', async ({ page }) => {
-    await openEditor(page);
+  test('geodesic surface mode never bleeds through a wall', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -247,8 +289,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
   });
 
-  test('slab is an extruded prism: depth reaches through to the back face', async ({ page }) => {
-    await openEditor(page);
+  test('slab is an extruded prism: depth reaches through to the back face', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -267,8 +309,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.deepMinZ).toBeLessThan(0);        // reached through to the back face
   });
 
-  test('slab matches geodesic footprint on a flat face (corners reached)', async ({ page }) => {
-    await openEditor(page);
+  test('slab matches geodesic footprint on a flat face (corners reached)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -293,8 +335,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.slabCircle.max[0]).toBeGreaterThan(7);
   });
 
-  test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
-    await openEditor(page);
+  test('many strokes stay fast and bounded (no O(strokes^2) replay)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -315,8 +357,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.meshTri).toBeLessThan(200000);
   });
 
-  test('a smaller target edge produces more triangles; clearing restores the base mesh', async ({ page }) => {
-    await openEditor(page);
+  test('a smaller target edge produces more triangles; clearing restores the base mesh', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -341,8 +383,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.clearedHigh).toBe(out.base);
   });
 
-  test('subdivision adapts to a very coarse flat face (the reported case)', async ({ page }) => {
-    await openEditor(page);
+  test('subdivision adapts to a very coarse flat face (the reported case)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -359,8 +401,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.meshTri).toBeGreaterThan(500);
   });
 
-  test('paintStroke rejects bad input', async ({ page }) => {
-    await openEditor(page);
+  test('paintStroke rejects bad input', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -377,8 +419,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.offModel.error).toBeTruthy(); // nothing within the footprint
   });
 
-  test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async ({ page }) => {
-    await openEditor(page);
+  test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -400,8 +442,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
   });
 
-  test('triangle-count readout updates on run, paint, and clear (no hard cap)', async ({ page }) => {
-    await openEditor(page); // runs a 10mm cube (12 triangles)
+  test('triangle-count readout updates on run, paint, and clear (no hard cap)', async () => {
+    await resetCube(page); // 10mm cube (12 triangles)
     const counter = page.locator('#triangle-count');
     await expect(counter).toBeVisible();
     const num = async () => parseInt((await counter.textContent() ?? '').replace(/[^0-9]/g, ''), 10);
@@ -418,8 +460,8 @@ test.describe('smooth paintbrush', () => {
     await expect.poll(num).toBe(base); // back to base after clear
   });
 
-  test('a region overlapping a smooth stroke resolves the same live and on reload', async ({ page }) => {
-    await openEditor(page);
+  test('a region overlapping a smooth stroke resolves the same live and on reload', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -445,8 +487,8 @@ test.describe('smooth paintbrush', () => {
     expect(out.reloadBoxTris).toBe(out.liveBoxTris);
   });
 
-  test('a smooth stroke survives save + reload', async ({ page }) => {
-    await openEditor(page);
+  test('a smooth stroke survives save + reload', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -488,8 +530,8 @@ test.describe('smooth paintbrush', () => {
 // it crosses. Smoothing is on by default and controllable (UI toggle/slider; API
 // smooth/resolution/maxEdge params).
 test.describe('smooth slab & shape painting', () => {
-  test('paintSlab smooths its edges by default and smooth:false keeps the base mesh', async ({ page }) => {
-    await openEditor(page);
+  test('paintSlab smooths its edges by default and smooth:false keeps the base mesh', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -514,8 +556,8 @@ test.describe('smooth slab & shape painting', () => {
     expect(out.blockyTri).toBe(out.base);             // smooth:false leaves tessellation untouched
   });
 
-  test('slab resolution controls smoothness (finer → more triangles)', async ({ page }) => {
-    await openEditor(page);
+  test('slab resolution controls smoothness (finer → more triangles)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -530,8 +572,8 @@ test.describe('smooth slab & shape painting', () => {
     expect(out.fine).toBeGreaterThan(out.coarse);
   });
 
-  test('paintInOrientedBox smooths by default; smooth:false keeps the base mesh', async ({ page }) => {
-    await openEditor(page);
+  test('paintInOrientedBox smooths by default; smooth:false keeps the base mesh', async () => {
+    await resetCube(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -553,8 +595,8 @@ test.describe('smooth slab & shape painting', () => {
     expect(out.blockyTri).toBe(out.base);
   });
 
-  test('a smooth slab resolves the same live and on reload (determinism)', async ({ page }) => {
-    await openEditor(page);
+  test('a smooth slab resolves the same live and on reload (determinism)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -581,8 +623,8 @@ test.describe('smooth slab & shape painting', () => {
     expect(out.reloadColored).toBe(out.liveColored); // same painted set
   });
 
-  test('a stroke appended over a smooth slab matches a full reload (determinism)', async ({ page }) => {
-    await openEditor(page);
+  test('a stroke appended over a smooth slab matches a full reload (determinism)', async () => {
+    await resetCube(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -605,7 +647,11 @@ test.describe('smooth slab & shape painting', () => {
     expect(out.reloadMeshTris).toBe(out.liveMeshTris);   // incremental append == full reload
     expect(out.reloadSlabTris).toBe(out.liveSlabTris);
   });
+});
 
+// The panel visibility check needs the paint picker opened; keep it isolated
+// like the other UI-interaction tests above.
+test.describe('smooth slab & shape painting — UI interactions', () => {
   test('the slab and shape panels show an edge-smoothing toggle, on by default', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');

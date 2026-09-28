@@ -43,3 +43,9 @@ still holds starter code, which only a real reload restores). Each of these need
 a reset primitive that doesn't exist today, so they keep their fresh pages.
 Retired manifold-id-verify.spec.ts, whose header planned its own deletion
 once labelled construction shipped.
+
+**Paint/worker batch**: converting fork-color-carry surfaced that
+`createSession()` keeps the live paint regions, so shared-page paint specs call
+`clearColors()` after it. The helper's doc comment now lists the state a fresh
+goto resets but the API equivalents don't. Tests that toggle the paint panel
+with no symmetric teardown (and all of paint-camera-passthrough) stay per-test.
