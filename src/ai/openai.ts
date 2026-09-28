@@ -424,7 +424,10 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
   // Canonicalize the tool_use/tool_result invariant on the ChatMessage
   // history first — the shared, single-source-of-truth repair the UI's
   // "Repair history" button and every other provider also use (see #914) —
-  // so what the button detects and what the send repairs can't diverge.
+  // so what the button detects and what the send repairs can't diverge. This
+  // is the ONLY repair on the send path: every toolCall becomes a
+  // function_call and every toolResult a function_call_output, emitted in
+  // order, so the conversion can't reintroduce a dangling or orphaned item.
   const repaired = repairToolHistory(history).messages;
   const out: ResponsesInputItem[] = [];
   for (const msg of repaired) {
@@ -469,46 +472,7 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
       if (content) out.push({ type: 'message', role: 'user', content });
     }
   }
-  return sanitizeResponsesToolCalls(out);
-}
-
-/** The Responses API 400s if a `function_call` item has no matching
- *  `function_call_output` ("No tool output found for function call …"). A
- *  turn that ends right after the model emits tool calls — user Stop, stall
- *  watchdog, or the spend cap tripping before results post — leaves a
- *  dangling call in history, so the next send fails. Mirror the Chat
- *  Completions / Anthropic repair: inject a synthetic error output for any
- *  unanswered call_id. Keyed off the GLOBAL set of answered ids so an image
- *  tool-result — surfaced on a `user` message wedged between items — doesn't
- *  read as a gap. */
-function sanitizeResponsesToolCalls(items: ResponsesInputItem[]): ResponsesInputItem[] {
-  // Mirror the tool_use repair the other way: drop any function_call_output
-  // whose call_id has no function_call (e.g. compaction dropped the call). The
-  // Responses API 400s on an output for a call it can't see.
-  const calls = new Set<string>();
-  for (const it of items) if (it.type === 'function_call') calls.add(it.call_id);
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.type === 'function_call_output' && !calls.has(it.call_id)) items.splice(i, 1);
-  }
-
-  const answered = new Set<string>();
-  for (const it of items) {
-    if (it.type === 'function_call_output') answered.add(it.call_id);
-  }
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (it.type !== 'function_call' || answered.has(it.call_id)) continue;
-    const synthetic: ResponsesInputItem = {
-      type: 'function_call_output',
-      call_id: it.call_id,
-      output: 'Tool call was interrupted and did not complete.',
-    };
-    items.splice(i + 1, 0, synthetic);
-    answered.add(it.call_id);
-    i += 1;
-  }
-  return items;
+  return out;
 }
 
 function buildResponsesUserContent(blocks: ChatBlock[]): ResponsesContentPart[] | null {
@@ -750,7 +714,10 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
   // Canonicalize the tool_use/tool_result invariant on the ChatMessage
   // history first — the shared, single-source-of-truth repair the UI's
   // "Repair history" button and every other provider also use (see #914) —
-  // so what the button detects and what the send repairs can't diverge.
+  // so what the button detects and what the send repairs can't diverge. This
+  // is the ONLY repair on the send path: every toolCall becomes a tool_calls
+  // entry and every toolResult a `tool` message (kept contiguous below), so
+  // the conversion can't reintroduce a dangling or orphaned tool message.
   const repaired = repairToolHistory(history).messages;
   const out: OpenAIMessage[] = [];
   for (const msg of repaired) {
@@ -796,52 +763,7 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
       if (content !== null) out.push({ role: 'user', content });
     }
   }
-  return sanitizeChatToolMessages(out);
-}
-
-/** OpenAI 400s if an assistant message carrying `tool_calls` isn't followed
- *  by a `tool` message for every tool_call_id before the next turn ("The
- *  following tool_call_ids did not have response messages"). A turn that
- *  ends right after the model emits tool calls — user Stop, stall watchdog,
- *  or the spend cap tripping before results are posted — leaves a dangling
- *  assistant message in history, so the next send fails.
- *
- *  Mirror anthropic.ts's `sanitizeToolUse`: inject a synthetic error result
- *  for any unanswered id. Keyed off the GLOBAL set of answered ids (not a
- *  positional scan) so an image tool-result — which surfaces the image on a
- *  `user` message wedged between `tool` messages — doesn't read as a gap. */
-function sanitizeChatToolMessages(messages: OpenAIMessage[]): OpenAIMessage[] {
-  // Mirror the tool_calls repair the other way: drop any `tool` message whose
-  // tool_call_id has no assistant tool_calls entry (e.g. compaction dropped the
-  // call). OpenAI 400s on a tool message that responds to a call it can't see.
-  const calls = new Set<string>();
-  for (const m of messages) {
-    if (m.role === 'assistant' && m.tool_calls) for (const tc of m.tool_calls) calls.add(tc.id);
-  }
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'tool' && m.tool_call_id && !calls.has(m.tool_call_id)) messages.splice(i, 1);
-  }
-
-  const answered = new Set<string>();
-  for (const m of messages) {
-    if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id);
-  }
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (m.role !== 'assistant' || !m.tool_calls || m.tool_calls.length === 0) continue;
-    const missing = m.tool_calls.filter(tc => !answered.has(tc.id));
-    if (missing.length === 0) continue;
-    const synthetic: OpenAIMessage[] = missing.map(tc => ({
-      role: 'tool',
-      tool_call_id: tc.id,
-      content: 'Tool call was interrupted and did not complete.',
-    }));
-    messages.splice(i + 1, 0, ...synthetic);
-    for (const s of synthetic) if (s.tool_call_id) answered.add(s.tool_call_id);
-    i += synthetic.length;
-  }
-  return messages;
+  return out;
 }
 
 function buildChatUserContent(blocks: ChatBlock[]): OpenAIMessage['content'] | null {
