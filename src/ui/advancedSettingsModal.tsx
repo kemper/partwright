@@ -443,8 +443,17 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           tooltip="The max_tokens value sent to Anthropic when a Claude 4.6+ model runs adaptive thinking (any Thinking level above Off, or a model that always thinks). Thinking tokens count against this ceiling and adaptive thinking has no separate budget, so it must be large — too low and high-effort turns stop mid-thought. Output is billed by what the model actually generates, not by this cap."
           defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinking}
           value={c.ai.maxOutputTokensAnthropicThinking}
-          min={4096} max={128_000} integer
+          min={4096} max={64_000} integer
           onChange={v => set('ai', 'maxOutputTokensAnthropicThinking', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (XHigh / Max thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value for adaptive-thinking turns at the XHigh or Max Thinking level, which think the longest — too low and a deep turn stops mid-thought with max_tokens. Every Claude 4.6+ model accepts at least 64k (Sonnet 4.6's cap), so higher values can error on some models. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinkingDeep}
+          value={c.ai.maxOutputTokensAnthropicThinkingDeep}
+          min={4096} max={128_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinkingDeep', v)}
         />
         <Field
           label="OpenAI max output tokens"

@@ -18,7 +18,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
-import { anthropicThinkingPlan, type AnthropicThinkingPlan } from './thinkingLevels';
+import { anthropicThinkingPlan, isDeepEffort, type AnthropicThinkingPlan } from './thinkingLevels';
 
 /** Resolve the Thinking level into this model's request shape (adaptive
  *  thinking + effort on Claude 4.6+, `budget_tokens` on older models — see
@@ -175,7 +175,7 @@ export async function streamTurn(
   const max_tokens = plan.budgetTokens > 0
     ? Math.max(baseMax, plan.budgetTokens + cfg.answerHeadroomTokens)
     : plan.active
-      ? Math.max(baseMax, cfg.maxOutputTokensAnthropicThinking)
+      ? Math.max(baseMax, isDeepEffort(plan) ? cfg.maxOutputTokensAnthropicThinkingDeep : cfg.maxOutputTokensAnthropicThinking)
       : baseMax;
 
   // System is sent as an array of blocks so we can attach cache_control to

@@ -76,6 +76,12 @@ export interface AnthropicThinkingPlan {
   budgetTokens: number;
 }
 
+/** Whether an adaptive plan runs at the top efforts (xhigh/max), which need
+ *  a larger output ceiling than the other levels. */
+export function isDeepEffort(plan: AnthropicThinkingPlan): boolean {
+  return plan.effort === 'xhigh' || plan.effort === 'max';
+}
+
 function clampAnthropicEffort(level: 'low' | 'medium' | 'high' | 'xhigh' | 'max', family: AnthropicThinkingFamily): AnthropicEffort {
   // Claude 4.6 has no xhigh — round down to high (the cheaper neighbour).
   if (family === 'adaptive46' && level === 'xhigh') return 'high';
@@ -124,26 +130,29 @@ export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budge
 // OpenAI (reasoning models: gpt-5 family, o-series)
 // ---------------------------------------------------------------------------
 
-/** gpt-5.N minor version (0 for plain gpt-5 / gpt-5-mini), or null for
- *  non-gpt-5 models (o-series). */
-function gpt5Minor(model: string): number | null {
-  const m = /^gpt-5(?:\.(\d+))?(?![\d.])/.exec(model.trim().toLowerCase());
+/** GPT generation as major/minor (gpt-5 → 5.0, gpt-5.5-mini → 5.5,
+ *  gpt-6-astra → 6.0), or null for other ids (o-series). */
+function gptVersion(model: string): { major: number; minor: number } | null {
+  const m = /^gpt-(\d+)(?:\.(\d+))?(?![\d.])/.exec(model.trim().toLowerCase());
   if (!m) return null;
-  return m[1] !== undefined ? Number(m[1]) : 0;
+  return { major: Number(m[1]), minor: m[2] !== undefined ? Number(m[2]) : 0 };
 }
 
 /** Map a Thinking level onto OpenAI `reasoning.effort` / `reasoning_effort`
- *  for a reasoning model. null = omit the field (provider default). Every
- *  reasoning model accepts low/medium/high; xhigh arrived with gpt-5.2 and
- *  max with gpt-5.6, so higher asks clamp down on older models. OpenAI
- *  reasoning models always reason, so Off is the lowest universal effort. */
+ *  for a reasoning model. null = omit the field (provider default).
+ *  Off also omits it: there is no single "lowest" value every reasoning model
+ *  accepts (gpt-5.1+ default to 'none', gpt-5 takes 'minimal', the -pro
+ *  models reject low, o1-mini rejects the field), so the provider default is
+ *  the only safe floor. Every reasoning model accepts low/medium/high; xhigh
+ *  arrived with gpt-5.2 and max with gpt-5.6, so higher asks clamp down on
+ *  older models. */
 export function openaiReasoningEffort(model: string, level: ThinkingLevel): string | null {
-  if (level === 'default') return null;
-  if (level === 'off') return 'low';
+  if (level === 'default' || level === 'off') return null;
   if (level === 'low' || level === 'medium' || level === 'high') return level;
-  const minor = gpt5Minor(model);
-  const hasXhigh = minor !== null && minor >= 2;
-  const hasMax = minor !== null && minor >= 6;
+  const v = gptVersion(model);
+  const atLeast = (major: number, minor: number) => v !== null && (v.major > major || (v.major === major && v.minor >= minor));
+  const hasXhigh = atLeast(5, 2);
+  const hasMax = atLeast(5, 6);
   if (level === 'max' && hasMax) return 'max';
   if (hasXhigh) return 'xhigh';
   return 'high';
@@ -156,13 +165,15 @@ export function openaiReasoningEffort(model: string, level: ThinkingLevel): stri
 /** Extra Chat Completions fields for the Custom provider.
  *  `include_reasoning` (visibility only — unknown-field servers ignore it) is
  *  sent whenever thinking isn't Off. `reasoning_effort` is sent only when the
- *  user opted in (Custom tab), since some servers (Ollama) map it to
- *  "think" and error on non-thinking models; the level passes through as-is
- *  (CLIProxyAPI clamps it per model and maps 'none' to disabled). */
+ *  user opted in (Custom tab), since some servers (Ollama) map it to "think"
+ *  and error on non-thinking models. Low → Max pass through as-is — the point
+ *  of the opt-in is reaching xhigh/max through a bridge like CLIProxyAPI, which
+ *  clamps per model. Off and Default send nothing: 'none' would become
+ *  "thinking disabled", which always-on models (Opus 5.5, Fable) reject. */
 export function customReasoningFields(level: ThinkingLevel, sendEffort: boolean): { include_reasoning?: true; reasoning_effort?: string } {
   const out: { include_reasoning?: true; reasoning_effort?: string } = {};
   if (level !== 'off') out.include_reasoning = true;
-  if (sendEffort && level !== 'default') out.reasoning_effort = level === 'off' ? 'none' : level;
+  if (sendEffort && level !== 'off' && level !== 'default') out.reasoning_effort = level;
   return out;
 }
 

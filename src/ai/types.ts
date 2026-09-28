@@ -218,12 +218,10 @@ export const RENDER_RESOLUTION_PX: Record<ChatToggles['vision']['resolution'], n
 
 /** Source of truth for the thinking-level dropdown. The pill, the
  *  per-provider request builders, and the per-turn suffix all read from
- *  this single record. The concrete token budgets / effort levels each
- *  level maps to are provider-specific and live next to each provider's
- *  wire format (see `thinkingBudget()` in anthropic.ts / gemini.ts and
- *  `reasoningEffort()` in openai.ts). */
+ *  this single record. The concrete per-provider / per-model mapping (effort
+ *  levels, token budgets, clamping) lives in `src/ai/thinkingLevels.ts`. */
 export const THINKING_LEVELS: Record<ThinkingLevel, { label: string; promptLabel: string; hint: string }> = {
-  off:     { label: 'Off',     promptLabel: 'off',     hint: 'No extended reasoning where the model allows it; models that always think (Claude Opus 5.x / Fable, OpenAI reasoning models) run at their lowest effort. Cheapest + fastest.' },
+  off:     { label: 'Off',     promptLabel: 'off',     hint: 'No extended reasoning where the model allows it. Claude models that always think (Opus 5.x / Fable) run at their lowest effort; OpenAI reasoning models use their own default. Cheapest + fastest.' },
   default: { label: 'Default', promptLabel: 'default', hint: 'No override — the model decides how much to think, using its provider default. Thinking is shown when the model does think.' },
   low:     { label: 'Low',     promptLabel: 'low',     hint: 'A short think before acting. Good for routine edits where a little planning helps.' },
   medium:  { label: 'Med',     promptLabel: 'medium',  hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors.' },

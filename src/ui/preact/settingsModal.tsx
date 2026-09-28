@@ -760,8 +760,7 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
               cb.onChange();
             }}
           />
-          {/* eslint-disable-next-line react/no-danger */}
-          <span dangerouslySetInnerHTML={{ __html: '<strong class="text-zinc-200">Send the Thinking level as <code>reasoning_effort</code>.</strong> <span class="text-zinc-400">Lets the 🧠 pill control reasoning depth through the endpoint (Off → <code>none</code>, Default → not sent). Turn on for CLIProxyAPI or vLLM; leave off for Ollama, which rejects it on models that don’t think. Either way, any level above Off asks the endpoint to stream the model’s reasoning.</span>' }} />
+          <span dangerouslySetInnerHTML={{ __html: '<strong class="text-zinc-200">Send the Thinking level as <code>reasoning_effort</code>.</strong> <span class="text-zinc-400">Lets the 🧠 pill set reasoning depth through the endpoint — Low → Max are sent as-is (Off and Default send nothing). Made for CLIProxyAPI, which maps each level to the model it routes to. Servers that only accept low / medium / high may reject XHigh or Max, and Ollama rejects the field on models that don’t think. Either way, any level above Off asks the endpoint to stream the model’s reasoning.</span>' }} />
         </label>
       </Section>
       <Divider />

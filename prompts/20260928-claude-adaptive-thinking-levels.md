@@ -74,3 +74,18 @@ budget, since Gemini tops out at High.
 The Full preset moves to XHigh. Old saved levels stay valid, and stored or
 session values are validated with `parseThinkingLevel`, so unknown strings
 fall back to the default.
+
+**Review follow-ups** (from a review subagent):
+- **OpenAI Off omits the field again.** Forcing `low` would 400 on the `-pro`
+  models and on o1-mini, and it makes gpt-5.1+ (default `none`) reason more.
+- **One-shot calls send `thinking: 'default'`.** This covers review and
+  publish metadata; Off would have pinned Opus 5.x to low effort and disabled
+  Sonnet 5's thinking.
+- **XHigh/Max get their own 64k output ceiling.** Every 4.6+ model accepts
+  64k; the regular thinking ceiling is capped there.
+- **Custom opt-in sends nothing at Off.** `none` becomes "thinking disabled",
+  which always-on models reject. The copy now names CLIProxyAPI and warns that
+  low/medium/high-only servers may reject XHigh/Max.
+- **The session-preference re-apply compares normalized toggles.** A
+  pre-change snapshot lacks the new field, so it rewrote settings on every
+  window focus.

@@ -499,7 +499,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     customModel: partial.customModel ?? settings.toggles.customModel,
     customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
-    customReasoningEffort: partial.customReasoningEffort ?? settings.toggles.customReasoningEffort,
+    customReasoningEffort: typeof partial.customReasoningEffort === 'boolean' ? partial.customReasoningEffort : settings.toggles.customReasoningEffort,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }

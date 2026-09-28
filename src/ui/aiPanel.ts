@@ -646,7 +646,11 @@ async function applySessionAiPreference(): Promise<void> {
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
     // (no needless settings write or transcript-shifting re-render).
-    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    // Compare NORMALIZED forms: a snapshot saved before a toggles field was
+    // added lacks it, so a raw compare would never match and every window
+    // focus would rewrite settings.
+    const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
+      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
     next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };

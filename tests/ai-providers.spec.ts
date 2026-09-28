@@ -849,7 +849,8 @@ test.describe('Multi-provider AI', () => {
     // max_tokens ceiling big enough for the thinking to fit.
     expect(out.opus47.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
     expect(out.opus47.output_config).toEqual({ effort: 'xhigh' });
-    expect(out.opus47.max_tokens as number).toBeGreaterThanOrEqual(32768);
+    // XHigh gets the deep-thinking ceiling (64k by default).
+    expect(out.opus47.max_tokens as number).toBeGreaterThanOrEqual(64000);
     expect(out.opus47Off.thinking).toEqual({ type: 'disabled' });
     // Opus 5.5 can't disable thinking — Off is the lowest effort instead.
     expect(out.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
@@ -953,11 +954,11 @@ test.describe('Multi-provider AI', () => {
       } finally { window.fetch = origFetch; }
       return bodies;
     });
-    // Reasoning model on the Responses path. Reasoning models always reason,
-    // so Off is the lowest universal effort; Default omits the field; Max
-    // clamps to the model's highest (gpt-5.5 tops out at xhigh).
+    // Reasoning model on the Responses path. Off and Default both omit the
+    // field (no single floor is valid on every reasoning model — -pro models
+    // reject low); Max clamps to the model's highest (gpt-5.5 tops out at xhigh).
     expect(out.reasoningHigh.reasoning.effort).toBe('high');
-    expect(out.reasoningOff.reasoning.effort).toBe('low');
+    expect(out.reasoningOff.reasoning).toBeUndefined();
     expect(out.reasoningDefault.reasoning).toBeUndefined();
     expect(out.reasoningMax.reasoning.effort).toBe('xhigh');
     // Non-reasoning model on the Chat Completions path: never carries a

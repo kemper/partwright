@@ -59,6 +59,9 @@ export interface AppConfig {
      *  separate budget, so this needs to be much larger than the plain cap or
      *  high-effort turns stop mid-thought with max_tokens. */
     maxOutputTokensAnthropicThinking: number;
+    /** Max output tokens for adaptive-thinking turns at XHigh / Max effort,
+     *  which think longest. Every Claude 4.6+ model allows at least 64k. */
+    maxOutputTokensAnthropicThinkingDeep: number;
     /** Default max output tokens for OpenAI stream turns (Responses + Chat). */
     maxOutputTokensOpenai: number;
     /** Default max output tokens for Gemini stream turns (combined thinking +
@@ -334,6 +337,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     answerHeadroomTokens: 8192,
     maxOutputTokensAnthropic: 8192,
     maxOutputTokensAnthropicThinking: 32768,
+    maxOutputTokensAnthropicThinkingDeep: 64000,
     maxOutputTokensOpenai: 8192,
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,

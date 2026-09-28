@@ -86,8 +86,11 @@ describe('anthropicThinkingPlan', () => {
 });
 
 describe('openaiReasoningEffort', () => {
-  it('off → low, default → omitted, low/medium/high pass through', () => {
-    expect(openaiReasoningEffort('gpt-5-mini', 'off')).toBe('low');
+  it('off and default → omitted (provider default), low/medium/high pass through', () => {
+    // No single "lowest" effort is valid on every reasoning model (-pro models
+    // reject low, gpt-5.1+ default to none), so Off leaves the field out.
+    expect(openaiReasoningEffort('gpt-5-mini', 'off')).toBeNull();
+    expect(openaiReasoningEffort('gpt-5-pro', 'off')).toBeNull();
     expect(openaiReasoningEffort('gpt-5-mini', 'default')).toBeNull();
     expect(openaiReasoningEffort('o3', 'medium')).toBe('medium');
   });
@@ -98,6 +101,7 @@ describe('openaiReasoningEffort', () => {
     expect(openaiReasoningEffort('gpt-5.5', 'xhigh')).toBe('xhigh');
     expect(openaiReasoningEffort('gpt-5.5', 'max')).toBe('xhigh');
     expect(openaiReasoningEffort('gpt-5.6-sol', 'max')).toBe('max');
+    expect(openaiReasoningEffort('gpt-6-astra', 'max')).toBe('max');
   });
 });
 
@@ -108,9 +112,10 @@ describe('customReasoningFields', () => {
     expect(customReasoningFields('default', false)).toEqual({ include_reasoning: true });
   });
 
-  it('opted in: level passes through, off → none, default → omitted', () => {
+  it('opted in: Low → Max pass through; off and default send no effort', () => {
     expect(customReasoningFields('xhigh', true)).toEqual({ include_reasoning: true, reasoning_effort: 'xhigh' });
-    expect(customReasoningFields('off', true)).toEqual({ reasoning_effort: 'none' });
+    // 'none' would mean "thinking disabled", which Opus 5.5 / Fable reject.
+    expect(customReasoningFields('off', true)).toEqual({});
     expect(customReasoningFields('default', true)).toEqual({ include_reasoning: true });
   });
 });

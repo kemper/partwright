@@ -46,6 +46,9 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
       systemSuffix: '',
       apiMessages: buildApiMessages(req.history),
       tools: [],
+      // Each model's own default — Off would pin always-thinking models
+      // (Opus 5.x, Fable) to low effort and disable Sonnet 5's thinking.
+      thinking: 'default',
     });
     return { text: r.text, usage: r.usage };
   }
