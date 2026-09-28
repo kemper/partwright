@@ -4,12 +4,18 @@
 // carrying a tool_result for every one of those calls, or the next request
 // 400s ("tool_use ids were found without tool_result blocks").
 //
-// The per-provider request builders (anthropic.ts / openai.ts / gemini.ts) each
-// repair this transiently for the message array they send, but a corrupted
-// *persisted* history keeps tripping the 400 on every turn until the stored
-// messages themselves are fixed. This module operates on the persisted
-// ChatMessage[] so the repair can be written back to IndexedDB and the chat
-// becomes sendable again. It backs three things in the panel:
+// This is the ONLY implementation of that repair (#914). Every provider request
+// builder (anthropic.ts buildApiMessages, openai.ts buildChatMessages /
+// buildResponsesInput — also used by custom.ts — gemini.ts buildGeminiContents,
+// local.ts buildLocalApiMessages) runs it on the history before converting to
+// its wire format, so "what the Repair button detects" and "what the send
+// repairs" are the same code. tests/ai-tool-history-parity.spec.ts pins that
+// every provider emits the same repaired tool sequence.
+//
+// A corrupted *persisted* history would still trip the 400 on every turn if we
+// only repaired transiently, so this module operates on the persisted
+// ChatMessage[] and the repair can be written back to IndexedDB, making the
+// chat sendable again. It backs three things in the panel:
 //   - the automatic repair-before-every-send at the runTurnWithStallRetry choke
 //     point, so a normal send AND the Retry / Keep-going buttons self-heal an
 //     interrupted turn instead of looping on the same 400;
@@ -173,8 +179,9 @@ export function hasOrphanedToolCalls(history: ChatMessage[]): boolean {
  *  Every hosted provider phrases it differently, so match on the stable
  *  fragments each one uses. Drives the error-bubble "Repair history" affordance
  *  so it appears for exactly this failure class even when the persisted history
- *  looks clean to `hasOrphanedToolCalls` (e.g. the orphan was only manufactured
- *  in the per-provider request transform). Pure string check — no history
+ *  looks clean to `hasOrphanedToolCalls` (e.g. a tool_result that answers a
+ *  known call but isn't adjacent to it — accepted here, rejected by a
+ *  strict-adjacency backend; see #961). Pure string check — no history
  *  needed. */
 export function isToolHistoryMismatchError(message: string): boolean {
   const m = message.toLowerCase();

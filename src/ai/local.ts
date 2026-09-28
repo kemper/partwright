@@ -552,12 +552,7 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   const systemSuffix = native
     ? spec.systemSuffix
     : appendPromptToolDocs(spec.systemSuffix, spec.tools);
-  // Repair any tool-history invariant violation (orphaned tool_use missing its
-  // result, or orphaned tool_result whose call was dropped by compaction)
-  // before building — the native function-calling path emits per-id `tool`
-  // messages WebLLM would otherwise reject. Mirrors gemini.ts.
-  const history = repairToolHistory(spec.history).messages;
-  const messages = buildLocalApiMessages(spec.systemPrompt, systemSuffix, history, info, native);
+  const messages = buildLocalApiMessages(spec.systemPrompt, systemSuffix, spec.history, info, native);
 
   const baseReq: Record<string, unknown> = {
     messages,
@@ -975,13 +970,22 @@ function buildOpenAiTools(tools: ToolDefinition[]): Array<{ type: 'function'; fu
   }));
 }
 
-function buildLocalApiMessages(
+/** Convert the persisted ChatMessage history into WebLLM's OpenAI-shape
+ *  message array. Exported so the cross-provider tool-history parity test can
+ *  assert the Local send path without loading the WebLLM engine. */
+export function buildLocalApiMessages(
   systemPrompt: string,
   systemSuffix: string,
-  history: ChatMessage[],
+  rawHistory: ChatMessage[],
   info: LocalModelInfo,
   native: boolean,
 ): Array<Record<string, unknown>> {
+  // Canonicalize the tool_use/tool_result invariant first — the shared
+  // repairToolHistory every provider builder runs (see #914). It pairs an
+  // orphaned tool call with a synthetic error result and strips a result whose
+  // call was dropped by compaction; the native function-calling path emits
+  // per-id `tool` messages WebLLM would otherwise reject.
+  const history = repairToolHistory(rawHistory).messages;
   const out: Array<Record<string, unknown>> = [];
   const sys = systemSuffix.trim().length > 0 ? `${systemPrompt}\n\n${systemSuffix}` : systemPrompt;
   out.push({ role: 'system', content: sys });
