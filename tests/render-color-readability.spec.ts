@@ -11,7 +11,8 @@
 // pipeline always honored vertex colors; the actual problem was
 // readability of the resulting PNG.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 interface PixelStats {
   total: number;
@@ -66,14 +67,23 @@ async function decodeAndSample(page: import('playwright/test').Page, dataUrl: st
   }, dataUrl);
 }
 
-test.describe('render-color readability', () => {
-  test('unpainted mesh silhouette is visible against the white background', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
+// Each test clears paint and runs its own model before checking the rendered
+// PNG (pw.run() keeps existing paint), so the file shares one booted editor
+// instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('render-color readability', () => {
+  test('unpainted mesh silhouette is visible against the white background', async () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.sphere(10, 32);');
       return pw.renderView({ elevation: 30, azimuth: 0, ortho: false, size: 240 });
     });
@@ -89,10 +99,7 @@ test.describe('render-color readability', () => {
     expect(pureWhiteFraction, `pure-white fraction ${pureWhiteFraction.toFixed(3)} — silhouette should NOT be invisible against the background`).toBeLessThan(0.7);
   });
 
-  test('painted-region color reads cleanly above 5% of the composite', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('painted-region color reads cleanly above 5% of the composite', async () => {
     // Paint the top face of a cube red. Render the top view ortho —
     // the painted face fills the entire tile, so most pixels in that
     // tile should be red-dominant. Without the wireframe-suppression
@@ -101,6 +108,7 @@ test.describe('render-color readability', () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 11] }, color: [1, 0, 0] });
       return pw.renderView({ elevation: 90, azimuth: 0, ortho: true, size: 240 });
@@ -117,13 +125,11 @@ test.describe('render-color readability', () => {
     expect(nearBlackFraction, `near-black pixel fraction ${nearBlackFraction.toFixed(3)} — wireframe overlay should be suppressed on colored renders`).toBeLessThan(0.05);
   });
 
-  test('renderViews on a multi-color paint job preserves each color distinctly', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('renderViews on a multi-color paint job preserves each color distinctly', async () => {
     const dataUrl = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       pw.paintInBox({ box: { min: [-12, -12, 9], max: [12, 12, 11] }, color: [1, 0, 0] }); // top: red
       pw.paintInBox({ box: { min: [9, -12, -12], max: [11, 12, 12] }, color: [0, 0.7, 0] }); // +X: green

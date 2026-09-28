@@ -5,6 +5,7 @@
 // in the multi-part save modal until the paint is committed.
 
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -21,6 +22,35 @@ async function openEditor(page: Page) {
 }
 
 const cube = `const { Manifold } = api; return Manifold.cube([10,10,10], true);`;
+
+/** Poll until the active part id differs from `prevPartId`. `#btn-add-part`'s
+ *  click handler is fire-and-forget (`void cb.onCreatePart()`), so Playwright's
+ *  click() resolves before the new part is actually created and switched to.
+ *  `onCreatePart` awaits `writeDraft(...)` (stashing the outgoing part's paint)
+ *  BEFORE `createPart()` resolves, so this single wait also covers the draft
+ *  write — a plain `.blur()` call does not reliably fire CodeMirror's onBlur in
+ *  a headless page (the editor never actually holds DOM focus here), so the
+ *  autosave-on-blur path isn't a usable signal; the "+" button's own stash is. */
+async function waitForPartChange(page: Page, prevPartId: string) {
+  await waitFor(
+    () => page.evaluate((prev) => {
+      const cur = (window as any).partwright.getCurrentPart();
+      return !!cur && cur.id !== prev;
+    }, prevPartId),
+    { timeout: 10_000, message: 'the new part to become active' },
+  );
+}
+
+/** Poll until `listRegions()` reports at least one region. The parts-list row
+ *  click handler is also fire-and-forget (`void cb.onSelectPart(...)`), so this
+ *  is the real "switch + draft restore + rehydrate" completion signal — the
+ *  same condition the test asserts right after, just polled instead of guessed. */
+async function waitForRegionsRestored(page: Page) {
+  await waitFor(
+    () => page.evaluate(() => (window as any).partwright.listRegions().length > 0),
+    { timeout: 10_000, message: 'paint regions to be restored after switching parts' },
+  );
+}
 
 test.describe('Part-unload paint persistence', () => {
   test('paint survives clicking the + add-part button and switching back', async ({ page }) => {
@@ -52,17 +82,16 @@ test.describe('Part-unload paint persistence', () => {
 
     // Blur the editor to fire the autosave (stashes the draft including paint).
     await page.locator('.cm-content').blur();
-    await page.waitForTimeout(600);
 
     // Click the "+" add-part button — this is the action that previously lost paint.
     // The button stashes the current part's draft (code + paint) before switching.
     await page.locator('#btn-add-part').click();
-    await page.waitForTimeout(2000); // let the new part initialize (WASM)
+    await waitForPartChange(page, part1Id); // let the new part initialize (WASM)
 
     // Switch back to Part 1 by clicking its row in the parts rail.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
     // Wait for the part switch + draft restore + rehydrate to complete.
-    await page.waitForTimeout(2500);
+    await waitForRegionsRestored(page);
 
     // The paint regions should be restored from the draft.
     const regionsAfter = await page.evaluate(() =>
@@ -85,11 +114,10 @@ test.describe('Part-unload paint persistence', () => {
 
     // Blur the editor so the autosave draft flush fires (captures paint too).
     await page.locator('.cm-content').blur();
-    await page.waitForTimeout(600);
 
     // Click "+" to add a new part — stashes the painted draft (code + paint).
     await page.locator('#btn-add-part').click();
-    await page.waitForTimeout(1500);
+    await waitForPartChange(page, part1Id);
 
     // Trigger Cmd/Ctrl+S → should open the multi-part save modal listing Part 1 as unsaved.
     await page.keyboard.press('ControlOrMeta+s');
@@ -98,13 +126,15 @@ test.describe('Part-unload paint persistence', () => {
     // Part 1 must appear (the painted draft makes it unsaved even though code matches saved).
     await expect(dialog.getByText('Part 1', { exact: true })).toBeVisible();
 
-    // "Save all" commits every listed part.
+    // "Save all" commits every listed part. The modal itself closes the instant
+    // the button is clicked (before the save loop runs), so the real completion
+    // signal is the success toast the save loop fires once every part lands.
     await dialog.getByRole('button', { name: 'Save all' }).click();
-    await page.waitForTimeout(3000);
+    await expect(page.locator('[role="status"]', { hasText: /Saved \d+ part/ })).toBeVisible({ timeout: 10_000 });
 
     // Switch back to Part 1 and verify its latest version has color regions.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
-    await page.waitForTimeout(2500);
+    await waitForRegionsRestored(page);
 
     const regionsOnSaved = await page.evaluate(() =>
       (window as any).partwright.listRegions()
@@ -127,22 +157,22 @@ test.describe('Part-unload paint persistence', () => {
 
     // Blur to trigger autosave so the draft is flushed before clicking "+".
     await page.locator('.cm-content').blur();
-    await page.waitForTimeout(600);
 
     // Click "+" — this stashes Part 1's draft (with paint) via the button path.
     await page.locator('#btn-add-part').click();
-    await page.waitForTimeout(1500);
+    await waitForPartChange(page, part1Id);
 
     // Reload the page — the draft (including stashed paint) must survive in IDB.
     await page.goto(`/editor?session=${sessionId}`);
     await page.waitForSelector('text=Ready', { timeout: 30_000 });
     await page.waitForFunction(() => !!(window as any).partwright?.listParts, { timeout: 30_000 });
-    await page.waitForTimeout(1500);
+    // Wait for both parts to actually render in the rail before clicking a row.
+    await expect(page.locator('#parts-list [data-part-id]')).toHaveCount(2);
 
     // The session should open on the last active part (Part 2). Switch to Part 1 —
     // restoreDraftIfNewer should rehydrate its stashed paint from the draft.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
-    await page.waitForTimeout(2500);
+    await waitForRegionsRestored(page);
 
     const regionsAfterReload = await page.evaluate(() =>
       (window as any).partwright.listRegions()

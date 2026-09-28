@@ -22,6 +22,14 @@ async function openEditor(page: import('playwright/test').Page) {
   });
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
+  // "Ready" can paint before window.partwright is installed — wait for the API
+  // itself, or the evaluate below races it ("reading 'run' of undefined").
+  await page.waitForFunction(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => !!(window as any).partwright?.run,
+    null,
+    { timeout: 15000 },
+  );
   // Run a tiny model so paint operations have a real mesh to operate on.
   await page.evaluate(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

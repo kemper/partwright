@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 // When the code editor is parked near the very bottom, real Chrome snaps the
 // visible code by a line whenever CodeMirror re-measures (a focus change, a
@@ -18,10 +19,12 @@ function longCode(): string {
   return lines.join('\n');
 }
 
-async function setupScrolledToBottom(page: import('playwright/test').Page): Promise<void> {
-  await page.goto('/editor');
-  await page.waitForFunction(() => !!(window as unknown as { partwright?: unknown }).partwright, null, { timeout: 30000 });
-  await page.waitForTimeout(2000);
+// Each test re-establishes the bottom-scrolled state itself (fresh session +
+// run + scroll-to-bottom), so tests are order-independent even on a shared
+// page — no reload needed. Only the initial "wait for the engine to boot"
+// settle is dropped here since openSharedEditor already establishes that
+// once for the whole file.
+async function setupScrolledToBottom(page: Page): Promise<void> {
   await page.evaluate(async (code: string) => {
     const pw = (window as unknown as { partwright: { createSession?: (n: string) => Promise<unknown>; run: (c: string) => Promise<unknown> } }).partwright;
     if (pw.createSession) { try { await pw.createSession('blur-scroll'); } catch { /* a session may already be open */ } }
@@ -38,22 +41,30 @@ async function setupScrolledToBottom(page: import('playwright/test').Page): Prom
   await page.waitForTimeout(450);
 }
 
-const scrollTop = (page: import('playwright/test').Page): Promise<number> =>
+const scrollTop = (page: Page): Promise<number> =>
   page.evaluate(() => Math.round((document.querySelector('.cm-scroller') as HTMLElement).scrollTop));
 
-const blur = (page: import('playwright/test').Page): Promise<void> =>
+const blur = (page: Page): Promise<void> =>
   page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
 
 // Simulate the engine/browser snap: a small programmatic scrollTop change with
 // no preceding user-input event (no wheel/key/pointer).
-const programmaticNudge = (page: import('playwright/test').Page, by: number): Promise<void> =>
+const programmaticNudge = (page: Page, by: number): Promise<void> =>
   page.evaluate((d) => { (document.querySelector('.cm-scroller') as HTMLElement).scrollTop += d; }, by);
 
-const programmaticSet = (page: import('playwright/test').Page, to: number): Promise<void> =>
+const programmaticSet = (page: Page, to: number): Promise<void> =>
   page.evaluate((t) => { (document.querySelector('.cm-scroller') as HTMLElement).scrollTop = t; }, to);
 
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
 test.describe('editor bottom-scroll stabilizer', () => {
-  test('reverts an unsolicited one-line snap at the bottom (after blur)', async ({ page }) => {
+  test('reverts an unsolicited one-line snap at the bottom (after blur)', async () => {
     await setupScrolledToBottom(page);
     const atBottom = await scrollTop(page);
 
@@ -65,7 +76,7 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBe(atBottom);
   });
 
-  test('reverts an unsolicited snap even while the editor stays focused', async ({ page }) => {
+  test('reverts an unsolicited snap even while the editor stays focused', async () => {
     await setupScrolledToBottom(page);
     const atBottom = await scrollTop(page);
 
@@ -76,7 +87,7 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBe(atBottom);
   });
 
-  test('honors a scroll that follows a real keystroke (typing at the bottom)', async ({ page }) => {
+  test('honors a scroll that follows a real keystroke (typing at the bottom)', async () => {
     await setupScrolledToBottom(page);
     const atBottom = await scrollTop(page);
 
@@ -89,7 +100,7 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBeLessThan(atBottom); // the move stood
   });
 
-  test('honors a small scroll after a keystroke anywhere in the editor (find-next path)', async ({ page }) => {
+  test('honors a small scroll after a keystroke anywhere in the editor (find-next path)', async () => {
     await setupScrolledToBottom(page);
     const atBottom = await scrollTop(page);
 
@@ -106,7 +117,7 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBeLessThan(atBottom); // honored, not reverted
   });
 
-  test('does not block a large programmatic scroll (real navigation)', async ({ page }) => {
+  test('does not block a large programmatic scroll (real navigation)', async () => {
     await setupScrolledToBottom(page);
 
     await blur(page);
@@ -117,7 +128,7 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBeLessThan(400);
   });
 
-  test('does not engage away from the bottom', async ({ page }) => {
+  test('does not engage away from the bottom', async () => {
     await setupScrolledToBottom(page);
     await programmaticSet(page, 1000);
     await page.waitForTimeout(100);

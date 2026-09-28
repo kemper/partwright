@@ -54,7 +54,7 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
 2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
 3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
-4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 3 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
+4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 8 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
 
@@ -132,11 +132,20 @@ npx playwright test --headed   # watch the browser run (local only)
 node environment). This tier is **only for dependency-free, pure-logic
 modules** — e.g. `src/ai/patch.ts`. It never boots a browser, dev server, or
 WASM, so it's the right home for any helper that can be imported and called in
-isolation. If a module needs browser APIs (`fetch` stubbing, IndexedDB, the
-real DOM), it does **not** belong here — keep it in the e2e tier as a
-`page.evaluate(() => import('/src/...'))` test (see `tests/ai-providers.spec.ts`,
-which exercises the provider request builders, SSE reader, and system-prompt
-assembly in a real browser).
+isolation. Node 22 ships native `fetch`/`Response`/`Blob`/`ReadableStream`/
+`TextEncoder`/`navigator`, so **`fetch`-stubbing tests belong here too** — see
+`tests/unit/aiGemini.test.ts`, `aiOpenai.test.ts`, `aiAnthropic.test.ts`,
+`aiCustom.test.ts`, and `aiToolHistoryParity.test.ts`, which drive the AI
+provider request builders and SSE parsing with `vi.stubGlobal('fetch', ...)`
+(`localStorage`-backed singletons like `src/ai/settings.ts` also work here —
+they wrap `localStorage` access in try/catch and fall back to defaults when
+it's absent). If a module needs **IndexedDB** or the real DOM, it does
+**not** belong here — keep it in the e2e tier as a
+`page.evaluate(() => import('/src/...'))` test. `tests/ai-autoresume.spec.ts`
+and `tests/ai-transient-retry.spec.ts` are the canonical example: they drive
+`chatLoop.runTurn`, which persists messages via IndexedDB (unavailable in
+plain Node), so they stay in Playwright even though the request-building logic
+they exercise is otherwise pure.
 
 ### E2E tier (Playwright)
 
@@ -154,10 +163,17 @@ suite runs **serially on any single machine** (`playwright.config.ts` pins
 produces 30s timeout flakes — verified empirically, so don't raise `workers`
 without re-checking flake rates. Parallelism comes from **sharding across CI
 jobs** instead: both `pr-checks.yml` (pre-merge) and `staging-gate.yml`
-(post-merge) run `npx playwright test --shard=i/3` in a 3-way matrix, so
-every shard is itself serial and contention-free while wall-clock time
-drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
-tier's `.test.ts` files stay out of the Playwright run.
+(post-merge) run an 8-way matrix with `E2E_SHARD=i/8`, so every shard is
+itself serial and contention-free. Shards are **time-balanced, not
+count-balanced**: `playwright.config.ts` narrows `testMatch` to the spec files
+`scripts/lib/e2eShard.mjs` assigns to shard *i* (greedy LPT over the per-file
+seconds in `tests/e2e-timings.json`; unknown/new files get the median weight).
+Playwright's own `--shard` splits by test *count*, which left one shard twice
+as slow as another. Reproduce one CI shard locally with
+`E2E_SHARD=3/8 npx playwright test`. Stale timings only cost balance, never
+coverage — refresh them occasionally from a green staging-gate run's
+`e2e-report-*` artifacts: `node scripts/e2e-timings.mjs <reports…>`. Unsharded, `testMatch` is pinned to
+`**/*.spec.ts` so the unit tier's `.test.ts` files stay out of the Playwright run.
 
 See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection and Playwright agent gotchas.
 
@@ -639,7 +655,7 @@ Guardrails for automated work, learned the hard way:
 
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
-1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
+1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 8 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
 2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
