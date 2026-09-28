@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
-import { withHistoryCacheBreakpoints } from '../../src/ai/anthropic';
+import { withHistoryCacheBreakpoints } from '../../src/ai/anthropicCache';
 
 type Msg = Anthropic.MessageParam;
 const marked = (m: Msg) => Array.isArray(m.content)

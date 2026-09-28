@@ -112,6 +112,11 @@ describe('imagesToElide (stepped trimming for cached providers)', () => {
     expect(changes).toEqual([16, 24, 32, 40]);
   });
 
+  it('never trims below one image, so the latest render survives a cut', () => {
+    expect(16 - imagesToElide(16, 15, 0)).toBe(1);
+    expect(imagesToElide(5, 0, 0)).toBe(5); // keep-none still strips everything
+  });
+
   it('elideStaleToolImages honours trimTo', () => {
     const history = Array.from({ length: 6 }, (_, i) => userTurn(i, [renderResult(String(i))]));
     const out = elideStaleToolImages(history, 5, 2);

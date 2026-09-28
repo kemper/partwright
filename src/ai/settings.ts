@@ -6,6 +6,7 @@ import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPE
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
+import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
@@ -27,6 +28,11 @@ export interface AiSettings {
   editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
+  /** True once the user picked an auto-compact mode themselves (or had a
+   *  non-default one before the default changed). A merely-defaulted 'Auto'
+   *  doesn't run for the Local provider: its few-thousand-token window would
+   *  compact after nearly every turn on the same small engine. */
+  autoCompactUserSet: boolean;
   /** User-overridden system prompts. `null` means "use the built-in default
    *  for this provider". We keep them per-provider so the slim local
    *  prompt and the full Anthropic prompt can be edited independently. */
@@ -184,6 +190,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   // ceiling (app config). With history caching, compacting only when the
   // conversation is big keeps each cache miss affordable.
   autoCompactMode: 'standard',
+  autoCompactUserSet: false,
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null, custom: null },
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
@@ -530,6 +537,7 @@ type DeepPartial<T> = {
 interface LegacyAiSettings {
   preset?: Preset;
   autoCompactMode?: AiSettings['autoCompactMode'];
+  autoCompactUserSet?: boolean;
   drawerOpen?: boolean;
   editorCollapsed?: boolean | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
@@ -594,6 +602,10 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
   return {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
     autoCompactMode: migrateAutoCompactMode(partial),
+    // Legacy blobs predate the flag: a stored non-'off' mode was a choice.
+    autoCompactUserSet: typeof partial.autoCompactUserSet === 'boolean'
+      ? partial.autoCompactUserSet
+      : (partial.autoCompactMode !== undefined && partial.autoCompactMode !== 'off'),
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
     editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
     toggles: {
@@ -653,7 +665,7 @@ export function setLocalContext(settings: AiSettings, partial: Partial<LocalCont
 }
 
 export function setAutoCompactMode(settings: AiSettings, mode: AiSettings['autoCompactMode']): AiSettings {
-  return { ...settings, autoCompactMode: mode };
+  return { ...settings, autoCompactMode: mode, autoCompactUserSet: true };
 }
 
 /** Replace or clear the custom system prompt for one provider. Passing
@@ -797,6 +809,6 @@ export const PRESET_OPTIONS: { id: Preset; label: string; hint: string }[] = [
 export const AUTO_COMPACT_OPTIONS: { id: AiSettings['autoCompactMode']; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Only the Compact button condenses the chat.' },
   { id: 'conservative', label: 'Hint at 80%', hint: 'Nag you to compact when the context fills up; never runs without your click.' },
-  { id: 'standard', label: 'Auto', hint: 'Silently compact when the context is 70% full or passes the auto-compact token ceiling (150k by default, in Advanced settings), whichever comes first; keep the last 4 turns verbatim. The default.' },
+  { id: 'standard', label: 'Auto', hint: `Silently compact when the context is 70% full or passes the auto-compact token ceiling (${Math.round(APP_CONFIG_DEFAULTS.ai.autoCompactMaxTokens / 1000)}k by default, in Advanced settings), whichever comes first; keep the last 4 turns verbatim. The default (Local models only compact on Auto when you pick it yourself).` },
   { id: 'aggressive', label: 'After every turn', hint: 'Compact after every assistant turn; keep only the last exchange. Best when full history doesn\'t matter — like driving the modeler.' },
 ];

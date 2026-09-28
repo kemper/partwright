@@ -56,7 +56,9 @@ function hasImage(r: PersistedToolResult): boolean {
 export function imagesToElide(total: number, maxImages: number, trimTo?: number): number {
   const max = Math.max(0, maxImages);
   if (total <= max) return 0;
-  const floor = trimTo === undefined ? max : Math.max(0, Math.min(trimTo, max));
+  // Never trim below one image (unless the caller keeps none at all): the
+  // render the model just asked for must survive the cut.
+  const floor = trimTo === undefined ? max : Math.min(max, Math.max(max > 0 ? 1 : 0, trimTo));
   const period = max - floor + 1;
   return period * Math.ceil((total - max) / period);
 }

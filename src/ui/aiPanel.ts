@@ -3994,6 +3994,10 @@ async function maybeAutoCompact(): Promise<void> {
   const settings = loadSettings();
   const mode = settings.autoCompactMode;
   if (mode === 'off' || mode === 'conservative') return;
+  // A defaulted Auto doesn't apply to Local: its few-thousand-token window
+  // would compact after nearly every turn, on the same small engine the next
+  // message needs. Local users who pick a mode themselves still get it.
+  if (settings.toggles.provider === 'local' && !settings.autoCompactUserSet) return;
 
   const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
   const ctxLimit = contextLimitFor(settings);

@@ -81,7 +81,7 @@ test.describe('AI history caching', () => {
     const out = await page.evaluate(async () => {
       const s = await import('/src/ai/settings.ts');
       const KEY = 'partwright-ai-settings-v1';
-      const read = () => { s.reloadSettingsFromStorage(); return s.loadSettings().autoCompactMode; };
+      const read = () => { s.reloadSettingsFromStorage(); const l = s.loadSettings(); return `${l.autoCompactMode}/${l.autoCompactUserSet ? 'user' : 'default'}`; };
       localStorage.removeItem(KEY);
       const fresh = read();
       localStorage.setItem(KEY, JSON.stringify({ autoCompactMode: 'off' }));
@@ -90,8 +90,18 @@ test.describe('AI history caching', () => {
       const chosenOff = read();
       localStorage.setItem(KEY, JSON.stringify({ autoCompactMode: 'aggressive' }));
       const legacyAggressive = read();
-      return { fresh, legacyOff, chosenOff, legacyAggressive };
+      s.saveSettings(s.setAutoCompactMode(s.loadSettings(), 'standard'));
+      const picked = read();
+      return { fresh, legacyOff, chosenOff, legacyAggressive, picked };
     });
-    expect(out).toEqual({ fresh: 'standard', legacyOff: 'standard', chosenOff: 'off', legacyAggressive: 'aggressive' });
+    // "default" vs "user" matters for Local: a defaulted Auto doesn't compact
+    // its tiny window after every turn; a picked one does.
+    expect(out).toEqual({
+      fresh: 'standard/default',
+      legacyOff: 'standard/default',
+      chosenOff: 'off/default',
+      legacyAggressive: 'aggressive/user',
+      picked: 'standard/user',
+    });
   });
 });

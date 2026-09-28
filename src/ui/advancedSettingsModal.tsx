@@ -300,7 +300,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           tooltip="When the image limit above is exceeded, older render images are dropped until this many remain. A bigger gap between the two numbers means fewer cache-breaking trims; a smaller one keeps the request leaner. Set it equal to the limit for a one-in-one-out sliding window."
           defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageTrimTo}
           value={c.ai.cachedImageTrimTo}
-          min={0} max={50} integer
+          min={1} max={50} integer
           onChange={v => set('ai', 'cachedImageTrimTo', v)}
         />
         <Field

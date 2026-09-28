@@ -58,3 +58,15 @@ always-on models the request now sends
 `block_binding.prefix_mismatch_behavior: drop_block` with the beta header, so
 the API drops those blocks instead of returning a 400. Models that don't run
 the check accept the field.
+
+**Review follow-ups** (from a review subagent; no blockers):
+- **Local keeps its old behavior.** A defaulted Auto would compact Local's
+  few-thousand-token window after nearly every turn, on the same engine the
+  next message needs. A new `autoCompactUserSet` flag means only a mode the
+  user picked (or a non-off legacy one) runs on Local.
+- **Stepped trimming never goes below one image,** so the render the model
+  just asked for survives a cut. The UI minimum is now 1.
+- **The cache-breakpoint helper moved** into a pure module
+  (`anthropicCache.ts`), so the unit test doesn't import the SDK client.
+- **The Auto hint reads the ceiling from `APP_CONFIG_DEFAULTS`,** so it
+  can't drift from the real default.
