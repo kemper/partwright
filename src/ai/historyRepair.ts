@@ -9,8 +9,8 @@
 // buildResponsesInput — also used by custom.ts — gemini.ts buildGeminiContents,
 // local.ts buildLocalApiMessages) runs it on the history before converting to
 // its wire format, so "what the Repair button detects" and "what the send
-// repairs" are the same code. tests/ai-tool-history-parity.spec.ts pins that
-// every provider emits the same repaired tool sequence.
+// repairs" are the same code. tests/unit/aiToolHistoryParity.test.ts pins
+// that every provider emits the same repaired tool sequence.
 //
 // A corrupted *persisted* history would still trip the 400 on every turn if we
 // only repaired transiently, so this module operates on the persisted

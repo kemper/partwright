@@ -27,3 +27,10 @@ the next test's beforeAll boots a fresh page.
 assert on results without depending on sibling-test state. Specs with real UI
 flows, IndexedDB/reload dependence, or documented isolation needs (smoke.spec.ts)
 keep the per-test page.
+
+**Pure-logic browser specs → vitest**: Node 22's native fetch/Response/
+ReadableStream let the provider request-builder, SSE, tool-history-parity and
+persist tests run in the unit tier with `vi.stubGlobal('fetch')` (37 tests;
+assertion count preserved). Tests that drive `chatLoop.runTurn` stay in
+Playwright: it persists through IndexedDB, and adding `fake-indexeddb` as a new
+devDependency for ~8 tests wasn't worth it in this pass.
