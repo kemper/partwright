@@ -15,6 +15,7 @@ import {
   type ImportInboxEntry,
 } from '../import/importInbox';
 import { createMenuSectionHeader, createMenuDivider } from './popoverMenu';
+import { showFeedbackModal, registerFeedbackCommands } from './feedbackModal';
 
 export interface ToolbarCallbacks {
   onRun: () => void;
@@ -792,6 +793,19 @@ export function createToolbar(
   });
 
   toolbar.appendChild(exportWrapper);
+
+  // Feedback — the one obvious in-editor route to report a bug, request a
+  // feature, or ask a question (all GitHub links; nothing is sent from here).
+  // Lives in the toolbar rather than the rail's utility group: the rail has no
+  // spare height, and one more item there squeezes the parts list.
+  // Icon-only below md so the wrapped mobile toolbar doesn't gain a row.
+  const btnFeedback = createButton('btn-feedback', '');
+  btnFeedback.innerHTML = '<span aria-hidden="true">\u{1F4AC}</span><span class="hidden md:inline">Feedback</span>';
+  btnFeedback.title = 'Send feedback — report a bug, request a feature, or ask a question';
+  btnFeedback.setAttribute('aria-label', 'Send feedback');
+  btnFeedback.addEventListener('click', () => { showFeedbackModal(); });
+  toolbar.appendChild(btnFeedback);
+  registerFeedbackCommands();
 
   // Dark mode toggle — text button, on by default, off when clicked
   const themeBtn = document.createElement('button');

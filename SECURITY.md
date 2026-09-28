@@ -55,4 +55,4 @@ If you want to audit the app yourself:
 
 ## Reporting vulnerabilities
 
-If you find a security issue, please open a GitHub issue or contact the maintainer directly.
+If you find a security issue, please report it privately through GitHub's [private vulnerability reporting](https://github.com/kemper/partwright/security/advisories/new) rather than in a public issue. If that form isn't available, open a short issue asking for a private contact (no vulnerability details) and the maintainer will follow up. For anything else — bugs, feature ideas, questions — see [Feedback & support](README.md#feedback--support).
