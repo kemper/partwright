@@ -5,7 +5,8 @@
 //  - copyColorsFromVersion transfers a prior version's colors onto the
 //    current mesh and reports which regions dropped
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 const LABELLED_CUBE = `
   const { Manifold } = api;
@@ -13,15 +14,28 @@ const LABELLED_CUBE = `
   return api.label(Manifold.cube([size, size, size], true), 'body');
 `;
 
-test.describe('forkVersion color carry-over + codeDiff', () => {
-  test('carries the parent version colors onto the forked geometry', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
+// Every test opens its own fresh session (createSession) before touching
+// paint/version state. createSession() only resets session/version
+// bookkeeping though — it does NOT clear the live paint-region store (only an
+// explicit loadVersion/rehydrate does that) — so each test also calls
+// clearColors() up front to guarantee it starts from zero regions regardless
+// of what a sibling test left painted. The file shares one booted editor
+// instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('forkVersion color carry-over + codeDiff', () => {
+  test('carries the parent version colors onto the forked geometry', async () => {
     const result = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('fork-carry-colors');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'base');
       pw.paintByLabel({ label: 'body', color: [0.8, 0.2, 0.2] });
       const painted = await pw.saveVersion('painted');
@@ -49,14 +63,12 @@ test.describe('forkVersion color carry-over + codeDiff', () => {
     expect(result.fork.codeDiff.removed).toBeGreaterThan(0);
   });
 
-  test('carryColors:false produces an uncolored fork', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('carryColors:false produces an uncolored fork', async () => {
     const result = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('fork-no-carry');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'base');
       pw.paintByLabel({ label: 'body', color: [0.2, 0.2, 0.8] });
       const painted = await pw.saveVersion('painted');
@@ -76,14 +88,12 @@ test.describe('forkVersion color carry-over + codeDiff', () => {
     expect(result.regionsAfter).toHaveLength(0);
   });
 
-  test('codeDiff reports changed:false for a no-op transform', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('codeDiff reports changed:false for a no-op transform', async () => {
     const fork = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('fork-noop-diff');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'base');
       return pw.forkVersion({ index: v1.version.index }, (c: string) => c, 'noop');
     }, LABELLED_CUBE);
@@ -92,14 +102,12 @@ test.describe('forkVersion color carry-over + codeDiff', () => {
     expect(fork.codeDiff.diff).toBeNull();
   });
 
-  test('forked colors persist to the saved version and survive a reload', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('forked colors persist to the saved version and survive a reload', async () => {
     const result = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('fork-persist-reload');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'base');
       pw.paintByLabel({ label: 'body', color: [0.8, 0.2, 0.2] });
       const painted = await pw.saveVersion('painted');
@@ -121,14 +129,12 @@ test.describe('forkVersion color carry-over + codeDiff', () => {
 });
 
 test.describe('modifyAndTest return', () => {
-  test('returns modifiedCode and a codeDiff that flags a real change', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('returns modifiedCode and a codeDiff that flags a real change', async () => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('modify-and-test-return');
+      pw.clearColors();
       await pw.runAndSave('const { Manifold } = api; const h = 10; return Manifold.cube([5, 5, h], true);', 'base');
       return pw.modifyAndTest((c: string) => c.replace('h = 10', 'h = 20'));
     });
@@ -141,14 +147,12 @@ test.describe('modifyAndTest return', () => {
     expect(r.stats).toBeTruthy();
   });
 
-  test('codeDiff.changed is false when the transform matches nothing', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('codeDiff.changed is false when the transform matches nothing', async () => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('modify-and-test-noop');
+      pw.clearColors();
       await pw.runAndSave('const { Manifold } = api; return Manifold.cube([5, 5, 10], true);', 'base');
       // A console transformFn that matches nothing returns the code unchanged;
       // codeDiff is what makes that visible (the stats would look "fine").
@@ -161,14 +165,12 @@ test.describe('modifyAndTest return', () => {
 });
 
 test.describe('copyColorsFromVersion', () => {
-  test('transfers colors when the descriptor still resolves, reports drops when it does not', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('transfers colors when the descriptor still resolves, reports drops when it does not', async () => {
     const result = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('copy-colors');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'base');
       pw.paintByLabel({ label: 'body', color: [0.3, 0.7, 0.3] });
       const painted = await pw.saveVersion('painted');
@@ -199,14 +201,12 @@ test.describe('copyColorsFromVersion', () => {
     expect(result.regionsAfter[0].triangles).toBeGreaterThan(0);
   });
 
-  test('errors clearly when the source version has no colors', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('errors clearly when the source version has no colors', async () => {
     const res = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.createSession('copy-colors-empty');
+      pw.clearColors();
       const v1 = await pw.runAndSave(code, 'no-colors');
       return pw.copyColorsFromVersion({ index: v1.version.index });
     }, LABELLED_CUBE);

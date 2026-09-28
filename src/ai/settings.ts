@@ -2,10 +2,11 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
+import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
@@ -27,6 +28,11 @@ export interface AiSettings {
   editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
+  /** True once the user picked an auto-compact mode themselves (or had a
+   *  non-default one before the default changed). A merely-defaulted 'Auto'
+   *  doesn't run for the Local provider: its few-thousand-token window would
+   *  compact after nearly every turn on the same small engine. */
+  autoCompactUserSet: boolean;
   /** User-overridden system prompts. `null` means "use the built-in default
    *  for this provider". We keep them per-provider so the slim local
    *  prompt and the full Anthropic prompt can be edited independently. */
@@ -48,6 +54,10 @@ export interface AiSettings {
   localContext: LocalContextSettings;
   /** Saved width of the AI chat drawer in pixels. */
   aiPanelWidth: number;
+  /** Settings-migration marker. Each one-time default change bumps
+   *  SETTINGS_REV and applies to stored settings below that rev exactly
+   *  once (see mergeWithDefaults). */
+  settingsRev: number;
 }
 
 export interface CustomLocalModel {
@@ -89,6 +99,9 @@ export interface LocalContextSettings {
 }
 
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
+
+/** Current settings-migration revision (see AiSettings.settingsRev). */
+const SETTINGS_REV = 1;
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 /** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
@@ -99,7 +112,7 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
  *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
 export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -146,7 +159,9 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 3,
     maxIterations: 'ultra',
     maxSpend: 'high',
-    thinking: 'high',
+    // XHigh is what Anthropic recommends for agentic work on newer Claude
+    // models; providers/models without it fall back to High.
+    thinking: 'xhigh',
     autoResume: true,
     planFirst: false,
     printOptimized: true,
@@ -163,6 +178,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   customModel: '',
   customModels: [],
   customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
+  customReasoningEffort: false,
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -170,11 +186,16 @@ const DEFAULT_SETTINGS: AiSettings = {
   toggles: DEFAULT_TOGGLES,
   drawerOpen: false,
   editorCollapsed: null,
-  autoCompactMode: 'off',
+  // Auto at 70% of the context window, capped by the auto-compact token
+  // ceiling (app config). With history caching, compacting only when the
+  // conversation is big keeps each cache miss affordable.
+  autoCompactMode: 'standard',
+  autoCompactUserSet: false,
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null, custom: null },
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
+  settingsRev: SETTINGS_REV,
 };
 
 let cached: AiSettings | null = null;
@@ -222,6 +243,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     customModel: t.customModel,
     customModels: [...t.customModels],
     customBaseUrl: t.customBaseUrl,
+    customReasoningEffort: t.customReasoningEffort,
   };
 }
 
@@ -320,6 +342,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       customModel: settings.toggles.customModel,
       customModels: settings.toggles.customModels,
       customBaseUrl: settings.toggles.customBaseUrl,
+      customReasoningEffort: settings.toggles.customReasoningEffort,
     },
   };
 }
@@ -458,6 +481,14 @@ export function setCustomModels(settings: AiSettings, models: string[]): AiSetti
   };
 }
 
+/** Custom provider: whether to send the Thinking level as `reasoning_effort`. */
+export function setCustomReasoningEffort(settings: AiSettings, enabled: boolean): AiSettings {
+  return {
+    ...settings,
+    toggles: { ...settings.toggles, customReasoningEffort: enabled },
+  };
+}
+
 /** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
 export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
   return {
@@ -474,7 +505,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
     maxIterations: partial.maxIterations ?? settings.toggles.maxIterations,
     maxSpend: partial.maxSpend ?? settings.toggles.maxSpend,
-    thinking: partial.thinking ?? settings.toggles.thinking,
+    thinking: parseThinkingLevel(partial.thinking) ?? settings.toggles.thinking,
     autoResume: partial.autoResume ?? settings.toggles.autoResume,
     planFirst: partial.planFirst ?? settings.toggles.planFirst,
     printOptimized: partial.printOptimized ?? settings.toggles.printOptimized,
@@ -486,6 +517,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     customModel: partial.customModel ?? settings.toggles.customModel,
     customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
+    customReasoningEffort: typeof partial.customReasoningEffort === 'boolean' ? partial.customReasoningEffort : settings.toggles.customReasoningEffort,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -505,6 +537,7 @@ type DeepPartial<T> = {
 interface LegacyAiSettings {
   preset?: Preset;
   autoCompactMode?: AiSettings['autoCompactMode'];
+  autoCompactUserSet?: boolean;
   drawerOpen?: boolean;
   editorCollapsed?: boolean | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
@@ -512,6 +545,7 @@ interface LegacyAiSettings {
   customLocalModels?: CustomLocalModel[];
   localContext?: Partial<LocalContextSettings>;
   aiPanelWidth?: number;
+  settingsRev?: number;
 }
 
 /** Return `id` as a valid LocalModelId when it exists in the curated list
@@ -526,6 +560,17 @@ function resolveValidLocalModel(
   if (LOCAL_MODELS.some(m => m.id === id)) return id as LocalModelId;
   if (customModels.some(m => m.id === id)) return id as LocalModelId;
   return null;
+}
+
+/** Rev 1: auto-compact's default moved from 'off' to 'standard' (Auto). A
+ *  stored 'off' from before rev 1 is almost always the old default rather
+ *  than a choice, so it's switched once; anything the user picks afterwards
+ *  (including 'off') is kept, because the stored settings then carry rev 1. */
+function migrateAutoCompactMode(partial: LegacyAiSettings): AiSettings['autoCompactMode'] {
+  const stored = partial.autoCompactMode;
+  if (stored === undefined) return DEFAULT_SETTINGS.autoCompactMode;
+  if ((partial.settingsRev ?? 0) < 1 && stored === 'off') return 'standard';
+  return stored;
 }
 
 function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
@@ -556,7 +601,11 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     : requestedProvider;
   return {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
-    autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
+    autoCompactMode: migrateAutoCompactMode(partial),
+    // Legacy blobs predate the flag: a stored non-'off' mode was a choice.
+    autoCompactUserSet: typeof partial.autoCompactUserSet === 'boolean'
+      ? partial.autoCompactUserSet
+      : (partial.autoCompactMode !== undefined && partial.autoCompactMode !== 'off'),
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
     editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
     toggles: {
@@ -565,7 +614,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
-      thinking: tgls.thinking ?? DEFAULT_SETTINGS.toggles.thinking,
+      thinking: parseThinkingLevel(tgls.thinking) ?? DEFAULT_SETTINGS.toggles.thinking,
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
       planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
       printOptimized: tgls.printOptimized ?? DEFAULT_SETTINGS.toggles.printOptimized,
@@ -579,6 +628,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
         ? tgls.customModels.filter((x): x is string => typeof x === 'string')
         : DEFAULT_SETTINGS.toggles.customModels,
       customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
+      customReasoningEffort: typeof tgls.customReasoningEffort === 'boolean' ? tgls.customReasoningEffort : DEFAULT_SETTINGS.toggles.customReasoningEffort,
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
@@ -590,6 +640,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
     aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
+    settingsRev: SETTINGS_REV,
   };
 }
 
@@ -614,7 +665,7 @@ export function setLocalContext(settings: AiSettings, partial: Partial<LocalCont
 }
 
 export function setAutoCompactMode(settings: AiSettings, mode: AiSettings['autoCompactMode']): AiSettings {
-  return { ...settings, autoCompactMode: mode };
+  return { ...settings, autoCompactMode: mode, autoCompactUserSet: true };
 }
 
 /** Replace or clear the custom system prompt for one provider. Passing
@@ -758,6 +809,6 @@ export const PRESET_OPTIONS: { id: Preset; label: string; hint: string }[] = [
 export const AUTO_COMPACT_OPTIONS: { id: AiSettings['autoCompactMode']; label: string; hint: string }[] = [
   { id: 'off', label: 'Off', hint: 'Only the Compact button condenses the chat.' },
   { id: 'conservative', label: 'Hint at 80%', hint: 'Nag you to compact when the context fills up; never runs without your click.' },
-  { id: 'standard', label: 'Auto at 70%', hint: 'Silently compact when 70% full; keep the last 4 turns verbatim.' },
+  { id: 'standard', label: 'Auto', hint: `Silently compact when the context is 70% full or passes the auto-compact token ceiling (${Math.round(APP_CONFIG_DEFAULTS.ai.autoCompactMaxTokens / 1000)}k by default, in Advanced settings), whichever comes first; keep the last 4 turns verbatim. The default (Local models only compact on Auto when you pick it yourself).` },
   { id: 'aggressive', label: 'After every turn', hint: 'Compact after every assistant turn; keep only the last exchange. Best when full history doesn\'t matter — like driving the modeler.' },
 ];

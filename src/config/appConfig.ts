@@ -37,7 +37,10 @@ export interface AppConfig {
      *  is rejected. Passed through the run_turn message so the Worker can use
      *  the user's value rather than falling back to defaults. */
     toolCallTimeoutMs: number;
-    /** Extended-thinking token budgets for Anthropic (per thinking level). */
+    /** Extended-thinking token budgets for Anthropic (per thinking level).
+     *  Only used by older Claude models (Haiku 4.5, Sonnet/Opus 4.5 and
+     *  earlier) — Claude 4.6+ use adaptive thinking + effort instead, and
+     *  4.7+ reject `budget_tokens` outright. XHigh/Max use the High budget. */
     thinkingBudgetAnthropicLow: number;
     thinkingBudgetAnthropicMedium: number;
     thinkingBudgetAnthropicHigh: number;
@@ -48,11 +51,17 @@ export interface AppConfig {
     /** Output token headroom reserved for the answer above the Anthropic
      *  thinking budget. The API requires max_tokens > budget_tokens. */
     answerHeadroomTokens: number;
-    /** Default max output tokens for Anthropic stream turns. A per-response
-     *  runaway guard, not a budget — only generated tokens are billed. Sized
-     *  for models that think even with the pill Off (Opus 5.x, Fable), whose
-     *  reasoning shares this ceiling with the answer and any tool-call input. */
+    /** Default max output tokens for Anthropic stream turns. */
     maxOutputTokensAnthropic: number;
+    /** Max output tokens for Anthropic turns that run adaptive thinking
+     *  (Claude 4.6+ with a Thinking level, or models that always think).
+     *  Thinking tokens count against max_tokens and adaptive thinking has no
+     *  separate budget, so this needs to be much larger than the plain cap or
+     *  high-effort turns stop mid-thought with max_tokens. */
+    maxOutputTokensAnthropicThinking: number;
+    /** Max output tokens for adaptive-thinking turns at XHigh / Max effort,
+     *  which think longest. Every Claude 4.6+ model allows at least 64k. */
+    maxOutputTokensAnthropicThinkingDeep: number;
     /** Default max output tokens for OpenAI stream turns (Responses + Chat). */
     maxOutputTokensOpenai: number;
     /** Default max output tokens for Gemini stream turns (combined thinking +
@@ -68,8 +77,34 @@ export interface AppConfig {
      *  stay) so a long modeling session's image tokens don't compound every
      *  turn — the same reason the CLI uses the model-sculpt subagent. The
      *  on-screen transcript still shows every image; only the provider request
-     *  is trimmed. Set high to disable trimming. */
+     *  is trimmed. Set high to disable trimming. Applies to providers whose
+     *  history isn't cached (Custom, Local, or Anthropic with history caching
+     *  off); cached providers use the stepped limits below. */
     keepRecentToolImages: number;
+    /** Cache the conversation history on Anthropic (a prompt-cache breakpoint
+     *  on the latest message). Every agent step re-sends the whole
+     *  conversation; with this on, the repeated part bills at the cache-read
+     *  rate (~10% of input) instead of full price. OpenAI and Gemini cache a
+     *  repeated prefix automatically. */
+    cacheConversationHistory: boolean;
+    /** Render images allowed to accumulate in the request before a trim, for
+     *  providers that cache the history (Anthropic with history caching on,
+     *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
+     *  earlier messages (breaking the cache), so trims happen in steps. */
+    cachedImageLimit: number;
+    /** When `cachedImageLimit` is exceeded, trim back down to this many
+     *  images. The gap between the two is how many renders pass between
+     *  cache-breaking trims. */
+    cachedImageTrimTo: number;
+    /** Auto-compact ("Auto" mode) also fires once the conversation passes
+     *  this many tokens, even if that is under 70% of the model's context
+     *  window. On 1M-context models 70% would be ~700k tokens — far past the
+     *  point where each cache miss (e.g. after a pause) gets expensive. */
+    autoCompactMaxTokens: number;
+    /** Images the user attached that compaction carries forward (newest
+     *  first) instead of dropping with the summarized turns. 0 = drop them
+     *  like before. */
+    compactionKeepImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -326,12 +361,19 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thinkingBudgetGeminiMedium: 8192,
     thinkingBudgetGeminiHigh: 24576,
     answerHeadroomTokens: 8192,
-    maxOutputTokensAnthropic: 32768,
+    maxOutputTokensAnthropic: 8192,
+    maxOutputTokensAnthropicThinking: 32768,
+    maxOutputTokensAnthropicThinkingDeep: 64000,
     maxOutputTokensOpenai: 8192,
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
     keepRecentToolImages: 3,
+    cacheConversationHistory: true,
+    cachedImageLimit: 15,
+    cachedImageTrimTo: 8,
+    autoCompactMaxTokens: 150_000,
+    compactionKeepImages: 4,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,

@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import {
-  anthropicEffort,
-  anthropicThinksWhenOff,
+  anthropicCannotDisable,
+  anthropicEffortLevels,
+  learnAnthropicCannotDisable,
   learnAnthropicThinkingMode,
   resetLearnedThinkingModes,
   resolveAnthropicThinkingMode,
   thinkingModeFromError,
 } from '../../src/ai/anthropicThinking';
 import { getCapabilities, getModelOptions } from '../../src/ai/catalog';
+import { anthropicThinkingPlan } from '../../src/ai/thinkingLevels';
+import { THINKING_LEVELS } from '../../src/ai/types';
 
 afterEach(() => resetLearnedThinkingModes());
 
@@ -46,17 +49,6 @@ describe('resolveAnthropicThinkingMode', () => {
   });
 });
 
-describe('anthropicThinksWhenOff', () => {
-  test('Claude 5-era models think with the param omitted; 4.x and budget models do not', () => {
-    for (const id of ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-opus-6']) {
-      expect(anthropicThinksWhenOff(id), id).toBe(true);
-    }
-    for (const id of ['claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-3-7-sonnet-latest']) {
-      expect(anthropicThinksWhenOff(id), id).toBe(false);
-    }
-  });
-});
-
 // Refresh guard: the weekly models.dev refresh PR runs this suite, so a new
 // Claude reasoning model whose snapshot entry records neither thinking shape
 // fails here — surfacing an API change at refresh time instead of as a 400 in
@@ -72,13 +64,29 @@ describe('catalog thinking coverage', () => {
     expect(gaps).toEqual([]);
   });
 
-  test('adaptive models accept every effort level the thinking pill sends', () => {
+  test('adaptive models are only ever sent an effort level they list', () => {
+    const budgets = { low: 2048, medium: 8192, high: 16384 };
     for (const { id } of getModelOptions('anthropic')) {
-      if (resolveAnthropicThinkingMode(id) !== 'adaptive') continue;
-      for (const level of ['low', 'medium', 'high'] as const) {
-        expect(anthropicEffort(id, level), `${id} ${level}`).toBe(level);
+      const mode = resolveAnthropicThinkingMode(id);
+      if (mode !== 'adaptive') continue;
+      const effortLevels = anthropicEffortLevels(id);
+      for (const level of Object.keys(THINKING_LEVELS) as (keyof typeof THINKING_LEVELS)[]) {
+        const plan = anthropicThinkingPlan(id, level, budgets, { mode, effortLevels });
+        if (plan.effort && effortLevels) expect(effortLevels, `${id} ${level}`).toContain(plan.effort);
+        expect(plan.thinking?.type, `${id} ${level}`).not.toBe('enabled');
       }
     }
+  });
+
+  test('a model learned to reject "disabled" runs Off at its lowest effort', () => {
+    expect(anthropicCannotDisable('claude-sonnet-5')).toBe(false);
+    learnAnthropicCannotDisable('claude-sonnet-5');
+    expect(anthropicCannotDisable('claude-sonnet-5')).toBe(true);
+    const plan = anthropicThinkingPlan('claude-sonnet-5', 'off', { low: 1, medium: 1, high: 1 }, {
+      mode: 'adaptive', effortLevels: anthropicEffortLevels('claude-sonnet-5'), cannotDisable: true,
+    });
+    expect(plan.thinking?.type).toBe('adaptive');
+    expect(plan.effort).toBe('low');
   });
 });
 

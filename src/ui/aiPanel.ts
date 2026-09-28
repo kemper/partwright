@@ -21,6 +21,7 @@ import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
+import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
 import { starterChipIdeas } from '../ideas/ideas';
@@ -152,6 +153,39 @@ function contextLimitFor(settings: AiSettings): number {
  *  before every kept message. Multiple compactions over a session would
  *  otherwise all share seq=-1 and sort unstably on reload — by stepping
  *  one below the current minimum we keep the order deterministic. */
+/** Replace the `dropped` turns with a summary — shared by auto and manual
+ *  compaction. Images the user attached in those turns are carried forward
+ *  in a user message placed just before the summary (up to the configured
+ *  cap), so a reference photo survives compaction instead of becoming a
+ *  text placeholder. The order [user: references][assistant: summary]
+ *  [kept turns…] keeps roles alternating for every provider. */
+async function persistCompaction(dropped: ChatMessage[], summaryText: string): Promise<void> {
+  const seq = nextCompactedSeq(state.history);
+  const carried = carriedAttachments(dropped, getConfig().ai.compactionKeepImages);
+  const messages: ChatMessage[] = [];
+  if (carried.length > 0) {
+    messages.push({
+      id: generateId(),
+      sessionId: state.sessionId,
+      role: 'user',
+      blocks: [{ type: 'text', text: CARRIED_ATTACHMENTS_NOTE }, ...carried],
+      createdAt: Date.now(),
+      seq: seq - 1,
+    });
+  }
+  messages.push({
+    id: generateId(),
+    sessionId: state.sessionId,
+    role: 'assistant',
+    blocks: [{ type: 'text', text: summaryText }],
+    createdAt: Date.now(),
+    seq,
+    compacted: true,
+  });
+  await deleteMessages(dropped.map(m => m.id));
+  await putMessages(messages);
+}
+
 function nextCompactedSeq(history: ChatMessage[]): number {
   const existing = history.map(m => m.seq).filter(n => Number.isFinite(n));
   const min = existing.length > 0 ? Math.min(...existing) : 0;
@@ -646,7 +680,11 @@ async function applySessionAiPreference(): Promise<void> {
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
     // (no needless settings write or transcript-shifting re-render).
-    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    // Compare NORMALIZED forms: a snapshot saved before a toggles field was
+    // added lacks it, so a raw compare would never match and every window
+    // focus would rewrite settings.
+    const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
+      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
     next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
@@ -1615,14 +1653,13 @@ function renderToggleStrip(): void {
   });
   adv.appendChild(spendCap);
 
-  // Thinking level — how much the model reasons before answering. Maps
-  // per-provider to Anthropic extended-thinking budget_tokens, Gemini
-  // thinkingBudget (+ surfaced thought parts), and OpenAI reasoning_effort.
-  // Off (the default) sends no thinking request, so it's the cheapest and
-  // reproduces the pre-feature behavior. No effect on local models.
+  // Thinking level — how much the model reasons before answering. Mapped per
+  // provider + model in src/ai/thinkingLevels.ts (Anthropic adaptive thinking
+  // + effort, or budget_tokens on older Claude; OpenAI reasoning_effort;
+  // Gemini thinkingConfig). No effect on local models.
   const thinkSel = document.createElement('select');
   thinkSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort; on a Custom endpoint any level above Off asks the server to stream the model reasoning. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
+  thinkSel.title = 'Thinking: how much the model reasons before it answers. Off = no extended reasoning where the model allows it (lowest effort on models that always think). Default = let the model decide. Low → Max = increasing effort; a level the model lacks falls back to its nearest one (e.g. Gemini tops out at High). Maps to Claude adaptive thinking + effort, OpenAI reasoning_effort, and Gemini thinking budgets; on a Custom endpoint any level above Off asks the server to stream the model reasoning. High is a good default for modeling. No effect on local models.';
   for (const opt of THINKING_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;
@@ -3981,7 +4018,9 @@ function triggerStallRetry(): void {
  *  - off:           do nothing.
  *  - conservative:  no auto-fire (the persistent "Compact now" link on
  *                   the cost meter at ≥80% is the canonical surface).
- *  - standard:      silently compact at 70% full, keep last 4 turns.
+ *  - standard:      silently compact at 70% full — or past the
+ *                   auto-compact token ceiling (app config), whichever
+ *                   comes first — keeping the last 4 turns.
  *  - aggressive:    compact after every turn, keep just the last
  *                   exchange. Best when full history doesn't matter —
  *                   like driving the modeler. */
@@ -3989,6 +4028,10 @@ async function maybeAutoCompact(): Promise<void> {
   const settings = loadSettings();
   const mode = settings.autoCompactMode;
   if (mode === 'off' || mode === 'conservative') return;
+  // A defaulted Auto doesn't apply to Local: its few-thousand-token window
+  // would compact after nearly every turn, on the same small engine the next
+  // message needs. Local users who pick a mode themselves still get it.
+  if (settings.toggles.provider === 'local' && !settings.autoCompactUserSet) return;
 
   const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
   const ctxLimit = contextLimitFor(settings);
@@ -4001,7 +4044,9 @@ async function maybeAutoCompact(): Promise<void> {
   } else {
     // standard
     keepTail = 4;
-    if (pct < 0.7) return;
+    // 70% of a 1M-token window is ~700k tokens; the absolute ceiling keeps
+    // cache misses (a pause past the cache TTL re-bills everything) cheap.
+    if (pct < 0.7 && tokens < getConfig().ai.autoCompactMaxTokens) return;
     if (state.history.length <= keepTail + 1) return;
   }
 
@@ -4038,17 +4083,7 @@ async function maybeAutoCompact(): Promise<void> {
     }
   }
 
-  const summaryMsg: ChatMessage = {
-    id: generateId(),
-    sessionId: state.sessionId,
-    role: 'assistant',
-    blocks: [{ type: 'text', text: `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}` }],
-    createdAt: Date.now(),
-    seq: nextCompactedSeq(state.history),
-    compacted: true,
-  };
-  await deleteMessages(proposal.drop.map(m => m.id));
-  await putMessages([summaryMsg]);
+  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`);
   // Dropping the summarized tail can sever a tool round — leaving a kept
   // tool_result whose originating tool_use is now gone. Clear that dangling
   // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
@@ -4120,17 +4155,7 @@ async function runCompact(): Promise<void> {
       }
     }
     // Replace the dropped tail with one synthetic summary message
-    const summaryMsg: ChatMessage = {
-      id: generateId(),
-      sessionId: state.sessionId,
-      role: 'assistant',
-      blocks: [{ type: 'text', text: `[compacted summary]\n${summary}` }],
-      createdAt: Date.now(),
-      seq: nextCompactedSeq(state.history),
-      compacted: true,
-    };
-    await deleteMessages(proposal.drop.map(m => m.id));
-    await putMessages([summaryMsg]);
+    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`);
     // Dropping the summarized tail can sever a tool round — leaving a kept
     // tool_result whose originating tool_use is now gone. Clear that dangling
     // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
