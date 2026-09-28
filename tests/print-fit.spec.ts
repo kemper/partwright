@@ -8,14 +8,7 @@
 // pure-logic tests can't see.
 
 import { test, expect, type Page } from 'playwright/test';
-
-async function waitForEngine(page: Page): Promise<void> {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
+import { openSharedEditor } from './helpers/sharedPage';
 
 interface RunResult {
   status: string;
@@ -36,6 +29,17 @@ async function run(page: Page, code: string): Promise<RunResult> {
 
 // Each case returns a single Manifold from a printFit builder. `multi` cases
 // are tools that legitimately overlap themselves but should still be 1 piece.
+// Every test here just runs a builder snippet through window.partwright.run and
+// checks the result — nothing persists between them — so the file shares one
+// booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
 const cases: Array<{ name: string; code: string; maxComponents?: number }> = [
   { name: 'screwHole (socket head)', code: `return api.printFit.screwHole({ size: 'M3', length: 12, head: 'socket' });` },
   { name: 'screwHole (countersunk)', code: `return api.printFit.screwHole({ size: 'M4', length: 10, head: 'countersunk' });` },
@@ -64,14 +68,9 @@ const assembly = `
 `;
 
 test.describe('printFit builders produce valid manifolds', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
 
   for (const c of cases) {
-    test(`${c.name} is a single-component manifold`, async ({ page }) => {
+    test(`${c.name} is a single-component manifold`, async () => {
       const r = await run(page, c.code);
       if (r.status === 'error') throw new Error(`${c.name} failed:\n${r.error}`);
       expect(r.isManifold, `${c.name} should be watertight`).toBe(true);
@@ -80,7 +79,7 @@ test.describe('printFit builders produce valid manifolds', () => {
     });
   }
 
-  test('plate + counterbored hole + insert boss assembles cleanly', async ({ page }) => {
+  test('plate + counterbored hole + insert boss assembles cleanly', async () => {
     const r = await run(page, assembly);
     if (r.status === 'error') throw new Error(`assembly failed:\n${r.error}`);
     expect(r.isManifold).toBe(true);
@@ -89,7 +88,7 @@ test.describe('printFit builders produce valid manifolds', () => {
     expect(r.boundingBox!.z[1]).toBeGreaterThan(6);
   });
 
-  test('bad size throws a clear, self-correcting error', async ({ page }) => {
+  test('bad size throws a clear, self-correcting error', async () => {
     const r = await run(page, `return api.printFit.screwHole({ size: 'M99', length: 5 });`);
     expect(r.status).toBe('error');
     expect(r.error).toMatch(/unknown fastener size/i);
@@ -131,14 +130,9 @@ const newBuilderCases: Array<{ name: string; code: string; components: number }>
 ];
 
 test.describe('fasteners/joints new builders', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
 
   for (const c of newBuilderCases) {
-    test(`${c.name} is manifold with ${c.components} component(s)`, async ({ page }) => {
+    test(`${c.name} is manifold with ${c.components} component(s)`, async () => {
       const r = await run(page, c.code);
       if (r.status === 'error') throw new Error(`${c.name} failed:\n${r.error}`);
       expect(r.isManifold, `${c.name} should be watertight`).toBe(true);
