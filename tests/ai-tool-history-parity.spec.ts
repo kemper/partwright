@@ -16,7 +16,11 @@ import { test, expect } from 'playwright/test';
 // Each wire format is normalized to an ordered token list:
 //   user:<text>           a user text turn
 //   call:<id>             an assistant tool call
-//   result:<id>:<kind>    a tool result; kind = synthetic (repair-injected) | real
+//   result:<id>:<kind>    a tool result; kind = synthetic (repair-injected) | real,
+//                         suffixed `+img` when the result's rendered image rides along
+//   image:<id>            an OpenAI image side-message sent BEFORE another tool
+//                         result — i.e. wedged inside the result block, which
+//                         breaks adjacency on strict backends (the #927 bug)
 // Order encodes adjacency: a call's result must be the very next token.
 
 // Gemini identifies calls/results by tool NAME, not id, so every call in the
@@ -26,6 +30,8 @@ const TOOL_NAMES: Record<string, string> = {
   call_DANGLING: 'runDangling',
   call_TAIL: 'runTail',
   call_GONE: 'runGone',
+  call_RENDER: 'runRender',
+  call_QUERY: 'runQuery',
 };
 
 const msg = (id: string, seq: number, rest: Record<string, unknown>) =>
@@ -35,6 +41,7 @@ const text = (t: string) => [{ type: 'text', text: t }];
 const SCENARIOS = [
   {
     name: 'a dangling tool_use mid-conversation and a compaction-orphaned tool_result',
+    needsRepair: true,
     history: [
       // Compaction replaced the assistant turn that made call_GONE; only its
       // result carrier survived — an orphaned tool_result.
@@ -59,10 +66,12 @@ const SCENARIOS = [
     ],
   },
   {
-    // Historically the Anthropic builder STRIPPED a trailing unanswered
-    // assistant turn while every other provider answered it — the exact
-    // divergence #914 set out to remove. Now all providers answer it.
+    // Before #927 routed every builder through repairToolHistory, the
+    // Anthropic builder STRIPPED a trailing unanswered assistant turn while
+    // every other provider answered it — the exact divergence #914 set out to
+    // remove. Pinned here so it can't come back.
     name: 'a dangling tool_use at the tail (turn stopped before any result posted)',
+    needsRepair: true,
     history: [
       msg('u0', 0, { role: 'user', blocks: text('make a cube') }),
       msg('a1', 1, { role: 'assistant', toolCalls: [{ id: 'call_OK', name: 'runOk', input: {} }] }),
@@ -75,6 +84,35 @@ const SCENARIOS = [
       'result:call_OK:real',
       'call:call_TAIL',
       'result:call_TAIL:synthetic',
+    ],
+  },
+  {
+    // The #927 repro: a CLEAN history (nothing for the Repair button to fix)
+    // where an earlier result in a multi-tool round carries a rendered image.
+    // Each wire format places that image differently, but none may split the
+    // result block — on OpenAI the image side-message must follow ALL the
+    // `tool` / function_call_output items, or a strict backend 400s.
+    name: 'a clean multi-tool round whose first result carries an image',
+    needsRepair: false,
+    history: [
+      msg('u0', 0, { role: 'user', blocks: text('render it and measure it') }),
+      msg('a1', 1, { role: 'assistant', toolCalls: [
+        { id: 'call_RENDER', name: 'runRender', input: {} },
+        { id: 'call_QUERY', name: 'runQuery', input: {} },
+      ] }),
+      msg('u1', 2, { role: 'user', toolResults: [
+        { toolUseId: 'call_RENDER', content: '{"rendered":true}', image: { data: 'AAAA', mediaType: 'image/png', label: 'iso' } },
+        { toolUseId: 'call_QUERY', content: '{"volume":10}' },
+      ] }),
+      msg('u2', 3, { role: 'user', blocks: text('now add a handle') }),
+    ],
+    expected: [
+      'user:render it and measure it',
+      'call:call_RENDER',
+      'call:call_QUERY',
+      'result:call_RENDER:real+img',
+      'result:call_QUERY:real',
+      'user:now add a handle',
     ],
   },
 ];
@@ -101,6 +139,18 @@ test.describe('Tool-history repair parity across providers', () => {
         const kind = (s: string) => (/did not complete/i.test(s) ? 'synthetic' : 'real');
         const joinText = (parts: any[], type: string) =>
           parts.filter(p => p.type === type).map(p => p.text).join('');
+        const res = (id: string, body: string, img: boolean) =>
+          `result:${id}:${kind(body)}${img ? '+img' : ''}`;
+        // OpenAI can't put an image in a tool result, so it rides on a
+        // following user message marked "(tool result image for <id>)". Fold it
+        // into that result's token — unless another tool result still follows
+        // it, which means it was wedged inside the result block (#927).
+        const IMAGE_MARKER = /^\(tool result image for (.+)\)$/;
+        const foldImage = (t: string[], id: string, resultFollows: boolean) => {
+          const at = t.findLastIndex(tok => tok.startsWith(`result:${id}:`));
+          if (resultFollows || at < 0) t.push(`image:${id}`);
+          else t[at] += '+img';
+        };
 
         // --- Normalizers: one per wire format -----------------------------
         const fromChatMessages = (msgs: any[]) => {
@@ -109,7 +159,7 @@ test.describe('Tool-history repair parity across providers', () => {
             if (m.role === 'assistant') {
               for (const tc of m.toolCalls ?? []) t.push(`call:${tc.id}`);
             } else {
-              for (const r of m.toolResults ?? []) t.push(`result:${r.toolUseId}:${kind(r.content)}`);
+              for (const r of m.toolResults ?? []) t.push(res(r.toolUseId, r.content, !!r.image));
               for (const b of m.blocks) if (b.type === 'text' && b.text.trim()) t.push(`user:${b.text}`);
             }
           }
@@ -124,7 +174,8 @@ test.describe('Tool-history repair parity across providers', () => {
                 if (b.type === 'tool_use') t.push(`call:${b.id}`);
               } else if (b.type === 'tool_result') {
                 const body = typeof b.content === 'string' ? b.content : joinText(b.content, 'text');
-                t.push(`result:${b.tool_use_id}:${kind(body)}`);
+                const img = Array.isArray(b.content) && b.content.some((c: any) => c.type === 'image');
+                t.push(res(b.tool_use_id, body, img));
               } else if (b.type === 'text' && b.text.trim()) {
                 t.push(`user:${b.text}`);
               }
@@ -135,28 +186,32 @@ test.describe('Tool-history repair parity across providers', () => {
         // OpenAI Chat Completions — also the Custom and Local-native shape.
         const fromChat = (msgs: any[]) => {
           const t: string[] = [];
-          for (const m of msgs) {
+          msgs.forEach((m, i) => {
             if (m.role === 'assistant') {
               for (const tc of m.tool_calls ?? []) t.push(`call:${tc.id}`);
             } else if (m.role === 'tool') {
-              t.push(`result:${m.tool_call_id}:${kind(String(m.content))}`);
+              t.push(res(m.tool_call_id, String(m.content), false));
             } else if (m.role === 'user') {
               const body = typeof m.content === 'string' ? m.content : joinText(m.content ?? [], 'text');
-              if (body.trim()) t.push(`user:${body}`);
+              const imageFor = body.match(IMAGE_MARKER);
+              if (imageFor) foldImage(t, imageFor[1], msgs[i + 1]?.role === 'tool');
+              else if (body.trim()) t.push(`user:${body}`);
             }
-          }
+          });
           return t;
         };
         const fromResponses = (items: any[]) => {
           const t: string[] = [];
-          for (const it of items) {
+          items.forEach((it, i) => {
             if (it.type === 'function_call') t.push(`call:${it.call_id}`);
-            else if (it.type === 'function_call_output') t.push(`result:${it.call_id}:${kind(String(it.output))}`);
+            else if (it.type === 'function_call_output') t.push(res(it.call_id, String(it.output), false));
             else if (it.type === 'message' && it.role === 'user') {
               const body = joinText(it.content ?? [], 'input_text');
-              if (body.trim()) t.push(`user:${body}`);
+              const imageFor = body.match(IMAGE_MARKER);
+              if (imageFor) foldImage(t, imageFor[1], items[i + 1]?.type === 'function_call_output');
+              else if (body.trim()) t.push(`user:${body}`);
             }
-          }
+          });
           return t;
         };
         const fromGemini = (contents: any[]) => {
@@ -167,7 +222,9 @@ test.describe('Tool-history repair parity across providers', () => {
                 if (p.functionCall) t.push(`call:${idByName[p.functionCall.name] ?? '?'}`);
               } else if (p.functionResponse) {
                 const id = idByName[p.functionResponse.name] ?? '?';
-                t.push(`result:${id}:${kind(JSON.stringify(p.functionResponse.response))}`);
+                t.push(res(id, JSON.stringify(p.functionResponse.response), false));
+              } else if (p.inlineData && t.length > 0 && t[t.length - 1].startsWith('result:')) {
+                t[t.length - 1] += '+img';
               } else if (typeof p.text === 'string' && p.text.trim()) {
                 t.push(`user:${p.text}`);
               }
@@ -237,18 +294,23 @@ test.describe('Tool-history repair parity across providers', () => {
         }
       }, { history: scenario.history, names: TOOL_NAMES });
 
-      // The UI's Repair affordance must see this history as broken...
-      expect(out.detectorFlagged).toBe(true);
+      // The UI's Repair affordance must agree on whether this history is
+      // broken...
+      expect(out.detectorFlagged).toBe(scenario.needsRepair);
       // ...and the repair itself must produce the intended sequence: every
-      // call answered immediately, the orphaned result gone, nothing dropped.
+      // call answered immediately, any orphaned result gone, nothing dropped.
       expect(out.canonical).toEqual(scenario.expected);
 
       // Every provider sends exactly that repaired sequence.
-      for (const provider of ['anthropic', 'openaiChat', 'openaiResponses', 'custom', 'gemini', 'localNative'] as const) {
+      for (const provider of ['anthropic', 'openaiChat', 'openaiResponses', 'custom', 'gemini'] as const) {
         expect(out[provider], `${provider} diverged from repairToolHistory`).toEqual(out.canonical);
       }
+      // Local models don't receive tool-result images (WebLLM has no image slot
+      // for them), so compare Local with the image marker dropped.
+      const noImg = out.canonical.map(tok => tok.replace(/\+img$/, ''));
+      expect(out.localNative, 'localNative diverged from repairToolHistory').toEqual(noImg);
       expect(out.localPrompt, 'localPrompt diverged from repairToolHistory')
-        .toEqual(out.canonical.map(tok => tok.replace(/^result:[^:]+:/, 'result:*:')));
+        .toEqual(noImg.map(tok => tok.replace(/^result:[^:]+:/, 'result:*:')));
     });
   }
 });

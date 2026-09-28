@@ -61,3 +61,17 @@ orphan-result pass keeps a tool_result matching a call *anywhere* in history,
 not just the immediately preceding assistant turn. Strict-adjacency backends
 still 400 on a stray/non-adjacent result while the Repair button reports
 nothing to fix.
+
+**Review pass (work-reviewer): 0 blocking, 4 optional — all folded in.**
+The system prompt told the model how to react to "Tool call was interrupted
+and did not complete," but the shared repair every provider now uses emits
+"Tool call did not complete (the turn was interrupted; …)", so the guidance
+never matched that case; reworded it to match any interrupted/did-not-complete
+result. Fixed a stale `isToolHistoryMismatchError` doc example and a
+misleading "historically" test comment. Added a third parity scenario — the
+#927 repro (clean history, first result of a multi-tool round carries an
+image) — with image-aware normalizers: each wire format places the image
+differently, so it folds into its result token as `+img`, but an OpenAI image
+side-message wedged before another tool result emits its own `image:<id>`
+token and breaks parity. Mutation-checked: reintroducing the #927
+interleaving fails `openaiChat` with `image:call_RENDER`.

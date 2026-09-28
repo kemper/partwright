@@ -179,8 +179,9 @@ export function hasOrphanedToolCalls(history: ChatMessage[]): boolean {
  *  Every hosted provider phrases it differently, so match on the stable
  *  fragments each one uses. Drives the error-bubble "Repair history" affordance
  *  so it appears for exactly this failure class even when the persisted history
- *  looks clean to `hasOrphanedToolCalls` (e.g. the orphan was only manufactured
- *  in the per-provider request transform). Pure string check — no history
+ *  looks clean to `hasOrphanedToolCalls` (e.g. a tool_result that answers a
+ *  known call but isn't adjacent to it — accepted here, rejected by a
+ *  strict-adjacency backend; see #961). Pure string check — no history
  *  needed. */
 export function isToolHistoryMismatchError(message: string): boolean {
   const m = message.toLowerCase();
