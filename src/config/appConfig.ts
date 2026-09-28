@@ -101,6 +101,10 @@ export interface AppConfig {
      *  window. On 1M-context models 70% would be ~700k tokens — far past the
      *  point where each cache miss (e.g. after a pause) gets expensive. */
     autoCompactMaxTokens: number;
+    /** Images the user attached that compaction carries forward (newest
+     *  first) instead of dropping with the summarized turns. 0 = drop them
+     *  like before. */
+    compactionKeepImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -369,6 +373,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
+    compactionKeepImages: 4,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,

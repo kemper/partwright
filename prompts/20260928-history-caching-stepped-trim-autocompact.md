@@ -70,3 +70,16 @@ the check accept the field.
   (`anthropicCache.ts`), so the unit test doesn't import the SDK client.
 - **The Auto hint reads the ceiling from `APP_CONFIG_DEFAULTS`,** so it
   can't drift from the real default.
+
+**Follow-up (kemper/partwright#972): compaction kept dropping user
+attachments.** With auto-compact now on by default, a reference photo in a
+long "make it look like this" session would silently turn into a
+`<image: …>` placeholder.
+- **What's kept.** Both compaction paths now go through one
+  `persistCompaction` helper. It carries the newest N (default 4, configurable)
+  user-attached images from the dropped turns into a user message placed just
+  before the summary.
+- **Why that order.** [user: references][assistant: summary][kept tail] keeps
+  roles alternating for every provider.
+- **What isn't kept.** Tool-result renders are excluded, since the agent can
+  re-render.

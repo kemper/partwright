@@ -313,6 +313,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10_000} max={1_000_000} integer
           onChange={v => set('ai', 'autoCompactMaxTokens', v)}
         />
+        <Field
+          label="Attached images kept through compaction"
+          unit="images"
+          hint="Reference images you attached are carried forward when older turns are compacted, instead of being dropped."
+          tooltip="Compaction replaces older turns with a text summary. Without this, a photo you attached early on (a 'make it look like this' reference) would disappear from what the model sees. The newest N of your attached images are re-attached just before the summary. The agent's own render screenshots aren't kept — it can re-render. Set 0 to drop attachments like before."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.compactionKeepImages}
+          value={c.ai.compactionKeepImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'compactionKeepImages', v)}
+        />
       </Section>
 
       <Section title="AI — geometry timeouts">
