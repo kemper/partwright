@@ -39,8 +39,9 @@ because…") so the user gets the takeaway at a glance.`;
  *  decide whether the agent should act on the review (see autoReview.ts). */
 const VERDICT_INSTRUCTION = `
 
-This review runs automatically after the agent finished a task. Begin your
-reply with exactly one line that is one of:
+This review runs automatically after the agent finished a task. Instead of
+the one-line verdict described above, begin your reply with exactly one line
+that is one of:
 Verdict: pass
 Verdict: minor issues
 Verdict: needs rework
@@ -75,6 +76,8 @@ export interface ReviewRequest {
   promoteToNote?: boolean;
   /** Ask for a machine-readable verdict line (automatic reviews). */
   requireVerdict?: boolean;
+  /** Cancels the review. An aborted review is never persisted. */
+  signal?: AbortSignal;
 }
 
 export interface ReviewResult {
@@ -118,7 +121,10 @@ export async function runReview(
       apiKey: req.apiKey,
       systemPrompt: req.requireVerdict ? REVIEW_SYSTEM + VERDICT_INSTRUCTION : REVIEW_SYSTEM,
       history: [ephemeral],
+      signal: req.signal,
     });
+    // An aborted stream resolves with partial text — never post that.
+    if (req.signal?.aborted) throw new DOMException('Review cancelled', 'AbortError');
     text = r.text;
     usage = r.usage;
   } catch (err) {

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTO_REVIEW_FOLLOWUP_TAG,
   buildFixPrompt,
+  countModelChangingCalls,
   latestUserRequest,
+  requestText,
   parseReviewVerdict,
   resolveReviewer,
   shouldActOnReview,
@@ -10,7 +12,7 @@ import {
 } from '../../src/ai/autoReview';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
-const ON = { enabled: true, provider: 'same' as const, model: '', fixRounds: 1 };
+const ON = { provider: 'same' as const, model: '', fixRounds: 1 };
 
 describe('parseReviewVerdict', () => {
   it.each([
@@ -29,15 +31,30 @@ describe('parseReviewVerdict', () => {
 });
 
 describe('shouldAutoReview', () => {
-  const base = { settings: ON, reason: 'end_turn' as const, toolCalls: 3, hadError: false, spentUsd: 0.2, spendCapUsd: 2 };
-  it('reviews a clean turn that did work', () => expect(shouldAutoReview(base)).toBe(true));
-  it('skips when off, errored, capped, tool-free, or over the spend cap', () => {
-    expect(shouldAutoReview({ ...base, settings: { ...ON, enabled: false } })).toBe(false);
+  const base = { enabled: true, reason: 'end_turn' as const, modelChangingToolCalls: 2, planning: false, hadError: false, spentUsd: 0.2, spendCapUsd: 2 };
+  it('reviews a clean turn that changed the model', () => expect(shouldAutoReview(base)).toBe(true));
+  it('skips when off, planning, errored, capped, inspect-only, or over the spend cap', () => {
+    expect(shouldAutoReview({ ...base, enabled: false })).toBe(false);
+    expect(shouldAutoReview({ ...base, planning: true })).toBe(false);
     expect(shouldAutoReview({ ...base, hadError: true })).toBe(false);
     expect(shouldAutoReview({ ...base, reason: 'iteration_cap' })).toBe(false);
-    expect(shouldAutoReview({ ...base, toolCalls: 0 })).toBe(false);
+    expect(shouldAutoReview({ ...base, modelChangingToolCalls: 0 })).toBe(false);
     expect(shouldAutoReview({ ...base, spentUsd: 2 })).toBe(false);
     expect(shouldAutoReview({ ...base, spendCapUsd: Infinity, spentUsd: 99 })).toBe(true);
+  });
+});
+
+describe('countModelChangingCalls', () => {
+  it('counts only model-changing calls made during the current round', () => {
+    const call = (name: string) => ({ id: name, name, input: {} });
+    const history = [
+      { id: 'a', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [call('runAndSave')], createdAt: 50, seq: 1 },
+      { id: 'b', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [call('getCode'), call('renderViews')], createdAt: 150, seq: 2 },
+      { id: 'c', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [call('runAndSave'), call('paintByLabel')], createdAt: 160, seq: 3 },
+    ] as unknown as ChatMessage[];
+    const changing = (n: string) => n === 'runAndSave' || n === 'paintByLabel';
+    expect(countModelChangingCalls(history, 100, changing)).toBe(2);
+    expect(countModelChangingCalls(history, 0, changing)).toBe(3);
   });
 });
 
@@ -57,21 +74,34 @@ describe('resolveReviewer', () => {
   it('same → the chat provider/model', () => {
     expect(resolveReviewer(ON, toggles)).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4-6' });
   });
-  it('explicit reviewer, or null when its model is blank', () => {
+  it('explicit reviewer, or a skip reason when its model is blank', () => {
     expect(resolveReviewer({ ...ON, provider: 'openai', model: 'gpt-5.5' }, toggles)).toEqual({ provider: 'openai', model: 'gpt-5.5' });
-    expect(resolveReviewer({ ...ON, provider: 'openai', model: ' ' }, toggles)).toBeNull();
+    expect(resolveReviewer({ ...ON, provider: 'openai', model: ' ' }, toggles)).toHaveProperty('skip');
+  });
+  it('a local chat model never reviews (the prompt overflows its window)', () => {
+    const local = { provider: 'local', localModel: 'x-MLC' } as unknown as ChatToggles;
+    expect(resolveReviewer(ON, local)).toHaveProperty('skip');
   });
 });
 
-describe('latestUserRequest / buildFixPrompt', () => {
-  const msg = (role: 'user' | 'assistant', text: string, seq: number): ChatMessage => ({
-    id: String(seq), sessionId: 's', role, blocks: text ? [{ type: 'text', text }] : [], createdAt: seq, seq,
+describe('latestUserRequest / buildFixPrompt / requestText', () => {
+  const msg = (role: 'user' | 'assistant', text: string, seq: number, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id: String(seq), sessionId: 's', role, blocks: text ? [{ type: 'text', text }] : [], createdAt: seq, seq, ...extra,
   });
-  it('finds the human request, skipping tool-result carriers and review follow-ups', () => {
-    const fix = buildFixPrompt('Verdict: needs rework\nHoles are blind.', 'Anthropic / claude-haiku-4-5');
+  it('finds the human request, skipping tool-result carriers, nudges and review follow-ups', () => {
+    const fix = buildFixPrompt('Anthropic / claude-haiku-4-5');
     expect(fix.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)).toBe(true);
-    expect(fix).toContain('Holes are blind.');
-    const history = [msg('user', 'Make a bracket', 1), msg('assistant', 'ok', 2), msg('user', '', 3), msg('user', fix, 4)];
+    expect(fix).toContain('review above');
+    const history = [
+      msg('user', 'Make a bracket', 1),
+      msg('assistant', 'ok', 2),
+      msg('user', '', 3),
+      msg('user', 'Keep going — call finish when done', 4, { autoResumeNudge: true }),
+      msg('user', fix, 5),
+    ];
     expect(latestUserRequest(history)).toBe('Make a bracket');
+  });
+  it('requestText joins text blocks and ignores images', () => {
+    expect(requestText([{ type: 'text', text: ' a ' }, { type: 'image', source: { data: 'x', mediaType: 'image/png' } }, { type: 'text', text: 'b' }])).toBe('a \nb');
   });
 });

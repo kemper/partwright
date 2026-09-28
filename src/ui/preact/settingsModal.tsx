@@ -29,6 +29,7 @@ import {
   loadSettings,
   setAutoCompactMode,
   setAutoReview,
+  setToggles,
   AUTO_REVIEW_MAX_FIX_ROUNDS,
   type AutoReviewSettings,
   setLocalContext,
@@ -1008,6 +1009,10 @@ function reviewerModelOptions(p: AutoReviewSettings['provider']): { id: string; 
 function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
   const { cb } = props;
   const review = settingsSignal.value.autoReview;
+  // On/off is per window (a toggle, like the panel's 🔍 pill); the reviewer
+  // and fix rounds below are shared preferences.
+  const enabled = settingsSignal.value.toggles.autoReview;
+  const setEnabled = (on: boolean) => { setSettings(setToggles(loadSettings(), { autoReview: on })); cb.onChange(); };
   const update = (partial: Partial<AutoReviewSettings>) => { setSettings(setAutoReview(loadSettings(), partial)); cb.onChange(); };
   const options = reviewerModelOptions(review.provider);
   const roundLabels = ['Post only', '1 fix round', '2 fix rounds', '3 fix rounds'].slice(0, AUTO_REVIEW_MAX_FIX_ROUNDS + 1);
@@ -1016,17 +1021,17 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
     <Section label="Automatic review">
       <div
         class="text-[11px] text-zinc-400 leading-snug"
-        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). Also toggled by the 🔍 Review pill in the panel.' }}
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
       />
       <div class="flex flex-wrap gap-1">
-        <Pill active={!review.enabled} label="Off" onClick={() => update({ enabled: false })} />
-        <Pill active={review.enabled} label="On" onClick={() => update({ enabled: true })} />
+        <Pill active={!enabled} label="Off" onClick={() => setEnabled(false)} />
+        <Pill active={enabled} label="On" onClick={() => setEnabled(true)} />
       </div>
       <label class="flex flex-col gap-1">
         <span class="text-xs text-zinc-400">Reviewer</span>
         <div class="flex items-center gap-2">
           <select
-            class="px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100"
+            class="px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100 focus:outline-none focus:border-blue-500"
             data-testid="auto-review-provider"
             value={review.provider}
             onChange={e => {
@@ -1040,7 +1045,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
           </select>
           {review.provider !== 'same' && (
             <select
-              class="flex-1 px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100"
+              class="flex-1 px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100 focus:outline-none focus:border-blue-500"
               data-testid="auto-review-model"
               value={review.model}
               onChange={e => update({ model: (e.currentTarget as HTMLSelectElement).value })}
@@ -1061,7 +1066,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
             <Pill key={n} active={review.fixRounds === n} label={label} onClick={() => update({ fixRounds: n })} />
           ))}
         </div>
-        <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The iteration and $ caps still apply.</span>
+        <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The $ cap stops further rounds; the iteration cap applies to each round.</span>
       </div>
     </Section>
   );

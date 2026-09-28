@@ -55,3 +55,30 @@ on the main thread. A 🔍 Review pill toggles it from the panel.
 
 **No console API added.** There's no existing `window.partwright` surface for
 AI chat settings (the same as the other AI toggles).
+
+**Review follow-ups** (from a review subagent: 3 blocking, 7 should-fix):
+- **Session and ownership safety (blocking).** The review captures its
+  session. A session switch or a lost write-ownership during the review means
+  no fix round and no push into the wrong transcript; the new session's
+  history is reloaded instead.
+- **Planning (blocking).** Plan-first turns aren't reviewed. After a plan
+  approval, the review grades the ORIGINAL request (it's passed in, not
+  inferred). Auto-continue nudges are skipped when the request is inferred.
+- **Stop works.** The review runs with its own AbortController in
+  `inFlightController`, threaded down to every provider's streamTurn, and is
+  shown as in-flight (Stop button, rewind disabled). An aborted review is
+  never persisted.
+- **"Changed the model"** now means model-changing tool calls in the current
+  round (the new `isModelChangingTool` in `tools.ts`), not any tool call.
+- **The on/off switch moved to `ChatToggles`** (per window), so the 🔍 pill
+  can't turn on paid reviews in another tab. Reviewer choice and fix rounds
+  stay global preferences.
+- **Caps and gates.** The spend cap is re-checked before each fix round, and
+  the copy now says the iteration cap applies per round. A "same" reviewer
+  with a Local chat skips with a reason. A declined unpriced reviewer is
+  remembered for the session instead of prompting after every task.
+- **The follow-up references the review** instead of repeating it (providers
+  already replay review blocks), so it no longer doubles the tokens.
+- **Queue and verdict.** A human message queued during the review wins over
+  the fix round, and fix rounds reset per request. The verdict instruction
+  now explicitly replaces the old one-line opener.

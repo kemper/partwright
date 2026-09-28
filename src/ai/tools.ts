@@ -1556,6 +1556,13 @@ export const RETRY_SAFE_TOOLS = new Set([
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+
+/** Tools that change the model (code, versions, textures, transforms, paint).
+ *  A turn that called none of these only inspected or answered, so there is
+ *  nothing for an automatic review to grade. */
+export function isModelChangingTool(name: string): boolean {
+  return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
+}
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from

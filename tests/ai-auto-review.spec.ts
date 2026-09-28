@@ -46,8 +46,8 @@ async function seedAnthropic(page: Page): Promise<void> {
       open.onerror = () => reject(open.error);
     });
     const s = await import('/src/ai/settings.ts');
-    let st = s.setToggles(s.loadSettings(), { provider: 'anthropic', anthropicModel: 'claude-haiku-4-5', thinking: 'off' });
-    st = s.setAutoReview(st, { enabled: true, provider: 'same', fixRounds: 1 });
+    let st = s.setToggles(s.loadSettings(), { provider: 'anthropic', anthropicModel: 'claude-haiku-4-5', thinking: 'off', autoReview: true });
+    st = s.setAutoReview(st, { provider: 'same', fixRounds: 1 });
     s.saveSettings(st);
   });
 }
@@ -97,9 +97,10 @@ test.describe('Automatic end-of-task review', () => {
 
     const panel = page.locator('#ai-panel');
     await expect(panel.getByText('Verdict: pass')).toBeVisible({ timeout: 60_000 });
-    // The review appears as its own block AND inside the follow-up turn.
-    await expect(panel.getByText(/Verdict: needs rework/)).toHaveCount(2);
-    await expect(panel.getByText(/\[Automatic review\]/)).toBeVisible();
+    // The review appears once, as its own block; the follow-up turn points at
+    // it rather than repeating it (providers replay review blocks already).
+    await expect(panel.getByText(/Verdict: needs rework/)).toHaveCount(1);
+    await expect(panel.getByText(/\[Automatic review\] The review above/)).toBeVisible();
     await expect(panel.getByText(/Fixed — the holes now run/)).toBeVisible();
     expect(reviews).toBe(2);
     // Exactly one fix round: build (2 calls) + fix (2 calls).
