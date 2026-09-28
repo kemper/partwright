@@ -18,6 +18,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
+import { withHistoryCacheBreakpoints } from './anthropicCache';
 import {
   anthropicCannotDisable,
   anthropicEffortLevels,
@@ -26,7 +27,7 @@ import {
   resolveAnthropicThinkingMode,
   thinkingModeFromError,
 } from './anthropicThinking';
-import { anthropicThinkingPlan, isDeepEffort, type AnthropicThinkingPlan } from './thinkingLevels';
+import { anthropicThinkingPlan, isDeepEffort, THINKING_BINDING_BETA, type AnthropicThinkingPlan } from './thinkingLevels';
 
 /** Resolve the Thinking level into this model's request shape. Which shape
  *  the model accepts (budget_tokens vs adaptive + effort) and its effort
@@ -189,7 +190,11 @@ export interface RequestSpec {
   /** Thinking level (see thinkingLevels.ts for the per-model mapping).
    *  Omitted = 'off'. */
   thinking?: ChatToggles['thinking'];
+  /** Put prompt-cache breakpoints on the conversation history (see
+   *  withHistoryCacheBreakpoints). Omitted = off. */
+  cacheHistory?: boolean;
 }
+
 
 export async function streamTurn(
   spec: RequestSpec,
@@ -229,7 +234,7 @@ export async function streamTurn(
     model: spec.model,
     max_tokens: baseMax,
     system,
-    messages: spec.apiMessages,
+    messages: spec.cacheHistory ? withHistoryCacheBreakpoints(spec.apiMessages) : spec.apiMessages,
   };
   // Omit tools entirely when the list is empty — passing tools:[] causes the
   // API to return malformed_function_call if the model tries to use a tool
@@ -239,6 +244,7 @@ export async function streamTurn(
   // the plan asks for is sent — an omitted field keeps the model's own
   // default (e.g. Haiku at 'off' sends neither, matching the pre-feature
   // request).
+  const requestOptions: { headers?: Record<string, string> } = {};
   const applyPlan = (plan: AnthropicThinkingPlan): void => {
     delete params.thinking;
     delete params.output_config;
@@ -252,11 +258,25 @@ export async function streamTurn(
       : plan.active
         ? Math.max(baseMax, isDeepEffort(plan) ? cfg.maxOutputTokensAnthropicThinkingDeep : cfg.maxOutputTokensAnthropicThinking)
         : baseMax;
+    // Models that bind thinking to the exact prior history (Opus 5.5 / Fable
+    // 5.1) would 400 on the edits Partwright makes on purpose (image
+    // trimming, keep-tail compaction, a mid-chat model switch). Ask the API
+    // to drop the affected thinking blocks instead — the turn proceeds
+    // without that earlier reasoning. The field isn't in the SDK's types
+    // yet, hence the cast.
+    delete requestOptions.headers;
+    if (plan.dropMismatchedThinking && params.thinking) {
+      params.thinking = {
+        ...params.thinking,
+        block_binding: { prefix_mismatch_behavior: 'drop_block' },
+      } as unknown as Anthropic.ThinkingConfigParam;
+      requestOptions.headers = { 'anthropic-beta': THINKING_BINDING_BETA };
+    }
   };
   const plan = thinkingPlan(model, level);
   applyPlan(plan);
   try {
-    return await runStream(client, params, callbacks, signal);
+    return await runStream(client, params, requestOptions, callbacks, signal);
   } catch (err) {
     // Self-heal a thinking-shape mismatch (a model newer than the catalog
     // snapshot that rejects budget_tokens, or one that can't disable
@@ -269,17 +289,18 @@ export async function streamTurn(
     if (!retry) throw err;
     console.info(`[anthropic] ${model} rejected its thinking config; retrying with ${JSON.stringify(retry.thinking ?? null)}`);
     applyPlan(retry);
-    return runStream(client, params, callbacks, signal);
+    return runStream(client, params, requestOptions, callbacks, signal);
   }
 }
 
 async function runStream(
   client: Anthropic,
   params: Anthropic.MessageStreamParams,
+  requestOptions: { headers?: Record<string, string> },
   callbacks: StreamCallbacks,
   signal: AbortSignal | undefined,
 ): Promise<StreamResult> {
-  const stream = client.messages.stream(params);
+  const stream = client.messages.stream(params, requestOptions);
 
   // Mirror text deltas into a local buffer so we still have the partial
   // response if the stream is aborted before finalMessage() resolves.

@@ -74,7 +74,19 @@ export interface AnthropicThinkingPlan {
   active: boolean;
   /** `budget_tokens` sent, or 0. Callers keep `max_tokens` above it. */
   budgetTokens: number;
+  /** Ask the API to drop, not reject, replayed thinking blocks whose
+   *  conversation prefix changed (`thinking.block_binding.
+   *  prefix_mismatch_behavior: "drop_block"`, beta header
+   *  THINKING_BINDING_BETA). Set for always-on models: Opus 5.5 / Fable 5.1
+   *  bind each thinking block to the exact history before it, and newer
+   *  accounts get a 400 when that history was edited — which Partwright does
+   *  on purpose (render-image trimming, keep-tail compaction, switching
+   *  models mid-chat). Models that don't run the check accept the field. */
+  dropMismatchedThinking?: boolean;
 }
+
+/** Beta that unlocks `thinking.block_binding` (see dropMismatchedThinking). */
+export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
 
 /** Whether an adaptive plan runs at the top efforts (xhigh/max), which need
  *  a larger output ceiling than the other levels. */
@@ -144,6 +156,7 @@ export function anthropicThinkingPlan(
   // answer, which the stall watchdog reads as a dead connection and the user
   // sees as an empty thinking box. Ask for the summary whenever thinking runs.
   const adaptive = { type: 'adaptive' as const, display: 'summarized' as const };
+  const drop = family === 'alwaysOn' ? { dropMismatchedThinking: true } : {};
 
   if (level === 'off') {
     // Always-on models: thinking can't be (reliably) disabled — Opus 5.5 /
@@ -151,7 +164,7 @@ export function anthropicThinkingPlan(
     // into visible text. The documented cheap path is adaptive at low effort.
     if (family === 'alwaysOn') {
       const low = clampEffort('low', efforts);
-      return { thinking: adaptive, ...(low ? { effort: low } : {}), active: true, budgetTokens: 0 };
+      return { thinking: adaptive, ...(low ? { effort: low } : {}), active: true, budgetTokens: 0, ...drop };
     }
     return { thinking: { type: 'disabled' }, active: false, budgetTokens: 0 };
   }
@@ -161,10 +174,10 @@ export function anthropicThinkingPlan(
     // summary on); the rest keep their default of not thinking.
     // (Sonnet 5+ runs adaptive when `thinking` is omitted; Opus 4.7/4.8 don't.)
     const thinksByDefault = family === 'alwaysOn' || (family === 'adaptive' && (parseClaudeId(model)?.major ?? 0) >= 5);
-    return thinksByDefault ? { thinking: adaptive, active: true, budgetTokens: 0 } : { active: false, budgetTokens: 0 };
+    return thinksByDefault ? { thinking: adaptive, active: true, budgetTokens: 0, ...drop } : { active: false, budgetTokens: 0 };
   }
   const effort = clampEffort(level, efforts);
-  return { thinking: adaptive, ...(effort ? { effort } : {}), active: true, budgetTokens: 0 };
+  return { thinking: adaptive, ...(effort ? { effort } : {}), active: true, budgetTokens: 0, ...drop };
 }
 
 // ---------------------------------------------------------------------------

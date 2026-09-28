@@ -138,7 +138,9 @@ describe('Anthropic thinking config', () => {
     expect(bodies.opus47.max_tokens as number).toBeGreaterThanOrEqual(64000);
     expect(bodies.opus47Off.thinking).toEqual({ type: 'disabled' });
     // Opus 5.5 can't disable thinking — Off is the lowest effort instead.
-    expect(bodies.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    // (block_binding: drop — not 400 on — thinking bound to history Partwright
+    // edited; see ai-history-caching.spec.ts.)
+    expect(bodies.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(bodies.opus55Off.output_config).toEqual({ effort: 'low' });
   });
 
@@ -187,7 +189,9 @@ describe('Anthropic thinking config', () => {
     const healed = await turn('claude-sonnet-4-5');
 
     expect(adaptiveBodies).toHaveLength(1);
-    expect(adaptiveBodies[0].thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    // Opus 5.5 always thinks, so it also asks the API to drop (not 400 on)
+    // thinking bound to history Partwright edited — see ai-history-caching.spec.ts.
+    expect(adaptiveBodies[0].thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(adaptiveBodies[0].output_config).toEqual({ effort: 'medium' });
     expect(healBodies).toHaveLength(2);
     expect(healBodies[0].thinking).toEqual({ type: 'enabled', budget_tokens: 8192 });

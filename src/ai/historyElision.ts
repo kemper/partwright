@@ -17,7 +17,17 @@
 // as optional alongside the required text content), so this is provider-
 // agnostic and applies at the single streamTurn call site.
 
-import type { ChatMessage, PersistedToolResult } from './types';
+import type { ChatMessage, PersistedToolResult, Provider } from './types';
+
+/** Whether `provider` caches the repeated conversation prefix, so trimming
+ *  should be stepped (cache-friendly) rather than sliding. OpenAI and Gemini
+ *  cache automatically; Anthropic does when history caching is enabled
+ *  (anthropic.ts adds the breakpoint). Custom endpoints and local models get
+ *  no dependable discount, so they keep the tight sliding window. */
+export function providerCachesHistory(provider: Provider, anthropicHistoryCaching: boolean): boolean {
+  if (provider === 'anthropic') return anthropicHistoryCaching;
+  return provider === 'openai' || provider === 'gemini';
+}
 
 /** Appended to an elided tool result's text so the model knows a render it
  *  produced earlier was omitted (and that its stats are still trustworthy). */
@@ -29,13 +39,40 @@ function hasImage(r: PersistedToolResult): boolean {
 }
 
 /**
- * Return a history equivalent to `history` but with all render images except
- * the most-recent `keepLastImages` stripped from tool results. Input is never
- * mutated; when nothing needs trimming the original array is returned as-is.
+ * How many of `total` images (oldest first) to strip.
+ *
+ * Sliding (`trimTo` omitted or ≥ `maxImages`): keep exactly the newest
+ * `maxImages`, so every new render drops one old image.
+ *
+ * Stepped (`trimTo` < `maxImages`): let images accumulate up to `maxImages`,
+ * then cut back to `trimTo` in one go. Stateless — derived from `total` alone,
+ * so the chat loop recomputes it each iteration and gets the same answer. The
+ * point is prompt caching: stripping an image edits an earlier message, which
+ * invalidates the provider's cached prefix from that point on. A sliding
+ * window edits history on every render; stepping edits it once per
+ * (maxImages − trimTo + 1) renders, so the cached history stays valid between
+ * cuts. The kept count cycles trimTo … maxImages.
+ */
+export function imagesToElide(total: number, maxImages: number, trimTo?: number): number {
+  const max = Math.max(0, maxImages);
+  if (total <= max) return 0;
+  // Never trim below one image (unless the caller keeps none at all): the
+  // render the model just asked for must survive the cut.
+  const floor = trimTo === undefined ? max : Math.min(max, Math.max(max > 0 ? 1 : 0, trimTo));
+  const period = max - floor + 1;
+  return period * Math.ceil((total - max) / period);
+}
+
+/**
+ * Return a history equivalent to `history` but with stale render images
+ * stripped from tool results (see `imagesToElide` for sliding vs stepped).
+ * Input is never mutated; when nothing needs trimming the original array is
+ * returned as-is.
  */
 export function elideStaleToolImages(
   history: ChatMessage[],
   keepLastImages: number,
+  trimTo?: number,
 ): ChatMessage[] {
   // Count tool-result images across the whole history.
   let total = 0;
@@ -44,9 +81,8 @@ export function elideStaleToolImages(
     for (const r of m.toolResults) if (hasImage(r)) total++;
   }
   // keepLastImages <= 0 means "strip them all"; large values disable trimming.
-  if (total <= Math.max(0, keepLastImages)) return history;
-
-  const elideCount = total - Math.max(0, keepLastImages);
+  const elideCount = imagesToElide(total, keepLastImages, trimTo);
+  if (elideCount === 0) return history;
   let seen = 0; // images encountered so far, oldest-first
 
   return history.map((m): ChatMessage => {
