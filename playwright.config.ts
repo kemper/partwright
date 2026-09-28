@@ -1,6 +1,8 @@
 import { defineConfig, devices } from 'playwright/test';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { filesForShard, parseShardSpec } from './scripts/lib/e2eShard.mjs';
 
 // Multi-env browser path detection. The Anthropic Claude Code on the web
 // sandbox preinstalls Playwright browsers at /opt/pw-browsers/ — using a
@@ -33,11 +35,23 @@ if (executablePath) {
   console.info(`[playwright.config] Using sandbox browser at ${executablePath}`);
 }
 
+// Time-balanced sharding. CI sets E2E_SHARD=i/N and each job runs only the
+// spec files scripts/lib/e2eShard.mjs assigns to shard i, weighted by the
+// per-file durations in tests/e2e-timings.json. (Playwright's own --shard
+// balances by test COUNT, which left one shard twice as slow as another.)
+// Unset locally → the whole suite, exactly as before.
+const shard = parseShardSpec(process.env.E2E_SHARD);
+const shardFiles = shard ? filesForShard(shard.index, shard.total, fileURLToPath(new URL('./tests', import.meta.url))) : null;
+if (shard) {
+  // eslint-disable-next-line no-console
+  console.info(`[playwright.config] E2E_SHARD ${shard.index}/${shard.total}: ${shardFiles!.length} spec files`);
+}
+
 export default defineConfig({
   testDir: './tests',
   // Only the browser e2e specs. Pure-logic *.test.ts files under tests/unit/
   // belong to the fast vitest runner (see vitest.config.ts) — keep them out.
-  testMatch: '**/*.spec.ts',
+  testMatch: shardFiles ? shardFiles.map(f => `**/tests/${f}`) : '**/*.spec.ts',
   // Run serially on any single machine. Each test boots WASM in its own page,
   // which is CPU-heavy; running pages concurrently on one box starves the
   // renderer and produces 30s timeout flakes. We get parallelism instead by
@@ -48,7 +62,11 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: [['list']],
+  // CI also writes a JSON report per shard; the staging gate uploads it so
+  // tests/e2e-timings.json can be refreshed (scripts/e2e-timings.mjs).
+  reporter: process.env.CI
+    ? [['list'], ['json', { outputFile: 'playwright-report/e2e-report.json' }]]
+    : [['list']],
   timeout: 30_000,
   use: {
     baseURL: 'http://localhost:5173',
