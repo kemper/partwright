@@ -5,19 +5,31 @@
 // rendered image" into a world-space hit, then flood-fill from there
 // gated by seed-normal deviation.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
+
+// Every test runs its own fresh geometry via pw.run() and only inspects the
+// value it just got back (or a region it just painted) — nothing depends on
+// paint state a sibling left behind — so the file shares one booted editor
+// instead of paying a fresh page + WASM boot per test. A defensive
+// clearColors() keeps each run starting from a clean paint slate.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('paint by vision', () => {
-  test('probePixel round-trips a known top-face pixel back to a hit on +Z', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('probePixel round-trips a known top-face pixel back to a hit on +Z', async () => {
     // Cube centered at origin: top face at z=10, normal (0,0,1). Render
     // the top view orthographically — the cube's top face fills the
     // entire square. Center pixel projects onto the surface at z=10.
     const probe = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       const view = { elevation: 90, azimuth: 0, ortho: true, size: 200 };
       return pw.probePixel({ pixel: [100, 100], view });
@@ -32,10 +44,7 @@ test.describe('paint by vision', () => {
     expect(probe.triangleId).toBeGreaterThanOrEqual(0);
   });
 
-  test('probePixel returns a re-aim diagnostic (not bare null) for a background pixel', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('probePixel returns a re-aim diagnostic (not bare null) for a background pixel', async () => {
     // Small sphere at origin rendered in a large viewport — the [5,5]
     // corner misses the mesh. The miss must now report where the model
     // actually projects so the caller can re-aim instead of giving up.
@@ -44,6 +53,7 @@ test.describe('paint by vision', () => {
     const probe = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.sphere(2, 32);');
       const view = { elevation: 90, azimuth: 0, ortho: true, size: 200 };
       return pw.probePixel({ pixel: [5, 5], view });
@@ -64,10 +74,7 @@ test.describe('paint by vision', () => {
     expect(b.minY).toBeGreaterThan(5);
   });
 
-  test('probePixel hits the center of a model NOT centered on the origin', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('probePixel hits the center of a model NOT centered on the origin', async () => {
     // The session that motivated this work painted an imported model whose
     // bbox was far from the origin. buildViewCamera frames the model's own
     // bbox, so the center pixel must still land on the surface — confirming
@@ -76,6 +83,7 @@ test.describe('paint by vision', () => {
     const probe = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true).translate([40, 29, 40]);');
       const view = { elevation: 90, azimuth: 0, ortho: true, size: 200 };
       return pw.probePixel({ pixel: [100, 100], view });
@@ -90,16 +98,14 @@ test.describe('paint by vision', () => {
     expect(typeof probe.nextStep).toBe('string');
   });
 
-  test('paintConnected floods from a seed gated by deviation from the seed normal', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('paintConnected floods from a seed gated by deviation from the seed normal', async () => {
     // Cube: 6 flat faces each 90° from the next. paintConnected with
     // a 30° deviation from the top-face seed should pick up the entire
     // top face but NOT the side or bottom faces.
     const painted = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');
       return pw.paintConnected({
         seed: { point: [0, 0, 10], normal: [0, 0, 1] },
@@ -131,13 +137,11 @@ test.describe('paint by vision', () => {
     }
   });
 
-  test('probePixel + paintConnected: end-to-end visual paint workflow', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('probePixel + paintConnected: end-to-end visual paint workflow', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       // Centered cube. Top face faces +Z; render orthographically from
       // straight up so center-pixel hits the top.
       await pw.run('return api.Manifold.cube([20, 20, 20], true);');

@@ -11,6 +11,7 @@
 // and session.workCamera (src/storage + setSessionWorkCamera).
 
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 
 type PW = {
   run: (code: string) => Promise<unknown>;
@@ -20,15 +21,36 @@ type PW = {
   getViewState: () => { camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } };
 };
 
+type Camera = { azimuth: number; elevation: number; distance: number; target: [number, number, number] };
+
 const BOX = 'const { Manifold } = api; return Manifold.cube([10, 10, 10], true);';
 const SPHERE = 'const { Manifold } = api; return Manifold.sphere(8, 32);';
 
-function camera(page: Page) {
+function camera(page: Page): Promise<Camera> {
   return page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getViewState().camera);
 }
 
+/** Read the X-axis bounding-box width off the `#geometry-data` element that
+ *  every run (including debounced auto-runs and the SCAD Customizer's
+ *  event-driven re-render) writes to — a concrete, code-visible completion
+ *  signal for "the new geometry actually landed" instead of a guessed settle
+ *  time. */
+function bboxWidth(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    try {
+      const data = JSON.parse(document.getElementById('geometry-data')?.textContent || '{}');
+      const x = data?.boundingBox?.x;
+      return Array.isArray(x) ? x[1] - x[0] : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
 // Orbit + zoom the viewport away from its default framing via a real mouse drag
-// + wheel on the canvas (OrbitControls' own input path).
+// + wheel on the canvas (OrbitControls' own input path), then poll the live
+// camera state until damping has actually decayed to a stop instead of
+// sleeping a guessed duration.
 async function orbitAndZoom(page: Page): Promise<void> {
   const canvas = page.locator('#viewport');
   const box = await canvas.boundingBox();
@@ -41,7 +63,30 @@ async function orbitAndZoom(page: Page): Promise<void> {
   await page.mouse.up();
   await page.mouse.move(cx, cy);
   await page.mouse.wheel(0, -300);
-  await page.waitForTimeout(600);
+  await waitForCameraSettle(page);
+}
+
+/** Poll the live camera pose until it stops changing between samples (damping
+ *  has decayed) for a short stable window, rather than sleeping a guessed
+ *  duration. Real signal: OrbitControls fires 'change' every frame while
+ *  still decaying, so consecutive reads keep moving until it actually stops. */
+async function waitForCameraSettle(page: Page, opts: { timeout?: number; stableMs?: number } = {}): Promise<Camera> {
+  const { timeout = 5000, stableMs = 150 } = opts;
+  const deadline = Date.now() + timeout;
+  let last = await camera(page);
+  let stableSince = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 40));
+    const cur = await camera(page);
+    const delta = Math.abs(cur.azimuth - last.azimuth) + Math.abs(cur.elevation - last.elevation) + Math.abs(cur.distance - last.distance);
+    if (delta < 0.02) {
+      if (Date.now() - stableSince >= stableMs) return cur;
+    } else {
+      stableSince = Date.now();
+    }
+    last = cur;
+    if (Date.now() >= deadline) return cur; // best effort — caller's own assertions will catch a real failure
+  }
 }
 
 test.describe('viewport camera persistence', () => {
@@ -58,21 +103,26 @@ test.describe('viewport camera persistence', () => {
       await pw.runAndSave(box, 'box');
       await pw.runAndSave(sphere, 'sphere');
     }, [BOX, SPHERE]);
-    await page.waitForTimeout(800);
+    // runAndSave awaits the full run (including the synchronous auto-frame),
+    // so no settle margin is needed before orbiting.
 
     await orbitAndZoom(page);
     const before = await camera(page);
     // Sanity: we actually moved off the default ~45°/35° framing.
     expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
 
-    // Switch to the earlier version. The debounced auto-run also re-renders
-    // ~300ms later, so wait long enough to catch a late reframe.
+    // Switch to the earlier version. The regression this guards is the
+    // debounced auto-run (300 ms, codeEditor.ts) firing after loadVersion's
+    // programmatic setValue and snapping the camera — so this is a NEGATIVE
+    // check that needs an observation window longer than that debounce plus a
+    // render. Don't shrink it on the assumption that setValue cancels the
+    // debounce: that cancel is exactly what's under test.
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const versions = await pw.listVersions();
       await pw.loadVersion({ index: versions[0].index });
     });
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(800);
 
     const after = await camera(page);
     expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(2);
@@ -86,7 +136,6 @@ test.describe('viewport camera persistence', () => {
     await page.evaluate(async (box) => {
       await (window as unknown as { partwright: PW }).partwright.run(box);
     }, BOX);
-    await page.waitForTimeout(800);
 
     await orbitAndZoom(page);
     const before = await camera(page);
@@ -105,7 +154,13 @@ test.describe('viewport camera persistence', () => {
     await editor.click();
     await page.keyboard.press('ControlOrMeta+a');
     await page.keyboard.type('const { Manifold } = api; return Manifold.cube([6, 6, 6], true);');
-    await page.waitForTimeout(2000); // past the 300ms auto-run debounce + render
+    // Wait for the debounced auto-run to actually land the new geometry (bbox
+    // width 6, down from the original 10) instead of sleeping past a guessed
+    // debounce + render time.
+    await waitFor(() => bboxWidth(page).then((w) => (w !== null && Math.abs(w - 6) < 0.5 ? w : null)), {
+      timeout: 8000,
+      message: 'the debounced auto-run to land the edited geometry',
+    });
 
     const after = await camera(page);
     // The model shrank, but the camera angle/distance must be unchanged.
@@ -122,7 +177,6 @@ test.describe('viewport camera persistence', () => {
     await page.evaluate(async (box) => {
       await (window as unknown as { partwright: PW }).partwright.run(box);
     }, BOX);
-    await page.waitForTimeout(600);
     await orbitAndZoom(page);
     const orbited = await camera(page);
 
@@ -133,11 +187,15 @@ test.describe('viewport camera persistence', () => {
       await pw.createSession();
       await pw.run(sphere);
     }, SPHERE);
-    await page.waitForTimeout(1000);
 
-    const fresh = await camera(page);
-    // Default framing is ~azimuth 45 / elevation 35; assert we snapped there and
-    // did not carry over the orbited angle.
+    // Default framing is ~azimuth 45 / elevation 35; poll for it directly
+    // (also the exact condition the assertions below check) instead of
+    // sleeping a guess and sampling once.
+    const fresh = await waitFor(
+      () => camera(page).then((c) => (Math.abs(c.elevation - 35) < 5 ? c : null)),
+      { timeout: 5000, message: 'the fresh session to auto-frame to the default view' },
+    );
+    // Assert we snapped to the default and did not carry over the orbited angle.
     expect(Math.abs(fresh.azimuth - orbited.azimuth)).toBeGreaterThan(5);
     expect(Math.abs(fresh.elevation - 35)).toBeLessThan(5);
   });
@@ -151,26 +209,25 @@ test.describe('viewport camera persistence', () => {
     await page.evaluate(async () => {
       await (window as unknown as { partwright: PW }).partwright.run('const { Manifold } = api; return Manifold.cube([12, 12, 12], true);');
     });
-    await page.waitForTimeout(700);
     await orbitAndZoom(page);
-    await page.waitForTimeout(800); // let damping settle before sampling
     const before = await camera(page);
     expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
 
-    // AI path: preserveCamera keeps the angle across the re-render.
+    // AI path: preserveCamera keeps the angle across the re-render. setCameraPose
+    // restores the preserved pose synchronously inside runCodeSync — awaited
+    // fully by runAndSave — so no post-await margin is needed.
     await page.evaluate(async () => {
       await (window as unknown as { partwright: PW }).partwright.runAndSave('const { Manifold } = api; return Manifold.cube([6, 6, 6], true);', 'ai-edit', undefined, { preserveCamera: true });
     });
-    await page.waitForTimeout(700);
     const afterAI = await camera(page);
     expect(Math.abs(afterAI.azimuth - before.azimuth)).toBeLessThan(2);
     expect(Math.abs(afterAI.distance - before.distance)).toBeLessThan(2);
 
-    // Bare console runAndSave (no opts) auto-frames back to the default ~45/35.
+    // Bare console runAndSave (no opts) auto-frames back to the default ~45/35 —
+    // again synchronous within the awaited call.
     await page.evaluate(async () => {
       await (window as unknown as { partwright: PW }).partwright.runAndSave('const { Manifold } = api; return Manifold.cube([20, 20, 20], true);', 'console-edit');
     });
-    await page.waitForTimeout(700);
     const afterBare = await camera(page);
     expect(Math.abs(afterBare.azimuth - 45)).toBeLessThan(5);
     expect(Math.abs(afterBare.elevation - 35)).toBeLessThan(5);
@@ -190,23 +247,27 @@ test.describe('viewport camera persistence', () => {
     await page.evaluate(async (code) => {
       const pw = (window as unknown as { partwright: { createSession(n?: string): Promise<unknown>; setActiveLanguage(l: string): Promise<void> } & PW }).partwright;
       await pw.createSession('scad-camera');
-      await pw.setActiveLanguage('scad'); // first SCAD run lazy-loads the WASM engine
+      await pw.setActiveLanguage('scad'); // first SCAD run lazy-loads the WASM engine (awaited)
       await pw.run(code);
     }, SCAD);
-    await page.waitForTimeout(1500);
 
     await orbitAndZoom(page);
     const before = await camera(page);
     expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
 
     // Drive the Customize panel's Width slider — the exact path the user hits.
+    // This is a raw DOM event dispatch (not an awaited call), so wait for the
+    // real completion signal: the bbox reflecting the new width (50, up from 20).
     await page.evaluate(() => {
       const panel = document.getElementById('params-panel')!;
       const slider = panel.querySelector('input[type="range"]') as HTMLInputElement;
       slider.value = '50';
       slider.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    await page.waitForTimeout(2500); // SCAD re-render (two-phase) + settle
+    await waitFor(() => bboxWidth(page).then((w) => (w !== null && Math.abs(w - 50) < 1 ? w : null)), {
+      timeout: 10000,
+      message: 'the SCAD Customizer two-phase re-render to land the new width',
+    });
 
     const after = await camera(page);
     expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(2);
@@ -222,11 +283,17 @@ test.describe('viewport camera persistence', () => {
     await page.evaluate(async () => {
       await (window as unknown as { partwright: PW }).partwright.runAndSave('const { Manifold } = api; return Manifold.cube([12, 12, 12], true);', 'box');
     });
-    await page.waitForTimeout(700);
     await orbitAndZoom(page);
-    // Wait past the workCamera save debounce + IDB write, then sample the settled
-    // pose (which is what got persisted).
-    await page.waitForTimeout(1600);
+    // Wait for the debounced workCamera save to actually land in session state
+    // (real signal — see workCameraSaveDebounceMs in appConfig.ts) rather than
+    // sleeping past a guessed debounce + IDB-write time.
+    await waitFor(
+      () => page.evaluate(async () => {
+        const sm = await import('/src/storage/sessionManager.ts');
+        return !!sm.getState().session?.workCamera;
+      }),
+      { timeout: 5000, message: 'the debounced workCamera save to land' },
+    );
     const before = await camera(page);
     expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
     const url = page.url();
@@ -235,8 +302,16 @@ test.describe('viewport camera persistence', () => {
     // Reload the same session URL — fresh page, IndexedDB persists.
     await page.goto(url);
     await page.waitForSelector('text=Ready', { timeout: 15000 });
-    await page.waitForTimeout(2500); // WASM + first render + workCamera restore
-    const after = await camera(page);
+    // Poll for the restored pose to actually match — the exact condition the
+    // assertions below check — instead of sleeping a guess and sampling once.
+    const after = await waitFor(
+      () => camera(page).then((c) =>
+        Math.abs(c.azimuth - before.azimuth) < 3 && Math.abs(c.elevation - before.elevation) < 3 && Math.abs(c.distance - before.distance) < 3
+          ? c
+          : null,
+      ),
+      { timeout: 10000, message: 'the persisted workCamera to be restored after reload' },
+    );
     expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(3);
     expect(Math.abs(after.elevation - before.elevation)).toBeLessThan(3);
     expect(Math.abs(after.distance - before.distance)).toBeLessThan(3);

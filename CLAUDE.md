@@ -132,11 +132,20 @@ npx playwright test --headed   # watch the browser run (local only)
 node environment). This tier is **only for dependency-free, pure-logic
 modules** — e.g. `src/ai/patch.ts`. It never boots a browser, dev server, or
 WASM, so it's the right home for any helper that can be imported and called in
-isolation. If a module needs browser APIs (`fetch` stubbing, IndexedDB, the
-real DOM), it does **not** belong here — keep it in the e2e tier as a
-`page.evaluate(() => import('/src/...'))` test (see `tests/ai-providers.spec.ts`,
-which exercises the provider request builders, SSE reader, and system-prompt
-assembly in a real browser).
+isolation. Node 22 ships native `fetch`/`Response`/`Blob`/`ReadableStream`/
+`TextEncoder`/`navigator`, so **`fetch`-stubbing tests belong here too** — see
+`tests/unit/aiGemini.test.ts`, `aiOpenai.test.ts`, `aiAnthropic.test.ts`,
+`aiCustom.test.ts`, and `aiToolHistoryParity.test.ts`, which drive the AI
+provider request builders and SSE parsing with `vi.stubGlobal('fetch', ...)`
+(`localStorage`-backed singletons like `src/ai/settings.ts` also work here —
+they wrap `localStorage` access in try/catch and fall back to defaults when
+it's absent). If a module needs **IndexedDB** or the real DOM, it does
+**not** belong here — keep it in the e2e tier as a
+`page.evaluate(() => import('/src/...'))` test. `tests/ai-autoresume.spec.ts`
+and `tests/ai-transient-retry.spec.ts` are the canonical example: they drive
+`chatLoop.runTurn`, which persists messages via IndexedDB (unavailable in
+plain Node), so they stay in Playwright even though the request-building logic
+they exercise is otherwise pure.
 
 ### E2E tier (Playwright)
 
