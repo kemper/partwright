@@ -839,6 +839,68 @@ test.describe('Multi-provider AI', () => {
     expect(out.medium.max_tokens as number).toBeGreaterThan(8192);
   });
 
+  test('Anthropic uses adaptive thinking + effort on adaptive-only models and self-heals a thinking-shape 400', async ({ page }) => {
+    // Opus 4.7+/Sonnet 5/Opus 5.x/Fable 400 on `budget_tokens`. An id the
+    // catalog snapshot doesn't carry yet (claude-opus-5-5) must resolve to the
+    // adaptive shape by name; a budget-shape 400 must flip shape and retry once.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const a = await import('/src/ai/anthropic.ts');
+      const origFetch = window.fetch;
+      const SSE = [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+        '',
+      ].join('\n');
+      const REJECT = JSON.stringify({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: '"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.' },
+      });
+      const ok = () => new Response(new Blob([SSE]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      const turn = (model: string) => a.streamTurn({
+        apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: 'medium',
+      });
+      try {
+        // 1. Adaptive-only model not in the snapshot.
+        const adaptiveBodies: Record<string, unknown>[] = [];
+        a.resetClient();
+        // @ts-expect-error test stub
+        window.fetch = async (_i: unknown, init: { body?: string }) => { adaptiveBodies.push(JSON.parse(String(init?.body ?? '{}'))); return ok(); };
+        await turn('claude-opus-5-5');
+
+        // 2. A budget-shape model whose API rejects budget_tokens → one retry.
+        const healBodies: Record<string, unknown>[] = [];
+        a.resetClient();
+        // @ts-expect-error test stub
+        window.fetch = async (_i: unknown, init: { body?: string }) => {
+          healBodies.push(JSON.parse(String(init?.body ?? '{}')));
+          return healBodies.length === 1
+            ? new Response(REJECT, { status: 400, headers: { 'Content-Type': 'application/json' } })
+            : ok();
+        };
+        const healed = await turn('claude-sonnet-4-5');
+        return { adaptiveBodies, healBodies, healedStop: healed.stopReason };
+      } finally { window.fetch = origFetch; }
+    });
+    expect(out.adaptiveBodies).toHaveLength(1);
+    expect(out.adaptiveBodies[0].thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(out.adaptiveBodies[0].output_config).toEqual({ effort: 'medium' });
+    expect(out.healBodies).toHaveLength(2);
+    expect(out.healBodies[0].thinking).toEqual({ type: 'enabled', budget_tokens: 8192 });
+    expect(out.healBodies[1].thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(out.healedStop).toBe('end_turn');
+  });
+
   test('Anthropic replays signed thinking blocks before tool_use during tool use', async ({ page }) => {
     // The riskiest invariant: when thinking is on, an assistant turn that
     // contains a tool_use must lead with its signed thinking block, or the
