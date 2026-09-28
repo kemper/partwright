@@ -323,6 +323,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={12} integer
           onChange={v => set('ai', 'compactionKeepImages', v)}
         />
+        <Field
+          label="Reference images sent to the automatic review"
+          hint="How many of your attached images the automatic end-of-task review sees next to the renders."
+          tooltip="The automatic review grades the finished model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewReferenceImages}
+          value={c.ai.reviewReferenceImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'reviewReferenceImages', v)}
+        />
       </Section>
 
       <Section title="AI — geometry timeouts">

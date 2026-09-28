@@ -82,3 +82,14 @@ AI chat settings (the same as the other AI toggles).
 - **Queue and verdict.** A human message queued during the review wins over
   the fix round, and fix rounds reset per request. The verdict instruction
   now explicitly replaces the old one-line opener.
+
+**Reference images reach the reviewer (#972).** The user asked whether
+attached images get dropped. The automatic review only saw the renders, so a
+"make it look like this photo" task was graded without the photo. It now also
+sends the images the user attached in this conversation, newest
+`reviewReferenceImages` (default 4, Advanced settings, 0 = renders only). That
+includes images compaction carried forward. It reuses `carriedAttachments`,
+which already picks user-attached images and skips the agent's own renders.
+The prompt tells the reviewer they are the user's reference. The e2e seeds an
+earlier message with an attached image and asserts that both review requests
+carry it. The spec fails with the change reverted.

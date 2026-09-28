@@ -3,7 +3,8 @@
 // "<image: …>" placeholder). This pure helper picks those images out of the
 // dropped turns so the panel can carry them forward in a message of their
 // own. Tool-result renders are deliberately excluded — the agent can always
-// re-render the model; the user's reference can't be recreated.
+// re-render the model; the user's reference can't be recreated. The automatic
+// review uses the same pick to show the reviewer the user's references.
 
 import type { ChatBlock, ChatMessage } from './types';
 

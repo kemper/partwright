@@ -62,6 +62,9 @@ export interface ReviewContext {
   notes: string[];
   /** What the user wants the reviewer to look at. Free text. */
   focus?: string;
+  /** Images the user attached (a photo, a sketch) that the result should
+   *  match. Sent after the snapshot. */
+  references?: ImageSource[];
 }
 
 export interface ReviewRequest {
@@ -95,6 +98,7 @@ export async function runReview(
   const userText = formatReviewPrompt(req.context);
   const blocks: ChatBlock[] = [{ type: 'text', text: userText }];
   if (req.context.snapshot) blocks.push({ type: 'image', source: req.context.snapshot });
+  for (const ref of req.context.references ?? []) blocks.push({ type: 'image', source: ref });
 
   // Single-shot ephemeral history — no tools, no recursion. The review
   // is essentially a one-prompt summarize, but going through streamTurn
@@ -133,7 +137,7 @@ export async function runReview(
       durationMs: Math.round(performance.now() - t0),
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
-      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
     });
     throw err;
   }
@@ -145,7 +149,7 @@ export async function runReview(
     outputTokens: usage.outputTokens,
     cachedTokens: usage.cacheReadInputTokens,
     textPreview: text.slice(0, 200),
-    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
   });
 
   // null = the reviewer model has no known pricing (the modal asked the
@@ -205,6 +209,12 @@ function formatReviewPrompt(ctx: ReviewContext): string {
     lines.push('A 4-iso composite of the current rendered geometry is attached.');
   } else {
     lines.push('(No snapshot — no geometry currently rendered, so reason from code + stats only.)');
+  }
+  const refs = ctx.references?.length ?? 0;
+  if (refs > 0) {
+    lines.push('');
+    lines.push('=== User reference images ===');
+    lines.push(`${refs === 1 ? 'The image' : `The ${refs} images`} after the snapshot ${refs === 1 ? 'was' : 'were'} attached by the user as reference. Judge how well the result matches ${refs === 1 ? 'it' : 'them'}.`);
   }
   return lines.join('\n');
 }

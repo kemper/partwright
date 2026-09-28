@@ -3960,7 +3960,13 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
     const result = await runReview({
       provider: reviewer.provider,
       model: reviewer.model,
-      context: { ...context, focus: request ? `Grade the result against the user's request: ${request}` : undefined },
+      context: {
+        ...context,
+        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The images the user attached anywhere in this conversation (incl.
+        // ones compaction carried forward), not the agent's own renders.
+        references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+      },
       sessionId: reviewSession,
       // The review is in the transcript — a session note per automatic
       // review is clutter.
