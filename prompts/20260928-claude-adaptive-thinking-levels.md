@@ -89,3 +89,23 @@ fall back to the default.
 - **The session-preference re-apply compares normalized toggles.** A
   pre-change snapshot lacks the new field, so it rewrote settings on every
   window focus.
+
+**Merged with main** (#963 landed a parallel adaptive-thinking fix plus the
+tool-history sanitizer unification). Rather than keep two systems, the
+reconciliation layers them:
+- **Kept from main:** the catalog/learned/heuristic shape resolver, the
+  self-heal retry, `runStream`, and the removal of the per-provider
+  sanitizers.
+- **PR A's plan decides what each level means** for the resolved shape: Off /
+  Default / XHigh / Max, and always-on models.
+- **Effort clamps to the catalog's per-model effort list** (new
+  `clampEffort`) instead of hard-coded tables.
+- **The self-heal also learns "can't disable"**, if an adaptive model rejects
+  `disabled`.
+- **OpenAI uses the catalog list too.** Off → `none` where listed (true
+  no-reasoning on gpt-5.1+), and `-pro` models only get levels they accept.
+  This supersedes the earlier "Off omits" rule.
+- **`display: summarized` now goes to 4.6 as well,** matching main.
+- **Main's `anthropicEffort` is replaced** by `anthropicEffortLevels`, and its
+  unit test is strengthened: every catalog model × every pill level only
+  sends listed efforts.
