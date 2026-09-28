@@ -18,7 +18,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
-import { anthropicThinkingPlan, isDeepEffort, type AnthropicThinkingPlan } from './thinkingLevels';
+import { anthropicThinkingPlan, isDeepEffort, THINKING_BINDING_BETA, type AnthropicThinkingPlan } from './thinkingLevels';
 
 /** Resolve the Thinking level into this model's request shape (adaptive
  *  thinking + effort on Claude 4.6+, `budget_tokens` on older models — see
@@ -157,6 +157,50 @@ export interface RequestSpec {
   /** Thinking level (see thinkingLevels.ts for the per-model mapping).
    *  Omitted = 'off'. */
   thinking?: ChatToggles['thinking'];
+  /** Put prompt-cache breakpoints on the conversation history (see
+   *  withHistoryCacheBreakpoints). Omitted = off. */
+  cacheHistory?: boolean;
+}
+
+type CacheableBlock = Anthropic.ContentBlockParam & { cache_control?: Anthropic.CacheControlEphemeral | null };
+
+/** Copy of `msg` with an ephemeral cache breakpoint on its last cacheable
+ *  block (thinking blocks can't carry one), or null if it has none. */
+function withBreakpoint(msg: Anthropic.MessageParam): Anthropic.MessageParam | null {
+  const blocks: Anthropic.ContentBlockParam[] = typeof msg.content === 'string'
+    ? (msg.content.length > 0 ? [{ type: 'text', text: msg.content }] : [])
+    : msg.content.slice();
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.type === 'thinking' || b.type === 'redacted_thinking') continue;
+    blocks[i] = { ...b, cache_control: { type: 'ephemeral' } } as CacheableBlock;
+    return { ...msg, content: blocks };
+  }
+  return null;
+}
+
+/** Cache the conversation history. Every agent step re-sends the whole
+ *  conversation; without a breakpoint in `messages` only the system prompt
+ *  and tools are cached, so the history bills at full input price each time.
+ *  Two breakpoints (Anthropic allows four; system + tools use two):
+ *  - the LAST message — writes the cache for the next step to read;
+ *  - the previous USER message — exactly where the previous request put its
+ *    breakpoint, so the read hits even when this step appended more than the
+ *    API's ~20-block lookback (a wide parallel-tool turn).
+ *  Pure: returns a new array; untouched messages are shared. */
+export function withHistoryCacheBreakpoints(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (messages.length === 0) return messages;
+  const out = messages.slice();
+  const lastIdx = out.length - 1;
+  const last = withBreakpoint(out[lastIdx]);
+  if (last) out[lastIdx] = last;
+  for (let i = lastIdx - 1; i >= 0; i--) {
+    if (out[i].role !== 'user') continue;
+    const prev = withBreakpoint(out[i]);
+    if (prev) out[i] = prev;
+    break;
+  }
+  return out;
 }
 
 export async function streamTurn(
@@ -205,7 +249,7 @@ export async function streamTurn(
     model: spec.model,
     max_tokens,
     system,
-    messages: spec.apiMessages,
+    messages: spec.cacheHistory ? withHistoryCacheBreakpoints(spec.apiMessages) : spec.apiMessages,
   };
   // Omit tools entirely when the list is empty — passing tools:[] causes the
   // API to return malformed_function_call if the model tries to use a tool
@@ -216,7 +260,20 @@ export async function streamTurn(
   // pre-feature request).
   if (plan.thinking) params.thinking = plan.thinking;
   if (plan.effort) params.output_config = { effort: plan.effort };
-  const stream = client.messages.stream(params);
+  // Models that bind thinking to the exact prior history (Opus 5.5 / Fable
+  // 5.1) would 400 on the edits Partwright makes on purpose (image trimming,
+  // keep-tail compaction, a mid-chat model switch). Ask the API to drop the
+  // affected thinking blocks instead — the turn proceeds without that
+  // earlier reasoning. The field isn't in the SDK's types yet, hence the cast.
+  const requestOptions: { headers?: Record<string, string> } = {};
+  if (plan.dropMismatchedThinking && params.thinking) {
+    params.thinking = {
+      ...params.thinking,
+      block_binding: { prefix_mismatch_behavior: 'drop_block' },
+    } as unknown as Anthropic.ThinkingConfigParam;
+    requestOptions.headers = { 'anthropic-beta': THINKING_BINDING_BETA };
+  }
+  const stream = client.messages.stream(params, requestOptions);
 
   // Mirror text deltas into a local buffer so we still have the partial
   // response if the stream is aborted before finalMessage() resolves.

@@ -853,7 +853,9 @@ test.describe('Multi-provider AI', () => {
     expect(out.opus47.max_tokens as number).toBeGreaterThanOrEqual(64000);
     expect(out.opus47Off.thinking).toEqual({ type: 'disabled' });
     // Opus 5.5 can't disable thinking — Off is the lowest effort instead.
-    expect(out.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    // (block_binding: drop — not 400 on — thinking bound to history Partwright
+    // edited; see ai-history-caching.spec.ts.)
+    expect(out.opus55Off.thinking).toEqual({ type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } });
     expect(out.opus55Off.output_config).toEqual({ effort: 'low' });
   });
 

@@ -269,12 +269,49 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Recent render images kept in context"
           unit="images"
-          hint="How many of the latest render snapshots stay in the request sent to the AI."
-          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          hint="For providers without history caching (Custom, Local, or Anthropic with caching off): how many of the latest render snapshots stay in the request."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming. Providers that cache the history use the two stepped limits below instead."
           defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
           value={c.ai.keepRecentToolImages}
           min={0} max={50} integer
           onChange={v => set('ai', 'keepRecentToolImages', v)}
+        />
+        <ToggleField
+          label="Cache the conversation history (Anthropic)"
+          hint="Every agent step re-sends the whole conversation. With this on, the repeated part is billed at Anthropic's cache-read rate (~10% of normal input) instead of full price. OpenAI and Gemini do this automatically."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cacheConversationHistory}
+          value={c.ai.cacheConversationHistory}
+          onChange={v => set('ai', 'cacheConversationHistory', v)}
+        />
+        <Field
+          label="Render images before a trim (cached providers)"
+          unit="images"
+          hint="Anthropic (with caching on), OpenAI and Gemini: render images pile up to this many before older ones are trimmed."
+          tooltip="Cached images are cheap to re-send, but trimming one edits an earlier message and makes the provider re-bill everything after it. So instead of dropping one image per render, images accumulate to this limit and are then cut back to the 'trim down to' count in one step, keeping the cached history valid in between."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageLimit}
+          value={c.ai.cachedImageLimit}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'cachedImageLimit', v)}
+        />
+        <Field
+          label="…then trim down to"
+          unit="images"
+          hint="How many recent render images remain after a trim on cached providers."
+          tooltip="When the image limit above is exceeded, older render images are dropped until this many remain. A bigger gap between the two numbers means fewer cache-breaking trims; a smaller one keeps the request leaner. Set it equal to the limit for a one-in-one-out sliding window."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageTrimTo}
+          value={c.ai.cachedImageTrimTo}
+          min={0} max={50} integer
+          onChange={v => set('ai', 'cachedImageTrimTo', v)}
+        />
+        <Field
+          label="Auto-compact token ceiling"
+          unit="tokens"
+          hint="In the Auto compaction mode, compact once the conversation passes this size, even if that's under 70% of the model's context window."
+          tooltip="On 1M-token models, 70% of the window is ~700k tokens. Long before that, each cache miss (for example after a pause of more than ~5 minutes) re-bills the whole conversation at full price, so a smaller ceiling keeps those moments cheap. Compaction summarizes older turns and keeps recent ones verbatim."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.autoCompactMaxTokens}
+          value={c.ai.autoCompactMaxTokens}
+          min={10_000} max={1_000_000} integer
+          onChange={v => set('ai', 'autoCompactMaxTokens', v)}
         />
       </Section>
 

@@ -24,7 +24,7 @@ import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError } from './transientError';
-import { elideStaleToolImages } from './historyElision';
+import { elideStaleToolImages, providerCachesHistory } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -330,7 +330,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Trim stale render images out of the request (the persisted/displayed
     // history keeps them) so a long modeling session's image tokens don't
     // compound on every turn. Recomputed each iteration as tool results grow.
-    const sentHistory = elideStaleToolImages(workingHistory, getConfig().ai.keepRecentToolImages);
+    // Providers that cache the history trim in steps (see imagesToElide) so
+    // the cached prefix survives between trims; the rest keep a tight window.
+    const aiCfg = getConfig().ai;
+    const sentHistory = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
+      ? elideStaleToolImages(workingHistory, aiCfg.cachedImageLimit, aiCfg.cachedImageTrimTo)
+      : elideStaleToolImages(workingHistory, aiCfg.keepRecentToolImages);
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -349,6 +354,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiMessages,
           tools,
           thinking: toggles.thinking,
+          cacheHistory: aiCfg.cacheConversationHistory,
         }, streamCallbacks, signal);
       } else if (toggles.provider === 'openai') {
         // sendMessage passes the active provider's key as `apiKey`; fall

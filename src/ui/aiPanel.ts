@@ -3984,7 +3984,9 @@ function triggerStallRetry(): void {
  *  - off:           do nothing.
  *  - conservative:  no auto-fire (the persistent "Compact now" link on
  *                   the cost meter at ≥80% is the canonical surface).
- *  - standard:      silently compact at 70% full, keep last 4 turns.
+ *  - standard:      silently compact at 70% full — or past the
+ *                   auto-compact token ceiling (app config), whichever
+ *                   comes first — keeping the last 4 turns.
  *  - aggressive:    compact after every turn, keep just the last
  *                   exchange. Best when full history doesn't matter —
  *                   like driving the modeler. */
@@ -4004,7 +4006,9 @@ async function maybeAutoCompact(): Promise<void> {
   } else {
     // standard
     keepTail = 4;
-    if (pct < 0.7) return;
+    // 70% of a 1M-token window is ~700k tokens; the absolute ceiling keeps
+    // cache misses (a pause past the cache TTL re-bills everything) cheap.
+    if (pct < 0.7 && tokens < getConfig().ai.autoCompactMaxTokens) return;
     if (state.history.length <= keepTail + 1) return;
   }
 

@@ -74,6 +74,15 @@ export interface AnthropicThinkingPlan {
   active: boolean;
   /** `budget_tokens` sent, or 0. Callers keep `max_tokens` above it. */
   budgetTokens: number;
+  /** Ask the API to drop, not reject, replayed thinking blocks whose
+   *  conversation prefix changed (`thinking.block_binding.
+   *  prefix_mismatch_behavior: "drop_block"`, beta header
+   *  THINKING_BINDING_BETA). Set for always-on models: Opus 5.5 / Fable 5.1
+   *  bind each thinking block to the exact history before it, and newer
+   *  accounts get a 400 when that history was edited — which Partwright does
+   *  on purpose (render-image trimming, keep-tail compaction, switching
+   *  models mid-chat). Models that don't run the check accept the field. */
+  dropMismatchedThinking?: boolean;
 }
 
 /** Whether an adaptive plan runs at the top efforts (xhigh/max), which need
@@ -81,6 +90,9 @@ export interface AnthropicThinkingPlan {
 export function isDeepEffort(plan: AnthropicThinkingPlan): boolean {
   return plan.effort === 'xhigh' || plan.effort === 'max';
 }
+
+/** Beta that unlocks `thinking.block_binding` (see dropMismatchedThinking). */
+export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
 
 function clampAnthropicEffort(level: 'low' | 'medium' | 'high' | 'xhigh' | 'max', family: AnthropicThinkingFamily): AnthropicEffort {
   // Claude 4.6 has no xhigh — round down to high (the cheaper neighbour).
@@ -112,7 +124,7 @@ export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budge
     // Always-on models: thinking can't be (reliably) disabled — Opus 5.5 /
     // Fable reject it, and Opus 5 with thinking disabled can leak tool calls
     // into visible text. The documented cheap path is adaptive at low effort.
-    if (family === 'alwaysOn') return { thinking: adaptive, effort: 'low', active: true, budgetTokens: 0 };
+    if (family === 'alwaysOn') return { thinking: adaptive, effort: 'low', active: true, budgetTokens: 0, dropMismatchedThinking: true };
     return { thinking: { type: 'disabled' }, active: false, budgetTokens: 0 };
   }
   if (level === 'default') {
@@ -121,9 +133,14 @@ export function anthropicThinkingPlan(model: string, level: ThinkingLevel, budge
     // summary on); the rest keep their default of not thinking.
     // (Sonnet 5+ runs adaptive when `thinking` is omitted; Opus 4.7/4.8 don't.)
     const thinksByDefault = family === 'alwaysOn' || (family === 'adaptive' && (parseClaudeId(model)?.major ?? 0) >= 5);
-    return thinksByDefault ? { thinking: adaptive, active: true, budgetTokens: 0 } : { active: false, budgetTokens: 0 };
+    if (!thinksByDefault) return { active: false, budgetTokens: 0 };
+    return family === 'alwaysOn'
+      ? { thinking: adaptive, active: true, budgetTokens: 0, dropMismatchedThinking: true }
+      : { thinking: adaptive, active: true, budgetTokens: 0 };
   }
-  return { thinking: adaptive, effort: clampAnthropicEffort(level, family), active: true, budgetTokens: 0 };
+  const plan: AnthropicThinkingPlan = { thinking: adaptive, effort: clampAnthropicEffort(level, family), active: true, budgetTokens: 0 };
+  if (family === 'alwaysOn') plan.dropMismatchedThinking = true;
+  return plan;
 }
 
 // ---------------------------------------------------------------------------

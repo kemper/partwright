@@ -77,11 +77,18 @@ describe('anthropicThinkingPlan', () => {
   it('always-on models: Off is lowest effort (never disabled), Default sends no effort', () => {
     for (const model of ['claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-1']) {
       const off = anthropicThinkingPlan(model, 'off', BUDGETS);
-      expect(off).toEqual({ thinking: { type: 'adaptive', display: 'summarized' }, effort: 'low', active: true, budgetTokens: 0 });
+      expect(off).toEqual({ thinking: { type: 'adaptive', display: 'summarized' }, effort: 'low', active: true, budgetTokens: 0, dropMismatchedThinking: true });
       const def = anthropicThinkingPlan(model, 'default', BUDGETS);
       expect(def.effort).toBeUndefined();
       expect(def.active).toBe(true);
     }
+  });
+
+  it('only always-on models ask to drop (not reject) thinking bound to edited history', () => {
+    expect(anthropicThinkingPlan('claude-opus-5-5', 'high', BUDGETS).dropMismatchedThinking).toBe(true);
+    expect(anthropicThinkingPlan('claude-fable-5-1', 'default', BUDGETS).dropMismatchedThinking).toBe(true);
+    expect(anthropicThinkingPlan('claude-opus-4-7', 'high', BUDGETS).dropMismatchedThinking).toBeUndefined();
+    expect(anthropicThinkingPlan('claude-haiku-4-5', 'high', BUDGETS).dropMismatchedThinking).toBeUndefined();
   });
 });
 

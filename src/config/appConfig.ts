@@ -77,8 +77,30 @@ export interface AppConfig {
      *  stay) so a long modeling session's image tokens don't compound every
      *  turn — the same reason the CLI uses the model-sculpt subagent. The
      *  on-screen transcript still shows every image; only the provider request
-     *  is trimmed. Set high to disable trimming. */
+     *  is trimmed. Set high to disable trimming. Applies to providers whose
+     *  history isn't cached (Custom, Local, or Anthropic with history caching
+     *  off); cached providers use the stepped limits below. */
     keepRecentToolImages: number;
+    /** Cache the conversation history on Anthropic (a prompt-cache breakpoint
+     *  on the latest message). Every agent step re-sends the whole
+     *  conversation; with this on, the repeated part bills at the cache-read
+     *  rate (~10% of input) instead of full price. OpenAI and Gemini cache a
+     *  repeated prefix automatically. */
+    cacheConversationHistory: boolean;
+    /** Render images allowed to accumulate in the request before a trim, for
+     *  providers that cache the history (Anthropic with history caching on,
+     *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
+     *  earlier messages (breaking the cache), so trims happen in steps. */
+    cachedImageLimit: number;
+    /** When `cachedImageLimit` is exceeded, trim back down to this many
+     *  images. The gap between the two is how many renders pass between
+     *  cache-breaking trims. */
+    cachedImageTrimTo: number;
+    /** Auto-compact ("Auto" mode) also fires once the conversation passes
+     *  this many tokens, even if that is under 70% of the model's context
+     *  window. On 1M-context models 70% would be ~700k tokens — far past the
+     *  point where each cache miss (e.g. after a pause) gets expensive. */
+    autoCompactMaxTokens: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -343,6 +365,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     charsPerToken: 4,
     imageTokenEstimate: 1500,
     keepRecentToolImages: 3,
+    cacheConversationHistory: true,
+    cachedImageLimit: 15,
+    cachedImageTrimTo: 8,
+    autoCompactMaxTokens: 150_000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
