@@ -55,3 +55,9 @@ failure is only possible now that no backstop masks a missed repair.
 
 Typecheck, unit tier (1811), circular-dep gate, and the 45 provider /
 tool-result / parity e2e tests green.
+
+Discovered while verifying (pre-existing, out of scope, filed as #961): the
+orphan-result pass keeps a tool_result matching a call *anywhere* in history,
+not just the immediately preceding assistant turn. Strict-adjacency backends
+still 400 on a stray/non-adjacent result while the Repair button reports
+nothing to fix.
