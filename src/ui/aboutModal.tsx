@@ -133,13 +133,16 @@ function AboutBody() {
   );
 }
 
+// Shared by the footer's secondary actions (Copy build info, Send feedback).
+const FOOTER_SECONDARY = 'px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 [@media(hover:hover)]:hover:bg-zinc-600 text-zinc-100';
+
 function AboutFooter(props: { close: () => void }) {
   const copyLabel = useSignal('Copy build info');
   return (
     <>
       <button
         type="button"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100"
+        class={FOOTER_SECONDARY}
         onClick={async () => {
           try {
             await navigator.clipboard.writeText(buildInfoText());
@@ -153,7 +156,7 @@ function AboutFooter(props: { close: () => void }) {
       <button
         type="button"
         id="about-feedback"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100"
+        class={FOOTER_SECONDARY}
         onClick={() => { props.close(); showFeedbackModal(); }}
       >Send feedback…</button>
       <button

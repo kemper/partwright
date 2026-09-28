@@ -7,7 +7,8 @@ files_changed:
   - .github/ISSUE_TEMPLATE/config.yml
   - src/feedbackLinks.ts
   - src/ui/feedbackModal.tsx
-  - src/ui/layout.ts
+  - src/ui/toolbar.ts
+  - src/buildInfo.ts
   - src/ui/aboutModal.tsx
   - src/content/build/shell.ts
   - src/content/data/help.ts
@@ -30,7 +31,7 @@ public email) and said they'd enable Discussions themselves.
 
 ## Assistant
 
-- Added a 💬 Feedback button to the editor's left rail. It opens a dialog of
+- Added a 💬 Feedback button to the editor's top toolbar. It opens a dialog of
   plain GitHub links; nothing is sent from the app, which keeps the "no data
   leaves your browser" promise. The same dialog is reachable from the command
   palette and the About dialog.
@@ -51,3 +52,11 @@ public email) and said they'd enable Discussions themselves.
 - Repo settings (Discussions, the `user-report` label, private vulnerability
   reporting, the homepage URL) can't be changed from this environment. They
   are listed in the PR as manual steps.
+- The button first went in the left rail's utility group. The e2e parts-rail
+  drag test failed because of it, which showed a real regression: the rail has
+  no spare height, so the extra item squeezed the parts list and could clip the
+  AI button on ~640 px-tall windows. Moved the button to the top toolbar.
+- Review fixes: reused `repoBase`/`shortCommit` from buildInfo instead of
+  copying them, gated hover styles for touch screens, opened external footer
+  links in a new tab, suppressed the first-visit tour in the spec, and kept a
+  fallback contact in SECURITY.md until private reporting is turned on.

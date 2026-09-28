@@ -43,7 +43,8 @@ export function shortCommit(commit: string): string {
   return SHA_RE.test(commit) ? commit.slice(0, 7) : commit;
 }
 
-function repoBase(repo: string): string | null {
+/** GitHub base URL for an "owner/name" slug, or null if the slug is malformed. */
+export function repoBase(repo: string): string | null {
   return REPO_RE.test(repo) ? `https://github.com/${repo}` : null;
 }
 

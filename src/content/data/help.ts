@@ -299,7 +299,7 @@ export function helpDynamicSections(opts: {
       id: 'feedback',
       heading: 'Feedback & support',
       body:
-        'Found a bug, have an idea, or stuck on something? Click <strong class="text-zinc-300">💬 Feedback</strong> in the editor\'s left rail (or search "feedback" in the command palette). It links to GitHub with your version and browser already filled in. Nothing is sent until you post it yourself.' +
+        'Found a bug, have an idea, or stuck on something? Click <strong class="text-zinc-300">💬 Feedback</strong> in the editor\'s top toolbar (or search "feedback" in the command palette). It links to GitHub with your version and browser already filled in. Nothing is sent until you post it yourself.' +
         '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
         `<li><a href="${issueChooserUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Report a bug</a> — anything broken or behaving oddly. A screenshot, the code, or a share link helps a lot.</li>` +
         `<li><a href="${featureRequestUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Request a feature</a> — ideas for new capabilities or improvements.</li>` +

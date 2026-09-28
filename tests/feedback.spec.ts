@@ -1,11 +1,16 @@
 import { test, expect } from 'playwright/test';
 
-// Golden path for the in-app feedback surface: the rail button opens the
+// Golden path for the in-app feedback surface: the toolbar button opens the
 // dialog, and every option is an external GitHub link (nothing is sent from
 // the app). The bug-report link carries the build version and drops the page
 // hash, which can hold a whole shared design.
 test.describe('Feedback dialog', () => {
-  test('rail button opens GitHub feedback links', async ({ page }) => {
+  // Suppress the first-visit guided tour — its backdrop would intercept clicks.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+  });
+
+  test('toolbar button opens GitHub feedback links', async ({ page }) => {
     await page.goto('/editor#private-design-payload');
     const btn = page.locator('#btn-feedback');
     await expect(btn).toBeVisible({ timeout: 30_000 });

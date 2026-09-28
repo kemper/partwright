@@ -77,7 +77,7 @@ function FeedbackBody() {
             href={o.href}
             target="_blank"
             rel="noopener noreferrer"
-            class="flex items-start gap-3 rounded-lg border border-zinc-700 bg-zinc-900/40 px-3 py-2.5 hover:border-zinc-500 hover:bg-zinc-800/60 transition-colors"
+            class="flex items-start gap-3 rounded-lg border border-zinc-700 bg-zinc-900/40 px-3 py-2.5 [@media(hover:hover)]:hover:border-zinc-500 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors"
           >
             <span class="text-lg leading-none mt-0.5" aria-hidden="true">{o.icon}</span>
             <span class="flex flex-col min-w-0">
@@ -93,7 +93,7 @@ function FeedbackBody() {
           href={securityReportUrl(buildInfo)}
           target="_blank"
           rel="noopener noreferrer"
-          class="text-blue-400 hover:text-blue-300"
+          class="text-blue-400 [@media(hover:hover)]:hover:text-blue-300"
         >Report it privately</a>.
       </p>
     </>
