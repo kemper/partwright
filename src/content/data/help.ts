@@ -8,6 +8,8 @@
 // an OS-neutral shortcut list). That keeps the wording single-sourced.
 
 import type { ContentSection } from './legal';
+import { buildInfo } from '../../buildInfo';
+import { discussionsUrl, featureRequestUrl, issueChooserUrl } from '../../feedbackLinks';
 
 export type { ContentSection };
 
@@ -292,6 +294,18 @@ export function helpDynamicSections(opts: {
         `<li>${kbd(opts.modEnterKeys)} — Save the current notes textarea.</li>` +
         `<li>${kbd('Enter')} in input modals (e.g. Connect AI, Import Preview) — Confirm.</li>` +
         '</ul>',
+    },
+    {
+      id: 'feedback',
+      heading: 'Feedback & support',
+      body:
+        'Found a bug, have an idea, or stuck on something? Click <strong class="text-zinc-300">💬 Feedback</strong> in the editor\'s left rail (or search "feedback" in the command palette). It links to GitHub with your version and browser already filled in. Nothing is sent until you post it yourself.' +
+        '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
+        `<li><a href="${issueChooserUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Report a bug</a> — anything broken or behaving oddly. A screenshot, the code, or a share link helps a lot.</li>` +
+        `<li><a href="${featureRequestUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Request a feature</a> — ideas for new capabilities or improvements.</li>` +
+        `<li><a href="${discussionsUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discussions</a> — questions, tips, and things you've made.</li>` +
+        '</ul>' +
+        'Posting needs a free GitHub account.',
     },
   ];
 }

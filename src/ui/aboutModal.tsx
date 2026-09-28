@@ -7,6 +7,7 @@ import type { ComponentChildren } from 'preact';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_PRIMARY } from './styleConstants';
 import { partwrightMarkSvg } from './brand';
+import { showFeedbackModal } from './feedbackModal';
 import {
   buildInfo,
   shortCommit,
@@ -149,6 +150,12 @@ function AboutFooter(props: { close: () => void }) {
           setTimeout(() => { copyLabel.value = 'Copy build info'; }, 1600);
         }}
       >{copyLabel.value}</button>
+      <button
+        type="button"
+        id="about-feedback"
+        class="px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100"
+        onClick={() => { props.close(); showFeedbackModal(); }}
+      >Send feedback…</button>
       <button
         type="button"
         class={BUTTON_PRIMARY}

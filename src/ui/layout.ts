@@ -2,6 +2,7 @@ import { getMobilePane, onMobilePaneChange, setMobilePane, type MobilePane } fro
 import { appPath } from '../deployment';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
+import { showFeedbackModal, registerFeedbackCommands } from './feedbackModal';
 import { loadSettings, saveSettings } from '../ai/settings';
 import { createPopoverGroup, createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
@@ -351,11 +352,11 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(tabData);
 
   // === Bottom utility group ===
-  // Catalog, Settings (quality), Diagnostics, Help, Guided tour, and About move
+  // Catalog, Settings (quality), Diagnostics, Help, Guided tour, Feedback, and About move
   // out of the top toolbar so it can slim down. `md:mt-auto` on the first item
   // pushes the whole cluster to the bottom of the desktop rail. Element ids are
   // preserved (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-tour,
-  // btn-about, btn-ai) so the tour and existing tests keep finding them.
+  // btn-feedback, btn-about, btn-ai) so the tour and existing tests keep finding them.
   const railActionClass = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-400 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
   const makeAction = (id: string, icon: string, label: string, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button');
@@ -399,6 +400,13 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   tourNavBtn.title = 'Take the guided tour of the editor';
   tourNavBtn.setAttribute('aria-label', 'Take the guided tour');
 
+  // Feedback — the one obvious in-editor route to report a bug, request a
+  // feature, or ask a question (all GitHub links; nothing is sent from here).
+  const feedbackNavBtn = makeAction('btn-feedback', '💬', 'Feedback', () => { showFeedbackModal(); });
+  feedbackNavBtn.title = 'Send feedback — report a bug, request a feature, or ask a question';
+  feedbackNavBtn.setAttribute('aria-label', 'Send feedback');
+  registerFeedbackCommands();
+
   // About — build/version info (commit, branch, links) for verifying which
   // Cloudflare branch/PR deploy you're testing.
   const aboutNavBtn = makeAction(
@@ -427,6 +435,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(diagNavBtn);
   rail.appendChild(helpNavBtn);
   rail.appendChild(tourNavBtn);
+  rail.appendChild(feedbackNavBtn);
   rail.appendChild(aboutNavBtn);
   rail.appendChild(aiNavBtn);
 

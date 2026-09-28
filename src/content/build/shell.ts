@@ -10,6 +10,8 @@
 // The top navigation is the shared header used by every non-editor surface
 // (landing, content pages, ideas) — see src/content/chrome.ts.
 import { contentHeaderHtml } from '../chrome';
+import { buildInfo } from '../../buildInfo';
+import { discussionsUrl, issueChooserUrl } from '../../feedbackLinks';
 
 /** Shared footer with cross-links + a non-commercial note. */
 export function footerHtml(): string {
@@ -34,6 +36,8 @@ export function footerHtml(): string {
       title: 'About',
       links: [
         { href: '/legal', label: 'Legal & privacy' },
+        { href: issueChooserUrl(buildInfo), label: 'Feedback & bug reports' },
+        { href: discussionsUrl(buildInfo), label: 'Community discussions' },
       ],
     },
   ];
