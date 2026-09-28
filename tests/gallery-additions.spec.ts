@@ -7,17 +7,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-async function waitForEngine(page: Page): Promise<void> {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
 
 interface RunResult {
   geometry: { status: string; error?: string; isManifold?: boolean; componentCount?: number; triangleCount?: number };
@@ -34,15 +27,21 @@ const newExamples = [
   'wind_turbine.js',
 ];
 
-test.describe('Gallery additions render cleanly', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
+// Each case runs a whole example file through partwright.runAndSave and
+// checks only the returned result object — nothing persists between cases —
+// so the file shares one booted editor instead of paying a fresh page +
+// WASM boot per example.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('Gallery additions render cleanly', () => {
   for (const name of newExamples) {
-    test(`${name} runs and produces a single-component manifold`, async ({ page }) => {
+    test(`${name} runs and produces a single-component manifold`, async () => {
       const filePath = path.join(examplesDir, name);
       if (!fs.existsSync(filePath)) {
         test.skip(true, `Example ${name} not present yet`);

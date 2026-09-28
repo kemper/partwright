@@ -5,6 +5,7 @@
 // Cmd/Ctrl+S). Drives the UI, since the confirm modal gates only the UI path.
 
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 async function openEditor(page: Page) {
@@ -26,29 +27,54 @@ async function typeCode(page: Page, text: string) {
   await page.keyboard.press('Delete');
   await page.keyboard.type(text, { delay: 3 });
 }
-async function flushDraft(page: Page) { await page.locator('.cm-content').blur(); await page.waitForTimeout(500); }
+// Blur to fire the onBlur autosave, then poll IndexedDB (via
+// sessionManager.readDraft) until the draft actually carries the typed
+// fragment — the real completion signal for an async, fire-and-forget write.
+async function flushDraft(page: Page, expectFragment: string) {
+  await page.locator('.cm-content').blur();
+  await waitFor(
+    () => page.evaluate(async (fragment) => {
+      const sm = await import('/src/storage/sessionManager.ts');
+      const st = sm.getState();
+      if (!st.session || !st.currentPart) return false;
+      const d = await sm.readDraft(st.session.id, 'manifold-js', st.currentPart.id);
+      return !!d?.code.includes(fragment);
+    }, expectFragment),
+    { timeout: 10_000, message: 'the blur autosave to persist the draft' },
+  );
+}
+// Cmd/Ctrl+S's onSave handler is fire-and-forget, so poll the current part's
+// version count instead of sleeping past a guess.
+async function saveShortcut(page: Page, expectedVersionCount: number) {
+  await page.keyboard.press('ControlOrMeta+s');
+  await waitFor(
+    () => page.evaluate(async (n) => {
+      const pw = (window as any).partwright;
+      return (await pw.listVersions()).length === n;
+    }, expectedVersionCount),
+    { timeout: 10_000, message: `the current part to reach v${expectedVersionCount}` },
+  );
+}
 
 // Build: Part 1 saved (current), Part "Widget" left unsaved + non-current.
 async function setup(page: Page) {
   await page.evaluate(() => (window as any).partwright.createSession('ExportUnsaved'));
   await typeCode(page, 'const {Manifold}=api; return Manifold.cube([10,10,10],true);');
-  await flushDraft(page);
-  await page.keyboard.press('ControlOrMeta+s');
-  await page.waitForTimeout(700);
+  await flushDraft(page, 'cube([10,10,10]');
+  await saveShortcut(page, 1);
 
   await page.evaluate(() => (window as any).partwright.createPart('Widget'));
   await typeCode(page, 'const {Manifold}=api; return Manifold.sphere(6,32);');
-  await flushDraft(page);
-  await page.keyboard.press('ControlOrMeta+s');
-  await page.waitForTimeout(700);
+  await flushDraft(page, 'sphere(6,32)');
+  await saveShortcut(page, 1);
 
   // Dirty Widget, persist its draft, then switch back to Part 1 (no auto-save)
-  // → Widget is now a NON-current part with unsaved changes.
+  // → Widget is now a NON-current part with unsaved changes. changePart() is
+  // awaited fully by the evaluate() call below, so no extra settle margin.
   await typeCode(page, 'const {Manifold}=api; return Manifold.sphere(8,32); // edit');
-  await flushDraft(page);
+  await flushDraft(page, 'sphere(8,32)');
   const p1 = await page.evaluate(() => (window as any).partwright.listParts()[0].id);
   await page.evaluate((id) => (window as any).partwright.changePart(id), p1);
-  await page.waitForTimeout(600);
 }
 
 async function openExportSTL(page: Page) {
@@ -71,12 +97,14 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
   // Widget starts with one saved version. Read the count WITHOUT switching parts
   // (a console changePart would restore+resave Widget's draft and perturb the
   // very unsaved state under test).
-  const widgetVersionsBefore = await page.evaluate(async () => {
+  const widgetId = await page.evaluate(() => {
     const pw = (window as any).partwright;
-    const db = await import('/src/storage/db.ts');
-    const w = pw.listParts().find((p: any) => p.name === 'Widget');
-    return (db as any).getVersionCount(w.id);
+    return pw.listParts().find((p: any) => p.name === 'Widget').id;
   });
+  const widgetVersionsBefore = await page.evaluate(async (id) => {
+    const db = await import('/src/storage/db.ts');
+    return (db as any).getVersionCount(id);
+  }, widgetId);
 
   // Clicking Save… closes the export modal and opens the multi-part save modal
   // (the part chooser) — the export does NOT fire (no "Exported" toast).
@@ -85,19 +113,26 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
   await expect(saveModal.getByText('Save unsaved parts')).toBeVisible({ timeout: 10_000 });
   // All parts pre-checked → the primary button reads "Save all". Commit.
   await saveModal.getByRole('button', { name: /Save all|Save selected/ }).click();
-  await page.waitForTimeout(2500);
+
+  // The save modal closes the instant the button is clicked (before the async
+  // save loop runs), so poll the real ground truth — Widget's version count —
+  // via a direct, read-only db.ts read (no changePart side effects, so it
+  // can't race the app's own in-flight save loop; see save-all-parts.spec.ts).
+  const widgetVersionsAfter = await waitFor(
+    () => page.evaluate(async (id) => {
+      const db = await import('/src/storage/db.ts');
+      return (db as any).getVersionCount(id);
+    }, widgetId).then((n: number) => (n === widgetVersionsBefore + 1 ? n : null)),
+    { timeout: 15_000, message: 'Widget to gain a new saved version' },
+  );
+  expect(widgetVersionsAfter).toBe(widgetVersionsBefore + 1);
+
+  // Negative check: give a wrongly-fired export a bounded window to toast
+  // before asserting it never did.
+  await page.waitForTimeout(1500);
   await expect(
     page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
   ).toHaveCount(0);
-
-  // The save modal committed a NEW version for the unsaved Widget part.
-  const widgetVersionsAfter = await page.evaluate(async () => {
-    const pw = (window as any).partwright;
-    const db = await import('/src/storage/db.ts');
-    const w = pw.listParts().find((p: any) => p.name === 'Widget');
-    return (db as any).getVersionCount(w.id);
-  });
-  expect(widgetVersionsAfter).toBe(widgetVersionsBefore + 1);
 });
 
 test('Export anyway proceeds despite unsaved non-current parts', async ({ page }) => {
@@ -148,16 +183,20 @@ test('export warns about untouched, never-saved parts', async ({ page }) => {
     await pw.runAndSave('const {Manifold}=api; return Manifold.cube([10,10,10],true);', 'v1');
   });
   // Add 3 brand-new parts via the + button, no edits → untouched starters.
+  // "+" is fire-and-forget, so poll the part count instead of sleeping.
   for (let i = 0; i < 3; i++) {
     await page.locator('#btn-add-part').click();
-    await page.waitForTimeout(900);
+    await waitFor(
+      () => page.evaluate((n) => (window as any).partwright.listParts().length === n, i + 2),
+      { timeout: 10_000, message: `${i + 2} parts to exist` },
+    );
   }
-  // Switch back to the first (saved) part so the new ones are non-current empties.
+  // Switch back to the first (saved) part so the new ones are non-current
+  // empties. changePart() is awaited fully, so no extra settle margin.
   await page.evaluate(async () => {
     const pw = (window as any).partwright;
     await pw.changePart(pw.listParts()[0].id);
   });
-  await page.waitForTimeout(500);
 
   await openExportSTL(page);
   const dialog = page.locator('[role="dialog"]');

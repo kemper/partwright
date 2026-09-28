@@ -9,8 +9,11 @@ name: Gate main → staging
 #
 # The e2e suite is CPU-bound (each test boots WASM in its own browser page), so
 # it runs SERIALLY within a runner (playwright.config.ts pins workers: 1) and
-# is parallelized across runners by sharding instead — contention-free, and the
-# wall-clock cost still drops ~3x.
+# is parallelized across 8 runners by TIME-BALANCED sharding (E2E_SHARD=i/N →
+# scripts/lib/e2eShard.mjs, weighted by tests/e2e-timings.json). build-unit and
+# e2e run in parallel; `promote` still needs both. Each shard uploads its JSON
+# report so the timings can be refreshed with scripts/e2e-timings.mjs.
+# Keep the matrix in sync with pr-checks.yml.
 
 on:
   push:
@@ -40,12 +43,12 @@ jobs:
         run: npm run test:unit
 
   e2e:
-    needs: build-unit
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,8 +70,19 @@ jobs:
         run: npx playwright install chromium
       - name: Install Playwright system deps
         run: npx playwright install-deps chromium
-      - name: E2E tests (shard ${{ matrix.shard }}/3)
-        run: npx playwright test --shard=${{ matrix.shard }}/3
+      - name: E2E tests (shard ${{ matrix.shard }}/8)
+        env:
+          E2E_SHARD: ${{ matrix.shard }}/8
+        run: npx playwright test --pass-with-no-tests
+      # Per-shard durations for refreshing tests/e2e-timings.json.
+      - name: Upload e2e timing report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ matrix.shard }}
+          path: playwright-report/e2e-report.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   promote:
     needs: [build-unit, e2e]

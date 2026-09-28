@@ -5,16 +5,28 @@
 //  - manifold-js engine rejects user code that calls partwright.* with
 //    a structured, instructive error instead of a generic ReferenceError
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
+
+// Every test runs its own fresh geometry via pw.run()/pw.createSession() and
+// only ever inspects the value it just got back — nothing depends on paint
+// state a sibling left behind — so the file shares one booted editor instead
+// of paying a fresh page + WASM boot per test. A defensive clearColors()
+// keeps each test's region-bearing run starting from a clean paint slate.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('paint batch + lifecycle', () => {
-  test('paintByLabels paints multiple features in one call', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('paintByLabels paints multiple features in one call', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run(`
         const { Manifold } = api;
         const head = api.label(Manifold.sphere(10, 32), 'head');
@@ -37,13 +49,11 @@ test.describe('paint batch + lifecycle', () => {
     }
   });
 
-  test('paintByLabels reports per-label failures without aborting the batch', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('paintByLabels reports per-label failures without aborting the batch', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run(`
         const { Manifold } = api;
         return api.label(Manifold.cube([10, 10, 10]), 'box');
@@ -60,10 +70,7 @@ test.describe('paint batch + lifecycle', () => {
     expect(result.failed[0].error).toMatch(/no label/);
   });
 
-  test('loadVersion reports labelsAvailable for labelled and unlabelled versions', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('loadVersion reports labelsAvailable for labelled and unlabelled versions', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -85,10 +92,7 @@ test.describe('paint batch + lifecycle', () => {
     expect(result.loadedLabelled.labelCount).toBeGreaterThan(0);
   });
 
-  test('runIsolated with view: top-down renders the top face clearly', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('runIsolated with view: top-down renders the top face clearly', async () => {
     const { topThumb, isoThumb } = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -108,10 +112,7 @@ test.describe('paint batch + lifecycle', () => {
     expect(topThumb.startsWith('data:image/png;base64,')).toBe(true);
   });
 
-  test('runCode rejects code that calls partwright.* with an instructive error', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('runCode rejects code that calls partwright.* with an instructive error', async () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

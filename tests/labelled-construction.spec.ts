@@ -1,16 +1,27 @@
 // Verifies api.label / api.labeledUnion + paintByLabel end-to-end:
 // labels survive boolean ops, resolve to non-empty triangle sets, and
-// the painted region carries the right counts. The Phase 0 verification
-// (tests/manifold-id-verify.spec.ts) already confirms manifold-3d's
-// runOriginalID semantics — this is the integration test on top.
+// the painted region carries the right counts. Labels rely on manifold-3d
+// propagating runOriginalID through booleans, so these tests also cover that
+// (the old Phase 0 probe, manifold-id-verify.spec.ts, was retired once this
+// shipped, as its own header planned).
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
+
+// Every test clears paint, then runs window.partwright.run/listLabels/
+// paintByLabel and asserts on the result (labels reset to the current run's
+// set each time; paint is cleared explicitly since pw.run() keeps it), so the
+// file shares one booted editor instead of paying a fresh page + WASM boot.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('labelled construction', () => {
-  test('api.label registers names and paintByLabel resolves them', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('api.label registers names and paintByLabel resolves them', async () => {
     // Three-feature model: head sphere + two eye spheres that overlap
     // the head. After boolean union, each triangle is attributed to
     // exactly one input by runOriginalID — so paintByLabel('eyeL')
@@ -19,6 +30,7 @@ test.describe('labelled construction', () => {
     const ran = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       const r = await pw.run(`
         const { Manifold } = api;
         const head = api.label(Manifold.sphere(20, 64), 'head');
@@ -69,13 +81,11 @@ test.describe('labelled construction', () => {
     expect(miss.error).toMatch(/head|eyeL|eyeR/);
   });
 
-  test('unlabeled model returns empty label list', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('unlabeled model returns empty label list', async () => {
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       await pw.run('return api.Manifold.cube([10, 10, 10]);');
     });
     const labels = await page.evaluate(async () => {
@@ -94,13 +104,11 @@ test.describe('labelled construction', () => {
     expect(painted.error).toContain('No labels registered');
   });
 
-  test('api.labeledUnion is sugar for label + add chain', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15000 });
-
+  test('api.labeledUnion is sugar for label + add chain', async () => {
     const ran = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
+      pw.clearColors();
       return pw.run(`
         const { Manifold } = api;
         return api.labeledUnion([

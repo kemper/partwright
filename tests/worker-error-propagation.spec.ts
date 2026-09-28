@@ -7,7 +7,8 @@
 // the geometry-data element with status: 'error' and a non-empty error
 // string so AI agents can diagnose failures.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 // Shared type used across evaluations.
 type GeometryData = {
@@ -23,11 +24,20 @@ type PartwrightApi = {
   sliceAtZ: (z: number) => unknown;
 };
 
-test.describe('Worker error propagation', () => {
-  test('code that throws surfaces an error in geometry data', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15_000 });
+// Every test here just calls pw.run(...) with its own self-contained code and
+// checks the returned/geometry-data status — nothing persists between them —
+// so the file shares one booted editor instead of paying a fresh page + WASM
+// boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('Worker error propagation', () => {
+  test('code that throws surfaces an error in geometry data', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       // Code that throws a runtime error — should NOT silently hang.
@@ -39,10 +49,7 @@ test.describe('Worker error propagation', () => {
     expect(result.error).toMatch(/intentional test error/i);
   });
 
-  test('code that returns nothing (undefined) surfaces the missing-return error', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15_000 });
-
+  test('code that returns nothing (undefined) surfaces the missing-return error', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       // Code that forgets to return a Manifold.
@@ -55,10 +62,7 @@ test.describe('Worker error propagation', () => {
     expect(result.error).toMatch(/return|Manifold/i);
   });
 
-  test('code that returns a plain object instead of a Manifold surfaces an error', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15_000 });
-
+  test('code that returns a plain object instead of a Manifold surfaces an error', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       return pw.run('return { notAManifold: true };');
@@ -68,10 +72,7 @@ test.describe('Worker error propagation', () => {
     expect(result.error).toBeTruthy();
   });
 
-  test('status bar shows error state (not stuck on loading) after bad code', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15_000 });
-
+  test('status bar shows error state (not stuck on loading) after bad code', async () => {
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       await pw.run('throw new Error("status bar test");');
@@ -90,10 +91,7 @@ test.describe('Worker error propagation', () => {
     expect(geoData.status).toBe('error');
   });
 
-  test('error clears after a successful run (no stuck error state)', async ({ page }) => {
-    await page.goto('/editor');
-    await page.waitForSelector('text=Ready', { timeout: 15_000 });
-
+  test('error clears after a successful run (no stuck error state)', async () => {
     // First run bad code to put the engine in error state.
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;

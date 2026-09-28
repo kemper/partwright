@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { waitForEditorReady } from './helpers/aiPanel';
 
 // Multi-part OBJ / STL / GLB export: validates the format-specific multi-part
 // builders (named objects in one OBJ, a .zip of per-part STLs, named nodes in one
@@ -12,7 +13,8 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
 
   test('builders emit named objects / per-part files / named nodes', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000); // let the module graph + engine settle
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const report = await page.evaluate(async () => {
       const { buildOBJProject } = await import('/src/export/obj.ts');
@@ -114,7 +116,8 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
 
   test('exportOBJ/STL/GLBPartsData bundle real parts through the full bake pipeline', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: any }).partwright;
@@ -145,7 +148,8 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
 
   test('OBJ part picker exports a multi-object file from a multi-part session', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build a 2-part session through the console API (mm so the unitless confirm
     // modal doesn't precede the part picker).
@@ -156,7 +160,6 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
       await pw.createPart('Pyramid');
       await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'pyramid');
     });
-    await page.waitForTimeout(1500);
 
     await page.locator('#btn-export').click();
     await page.locator('#export-dropdown').getByText('OBJ', { exact: true }).click();
@@ -177,7 +180,8 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
 
   test('concurrent console exports each bundle ALL parts (shared pool not torn down mid-bake)', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Two multi-part exports fired at once share the singleton geometry pool.
     // Without serialization, whichever finishes first disposes the pool and
@@ -222,7 +226,6 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
       await pw.runAndSave('return api.Manifold.cube([6,6,6], true);', 'g');
       await pw.setPartGroup(['Helmet', 'Greaves'], 'Armor');
     });
-    await page.waitForTimeout(1000);
 
     await page.locator('#btn-export').click();
     await page.locator('#export-dropdown').getByText('OBJ', { exact: true }).click();
