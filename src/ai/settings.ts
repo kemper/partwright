@@ -174,7 +174,10 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoResume: false,
     planFirst: false,
     printOptimized: true,
-    autoReview: false,
+    // A fresh-context review of each finished task (one extra request per
+    // task that changed the model). On in Standard and Full; Minimal keeps
+    // it off to minimize spend.
+    autoReview: true,
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -189,7 +192,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoResume: true,
     planFirst: false,
     printOptimized: true,
-    autoReview: false,
+    autoReview: true,
     anthropicModel: 'claude-opus-4-7',
   },
 };

@@ -3924,12 +3924,19 @@ async function runTurnWithStallRetry(
 /** Reviewer models whose unknown pricing the user declined this session, so
  *  the confirmation doesn't pop up at the end of every task. */
 const declinedReviewers = new Set<string>();
+/** Skip reasons already shown this page load. Review is on by default, so a
+ *  Local chat (which can't be its own reviewer) would otherwise repeat the
+ *  same notice after every task. */
+const shownReviewSkips = new Set<string>();
 
 async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: string): Promise<string | null> {
   const cfg = loadSettings().autoReview;
   const reviewer = resolveReviewer(cfg, toggles);
   if ('skip' in reviewer) {
-    setTransientStatus(`Automatic review skipped: ${reviewer.skip}.`);
+    if (!shownReviewSkips.has(reviewer.skip)) {
+      shownReviewSkips.add(reviewer.skip);
+      setTransientStatus(`Automatic review skipped: ${reviewer.skip}.`);
+    }
     return null;
   }
   const reviewerKey = `${reviewer.provider}/${reviewer.model}`;

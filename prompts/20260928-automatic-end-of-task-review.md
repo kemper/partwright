@@ -93,3 +93,11 @@ which already picks user-attached images and skips the agent's own renders.
 The prompt tells the reviewer they are the user's reference. The e2e seeds an
 earlier message with an attached image and asserts that both review requests
 carry it. The spec fails with the change reverted.
+
+**On by default (user request).** After trying it, the user asked for review
+to be on by default. It is now on in the Standard (default) and Full presets.
+Minimal keeps it off, since that preset exists to minimize spend. Saved
+settings that have no `autoReview` field pick up the new default. Because
+default-on means Local users would see "Automatic review skipped (Local
+can't review)" after every task, each skip reason now shows once per page
+load. All AI e2e specs plus smoke (105 tests) still pass with review on.

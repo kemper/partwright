@@ -1021,7 +1021,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
     <Section label="Automatic review">
       <div
         class="text-[11px] text-zinc-400 leading-snug"
-        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
       />
       <div class="flex flex-wrap gap-1">
         <Pill active={!enabled} label="Off" onClick={() => setEnabled(false)} />
