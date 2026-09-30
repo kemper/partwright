@@ -10,7 +10,8 @@ import { turnCostUsd } from './cost';
 import { recordEvent } from './diagnostics';
 import { generateId } from '../storage/db';
 import { putMessages } from './db';
-import { providerLabel } from './settings';
+import { loadSettings, providerLabel } from './settings';
+import { buildReviewSystemPrompt } from './reviewPrompt';
 import { captureIsoViews } from './images';
 import type {
   ChatBlock,
@@ -19,35 +20,6 @@ import type {
   Provider,
   TurnUsage,
 } from './types';
-
-const REVIEW_SYSTEM = `You are a senior CAD reviewer giving a SECOND OPINION on another
-model's work-in-progress inside Partwright, a parametric browser CAD
-tool. Be concise and direct. Output plain text (no markdown headings,
-no JSON), 4-10 sentences. Cover:
-
-- What looks right vs wrong in the current code or rendered geometry.
-- Concrete suggestions the original model can act on next turn (with
-  numbers when applicable: dimensions, angles, axes).
-- Anything that contradicts the stated user requirements / decisions
-  in the session notes.
-
-Do NOT rewrite the code. Do NOT pretend to be the original model. Open
-with a one-line verdict ("looks correct", "close, but…", "needs rework
-because…") so the user gets the takeaway at a glance.`;
-
-/** Appended to the reviewer prompt for automatic reviews, so the panel can
- *  decide whether the agent should act on the review (see autoReview.ts). */
-const VERDICT_INSTRUCTION = `
-
-This review runs automatically after the agent finished a task. Instead of
-the one-line verdict described above, begin your reply with exactly one line
-that is one of:
-Verdict: pass
-Verdict: minor issues
-Verdict: needs rework
-Use "pass" only when the result satisfies the request as stated. Judge the
-work against the user's request (given as the focus); ignore style
-preferences that the request didn't ask for.`;
 
 export interface ReviewContext {
   /** Active editor code. */
@@ -77,8 +49,6 @@ export interface ReviewRequest {
   sessionId: string;
   /** Set false to skip writing a session note. Defaults to true. */
   promoteToNote?: boolean;
-  /** Ask for a machine-readable verdict line (automatic reviews). */
-  requireVerdict?: boolean;
   /** Cancels the review. An aborted review is never persisted. */
   signal?: AbortSignal;
 }
@@ -123,7 +93,9 @@ export async function runReview(
       provider: req.provider,
       model: req.model,
       apiKey: req.apiKey,
-      systemPrompt: req.requireVerdict ? REVIEW_SYSTEM + VERDICT_INSTRUCTION : REVIEW_SYSTEM,
+      // The user's rubric (⚙ AI Settings → Automatic review → Review prompt)
+      // or the default, plus the fixed "Verdict: …" output contract.
+      systemPrompt: buildReviewSystemPrompt(loadSettings().reviewPromptOverride),
       history: [ephemeral],
       signal: req.signal,
     });

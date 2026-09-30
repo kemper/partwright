@@ -3978,7 +3978,6 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
       // The review is in the transcript — a session note per automatic
       // review is clutter.
       promoteToNote: false,
-      requireVerdict: true,
       signal: controller.signal,
     });
     // Persisted under its own session either way; only show it (and act on
