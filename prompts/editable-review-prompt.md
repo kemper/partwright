@@ -61,3 +61,17 @@ Why the reviews were weak, and the changes made:
 Not done: no `window.partwright` method. The AI-settings prompt overrides have
 never been on the console API (system prompts aren't either), so this follows
 the existing precedent.
+
+### Follow-up: review-pass nits
+
+A read-only review of the diff found three small issues, all fixed:
+- **Manual reviews without a request.** The rubric assumed the focus was always
+  the user's request. It now says what to do with a narrow 👁 focus (answer it
+  first, still flag anything seriously wrong) and with no focus at all (judge
+  against the notes and the code's evident intent).
+- **Truncated session note.** The `[REVIEW from …]` session note was cut at a
+  hardcoded 600 characters, which would chop the new numbered findings. It's now
+  `appConfig.ai.reviewNoteMaxChars` (default 2000), exposed in Advanced
+  settings, following the repo rule that tuning constants go through config.
+- **Blank prompt badge.** A blank editor showed "Custom" even though saving it
+  reverts to the default. It now reads as the built-in default.

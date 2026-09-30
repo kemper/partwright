@@ -13,6 +13,7 @@ import { putMessages } from './db';
 import { loadSettings, providerLabel } from './settings';
 import { buildReviewSystemPrompt } from './reviewPrompt';
 import { captureIsoViews } from './images';
+import { getConfig } from '../config/appConfig';
 import type {
   ChatBlock,
   ChatMessage,
@@ -194,7 +195,7 @@ function formatReviewPrompt(ctx: ReviewContext): string {
 async function tryWriteSessionNote(provider: Provider, model: string, text: string): Promise<void> {
   const w = window as unknown as { partwright?: { addSessionNote?: (t: string) => Promise<unknown> } };
   if (!w.partwright?.addSessionNote) return;
-  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 600);
+  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, getConfig().ai.reviewNoteMaxChars);
   try {
     await w.partwright.addSessionNote(`[REVIEW from ${providerLabel(provider)} / ${model}] ${oneLine}`);
   } catch { /* swallow — review still made it into the chat transcript */ }

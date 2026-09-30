@@ -17,8 +17,11 @@ export interface ReviewPromptModalCallbacks {
   onChange?: () => void;
 }
 
+/** Blank counts as default: saving it clears the override (the setter
+ *  stores null for blank), so the badge must not claim "Custom". */
 function isDefault(text: string): boolean {
-  return text.trim() === DEFAULT_REVIEW_PROMPT.trim();
+  const t = text.trim();
+  return t === '' || t === DEFAULT_REVIEW_PROMPT.trim();
 }
 
 function ReviewPromptBody(props: { text: Signal<string> }) {
