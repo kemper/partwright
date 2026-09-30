@@ -7,6 +7,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { gatherReviewContext, runReview, type ReviewContext } from '../ai/review';
+import { buildReviewSystemPrompt } from '../ai/reviewPrompt';
 import { ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, providerLabel, loadSettings } from '../ai/settings';
 import { getKey } from '../ai/db';
 import { formatUsd, estimateTurnCostUsd } from '../ai/cost';
@@ -186,14 +187,16 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
 
   const { context, contextError, focus, provider, model, runError, noKeyForProvider, availability } = state.value;
 
-  // Cost preview — same formula as the original. Reacts to provider/model/focus.
+  // Cost preview. Reacts to provider/model/focus; the system prompt is the
+  // (possibly user-edited) review rubric + output contract.
   let costText = '';
   if (model) {
     const codeChars = context?.code.length ?? 1500;
     const notesChars = context?.notes.join('\n').length ?? 0;
     const focusChars = focus.length;
-    const tokens = Math.round((codeChars + notesChars + focusChars + 800) / 4) + (context?.snapshot ? 1500 : 0);
-    const est = estimateTurnCostUsd(provider, model, 0, tokens, 200);
+    const promptChars = buildReviewSystemPrompt(loadSettings().reviewPromptOverride).length;
+    const tokens = Math.round((codeChars + notesChars + focusChars + promptChars) / 4) + (context?.snapshot ? 1500 : 0);
+    const est = estimateTurnCostUsd(provider, model, 0, tokens, 400);
     costText = (provider === 'local' || provider === 'custom')
       ? 'Self-hosted model: free at the API level.'
       : est === null

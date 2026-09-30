@@ -332,6 +332,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={12} integer
           onChange={v => set('ai', 'reviewReferenceImages', v)}
         />
+        <Field
+          label="Review note length (chars)"
+          hint="How much of a 👁 review is copied into the session note the agent reads on its next turn."
+          tooltip="A manual 👁 review is posted to the chat in full and also saved as a [REVIEW from …] session note, which the agent reads via getSessionContext. Longer notes keep every finding; shorter ones save context."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewNoteMaxChars}
+          value={c.ai.reviewNoteMaxChars}
+          min={200} max={8000} integer
+          onChange={v => set('ai', 'reviewNoteMaxChars', v)}
+        />
       </Section>
 
       <Section title="AI — geometry timeouts">

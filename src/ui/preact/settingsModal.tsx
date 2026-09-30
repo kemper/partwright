@@ -25,6 +25,7 @@ import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from '../ai
 import { renderLocalPicker } from '../aiLocalModal';
 import { confirmDialog } from '../dialogs';
 import { showSystemPromptModal } from '../aiSystemPromptModal';
+import { showReviewPromptModal } from '../aiReviewPromptModal';
 import {
   loadSettings,
   setAutoCompactMode,
@@ -118,7 +119,7 @@ export function SettingsModalBody(props: {
       <Divider />
       <AutoCompactSection cb={cb} />
       <Divider />
-      <AutoReviewSection cb={cb} />
+      <AutoReviewSection cb={cb} close={close} />
     </>
   );
 }
@@ -1006,8 +1007,8 @@ function reviewerModelOptions(p: AutoReviewSettings['provider']): { id: string; 
   return [];
 }
 
-function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
-  const { cb } = props;
+function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }) {
+  const { cb, close } = props;
   const review = settingsSignal.value.autoReview;
   // On/off is per window (a toggle, like the panel's 🔍 pill); the reviewer
   // and fix rounds below are shared preferences.
@@ -1067,6 +1068,22 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks }) {
           ))}
         </div>
         <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The $ cap stops further rounds; the iteration cap applies to each round.</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">Review prompt</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">
+          {settingsSignal.value.reviewPromptOverride !== null
+            ? <><strong>Custom prompt active</strong> — your instructions are sent to the reviewer instead of the built-in rubric (also used by the 👁 Review button).</>
+            : <><strong>Built-in</strong> — a skeptical rubric: check every requested feature and dimension, structure (manifold, part count), and appearance, with evidence and a concrete fix per finding. Also used by the 👁 Review button.</>}
+        </span>
+        <SecondaryButton
+          label={settingsSignal.value.reviewPromptOverride !== null ? 'Edit / reset review prompt' : 'View / edit review prompt'}
+          selfStart={true}
+          onClick={() => {
+            close();
+            showReviewPromptModal({ onChange: cb.onChange });
+          }}
+        />
       </div>
     </Section>
   );

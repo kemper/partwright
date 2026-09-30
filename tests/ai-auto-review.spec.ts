@@ -123,4 +123,60 @@ test.describe('Automatic end-of-task review', () => {
     expect(chatCalls).toBe(4);
     await page.screenshot({ path: 'test-results/auto-review.png' });
   });
+
+  test('the review prompt is visible and editable in AI Settings, and the reviewer receives the edit', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* */ } });
+    const reviewerSystems: string[] = [];
+    let chatCalls = 0;
+    await page.route('https://api.anthropic.com/**', async route => {
+      const body = route.request().postDataJSON() as { system?: Array<{ text: string }>; messages: Array<{ role: string; content: unknown }> };
+      const system = (body.system ?? []).map(b => b.text).join('\n');
+      let reply: string;
+      // The fixed output contract is appended to every review, custom or not.
+      if (system.includes('Verdict: needs rework')) {
+        reviewerSystems.push(system);
+        reply = textReply('rev', 'Verdict: pass\nBoth holes cut through; the plate is 40×20×4.');
+      } else {
+        chatCalls++;
+        const last = body.messages[body.messages.length - 1];
+        const lastIsToolResult = Array.isArray(last.content) && (last.content as Array<{ type: string }>).some(b => b.type === 'tool_result');
+        reply = lastIsToolResult ? textReply(`end${chatCalls}`, 'Built the plate.') : toolReply(`t${chatCalls}`, { code: THROUGH, label: 'plate' });
+      }
+      await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream', 'access-control-allow-origin': '*' }, body: reply });
+    });
+
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await seedAnthropic(page);
+    await page.reload();
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const heading = page.getByRole('heading', { name: 'AI Settings' });
+    if (!(await heading.isVisible().catch(() => false))) {
+      await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
+    }
+    await expect(heading).toBeVisible();
+
+    // The built-in prompt is shown in full; replace it with a custom rubric.
+    await page.getByRole('button', { name: 'View / edit review prompt' }).click();
+    await expect(page.getByRole('heading', { name: 'Review prompt' })).toBeVisible();
+    const editor = page.getByTestId('review-prompt-text');
+    await expect(editor).toHaveValue(/senior CAD reviewer/);
+    await expect(page.getByTestId('review-prompt-state')).toHaveText('Built-in default');
+    await editor.fill('Only check that every hole goes all the way through.');
+    await expect(page.getByTestId('review-prompt-state')).toHaveText('Custom (override)');
+    await page.screenshot({ path: 'test-results/review-prompt-editor.png' });
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().reviewPromptOverride))
+      .toBe('Only check that every hole goes all the way through.');
+
+    const input = page.locator('#ai-panel textarea');
+    await input.fill('Make a 40×20×4 plate with two Ø5 through-holes');
+    await input.press('Enter');
+    await expect(page.locator('#ai-panel').getByText('Verdict: pass')).toBeVisible({ timeout: 60_000 });
+    expect(reviewerSystems).toHaveLength(1);
+    expect(reviewerSystems[0].startsWith('Only check that every hole goes all the way through.')).toBe(true);
+    expect(reviewerSystems[0]).not.toContain('senior CAD reviewer');
+  });
 });

@@ -111,6 +111,10 @@ export interface AppConfig {
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
     reviewReferenceImages: number;
+    /** Max characters of a manual (👁) review copied into the
+     *  `[REVIEW from …]` session note the agent reads via getSessionContext.
+     *  The review itself is always kept in full in the chat transcript. */
+    reviewNoteMaxChars: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -381,6 +385,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
     reviewReferenceImages: 4,
+    reviewNoteMaxChars: 2000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
