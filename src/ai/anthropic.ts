@@ -19,6 +19,7 @@ import type {
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
 import { withHistoryCacheBreakpoints } from './anthropicCache';
+import { getLimits } from './catalog';
 import {
   anthropicCannotDisable,
   anthropicEffortLevels,
@@ -182,10 +183,11 @@ export interface RequestSpec {
    *  results). */
   apiMessages: Anthropic.MessageParam[];
   tools: ToolDefinition[];
-  /** Hard ceiling on output tokens for this turn. We default to 8K — large
-   *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. When the model thinks this is raised
-   *  automatically (above the budget, or to the adaptive-thinking ceiling). */
+  /** Hard ceiling on output tokens for this turn. Defaults to
+   *  `maxOutputTokensAnthropic` (32K) — room for a large tool call; streaming
+   *  keeps a high ceiling clear of HTTP timeouts. When the model thinks this
+   *  is raised automatically (above the budget, or to the adaptive-thinking
+   *  ceiling), and it's always capped at the model's catalog output limit. */
   maxTokens?: number;
   /** Thinking level (see thinkingLevels.ts for the per-model mapping).
    *  Omitted = 'off'. */
@@ -258,6 +260,11 @@ export async function streamTurn(
       : plan.active
         ? Math.max(baseMax, isDeepEffort(plan) ? cfg.maxOutputTokensAnthropicThinkingDeep : cfg.maxOutputTokensAnthropicThinking)
         : baseMax;
+    // Never ask for more than the model can emit — the API 400s above its
+    // output limit (e.g. a raised setting on a 64k-output model) — unless the
+    // cap would undercut a thinking budget.
+    const modelCap = getLimits('anthropic', model)?.output;
+    if (modelCap && modelCap > plan.budgetTokens) params.max_tokens = Math.min(params.max_tokens, modelCap);
     // Models that bind thinking to the exact prior history (Opus 5.5 / Fable
     // 5.1) would 400 on the edits Partwright makes on purpose (image
     // trimming, keep-tail compaction, a mid-chat model switch). Ask the API
