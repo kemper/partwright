@@ -154,7 +154,7 @@ export async function runReview(
   return { text, usage, costUsd: pricedCost, message: reviewMsg };
 }
 
-function formatReviewPrompt(ctx: ReviewContext): string {
+export function formatReviewPrompt(ctx: ReviewContext): string {
   const lines: string[] = [];
   lines.push('Please review the current state of this Partwright session.');
   if (ctx.focus && ctx.focus.trim().length > 0) {
