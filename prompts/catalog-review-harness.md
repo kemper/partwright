@@ -31,3 +31,12 @@ evaluation can be rerun after the prompt or the catalog changes:
   `claude-sonnet-5-5`) when `ANTHROPIC_API_KEY` is set, and skips entries that
   already have a review. `report` tallies verdicts with the same regex as
   `parseReviewVerdict`.
+
+### Follow-up: page recycling
+
+The first full-catalog pass ran every entry in one page. After about 100
+imports the WASM heap degraded ("memory access out of bounds", "table index is
+out of bounds"), so entries that prepare fine on a fresh page (e.g. ballerina)
+failed late in the run. The harness now recycles the page every 20 entries and
+gives each failed entry one retry on a fresh page. The per-entry timeout also
+goes up to 360 s for heavy SCAD entries (pocket-watch, mechanical-orrery).

@@ -25,6 +25,10 @@ import { chromium } from 'playwright';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CATALOG = path.join(REPO, 'public', 'catalog');
+// Heavy SCAD/SDF entries can take minutes to mesh.
+const ENTRY_TIMEOUT_MS = 360_000;
+// Pages are recycled this often; one page degrades over ~100 heavy imports.
+const RECYCLE_EVERY = 20;
 
 function parseArgs(argv) {
   const a = { cmd: argv[0] ?? 'prepare', out: '/tmp/catalog-review', base: 'http://localhost:5173', only: [], model: 'claude-sonnet-5-5' };
@@ -101,21 +105,30 @@ async function prepare(args) {
   const browser = await chromium.launch({ executablePath: findChrome(), args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   let page = await freshPage(context, args.base);
+  const recycle = async () => { await page.close().catch(() => {}); page = await freshPage(context, args.base); };
+  const attempt = async (entry) => {
+    try {
+      const res = await Promise.race([
+        prepareOne(page, entry),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout after ${ENTRY_TIMEOUT_MS / 1000}s`)), ENTRY_TIMEOUT_MS)),
+      ]);
+      if (res.error) await recycle();
+      return res;
+    } catch (err) {
+      // A hung page poisons the next entry; start clean.
+      await recycle();
+      return { error: String(err?.message ?? err) };
+    }
+  };
   let done = 0;
   for (const entry of entries) {
     const t0 = Date.now();
-    let res;
-    try {
-      res = await Promise.race([
-        prepareOne(page, entry),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout after 240s')), 240_000)),
-      ]);
-    } catch (err) {
-      res = { error: String(err?.message ?? err) };
-      // A hung or crashed page poisons the next entry; start clean.
-      await page.close().catch(() => {});
-      page = await freshPage(context, args.base);
-    }
+    // The WASM heap degrades over a long run (OOM / "table index out of bounds"
+    // after ~100 imports), so recycle the page periodically and give each failure
+    // one retry on a fresh page before recording it.
+    if (done > 0 && done % RECYCLE_EVERY === 0) await recycle();
+    let res = await attempt(entry);
+    if (res.error) res = await attempt(entry);
     const meta = { id: entry.id, name: entry.name, language: entry.language, file: entry.file, tags: entry.tags ?? [], ms: Date.now() - t0 };
     if (res.error) {
       meta.error = res.error;
