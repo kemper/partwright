@@ -56,6 +56,11 @@ export interface AiSettings {
   aiPanelWidth: number;
   /** Automatic end-of-task review (see src/ai/autoReview.ts). */
   autoReview: AutoReviewSettings;
+  /** User-overridden reviewer rubric (manual 👁 and automatic reviews).
+   *  `null` means the built-in DEFAULT_REVIEW_PROMPT (src/ai/reviewPrompt.ts).
+   *  The fixed output contract is always appended, so an edit can't break
+   *  the automatic loop's verdict parsing. */
+  reviewPromptOverride: string | null;
   /** Settings-migration marker. Each one-time default change bumps
    *  SETTINGS_REV and applies to stored settings below that rev exactly
    *  once (see mergeWithDefaults). */
@@ -224,6 +229,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
   autoReview: DEFAULT_AUTO_REVIEW,
+  reviewPromptOverride: null,
   settingsRev: SETTINGS_REV,
 };
 
@@ -578,6 +584,7 @@ interface LegacyAiSettings {
   localContext?: Partial<LocalContextSettings>;
   aiPanelWidth?: number;
   autoReview?: Partial<AutoReviewSettings>;
+  reviewPromptOverride?: string | null;
   settingsRev?: number;
 }
 
@@ -675,6 +682,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     localContext: normalizeLocalContext(partial.localContext),
     aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
     autoReview: normalizeAutoReview(partial.autoReview),
+    reviewPromptOverride: nonBlankOrNull(partial.reviewPromptOverride),
     settingsRev: SETTINGS_REV,
   };
 }
@@ -720,6 +728,16 @@ export function setLocalContext(settings: AiSettings, partial: Partial<LocalCont
 
 export function setAutoCompactMode(settings: AiSettings, mode: AiSettings['autoCompactMode']): AiSettings {
   return { ...settings, autoCompactMode: mode, autoCompactUserSet: true };
+}
+
+function nonBlankOrNull(s: unknown): string | null {
+  return typeof s === 'string' && s.trim().length > 0 ? s : null;
+}
+
+/** Replace or clear the reviewer rubric. `null` (or blank) reverts to the
+ *  built-in default. */
+export function setReviewPromptOverride(settings: AiSettings, prompt: string | null): AiSettings {
+  return { ...settings, reviewPromptOverride: nonBlankOrNull(prompt) };
 }
 
 /** Replace or clear the custom system prompt for one provider. Passing

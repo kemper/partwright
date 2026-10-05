@@ -113,6 +113,7 @@ export function latestUserRequest(history: ChatMessage[]): string {
  *  "[Review from …]"), so it's referenced, not repeated. */
 export function buildFixPrompt(reviewerLabel: string): string {
   return `${AUTO_REVIEW_FOLLOWUP_TAG} The review above (${reviewerLabel}) found issues. `
-    + 'Address the findings that are genuinely wrong, verify the fix with a render, and save the result. '
-    + 'If you disagree with a finding, say why in one sentence instead of changing the model.';
+    + 'Work through its numbered findings in order: fix each one, or — only when the reviewer plainly misread '
+    + 'the render or stats — say in one sentence why that finding is wrong. Don\'t stop after the first fix. '
+    + 'Then re-render, including the view where each problem showed, to confirm it is gone, and save the result.';
 }
