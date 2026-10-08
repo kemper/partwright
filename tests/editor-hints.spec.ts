@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { HINTS } from '../src/ui/hints/hintsData';
 
 // Golden path for the "Did you know?" hints ticker (src/ui/hints/*).
 test.describe('editor hints ticker', () => {
@@ -58,6 +59,12 @@ test.describe('editor hints ticker', () => {
   });
 
   test('lays out on one row when there is room, two rows when tight', async ({ page }) => {
+    // The first hint is shuffled, and whether a hint fits on one row depends on
+    // its length. Pin a known short hint by marking every other one as seen, so
+    // the layout assertion doesn't depend on which hint the shuffle picked.
+    await page.addInitScript((seen) => {
+      try { localStorage.setItem('partwright-hints-seen', JSON.stringify(seen)); } catch { /* ignore */ }
+    }, HINTS.map(h => h.id).filter(id => id !== 'shortcuts'));
     await page.goto('/editor');
     const strip = page.locator('#editor-hints');
     await expect(strip).toBeVisible({ timeout: 15_000 });
@@ -70,7 +77,6 @@ test.describe('editor hints ticker', () => {
         host.style.flex = `0 0 ${w}px`;
         host.style.maxWidth = `${w}px`;
       }, px);
-      await page.waitForTimeout(300);
       const badge = await strip.locator('span', { hasText: 'Did you know?' }).first().boundingBox();
       const text = await page.locator('#editor-hints-text').boundingBox();
       if (!badge || !text) throw new Error('missing badge/text box');
@@ -78,8 +84,10 @@ test.describe('editor hints ticker', () => {
       return Math.abs((badge.y + badge.height / 2) - (text.y + text.height / 2)) < 6 ? 'single' : 'two';
     };
 
-    expect(await rowsAtWidth(900)).toBe('single');
-    expect(await rowsAtWidth(430)).toBe('two');
+    // The relayout runs on a ResizeObserver → rAF, so poll until it settles
+    // rather than sleeping a fixed interval (slow CI runners can lag past it).
+    await expect.poll(() => rowsAtWidth(900)).toBe('single');
+    await expect.poll(() => rowsAtWidth(430)).toBe('two');
   });
 
   test('keeps its grown height instead of snapping back (no pane stutter)', async ({ page }) => {
