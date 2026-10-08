@@ -1,0 +1,55 @@
+{
+  "part": "frame_ankle_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 2,
+    "score": 0.04499564963044685,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "bootstrap slice-stack (3 bands) — 3/6 MUST, staircased sphere socket",
+    "full CAD decomposition (disk-ring + wedge/tip/ymin cuts + neck + lobe + keyhole prism - probed sphere - measured entry cones) with stepped-offset chamfer — 6/6 MUST, area ratio failed (staircase +5% area)",
+    "same structure, exact planar bevel wedges + cone frustums for 45deg 0.5mm ring chamfers — 6/6 MUST 2/2 SHOULD, converged"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 0.8001,
+      "phase": "features",
+      "chamfer": 0.0562,
+      "hausdorff": 0.4325,
+      "volumeIoU": 0.9088,
+      "failedMust": [
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "CAD reconstruction: disk-ring + wedge/tip cuts with stepped 45deg 0.5 chamfers, neck+lobe, keyhole prism, probed sphere r2.9046 + measured conical entry chamfers",
+      "verdict": "improved",
+      "score": 0.1331,
+      "phase": "done",
+      "chamfer": 0.0063,
+      "hausdorff": 0.4,
+      "volumeIoU": 0.9896,
+      "failedMust": []
+    },
+    {
+      "id": 2,
+      "note": "replace stepped chamfer with exact planar bevel wedges + cone frustums; hypothesis: staircase area (+5%) was the area-ratio failure",
+      "verdict": "improved",
+      "score": 0.045,
+      "phase": "done",
+      "chamfer": 0.0026,
+      "hausdorff": 0.1185,
+      "volumeIoU": 0.9949,
+      "failedMust": []
+    }
+  ]
+}

@@ -16,7 +16,7 @@ import { meshBounds } from './slabPaint';
 import { makeNoise, mulberry32 } from '../geometry/noise';
 
 export type RGB = [number, number, number];
-export type ColorPatternKind = 'stripes' | 'spots' | 'patches' | 'gradient';
+export type ColorPatternKind = 'stripes' | 'spots' | 'patches' | 'gradient' | 'checker';
 
 export interface ColorPatternSpec {
   /** Which field to evaluate. */
@@ -43,7 +43,7 @@ export interface ColorPatternSpec {
   anchors?: [number, number, number][];
 }
 
-export const COLOR_PATTERN_KINDS: ReadonlyArray<ColorPatternKind> = ['stripes', 'spots', 'patches', 'gradient'];
+export const COLOR_PATTERN_KINDS: ReadonlyArray<ColorPatternKind> = ['stripes', 'spots', 'patches', 'gradient', 'checker'];
 
 /** Where a pattern applies. A `label` restricts it to an `api.label` region; the
  *  geometric predicates (`above`/`below` a plane, inside a `box`, inside a
@@ -196,6 +196,23 @@ export function computePatternColors(
           return d > lo ? mark : base;
         };
       }
+      break;
+    }
+    case 'checker': {
+      // 3D checkerboard: alternate by the parity of the cell index sum. `warp`
+      // wobbles the cell boundaries for a hand-painted look; a third colour
+      // turns the pattern into a 3-cycle (candy-cane / plaid-ish rotation).
+      const cell = Math.max(scale, 1e-3);
+      const warp = spec.warp ?? 0;
+      const warpNoise = warp ? makeNoise({ seed, frequency: 1.1 / cell, octaves: 2 }) : null;
+      const third = colors[2];
+      const n = third ? 3 : 2;
+      pick = (c) => {
+        const w = warpNoise ? warp * cell * 0.4 * warpNoise(c[0], c[1], c[2]) : 0;
+        const idx = Math.floor((c[0] + w) / cell) + Math.floor((c[1] + w) / cell) + Math.floor((c[2] + w) / cell);
+        const m = ((idx % n) + n) % n;
+        return m === 0 ? base : m === 1 ? mark : third!;
+      };
       break;
     }
     default:

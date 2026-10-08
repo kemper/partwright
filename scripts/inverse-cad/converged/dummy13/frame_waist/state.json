@@ -1,0 +1,45 @@
+{
+  "part": "frame_waist",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.011637106155106521,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "bootstrap slice-stack (1/6 MUST — staircased bands, cavity-as-prism)",
+    "full primitive rebuild from probes: chamfered disc + shoulder block + tangent-circle tabs + hourglass socket + wedge/corner-line cuts (CONVERGED 6/6+2/2)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 2.7649,
+      "phase": "silhouette",
+      "chamfer": 0.1803,
+      "hausdorff": 1.3801,
+      "volumeIoU": 0.7974,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "structured rebuild: chamfered disc r4.5 + shoulder block + tangent-circle side tabs + D-neck + ball r3; wedge mouth & corner-chamfer lines through socket center; hourglass socket (sphere 2.852 + 0.3515-slope cones both faces); uniform 0.5 45deg face chamfers",
+      "verdict": "improved",
+      "score": 0.0116,
+      "phase": "done",
+      "chamfer": 0.0009,
+      "hausdorff": 0.0893,
+      "volumeIoU": 0.9991,
+      "failedMust": []
+    }
+  ]
+}

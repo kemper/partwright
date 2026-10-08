@@ -1,0 +1,45 @@
+{
+  "part": "armor_hip_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.049581304094973966,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic z-band bootstrap (slice-stack): 1/6 MUST, silhouette-limited",
+    "levelSet z-section interpolation (genLevelSet step 0.1 / dp 0.02 / edge 0.1, §5.25): CONVERGED 6/6+2/2 in one turn"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 2.1537,
+      "phase": "silhouette",
+      "chamfer": 0.1301,
+      "hausdorff": 1.3722,
+      "volumeIoU": 0.7974,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "levelSet z-blend of 108 measured sections (step 0.1, dp 0.02, edge 0.1) per 5.25 — freeform morph along z, sharp y-walls handled per-section",
+      "verdict": "improved",
+      "score": 0.0496,
+      "phase": "done",
+      "chamfer": 0.0024,
+      "hausdorff": 0.0924,
+      "volumeIoU": 0.995,
+      "failedMust": []
+    }
+  ]
+}

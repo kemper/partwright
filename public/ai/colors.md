@@ -228,7 +228,7 @@ repeating colour motif — it reads far better than hand-placed `paint.box` band
 
 ```js
 api.paint.pattern({
-  pattern: 'stripes',                 // 'stripes' | 'spots' | 'patches' | 'gradient'
+  pattern: 'stripes',                 // 'stripes' | 'spots' | 'patches' | 'gradient' | 'checker'
   colors:  ['#D6913E', '#5A3A1F'],    // [base, mark, third?] — hex or [r,g,b]; ≥2
   scope:   'body',                    // an api.label region (so it never touches eyes/nose); omit = whole model
   axis:    'z',                       // stripes: band direction
@@ -249,6 +249,9 @@ api.paint.pattern({
   `anchors: [[x,y,z], …]` (ear/paw/tail/face points) so the field marks triangles
   within `scale` of the nearest one (the face mask darkens too) — without anchors
   it falls back to distance-from-centre.
+- **`checker`** — 3D checkerboard by cell-index parity (`scale` = cell size).
+  `warp` wobbles the cell boundaries for a hand-painted look; a 3rd colour turns
+  it into a 3-cycle rotation. Good for game pieces, picnic ware, test prints.
 
 **Regional scoping — different patterns on different parts, seam-free.** The
 `scope` accepts geometric predicates that AND with the label and narrow by

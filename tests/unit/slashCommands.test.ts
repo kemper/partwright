@@ -60,8 +60,8 @@ describe('matchSlashCommands', () => {
   });
 
   it('filters by canonical-name prefix', () => {
-    // 'c' also matches /help via its 'commands' alias.
-    expect(matchSlashCommands('c').map(c => c.name)).toEqual(['compact', 'clear', 'help']);
+    // 'c' also matches /reconstruct ('convert' alias) and /help ('commands' alias).
+    expect(matchSlashCommands('c').map(c => c.name)).toEqual(['compact', 'clear', 'reconstruct', 'help']);
     expect(matchSlashCommands('cl').map(c => c.name)).toEqual(['clear']);
     expect(matchSlashCommands('comp').map(c => c.name)).toEqual(['compact']);
   });

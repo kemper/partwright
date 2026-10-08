@@ -95,12 +95,13 @@ export interface ChatToggles {
    *  active provider is Anthropic. */
   maxSpend: 'cheap' | 'low' | 'medium' | 'medHigh' | 'high' | 'veryHigh' | 'infinity';
   /** Extended-thinking / reasoning level for the active hosted provider.
-   *  Maps per-provider to Anthropic `budget_tokens`, Gemini `thinkingBudget`
-   *  (+ `includeThoughts`), and OpenAI `reasoning_effort`. 'off' sends no
-   *  thinking request at all, so it reproduces the pre-feature behavior
-   *  byte-for-byte — the control is opt-in. No effect on the local provider
-   *  (WebLLM models do their own thing and we strip `<think>` blocks). */
-  thinking: 'off' | 'low' | 'medium' | 'high';
+   *  Mapped per provider + model by `src/ai/thinkingLevels.ts` (Anthropic
+   *  adaptive thinking + `output_config.effort`, or `budget_tokens` on older
+   *  Claude models; OpenAI `reasoning_effort`; Gemini `thinkingConfig`).
+   *  'off' disables thinking where the model allows it (lowest effort where
+   *  it can't); 'default' sends no depth override. No effect on the local
+   *  provider (WebLLM models do their own thing and we strip `<think>`). */
+  thinking: ThinkingLevel;
   /** Auto-continue mode. When ON, the agent only stops when the model calls
    *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
    *  automatically resumed (a synthetic nudge is appended and the loop runs
@@ -124,6 +125,11 @@ export interface ChatToggles {
    *  Injects prompt text only — it does not gate any tool, so it composes
    *  with every other toggle. ON by default. */
   printOptimized: boolean;
+  /** Automatic end-of-task review (🔍 pill). Lives in toggles — per tab, like
+   *  the other pills — so switching it in one window never turns on paid
+   *  reviews in another. The reviewer choice + fix rounds are global
+   *  preferences in AiSettings.autoReview. */
+  autoReview: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots
@@ -158,7 +164,16 @@ export interface ChatToggles {
    *  Auth for this endpoint is optional — the API key, when present, lives
    *  in the `aiKeys` store keyed by 'custom'. */
   customBaseUrl: string;
+  /** Custom provider only: also send the Thinking level as the standard
+   *  `reasoning_effort` field (Off → 'none'). Opt-in because some
+   *  OpenAI-compatible servers (Ollama) map it to "think" and reject it on
+   *  non-thinking models; CLIProxyAPI and vLLM honor it. Off = only the
+   *  visibility flag (`include_reasoning`) is sent. */
+  customReasoningEffort: boolean;
 }
+
+/** The 🧠 Thinking pill's levels, in menu order. */
+export type ThinkingLevel = 'off' | 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Source of truth for the iteration-cap dropdown. The toggle pill,
  *  the agent loop, and the per-turn system suffix all derive from this
@@ -208,16 +223,25 @@ export const RENDER_RESOLUTION_PX: Record<ChatToggles['vision']['resolution'], n
 
 /** Source of truth for the thinking-level dropdown. The pill, the
  *  per-provider request builders, and the per-turn suffix all read from
- *  this single record. The concrete token budgets / effort levels each
- *  level maps to are provider-specific and live next to each provider's
- *  wire format (see `thinkingBudget()` in anthropic.ts / gemini.ts and
- *  `reasoningEffort()` in openai.ts). */
-export const THINKING_LEVELS: Record<ChatToggles['thinking'], { label: string; promptLabel: string; hint: string }> = {
-  off:    { label: 'Off',  promptLabel: 'off',    hint: 'No extended reasoning. Lowest cost + latency. Reproduces the pre-feature behavior exactly.' },
-  low:    { label: 'Low',  promptLabel: 'low',    hint: 'A short think before acting. Good for routine edits where a little planning helps.' },
-  medium: { label: 'Med',  promptLabel: 'medium', hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors.' },
-  high:   { label: 'High', promptLabel: 'high',   hint: 'Deep reasoning for the hardest spatial problems. Costs the most output tokens.' },
+ *  this single record. The concrete per-provider / per-model mapping (effort
+ *  levels, token budgets, clamping) lives in `src/ai/thinkingLevels.ts`. */
+export const THINKING_LEVELS: Record<ThinkingLevel, { label: string; promptLabel: string; hint: string }> = {
+  off:     { label: 'Off',     promptLabel: 'off',     hint: 'No extended reasoning where the model allows it. Claude models that always think (Opus 5.x / Fable) run at their lowest effort; OpenAI reasoning models use their own default. Cheapest + fastest.' },
+  default: { label: 'Default', promptLabel: 'default', hint: 'No override — the model decides how much to think, using its provider default. Thinking is shown when the model does think.' },
+  low:     { label: 'Low',     promptLabel: 'low',     hint: 'A short think before acting. Good for routine edits where a little planning helps.' },
+  medium:  { label: 'Med',     promptLabel: 'medium',  hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors.' },
+  high:    { label: 'High',    promptLabel: 'high',    hint: 'Deep reasoning for hard spatial problems. The recommended default for modeling.' },
+  xhigh:   { label: 'XHigh',   promptLabel: 'extra-high', hint: 'Beyond High — what Anthropic recommends for agentic work on newer Claude models. Falls back to High where a model has no such level.' },
+  max:     { label: 'Max',     promptLabel: 'max',     hint: 'The most reasoning the model offers. Slow and costly — for one-off hard problems. Falls back to the model\'s highest level.' },
 };
+
+/** Coerce a stored/serialized value to a known Thinking level (unknown →
+ *  null so callers can fall back to their default). */
+export function parseThinkingLevel(value: unknown): ThinkingLevel | null {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(THINKING_LEVELS, value)
+    ? value as ThinkingLevel
+    : null;
+}
 
 /** Outcome category the agent loop reports back to the UI. Single
  *  source of truth — chatLoop produces these, aiPanel renders them. */
@@ -260,6 +284,9 @@ export interface ChatMessage {
   usage?: TurnUsage;
   /** Estimated USD cost for this turn (assistant only). */
   costUsd?: number;
+  /** True when the turn ran on a model with no known pricing, so `costUsd`
+   *  is absent and the transcript shows "cost unknown" (assistant only). */
+  costUnknown?: boolean;
   createdAt: number;
   /** Sequence ordinal — monotonically increases per session. Restored
    *  ordering uses this rather than createdAt to avoid clock-skew jitter. */

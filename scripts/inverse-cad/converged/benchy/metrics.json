@@ -1,0 +1,573 @@
+{
+  "ok": true,
+  "attempt": 5,
+  "note": "levelSet edge 0.2 -> 0.15 (same sections): remaining findings are MC-lerp resolution-bound skins, not structure",
+  "score": 0.09844,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.00816,
+    "hausdorff": 0.16226,
+    "rms": 0.01382,
+    "candToTarget": {
+      "mean": 0.00829,
+      "rms": 0.01422,
+      "max": 0.16226,
+      "p50": 0.0051,
+      "p90": 0.01746,
+      "p99": 0.06042,
+      "meanSigned": -0.00181,
+      "excessArea_mm2": 27.35687,
+      "missingArea_mm2": 119.98629
+    },
+    "targetToCand": {
+      "mean": 0.00802,
+      "rms": 0.0134,
+      "max": 0.15013,
+      "p50": 0.00512,
+      "p90": 0.01682,
+      "p99": 0.05462,
+      "meanSigned": 0.00148,
+      "excessArea_mm2": 88.18068,
+      "missingArea_mm2": 32.53726
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.23443,
+      "min": [
+        -29.65692,
+        -15.97954,
+        -0.47899
+      ],
+      "size": [
+        260,
+        137,
+        209
+      ]
+    },
+    "volumeIoU": 0.99566,
+    "excess_mm3": 28.53589,
+    "missing_mm3": 38.97114,
+    "targetVol_mm3": 15536.97434,
+    "candVol_mm3": 15526.53909,
+    "findings": [
+      {
+        "id": "F1",
+        "sign": "missing",
+        "volume_mm3": 1.91957,
+        "centroid": [
+          -7.26924,
+          -1.17845,
+          19.09873
+        ],
+        "bbox": {
+          "min": [
+            -7.38645,
+            -7.07135,
+            18.74394
+          ],
+          "max": [
+            -7.15202,
+            6.75978,
+            19.91607
+          ]
+        },
+        "relCentroid": [
+          0.36511,
+          0.46199,
+          0.39789
+        ],
+        "extent_mm": [
+          0.23443,
+          13.83114,
+          1.17213
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      },
+      {
+        "id": "F2",
+        "sign": "excess",
+        "volume_mm3": 1.13371,
+        "centroid": [
+          13.82911,
+          -0.03857,
+          15.57919
+        ],
+        "bbox": {
+          "min": [
+            13.7119,
+            -10.35332,
+            15.46198
+          ],
+          "max": [
+            13.94632,
+            10.27618,
+            15.6964
+          ]
+        },
+        "relCentroid": [
+          0.71674,
+          0.49876,
+          0.32457
+        ],
+        "extent_mm": [
+          0.23443,
+          20.62949,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F3",
+        "sign": "excess",
+        "volume_mm3": 0.97911,
+        "centroid": [
+          12.42255,
+          -0.03857,
+          40.19393
+        ],
+        "bbox": {
+          "min": [
+            12.30534,
+            -8.94676,
+            40.07672
+          ],
+          "max": [
+            12.53977,
+            8.86962,
+            40.31114
+          ]
+        },
+        "relCentroid": [
+          0.6933,
+          0.49876,
+          0.83737
+        ],
+        "extent_mm": [
+          0.23443,
+          17.81638,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F4",
+        "sign": "excess",
+        "volume_mm3": 0.88893,
+        "centroid": [
+          18.51763,
+          0.07864,
+          16.98575
+        ],
+        "bbox": {
+          "min": [
+            18.40042,
+            -8.00906,
+            16.86853
+          ],
+          "max": [
+            18.63485,
+            8.16634,
+            17.10296
+          ]
+        },
+        "relCentroid": [
+          0.79488,
+          0.50254,
+          0.35387
+        ],
+        "extent_mm": [
+          0.23443,
+          16.1754,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F5",
+        "sign": "excess",
+        "volume_mm3": 0.86316,
+        "centroid": [
+          -5.1594,
+          0.31657,
+          14.81643
+        ],
+        "bbox": {
+          "min": [
+            -5.27661,
+            -5.19594,
+            14.52427
+          ],
+          "max": [
+            -5.04219,
+            5.35323,
+            15.46198
+          ]
+        },
+        "relCentroid": [
+          0.40027,
+          0.51021,
+          0.30868
+        ],
+        "extent_mm": [
+          0.23443,
+          10.54917,
+          0.9377
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F6",
+        "sign": "excess",
+        "volume_mm3": 0.82451,
+        "centroid": [
+          -7.03481,
+          -0.03857,
+          38.31852
+        ],
+        "bbox": {
+          "min": [
+            -7.15202,
+            -7.54021,
+            38.20131
+          ],
+          "max": [
+            -6.9176,
+            7.46306,
+            38.43573
+          ]
+        },
+        "relCentroid": [
+          0.36901,
+          0.49876,
+          0.7983
+        ],
+        "extent_mm": [
+          0.23443,
+          15.00327,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F7",
+        "sign": "missing",
+        "volume_mm3": 0.72145,
+        "centroid": [
+          -25.67168,
+          -10.47053,
+          10.65624
+        ],
+        "bbox": {
+          "min": [
+            -27.31266,
+            -11.29102,
+            10.53903
+          ],
+          "max": [
+            -24.73398,
+            -9.41561,
+            10.77346
+          ]
+        },
+        "relCentroid": [
+          0.0584,
+          0.16228,
+          0.22201
+        ],
+        "extent_mm": [
+          2.57869,
+          1.87541,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      },
+      {
+        "id": "F8",
+        "sign": "excess",
+        "volume_mm3": 0.70857,
+        "centroid": [
+          20.86189,
+          0.07864,
+          17.68903
+        ],
+        "bbox": {
+          "min": [
+            20.74468,
+            -6.36808,
+            17.57181
+          ],
+          "max": [
+            20.97911,
+            6.52536,
+            17.80624
+          ]
+        },
+        "relCentroid": [
+          0.83395,
+          0.50254,
+          0.36852
+        ],
+        "extent_mm": [
+          0.23443,
+          12.89343,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      },
+      {
+        "id": "F9",
+        "sign": "missing",
+        "volume_mm3": 0.70857,
+        "centroid": [
+          -20.60595,
+          10.9347,
+          10.65198
+        ],
+        "bbox": {
+          "min": [
+            -21.68644,
+            10.04175,
+            10.30461
+          ],
+          "max": [
+            -19.5766,
+            11.91716,
+            10.77346
+          ]
+        },
+        "relCentroid": [
+          0.14283,
+          0.85269,
+          0.22192
+        ],
+        "extent_mm": [
+          2.10983,
+          1.87541,
+          0.46885
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      },
+      {
+        "id": "F10",
+        "sign": "missing",
+        "volume_mm3": 0.66992,
+        "centroid": [
+          -25.57701,
+          10.33929,
+          10.65174
+        ],
+        "bbox": {
+          "min": [
+            -26.60939,
+            9.33847,
+            10.30461
+          ],
+          "max": [
+            -24.73398,
+            11.21388,
+            10.77346
+          ]
+        },
+        "relCentroid": [
+          0.05998,
+          0.83348,
+          0.22191
+        ],
+        "extent_mm": [
+          1.87541,
+          1.87541,
+          0.46885
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      },
+      {
+        "id": "F11",
+        "sign": "missing",
+        "volume_mm3": 0.66992,
+        "centroid": [
+          -20.59095,
+          -10.96192,
+          10.65624
+        ],
+        "bbox": {
+          "min": [
+            -21.45201,
+            -11.9943,
+            10.53903
+          ],
+          "max": [
+            -19.5766,
+            -10.11889,
+            10.77346
+          ]
+        },
+        "relCentroid": [
+          0.14308,
+          0.14644,
+          0.22201
+        ],
+        "extent_mm": [
+          1.87541,
+          1.87541,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      },
+      {
+        "id": "F12",
+        "sign": "excess",
+        "volume_mm3": 0.54109,
+        "centroid": [
+          8.20289,
+          -0.03857,
+          20.50214
+        ],
+        "bbox": {
+          "min": [
+            8.08567,
+            -4.96152,
+            20.38493
+          ],
+          "max": [
+            8.3201,
+            4.88438,
+            20.61935
+          ]
+        },
+        "relCentroid": [
+          0.62297,
+          0.49876,
+          0.42713
+        ],
+        "extent_mm": [
+          0.23443,
+          9.84589,
+          0.23443
+        ],
+        "thickness_mm": 0.23443,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      }
+    ],
+    "totalFindings": 14,
+    "discardedVolume_mm3": 1.01776
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0604,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.1623,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9957,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 1.9196,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement (F1: missing 1.9mm³ at rel [0.37, 0.46, 0.40], thin-skin)"
+      },
+      {
+        "name": "topology",
+        "value": "genus 5/5, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 0.999,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0082,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 1.0178,
+        "threshold": "1 ± 0.04",
+        "pass": true,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 2/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 5,
+    "volume": 15534.55406,
+    "surfaceArea": 9598.90349,
+    "bbox": {
+      "min": [
+        -29.18807,
+        -15.51069,
+        -0.01014
+      ],
+      "max": [
+        30.81715,
+        15.51219,
+        48.01257
+      ],
+      "size": [
+        60.00522,
+        31.02288,
+        48.02271
+      ],
+      "center": [
+        0.81454,
+        0.00075,
+        24.00122
+      ]
+    }
+  }
+}

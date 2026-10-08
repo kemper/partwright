@@ -1,0 +1,59 @@
+{
+  "part": "hand_grip_right",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 2,
+    "score": 0.3387984297942861,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 1/2 SHOULD"
+  },
+  "strategiesTried": [
+    "coarse-z-slice-stack bootstrap: superseded",
+    "mirror-of-left-converged-candidate (fine-z-slice-stack + socket sphere + ledge snapping + eps overlap + box debris voids, final .mirror([1,0,0])): CONVERGED (attempt 2, score 0.339)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.797,
+      "phase": "topology",
+      "chamfer": 0.1286,
+      "hausdorff": 1.0792,
+      "volumeIoU": 0.8047,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "mirror hand_grip_left converged candidate about x=0 (verified: bbox/socket/debris all exact mirrors)",
+      "verdict": "improved",
+      "score": 0.339,
+      "phase": "topology",
+      "chamfer": 0.0283,
+      "hausdorff": 0.2875,
+      "volumeIoU": 0.9551,
+      "failedMust": [
+        "topology"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "box debris voids (chi=+2 shells) instead of torus: gate now bridges genus conventions, expects engine genus 0",
+      "verdict": "improved",
+      "score": 0.3388,
+      "phase": "done",
+      "chamfer": 0.0282,
+      "hausdorff": 0.2875,
+      "volumeIoU": 0.955,
+      "failedMust": []
+    }
+  ]
+}

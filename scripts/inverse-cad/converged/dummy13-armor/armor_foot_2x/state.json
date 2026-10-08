@@ -1,0 +1,45 @@
+{
+  "part": "armor_foot_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.023312419379455003,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic bootstrap Z band-stack (attempt 0: 1/6 MUST, abandoned)",
+    "levelSet z-section interpolation per PLAYBOOK 5.25/5.25b (attempt 1: CONVERGED)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 2.2866,
+      "phase": "silhouette",
+      "chamfer": 0.1583,
+      "hausdorff": 1.0416,
+      "volumeIoU": 0.8322,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "levelSet z-section interpolation (5.25, armor_neck recipe): 86 sections pitch 0.1 + straddle pairs at ledges 3.0025 (dA -19.8) and 6.4025 (contour birth), res 0.08",
+      "verdict": "improved",
+      "score": 0.0233,
+      "phase": "done",
+      "chamfer": 0.0019,
+      "hausdorff": 0.0602,
+      "volumeIoU": 0.9982,
+      "failedMust": []
+    }
+  ]
+}

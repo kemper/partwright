@@ -1,0 +1,63 @@
+{
+  "part": "frame_abdomen",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 2,
+    "score": 0.05848100700063029,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic slice-stack bootstrap (0/6)",
+    "probe-driven primitive composition: disc r4.5 + mouth wedge 0.6682 + corner lines + socket r2.8488 + cones(2.3677,0.3525) + ellipse bulge + r3 body + D-neck + ball r3 (CONVERGED)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 2.7791,
+      "phase": "place",
+      "chamfer": 0.2402,
+      "hausdorff": 1.5114,
+      "volumeIoU": 0.7364,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "probe-driven composition: r4.5 disc + mouth wedge(0.6682)+corner lines + socket r2.8488 + cones(2.3677,0.3525) + ellipse bulge(3.2,2.5) + r3 body + D-neck(1.5,flat z-1.3) + ball r3@y13 clipped",
+      "verdict": "improved",
+      "score": 4.2525,
+      "phase": "place",
+      "chamfer": 0.3736,
+      "hausdorff": 3.9946,
+      "volumeIoU": 0.7723,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "fix: wedge = intersection of half-space prisms (not union); global z-clip |z|<=2.5 for body cylinder",
+      "verdict": "improved",
+      "score": 0.0585,
+      "phase": "done",
+      "chamfer": 0.0022,
+      "hausdorff": 0.3429,
+      "volumeIoU": 0.9978,
+      "failedMust": []
+    }
+  ]
+}

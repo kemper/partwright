@@ -1,0 +1,44 @@
+{
+  "part": "armor_knee_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 1.4032406526870898e-07,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "facet-census hull-minus-cavity-prism (5.26/5.27) \u2014 CONVERGED bit-exact"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 1.9812,
+      "phase": "silhouette",
+      "chamfer": 0.1265,
+      "hausdorff": 1.4621,
+      "volumeIoU": 0.7776,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "facet-census decode: hull of 40 exact outer verts minus exact cavity prism (circle r1.5@(0,1) + tent apex 1+sqrt3 + bottom flare 1.3->1.367)",
+      "verdict": "improved",
+      "score": 0,
+      "phase": "done",
+      "chamfer": 0,
+      "hausdorff": 0,
+      "volumeIoU": 1,
+      "failedMust": []
+    }
+  ]
+}

@@ -25,6 +25,7 @@ export const SLASH_COMMANDS = [
   { name: 'export', summary: 'Download the conversation as a Markdown file' },
   { name: 'models', summary: 'Open AI settings — provider, model, and API key', aliases: ['model', 'settings'] },
   { name: 'portrait', summary: 'Prefill a prompt to model a stylized 3D bust from a photo you attach', aliases: ['bust'] },
+  { name: 'reconstruct', summary: 'Prefill a prompt to reverse-engineer an imported mesh into editable code', aliases: ['convert'] },
   { name: 'help', summary: 'List the available slash commands', aliases: ['commands'] },
 ] as const satisfies readonly SlashCommandSpec[];
 

@@ -1,0 +1,44 @@
+{
+  "part": "frame_shin_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.0026798908946467945,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "measured-primitive-composition (ball+neck+oct-prism+window+spool): CONVERGED attempt 1"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.4735,
+      "phase": "topology",
+      "chamfer": 0.1204,
+      "hausdorff": 2.3545,
+      "volumeIoU": 0.9248,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "full measured restructure: ball r3 c(0,-28,2.5) z0-clipped + neck D-profile r1.5 flat z1.2 + oct shaft w/ 0.5 end chamfer + window slab z1..4.1 from y=-5 + thigh-pattern spool & dimples",
+      "verdict": "improved",
+      "score": 0.0027,
+      "phase": "done",
+      "chamfer": 0.0003,
+      "hausdorff": 0.0911,
+      "volumeIoU": 0.9998,
+      "failedMust": []
+    }
+  ]
+}

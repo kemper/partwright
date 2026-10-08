@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -69,6 +69,8 @@ import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList } from './ui/partList';
+import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
+import { openPartsOverview } from './ui/partsOverview';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
@@ -77,6 +79,7 @@ import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { recordTurntable, recordExplode, recordParamSweep, downloadAnimation, AnimationExportError, type ExplodePart, type ParamSweepFrame } from './export/animation';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { openPublishModal } from './ui/publishModal';
@@ -84,7 +87,7 @@ import { findPublishTarget, type PublishFormat } from './publish/publishTargets'
 import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, isBambuPrinter, isBambuNozzle, isBambuFilament } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -130,6 +133,8 @@ import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
+import { toTriangleSoup } from './reconstruct/meshComponents';
+import { generateCodeInWorker, evaluateInWorker } from './reconstruct/reconstructClient';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { engraveInWorker } from './surface/engraveWorkerClient';
@@ -144,6 +149,7 @@ import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
+import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
@@ -214,7 +220,9 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startExportProgress } from './ui/exportProgressModal';
+import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -282,6 +290,7 @@ import {
   deletePart,
   deleteParts,
   reorderParts,
+  setPartGroup,
   partSaveState,
   currentPartIsDirty,
   getState,
@@ -392,6 +401,74 @@ function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' |
 let currentParamSchema: ParamSpec[] | null = null;
 let currentParamValues: Record<string, ParamValue> = {};
 let paramsPanel: ParamsPanelController | null = null;
+
+// === Assembly (multi-part grid) view ===
+// The mount for the assembly parameter panel (the viewport pane) and the toolbar
+// toggle button, both assigned during editor setup. openAssembly/closeAssembly
+// are module-scoped so the console API (partwright.openAssembly) can drive them.
+let assemblyMount: HTMLElement | null = null;
+let assemblyToggleBtn: HTMLButtonElement | null = null;
+// The part-id set the Assembly view opened against. If the session's parts
+// change while the view is open (a part added/deleted/reordered in this or
+// another tab), the in-memory grid + shared-param records go stale — so we close
+// the view rather than show/save against a set that no longer matches.
+let assemblyOpenSig: string | null = null;
+function partsSignature(): string {
+  return getState().parts.map(p => p.id).join(',');
+}
+// Whether cross-section was on when Assembly opened, so we can restore it on exit
+// (the Assembly overview is read-only, so clipping — which acts on the now-hidden
+// single part — is turned off while it's open).
+let assemblyPriorClip = false;
+// Hides/shows the editing chrome (Inspect + Tools popovers) and deactivates any
+// live tool when entering/leaving the read-only Assembly overview. Assigned in
+// editor setup where the tool-close helpers are in scope.
+let applyAssemblyChrome: ((on: boolean) => void) | null = null;
+
+function syncAssemblyToggle(open: boolean): void {
+  if (!assemblyToggleBtn) return;
+  assemblyToggleBtn.className = open ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+  // Hidden entirely for single-part sessions where there's nothing to assemble.
+  const { session, parts } = getState();
+  assemblyToggleBtn.classList.toggle('hidden', !(session && parts.length > 1));
+}
+
+async function openAssembly(): Promise<void> {
+  if (isAssemblyViewOpen() || !assemblyMount) return;
+  const st = getState();
+  if (!st.session || st.parts.length < 2) {
+    showToast('Add a second part to view all parts together.', { variant: 'neutral' });
+    return;
+  }
+  syncAssemblyToggle(true);
+  assemblyOpenSig = partsSignature();
+  paramsPanel?.close(); // the assembly view has its own shared-parameter panel
+  applyAssemblyChrome?.(true); // read-only overview: hide edit tools + cross-section
+  await openAssemblyView({
+    mount: assemblyMount,
+    isReadOnly: () => isReadOnlyViewer(),
+    // The current part's mesh is already built on the main thread — show it
+    // instantly instead of rebuilding it in the pool.
+    seedMesh: (versionId) => (getState().currentVersion?.id === versionId ? currentMeshData : null),
+    seedSchema: (versionId) => (getState().currentVersion?.id === versionId ? currentParamSchema : null),
+    onClosed: () => {
+      assemblyOpenSig = null;
+      applyAssemblyChrome?.(false); // restore the edit tools + prior cross-section
+      syncAssemblyToggle(false);
+      resetView(); // re-frame the restored single-part model
+    },
+  });
+}
+
+function closeAssembly(): void {
+  if (!isAssemblyViewOpen()) return;
+  closeAssemblyView(); // fires onClosed → syncAssemblyToggle(false) + resetView
+}
+
+function toggleAssembly(): void {
+  if (isAssemblyViewOpen()) closeAssembly();
+  else void openAssembly();
+}
 
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
@@ -3917,21 +3994,33 @@ async function main() {
    *  (`version.geometryData.colorRegions`) — using the same resolver + compositor
    *  the live editor uses, so nothing is silently dropped. Returns null when the
    *  part has no version or produced no usable mesh. */
-  async function bakeColoredMeshForPart(partId: string, name: string): Promise<{ name: string; mesh: MeshData } | null> {
+  async function bakeColoredMeshForPart(
+    partId: string,
+    name: string,
+    opts: { onStart?: () => void } = {},
+  ): Promise<{ name: string; mesh: MeshData } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
       return { name, mesh: coloredMeshForExport(currentMeshData) };
     }
     const version = await getLatestVersion(partId);
     if (!version) return null;
     const lang = effectiveVersionLanguage(version, getState().session);
-    const saved = getActiveImports();
-    let result;
-    try {
-      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      result = await executeCodeAsync(version.code, lang);
-    } finally {
-      setActiveImports(saved);
-    }
+    // Bake off-editor through the geometry Worker POOL so a multi-part export can
+    // build several parts at once. Imports/companions are passed EXPLICITLY per
+    // build (never the shared setActiveImports global) so concurrent bakes can't
+    // race each other's imports. onStart fires when a worker picks this part up.
+    const result = await buildInPool({
+      code: version.code,
+      lang,
+      imports: (version.importedMeshes ?? []) as ImportedMesh[],
+      // Prefer the version's own companion files (schema ≥ 1.10). Pre-1.10 SCAD
+      // versions saved none, so fall back to the live session set — matching the
+      // old executeCodeAsync path, which read getCompanionFiles() when no explicit
+      // set was passed. Without this, an old SCAD part with `include <lib>` would
+      // build with no companions, fail, and be silently dropped from the export.
+      companionFiles: version.companionFiles ?? getCompanionFiles(),
+      onStart: opts.onStart,
+    });
     if (!result || result.error || !result.mesh) return null;
     const mesh = result.mesh;
 
@@ -3980,6 +4069,78 @@ async function main() {
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
     return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+  }
+
+  /** One part slated for a multi-part export bake. */
+  interface ExportBakePart { id: string; name: string; group?: string }
+
+  // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
+  // process-wide singleton and each batch sizes + disposes it, so two concurrent
+  // bakes would tear down each other's workers — silently truncating an export.
+  // The UI export flows are modal (can't overlap), but the console/AI twins
+  // (exportOBJParts / export3MFParts / …) can be fired concurrently; this chain
+  // makes a second bake wait for the first instead of colliding.
+  let exportBakeMutex: Promise<void> = Promise.resolve();
+
+  /**
+   * Bake several parts' coloured meshes concurrently through the geometry Worker
+   * pool. Order-preserving — the returned `baked` array follows `parts` order
+   * (with no-geometry parts dropped) so grid layout / naming stay deterministic.
+   *
+   * The pool is sized from `renderer.exportPoolSize` (clamped to cores − 1 and the
+   * part count) and torn down when the batch settles, so we don't hold N WASM
+   * heaps resident after the export. `onStatus` reports each part's
+   * queued → rendering → done/failed transitions for the per-part progress UI;
+   * `cancel.cancelled` is polled to bail out early (the caller disposes the pool
+   * to abort in-flight bakes). A single part failing never fails the batch.
+   *
+   * Concurrent calls are serialized via `exportBakeMutex` so two exports never
+   * share — and dispose — the singleton pool at once.
+   */
+  async function bakePartsParallel(
+    parts: ExportBakePart[],
+    opts: {
+      onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
+      cancel?: { cancelled: boolean };
+    } = {},
+  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+    // Wait for any in-flight export bake, then claim the pool for this one.
+    const prior = exportBakeMutex;
+    let release!: () => void;
+    exportBakeMutex = new Promise<void>((r) => { release = r; });
+    await prior.catch(() => { /* a prior bake's failure must not block this one */ });
+
+    try {
+      const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
+      setEnginePoolSize(desired);
+      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      try {
+        await Promise.all(parts.map(async (part, i) => {
+          if (opts.cancel?.cancelled) return;
+          try {
+            const result = await bakeColoredMeshForPart(part.id, part.name, {
+              onStart: () => { if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'rendering'); },
+            });
+            if (opts.cancel?.cancelled) return;
+            if (result) {
+              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              opts.onStatus?.(part.id, 'done');
+            } else {
+              opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
+            }
+          } catch {
+            // A build error / pool teardown (incl. cancel) rejects the bake. Only
+            // surface it as a failure when the user didn't cancel.
+            if (!opts.cancel?.cancelled) opts.onStatus?.(part.id, 'failed');
+          }
+        }));
+      } finally {
+        disposeEnginePool();
+      }
+      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
+    } finally {
+      release();
+    }
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -4141,6 +4302,21 @@ async function main() {
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
+    const placed = await placeImportedMeshInner(parsed, filename);
+    // Post-import ask: offer to rebuild a fresh STL import as editable code,
+    // with the same settings panel the Tools pill opens. Interactive path only
+    // (importMeshData / console imports stay prompt-free for agents); render-
+    // only meshes skip it — their slices don't close, so conversion would fail.
+    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) {
+      openConvertToCodeModal(partwrightAPI as unknown as Parameters<typeof openConvertToCodeModal>[0], {
+        context: `Imported ${filename} as a mesh. Convert it to smooth, editable code?`,
+        cancelLabel: 'Keep mesh only',
+      });
+    }
+    return placed;
+  }
+
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string): Promise<boolean> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -4647,6 +4823,19 @@ async function main() {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
     }
   };
+  // Animation exports: record the live viewport into a downloadable video.
+  const actionExportTurntable = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording turntable\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportTurntable();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
+  const actionExportExplode = async () => {
+    if (!currentMeshData) { noGeometryToast(); return; }
+    showToast('Recording exploded view\u2026 keep this tab visible', { variant: 'neutral', source: 'export' });
+    const r = await partwrightAPI.exportExplode();
+    if (r && 'error' in r && r.error) showToast(r.error, { variant: 'warn', source: 'export' });
+  };
   const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
@@ -4677,13 +4866,13 @@ async function main() {
     const choices: ExportPartChoice[] = [];
     for (const p of parts) {
       const v = await getLatestVersion(p.id);
-      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
       title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
       description: bambu
-        ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+        ? 'Choose which parts to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
       bambu: bambu ? {
         printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
@@ -4693,37 +4882,50 @@ async function main() {
         filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
         defaultFilament: DEFAULT_BAMBU_FILAMENT,
       } : undefined,
+      // Generic 3MF gets the packing-strategy pane too (Bambu implies it). Both use
+      // the two-pane layout so the arrangement control is always visible.
+      ...(bambu ? {} : { packing: true }),
     });
     if (!selected || selected.partIds.length === 0) return;
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: 'Preparing 3MF…',
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (result) baked.push(result);
-      }
-      updateProgress(job, 1, 'Writing 3MF…');
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle('Writing 3MF…');
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, {
         bambu, bedSize: [bed[0], bed[1]],
         printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
+        plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4741,7 +4943,7 @@ async function main() {
     const choices: ExportPartChoice[] = [];
     for (const p of parts) {
       const v = await getLatestVersion(p.id);
-      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
@@ -4752,28 +4954,37 @@ async function main() {
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
-    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
+    const bakeParts: ExportBakePart[] = selectedIds
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
+    // Parts bake in parallel across the Worker pool; the per-part modal shows each
+    // one's queued → rendering → done state. Cancel disposes the pool (aborting
+    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    const cancel = { cancelled: false };
+    const progress = startExportProgress({
+      title: `Preparing ${formatTag}…`,
+      parts: bakeParts,
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+    });
     try {
-      const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selectedIds.length; i++) {
-        const part = byId.get(selectedIds[i]);
-        if (!part) continue;
-        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
-        const result = await bakeColoredMeshForPart(part.id, part.name);
-        if (result) baked.push(result);
-      }
-      updateProgress(job, 1, `Writing ${formatTag}…`);
+      const { baked } = await bakePartsParallel(bakeParts, {
+        cancel,
+        onStatus: (id, status) => progress.setStatus(id, status),
+      });
+      if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      progress.setTitle(`Writing ${formatTag}…`);
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selectedIds.length - baked.length;
+      const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
-      endProgress(job);
+      progress.end();
     }
   }
 
@@ -4793,13 +5004,14 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `Unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push(result);
+      bakeParts.push({ id: part.id, name: part.name });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     return { baked };
   }
@@ -4857,7 +5069,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -4872,7 +5084,13 @@ async function main() {
         return { error: `export3MFParts: unknown nozzle "${opts.nozzle}". Valid: ${BAMBU_NOZZLES.join(', ')}.` };
       if (opts.filament !== undefined && !isBambuFilament(opts.filament))
         return { error: `export3MFParts: unknown filament "${opts.filament}". Valid: ${BAMBU_FILAMENT_TYPES.map(f => f.id).join(', ')}.` };
+      if (opts.plateLayout !== undefined && !isBambuPlateLayout(opts.plateLayout))
+        return { error: `export3MFParts: unknown plateLayout "${opts.plateLayout}". Valid: ${BAMBU_PLATE_LAYOUTS.join(', ')}.` };
     }
+    // packStrategy applies to BOTH modes (the generic grid honours it too), so
+    // validate it regardless of `bambu`.
+    if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
+      return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
     let ids = partIds;
@@ -4884,19 +5102,22 @@ async function main() {
       ids = allParts.map(p => p.id);
     }
     const byId = new Map(allParts.map(p => [p.id, p]));
-    const baked: { name: string; mesh: MeshData }[] = [];
+    // Validate every id up front so a bad one fails fast (before spinning the pool).
+    const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
       if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
-      const result = await bakeColoredMeshForPart(part.id, part.name);
-      if (result) baked.push(result);
+      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
+    const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
+        plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
+        packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
       return { built, parts: baked.length };
     } catch (e) {
@@ -4907,7 +5128,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4918,7 +5139,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -5523,7 +5744,12 @@ async function main() {
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
-    onSelectPart: (partId: string) => selectPart(partId),
+    onSelectPart: (partId: string) => {
+      // In the Assembly overview, selecting a part leaves the grid and opens that
+      // part in the normal single-part editor.
+      if (isAssemblyViewOpen()) return void (async () => { await selectPart(partId); closeAssembly(); })();
+      return selectPart(partId);
+    },
     onCreatePart: async () => {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
@@ -5566,10 +5792,15 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await mergePartsFlow(partIds);
     },
-    onReorderParts: async (orderedIds: string[]) => {
+    onSetPartGroup: async (partIds: string[], group: string | null) => {
       if (isReadOnlyViewer()) return;
-      await reorderParts(orderedIds);
+      await setPartGroup(partIds, group);
     },
+    onReorderParts: async (layout) => {
+      if (isReadOnlyViewer()) return;
+      await reorderParts(layout);
+    },
+    onViewAllParts: () => { void openAssembly(); },
     onToggleCollapse: () => togglePartsRail(),
   });
 
@@ -5805,6 +6036,8 @@ async function main() {
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-turntable', title: 'Export turntable video', hint: 'Export', keywords: 'animation video webm spin record', run: () => { void actionExportTurntable(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-explode', title: 'Export exploded-view video', hint: 'Export', keywords: 'animation video webm explode assembly record', run: () => { void actionExportExplode(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
@@ -7111,6 +7344,61 @@ async function main() {
   // Tools menu (see viewportPanelDrag's dockUnderBottom), so the two read as one
   // unit when auto-revealed.
   viewportToolsMount(clipControls).appendChild(customizeBtn);
+
+  // "All parts" toggle — the in-viewport entry point to the grid Assembly view
+  // (the part-list "⧉" button is the other). Shown only for multi-part sessions;
+  // reflects and drives the open/closed state. Escape also exits the view. It's a
+  // standalone pill on the toolbar (not inside the Tools popover) so it stays
+  // reachable to toggle OFF while the Assembly view hides the Tools popover.
+  assemblyMount = viewportPane;
+  assemblyToggleBtn = document.createElement('button');
+  assemblyToggleBtn.id = 'assembly-toggle';
+  assemblyToggleBtn.textContent = '⧉ All parts';
+  assemblyToggleBtn.title = 'View all parts together in a 3D grid (Assembly)';
+  assemblyToggleBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
+  assemblyToggleBtn.addEventListener('click', () => toggleAssembly());
+  clipControls.appendChild(assemblyToggleBtn);
+  // Clicking a part in the grid selects it and drops into the normal editor.
+  setOnAssemblyPartClick((partId) => {
+    void (async () => { await selectPart(partId); closeAssembly(); })();
+  });
+  // The Assembly overview is read-only: hide the Inspect + Tools popovers (every
+  // mutate tool + Measure/Cross-Section lives in them) and turn cross-section off
+  // while it's open, restoring everything on exit. Closes any live tool so
+  // nothing keeps editing the now-hidden single part.
+  applyAssemblyChrome = (on: boolean) => {
+    document.getElementById('viewport-inspect-group')?.classList.toggle('hidden', on);
+    document.getElementById('viewport-tools-group')?.classList.toggle('hidden', on);
+    if (on) {
+      if (isAnnotateOpen()) closeAnnotateMenu();
+      if (isPaintOpen()) closePaintMenu();
+      if (isSimplifyOpen()) closeSimplifyMenu();
+      if (isPrintToolsOpen()) closePrintToolsMenu();
+      closeMeasureIfActive();
+      if (getClipState().enabled) { assemblyPriorClip = true; setClipping(false); syncClipUI(); }
+    } else if (assemblyPriorClip) {
+      assemblyPriorClip = false;
+      setClipping(true);
+      syncClipUI();
+    }
+  };
+  // Keep the toggle's visibility in sync with the part count (hidden for
+  // single-part sessions). Also close the view if the session drops to one part.
+  onStateChange((state) => {
+    const multi = !!(state.session && state.parts.length > 1);
+    // Close the view if it can no longer be shown (dropped to one part) or if the
+    // set of parts changed out from under it (add/delete/reorder → stale records).
+    if (isAssemblyViewOpen() && (!multi || partsSignature() !== assemblyOpenSig)) {
+      closeAssembly();
+      return;
+    }
+    if (!isAssemblyViewOpen()) syncAssemblyToggle(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isAssemblyViewOpen() && !document.querySelector('[role="dialog"]')) {
+      closeAssembly();
+    }
+  });
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -9825,6 +10113,94 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Voxelize the current model into the voxel engine; saves a new version. */
+    /** Convert the current model (typically a fresh STL import) into
+     *  self-contained editable manifold-js code — a smooth section-interpolated
+     *  remake with no dependency on the import — then run it, save a version,
+     *  and measure the remake against the source mesh. quality: 'draft'
+     *  (fastest) | 'standard' | 'fine' (smoothest); step/edge/dpTol override
+     *  the auto-derived resolution (world units, smaller = finer + slower). */
+    async convertToCode(opts?: { quality?: 'draft' | 'standard' | 'fine'; step?: number; edge?: number; dpTol?: number; samples?: number }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded — run or import a mesh first' };
+        if (getActiveLanguage() !== 'manifold-js') {
+          // The generated code is manifold-js; converting a SCAD/BREP/voxel
+          // session would silently switch engines. Explicit error > silent bake.
+          return { error: `convertToCode requires a manifold-js session (active language: ${getActiveLanguage()})` };
+        }
+        const q = opts?.quality ?? 'standard';
+        if (!['draft', 'standard', 'fine'].includes(q)) return { error: `convertToCode: quality must be 'draft'|'standard'|'fine' (got ${String(q)})` };
+        for (const k of ['step', 'edge', 'dpTol'] as const) {
+          const v = opts?.[k];
+          if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
+            return { error: `convertToCode: ${k} must be a positive, finite number (got ${String(v)})` };
+          }
+        }
+        if (opts?.samples !== undefined && (!Number.isInteger(opts.samples) || opts.samples < 100 || opts.samples > 200000)) {
+          return { error: `convertToCode: samples must be an integer in 100..200000 (got ${String(opts.samples)})` };
+        }
+        const budget = Math.round(getConfig().import.reconstructCellBudget * (q === 'draft' ? 0.25 : q === 'fine' ? 4 : 1));
+        // Capture the source soup BEFORE the run replaces the model.
+        const source = toTriangleSoup(currentMeshData);
+        // Slicing a large mesh runs for seconds in the Worker — own the shared
+        // inline "Rendering… Xs" + Cancel (same slots as the engrave carve) so
+        // the user gets live feedback and a real interrupt, not a fading toast.
+        surfaceCarveAbort?.abort();              // supersede an in-flight owner
+        const abort = new AbortController();
+        surfaceCarveAbort = abort;
+        surfaceCarveCancel = () => abort.abort();
+        startRunTimer(performance.now());
+        let generated;
+        try {
+          generated = await generateCodeInWorker(source, {
+            cellBudget: budget,
+            step: opts?.step,
+            edge: opts?.edge,
+            dpTol: opts?.dpTol,
+            sourceName: getActiveImports()[0]?.filename,
+          }, { signal: abort.signal });
+        } finally {
+          // Only the current owner may clear the indicator — a superseded call
+          // must not hide the timer the newer one just started.
+          if (surfaceCarveAbort === abort) {
+            stopRunTimer();
+            setStatus(statusBar, 'ready', 'Ready');
+            surfaceCarveAbort = null;
+            surfaceCarveCancel = null;
+          }
+        }
+        const saved = await partwrightAPI.runAndSave(generated.code, `convert to code (${q})`) as { error?: string; version?: unknown; geometry?: unknown };
+        if (saved.error) return { error: `generated code failed to run: ${saved.error}`, stats: generated.stats };
+        if (!currentMeshData) return { error: 'conversion ran but produced no mesh', stats: generated.stats };
+        const metrics = await evaluateInWorker(source, toTriangleSoup(currentMeshData), opts?.samples ?? getConfig().import.reconstructEvalSamples);
+        const fmt = (v: number) => Number(v.toPrecision(3));
+        void partwrightAPI.addSessionNote(
+          `[MEASUREMENT] convertToCode(${q}): chamfer=${fmt(metrics.chamfer)}, p99=${fmt(metrics.candToTarget.p99)}, max=${fmt(metrics.hausdorff)} (sampling noise floor ~${fmt(metrics.sampleSpacing)}); ${generated.stats.components} component(s), ${generated.stats.sections} sections, ${generated.stats.bandedSegments} banded segment(s)`,
+        );
+        for (const w of generated.stats.warnings) showToast(w, { variant: 'warn', source: 'reconstruct' });
+        showToast(`Converted to code — mean deviation ${fmt(metrics.chamfer)}, max ${fmt(metrics.hausdorff)}`, { variant: 'success', source: 'reconstruct' });
+        return { ok: true, stats: generated.stats, metrics, version: saved.version, geometry: saved.geometry };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Measure how close the current model is to imported mesh `index`
+     *  (default 0): chamfer (mean surface deviation) and hausdorff (worst
+     *  point) from matched point-cloud samples of both surfaces. Distances
+     *  below `sampleSpacing` are sampling noise, not real error; raise
+     *  `samples` for a tighter floor (slower). */
+    async evalAgainstImport(index?: number, opts?: { samples?: number }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const imports = getActiveImports();
+        if (imports.length === 0) return { error: 'No imported meshes in this session — evalAgainstImport compares the current model against an import' };
+        const i = index ?? 0;
+        if (!Number.isInteger(i) || i < 0 || i >= imports.length) return { error: `evalAgainstImport: index must be an integer in 0..${imports.length - 1} (got ${String(index)})` };
+        const samples = opts?.samples;
+        if (samples !== undefined && (!Number.isInteger(samples) || samples < 100 || samples > 200000)) {
+          return { error: `evalAgainstImport: samples must be an integer in 100..200000 (got ${String(samples)})` };
+        }
+        const metrics = await evaluateInWorker(toTriangleSoup(imports[i]), toTriangleSoup(currentMeshData), samples ?? getConfig().import.reconstructEvalSamples);
+        return { ok: true, importIndex: i, filename: imports[i].filename, ...metrics };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
@@ -9971,6 +10347,29 @@ async function main() {
       };
     },
 
+    /** Open the Assembly view — show every part of the session laid out in a
+     *  non-overlapping grid, built in parallel. Needs ≥ 2 parts. */
+    async openAssembly() {
+      const st = getState();
+      if (!st.session) return { error: 'No session open.' };
+      if (st.parts.length < 2) return { error: 'The session has only one part — add another to view all parts together.' };
+      await openAssembly();
+      return { status: 'ok', ...getAssemblySnapshot() };
+    },
+
+    /** Close the Assembly view and return to the single-part editor. */
+    closeAssembly() {
+      if (!isAssemblyViewOpen()) return { error: 'The Assembly view is not open.' };
+      closeAssembly();
+      return { status: 'ok' };
+    },
+
+    /** Snapshot of the Assembly view: whether it's open, the parts and their
+     *  placement, and the union of shared parameters. */
+    getAssembly() {
+      return getAssemblySnapshot();
+    },
+
     /** Slice current manifold at Z height. Returns cross-section data. */
     sliceAtZ(z: number) {
       const check = guard(() => assertNumber(z, 'sliceAtZ(z)'));
@@ -10019,6 +10418,97 @@ async function main() {
       exportOBJ(fileExportMesh(true)!, filename);
     },
 
+    /** Record the camera orbiting the model once and download the video. */
+    async exportTurntable(opts?: { seconds?: number; revolutions?: number }) {
+      assertObject(opts, 'exportTurntable(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportTurntable opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.revolutions, 'exportTurntable opts.revolutions', { optional: true, min: 0.25, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      try {
+        const blob = await recordTurntable({ seconds: opts?.seconds, revolutions: opts?.revolutions });
+        const filename = downloadAnimation(blob, 'turntable');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Turntable recording failed' };
+      }
+    },
+
+    /** Record an exploded-view video: components ease apart, hold, reassemble. */
+    async exportExplode(opts?: { seconds?: number; spread?: number }) {
+      assertObject(opts, 'exportExplode(opts)', { optional: true });
+      assertNumber(opts?.seconds, 'exportExplode opts.seconds', { optional: true, min: 1, max: 60 });
+      assertNumber(opts?.spread, 'exportExplode opts.spread', { optional: true, min: 0.1, max: 10 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!currentManifold) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
+      // Decompose on the main thread; extract plain meshes then free the WASM pieces.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pieces: any[] = currentManifold.decompose();
+      // Carry the painted/model colors onto each decomposed piece (nearest-
+      // centroid, same as the export paths) so the exploded video stays colored.
+      const coloredSrc = coloredMeshForExport(currentMeshData);
+      const parts: ExplodePart[] = pieces.map((p) => {
+        const bb = p.boundingBox();
+        const m = p.getMesh();
+        let mesh: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+        if (coloredSrc.triColors && coloredSrc.triColors.length >= coloredSrc.numTri * 3) {
+          mesh = carryColorsToMesh(coloredSrc, mesh);
+        }
+        return {
+          mesh,
+          center: [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2] as [number, number, number],
+        };
+      });
+      pieces.forEach((p) => { try { p.delete(); } catch { /* ok */ } });
+      try {
+        const blob = await recordExplode(parts, { seconds: opts?.seconds, spread: opts?.spread });
+        const filename = downloadAnimation(blob, 'explode');
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        const msg = e instanceof AnimationExportError ? e.message : e instanceof Error ? e.message : 'Exploded-view recording failed';
+        return { error: msg };
+      } finally {
+        // Restore the live mesh (the recording swapped exploded frames in).
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
+    },
+
+    /** Animate a Customizer parameter across a range and download the video.
+     *  Precomputes one mesh per step (manifold-js sessions only), then records
+     *  a smooth ping-pong playback. */
+    async exportParamSweep(param: string, from: number, to: number, opts?: { steps?: number; seconds?: number; pingPong?: boolean }) {
+      assertString(param, 'exportParamSweep(param)');
+      assertNumber(from, 'exportParamSweep(from)');
+      assertNumber(to, 'exportParamSweep(to)');
+      assertObject(opts, 'exportParamSweep(opts)', { optional: true });
+      assertNumber(opts?.steps, 'exportParamSweep opts.steps', { optional: true, min: 2, max: 120 });
+      assertNumber(opts?.seconds, 'exportParamSweep opts.seconds', { optional: true, min: 1, max: 60 });
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'exportParamSweep runs the model per frame \u2014 only manifold-js sessions are supported.' };
+      const steps = Math.round(opts?.steps ?? 12);
+      const code = getValue();
+      const frames: ParamSweepFrame[] = [];
+      for (let i = 0; i < steps; i++) {
+        const value = from + (to - from) * (i / (steps - 1));
+        const r = executeCode(code, undefined, { [param]: value });
+        if (r.error || !r.mesh) {
+          return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
+        }
+        frames.push({ value, mesh: r.mesh });
+      }
+      try {
+        const blob = await recordParamSweep(frames, { seconds: opts?.seconds, pingPong: opts?.pingPong });
+        const filename = downloadAnimation(blob, `sweep-${param}`);
+        showToast(`Exported ${filename}`, { variant: 'success', source: 'export' });
+        return { ok: true, filename };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : 'Parameter-sweep recording failed' };
+      } finally {
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
+    },
+
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
@@ -10047,9 +10537,13 @@ async function main() {
      *  multi-object 3MF (grid-arranged, opens in any slicer). The UI equivalents
      *  are the "3MF — Bambu/Orca" menu item and the generic "3MF" export in a
      *  multi-part session. Pass an array of part ids (default: every part); each
-     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
-     *  or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
+     *  part's latest version is baked WITH its colours. `{ plateLayout }` (Bambu
+     *  only) controls plate distribution: `'separate'` (default, one part per
+     *  plate), `'grid'` (all parts on one plate), or `'group'` (each part group on
+     *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
+     *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
+     *  `{ ok, filename, parts }` or `{ error }`. */
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -10057,8 +10551,9 @@ async function main() {
      *  3MF and RETURNS `{ filename, mimeType, base64, sizeBytes, parts }` (or
      *  `{ error }`) instead of downloading, so an agent/test can read the
      *  exported file back without the browser download path. `{ bambu }` as in
-     *  export3MFParts (default true). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
+     *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
+     *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -11384,16 +11879,26 @@ async function main() {
     // history. The "current part" determines what every other method (run,
     // save, paint, export, …) acts on.
 
-    /** List the parts in the active session, each flagged with `isCurrent`. */
+    /** Open the parts-overview modal (a thumbnail contact-sheet of every
+     *  part; click a tile to switch). Same view as the part rail's grid
+     *  button. Returns { error } when there is no session or no parts. */
+    showPartsOverview() {
+      const opened = openPartsOverview((id) => { void selectPart(id); });
+      return opened ? { ok: true } : { error: 'showPartsOverview: no session with parts is open' };
+    },
+
+    /** List the parts in the active session, each flagged with `isCurrent`.
+     *  `group` (present only when the part is in one) threads same-group parts
+     *  under a collapsible header in the part list. */
     listParts() {
       const current = getCurrentPart();
-      return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, isCurrent: p.id === current?.id }));
+      return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}), isCurrent: p.id === current?.id }));
     },
 
     /** The active part, or null when no session is open. */
     getCurrentPart() {
       const p = getCurrentPart();
-      return p ? { id: p.id, name: p.name, order: p.order } : null;
+      return p ? { id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}) } : null;
     },
 
     /** Create a new, empty part and switch to it. Resets the editor to a starter
@@ -11433,6 +11938,30 @@ async function main() {
       if ('error' in part) return part;
       await renamePart(part.id, newName);
       return { id: part.id, name: newName };
+    },
+
+    /** Group parts under a shared, collapsible header in the part list (or
+     *  ungroup them). `targets` is a single part (name / id / 0-based index /
+     *  { id } / { name }) or an array of them; `group` is the group name, or
+     *  `null`/`''` to ungroup. Grouping is a display-only threading — it doesn't
+     *  change any part's version history. */
+    async setPartGroup(targets: unknown, group: string | null) {
+      if (!getState().session) {
+        return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      }
+      const check = guard(() => assertString(group, 'setPartGroup(group)', { optional: true, allowEmpty: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const list = Array.isArray(targets) ? targets : [targets];
+      if (list.length === 0) return { error: 'setPartGroup(targets): pass at least one part.' };
+      const ids: string[] = [];
+      for (const t of list) {
+        const part = resolvePartTarget(t, 'setPartGroup');
+        if ('error' in part) return part;
+        if (!ids.includes(part.id)) ids.push(part.id);
+      }
+      const clean = group && group.trim() ? group.trim() : null;
+      await setPartGroup(ids, clean);
+      return { grouped: ids.length, group: clean };
     },
 
     /** Delete a part and its versions. Refuses to delete a session's last part.
@@ -15239,11 +15768,13 @@ async function main() {
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },
         // Parts (multiple objects per session)
-        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, group?, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'showPartsOverview': { signature: 'showPartsOverview() -- Open the all-parts thumbnail overview modal', docs: '/ai.md#console-api--windowpartwright' },
         'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
         'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
         'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
+        'setPartGroup':    { signature: 'await setPartGroup(target|target[], group|null) -- Group parts under a collapsible header in the part list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deletePart':      { signature: 'await deletePart(name|id|index) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
@@ -15290,6 +15821,10 @@ async function main() {
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        // Assembly view (all parts in a grid)
+        'openAssembly':         { signature: 'openAssembly() -- Show every part of the session in a non-overlapping grid, built in parallel (needs ≥2 parts) -> snapshot', docs: '/ai.md#assembly-view' },
+        'closeAssembly':        { signature: 'closeAssembly() -- Close the Assembly view, return to the single part', docs: '/ai.md#assembly-view' },
+        'getAssembly':          { signature: 'getAssembly() -- Assembly snapshot: {open, parts:[{id,name,placed}], sharedParams}', docs: '/ai.md#assembly-view' },
         // Insert & arrange palette (Tinkercad-style direct manipulation)
         'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
         'exitArrange':          { signature: 'exitArrange() -- Deactivate arrange mode', docs: '/ai.md#arrange-mode' },
@@ -15324,9 +15859,12 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'exportTurntable': { signature: 'await exportTurntable({seconds?, revolutions?}) -- Record the camera orbiting the model and download a turntable video (.webm) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
+        'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
@@ -15423,6 +15961,8 @@ async function main() {
         'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        'convertToCode':   { signature: "await convertToCode({quality?, step?, edge?, dpTol?, samples?}) -- Rebuild the current model (e.g. an STL import) as smooth, import-free, editable code; saves a version and reports chamfer/hausdorff vs the source", docs: '/ai/reconstruction.md' },
+        'evalAgainstImport': { signature: 'await evalAgainstImport(index?, {samples?}) -- Chamfer/hausdorff report of the current model vs imported mesh index (how faithful is the remake?)', docs: '/ai/reconstruction.md' },
         'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
         'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
@@ -15508,6 +16048,7 @@ async function main() {
   initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
+  initConvertToCodeUI(partwrightAPI as unknown as Parameters<typeof initConvertToCodeUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
   initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
 
@@ -16695,6 +17236,11 @@ async function main() {
         }
       }
       setModelColorRegions(modelColorDecls);
+
+      // Viewport shading material declared in code (api.material) — apply it,
+      // or clear back to the studio default when this run declared none.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setMaterialOverride((result.materialSpec as any) ?? null);
 
       // Apply any existing color regions to the mesh. Refining regions —
       // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:

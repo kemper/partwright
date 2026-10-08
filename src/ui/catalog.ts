@@ -164,10 +164,11 @@ export async function createCatalogPage(
         const res = await fetch(assetPath(`/catalog/${entry.file}`), { cache: 'no-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json() as ExportedSession;
-        // Latest version is the highest index; pull thumbnail from it.
+        // Prefer the session-level composite contact sheet (schema 1.18,
+        // multi-part entries); fall back to the latest version's thumbnail.
         const versions = payload.versions ?? [];
         const latest = versions.length > 0 ? versions[versions.length - 1] : null;
-        const thumbnailUrl = latest?.thumbnail ?? null;
+        const thumbnailUrl = payload.session?.compositeThumbnail ?? latest?.thumbnail ?? null;
         const { hasParams, isSDF } = deriveCharacteristics(entry, payload);
         return { manifest: entry, payload, thumbnailUrl, hasParams, isSDF, error: null };
       } catch (e) {

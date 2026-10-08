@@ -1,0 +1,46 @@
+{
+  "part": "armor_outer_chest",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.04954519925599095,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic bootstrap Z band-stack (attempt 0: 0/6 MUST, score 4.25)",
+    "levelSet z-section SDF interpolation, 0.15mm pitch + ledge straddle pairs (5.25) — CONVERGED attempt 1"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 4.2489,
+      "phase": "topology",
+      "chamfer": 0.209,
+      "hausdorff": 3.9899,
+      "volumeIoU": 0.8053,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "freeform shell (prismatic<0.5 all axes, vol 29% bbox) -> levelSet z-section interpolation per 5.25, 138 sections pitch 0.15 + straddle pairs at ledges 2.005/10.005/11.895/15.305/16.005, res 0.15",
+      "verdict": "improved",
+      "score": 0.0495,
+      "phase": "done",
+      "chamfer": 0.0045,
+      "hausdorff": 0.1184,
+      "volumeIoU": 0.996,
+      "failedMust": []
+    }
+  ]
+}

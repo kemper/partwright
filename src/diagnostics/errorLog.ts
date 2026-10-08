@@ -22,8 +22,10 @@ export type ErrorSource =
   | 'export'
   | 'storage'
   | 'network'
+  | 'reconstruct'
   | 'app'
   | 'character'
+  | 'assembly'
   | 'uncaught';
 
 export interface LogEntry {

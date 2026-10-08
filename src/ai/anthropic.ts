@@ -17,17 +17,60 @@ import type {
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
+import { repairToolHistory } from './historyRepair';
+import { withHistoryCacheBreakpoints } from './anthropicCache';
+import { getLimits } from './catalog';
+import {
+  anthropicCannotDisable,
+  anthropicEffortLevels,
+  learnAnthropicCannotDisable,
+  learnAnthropicThinkingMode,
+  resolveAnthropicThinkingMode,
+  thinkingModeFromError,
+} from './anthropicThinking';
+import { anthropicThinkingPlan, isDeepEffort, THINKING_BINDING_BETA, type AnthropicThinkingPlan } from './thinkingLevels';
 
-/** Map the shared thinking level to Anthropic `budget_tokens`. 0 means
- *  thinking is disabled and no `thinking` param is sent — byte-identical to
- *  the pre-feature request. Budgets must be ≥1024 and strictly less than
- *  `max_tokens`; streamTurn raises max_tokens to guarantee the latter. */
-function getThinkingBudget(level: ChatToggles['thinking']): number {
-  if (level === 'off') return 0;
+/** Resolve the Thinking level into this model's request shape. Which shape
+ *  the model accepts (budget_tokens vs adaptive + effort) and its effort
+ *  levels come from anthropicThinking.ts (a shape learned from the API's own
+ *  400, then the catalog snapshot, then a name heuristic); what each level
+ *  MEANS for that shape lives in thinkingLevels.ts. Budgets come from the
+ *  user's app config. */
+function thinkingPlan(model: string, level: ChatToggles['thinking']): AnthropicThinkingPlan {
   const cfg = getConfig().ai;
-  if (level === 'low') return cfg.thinkingBudgetAnthropicLow;
-  if (level === 'medium') return cfg.thinkingBudgetAnthropicMedium;
-  return cfg.thinkingBudgetAnthropicHigh;
+  return anthropicThinkingPlan(model, level, {
+    low: cfg.thinkingBudgetAnthropicLow,
+    medium: cfg.thinkingBudgetAnthropicMedium,
+    high: cfg.thinkingBudgetAnthropicHigh,
+  }, {
+    mode: resolveAnthropicThinkingMode(model),
+    effortLevels: anthropicEffortLevels(model),
+    cannotDisable: anthropicCannotDisable(model),
+  });
+}
+
+/** Whether `model` will think on a request at `level` — i.e. whether prior
+ *  thinking blocks must be replayed (a thinking-enabled tool loop 400s when
+ *  the tool_use isn't preceded by its signed thinking block). */
+export function anthropicThinkingActive(model: string, level: ChatToggles['thinking']): boolean {
+  return thinkingPlan(model, level).active;
+}
+
+/** After a 400, the plan to retry with — or null when the error isn't about
+ *  the thinking shape. Learns the correction for the rest of the session:
+ *  a model that rejects `disabled` (it always thinks), or the other of the
+ *  budget / adaptive shapes. */
+function retryPlanAfter(message: string, model: string, level: ChatToggles['thinking'], plan: AnthropicThinkingPlan): AnthropicThinkingPlan | null {
+  if (!plan.thinking || !/thinking/i.test(message)) return null;
+  if (plan.thinking.type === 'disabled') {
+    if (!/disabled/i.test(message)) return null;
+    learnAnthropicCannotDisable(model);
+    return thinkingPlan(model, level);
+  }
+  const next = thinkingModeFromError(message, plan.budgetTokens > 0 ? 'budget' : 'adaptive');
+  if (!next) return null;
+  learnAnthropicThinkingMode(model, next);
+  return thinkingPlan(model, level);
 }
 
 let cachedClient: Anthropic | null = null;
@@ -140,15 +183,20 @@ export interface RequestSpec {
    *  results). */
   apiMessages: Anthropic.MessageParam[];
   tools: ToolDefinition[];
-  /** Hard ceiling on output tokens for this turn. We default to 8K — large
-   *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. When thinking is enabled this is raised
-   *  automatically so it stays above the thinking budget. */
+  /** Hard ceiling on output tokens for this turn. Defaults to
+   *  `maxOutputTokensAnthropic` (32K) — room for a large tool call; streaming
+   *  keeps a high ceiling clear of HTTP timeouts. When the model thinks this
+   *  is raised automatically (above the budget, or to the adaptive-thinking
+   *  ceiling), and it's always capped at the model's catalog output limit. */
   maxTokens?: number;
-  /** Extended-thinking level. 'off' (default) sends no `thinking` param.
-   *  Low/Med/High enable it with an increasing token budget. */
+  /** Thinking level (see thinkingLevels.ts for the per-model mapping).
+   *  Omitted = 'off'. */
   thinking?: ChatToggles['thinking'];
+  /** Put prompt-cache breakpoints on the conversation history (see
+   *  withHistoryCacheBreakpoints). Omitted = off. */
+  cacheHistory?: boolean;
 }
+
 
 export async function streamTurn(
   spec: RequestSpec,
@@ -156,14 +204,10 @@ export async function streamTurn(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const client = getClient(spec.apiKey);
-  const budget = getThinkingBudget(spec.thinking ?? 'off');
+  const level = spec.thinking ?? 'off';
+  const model = String(spec.model);
   const cfg = getConfig().ai;
-  // The API requires max_tokens > budget_tokens, so when thinking is on we
-  // float the ceiling above the budget. When it's off, the configured default
-  // is untouched.
-  const max_tokens = budget > 0
-    ? Math.max(spec.maxTokens ?? cfg.maxOutputTokensAnthropic, budget + cfg.answerHeadroomTokens)
-    : spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
+  const baseMax = spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small
@@ -190,20 +234,80 @@ export async function streamTurn(
 
   const params: Anthropic.MessageStreamParams = {
     model: spec.model,
-    max_tokens,
+    max_tokens: baseMax,
     system,
-    messages: spec.apiMessages,
+    messages: spec.cacheHistory ? withHistoryCacheBreakpoints(spec.apiMessages) : spec.apiMessages,
   };
   // Omit tools entirely when the list is empty — passing tools:[] causes the
   // API to return malformed_function_call if the model tries to use a tool
   // it remembers from earlier turns in the conversation.
   if (tools.length > 0) params.tools = tools;
-  // Only attach the thinking config when enabled — omitting it entirely keeps
-  // the request (and the prompt cache) identical to the pre-feature path.
-  if (budget > 0) {
-    params.thinking = { type: 'enabled', budget_tokens: budget };
+  // (Re)attach the thinking config + output ceiling for a plan. Only what
+  // the plan asks for is sent — an omitted field keeps the model's own
+  // default (e.g. Haiku at 'off' sends neither, matching the pre-feature
+  // request).
+  const requestOptions: { headers?: Record<string, string> } = {};
+  const applyPlan = (plan: AnthropicThinkingPlan): void => {
+    delete params.thinking;
+    delete params.output_config;
+    if (plan.thinking) params.thinking = plan.thinking;
+    if (plan.effort) params.output_config = { effort: plan.effort };
+    // Thinking tokens count against max_tokens. With a fixed budget the API
+    // requires max_tokens > budget_tokens, so float the ceiling above it;
+    // adaptive thinking has no budget, so use the (larger) thinking ceiling.
+    params.max_tokens = plan.budgetTokens > 0
+      ? Math.max(baseMax, plan.budgetTokens + cfg.answerHeadroomTokens)
+      : plan.active
+        ? Math.max(baseMax, isDeepEffort(plan) ? cfg.maxOutputTokensAnthropicThinkingDeep : cfg.maxOutputTokensAnthropicThinking)
+        : baseMax;
+    // Never ask for more than the model can emit — the API 400s above its
+    // output limit (e.g. a raised setting on a 64k-output model) — unless the
+    // cap would undercut a thinking budget.
+    const modelCap = getLimits('anthropic', model)?.output;
+    if (modelCap && modelCap > plan.budgetTokens) params.max_tokens = Math.min(params.max_tokens, modelCap);
+    // Models that bind thinking to the exact prior history (Opus 5.5 / Fable
+    // 5.1) would 400 on the edits Partwright makes on purpose (image
+    // trimming, keep-tail compaction, a mid-chat model switch). Ask the API
+    // to drop the affected thinking blocks instead — the turn proceeds
+    // without that earlier reasoning. The field isn't in the SDK's types
+    // yet, hence the cast.
+    delete requestOptions.headers;
+    if (plan.dropMismatchedThinking && params.thinking) {
+      params.thinking = {
+        ...params.thinking,
+        block_binding: { prefix_mismatch_behavior: 'drop_block' },
+      } as unknown as Anthropic.ThinkingConfigParam;
+      requestOptions.headers = { 'anthropic-beta': THINKING_BINDING_BETA };
+    }
+  };
+  const plan = thinkingPlan(model, level);
+  applyPlan(plan);
+  try {
+    return await runStream(client, params, requestOptions, callbacks, signal);
+  } catch (err) {
+    // Self-heal a thinking-shape mismatch (a model newer than the catalog
+    // snapshot that rejects budget_tokens, or one that can't disable
+    // thinking): the 400 arrives before any stream output, so switching shape
+    // and retrying once is invisible to the UI. The correction sticks for the
+    // rest of the session.
+    const retry = !signal?.aborted && err instanceof Anthropic.BadRequestError
+      ? retryPlanAfter(err.message, model, level, plan)
+      : null;
+    if (!retry) throw err;
+    console.info(`[anthropic] ${model} rejected its thinking config; retrying with ${JSON.stringify(retry.thinking ?? null)}`);
+    applyPlan(retry);
+    return runStream(client, params, requestOptions, callbacks, signal);
   }
-  const stream = client.messages.stream(params);
+}
+
+async function runStream(
+  client: Anthropic,
+  params: Anthropic.MessageStreamParams,
+  requestOptions: { headers?: Record<string, string> },
+  callbacks: StreamCallbacks,
+  signal: AbortSignal | undefined,
+): Promise<StreamResult> {
+  const stream = client.messages.stream(params, requestOptions);
 
   // Mirror text deltas into a local buffer so we still have the partial
   // response if the stream is aborted before finalMessage() resolves.
@@ -333,8 +437,16 @@ export function buildApiMessages(
   history: ChatMessage[],
   opts: { replayThinking?: boolean } = {},
 ): Anthropic.MessageParam[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) — so
+  // what the button detects and what the send repairs can't diverge. This is
+  // the ONLY repair on the send path: the conversion below maps each repaired
+  // message 1:1 (every toolCall → tool_use, every toolResult → tool_result,
+  // carrier kept adjacent), so it can't reintroduce a violation.
+  const repaired = repairToolHistory(history).messages;
   const out: Anthropic.MessageParam[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'user') {
       const content = userBlocksToApi(msg.blocks, msg.toolResults ?? []);
       if (content.length > 0) out.push({ role: 'user', content });
@@ -349,103 +461,7 @@ export function buildApiMessages(
       if (content.length > 0) out.push({ role: 'assistant', content });
     }
   }
-  return stripOrphanToolResults(sanitizeToolUse(out));
-}
-
-/** Drop tool_result blocks whose `tool_use_id` has no matching `tool_use`
- *  anywhere in the request — the mirror of sanitizeToolUse. Compaction (or any
- *  edit that severs a tool round) can leave a kept tool_result whose call was
- *  dropped, and the API 400s with "unexpected `tool_use_id`". A user message
- *  emptied by the strip is removed so the request stays well-formed. Runs
- *  after sanitizeToolUse, whose synthetic results reference real ids and so
- *  are never stripped here. */
-function stripOrphanToolResults(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
-  const knownIds = new Set<string>();
-  for (const m of messages) {
-    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
-    for (const b of m.content as Anthropic.ContentBlockParam[]) {
-      if (b.type === 'tool_use') knownIds.add((b as { type: 'tool_use'; id: string }).id);
-    }
-  }
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
-    const content = m.content as Anthropic.ContentBlockParam[];
-    const filtered = content.filter(
-      b => b.type !== 'tool_result' || knownIds.has((b as { type: 'tool_result'; tool_use_id: string }).tool_use_id),
-    );
-    if (filtered.length === content.length) continue;
-    if (filtered.length === 0) {
-      messages.splice(i, 1);
-      i--;
-      continue;
-    }
-    m.content = filtered;
-  }
-  return messages;
-}
-
-/** Repair dangling tool_use/tool_result invariant violations before the
- *  messages array is sent to the API. When a turn is aborted or stalls
- *  mid-tool-call, the history can contain an assistant message with
- *  tool_use blocks that has no matching tool_result in the next message —
- *  the API rejects this with a 400.
- *
- *  Two cases:
- *  1. Orphaned tool_use at the tail (no following user message at all) —
- *     strip the assistant message entirely so the conversation ends cleanly
- *     on the last complete user message.
- *  2. Orphaned tool_use mid-conversation (next message is a user message
- *     that doesn't carry the matching tool_results) — inject synthetic
- *     tool_result blocks marked is_error so the invariant is satisfied and
- *     the model understands those tools didn't complete. */
-function sanitizeToolUse(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-
-    const content = msg.content as Anthropic.ContentBlockParam[];
-    const toolUseIds = content
-      .filter(b => b.type === 'tool_use')
-      .map(b => (b as { type: 'tool_use'; id: string }).id);
-    if (toolUseIds.length === 0) continue;
-
-    const next = messages[i + 1];
-
-    if (!next) {
-      // Trailing assistant message with unexecuted tool calls — strip it so
-      // the conversation ends on a user message the model can respond to.
-      messages.splice(i, 1);
-      i--;
-      continue;
-    }
-
-    const nextContent = (Array.isArray(next.content) ? next.content : []) as Anthropic.ContentBlockParam[];
-    const coveredIds = new Set(
-      nextContent
-        .filter(b => b.type === 'tool_result')
-        .map(b => (b as { type: 'tool_result'; tool_use_id: string }).tool_use_id)
-    );
-    const missing = toolUseIds.filter(id => !coveredIds.has(id));
-    if (missing.length === 0) continue;
-
-    // Inject synthetic results for the missing IDs, prepended so tool_results
-    // appear before any user text (required by the API).
-    const synthetic: Anthropic.ContentBlockParam[] = missing.map(id => ({
-      type: 'tool_result' as const,
-      tool_use_id: id,
-      content: 'Tool call was interrupted and did not complete.',
-      is_error: true,
-    }));
-
-    if (next.role === 'user' && Array.isArray(next.content)) {
-      (next.content as Anthropic.ContentBlockParam[]).unshift(...synthetic);
-    } else {
-      messages.splice(i + 1, 0, { role: 'user', content: synthetic });
-      i++;
-    }
-  }
-  return messages;
+  return out;
 }
 
 function userBlocksToApi(blocks: ChatBlock[], toolResults: PersistedToolResult[]): Anthropic.ContentBlockParam[] {

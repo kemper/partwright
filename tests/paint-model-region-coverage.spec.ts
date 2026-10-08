@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 
 // Regression for the model-region (api.label underlay) coverage collapse.
 //
@@ -30,7 +31,16 @@ test('api.label underlay coverage does not collapse across incremental strokes',
     timeout: 60000,
   });
   await page.evaluate(async (c) => { await (window as unknown as { partwright: { run: (s: string) => Promise<unknown> } }).partwright.run(c); }, code);
-  await page.waitForTimeout(4000);
+  // setModelColorRegions runs synchronously inside runCodeSync (awaited by
+  // run() above), so this resolves near-instantly — poll for it rather than
+  // sleeping a guess, as a safety net against any future async drift.
+  await waitFor(
+    () => page.evaluate(async () => {
+      const { getModelRegions } = await import('/src/color/regions.ts');
+      return getModelRegions().length > 0;
+    }),
+    { timeout: 10000, message: 'the api.label underlay to populate model regions' },
+  );
 
   // A smooth brush stroke on the +X+Y face climbing toward the apex (0,0,22).
   function faceStroke(zLo: number, zHi: number, j: number): [number, number, number][] {
@@ -58,8 +68,14 @@ test('api.label underlay coverage does not collapse across incremental strokes',
       addRegion('S', [0.85, 0.8, 0.3], 'paintbrush',
         { kind: 'brushStroke', samples: s, radius: 1, shape: 'circle', maxEdge: 0.0625, surface: 'slab', depth: 0, wrapAngleDeg: 90 } as never,
         new Set<number>(), true);
+      // addRegion's notify() synchronously kicks off the async Worker
+      // reconcile (see onColorRegionsChange in main.ts), so by the time this
+      // evaluate() call returns, asyncReconcileInFlight is already true and
+      // partwright.waitForPaint() reliably awaits its completion — the real
+      // signal for "the incremental mesh subdivision landed" instead of a
+      // guessed settle time.
+      await (window as unknown as { partwright: { waitForPaint: () => Promise<void> } }).partwright.waitForPaint();
     }, samples);
-    await page.waitForTimeout(7000);
     series.push(await coverage());
   }
 

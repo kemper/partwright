@@ -5,23 +5,24 @@
 // real browser with the real WASM engine.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
-async function waitForEngine(page: Page) {
-  await page.waitForSelector('text=Ready', { timeout: 30_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { runIsolated?: unknown } }).partwright?.runIsolated,
-    { timeout: 30_000 },
-  );
-}
+// Every test here just runs SDF-tree code through window.partwright.runIsolated
+// (or runAndSave, whose session state doesn't affect later runIsolated calls —
+// runIsolated is explicitly the "test without side effects" primitive) and
+// checks the returned stats — nothing persists between tests that matters, so
+// the file shares one booted editor instead of paying a fresh page + WASM boot
+// per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('api.sdf', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
-
-  test('sdf.sphere().build() produces a sane spherical mesh', async ({ page }) => {
+  test('sdf.sphere().build() produces a sane spherical mesh', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -40,7 +41,7 @@ test.describe('api.sdf', () => {
     expect(stats.volume).toBeLessThan(560);
   });
 
-  test('smoothUnion of two spheres meshes as one connected piece', async ({ page }) => {
+  test('smoothUnion of two spheres meshes as one connected piece', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -57,7 +58,7 @@ test.describe('api.sdf', () => {
     expect(stats.isManifold).toBe(true);
   });
 
-  test('paint-by-label works on labelled SDF subtrees', async ({ page }) => {
+  test('paint-by-label works on labelled SDF subtrees', async () => {
     // Two labelled spheres -> two label entries in the registry. Use
     // runAndSave (which keeps the label map around for paintByLabel),
     // then assert both labels resolve.
@@ -89,7 +90,7 @@ test.describe('api.sdf', () => {
     expect(result.eyePaint.triangles).toBeGreaterThan(10);
   });
 
-  test('gyroid intersected with a box meshes a finite lattice', async ({ page }) => {
+  test('gyroid intersected with a box meshes a finite lattice', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -108,7 +109,7 @@ test.describe('api.sdf', () => {
     expect(stats.volume).toBeLessThan(1000);
   });
 
-  test('mixing SDF and Manifold parts: smooth grip on a crisp plate', async ({ page }) => {
+  test('mixing SDF and Manifold parts: smooth grip on a crisp plate', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -129,7 +130,7 @@ test.describe('api.sdf', () => {
     expect(stats.isManifold).toBe(true);
   });
 
-  test('build() rejects unbounded gyroid without explicit bounds', async ({ page }) => {
+  test('build() rejects unbounded gyroid without explicit bounds', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -144,7 +145,7 @@ test.describe('api.sdf', () => {
     expect(String(stats.error)).toMatch(/bounds|finite/i);
   });
 
-  test('chained transforms compose correctly through the engine', async ({ page }) => {
+  test('chained transforms compose correctly through the engine', async () => {
     // A translated, then rotated box should land at the right place
     // and keep its volume (rotation+translation are isometries).
     const stats = await page.evaluate(async () => {
@@ -169,7 +170,7 @@ test.describe('api.sdf', () => {
 
   // --- Follow-up features: new primitives + combinators ----------------
 
-  test('ellipsoid meshes with the right bounding box and volume', async ({ page }) => {
+  test('ellipsoid meshes with the right bounding box and volume', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -190,7 +191,7 @@ test.describe('api.sdf', () => {
     expect(stats.volume).toBeLessThan(840);
   });
 
-  test('roundedBox and roundedCylinder preserve their OUTER dimensions', async ({ page }) => {
+  test('roundedBox and roundedCylinder preserve their OUTER dimensions', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -216,7 +217,7 @@ test.describe('api.sdf', () => {
     expect(out.cyl.boundingBox.dimensions[2]).toBeLessThan(30.8);
   });
 
-  test('TPMS family (schwarzP, diamond, lidinoid) all mesh inside a box', async ({ page }) => {
+  test('TPMS family (schwarzP, diamond, lidinoid) all mesh inside a box', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -237,7 +238,7 @@ test.describe('api.sdf', () => {
     }
   });
 
-  test('combinators: polarArray ring, mirrorPair, repeat-in-box', async ({ page }) => {
+  test('combinators: polarArray ring, mirrorPair, repeat-in-box', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -268,7 +269,7 @@ test.describe('api.sdf', () => {
     expect(out.grid.componentCount).toBeGreaterThan(1);
   });
 
-  test('taper narrows a column; gradedGyroid meshes', async ({ page }) => {
+  test('taper narrows a column; gradedGyroid meshes', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -298,7 +299,7 @@ test.describe('api.sdf', () => {
 
   // --- Follow-up #2: graded TPMS variants, repeatN, polarRepeat -------
 
-  test('gradedSchwarzP / gradedDiamond / gradedLidinoid all mesh in a box', async ({ page }) => {
+  test('gradedSchwarzP / gradedDiamond / gradedLidinoid all mesh in a box', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -321,7 +322,7 @@ test.describe('api.sdf', () => {
     }
   });
 
-  test('repeatN produces a finite array without needing intersect', async ({ page }) => {
+  test('repeatN produces a finite array without needing intersect', async () => {
     const stats = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -343,7 +344,7 @@ test.describe('api.sdf', () => {
     expect(stats.boundingBox.dimensions[1]).toBeLessThan(10.4);
   });
 
-  test('polarRepeat tiles a unit cell around an axis', async ({ page }) => {
+  test('polarRepeat tiles a unit cell around an axis', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -371,7 +372,7 @@ test.describe('api.sdf', () => {
     expect(vDiff).toBeLessThan(0.05);
   });
 
-  test('repeatN stagger produces a brick-bonded grid (different from straight grid)', async ({ page }) => {
+  test('repeatN stagger produces a brick-bonded grid (different from straight grid)', async () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

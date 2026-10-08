@@ -26,6 +26,85 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 8, 2026',
+    headline: 'Partwright 1.5 — a sturdier AI assistant that checks its own work, multi-part assemblies, and mesh-to-code',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.5',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working, and the running version is shown in the About dialog. The AI assistant works with the newest Claude, OpenAI, and Gemini models, recovers on its own from the errors that used to wedge a chat, and now reviews its own work at the end of a task. Multi-part projects get an Assembly overview, grouped parts, and much better Bambu 3MF export, and imported meshes can be converted into smooth, editable code.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Works with the newest models',
+            body: 'Newer Claude models (Opus 5.x, Sonnet 5, Fable) reject the old way of requesting extended thinking and used to fail with an error on every turn. Requests now pick the right thinking format for each model automatically, and quietly retry once if a model answers with an unexpected format. The 🧠 thinking pill gains Default, XHigh, and Max levels, the default reply length for Claude goes up from 8k to 32k tokens, and every limit is clamped to what the chosen model actually allows.',
+          },
+          {
+            title: 'Fewer stuck chats',
+            body: 'An interrupted turn (Stop, a stall, the spend cap, or switching sessions mid-turn) could leave the history in a state every provider rejected, so even Retry failed. The history is now repaired automatically before every send. Tool results that come with images are ordered so strict OpenAI-compatible gateways accept them, and thinking models reached through a custom endpoint no longer time out while they reason silently.',
+          },
+          {
+            title: 'Automatic end-of-task review',
+            body: 'When the assistant finishes a task, a reviewer now checks the result against your request (including any reference photos you attached) and sends it back for a fix round if something is off. It\'s on by default in the Standard and Full presets. The review prompt is visible and editable under AI Settings → Automatic review.',
+          },
+          {
+            title: 'Longer conversations, lower cost',
+            body: 'The conversation history is now cached between turns, older images are trimmed step by step, and auto-compact is on by default. Reference photos you attached carry forward through compaction instead of turning into placeholders.',
+          },
+          {
+            title: 'No more guessed prices',
+            body: 'Models without known pricing used to be billed at a guessed rate, which could be off by 4× or more. Their cost now shows as unknown, the session total shows as a minimum (≥$X), and you\'re asked to approve an unpriced model before its first request.',
+          },
+        ],
+      },
+      {
+        label: 'Multi-part projects',
+        items: [
+          {
+            title: 'Assembly overview',
+            body: 'A new "All parts" view lays every part of a multi-part session out in a grid, framing the whole set as parts render. Click any part to open it in the normal editor.',
+          },
+          {
+            title: 'Grouped parts',
+            body: 'Parts can be organized under collapsible group headers in the part list, and the export picker lists them by group with a select-all checkbox per group.',
+          },
+          {
+            title: 'Better Bambu 3MF export',
+            body: 'Choose one part per plate, a packed grid, or by group; parts are packed by their real footprints and spill onto extra plates instead of running off the bed. A packing strategy keeps parts centred away from the edges of the plate, and the export options stay visible beside the part list. Multi-part exports now run in parallel with per-part progress, and Escape or Cancel stops them.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Convert imported meshes to code',
+            body: 'Turn an imported STL into smooth, editable model code, with quality presets and adjustable detail. It\'s offered right after you import a mesh, and is also available from the Tools popover, the command palette, and the AI assistant (/reconstruct).',
+          },
+          {
+            title: 'Blender-style shaping, materials, and animation',
+            body: 'New mesh-shaping operations — scatter, bend, twist, taper, wrap, follow a curve, sculpt, round, and smooth-weld — plus viewport material presets like brass and glass, and video exports: turntable spins, exploded-view animations, and parameter sweeps.',
+          },
+        ],
+      },
+      {
+        label: 'Studio',
+        items: [
+          {
+            title: 'Send feedback from the app',
+            body: 'A Feedback button in the toolbar, command palette, and About dialog opens a bug report or feature request with your version and browser already filled in.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'July 5, 2026',
     headline: 'Partwright 1.4 — figures that hold and wear things, and an AI that looks before it plans',
     groups: [

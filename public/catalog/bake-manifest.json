@@ -501,6 +501,44 @@
           "jewelry"
         ]
       }
+    },
+    "spike-ball-grip": {
+      "source": "examples/spike_ball_grip.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "ball",
+          "spikes"
+        ]
+      }
+    },
+    "checker-twist-vase": {
+      "source": "examples/checker_twist_vase.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "wrapped-name-mug": {
+      "source": "examples/wrapped_name_mug.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "rounded-dice": {
+      "source": "examples/rounded_dice.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "welded-duck": {
+      "source": "examples/welded_duck.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     }
   }
 }

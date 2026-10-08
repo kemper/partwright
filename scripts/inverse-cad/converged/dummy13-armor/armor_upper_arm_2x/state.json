@@ -1,0 +1,43 @@
+{
+  "part": "armor_upper_arm_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.02571191628265361,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "facet-census-decode: convex outer hull of exact vertices minus 5 convex cavity hulls — CONVERGED attempt 1"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 1.0247,
+      "phase": "silhouette",
+      "chamfer": 0.0456,
+      "hausdorff": 0.8791,
+      "volumeIoU": 0.898,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "facet-census decode: convex outer hull (26 exact verts/side) minus 5 measured convex cavities (C1 chamfered slab, B/T 45deg ramp openings, C3 front cut, 144-gon bore r3.1)",
+      "verdict": "improved",
+      "score": 0.0257,
+      "phase": "done",
+      "chamfer": 0,
+      "hausdorff": 0,
+      "volumeIoU": 0.9949,
+      "failedMust": []
+    }
+  ]
+}

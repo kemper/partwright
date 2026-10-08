@@ -10,8 +10,10 @@ import { turnCostUsd } from './cost';
 import { recordEvent } from './diagnostics';
 import { generateId } from '../storage/db';
 import { putMessages } from './db';
-import { providerLabel } from './settings';
+import { loadSettings, providerLabel } from './settings';
+import { buildReviewSystemPrompt } from './reviewPrompt';
 import { captureIsoViews } from './images';
+import { getConfig } from '../config/appConfig';
 import type {
   ChatBlock,
   ChatMessage,
@@ -19,21 +21,6 @@ import type {
   Provider,
   TurnUsage,
 } from './types';
-
-const REVIEW_SYSTEM = `You are a senior CAD reviewer giving a SECOND OPINION on another
-model's work-in-progress inside Partwright, a parametric browser CAD
-tool. Be concise and direct. Output plain text (no markdown headings,
-no JSON), 4-10 sentences. Cover:
-
-- What looks right vs wrong in the current code or rendered geometry.
-- Concrete suggestions the original model can act on next turn (with
-  numbers when applicable: dimensions, angles, axes).
-- Anything that contradicts the stated user requirements / decisions
-  in the session notes.
-
-Do NOT rewrite the code. Do NOT pretend to be the original model. Open
-with a one-line verdict ("looks correct", "close, but…", "needs rework
-because…") so the user gets the takeaway at a glance.`;
 
 export interface ReviewContext {
   /** Active editor code. */
@@ -48,6 +35,9 @@ export interface ReviewContext {
   notes: string[];
   /** What the user wants the reviewer to look at. Free text. */
   focus?: string;
+  /** Images the user attached (a photo, a sketch) that the result should
+   *  match. Sent after the snapshot. */
+  references?: ImageSource[];
 }
 
 export interface ReviewRequest {
@@ -60,12 +50,15 @@ export interface ReviewRequest {
   sessionId: string;
   /** Set false to skip writing a session note. Defaults to true. */
   promoteToNote?: boolean;
+  /** Cancels the review. An aborted review is never persisted. */
+  signal?: AbortSignal;
 }
 
 export interface ReviewResult {
   text: string;
   usage: TurnUsage;
-  costUsd: number;
+  /** null when the reviewer model has no known pricing. */
+  costUsd: number | null;
   message: ChatMessage;
 }
 
@@ -76,6 +69,7 @@ export async function runReview(
   const userText = formatReviewPrompt(req.context);
   const blocks: ChatBlock[] = [{ type: 'text', text: userText }];
   if (req.context.snapshot) blocks.push({ type: 'image', source: req.context.snapshot });
+  for (const ref of req.context.references ?? []) blocks.push({ type: 'image', source: ref });
 
   // Single-shot ephemeral history — no tools, no recursion. The review
   // is essentially a one-prompt summarize, but going through streamTurn
@@ -100,9 +94,14 @@ export async function runReview(
       provider: req.provider,
       model: req.model,
       apiKey: req.apiKey,
-      systemPrompt: REVIEW_SYSTEM,
+      // The user's rubric (⚙ AI Settings → Automatic review → Review prompt)
+      // or the default, plus the fixed "Verdict: …" output contract.
+      systemPrompt: buildReviewSystemPrompt(loadSettings().reviewPromptOverride),
       history: [ephemeral],
+      signal: req.signal,
     });
+    // An aborted stream resolves with partial text — never post that.
+    if (req.signal?.aborted) throw new DOMException('Review cancelled', 'AbortError');
     text = r.text;
     usage = r.usage;
   } catch (err) {
@@ -111,7 +110,7 @@ export async function runReview(
       durationMs: Math.round(performance.now() - t0),
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
-      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
     });
     throw err;
   }
@@ -123,10 +122,12 @@ export async function runReview(
     outputTokens: usage.outputTokens,
     cachedTokens: usage.cacheReadInputTokens,
     textPreview: text.slice(0, 200),
-    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}`,
+    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
   });
 
-  const costUsd = turnCostUsd(req.provider, req.model, usage);
+  // null = the reviewer model has no known pricing (the modal asked the
+  // user to authorize it); surfaced as "cost unknown", never $0.
+  const pricedCost = turnCostUsd(req.provider, req.model, usage);
 
   onProgress?.('persisting');
   const reviewDurationMs = Math.round(performance.now() - t0);
@@ -136,7 +137,7 @@ export async function runReview(
     role: 'assistant',
     blocks: [{ type: 'review', provider: req.provider, model: req.model, text: text || '(empty review)' }],
     usage,
-    costUsd,
+    ...(pricedCost === null ? { costUnknown: true } : { costUsd: pricedCost }),
     createdAt: Date.now(),
     durationMs: reviewDurationMs,
     // Reviews insert into the live chat AFTER all current messages.
@@ -150,10 +151,10 @@ export async function runReview(
     await tryWriteSessionNote(req.provider, req.model, text);
   }
 
-  return { text, usage, costUsd, message: reviewMsg };
+  return { text, usage, costUsd: pricedCost, message: reviewMsg };
 }
 
-function formatReviewPrompt(ctx: ReviewContext): string {
+export function formatReviewPrompt(ctx: ReviewContext): string {
   const lines: string[] = [];
   lines.push('Please review the current state of this Partwright session.');
   if (ctx.focus && ctx.focus.trim().length > 0) {
@@ -182,13 +183,19 @@ function formatReviewPrompt(ctx: ReviewContext): string {
   } else {
     lines.push('(No snapshot — no geometry currently rendered, so reason from code + stats only.)');
   }
+  const refs = ctx.references?.length ?? 0;
+  if (refs > 0) {
+    lines.push('');
+    lines.push('=== User reference images ===');
+    lines.push(`${refs === 1 ? 'The image' : `The ${refs} images`} after the snapshot ${refs === 1 ? 'was' : 'were'} attached by the user as reference. Judge how well the result matches ${refs === 1 ? 'it' : 'them'}.`);
+  }
   return lines.join('\n');
 }
 
 async function tryWriteSessionNote(provider: Provider, model: string, text: string): Promise<void> {
   const w = window as unknown as { partwright?: { addSessionNote?: (t: string) => Promise<unknown> } };
   if (!w.partwright?.addSessionNote) return;
-  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 600);
+  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, getConfig().ai.reviewNoteMaxChars);
   try {
     await w.partwright.addSessionNote(`[REVIEW from ${providerLabel(provider)} / ${model}] ${oneLine}`);
   } catch { /* swallow — review still made it into the chat transcript */ }

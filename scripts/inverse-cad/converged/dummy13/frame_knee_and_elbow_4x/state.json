@@ -1,0 +1,78 @@
+{
+  "part": "frame_knee_and_elbow_4x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 4,
+    "score": 0.039605926801644376,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "slice-stack bootstrap (superseded: carried socket mid-slices through depth)",
+    "traced-base + pacman socket refill + revolved hourglass cavity + exact 45deg chamfer cuts (CONVERGED, attempt 4)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.1303,
+      "phase": "silhouette",
+      "chamfer": 0.0755,
+      "hausdorff": 0.4555,
+      "volumeIoU": 0.8611,
+      "failedMust": [
+        "hausdorff P99",
+        "volume IoU",
+        "worst finding"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "restructure: full-height traced base + pac-man socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
+      "verdict": "render-error",
+      "error": "outer0.union is not a function"
+    },
+    {
+      "id": 2,
+      "note": "restructure: full-height traced base + pac-man socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
+      "verdict": "regressed",
+      "score": 1.1319,
+      "phase": "tune",
+      "chamfer": 0.0735,
+      "hausdorff": 1.9838,
+      "volumeIoU": 0.958,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 3,
+      "note": "exact 45deg leg-0.5 chamfers on outer perimeter both faces: masked cone-rings on r=4.5 arcs, straight wedge y=-4.5, mitered hull wedge on V-notch",
+      "verdict": "improved",
+      "score": 0.8433,
+      "phase": "tune",
+      "chamfer": 0.0558,
+      "hausdorff": 1.9798,
+      "volumeIoU": 0.9964,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max"
+      ]
+    },
+    {
+      "id": 4,
+      "note": "fix float32 cap membrane: overshoot cavity revolve past faces; pac fill radius 2.0 avoids coincident r=2.4 cylinders",
+      "verdict": "improved",
+      "score": 0.0396,
+      "phase": "done",
+      "chamfer": 0.0034,
+      "hausdorff": 0.046,
+      "volumeIoU": 0.9964,
+      "failedMust": []
+    }
+  ]
+}

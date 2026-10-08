@@ -231,8 +231,9 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
 
 /** Build one labeled widget row. Returns the row plus a setter that pushes a
  *  resolved value back into the control (used to reflect Reset / persisted
- *  state without a rebuild). */
-function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue) => void): { row: HTMLElement; setValue: (v: ParamValue) => void } {
+ *  state without a rebuild). Exported so the Assembly view's shared-parameter
+ *  panel renders identical widgets. */
+export function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue) => void): { row: HTMLElement; setValue: (v: ParamValue) => void } {
   const row = document.createElement('div');
   row.className = 'flex flex-col gap-1';
 

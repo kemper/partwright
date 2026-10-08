@@ -5,8 +5,9 @@
 // edge cases the snapshot can't drift.
 
 import { describe, test, expect } from 'vitest';
-import { turnCostUsd, formatUsd } from '../../src/ai/cost';
+import { turnCostUsd, formatUsd, hasKnownPricing, estimateTurnCostUsd } from '../../src/ai/cost';
 import { getPricing, getModelOptions } from '../../src/ai/catalog';
+import { ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS } from '../../src/ai/settings';
 
 describe('turnCostUsd no-double-count contract', () => {
   // The bug we're guarding against: OpenAI / Gemini provider files used to
@@ -61,9 +62,9 @@ describe('turnCostUsd no-double-count contract', () => {
 describe('known-model pricing for out-of-snapshot compaction models', () => {
   // The bug we're guarding against: gpt-4o-mini is the OpenAI compaction model
   // but isn't in the build-time catalog snapshot (filtered to last-year
-  // releases). A catalog miss fell through to the Sonnet-tier FALLBACK_PRICING
-  // ($3/$15 per 1M), over-reporting the summarize call ~5–40×. cost.ts now
-  // carries an explicit KNOWN_MODEL_PRICING entry for it.
+  // releases). A catalog miss used to fall through to a guessed $3/$15
+  // rate, over-reporting the summarize call ~5–40×. cost.ts now carries an
+  // explicit KNOWN_MODEL_PRICING entry for it.
   test('gpt-4o-mini priced at its real (cheap) rate, not the Sonnet fallback', () => {
     const usage = {
       inputTokens: 1_000_000,
@@ -74,9 +75,6 @@ describe('known-model pricing for out-of-snapshot compaction models', () => {
     const cost = turnCostUsd('openai', 'gpt-4o-mini', usage);
     // Real gpt-4o-mini: $0.15 in + $0.60 out per 1M = $0.75.
     expect(cost).toBeCloseTo(0.75, 6);
-    // Must be far below the $3 + $15 = $18 Sonnet-tier fallback.
-    const fallback = turnCostUsd('openai', 'totally-unknown-model-xyz', usage);
-    expect(fallback).toBeGreaterThan(cost * 10);
   });
 
   test('cached gpt-4o-mini input uses the discounted cache-read rate', () => {
@@ -88,6 +86,67 @@ describe('known-model pricing for out-of-snapshot compaction models', () => {
     });
     // cacheRead $0.075 per 1M.
     expect(cost).toBeCloseTo(0.075, 6);
+  });
+});
+
+describe('unknown model pricing is reported as unknown, never guessed', () => {
+  // The bug we're guarding against: a deployed build's snapshot predates a
+  // model the user picked from the live "Load models from your key" list
+  // (production shipped without `gemini-3.8-flash`). The catalog miss used a
+  // guessed $3/$15 median rate, reporting a Flash session at ~4× its real
+  // Google bill. Unpriced models now return null so the UI can say "cost
+  // unknown" and ask the user to authorize them.
+  const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+
+  for (const provider of ['anthropic', 'openai', 'gemini'] as const) {
+    test(`${provider}: an id missing from the catalog has no price`, () => {
+      expect(turnCostUsd(provider, 'model-from-the-future-9000', usage)).toBeNull();
+      expect(estimateTurnCostUsd(provider, 'model-from-the-future-9000', 1000, 500)).toBeNull();
+      expect(hasKnownPricing(provider, 'model-from-the-future-9000')).toBe(false);
+    });
+  }
+
+  test('catalog models are priced', () => {
+    const opt = getModelOptions('gemini').find((o) => getPricing('gemini', o.id));
+    if (!opt) return;
+    expect(hasKnownPricing('gemini', opt.id)).toBe(true);
+    expect(turnCostUsd('gemini', opt.id, usage)).toBeGreaterThan(0);
+  });
+
+  test('local and custom providers are free, not unknown', () => {
+    for (const provider of ['local', 'custom']) {
+      expect(hasKnownPricing(provider, 'anything')).toBe(true);
+      expect(turnCostUsd(provider, 'anything', usage)).toBe(0);
+    }
+  });
+});
+
+describe('every model the app offers is priced', () => {
+  // An unpriced model makes the panel ask the user to authorize it, so any
+  // id we ship as a default or picker option must carry real pricing —
+  // otherwise every new user hits the prompt (gpt-5-mini, the OpenAI
+  // default, had aged out of the snapshot).
+  test('defaults and picker options', () => {
+    const offered: Array<[string, string]> = [
+      ['openai', 'gpt-5-mini'],
+      ['gemini', 'gemini-flash-latest'],
+      ...ANTHROPIC_MODEL_OPTIONS.map((o) => ['anthropic', o.id] as [string, string]),
+      ...OPENAI_MODEL_OPTIONS.map((o) => ['openai', o.id] as [string, string]),
+      ...GEMINI_MODEL_OPTIONS.map((o) => ['gemini', o.id] as [string, string]),
+    ];
+    const unpriced = offered.filter(([p, id]) => !hasKnownPricing(p, id)).map(([p, id]) => `${p}/${id}`);
+    expect(unpriced).toEqual([]);
+  });
+});
+
+describe('pinned compaction-model pricing', () => {
+  // gemini-2.5-flash-lite (Gemini's compaction model) had already aged out of
+  // the snapshot, so every Gemini /compact was priced at $3/$15 — ~30× over.
+  test('gemini-2.5-flash-lite priced at $0.10 / $0.40', () => {
+    const cost = turnCostUsd('gemini', 'gemini-2.5-flash-lite', {
+      inputTokens: 1_000_000, outputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+    });
+    expect(cost).toBeCloseTo(0.5, 6);
   });
 });
 

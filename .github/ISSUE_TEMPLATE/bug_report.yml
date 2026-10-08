@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in Partwright is broken or behaves unexpectedly.
+labels: ["bug", "user-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this! Partwright runs entirely in your browser, so nothing about your models reaches us unless you paste it here.
+        If you opened this from the app's **Feedback** menu, the version and environment fields below are already filled in — edit or remove anything you'd rather not share.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The clicks, code, or prompt that trigger it. A minimal code snippet is ideal.
+      placeholder: |
+        1. Open the editor
+        2. Paste this code…
+        3. Click Run
+    validations:
+      required: false
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Screenshots, share link, or diagnostics
+      description: |
+        Drag in a screenshot, paste a share link (Export menu → "Share link…"), or paste entries from the Diagnostic log (⚠ in the left rail → Copy).
+        Only include a share link if you're happy for the design to be public — it encodes the whole model.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the app's About dialog (ⓘ in the left rail).
+      placeholder: v1.0.0 (abc1234)
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Page URL and browser. Pre-filled when you open this from the app.
+      placeholder: |
+        https://www.partwrightstudio.com/editor
+        Chrome 130 on macOS
+      render: text
+    validations:
+      required: false

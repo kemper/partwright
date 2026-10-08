@@ -1,0 +1,43 @@
+{
+  "part": "frame_forearm_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.0038007333019087998,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "sibling-transfer-from-frame_shin_2x (5.18, chord-math verified) — SUCCEEDED attempt 1"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.4475,
+      "phase": "place",
+      "chamfer": 0.1208,
+      "hausdorff": 1.0696,
+      "volumeIoU": 0.8614,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "shin transfer (§5.18): ball r3 c(0,-15,2.5) probed exact; neck D r1.5/z1.2, end chamfer -11/-10.5, shaft oct2.5 -10.5..0, slab z1..4.1 y-5..3.5, spool+dimples verbatim — all chord-math verified",
+      "verdict": "improved",
+      "score": 0.0038,
+      "phase": "done",
+      "chamfer": 0.0005,
+      "hausdorff": 0.0943,
+      "volumeIoU": 0.9996,
+      "failedMust": []
+    }
+  ]
+}

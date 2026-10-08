@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { repairToolHistory, hasOrphanedToolCalls } from '../../src/ai/historyRepair';
+import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../../src/ai/historyRepair';
 import type { ChatMessage } from '../../src/ai/types';
 
 function assistant(seq: number, toolCallIds: string[], text = ''): ChatMessage {
@@ -153,5 +153,40 @@ describe('repairToolHistory', () => {
       expect(r.changed).toBe(false);
       expect(r.toDelete).toHaveLength(0);
     });
+  });
+});
+
+describe('isToolHistoryMismatchError', () => {
+  it('matches the Anthropic orphaned-tool_use 400 (the reported error)', () => {
+    const msg =
+      'OpenAI 400: {"type":"error","error":{"type":"invalid_request_error","message":"messages.28: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01Cvxc2x4mLvUKaYTaCQK32e. Each `tool_use` block must have a corresponding `tool_result` block in the next message."}}';
+    expect(isToolHistoryMismatchError(msg)).toBe(true);
+  });
+
+  it('matches the Anthropic orphaned-tool_result 400', () => {
+    expect(isToolHistoryMismatchError('400: unexpected `tool_use_id` found in `tool_result` blocks')).toBe(true);
+  });
+
+  it('matches the OpenAI unanswered-tool_calls 400', () => {
+    expect(
+      isToolHistoryMismatchError(
+        "OpenAI 400: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: call_abc",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches the OpenAI orphaned-tool-message 400", () => {
+    expect(
+      isToolHistoryMismatchError(
+        "Invalid parameter: messages with role 'tool' must be a response to a preceding message with 'tool_calls'.",
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match unrelated errors', () => {
+    expect(isToolHistoryMismatchError('401: Invalid API key.')).toBe(false);
+    expect(isToolHistoryMismatchError('Rate limit exceeded, please retry.')).toBe(false);
+    expect(isToolHistoryMismatchError('The model returned an empty response.')).toBe(false);
+    expect(isToolHistoryMismatchError('')).toBe(false);
   });
 });

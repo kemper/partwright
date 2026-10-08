@@ -1,0 +1,25 @@
+{
+  "part": "armor_crotch",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 0,
+    "score": 0.3775028061681946,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 0.3775,
+      "phase": "done",
+      "chamfer": 0.0215,
+      "hausdorff": 0.5287,
+      "volumeIoU": 0.9722,
+      "failedMust": []
+    }
+  ]
+}

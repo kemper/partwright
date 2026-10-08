@@ -12,9 +12,22 @@
 //      openai.ts's authHeaders).
 //   2. We never touch the Responses API (`/v1/responses`) — it's OpenAI-
 //      proprietary and self-hosted servers don't implement it. `streamTurn`
-//      passes `forceChatCompletions: true`, and we send `thinking: 'off'` so
-//      no `reasoning_effort` field is ever attached (arbitrary servers reject
-//      unknown fields).
+//      passes `forceChatCompletions: true` and omits `thinking`, so the
+//      OpenAI transport never attaches its own `reasoning_effort`.
+//
+// Reasoning visibility: when the user's Thinking toggle isn't Off we send
+// `include_reasoning: true`. `reasoning_effort` is only sent when the user
+// opts in on the Custom tab (`customReasoningEffort`) — see
+// customReasoningFields in thinkingLevels.ts. Modern thinking models
+// reached through a bridge like CLIProxyAPI (Claude Opus/Sonnet 5 think
+// adaptively by default; Codex models always reason) otherwise think with
+// their reasoning hidden, so the stream is completely silent until the first
+// answer token — often longer than the stall watchdog's window, which then
+// aborts and retries every turn. Asking for the reasoning makes the server
+// stream it as `reasoning_content` deltas, which openai.ts forwards to the
+// thinking box and the watchdog. `include_reasoning` is a visibility flag,
+// not a depth knob: servers that don't know it ignore it (llama.cpp, Ollama,
+// LM Studio) or already default it on (vLLM), so it's safe to send.
 //
 // Mirrors the exported shape of the other providers (streamTurn / summarize /
 // validateKey / listModels / resetClient) so chatLoop.ts, compaction.ts, and
@@ -26,7 +39,8 @@ import {
   type StreamCallbacks,
   type StreamResult,
 } from './openai';
-import type { ChatMessage, TurnUsage } from './types';
+import type { ChatMessage, ChatToggles, TurnUsage } from './types';
+import { customReasoningFields } from './thinkingLevels';
 import type { ToolDefinition } from './tools';
 
 export type { StreamCallbacks, StreamResult } from './openai';
@@ -42,6 +56,11 @@ export interface CustomRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
+  /** The Thinking toggle. Anything but 'off' asks the server to stream the
+   *  model's reasoning (see module header). Omitted = 'off'. */
+  thinking?: ChatToggles['thinking'];
+  /** Also send the level as `reasoning_effort` (user opt-in). */
+  sendReasoningEffort?: boolean;
 }
 
 /** Build the `/models` URL for the configured base. Trailing slash tolerated. */
@@ -70,10 +89,12 @@ export async function streamTurn(
       tools: spec.tools,
       maxTokens: spec.maxTokens,
       // Self-hosted servers implement Chat Completions, not the Responses
-      // API; never send a reasoning request (see module header).
-      thinking: 'off',
+      // API. `thinking` is deliberately omitted so the OpenAI transport never
+      // attaches its own reasoning_effort; the opt-in one rides in
+      // extraChatFields below (see module header).
       baseUrl: spec.baseUrl,
       forceChatCompletions: true,
+      extraChatFields: customReasoningFields(spec.thinking ?? 'off', spec.sendReasoningEffort === true),
     },
     callbacks,
     signal,

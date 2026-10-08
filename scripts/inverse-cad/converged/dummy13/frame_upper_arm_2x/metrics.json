@@ -1,0 +1,152 @@
+{
+  "ok": true,
+  "attempt": 1,
+  "note": "sibling transfer from frame_thigh_2x: fork end (flare/fork/slot/cavity/channel/diag chamfer) shifted y-8, spool/window/shaft verbatim; every dim chord-verified vs bootstrap + z=2.5/4.75/4.3 sections",
+  "score": 0.02718,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.00174,
+    "hausdorff": 0.08694,
+    "rms": 0.00657,
+    "candToTarget": {
+      "mean": 0.00175,
+      "rms": 0.00656,
+      "max": 0.08694,
+      "p50": 0,
+      "p90": 0.00183,
+      "p99": 0.03215,
+      "meanSigned": 0.00109,
+      "excessArea_mm2": 0.62894,
+      "missingArea_mm2": 0.19142
+    },
+    "targetToCand": {
+      "mean": 0.00172,
+      "rms": 0.00657,
+      "max": 0.08593,
+      "p50": 0,
+      "p90": 0.00171,
+      "p99": 0.03241,
+      "meanSigned": -0.00112,
+      "excessArea_mm2": 0.02736,
+      "missingArea_mm2": 0.79343
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -4.3,
+        -2.8,
+        -0.3
+      ],
+      "size": [
+        58,
+        114,
+        38
+      ]
+    },
+    "volumeIoU": 0.99815,
+    "excess_mm3": 0.55012,
+    "missing_mm3": 0.027,
+    "targetVol_mm3": 311.83312,
+    "candVol_mm3": 312.35625,
+    "findings": [],
+    "totalFindings": 0,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0324,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.0869,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9982,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement"
+      },
+      {
+        "name": "topology",
+        "value": "genus 3/3, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 1.0019,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0017,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 0.9995,
+        "threshold": "1 ± 0.04",
+        "pass": true,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 2/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 3,
+    "volume": 313.00813,
+    "surfaceArea": 546.90869,
+    "bbox": {
+      "min": [
+        -4,
+        -2.5,
+        0
+      ],
+      "max": [
+        4,
+        14,
+        5
+      ],
+      "size": [
+        8,
+        16.5,
+        5
+      ],
+      "center": [
+        0,
+        5.75,
+        2.5
+      ]
+    }
+  }
+}

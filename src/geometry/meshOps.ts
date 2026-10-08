@@ -21,6 +21,10 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createScatter } from './scatter';
+import { createDeformOps } from './deform';
+import { createMeshSdfOps } from './meshSdfOps';
+
 export type Vec3 = [number, number, number];
 type Vec3Or1 = Vec3 | [number, number] | number;
 type AlignMode = 'min' | 'max' | 'center' | 'left' | 'right' | 'front' | 'back' | 'top' | 'bottom';
@@ -613,6 +617,12 @@ export function createMeshOpsNamespace(module: any) {
     linearPattern,
     circularPattern,
     spiralPattern,
+    // surface scatter (instance-on-surface, Geometry Nodes-style)
+    ...createScatter(module),
+    // named deforms (wrap / bend / twist / taper / alongCurve)
+    ...createDeformOps(module),
+    // SDF-backed rounding + smooth welding for arbitrary meshes
+    ...createMeshSdfOps(module),
     // robust booleans / heal
     expectUnion,
     expectDifference,

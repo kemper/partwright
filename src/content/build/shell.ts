@@ -10,10 +10,12 @@
 // The top navigation is the shared header used by every non-editor surface
 // (landing, content pages, ideas) — see src/content/chrome.ts.
 import { contentHeaderHtml } from '../chrome';
+import { buildInfo } from '../../buildInfo';
+import { discussionsUrl, issueChooserUrl } from '../../feedbackLinks';
 
 /** Shared footer with cross-links + a non-commercial note. */
 export function footerHtml(): string {
-  const cols: { title: string; links: { href: string; label: string }[] }[] = [
+  const cols: { title: string; links: { href: string; label: string; external?: boolean }[] }[] = [
     {
       title: 'Explore',
       links: [
@@ -34,6 +36,8 @@ export function footerHtml(): string {
       title: 'About',
       links: [
         { href: '/legal', label: 'Legal & privacy' },
+        { href: issueChooserUrl(buildInfo), label: 'Feedback & bug reports', external: true },
+        { href: discussionsUrl(buildInfo), label: 'Community discussions', external: true },
       ],
     },
   ];
@@ -41,7 +45,7 @@ export function footerHtml(): string {
     .map(
       (c) => `<div class="flex flex-col gap-2">
       <div class="text-xs uppercase tracking-wider text-zinc-500 font-semibold">${c.title}</div>
-      ${c.links.map((l) => `<a href="${l.href}" class="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">${l.label}</a>`).join('')}
+      ${c.links.map((l) => `<a href="${l.href}"${l.external ? ' target="_blank" rel="noopener noreferrer"' : ''} class="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">${l.label}</a>`).join('')}
     </div>`,
     )
     .join('');

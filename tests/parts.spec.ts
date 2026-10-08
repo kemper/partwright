@@ -196,7 +196,7 @@ test.describe('Multi-part sessions', () => {
     expect(initial).toEqual(['Part 1', 'Beta', 'Gamma']);
 
     // Drag the first row's grip below the last row.
-    const firstGrip = list.locator('[data-part-id]').first().locator('[title="Drag to reorder"]');
+    const firstGrip = list.locator('[data-part-id]').first().locator('[aria-label="Drag to reorder"]');
     const lastRow = list.locator('[data-part-id]').last();
     const g = await firstGrip.boundingBox();
     const l = await lastRow.boundingBox();

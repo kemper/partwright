@@ -10,15 +10,21 @@ import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, 
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
+import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
-import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
+import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { confirmDialog } from './dialogs';
+import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
+import { gatherReviewContext, runReview } from '../ai/review';
+import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
+import { isModelChangingTool } from '../ai/tools';
+import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
 import { starterChipIdeas } from '../ideas/ideas';
@@ -34,7 +40,7 @@ import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
-import { repairToolHistory, hasOrphanedToolCalls } from '../ai/historyRepair';
+import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
 import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
@@ -150,6 +156,39 @@ function contextLimitFor(settings: AiSettings): number {
  *  before every kept message. Multiple compactions over a session would
  *  otherwise all share seq=-1 and sort unstably on reload — by stepping
  *  one below the current minimum we keep the order deterministic. */
+/** Replace the `dropped` turns with a summary — shared by auto and manual
+ *  compaction. Images the user attached in those turns are carried forward
+ *  in a user message placed just before the summary (up to the configured
+ *  cap), so a reference photo survives compaction instead of becoming a
+ *  text placeholder. The order [user: references][assistant: summary]
+ *  [kept turns…] keeps roles alternating for every provider. */
+async function persistCompaction(dropped: ChatMessage[], summaryText: string): Promise<void> {
+  const seq = nextCompactedSeq(state.history);
+  const carried = carriedAttachments(dropped, getConfig().ai.compactionKeepImages);
+  const messages: ChatMessage[] = [];
+  if (carried.length > 0) {
+    messages.push({
+      id: generateId(),
+      sessionId: state.sessionId,
+      role: 'user',
+      blocks: [{ type: 'text', text: CARRIED_ATTACHMENTS_NOTE }, ...carried],
+      createdAt: Date.now(),
+      seq: seq - 1,
+    });
+  }
+  messages.push({
+    id: generateId(),
+    sessionId: state.sessionId,
+    role: 'assistant',
+    blocks: [{ type: 'text', text: summaryText }],
+    createdAt: Date.now(),
+    seq,
+    compacted: true,
+  });
+  await deleteMessages(dropped.map(m => m.id));
+  await putMessages(messages);
+}
+
 function nextCompactedSeq(history: ChatMessage[]): number {
   const existing = history.map(m => m.seq).filter(n => Number.isFinite(n));
   const min = existing.length > 0 ? Math.min(...existing) : 0;
@@ -644,7 +683,11 @@ async function applySessionAiPreference(): Promise<void> {
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
     // (no needless settings write or transcript-shifting re-render).
-    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    // Compare NORMALIZED forms: a snapshot saved before a toggles field was
+    // added lacks it, so a raw compare would never match and every window
+    // focus would rewrite settings.
+    const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
+      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
     next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
@@ -1541,6 +1584,15 @@ function renderToggleStrip(): void {
     },
   ));
   primary.appendChild(togglePill(
+    '🔍 Review',
+    toggles.autoReview,
+    'Automatic review (this window): after a task that changed the model, a reviewer with a fresh context grades the result against your request and suggests fixes (one extra request per task). Configure the reviewer model and fix rounds in ⚙ AI Settings → Automatic review.',
+    () => {
+      applyToggleChange({ autoReview: !toggles.autoReview });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
     '📋 Plan',
     toggles.planFirst,
     'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
@@ -1613,14 +1665,13 @@ function renderToggleStrip(): void {
   });
   adv.appendChild(spendCap);
 
-  // Thinking level — how much the model reasons before answering. Maps
-  // per-provider to Anthropic extended-thinking budget_tokens, Gemini
-  // thinkingBudget (+ surfaced thought parts), and OpenAI reasoning_effort.
-  // Off (the default) sends no thinking request, so it's the cheapest and
-  // reproduces the pre-feature behavior. No effect on local models.
+  // Thinking level — how much the model reasons before answering. Mapped per
+  // provider + model in src/ai/thinkingLevels.ts (Anthropic adaptive thinking
+  // + effort, or budget_tokens on older Claude; OpenAI reasoning_effort;
+  // Gemini thinkingConfig). No effect on local models.
   const thinkSel = document.createElement('select');
   thinkSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
+  thinkSel.title = 'Thinking: how much the model reasons before it answers. Off = no extended reasoning where the model allows it (lowest effort on models that always think). Default = let the model decide. Low → Max = increasing effort; a level the model lacks falls back to its nearest one (e.g. Gemini tops out at High). Maps to Claude adaptive thinking + effort, OpenAI reasoning_effort, and Gemini thinking budgets; on a Custom endpoint any level above Off asks the server to stream the model reasoning. High is a good default for modeling. No effect on local models.';
   for (const opt of THINKING_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;
@@ -1702,7 +1753,13 @@ function renderCostMeter(): void {
   costMeterEl.appendChild(sep);
 
   const session = document.createElement('span');
-  session.textContent = `session: ${formatUsd(cost)}`;
+  // Turns on an unpriced model add nothing to `cost`, so the total is a
+  // floor, not the bill — say so rather than under-report silently.
+  const unpricedTurns = state.history.filter(m => m.costUnknown).length;
+  session.textContent = unpricedTurns > 0 ? `session: ≥${formatUsd(cost)}` : `session: ${formatUsd(cost)}`;
+  if (unpricedTurns > 0) {
+    session.title = `${unpricedTurns} turn(s) ran on a model with no known pricing and aren't included. Check your provider's billing console for actual charges.`;
+  }
   costMeterEl.appendChild(session);
 
   const sep2 = document.createElement('span');
@@ -1711,7 +1768,8 @@ function renderCostMeter(): void {
   costMeterEl.appendChild(sep2);
 
   const next = document.createElement('span');
-  next.textContent = `next turn ~${formatUsd(turnEst)}`;
+  next.textContent = turnEst === null ? 'next turn: cost unknown' : `next turn ~${formatUsd(turnEst)}`;
+  if (turnEst === null) next.title = `No pricing data for "${model}" — the $ spend cap can't track this model.`;
   costMeterEl.appendChild(next);
 }
 
@@ -1951,6 +2009,9 @@ function renderPlanApprovalBar(): void {
 
 async function approvePlan(): Promise<void> {
   if (!state.pendingPlanApproval) return;
+  // The automatic review grades the built result against the ORIGINAL
+  // request, not this turn's "Plan approved" message.
+  const reviewRequest = state.pendingPlanApproval.originalText;
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
 
@@ -1968,7 +2029,7 @@ async function approvePlan(): Promise<void> {
   // the approved turn could only re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
     { type: 'text', text: 'Plan approved. Please proceed.' },
-  ]);
+  ], { reviewRequest });
 }
 
 async function rejectPlan(): Promise<void> {
@@ -2188,11 +2249,12 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     }
   }
 
-  if (msg.role === 'assistant' && (msg.costUsd !== undefined || msg.durationMs !== undefined)) {
+  if (msg.role === 'assistant' && (msg.costUsd !== undefined || msg.costUnknown || msg.durationMs !== undefined)) {
     const meta = document.createElement('div');
     meta.className = 'text-[10px] text-zinc-600';
     const parts: string[] = [];
     if (msg.costUsd !== undefined) parts.push(formatUsd(msg.costUsd));
+    else if (msg.costUnknown) parts.push('cost unknown');
     if (msg.usage) parts.push(`${msg.usage.outputTokens}t out`);
     if (msg.durationMs !== undefined) {
       parts.push(formatDuration(msg.durationMs));
@@ -2263,19 +2325,22 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   const retryBtn = document.createElement('button');
   retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
   retryBtn.textContent = '↻ Retry';
-  retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
+  retryBtn.title = 'Resume the agent from where it failed — completed work above is kept, and any interrupted tool call is auto-repaired first so the resend can\'t trip the same tool-history 400.';
   retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
 
   // When the failure is a wedged tool-history invariant (an orphaned tool_use
-  // with no matching tool_result — the unrecoverable provider 400 that even a
-  // rewind couldn't escape), offer a one-click repair right where the user is
-  // stuck. The button only appears when there's actually something to fix.
-  if (hasOrphanedToolCalls(state.history)) {
+  // with no matching tool_result — the provider 400 that even a rewind couldn't
+  // escape), offer a one-click repair right where the user is stuck. Show it
+  // whenever the persisted history has something to fix OR the error text is a
+  // tool-mismatch 400 (so the manual escape hatch appears for this failure
+  // class even in an edge shape the persisted-history detector misses).
+  const errText = msg.blocks.find(b => b.type === 'text')?.text ?? '';
+  if (hasOrphanedToolCalls(state.history) || isToolHistoryMismatchError(errText)) {
     const repairBtn = document.createElement('button');
     repairBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
     repairBtn.textContent = '🛠 Repair history';
-    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed.';
+    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed. (Retry now does this automatically too.)';
     repairBtn.addEventListener('click', () => { void repairCurrentChat(); });
     actions.appendChild(repairBtn);
   }
@@ -3037,6 +3102,16 @@ async function preflightTurn(
       return PREFLIGHT_ABORT;
     }
     apiKey = key.apiKey;
+    // No real pricing for this model (e.g. newer than the deployed catalog)
+    // → the cost meter and $ cap can't track it; ask before spending.
+    const model = activeModel(settings.toggles);
+    if (model && !hasKnownPricing(provider, model)) {
+      if (!(await confirmUnpricedModel(provider, model))) {
+        setTransientStatus(`Not sent — "${model}" has no known pricing. Pick a priced model or authorize it to continue.`);
+        return PREFLIGHT_ABORT;
+      }
+      setTransientStatus('');
+    }
   } else {
     if (!settings.toggles.localModel) {
       void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } });
@@ -3100,6 +3175,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
   portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
+  reconstruct: () => { prefillAiInput(RECONSTRUCT_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a
@@ -3354,10 +3430,13 @@ interface TurnOutcome {
   reason: TurnOutcomeReason;
   detail?: string;
   iterations: number;
+  /** The turn ran on a model with no known pricing — show "cost unknown"
+   *  rather than the $0 its unpriced iterations summed to. */
+  costUnknown?: boolean;
 }
 
 function formatTurnOutcome(o: TurnOutcome): string {
-  const cost = formatUsd(o.totalCostUsd);
+  const cost = o.costUnknown ? 'cost unknown' : formatUsd(o.totalCostUsd);
   const iters = `${o.iterations} iter`;
   const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
   switch (o.reason) {
@@ -3452,18 +3531,46 @@ function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<Cha
     : runTurnInWorker(input, callbacks);
 }
 
-async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
+async function runTurnWithStallRetry(
+  apiKey: string | undefined,
+  toggles: ChatToggles,
+  userBlocks: ChatBlock[],
+  opts: { reviewRequest?: string } = {},
+): Promise<void> {
   let attempt = 0;
   let lastTurnOutcome: TurnOutcome | null = null;
   // Bucket the conversation lives in as this turn begins. If the model creates
   // a session mid-turn the active bucket changes out from under us, so we
   // remember the starting bucket and re-home the chat once the turn settles.
   let turnStartBucket = state.sessionId;
+  // Automatic review: fix rounds the agent has had for THIS request, and
+  // whether auto-compaction was held back until the review posted (the two
+  // would otherwise race over state.history).
+  let autoReviewRounds = 0;
+  let deferredAutoCompact = false;
+  // What an automatic review grades against: the human request that started
+  // this run (plan approval passes the original text, since its own message
+  // is just "Plan approved"), and when the current round began (only tool
+  // calls made since then count as "changed the model").
+  let reviewRequest = opts.reviewRequest ?? requestText(userBlocks);
+  let roundStartedAt = Date.now();
   // NOTE: don't record the session's AI preference here. On turn start the
   // active model may be a *fallback* (the session's remembered model was
   // unavailable), and recording it would erase the real preference instead of
   // letting it snap back. The preference is recorded only on a deliberate model
   // / provider pick (the picker + settings/local modals below).
+
+  // Self-heal a wedged tool-history invariant before every send. An interrupted
+  // turn (Stop, stall watchdog, spend cap, crash, or a mid-turn session switch)
+  // can leave an orphaned assistant tool_use with no matching tool_result
+  // persisted in history; every hosted provider then 400s on that shape on
+  // EVERY subsequent send — including a plain Retry — until the stored messages
+  // themselves are fixed. Repairing here (a no-op on already-clean history)
+  // makes both a normal send and the Retry/Keep-going buttons auto-recover
+  // instead of looping on the same 400. This is the automatic counterpart to
+  // the explicit /repair command and the error-bubble "Repair history" button.
+  await persistToolHistoryRepair();
+
   while (true) {
     attempt++;
     const controller = new AbortController();
@@ -3640,9 +3747,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // truncation, refusal, empty final) so the user keeps full context
         // for the "Keep going" resume.
         if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
-          void maybeAutoCompact();
+          if (toggles.autoReview) deferredAutoCompact = true;
+          else void maybeAutoCompact();
         }
-        lastTurnOutcome = info;
+        lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
       },
     });
     } catch (err) {
@@ -3734,6 +3842,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       lastTurnOutcome = null;
       userBlocks = next;
       attempt = 0;
+      // A new human request: its own review, its own fix rounds.
+      autoReviewRounds = 0;
+      reviewRequest = requestText(next) || reviewRequest;
+      roundStartedAt = Date.now();
       continue;
     }
 
@@ -3745,12 +3857,156 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     if (finalOutcome && isResumableStop(finalOutcome.reason) && !state.history.some(m => m.errored)) {
       pushStopNotice(finalOutcome);
     }
+
+    // Automatic end-of-task review: a fresh-context reviewer grades the
+    // result; a non-passing verdict (with fix rounds left) is handed back to
+    // the agent as a follow-up turn.
+    if (finalOutcome && writeOwner && shouldAutoReview({
+      enabled: toggles.autoReview,
+      reason: finalOutcome.reason,
+      modelChangingToolCalls: countModelChangingCalls(state.history, roundStartedAt, isModelChangingTool),
+      planning: toggles.planFirst || state.pendingPlanApproval !== null,
+      hadError: state.history.some(m => m.errored),
+      spentUsd: totalCost(state.history),
+      spendCapUsd: SPEND_CAP_USD[toggles.maxSpend],
+    })) {
+      const reviewSession = state.sessionId;
+      const followUp = await runAutoReview(toggles, autoReviewRounds, reviewRequest || latestUserRequest(state.history));
+      showProgressFinal(formatTurnOutcome(finalOutcome));
+      if (state.sessionId !== reviewSession || !writeOwner) {
+        // The user switched sessions, or another tab took control, while the
+        // review ran. Never act on it here: the in-memory transcript still
+        // holds the old session, so reload the one now on screen.
+        if (state.sessionId !== reviewSession) {
+          await loadHistoryForCurrentSession();
+          renderTranscript();
+          renderCostMeter();
+        }
+      } else if (state.queuedBlocks.length > 0) {
+        // The human typed while the review ran — their message wins over a
+        // fix round (it may well be "stop, that's fine").
+        userBlocks = drainQueuedBlocks();
+        autoReviewRounds = 0;
+        reviewRequest = requestText(userBlocks) || reviewRequest;
+        roundStartedAt = Date.now();
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      } else if (followUp && overSpendCap(totalCost(state.history), SPEND_CAP_USD[toggles.maxSpend])) {
+        setTransientStatus('The automatic review found issues, but the session reached its $ cap — no fix round started.');
+      } else if (followUp) {
+        autoReviewRounds++;
+        userBlocks = [{ type: 'text', text: followUp }];
+        roundStartedAt = Date.now();
+        attempt = 0;
+        progressState.retryCount = 0;
+        stalledByWatchdog = false;
+        continue;
+      }
+    }
+    if (deferredAutoCompact) {
+      deferredAutoCompact = false;
+      void maybeAutoCompact();
+    }
     broadcastChatChanged();
     // The turn truly ended (retries/queued follow-ups `continue` above and never
     // reach here) — let the host flush anything it held back during the turn,
     // e.g. the deferred Customizer reveal.
     for (const fn of turnEndListeners) fn();
     return;
+  }
+}
+
+/** Run one automatic review of the finished task and post it to the chat.
+ *  Returns the follow-up prompt when the agent should act on it, else null.
+ *  Never throws — a failed review is reported and the turn simply ends. */
+/** Reviewer models whose unknown pricing the user declined this session, so
+ *  the confirmation doesn't pop up at the end of every task. */
+const declinedReviewers = new Set<string>();
+/** Skip reasons already shown this page load. Review is on by default, so a
+ *  Local chat (which can't be its own reviewer) would otherwise repeat the
+ *  same notice after every task. */
+const shownReviewSkips = new Set<string>();
+
+async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: string): Promise<string | null> {
+  const cfg = loadSettings().autoReview;
+  const reviewer = resolveReviewer(cfg, toggles);
+  if ('skip' in reviewer) {
+    if (!shownReviewSkips.has(reviewer.skip)) {
+      shownReviewSkips.add(reviewer.skip);
+      setTransientStatus(`Automatic review skipped: ${reviewer.skip}.`);
+    }
+    return null;
+  }
+  const reviewerKey = `${reviewer.provider}/${reviewer.model}`;
+  const unpricedSkip = 'Automatic review skipped: the reviewer model has no known pricing and wasn’t authorized — pick a priced reviewer in ⚙ AI Settings → Automatic review.';
+  if (declinedReviewers.has(reviewerKey)) {
+    setTransientStatus(unpricedSkip);
+    return null;
+  }
+  if (!(await confirmUnpricedModel(reviewer.provider, reviewer.model))) {
+    declinedReviewers.add(reviewerKey);
+    setTransientStatus(unpricedSkip);
+    return null;
+  }
+  const label = `${providerLabel(reviewer.provider)} / ${reviewer.model}`;
+  const reviewSession = state.sessionId;
+  // Run like a turn: busy (typed messages queue instead of racing the review
+  // for state.history), Stop cancels it, and a take-over by another tab
+  // (applyOwnership → stopActiveTurn) aborts it too.
+  const controller = new AbortController();
+  state.inFlight = true;
+  state.inFlightController = controller;
+  setSendButtonMode('inflight');
+  updateRewindButtons();
+  showProgress('tool', `🔍 automatic review (${label})`);
+  try {
+    const context = await gatherReviewContext();
+    if (controller.signal.aborted || state.sessionId !== reviewSession || !writeOwner) return null;
+    const result = await runReview({
+      provider: reviewer.provider,
+      model: reviewer.model,
+      context: {
+        ...context,
+        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The images the user attached anywhere in this conversation (incl.
+        // ones compaction carried forward), not the agent's own renders.
+        references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+      },
+      sessionId: reviewSession,
+      // The review is in the transcript — a session note per automatic
+      // review is clutter.
+      promoteToNote: false,
+      signal: controller.signal,
+    });
+    // Persisted under its own session either way; only show it (and act on
+    // it) if that session is still the one on screen.
+    if (state.sessionId !== reviewSession) return null;
+    state.history.push(result.message);
+    renderTranscript();
+    renderCostMeter();
+    const verdict = parseReviewVerdict(result.text);
+    if (shouldActOnReview(verdict, roundsUsed, cfg.fixRounds)) {
+      setTransientStatus(`Automatic review found issues — the agent is addressing them (round ${roundsUsed + 1} of ${cfg.fixRounds}).`);
+      return buildFixPrompt(label);
+    }
+    setTransientStatus(verdict === 'pass' ? 'Automatic review: passed.' : 'Automatic review posted to the chat.');
+    return null;
+  } catch (err) {
+    if (controller.signal.aborted) {
+      setTransientStatus('Automatic review stopped.');
+      return null;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    errorLog.capture({ level: 'warn', source: 'ai', message: `Automatic review failed: ${msg}` });
+    setTransientStatus(`Automatic review failed: ${msg}`);
+    return null;
+  } finally {
+    state.inFlight = false;
+    state.inFlightController = null;
+    setSendButtonMode('send');
+    updateRewindButtons();
   }
 }
 
@@ -3942,7 +4198,9 @@ function triggerStallRetry(): void {
  *  - off:           do nothing.
  *  - conservative:  no auto-fire (the persistent "Compact now" link on
  *                   the cost meter at ≥80% is the canonical surface).
- *  - standard:      silently compact at 70% full, keep last 4 turns.
+ *  - standard:      silently compact at 70% full — or past the
+ *                   auto-compact token ceiling (app config), whichever
+ *                   comes first — keeping the last 4 turns.
  *  - aggressive:    compact after every turn, keep just the last
  *                   exchange. Best when full history doesn't matter —
  *                   like driving the modeler. */
@@ -3950,6 +4208,10 @@ async function maybeAutoCompact(): Promise<void> {
   const settings = loadSettings();
   const mode = settings.autoCompactMode;
   if (mode === 'off' || mode === 'conservative') return;
+  // A defaulted Auto doesn't apply to Local: its few-thousand-token window
+  // would compact after nearly every turn, on the same small engine the next
+  // message needs. Local users who pick a mode themselves still get it.
+  if (settings.toggles.provider === 'local' && !settings.autoCompactUserSet) return;
 
   const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
   const ctxLimit = contextLimitFor(settings);
@@ -3962,7 +4224,9 @@ async function maybeAutoCompact(): Promise<void> {
   } else {
     // standard
     keepTail = 4;
-    if (pct < 0.7) return;
+    // 70% of a 1M-token window is ~700k tokens; the absolute ceiling keeps
+    // cache misses (a pause past the cache TTL re-bills everything) cheap.
+    if (pct < 0.7 && tokens < getConfig().ai.autoCompactMaxTokens) return;
     if (state.history.length <= keepTail + 1) return;
   }
 
@@ -3999,17 +4263,7 @@ async function maybeAutoCompact(): Promise<void> {
     }
   }
 
-  const summaryMsg: ChatMessage = {
-    id: generateId(),
-    sessionId: state.sessionId,
-    role: 'assistant',
-    blocks: [{ type: 'text', text: `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}` }],
-    createdAt: Date.now(),
-    seq: nextCompactedSeq(state.history),
-    compacted: true,
-  };
-  await deleteMessages(proposal.drop.map(m => m.id));
-  await putMessages([summaryMsg]);
+  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`);
   // Dropping the summarized tail can sever a tool round — leaving a kept
   // tool_result whose originating tool_use is now gone. Clear that dangling
   // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
@@ -4081,17 +4335,7 @@ async function runCompact(): Promise<void> {
       }
     }
     // Replace the dropped tail with one synthetic summary message
-    const summaryMsg: ChatMessage = {
-      id: generateId(),
-      sessionId: state.sessionId,
-      role: 'assistant',
-      blocks: [{ type: 'text', text: `[compacted summary]\n${summary}` }],
-      createdAt: Date.now(),
-      seq: nextCompactedSeq(state.history),
-      compacted: true,
-    };
-    await deleteMessages(proposal.drop.map(m => m.id));
-    await putMessages([summaryMsg]);
+    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`);
     // Dropping the summarized tail can sever a tool round — leaving a kept
     // tool_result whose originating tool_use is now gone. Clear that dangling
     // reference so the very next turn doesn't 400 on an orphaned tool_use_id.

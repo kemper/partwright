@@ -20,6 +20,11 @@ let body = Manifold.cylinder(knobH, knobR, knobR, 64);
 const lobe = Manifold.cylinder(knobH + 2, lobeR, lobeR, 24).translate([knobR, 0, -1]);
 body = body.subtract(circularPattern(lobe, p.lobeCount, { axis: 'z' }));
 
+// Round every scallop/rim edge on the grip body for a comfortable bare-hand
+// grip — this happens BEFORE the tolerance-critical pocket/bore subtractions
+// below, so the exact fastener fit is untouched by the remeshing.
+body = api.round(body, { radius: 1 });
+
 // Chamfer the top rim with a cone intersect.
 const topChamfer = Manifold.cylinder(2.5, knobR + 3, knobR - 1.5, 64).translate([0, 0, knobH - 2.5]);
 body = body.intersect(

@@ -9,6 +9,7 @@ import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
 import { componentsOverlap } from './bboxOverlap';
+import { sourceUsesManifoldText, preloadTextFonts } from '../geometry/textGlyphs';
 import { resolvePaintOps } from '../color/paintOpsResolve';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 
@@ -135,6 +136,14 @@ export async function previewModel(
       stats: null,
       render: null,
     };
+  }
+
+  // Pre-load Liberation Sans if the code uses text — mirrors engineWorker's
+  // heuristic so `api.text` works in the headless preview tier too (the fonts
+  // fetch resolves from disk under vite SSR).
+  if (engine === 'manifold-js'
+      && (sourceUsesManifoldText(code) || /\bapi\.(?:fasteners|printFit)\b/.test(code) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code))) {
+    await preloadTextFonts();
   }
 
   let raw: MeshResult;

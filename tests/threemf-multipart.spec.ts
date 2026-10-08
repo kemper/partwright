@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { waitForEditorReady } from './helpers/aiPanel';
 
 // Multi-part 3MF export: validates the generic + Bambu "project" 3MF builder
 // (multiple objects, one plate per part, m:colorgroup + paint_color colour) and
@@ -12,7 +13,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('build3MFProject emits multiple objects, plates and colour bindings', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000); // let the module graph + engine settle
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const report = await page.evaluate(async () => {
       const { build3MFProject } = await import('/src/export/threemfProject.ts');
@@ -146,7 +148,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('part picker lets you choose parts and export a multi-plate 3MF', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build a 2-part session through the console API. Set units to mm so the
     // export-confirm (unitless) modal doesn't precede the part picker.
@@ -160,7 +163,6 @@ test.describe('multi-part 3MF export', () => {
       return pw.listParts ? pw.listParts().length : 2;
     });
     expect(partCount).toBeGreaterThan(1);
-    await page.waitForTimeout(1500);
 
     // Trigger the Bambu/Orca multi-plate export (distinct from the generic 3MF).
     await page.locator('#btn-export').click();
@@ -174,6 +176,17 @@ test.describe('multi-part 3MF export', () => {
     // The Bambu export shows the printer/nozzle/filament dropdowns (not the generic).
     await expect(modal.getByText(/Bambu Studio settings/i)).toBeVisible();
     await expect(modal.locator('select')).toHaveCount(3);
+
+    // Two-pane layout: the options sit in an always-visible RIGHT-HAND pane
+    // beside the part list, not stacked below it. Assert the "Bambu Studio
+    // settings" heading is horizontally to the right of the part-list header
+    // (its left edge starts past the list header's right edge) at desktop width.
+    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const optsBox = await modal.getByText(/Bambu Studio settings/i).boundingBox();
+    expect(listBox).not.toBeNull();
+    expect(optsBox).not.toBeNull();
+    expect(optsBox!.x).toBeGreaterThan(listBox!.x + listBox!.width);
+
     // Pick a single-nozzle printer to exercise the override path through the modal.
     await modal.locator('select').first().selectOption('p1s');
 
@@ -188,7 +201,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('export3MFPartsData bundles real parts through the full bake pipeline', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build 3 real coloured parts, then read the Bambu 3MF back via the
     // bytes-returning API (no browser download) and inspect the actual output —
@@ -236,7 +250,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('Bambu plates use BambuStudio\'s ⌈√N⌉-column grid with per-axis stride', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // 6 parts → ⌈√6⌉ = 3 columns × 2 rows, matching BambuStudio's PartPlateList.
     // Each part centres on its plate cell at (col·396 + 165, −row·384 + 160) for the
@@ -272,9 +287,186 @@ test.describe('multi-part 3MF export', () => {
     expect(cols.yRows).toBe(2); // 2 rows
   });
 
+  test('plateLayout controls how parts distribute across Bambu plates', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
+
+    // 4 parts, two of them sharing a group ("A"), the other two ungrouped. The
+    // three layout modes should produce distinct plate counts + placements.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string, group?: string) => ({
+        name, ...(group ? { group } : {}),
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = [
+        makePart('a1', 'A'), makePart('a2', 'A'), makePart('loose1'), makePart('loose2'),
+      ];
+      const decode = (built: { blob: Blob }) =>
+        built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const plateCount = (t: string) => (t.match(/<plate>/g) ?? []).length;
+      // Distinct <item> X translations = distinct plate/sub-grid columns occupied.
+      const distinctXs = (t: string) => new Set(
+        [...t.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+          .map(m => Number(m[1].trim().split(/\s+/)[9]).toFixed(2)),
+      ).size;
+
+      const sep = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'separate' }));
+      const grid = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid' }));
+      const group = await decode(build3MFProject(parts, { bambu: true, plateLayout: 'group' }));
+      const dflt = await decode(build3MFProject(parts, { bambu: true })); // default = separate
+      return {
+        sepPlates: plateCount(sep), gridPlates: plateCount(grid), groupPlates: plateCount(group),
+        dfltPlates: plateCount(dflt),
+        gridDistinctXs: distinctXs(grid),
+      };
+    });
+
+    // separate → one plate per part; default matches separate.
+    expect(out.sepPlates).toBe(4);
+    expect(out.dfltPlates).toBe(4);
+    // grid → all four on ONE plate (but still spread out in a sub-grid, so >1 column).
+    expect(out.gridPlates).toBe(1);
+    expect(out.gridDistinctXs).toBeGreaterThan(1);
+    // group → group A (2 parts) + two ungrouped singletons = 3 plates.
+    expect(out.groupPlates).toBe(3);
+  });
+
+  test('packed layout keeps a big-part+small-parts mix within the plate footprint', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
+
+    // The reported bug: one large part + several small ones in a packed layout
+    // ballooned the whole grid off the plate (old uniform-max-pitch grid). With
+    // shelf packing, all parts must sit inside a single plate cell's bed footprint.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      // A part is a single triangle sized w×d (X width, Y depth).
+      const makePart = (name: string, w: number, d: number) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, w, 0, 0, 0, d, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = [
+        makePart('big', 180, 180),
+        makePart('s1', 15, 15), makePart('s2', 15, 15),
+        makePart('s3', 15, 15), makePart('s4', 15, 15),
+      ];
+      // H2C bed is 330×320; packed onto one plate they should all fit.
+      const built = build3MFProject(parts, { bambu: true, plateLayout: 'grid' });
+      const text = await built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const plates = (text.match(/<plate>/g) ?? []).length;
+      // Item translation is the part CENTRE minus its own centroid; the packed
+      // centres all live within one bed footprint, so the centre X spread must be
+      // well under the plate stride (396 for H2C) — proof they didn't balloon out.
+      const txs = [...text.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+        .map(m => Number(m[1].trim().split(/\s+/)[9]));
+      const spanX = Math.max(...txs) - Math.min(...txs);
+      return { plates, spanX, count: txs.length };
+    });
+
+    expect(out.count).toBe(5);
+    expect(out.plates).toBe(1);           // all five packed onto ONE plate
+    expect(out.spanX).toBeLessThan(330);  // centres stay within the H2C bed width (no balloon)
+  });
+
+  test('packStrategy shapes how parts sharing a plate are arranged', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
+
+    // Four equal 40×40 parts packed onto ONE plate (plateLayout 'grid'). The three
+    // packing strategies must produce distinct arrangements: 'grid' a compact 2×2
+    // square, 'horizontal' a single full-width row, 'vertical' a single column.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string, w: number, d: number) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, w, 0, 0, 0, d, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = Array.from({ length: 4 }, (_, i) => makePart('p' + i, 40, 40));
+      const decode = (built: { blob: Blob }) =>
+        built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      // Item translation X (index 9) and Y (index 10); count the distinct values.
+      const axisCounts = (t: string) => {
+        const items = [...t.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+          .map(m => m[1].trim().split(/\s+/));
+        const xs = new Set(items.map(i => Number(i[9]).toFixed(2)));
+        const ys = new Set(items.map(i => Number(i[10]).toFixed(2)));
+        return { nx: xs.size, ny: ys.size, n: items.length };
+      };
+      const grid = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'grid' })));
+      const horiz = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'horizontal' })));
+      const vert = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid', packStrategy: 'vertical' })));
+      const dflt = axisCounts(await decode(build3MFProject(parts, { bambu: true, plateLayout: 'grid' })));
+      return { grid, horiz, vert, dflt };
+    });
+
+    // grid (default) → compact 2×2: 2 distinct X, 2 distinct Y.
+    expect(out.grid).toEqual({ nx: 2, ny: 2, n: 4 });
+    expect(out.dflt).toEqual(out.grid); // 'grid' is the default when omitted
+    // horizontal → one full-width row: 4 distinct X, 1 Y.
+    expect(out.horiz).toEqual({ nx: 4, ny: 1, n: 4 });
+    // vertical → one full-depth column: 1 X, 4 distinct Y.
+    expect(out.vert).toEqual({ nx: 1, ny: 4, n: 4 });
+  });
+
+  test('generic 3MF part picker shows the packing pane on the right', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
+
+    // Build a 2-part session so the generic "3MF" export opens the part picker.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.runAndSave('return api.Manifold.cube([10,10,10], true);', 'box');
+      await pw.createPart('Pyramid');
+      await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'pyramid');
+    });
+
+    // Trigger the GENERIC 3MF export (not the Bambu one).
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('3MF', { exact: true }).click();
+
+    const modal = page.getByRole('dialog');
+    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    // Packing radios present; NO Bambu Studio settings (that's the Bambu export).
+    await expect(modal.getByText('Packing', { exact: true })).toBeVisible();
+    await expect(modal.getByText('Centered grid')).toBeVisible();
+    await expect(modal.getByText(/Bambu Studio settings/i)).toHaveCount(0);
+
+    // Two-pane layout: the Packing heading sits to the RIGHT of the part-list header.
+    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const packBox = await modal.getByText('Packing', { exact: true }).boundingBox();
+    expect(listBox).not.toBeNull();
+    expect(packBox).not.toBeNull();
+    expect(packBox!.x).toBeGreaterThan(listBox!.x + listBox!.width);
+
+    // Pick "Vertical columns" and export; the download should still fire.
+    await modal.getByText('Vertical columns').click();
+    await modal.getByRole('button', { name: /select all/i }).click();
+    const downloadPromise = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
+    await modal.getByRole('button', { name: /export/i }).click();
+    const download = await downloadPromise;
+    expect(download).not.toBeNull();
+    expect(download!.suggestedFilename()).toMatch(/\.3mf$/);
+  });
+
   test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const out = await page.evaluate(async () => {
       const { build3MFProject } = await import('/src/export/threemfProject.ts');

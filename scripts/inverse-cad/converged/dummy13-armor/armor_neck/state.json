@@ -1,0 +1,45 @@
+{
+  "part": "armor_neck",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.03914838843785278,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic bootstrap Z band-stack (attempt 0): 1/6 MUST, chamfer 0.52, hausdorff 4.6 \u2014 freeform shell, abandoned",
+    "levelSet z-section SDF interpolation per PLAYBOOK 5.25 (attempt 1): CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 5.3054,
+      "phase": "silhouette",
+      "chamfer": 0.5171,
+      "hausdorff": 4.6246,
+      "volumeIoU": 0.6166,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "5.25 levelSet interpolation of 55 measured z-sections (pitch 0.1, res 0.08), ledge straddle pair at z=4.4025 (only true ledge from 0.05mm area scan)",
+      "verdict": "improved",
+      "score": 0.0391,
+      "phase": "done",
+      "chamfer": 0.0027,
+      "hausdorff": 0.0488,
+      "volumeIoU": 0.9956,
+      "failedMust": []
+    }
+  ]
+}

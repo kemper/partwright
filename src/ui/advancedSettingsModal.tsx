@@ -269,12 +269,77 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Recent render images kept in context"
           unit="images"
-          hint="How many of the latest render snapshots stay in the request sent to the AI."
-          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          hint="For providers without history caching (Custom, Local, or Anthropic with caching off): how many of the latest render snapshots stay in the request."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming. Providers that cache the history use the two stepped limits below instead."
           defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
           value={c.ai.keepRecentToolImages}
           min={0} max={50} integer
           onChange={v => set('ai', 'keepRecentToolImages', v)}
+        />
+        <ToggleField
+          label="Cache the conversation history (Anthropic)"
+          hint="Every agent step re-sends the whole conversation. With this on, the repeated part is billed at Anthropic's cache-read rate (~10% of normal input) instead of full price. OpenAI and Gemini do this automatically."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cacheConversationHistory}
+          value={c.ai.cacheConversationHistory}
+          onChange={v => set('ai', 'cacheConversationHistory', v)}
+        />
+        <Field
+          label="Render images before a trim (cached providers)"
+          unit="images"
+          hint="Anthropic (with caching on), OpenAI and Gemini: render images pile up to this many before older ones are trimmed."
+          tooltip="Cached images are cheap to re-send, but trimming one edits an earlier message and makes the provider re-bill everything after it. So instead of dropping one image per render, images accumulate to this limit and are then cut back to the 'trim down to' count in one step, keeping the cached history valid in between."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageLimit}
+          value={c.ai.cachedImageLimit}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'cachedImageLimit', v)}
+        />
+        <Field
+          label="…then trim down to"
+          unit="images"
+          hint="How many recent render images remain after a trim on cached providers."
+          tooltip="When the image limit above is exceeded, older render images are dropped until this many remain. A bigger gap between the two numbers means fewer cache-breaking trims; a smaller one keeps the request leaner. Set it equal to the limit for a one-in-one-out sliding window."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageTrimTo}
+          value={c.ai.cachedImageTrimTo}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'cachedImageTrimTo', v)}
+        />
+        <Field
+          label="Auto-compact token ceiling"
+          unit="tokens"
+          hint="In the Auto compaction mode, compact once the conversation passes this size, even if that's under 70% of the model's context window."
+          tooltip="On 1M-token models, 70% of the window is ~700k tokens. Long before that, each cache miss (for example after a pause of more than ~5 minutes) re-bills the whole conversation at full price, so a smaller ceiling keeps those moments cheap. Compaction summarizes older turns and keeps recent ones verbatim."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.autoCompactMaxTokens}
+          value={c.ai.autoCompactMaxTokens}
+          min={10_000} max={1_000_000} integer
+          onChange={v => set('ai', 'autoCompactMaxTokens', v)}
+        />
+        <Field
+          label="Attached images kept through compaction"
+          unit="images"
+          hint="Reference images you attached are carried forward when older turns are compacted, instead of being dropped."
+          tooltip="Compaction replaces older turns with a text summary. Without this, a photo you attached early on (a 'make it look like this' reference) would disappear from what the model sees. The newest N of your attached images are re-attached just before the summary. The agent's own render screenshots aren't kept — it can re-render. Set 0 to drop attachments like before."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.compactionKeepImages}
+          value={c.ai.compactionKeepImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'compactionKeepImages', v)}
+        />
+        <Field
+          label="Reference images sent to the automatic review"
+          hint="How many of your attached images the automatic end-of-task review sees next to the renders."
+          tooltip="The automatic review grades the finished model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewReferenceImages}
+          value={c.ai.reviewReferenceImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'reviewReferenceImages', v)}
+        />
+        <Field
+          label="Review note length (chars)"
+          hint="How much of a 👁 review is copied into the session note the agent reads on its next turn."
+          tooltip="A manual 👁 review is posted to the chat in full and also saved as a [REVIEW from …] session note, which the agent reads via getSessionContext. Longer notes keep every finding; shorter ones save context."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewNoteMaxChars}
+          value={c.ai.reviewNoteMaxChars}
+          min={200} max={8000} integer
+          onChange={v => set('ai', 'reviewNoteMaxChars', v)}
         />
       </Section>
 
@@ -359,7 +424,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — thinking budgets">
-        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens).</div>
+        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Only models that take a fixed budget use these (Haiku 4.5, Sonnet/Opus 4.5 and earlier) — newer models (4.6+, Sonnet 5, Opus 5.x, Fable) use adaptive thinking with an effort level, sized by the thinking output ceilings below. Which shape a model takes comes from the model catalog, or is learned from the API. XHigh and Max use the High budget.</div>
         <Field
           label="Anthropic — Low"
           unit="tokens"
@@ -431,11 +496,29 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Anthropic max output tokens"
           unit="tokens"
-          tooltip="The max_tokens value sent to Anthropic's API on every turn. This is the total output ceiling including any thinking tokens. If you've set a High thinking budget above this value, the API will error — raise both together."
+          tooltip="The max_tokens value sent to Anthropic on turns without adaptive thinking — the ceiling on one response, including any budgeted thinking tokens. Output is billed by what the model actually generates, not by this cap, so it guards against runaway responses rather than setting a budget. It's raised automatically above a thinking budget, and every Anthropic ceiling is capped at the model's own output limit."
           defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropic}
           value={c.ai.maxOutputTokensAnthropic}
           min={1024} max={200_000} integer
           onChange={v => set('ai', 'maxOutputTokensAnthropic', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value sent to Anthropic when a Claude 4.6+ model runs adaptive thinking (any Thinking level above Off, or a model that always thinks). Thinking tokens count against this ceiling and adaptive thinking has no separate budget, so it must be large — too low and high-effort turns stop mid-thought. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinking}
+          value={c.ai.maxOutputTokensAnthropicThinking}
+          min={4096} max={64_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinking', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (XHigh / Max thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value for adaptive-thinking turns at the XHigh or Max Thinking level, which think the longest — too low and a deep turn stops mid-thought with max_tokens. Every Claude 4.6+ model accepts at least 64k (Sonnet 4.6's cap), so higher values can error on some models. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinkingDeep}
+          value={c.ai.maxOutputTokensAnthropicThinkingDeep}
+          min={4096} max={128_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinkingDeep', v)}
         />
         <Field
           label="OpenAI max output tokens"
@@ -522,6 +605,34 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.gridDivisions}
           min={2} max={200} integer
           onChange={v => set('renderer', 'gridDivisions', v)}
+        />
+        <Field
+          label="Assembly build workers"
+          hint="Parts the Assembly (all-parts) view builds in parallel. Clamped to CPU cores − 1."
+          tooltip="The Assembly view meshes every part of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyPoolSize}
+          value={c.renderer.assemblyPoolSize}
+          min={1} max={16} integer
+          onChange={v => set('renderer', 'assemblyPoolSize', v)}
+        />
+        <Field
+          label="Export build workers"
+          hint="Parts a multi-part export bakes in parallel. Clamped to CPU cores − 1 and the part count."
+          tooltip="A multi-part export (3MF / OBJ / STL / GLB) re-runs each part's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes parts one at a time. Clamped at runtime to your CPU core count minus one and to the number of parts you're exporting."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.exportPoolSize}
+          value={c.renderer.exportPoolSize}
+          min={1} max={16} integer
+          onChange={v => set('renderer', 'exportPoolSize', v)}
+        />
+        <Field
+          label="Assembly grid gutter"
+          unit="× cell"
+          hint="Spacing between parts in the Assembly grid, as a fraction of the largest part."
+          tooltip="How much empty space sits between cells in the all-parts grid, as a fraction of the largest part's footprint. 0.25 leaves a quarter-cell gap; 0 packs parts edge to edge."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyGridGutter}
+          value={c.renderer.assemblyGridGutter}
+          min={0} max={2} step={0.05}
+          onChange={v => set('renderer', 'assemblyGridGutter', v)}
         />
         <Field
           label="Ambient light intensity"
@@ -758,6 +869,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.filamentConfidenceWarnThreshold}
           min={0.1} max={1} step={0.05}
           onChange={v => set('import', 'filamentConfidenceWarnThreshold', v)}
+        />
+        <Field
+          label="Convert-to-code cell budget"
+          unit="cells"
+          hint="levelSet resolution budget for convertToCode at 'standard' quality."
+          tooltip="Converting a mesh import to code rebuilds it as a smooth levelSet whose grid resolution is derived from this sample budget (draft quality = ×0.25, fine = ×4). More cells = a smoother, more faithful remake but a slower build — build time is roughly proportional to this number. 6M ≈ ten seconds on a mid-size model."
+          defaultValue={APP_CONFIG_DEFAULTS.import.reconstructCellBudget}
+          value={c.import.reconstructCellBudget}
+          min={200_000} max={100_000_000} integer
+          onChange={v => set('import', 'reconstructCellBudget', v)}
+        />
+        <Field
+          label="Reconstruction eval samples"
+          unit="points"
+          hint="Surface samples per mesh for convertToCode / evalAgainstImport reports."
+          tooltip="The faithfulness report (chamfer/hausdorff) samples this many points on each surface and measures nearest-neighbor distances. More samples tighten the measurement's noise floor (reported as sampleSpacing) at the cost of a slower report."
+          defaultValue={APP_CONFIG_DEFAULTS.import.reconstructEvalSamples}
+          value={c.import.reconstructEvalSamples}
+          min={500} max={100_000} integer
+          onChange={v => set('import', 'reconstructEvalSamples', v)}
         />
       </Section>
 

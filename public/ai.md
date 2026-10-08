@@ -120,6 +120,14 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
+| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
+| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
+| Text / relief wrapped around a cylinder (mug, ring, vase) | `api.wrapAround(flatShape, {radius})` -> `/ai/deform.md` | (not available) | (mesh-only) |
+| Bend / twist / taper an existing mesh | `api.bend/twist/taper(shape, {…})` -> `/ai/deform.md` | `linear_extrude(twist=, scale=)` at build time | (mesh-only) |
+| Strip / rail following a 3D path | `api.alongCurve(shape, points)` -> `/ai/deform.md` (or `Curves.sweep` to build from a profile) | BOSL2 `path_sweep()` | (use manifold-js) |
+| Spikes / studs / scales / rivets scattered over a surface | `api.scatter(target, instance, {count, seed})` -> `/ai/deform.md` | (build manually) | (mesh-only) |
+| Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
+| Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
 
@@ -163,11 +171,13 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
 | `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
+| `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten` (declarative brush nudges), `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
 | `spending` | To understand the user's compute budget and what each mode enforces or advises. |
 | `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
+| `reconstruction` | Before converting an imported mesh into editable code (`convertToCode` / `evalAgainstImport` / the /reconstruct workflow) — how to read the chamfer/hausdorff metrics, the noise floor, and the measured refinement tactics. |
 
 ## Common agent mistakes
 
@@ -237,6 +247,8 @@ partwright.getModule()         // Raw manifold-3d WASM module
 partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'
 await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the prev draft, restores the other
 partwright.importImageAsVoxels(imageUrl, opts?) // Image (data:/URL) -> colored voxel session. See /ai/voxel.md
+await partwright.convertToCode(opts?) // Rebuild the current model (e.g. an STL import) as smooth, import-free, EDITABLE code; saves a version + reports chamfer/hausdorff vs the source. See /ai/reconstruction.md
+await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: current model vs imported mesh i (how faithful is the remake?). See /ai/reconstruction.md
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
@@ -255,6 +267,11 @@ partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
 partwright.isAutoRunEnabled()        // Whether auto-run is active
+
+// Assembly view (all parts in a grid) -- see #assembly-view
+await partwright.openAssembly()      // Show every part in a non-overlapping grid, built in parallel (needs >=2 parts) -> snapshot
+partwright.closeAssembly()           // Close it, return to the single part
+partwright.getAssembly()             // -> {open, parts:[{id,name,placed}], sharedParams}
 
 // Arrange mode (Tinkercad-style direct manipulation) -- see #arrange-mode
 partwright.enterArrange()                 // Activate the click-to-select / drag-to-move tool -> {ok}
@@ -285,6 +302,10 @@ partwright.exportSTL()         // Download STL ("                               
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
 partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
+// Animation videos (record the live viewport -> .webm download; tab must stay visible). See /ai/deform.md.
+await partwright.exportTurntable({seconds?, revolutions?})        // camera orbits the model -> {ok, filename}
+await partwright.exportExplode({seconds?, spread?})               // components fly apart + reassemble (multi-component models)
+await partwright.exportParamSweep(param, from, to, {steps?, seconds?, pingPong?})  // Customizer param morph (manifold-js)
 // Agent-friendly variants -- bytes return inline, no file dialog. See /ai/file-io.md.
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
@@ -380,11 +401,13 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // and its lid); save them as separate STLs/parts, or model each in isolation.
 // Address a part by its name, its id, or its 0-based index (changePart/
 // renamePart/deletePart all accept any of the three).
-partwright.listParts()                   // -> [{id, name, order, isCurrent}]
-partwright.getCurrentPart()              // -> {id, name, order} or null
+partwright.listParts()                   // -> [{id, name, order, group?, isCurrent}]
+partwright.showPartsOverview()           // Open the all-parts thumbnail overview (contact sheet; click a tile to switch part)
+partwright.getCurrentPart()              // -> {id, name, order, group?} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
 await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
 await partwright.renamePart(name|id|index, newName)  // Rename a part
+await partwright.setPartGroup(target|target[], group|null)  // Thread parts under a collapsible group header in the part list (null/'' ungroups) -> {grouped, group}
 await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
@@ -546,6 +569,24 @@ return Manifold.cube([p.width, p.width, p.rows * 10], true);
 
 **Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved). A `color` param's value (a hex string) drives geometry color by passing it to `api.label(shape, name, { color: p.accent })` (see [Model-declared color](#model-declared-color-self-coloring-models) below) — so a color knob recolors the model live. `text` params are captured but have no geometry sink yet.
 
+### Assembly view
+
+A session can hold **multiple parts** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the part list** or the **"⧉ All parts" toggle in the viewport** (both appear only when the session has ≥ 2 parts; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
+
+```js
+await partwright.openAssembly()   // build every part in parallel, fill the grid progressively
+partwright.getAssembly()          // { open, parts:[{id,name,placed}], sharedParams }
+partwright.closeAssembly()        // back to the single-part editor
+```
+
+Each part's mesh is built in a **pool of Workers in parallel**, and the grid fills in progressively as parts finish (the current part appears instantly from its live mesh). Parts rest on a common floor, centred in their cells, with a name label.
+
+The Assembly view is **read-only**: the editing tools and cross-section are hidden while it's open (they act on a single part). **Clicking a part** — in the grid or the part list — leaves the overview and opens that part in the normal single-part editor. `Esc` or the `⧉` toggle also exits.
+
+**Shared parameters.** The panel lists the **union** of every part's `api.params` knobs — one row per name. Each row shows **"affects N parts"** (hover for the part names); numeric ranges are the widest across the sharing parts. Changing a value **live-previews** across every part that declares that key; **Save** writes the tweaked values back to each of those parts' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
+
+> Note: the Assembly grid renders each part's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the part itself).
+
 ### Model-declared color (self-coloring models)
 
 Give a label a color right in the code and it renders **and exports** colored — no separate paint step, and the editor stays editable:
@@ -568,7 +609,7 @@ Beyond labels, you can declare **geometric** paint right in the model code with 
 ```js
 const { Manifold } = api;
 const part = Manifold.cube([30, 30, 30], true).refine(16);   // refine so selectors have fine triangles
-api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal)
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal); band is ONE-SIDED: [offset, offset+thickness], NOT centered on offset
 api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] }); // axis-aligned box
 api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) shell
 api.paint.label('body', '#888');   // recolor an existing api.label(...) region
@@ -660,11 +701,35 @@ api.circularPattern(shape, count, {axis?, angle?, center?, radius?})
    // radius: shortcut — pushes shape outward by `radius` BEFORE rotating
    //   (so you write `circularPattern(stud, 8, {radius: 25})` instead of
    //   pre-translating the stud yourself).
+   // FOOTGUN: the radius push is measured from the WORLD ORIGIN, not from
+   //   `center` — combining `radius` with a custom `center` produces a ring
+   //   in the wrong place. With a custom center, pre-position the shape in
+   //   world space yourself and let the pattern do rotation only.
 
 api.spiralPattern(shape, count, {anglePerCopy, risePerCopy, axis?, center?})
    // The "staircase / screw / spring" case — each copy gets both a rotation
    // AND an axial translation. Steps + helical fins + threaded rod profile
    // all fall under this one.
+
+api.scatter(target, instance, {count, seed?, alignToNormal?, spin?, scale?, offset?, minSpacing?, where?})
+   // Seeded instances across target's surface, normal-aligned. Returns the
+   // union of the instances only — add to the base yourself. See /ai/deform.md.
+```
+
+**Deform / round / weld / sculpt** — Blender-parity mesh-shaping verbs; full reference in **[/ai/deform.md](/ai/deform.md)**:
+
+```
+api.wrapAround(shape, {radius, axis?, angleOffset?})   // wrap a flat shape around a cylinder (text on mugs)
+api.bend(shape, {angle})                               // X extent → arc in the XY plane
+api.twist(shape, {degrees, axis?})                     // rotation grows linearly along the axis
+api.taper(shape, {scaleTop, scaleBottom?, axis?})      // linear cross-section scale along the axis
+api.alongCurve(shape, points, {up?})                   // X extent follows a 3D polyline (parallel-transport frame)
+api.round(m, {radius, mode?, resolution?})             // fillet EVERY edge (convex + concave) of any solid
+api.smoothWeld(a, b, {radius})                         // smoothUnion for plain meshes (also takes an array)
+api.sculpt.grab(m, {at, radius, offset})               // drag the surface near a point
+api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = dent)
+api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
+api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.

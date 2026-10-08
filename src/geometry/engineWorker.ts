@@ -254,6 +254,8 @@ self.onmessage = async (event: MessageEvent) => {
       const paintOps = result.paintOps ?? null;
       // api.surface.* ops — plain serialisable { id, params } objects, cross as-is.
       const surfaceOps = result.surfaceOps ?? null;
+      // api.material(...) — plain serialisable MaterialSpec, crosses as-is.
+      const materialSpec = result.materialSpec ?? null;
       const paramsSchema = result.paramsSchema ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
@@ -275,7 +277,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
           transfer,
         );
       } else {
