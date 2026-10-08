@@ -62,8 +62,12 @@ Rules:
 - Name a cause only when you can see it; mark an inferred cause "likely".
 - Report only real defects, most important first — as few as there are.
   Zero is fine; never more than 6.
-- Don't ask for more views or renders; you can't get them. If a requirement
-  can't be verified, say so in one "Unverified:" line.
+- Don't ask for more views or renders; you can't get them. Before calling
+  anything unverified, settle it from the code's numbers and the stats: bbox
+  z-min vs 0, wall = outer radius − thread depth − bore, part extents vs the
+  edges they sit on. Anything you can compute is a numbered finding; only
+  what neither the code nor the stats can decide goes in one "Unverified:"
+  line.
 - Notes are only for taste: style or polish ideas, at most 2, under
   "Notes:". They never change the verdict.
 - Do NOT rewrite the code. Do NOT pretend to be the builder.`;

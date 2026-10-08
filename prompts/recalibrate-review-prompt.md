@@ -61,3 +61,18 @@ v3 targets both:
   Notes are explicitly taste-only.
 - **Verdicts are keyed to request features.** "needs rework" means any feature
   the request names is missing or wrong. "pass" requires zero numbered findings.
+
+### Follow-up: v3 → v4
+
+Scored against the same ground truth, v3 was the best balance so far:
+- 83% of numbered findings are real defects (OLD 39%, v2 94%);
+- 15/20 verdicts right (OLD 16, v2 13);
+- ~2 findings per review.
+
+Its remaining misses, and both wrong passes, share one cause. Measurable
+problems were parked in "Unverified:" when the code's own numbers could
+settle them: the jar's 0.84 mm thread wall, lotus-yogi floating at z-min
+9.72, the gear plate offset. v4 adds one rule: before calling anything
+unverified, compute it from the code and the stats, with examples. Only what
+neither can decide goes on the Unverified line. A targeted rerun of the 6
+affected entries plus 2 controls checks it.
