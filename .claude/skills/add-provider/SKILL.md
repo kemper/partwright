@@ -1,3 +1,8 @@
+---
+name: add-provider
+description: "Checklist for wiring a new hosted AI provider (beyond Anthropic/OpenAI/Gemini/Local/Custom) into the in-app chat: types, settings, pricing, streamTurn, chatLoop dispatch, tests. Use when adding a provider to src/ai/."
+---
+
 # Add Hosted Provider
 
 Full checklist for wiring a new cloud AI provider into the in-app chat. Run when adding a provider beyond the existing Anthropic/OpenAI/Gemini/Local set.
