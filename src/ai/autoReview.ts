@@ -115,5 +115,6 @@ export function buildFixPrompt(reviewerLabel: string): string {
   return `${AUTO_REVIEW_FOLLOWUP_TAG} The review above (${reviewerLabel}) found issues. `
     + 'Work through its numbered findings in order: fix each one, or — only when the reviewer plainly misread '
     + 'the render or stats — say in one sentence why that finding is wrong. Don\'t stop after the first fix. '
+    + 'Its "Notes:" are optional suggestions; leave them unless trivial. '
     + 'Then re-render, including the view where each problem showed, to confirm it is gone, and save the result.';
 }
