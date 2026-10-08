@@ -1,3 +1,8 @@
+---
+name: promptlog
+description: "Format and rules for the sanitized prompt log every non-prompt commit must stage under prompts/ (one YAML frontmatter block, ## Human / ## Assistant decision notes). Read before your first git commit in a session; the promptlog-guard hook blocks commits without one."
+---
+
 # Prompt Log
 
 When you make a git commit, also commit a sanitized log of the prompts that led to it. Both the human's and yours.

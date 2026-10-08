@@ -1,3 +1,8 @@
+---
+name: smoke-test
+description: "16-item manual browser checklist (landing, editor, WASM load, help, sessions, paint, export, …) to run after touching routing, Vite config, index.html, or app initialization."
+---
+
 # Smoke Test
 
 Manually verify the app after touching routing, Vite config, index.html, or initialization code. Start the dev server (`npm run dev`) then check each item in a browser:

@@ -1,3 +1,8 @@
+---
+name: sculpt
+description: "Build or refine a model that should look like a target (photo, described subject, catalog toy, mechanical part) by delegating the render-look-adjust loop to the model-sculpt subagent, keeping preview images out of the main context. Use for photo-to-figurine and 'make a model that looks like X' work."
+---
+
 # Sculpt
 
 Build (or refine) a model that looks like a target — a photo, a described

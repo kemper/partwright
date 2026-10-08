@@ -37,10 +37,10 @@ draft PR  →  human review & merge  (the gate)
 
 ## How to participate
 
-- **Finished a task?** Run `/retro` (see `.claude/skills/retro.md`). A `Stop`
+- **Finished a task?** Run `/retro` (see `.claude/skills/retro/SKILL.md`). A `Stop`
   hook nudges you, but the call is yours — skip it when nothing was notable.
 - **You're the weekly facilitator?** Run `/retro-review`
-  (see `.claude/skills/retro-review.md`). Triggered on a schedule; opens a
+  (see `.claude/skills/retro-review/SKILL.md`). Triggered on a schedule; opens a
   draft PR you don't merge yourself.
 
 ## Principles

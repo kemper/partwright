@@ -49,7 +49,7 @@ and reasons about the hits against the diff.
 > `componentCount === 1` for the manifold-js / scad solids). **`replicad`/BREP is
 > excluded**: its OpenCASCADE WASM won't init under Node SSR, so it can't preview
 > headlessly and must be verified in the browser. The `/sculpt` skill
-> (`.claude/skills/sculpt.md`) is the launcher — it picks the engine, briefs
+> (`.claude/skills/sculpt/SKILL.md`) is the launcher — it picks the engine, briefs
 > `model-sculpt`, and surfaces the preview via `SendUserFile` **without** the main
 > agent Reading it, keeping the cost invariant intact.
 
