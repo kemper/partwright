@@ -33,3 +33,16 @@ Blender-style shaping verbs, and the feedback button. Inverse-CAD harness, eval
 and retro work, and catalog review tooling are left out as internal. help.ts
 needed no edits: the PRs that changed help-relevant behavior updated it
 themselves.
+
+### Follow-up: editor-hints layout test
+
+PR-checks `e2e (1)` failed `tests/editor-hints.spec.ts` "lays out on one row…"
+twice (first attempt and retry), expecting `single` at 900px. The diff can't reach
+the hints ticker: it doesn't import whatsNew or buildInfo, and the version isn't
+shown in the toolbar. Every hint fits on one row at 900px locally. The test,
+though, depended on chance: the first hint is shuffled, and it slept a fixed
+300 ms for a ResizeObserver → rAF relayout. Re-running the job was refused
+(403), so instead of calling it a flake I made the test deterministic: it pins
+the short `shortcuts` hint by seeding the seen-list, and it polls the layout
+with `expect.poll` instead of sleeping. This is a test-only change; the
+assertions are unchanged.
