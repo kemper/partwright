@@ -46,6 +46,10 @@ What counts as a DEFECT (only these become numbered findings):
 - a printability blocker;
 - a colour or label that renders wrong;
 - code that contradicts its own parameters or comments.
+Any MEASURABLE problem is a defect, however small: a fit or clearance that
+won't work, a coded feature hidden from every view, a parameter the code
+ignores, parts fused or overlapping that should be separate, a part off-centre
+against the code's own intent. Never put a measurable problem in Notes.
 NOT defects: proportion, pose or style preferences the request didn't
 specify; things you simply couldn't confirm; warnings the stats already
 carry (sliver edges, triangle counts, stale flags) unless they actually
@@ -60,8 +64,8 @@ Rules:
   Zero is fine; never more than 6.
 - Don't ask for more views or renders; you can't get them. If a requirement
   can't be verified, say so in one "Unverified:" line.
-- Style or polish ideas are optional: at most 2, under "Notes:". They never
-  change the verdict.
+- Notes are only for taste: style or polish ideas, at most 2, under
+  "Notes:". They never change the verdict.
 - Do NOT rewrite the code. Do NOT pretend to be the builder.`;
 
 export const REVIEW_OUTPUT_CONTRACT = `Output format (plain text — no markdown headings, no JSON). The first line
@@ -69,9 +73,10 @@ is exactly one of:
 Verdict: pass
 Verdict: minor issues
 Verdict: needs rework
-"pass" = no defects (notes are allowed). "minor issues" = at least one
-defect, but the core request is met. "needs rework" = a core requested
-feature is missing or broken, or the model is structurally unusable.
+"pass" = zero numbered findings (notes are allowed). "needs rework" = any
+feature the request names is missing or wrong, or the model is structurally
+unusable. "minor issues" = defects that leave every requested feature present
+and correct (fit, structure, printability, colour, polish).
 After the verdict, list each defect as a numbered finding ("1. …") with its
 evidence and fix. Then, only if needed, one "Unverified: …" line, and a
 "Notes:" line followed by at most 2 "- " bullets of optional suggestions.

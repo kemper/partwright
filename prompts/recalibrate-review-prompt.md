@@ -41,3 +41,23 @@ restated stats warnings and "X is correct" lines (6% of slots 1-2, 36% of slots
   doesn't spend its iterations on them.
 - The verdict line format is unchanged, so `parseReviewVerdict` and the
   fix-round loop are untouched.
+
+### Follow-up: v2 → v3 after the first rerun
+
+I reran the 20 entries with verified ground truth, using identical inputs.
+Numbered-finding precision rose from 39% to 94%, and findings per review fell
+from 4.95 to 1.6. But the first recalibration over-corrected in two ways:
+- **Recall fell (91% → 75%).** Small *measurable* defects were demoted to
+  Notes: knob bore clearance, a param the code ignores, a buried dial pointer.
+  The off-centre gear plate went missing entirely.
+- **Verdict accuracy fell (16 → 13 / 20).** Every miss was too lenient: a
+  finding said a named requested feature was missing or wrong (pipe-tee is a
+  4-port cross, machine-knob has no finger grip), yet the verdict stayed
+  "minor issues".
+
+v3 targets both:
+- **Measurable means numbered.** Any measurable problem is a numbered defect
+  however small, and the categories are named so the model can recognise them.
+  Notes are explicitly taste-only.
+- **Verdicts are keyed to request features.** "needs rework" means any feature
+  the request names is missing or wrong. "pass" requires zero numbered findings.
