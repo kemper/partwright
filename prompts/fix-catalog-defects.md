@@ -111,3 +111,14 @@ fix is done well.
   (22, 25, 33, 34, 36) were re-run and spliced in. All 37 parts and the
   58-piece total are unchanged, and the outer chest's chamfer error against
   the source STL improved.
+- **surfer, ballerina, lotus-yogi.**
+  - Surfer: the board's 0.18 taper had collapsed one end and ballooned the
+    other, so the board is rebuilt as a proper long, narrow board with both
+    feet planted on its deck.
+  - Ballerina: the tutu is now three distinct stepped tiers instead of one
+    melted disc.
+  - Lotus-yogi: re-posed from a squat to a cross-legged seat on a cushion. The
+    figure rig can't put the feet on the opposite thighs, so it is a simplified
+    lotus, and the manifest description now says so (rig gap filed separately).
+  - All three now rest on z=0 by translating by the built mesh's real min z.
+    Missing `lips` palette colours were added for the lotus-yogi and the surfer.

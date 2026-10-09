@@ -34,12 +34,15 @@ const rig = F.ground(F.rig({
     spine: { lean: 10, turn: 6 },
     head: { pitch: -8, yaw: 6 },
   },
-// 'drop' re-poses each leg (2-bone IK) so BOTH feet land coplanar on one ground
-// plane — the asymmetric fore/aft surf stance otherwise leaves the soles ~4
-// units apart in Z and the board can't weld both feet. Now the board top meets
-// both soles flush → one component.
-}), { mode: 'drop' });
-const j = rig.joints, r = rig.r;
+  // 'drop' re-poses each leg (2-bone IK, hips fixed) so BOTH feet land coplanar on
+  // one ground plane. The rear (+Y) leg is already at full reach, so the default
+  // plane (the lowest sole, 1.74) is unreachable for it and the soles stayed
+  // ~1.3 apart. Targeting z = 4.0 (just above the reachable rear sole) keeps the
+  // crouch and stance and puts both soles on one plane, so the flat deck seats
+  // under BOTH feet.
+}), { mode: 'drop', z: 4.0 });
+const j = rig.joints,
+  r = rig.r;
 
 // 2. HEAD + FACE — square face, straight nose, relaxed grin with a sun-squint.
 const mouthOpts = { style: 'lips', lipShape: 'natural', expression: 'slightSmile', width: r.head * 0.5 };
@@ -85,10 +88,13 @@ const shorts = F.clothing.pants(rig, {
 // 5. HAIR — short, tousled wavy.
 const hair = F.hair(rig, { style: 'short', texture: 'wavy' }).label('hair');
 
-// 6. SURFBOARD — the base/stand. One long rounded board spanning both feet,
-//    dropped onto the lower sole's ground plane and welded to BOTH feet so the
-//    figure rests flat on the ground as a single component.
-const soleL = rig.sole.L, soleR = rig.sole.R;
+// 6. SURFBOARD — the base/stand. One long, narrow surfboard (about 2.6x longer
+//    than wide) spanning both feet, welded to BOTH so the figure is ONE
+//    component. The deck is FLAT at a height just above the higher sole, so each
+//    foot is planted on the top surface and overlaps it ~0.5 (they weld); the
+//    hull below narrows to rounded rails.
+const soleL = rig.sole.L,
+  soleR = rig.sole.R;
 const groundZ = Math.min(soleL.groundZ, soleR.groundZ);
 const highSole = Math.max(soleL.groundZ, soleR.groundZ);
 
@@ -98,37 +104,45 @@ const midX = (soleL.point[0] + soleR.point[0]) * 0.5;
 const midY = (soleL.point[1] + soleR.point[1]) * 0.5;
 
 // Size the board off the ACTUAL stance footprint so it spans both feet in X and
-// Y (with margin) and is thick enough that its TOP reaches up past the higher
-// sole — guaranteeing both feet fuse into it (one component).
+// Y (with margin).
 const footSpanX = Math.abs(soleL.point[0] - soleR.point[0]);
 const footSpanY = Math.abs(soleL.point[1] - soleR.point[1]);
 
-const boardWidth = footSpanX + r.foot * 4.6;     // covers the sideways spread + foot width
-const boardLen = Math.max(rig.opts.height * 0.95, footSpanY + r.foot * 9);  // long board, spans stagger
-// Bottom rests on the floor (z = groundZ); top must clear the higher sole so
-// both feet seat into the board. Kept slim for a sleek surfboard deck — just
-// enough thickness to bridge the small sole-height gap plus a thin foil.
-const boardThick = (highSole - groundZ) + r.foot * 1.05;
+const boardWidth = footSpanX + r.foot * 4.6; // covers the sideways spread + foot width
+const boardLen = Math.max(rig.opts.height * 0.95, footSpanY + r.foot * 9); // long board, spans stagger
+// Flat deck 0.75 above the (coplanar) sole plane: the foot hull's sole sits a
+// hair above its nominal groundZ, so this leaves ~0.5 of the foot sunk into the
+// deck and welded. The board's underside sits well below the soles.
+const deckZ = highSole + 0.75;
+const boardBottomZ = groundZ - 1.6;
+const boardThick = deckZ - boardBottomZ;
 
-// A surfboard is an elongated, flattened form pointed at the nose & tail. A
-// flattened ellipsoid gives exactly that — wide middle, naturally tapered ends —
-// far better than a tapered box (which pinches the middle). Stretch along Y
-// (travel direction), flatten in Z; a mild forward taper sharpens the nose (+Y).
-const board = sdf.ellipsoid(boardWidth * 0.5, boardLen * 0.5, boardThick * 0.5)
-  .taper(0.18, 'y')
-  .translate([midX, midY, groundZ + boardThick * 0.5])
+// Plan shape and rails: an ellipsoid whose EQUATOR is the deck (widest at the
+// deck plane, rounded rails curving in beneath), cut flat at the deck and at the
+// underside. A gentle +Y widening (rate 0.006 per unit => nose ~0.84x, tail
+// ~1.16x of the mid width, NOT the old 0.18 which collapsed the nose and
+// ballooned the tail into a wedge) leaves a narrow pointed nose at −Y, the
+// direction the figure faces.
+const hull = sdf.ellipsoid(boardWidth * 0.5, boardLen * 0.5, boardThick * 1.5)
+  .taper(0.006, 'y');
+const slab = sdf.box([boardWidth * 3, boardLen * 2, boardThick])
+  .translate([0, 0, -boardThick * 0.5]); // z in [-boardThick, 0]: deck at 0
+const board = hull.intersect(slab)
+  .translate([midX, midY, deckZ])
   .label('board');
 
-// NOTE: the board top overlaps both soles (soles sit at groundZ..above, board
-// top is at groundZ + boardThick) so each foot fuses into the board → one
-// component. No F.base is added — the board IS the stand and rests flat.
+// NOTE: no F.base is added — the board IS the stand. The deck (z = deckZ) is
+// 0.5 above both soles, so each foot fuses into the board → one component.
 
 // 7. Union all labelled regions and build with face/hand/foot detail.
 // Global 0.58 grid keeps the whole figure (incl. the broad board) under the
 // catalog triangle budget; the face/hand/foot detail regions still mesh those
 // features finely regardless of the global grid.
-return sdf.union(skin, eyes, nipples, lips, shorts, hair, board)
+const built = sdf.union(skin, eyes, nipples, lips, shorts, hair, board)
   .build({
     edgeLength: 0.58,
     detail: [...F.faceDetail(rig, { edgeLength: rig.r.head * 0.06 }), ...F.handDetail(rig), ...F.footDetail(rig)],
   });
+// Rest the board's underside on z = 0 (exact: use the built mesh's bbox, since
+// the marching-tetrahedra flat bottom lands a hair off the nominal plane).
+return built.translate([0, 0, -built.boundingBox().min[2]]);
