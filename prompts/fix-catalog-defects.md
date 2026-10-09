@@ -81,3 +81,5 @@ fix is done well.
   a door in it. The garden hedge is cleared around the fountain basin again; it
   had been narrowed by mistake in round 3. The mirrored battlements now have a
   double crenel at the centre line instead of a double merlon.
+- **pipe-tee-fitting round 2.** The tee is lifted by the collar radius so it
+  rests on z=0, and the stale vert_len comment now matches the code.

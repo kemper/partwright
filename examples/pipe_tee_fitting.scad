@@ -31,14 +31,18 @@ collar_cham   = 1.2;           // outer-edge chamfer on the collar lip
 // and nothing pokes out below the run pipe.
 vert_bot      = 0;
 vert_top      = pipe_od/2 + vert_above;  // ~ 65
-vert_len      = vert_top - vert_bot;     // ~ 81
+vert_len      = vert_top - vert_bot;     // = 65
 
 // Bores extend past the collar faces by `eps` so the boolean cuts cleanly
 // through the outer skin (no zero-thickness slivers at the openings).
 eps = 0.1;
 
+// The whole fitting is lifted by the collar radius so its lowest point (the
+// run's collar rims) rests on Z=0 instead of straddling the ground plane.
+lift = collar_od / 2;
+
 // ---- Assembly --------------------------------------------------------------
-difference() {
+up(lift) difference() {
     union() {
         // Outer skin: horizontal pipe along X, vertical pipe along Z.
         // The vertical pipe's base sits on the run's centreline, deep inside
