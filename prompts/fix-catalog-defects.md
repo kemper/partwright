@@ -167,3 +167,7 @@ fix is done well.
   into one solid. That was declined: the watch is an intentional multi-part,
   per-label-coloured assembly, which CLAUDE.md lists as a legitimate
   componentCount > 1 subject.
+- **pocket-watch round 3.** The code now states that it is a multi-part
+  display assembly, matching its 30 labelled shells. The balance staff runs up
+  into its cap, and three screws were added on the bridge ends as the header
+  promised.
