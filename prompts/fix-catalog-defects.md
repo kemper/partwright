@@ -150,3 +150,7 @@ fix is done well.
     empty tooth intersections.
   Heavy SCAD meshing under load ran past the review harness's 360 s per-entry
   timeout, so it is raised to 900 s.
+- **treasure-chest round 3.** The hasp is clipped to the lid's cylinder, so it
+  follows the dome at constant proudness instead of standing out as a flat
+  block. The strap comment was corrected, and the strap brass brightened while
+  staying distinct from the gold.
