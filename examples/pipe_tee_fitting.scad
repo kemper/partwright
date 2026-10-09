@@ -26,36 +26,44 @@ collar_od     = pipe_od + 6;   // flared collar slightly larger
 collar_h      = 6;             // collar thickness along the pipe axis
 collar_cham   = 1.2;           // outer-edge chamfer on the collar lip
 
-// Derived: vertical pipe needs to dip below Z=0 so it overlaps the horizontal
-// pipe's volume (≥0.5 mm). Drop the bottom to -pipe_od/2 - 1 for clean union.
-vert_bot      = -pipe_od/2 - 1;          // ~ -16
+// Derived: the vertical pipe starts on the run's centreline (Z=0). Its base
+// disc lies entirely inside the horizontal pipe's solid, so the union is clean
+// and nothing pokes out below the run pipe.
+vert_bot      = 0;
 vert_top      = pipe_od/2 + vert_above;  // ~ 65
-vert_len      = vert_top - vert_bot;     // ~ 81
+vert_len      = vert_top - vert_bot;     // = 65
 
 // Bores extend past the collar faces by `eps` so the boolean cuts cleanly
 // through the outer skin (no zero-thickness slivers at the openings).
 eps = 0.1;
 
+// The whole fitting is lifted by the collar radius so its lowest point (the
+// run's collar rims) rests on Z=0 instead of straddling the ground plane.
+lift = collar_od / 2;
+
 // ---- Assembly --------------------------------------------------------------
-difference() {
+up(lift) difference() {
     union() {
         // Outer skin: horizontal pipe along X, vertical pipe along Z.
-        // The vertical pipe's base sits at vert_bot so its volume overlaps
-        // the horizontal pipe well past the 0.5 mm boolean-union threshold.
+        // The vertical pipe's base sits on the run's centreline, deep inside
+        // the horizontal pipe's volume.
         xcyl(h=horiz_len, d=pipe_od);
         up(vert_bot) zcyl(h=vert_len, d=pipe_od, anchor=BOTTOM);
 
-        // Three flared collars, one per open end. cyl() with `chamfer1`
-        // bevels the anchor (outer/open) face only, leaving the inner face
-        // flush against the pipe body for a clean union.
-        right(horiz_len/2) xcyl(h=collar_h, d=collar_od, chamfer1=collar_cham, anchor=RIGHT);
+        // Three flared collars, one per open end. cyl() chamfer1 is the -X/-Z
+        // end and chamfer2 the +X/+Z end, so the outer (open) lip is chamfer2
+        // on the right and top collars and chamfer1 on the left one; the inner
+        // face stays flush against the pipe body for a clean union.
+        right(horiz_len/2) xcyl(h=collar_h, d=collar_od, chamfer2=collar_cham, anchor=RIGHT);
         left (horiz_len/2) xcyl(h=collar_h, d=collar_od, chamfer1=collar_cham, anchor=LEFT);
-        up   (vert_top)    zcyl(h=collar_h, d=collar_od, chamfer1=collar_cham, anchor=TOP);
+        up   (vert_top)    zcyl(h=collar_h, d=collar_od, chamfer2=collar_cham, anchor=TOP);
     }
 
     // Inner bores — a single union, so the cavities merge at the T.
     union() {
         xcyl(h=horiz_len + 2*eps, d=pipe_id);
-        up(vert_bot - eps) zcyl(h=vert_len + 2*eps, d=pipe_id, anchor=BOTTOM);
+        // Starts at the run's centreline (inside the horizontal bore), so it
+        // opens into the run without punching through the run's underside.
+        up(vert_bot) zcyl(h=vert_len + eps, d=pipe_id, anchor=BOTTOM);
     }
 }

@@ -315,6 +315,11 @@ async function main() {
     }
   }
 
+  // A persisted surface texture (Version.surfaceTexture) is the full textured
+  // mesh, multiple MB, and blows the catalog size limit. The app recomputes it
+  // from the stored code on open, so catalog entries ship without it.
+  for (const v of (result.data && result.data.versions) || []) delete v.surfaceTexture;
+
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(result.data, null, 2) + '\n');
   const sizeKb = (fs.statSync(OUT).size / 1024).toFixed(0);

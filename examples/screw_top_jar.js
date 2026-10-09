@@ -18,13 +18,25 @@ const bodyR = p.diameter / 2;
 const innerR = bodyR - p.wall;
 const neckH = Math.max(3 * p.pitch, 10);   // a few threads of engagement
 
+// The neck's thread root sits one thread-depth inside the outer diameter. Bore
+// the neck so at least MIN_NECK_WALL of solid stays under that root — otherwise
+// a thin wall (or, at wall=2, a through-slot) opens along the helix.
+const MIN_NECK_WALL = 1.6;
+const rootR = bodyR - threads.depth(p.pitch);
+const neckInnerR = Math.min(innerR, rootR - MIN_NECK_WALL);
+const step = innerR - neckInnerR;          // radial step from barrel bore to neck bore
+
 // ---- Jar body: smooth barrel + threaded neck, then hollowed out ----
 const barrel = Manifold.cylinder(p.height, bodyR, bodyR, 96);
 const neck = threads.rod({ diameter: p.diameter, pitch: p.pitch, length: neckH })
   .translate([0, 0, p.height]);
 let jar = barrel.add(neck);
-// Hollow from just above the base up through the open neck.
-const cavity = Manifold.cylinder(p.height + neckH, innerR, innerR, 96).translate([0, 0, p.wall]);
+// Hollow from just above the base up through the open neck. The bore narrows
+// to neckInnerR through a 45-degree cone (printable, no flat ceiling).
+const cavPts = [[0, p.wall], [innerR, p.wall]];
+if (step > 1e-6) cavPts.push([innerR, p.height - step]);
+cavPts.push([neckInnerR, p.height], [neckInnerR, p.height + neckH + 1], [0, p.height + neckH + 1]);
+const cavity = Manifold.revolve(new api.CrossSection([cavPts]), 96, 360);
 jar = jar.subtract(cavity);
 
 // ---- Lid: capped cylinder, internal threads tapped by subtraction, knurled ----
@@ -34,9 +46,18 @@ let lid = Manifold.cylinder(lidH, lidR, lidR, 96);
 // Tap internal threads: subtract an oversized rod (open at the bottom face).
 const tap = threads.rod({ diameter: p.diameter + 2 * p.clearance, pitch: p.pitch, length: neckH + 1, chamfer: false });
 lid = lid.subtract(tap);
-// Knurled grip: scallop the rim with a ring of flutes.
-const flute = Manifold.cylinder(lidH + 2, 1.6, 1.6, 16).translate([lidR, 0, -1]);
-lid = lid.subtract(circularPattern(flute, p.knurls, { axis: 'z' }));
+// Knurled grip: scallop the rim with a ring of flutes. Keep at least
+// MIN_FLUTE_WALL of solid between the tap's major radius (the thread groove) and
+// the flute floor, so the flutes never break into the thread. The flute circle
+// is shifted outward as the allowed depth shrinks (a shallower scallop).
+const MIN_FLUTE_WALL = 1.2;
+const FLUTE_R = 1.6;
+const fluteDepth = Math.min(FLUTE_R, p.wall - p.clearance - MIN_FLUTE_WALL);
+if (fluteDepth >= 0.3) {
+  const flute = Manifold.cylinder(lidH + 2, FLUTE_R, FLUTE_R, 16)
+    .translate([lidR + (FLUTE_R - fluteDepth), 0, -1]);
+  lid = lid.subtract(circularPattern(flute, p.knurls, { axis: 'z' }));
+}
 lid = lid.translate([p.diameter + 24, 0, 0]);
 
 return labeledUnion([

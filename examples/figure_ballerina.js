@@ -35,7 +35,7 @@ const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: rig.r.head * 0.09 },
-  mouth: false,  // the painted lips ridge below IS the mouth
+  mouth: false, // the painted lips ridge below IS the mouth
   ears: false,
   brows: {},
 });
@@ -74,33 +74,34 @@ const leotard = bodice.union(briefs).label('leotard');
 // rig.joints.spine Z ≈ 40.1, which is the natural waistline.
 // Tutu at the waist means: torso is visible above it, legs below it.
 // This creates the correct visual read of a skirt from the front.
-const navelPos  = rig.joints.spine;
-const navelZ    = navelPos[2];    // ≈ 40.1
-const bodyR     = rig.r.hipsX;  // ≈ 5.1 (body half-width at hip level)
+const navelPos = rig.joints.spine;
+const navelZ = navelPos[2]; // ≈ 40.1
+const bodyR = rig.r.hipsX; // ≈ 5.1 (body half-width at hip level)
 
 // The tutu disk center is at waist level
 // Lowered slightly from navel so it sits at the top of the hip area
-const tutuCenterZ = navelZ - 2.5;   // ≈ 37.6 — just below navel
+const tutuCenterZ = navelZ - 2.5; // ≈ 37.6 — just below navel
 
 // Wide outer radius for clear tutu silhouette
-const tutuOuterR  = rig.opts.height * 0.248;   // ≈ 17.9 units
-const tutuThick   = rig.opts.height * 0.050;   // ≈ 3.6 units
+const tutuOuterR = rig.opts.height * 0.248; // ≈ 17.9 units
+const tutuThick = rig.opts.height * 0.050; // ≈ 3.6 units
 
-// Main wide horizontal disk
-const tutuMain = sdf.roundedCylinder(tutuOuterR, tutuThick, tutuThick * 0.36)
+// THREE clearly separate tiers stepped in radius AND height — a layered tutu,
+// not one melted saucer. Each tier is a thin rounded disc with a clear air gap
+// (~0.8) to the next; they stay attached because every tier's disc swallows the
+// waist (radius > body), and a SMALL blend (k 0.3) welds them to the body only.
+const tierT = tutuThick * 0.44; // ≈ 1.6 units per tier
+const tierDz = tutuThick * 0.66; // ≈ 2.4 vertical pitch (gap ≈ 0.8)
+const tutuLowerT = sdf.roundedCylinder(tutuOuterR, tierT, tierT * 0.42)
+  .translate([0, 0, tutuCenterZ - tierDz]);
+const tutuMidT = sdf.roundedCylinder(tutuOuterR * 0.74, tierT, tierT * 0.42)
   .translate([0, 0, tutuCenterZ]);
+const tutuTopT = sdf.roundedCylinder(tutuOuterR * 0.48, tierT, tierT * 0.42)
+  .translate([0, 0, tutuCenterZ + tierDz]);
 
-// Upper layer: slightly smaller, above the main disk, for tutu layered volume
-const tutuUpper = sdf.roundedCylinder(tutuOuterR * 0.60, tutuThick * 0.72, tutuThick * 0.24)
-  .translate([0, 0, tutuCenterZ + tutuThick * 0.22]);
-
-// Lower flounce: thin small layer below for depth
-const tutuLower = sdf.roundedCylinder(tutuOuterR * 0.50, tutuThick * 0.60, tutuThick * 0.22)
-  .translate([0, 0, tutuCenterZ - tutuThick * 0.55]);
-
-const tutu = tutuMain
-  .smoothUnion(tutuUpper, tutuThick * 0.50)
-  .smoothUnion(tutuLower, tutuThick * 0.45)
+const tutu = tutuLowerT
+  .smoothUnion(tutuMidT, 0.3)
+  .smoothUnion(tutuTopT, 0.3)
   .label('tutu');
 
 // 6. HAIR — tight bun
@@ -115,5 +116,8 @@ const base = F.base(rig, {
 // 8. Hard-union all labeled regions and build.
 // detail: faceDetail meshes the head finely (~3x finer grid) so the carved
 // smile and eye domes are smooth; handDetail resolves the sculpted fingers.
-return sdf.union(skin, eyes, lips, leotard, tutu, hair, base)
+const built = sdf.union(skin, eyes, lips, leotard, tutu, hair, base)
   .build({ edgeLength: 0.52, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });
+// The rig's base disc extends below the soles' z=0 by convention; shift the
+// model so the base's underside rests exactly on z = 0.
+return built.translate([0, 0, -built.boundingBox().min[2]]);
