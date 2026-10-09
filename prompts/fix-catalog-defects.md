@@ -30,3 +30,8 @@ fix is done well.
   in-app review input. Real in-scope findings go back to the fixer.
 - **Committed per entry.** Entries are committed by explicit path as each one
   completes, so in-flight fixers' half-written files are never swept in.
+- **pacman-ghost.** The catalog description promised a "standalone figurine"
+  but the entry is deliberately a diorama (Pac-Man + ghost + pellets + base).
+  I kept the model and corrected the description, which is the less
+  destructive fix; the ghost's hem "teeth" were a real defect and were rebuilt
+  as a scalloped ring.
