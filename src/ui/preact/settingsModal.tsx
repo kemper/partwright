@@ -1074,7 +1074,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
         <span class="text-[11px] text-zinc-400 leading-snug">
           {settingsSignal.value.reviewPromptOverride !== null
             ? <><strong>Custom prompt active</strong> — your instructions are sent to the reviewer instead of the built-in rubric (also used by the 👁 Review button).</>
-            : <><strong>Built-in</strong> — a skeptical rubric: check every requested feature and dimension, structure (manifold, part count), and appearance, with evidence and a concrete fix per finding. Also used by the 👁 Review button.</>}
+            : <><strong>Built-in</strong> — checks requested features, dimensions, structure and printability, and reports only objective defects with evidence and a concrete fix; style ideas are optional notes, so work that meets the request passes. Also used by the 👁 Review button.</>}
         </span>
         <SecondaryButton
           label={settingsSignal.value.reviewPromptOverride !== null ? 'Edit / reset review prompt' : 'View / edit review prompt'}
