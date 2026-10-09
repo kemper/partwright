@@ -305,9 +305,25 @@ export function resolveOnCurrentMesh(d: RegionDescriptor): Set<number> {
   return currentMeshResolver?.(d) ?? new Set<number>();
 }
 
+// Told when an interactive paint landed entirely outside its part (so the UI
+// can say why nothing happened). Published by main.ts.
+let scopeMissHandler: ((label: string) => void) | null = null;
+
+export function setScopeMissHandler(fn: ((label: string) => void) | null): void {
+  scopeMissHandler = fn;
+}
+
 /** The part interactive paint is currently confined to, or null. */
 export function getImplicitPaintScope(): string | null {
   return implicitPaintScope?.() ?? null;
+}
+
+/** The part of `tris` that interactive paint would actually land on — the
+ *  hover preview uses it so it never shows paint bleeding outside the
+ *  selected part. `tris` unchanged when nothing is selected. */
+export function clipToActivePaintScope(tris: Set<number>): Set<number> {
+  const label = getImplicitPaintScope();
+  return label && scopeClipper && tris.size > 0 ? scopeClipper(label, tris) : tris;
 }
 
 /** Add a scope to a descriptor (no-op for `byLabel`, which is already a whole
@@ -352,7 +368,10 @@ export function addPaintRegion(
   // A click/stroke that lands entirely outside the selected part paints
   // nothing — don't litter the region list with an empty region.
   const label = scoped.kind === 'byLabel' || scoped.kind === 'pattern' ? null : scoped.scope?.label;
-  if (label && scopeClipper && triangles.size > 0 && scopeClipper(label, triangles).size === 0) return null;
+  if (label && scopeClipper && triangles.size > 0 && scopeClipper(label, triangles).size === 0) {
+    scopeMissHandler?.(label);
+    return null;
+  }
   return addRegion(name, color, source, scoped, triangles, visible, slotId, perTriColors);
 }
 

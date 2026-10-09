@@ -219,7 +219,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, withExplicitPaintScope, setScopeClipper, setImplicitPaintScope, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, withExplicitPaintScope, setScopeClipper, setScopeMissHandler, setImplicitPaintScope, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
@@ -778,7 +778,7 @@ function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>):
 const rgbToHexStr = (c: readonly number[]) => `#${c.map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('')}`;
 
 /** Paint regions tied to a part (`byLabel`, or any region with a part scope)
- *  whose label no longer exists — or is empty — in the current code. Only
+ *  whose label no longer exists in the current code. Only
  *  reported once a run has produced a label map to compare against. */
 function unmatchedPaintRegions(): { regionId: number; name: string; label: string; color: string; kept: boolean }[] {
   if (!currentLabelMesh) return [];
@@ -786,7 +786,10 @@ function unmatchedPaintRegions(): { regionId: number; name: string; label: strin
   for (const r of getRegions()) {
     const label = descriptorPartLabel(r.descriptor);
     if (!label) continue;
-    if ((currentLabelMap?.get(label)?.size ?? 0) > 0) continue;
+    // Only labels GONE from the code. A label that's still declared but paints
+    // nothing (closed-lid eyes, a buried feature, a SCAD-lost label) is the
+    // model's business, not orphaned paint.
+    if (currentLabelMap?.has(label) || currentLostLabels?.includes(label)) continue;
     out.push({ regionId: r.id, name: r.name, label, color: rgbToHexStr(r.color), kept: keptUnmatchedRegionIds.has(r.id) });
   }
   return out;
@@ -1544,9 +1547,12 @@ function resolveDescriptorTriangles(
   /** Id of the region being resolved, when known. Used by `colorFlood` to read
    *  the surface color *beneath* itself (excluding its own stamp). */
   selfRegionId?: number,
+  /** The labels + colours to resolve against. Defaults to the live object;
+   *  baking ANOTHER object (multi-object export) passes that object's own. */
+  ctx?: ResolveContext,
 ): ResolveResult {
-  const raw = resolveDescriptorTrianglesRaw(descriptor, mesh, adjacency, parentToChildren, selfRegionId);
-  const triangles = clipToPartScope(descriptor, raw.triangles, mesh);
+  const raw = resolveDescriptorTrianglesRaw(descriptor, mesh, adjacency, parentToChildren, selfRegionId, ctx);
+  const triangles = clipToPartScope(descriptor, raw.triangles, mesh, ctx);
   if (triangles === raw.triangles) return raw;
   let perTriColors = raw.perTriColors;
   if (perTriColors) {
@@ -1562,13 +1568,22 @@ function resolveDescriptorTriangles(
  *  resolver AND the worker-computed brush footprints. `byLabel` is already a
  *  whole part and `pattern` applies its own scope.label. Returns `tris` itself
  *  when there's nothing to clip. */
-function clipToPartScope(d: RegionDescriptor, tris: Set<number>, mesh: MeshData): Set<number> {
+function clipToPartScope(d: RegionDescriptor, tris: Set<number>, mesh: MeshData, ctx?: ResolveContext): Set<number> {
   const label = d.kind === 'byLabel' || d.kind === 'pattern' ? null : d.scope?.label;
   if (!label || tris.size === 0) return tris;
-  const part = labelTrianglesOnMesh(label, mesh);
+  const part = labelTrianglesOnMesh(label, mesh, ctx);
   const out = new Set<number>();
   for (const t of tris) if (part.has(t)) out.add(t);
   return out;
+}
+
+/** The live composite colours beneath region `selfId`: the code-colour
+ *  underlay plus the user regions painted before it (all of them when the
+ *  region is new / unknown). */
+function liveColorsBelowRegion(numTri: number, selfId?: number): Uint8Array | null {
+  const self = selfId !== undefined ? getRegions().find(r => r.id === selfId) : undefined;
+  const below = self ? getRegions().filter(r => r.order < self.order) : [...getRegions()];
+  return composeTriColors(numTri, [[...getModelRegions()], below], { baseColors: currentMeshData?.numTri === numTri ? currentMeshData.triColors : undefined });
 }
 
 // Per-mesh "which label owns each triangle" table, so a part scope can be
@@ -1577,10 +1592,19 @@ function clipToPartScope(d: RegionDescriptor, tris: Set<number>, mesh: MeshData)
 // triangle under its centroid). Rebuilt when the label map changes.
 let labelOwnerCache: { labels: Map<string, Set<number>> | null; byMesh: WeakMap<Uint32Array, Map<string, Set<number>>> } = { labels: null, byMesh: new WeakMap() };
 
+/** What a descriptor resolves against: the label map + the mesh it indexes,
+ *  and (for colour-keyed kinds) the colours drawn beneath a region. */
+interface ResolveContext {
+  labels: Map<string, Set<number>> | null;
+  labelMesh: MeshData | null;
+  /** Composite colours beneath region `selfId` (all layers when unknown). */
+  colorsBelow?: (numTri: number, selfId?: number) => Uint8Array | null;
+}
+
 /** The triangles of label `name` on `mesh` (empty when the label is unknown). */
-function labelTrianglesOnMesh(name: string, mesh: MeshData): Set<number> {
-  const labels = currentLabelMap;
-  const base = currentLabelMesh;
+function labelTrianglesOnMesh(name: string, mesh: MeshData, ctx?: ResolveContext): Set<number> {
+  const labels = ctx ? ctx.labels : currentLabelMap;
+  const base = ctx ? ctx.labelMesh : currentLabelMesh;
   const ids = labels?.get(name);
   if (!labels || !ids || !base) return new Set<number>();
   // Same topology (e.g. the coloured copy of the run mesh the viewport shows).
@@ -1606,12 +1630,16 @@ function resolveDescriptorTrianglesRaw(
   adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
   selfRegionId?: number,
+  ctx?: ResolveContext,
 ): ResolveResult {
+  const labelMap = ctx ? ctx.labels : currentLabelMap;
   switch (descriptor.kind) {
     case 'colorMatch': {
-      // Every triangle drawn in the source colour (this region excluded, so it
-      // keeps following the colour it replaced) — typically scoped to a part.
-      const triColors = buildTriColors(mesh.numTri, false, selfRegionId, mesh.triColors);
+      // Every triangle drawn in the source colour by the layers BENEATH this
+      // region — so it keeps following the colour it replaced, and a later
+      // replace stacked on top can't make it unravel on the next reconcile.
+      // Typically scoped to a part.
+      const triColors = (ctx?.colorsBelow ?? liveColorsBelowRegion)(mesh.numTri, selfRegionId);
       const [sr, sg, sb] = descriptor.seedColor;
       const maxDistSq = descriptor.colorTolerance * descriptor.colorTolerance * 3;
       const out = new Set<number>();
@@ -1640,7 +1668,7 @@ function resolveDescriptorTrianglesRaw(
       if (nearest.triIndex < 0) return { triangles: new Set<number>() };
       // Read colors with this region excluded, and anchor on the stored matched
       // color, so the flood follows the *source* color this fill sits on top of.
-      const triColors = buildTriColors(mesh.numTri, false, selfRegionId);
+      const triColors = ctx?.colorsBelow ? ctx.colorsBelow(mesh.numTri, selfRegionId) : buildTriColors(mesh.numTri, false, selfRegionId);
       const anchor: [number, number, number] = [
         Math.round(seedColor[0] * 255), Math.round(seedColor[1] * 255), Math.round(seedColor[2] * 255),
       ];
@@ -1671,8 +1699,8 @@ function resolveDescriptorTrianglesRaw(
       // empty set → region drops silently.
       // With no subdivision map the target may still be a re-tessellated
       // mesh (paint refine, texture), so map by topology, not raw ids.
-      if (!parentToChildren) return { triangles: new Set(labelTrianglesOnMesh(descriptor.label, mesh)) };
-      const ids = currentLabelMap?.get(descriptor.label);
+      if (!parentToChildren) return { triangles: new Set(labelTrianglesOnMesh(descriptor.label, mesh, ctx)) };
+      const ids = labelMap?.get(descriptor.label);
       return { triangles: ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>() };
     }
     case 'connectedFromSeed': {
@@ -1722,7 +1750,7 @@ function resolveDescriptorTrianglesRaw(
       const label = descriptor.scope?.label;
       let base: Set<number>;
       if (label) {
-        const ids = currentLabelMap?.get(label);
+        const ids = labelMap?.get(label);
         base = ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
       } else {
         base = new Set<number>();
@@ -2468,7 +2496,7 @@ async function appendStrokeRefineAsync(
       const { id, label } = emptyScopedStroke;
       queueMicrotask(() => {
         removeRegion(id);
-        showToast(`That stroke was outside "${label}" — nothing painted. Clear the part selection to paint the rest of the object.`, { variant: 'neutral' });
+        showToast(`That's outside "${label}" — nothing painted. Clear the part selection to paint the rest of the object.`, { variant: 'neutral' });
       });
     }
   } finally {
@@ -4575,6 +4603,14 @@ async function main() {
 
     // Layer B — code-declared colours (the model-colour underlay).
     const modelLayer: ColorRegion[] = [];
+    const manualLayer: ColorRegion[] = [];
+    // Resolve against THIS object's labels and colours, not the live editor's
+    // (its labels belong to whichever object is open).
+    const bakeCtx = {
+      labels: result.labelMap ?? null,
+      labelMesh: mesh,
+      colorsBelow: (n: number) => composeTriColors(n, [modelLayer, manualLayer]),
+    };
     if (result.labelColors && result.labelMap) {
       for (const [labelName, color] of result.labelColors) {
         const tris = result.labelMap.get(labelName);
@@ -4585,17 +4621,17 @@ async function main() {
       for (const op of result.paintOps) {
         const d = op.descriptor as RegionDescriptor;
         if (needsAdjacency(d)) ensureAdjacency();
-        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, bakeCtx);
         if (triangles.size > 0) modelLayer.push(mkRegion(op.color, triangles, perTriColors));
       }
     }
 
-    // Layer A — the part's saved manual paint regions.
-    const manualLayer: ColorRegion[] = [];
+    // Layer A — the part's saved manual paint regions (in paint order, so a
+    // colour-keyed region sees exactly the layers painted beneath it).
     for (const region of versionColorRegions(version)) {
       const d = region.descriptor;
       if (needsAdjacency(d)) ensureAdjacency();
-      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, bakeCtx);
       if (triangles.size > 0) {
         manualLayer.push({
           id: ++order, name: region.name, color: region.color, source: region.source,
@@ -9022,6 +9058,9 @@ async function main() {
     return out;
   });
   setImplicitPaintScope(() => getSelectedPartName());
+  setScopeMissHandler((label) => {
+    showToast(`That's outside "${label}" — nothing painted. Clear the part selection to paint the rest of the object.`, { variant: 'neutral' });
+  });
   setCurrentMeshResolver((d) => {
     const mesh = currentMeshData;
     if (!mesh) return new Set<number>();
@@ -9031,6 +9070,14 @@ async function main() {
   // The tint hides while painting (the strokes are the feedback) and returns
   // when the panel closes; any selection change (rail, chips, API) redraws.
   onPaintOpenChange(() => refreshPartSelectionVisual());
+  // A selection belongs to one object: switching or closing the object (or the
+  // session) clears it right away — not only at the next mesh update, which a
+  // failed or empty run never delivers. Otherwise the stale part would keep
+  // scoping paint and prefixing chat messages.
+  onStateChange((state) => {
+    if (!getSelectedPartKey()) return;
+    if ((state.currentPart?.id ?? null) !== selectionContext.objectId) selectObjectPart(null);
+  });
   onPartSelectionChange(() => {
     if (!getSelectedPartKey()) isolatedPartKey = null;
     refreshPartSelectionVisual();
@@ -9040,7 +9087,8 @@ async function main() {
   // when that geometry isn't labelled); double-click empty space to clear.
   // Skipped while a click-driven tool owns the viewport.
   getCanvas().addEventListener('dblclick', (e) => {
-    if (isPaintOpen() || apiIsArrangeActive()) return;
+    // Click-driven tools own the viewport while they're on.
+    if (isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()) return;
     const hit = pickFace(e);
     if (!hit) {
       if (getSelectedPartKey()) selectObjectPart(null);
@@ -10257,6 +10305,28 @@ async function main() {
     // previews as a no-op, mirroring Apply rather than texturing the whole model).
     rest.selectedTriangles = rs ? selectTrianglesNearSeeds(currentMeshData, rs.seeds, rs.radius) : new Set<number>();
     return rest;
+  }
+
+  /** Dry-run code the part/piece actions are about to commit (rename, bake,
+   *  piece filters) so a rewrite that doesn't run changes NOTHING — instead of
+   *  saving a broken version and reporting success. Returns { error } or null. */
+  async function preflightRewrite(code: string, fn: string): Promise<{ error: string } | null> {
+    const iso = await executeIsolated(code);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    try { (iso.manifold as any)?.delete?.(); } catch { /* ignore */ }
+    const gd = iso.geometryData as { status?: string; error?: string; componentCount?: number };
+    if (gd.status === 'error') return { error: `${fn}: the rewritten code doesn't run, so nothing was changed — ${gd.error ?? 'unknown error'}` };
+    return null;
+  }
+
+  /** A runAndSave result that didn't produce a good saved version. */
+  function saveFailed(res: unknown): string | null {
+    const r = res as { error?: string; passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } | null } | null;
+    if (!r) return 'no result';
+    if (typeof r.error === 'string') return r.error;
+    if (r.passed === false) return r.failures?.join('; ') ?? 'assertions failed';
+    if (r.geometry?.status === 'error') return r.geometry.error ?? 'the code failed to run';
+    return null;
   }
 
   // === Expose window.partwright console API ===
@@ -12713,14 +12783,21 @@ async function main() {
       return { object: { id: obj.id, name: obj.name }, ...rest, selected: getSelectedPartKey() };
     },
 
-    /** Select one part (by label name) or piece (`{ piece: index }`, from
-     *  listObjectParts) of the current object — the same as clicking it in the
-     *  object list. `{ unlabeled: true }` selects the geometry no part covers;
-     *  `null` clears. Kept for compatibility: it now SELECTS (the selection
-     *  persists across runs while the part exists, and scopes the paint tools).
-     *  -> { ok, triangles } or { error } */
+    /** Tint one part (by label name) or piece (`{ piece: index }`, from
+     *  listObjectParts) of the current object in the viewport so the user sees
+     *  which one you mean. Visual only and transient (gone on the next mesh
+     *  update) — it does NOT change the user's selection or paint scope; use
+     *  selectObjectPart for that. `{ unlabeled: true }` tints the geometry no
+     *  part covers; `null` clears. -> { ok, triangles } or { error } */
     highlightObjectPart(target: string | { piece?: number; unlabeled?: boolean } | null) {
-      return partwrightAPI.selectObjectPart(target);
+      const key = objectPartTargetKey(target, 'highlightObjectPart');
+      if (typeof key === 'object' && key !== null) return key;
+      clearTriangleHighlight();
+      if (key === null) { refreshPartSelectionVisual(); return { ok: true, triangles: 0 }; }
+      const mesh = lastDisplayedMesh ?? currentMeshData;
+      if (!mesh || !objectPartsMesh()) return { error: 'No geometry loaded — run code first.' };
+      if (!partKeyBaseTriangles(key)) return { error: `Unknown part or piece "${key}".` };
+      return { ok: true, triangles: showTriangleHighlight(mesh, partKeyTrianglesOn(key, mesh)) };
     },
 
     /** Select a part / piece of the current object, exactly like clicking it
@@ -12828,7 +12905,9 @@ async function main() {
       if (from === to) return { error: 'renameObjectPart: the new name is the same as the old one.' };
       if ((currentLabelMap?.get(to)?.size ?? 0) > 0) return { error: `renameObjectPart: there's already a part named "${to}".` };
       const { code, count } = renameLabelInCode(getValue(), from, to);
-      if (count === 0) return { error: `renameObjectPart: couldn't find "${from}" as a string in the code — it may be built dynamically. Rename it in the code by hand.` };
+      if (count === 0) return { error: `renameObjectPart: couldn't find "${from}" as a label string in the code — it may be built dynamically. Rename it in the code by hand.` };
+      const pre = await preflightRewrite(code, 'renameObjectPart');
+      if (pre) return pre;
       // Re-key the paint that belongs to the part, so it follows the rename.
       for (const r of getRegions()) {
         const d = r.descriptor;
@@ -12838,6 +12917,8 @@ async function main() {
       }
       const wasSelected = getSelectedPartKey() === `part:${from}`;
       const res = await partwrightAPI.runAndSave(code, `Rename part ${from} → ${to}`) as Record<string, unknown>;
+      const failed = saveFailed(res);
+      if (failed) return { ...res, error: `renameObjectPart: ${failed}` };
       if (wasSelected && (currentLabelMap?.get(to)?.size ?? 0) > 0) selectObjectPart(`part:${to}`);
       return { ...res, renamed: { from, to, occurrences: count } };
     },
@@ -12855,8 +12936,14 @@ async function main() {
       if (!part.color) return { error: `Part "${name}" has no colour to bake — colour it first (setObjectPartColor).` };
       const code = upsertPaintLabelInCode(getValue(), name, part.color);
       if (!code) return { error: 'bakeObjectPartColor: the code has no top-level `return` to put api.paint.label before.' };
+      const pre = await preflightRewrite(code, 'bakeObjectPartColor');
+      if (pre) return pre;
+      // The fill now lives in the code — drop the overlay (only once the
+      // rewrite is known to run) so the saved version doesn't carry both.
       for (const r of getRegions().filter(x => x.descriptor.kind === 'byLabel' && x.descriptor.label === name)) removeRegion(r.id);
       const res = await partwrightAPI.runAndSave(code, `Bake ${name} colour into code`) as Record<string, unknown>;
+      const failed = saveFailed(res);
+      if (failed) return { ...res, error: `bakeObjectPartColor: ${failed}` };
       return { ...res, baked: { name, color: part.color } };
     },
 
@@ -12874,12 +12961,19 @@ async function main() {
       const dropCode = wrapWithPieceFilter(prep.code, 'drop', [prep.box]);
       if (!keepCode || !dropCode) return { error: 'extractObjectPiece: the code has no top-level `return` to filter.' };
       const label = prep.part ? `${original.name} · ${prep.part}` : `${original.name} · piece ${index + 1}`;
-      const dropped = await partwrightAPI.runAndSave(dropCode, `Extract piece ${index + 1} to a new object`) as Record<string, unknown>;
-      if (dropped.error) return dropped;
+      // Both rewrites must run before anything is committed.
+      const preKeep = await preflightRewrite(keepCode, 'extractObjectPiece');
+      if (preKeep) return preKeep;
+      const preDrop = await preflightRewrite(dropCode, 'extractObjectPiece');
+      if (preDrop) return preDrop;
+      const dropped = await partwrightAPI.runAndSave(dropCode, `Extract piece ${index + 1} to a new object`);
+      const dropFailed = saveFailed(dropped);
+      if (dropFailed) return { error: `extractObjectPiece: ${dropFailed}` };
       const created = await partwrightAPI.createObject(label) as Record<string, unknown>;
       if (created.error) return created;
-      const kept = await partwrightAPI.runAndSave(keepCode, `Piece ${index + 1} of ${original.name}`) as Record<string, unknown>;
-      if (kept.error) return kept;
+      const kept = await partwrightAPI.runAndSave(keepCode, `Piece ${index + 1} of ${original.name}`);
+      const keepFailed = saveFailed(kept);
+      if (keepFailed) return { error: `extractObjectPiece: the new object's code failed — ${keepFailed}` };
       return { ok: true, object: { id: created.id, name: created.name }, original: { id: original.id, name: original.name } };
     },
 
@@ -12891,7 +12985,11 @@ async function main() {
       if ('error' in prep) return prep;
       const code = wrapWithPieceFilter(prep.code, 'drop', [prep.box]);
       if (!code) return { error: 'deleteObjectPiece: the code has no top-level `return` to filter.' };
-      return partwrightAPI.runAndSave(code, `Delete piece ${index + 1}`);
+      const pre = await preflightRewrite(code, 'deleteObjectPiece');
+      if (pre) return pre;
+      const res = await partwrightAPI.runAndSave(code, `Delete piece ${index + 1}`);
+      const failed = saveFailed(res);
+      return failed ? { ...(res as Record<string, unknown>), error: `deleteObjectPiece: ${failed}` } : res;
     },
 
     /** Download one piece of the current object as an STL. -> { filename } or { error } */
@@ -15180,7 +15278,31 @@ async function main() {
      *  editing the color argument in the code and re-running; when nothing
      *  matched but code-declared colors exist, the result carries a `hint`
      *  saying so. */
-    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
+    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number; scope?: { label: string } }) {
+      // Within one part: recolouring whole regions would leak outside it, so
+      // add a part-scoped colour-match region (the paint panel's "Replace in
+      // <part>") — every face of the part drawn in `from`, re-matched by colour.
+      if (opts && typeof opts === 'object' && opts.scope !== undefined) {
+        const label = opts.scope && typeof opts.scope === 'object' ? opts.scope.label : undefined;
+        if (typeof label !== 'string' || (currentLabelMap?.get(label)?.size ?? 0) === 0) return { error: 'replaceColor(scope): pass { label } naming a part of the current object (see listObjectParts).' };
+        const { scope: _scope, ...rest } = opts;
+        const check = guard(() => {
+          const from = assertNumberTuple(rest.from, 3, 'replaceColor(opts.from)');
+          from.forEach((n, i) => assertNumber(n, `replaceColor(opts.from[${i}])`, { min: 0, max: 1 }));
+          const to = assertNumberTuple(rest.to, 3, 'replaceColor(opts.to)');
+          to.forEach((n, i) => assertNumber(n, `replaceColor(opts.to[${i}])`, { min: 0, max: 1 }));
+          if (rest.tolerance !== undefined) assertNumber(rest.tolerance, 'replaceColor(opts.tolerance)', { min: 0 });
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+        const mesh = currentMeshData;
+        if (!mesh) return { error: 'No geometry loaded — run code first.' };
+        const descriptor: RegionDescriptor = { kind: 'colorMatch', seedColor: [...rest.from] as [number, number, number], colorTolerance: rest.tolerance ?? 0.02, scope: { label } };
+        const { triangles } = resolveDescriptorTriangles(descriptor, mesh, null, null);
+        if (triangles.size === 0) return { replaced: 0, hint: `No faces of "${label}" are drawn in that colour.` };
+        const region = addRegion(`Replace in ${label}`, [...rest.to] as [number, number, number], 'face-pick', descriptor, triangles);
+        scheduleColorRefresh();
+        return { replaced: region.triangles.size, id: region.id, scope: { label } };
+      }
       const check = guard(() => {
         assertObject(opts, 'replaceColor(opts)');
         const from = assertNumberTuple(opts?.from, 3, 'replaceColor(opts.from)');
@@ -15223,7 +15345,15 @@ async function main() {
      *  forward-facing triangles inside the footprint are painted; a depth slab
      *  stops it bleeding through thin walls. Returns `{ ok, name, triangles,
      *  avgColor }` or `{ error }`. Call saveVersion() afterwards to persist. */
-    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string; scope?: { label: string } }) {
+      // `scope: { label }` clips the stamp to one part (`label` alone only
+      // places/sizes it on that part).
+      const scopeLabel = opts && typeof opts === 'object' && opts.scope && typeof opts.scope === 'object' ? opts.scope.label : undefined;
+      if (opts && typeof opts === 'object' && opts.scope !== undefined) {
+        if (typeof scopeLabel !== 'string' || (currentLabelMap?.get(scopeLabel)?.size ?? 0) === 0) return { error: 'paintImage(scope): pass { label } naming a part of the current object (see listObjectParts).' };
+        opts = { ...opts };
+        delete opts.scope;
+      }
       const check = guard(() => {
         assertObject(opts, 'paintImage(opts)');
         assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
@@ -15282,6 +15412,7 @@ async function main() {
         detail: opts.detail,
         removeBackground: opts.removeBackground,
         name: opts.name,
+        ...(scopeLabel ? { scope: scopeLabel } : {}),
       });
       if (!region) {
         return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
@@ -16721,7 +16852,7 @@ async function main() {
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?, colorSource?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}', docs: '/ai.md#objects-parts-and-pieces' },
-        'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece} | {unlabeled: true} | null) -- Alias of selectObjectPart (kept for compatibility) -> {ok, selected, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece} | {unlabeled: true} | null) -- Transient visual tint of a part/piece (does not change the selection) -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         'selectObjectPart': { signature: 'selectObjectPart(name | {part} | {piece: index} | {unlabeled: true} | null) -- Select a part/piece like clicking it in the object list: tinted, scopes the interactive paint tools, AI chat context -> {ok, selected, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'getSelectedObjectPart': { signature: 'getSelectedObjectPart() -- The object-list selection -> {key, part?, piece?, description, isolated} | null', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'isolateObjectPart': { signature: 'isolateObjectPart(name | {part} | {piece} | {unlabeled: true} | null) -- Ghost everything else (visual only); null shows all -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
@@ -16885,8 +17016,8 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
-        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?, scope?:{label}}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, scope?:{label}, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
@@ -17045,7 +17176,7 @@ async function main() {
         const out = res as Record<string, unknown>;
         const region = getRegions().find(r => r.id === out.id);
         if (region && region.triangles.size === 0) {
-          removeRegion(region.id);
+          withSyncReconcile(() => removeRegion(region.id));
           return { error: `${method}: nothing it selects lies inside part "${label}" — no paint added.` };
         }
         if (region && typeof out.triangles === 'number') out.triangles = region.triangles.size;

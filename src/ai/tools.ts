@@ -933,7 +933,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'highlightObjectPart',
-    description: 'SELECT one part (by label name) or piece of the current object, exactly as if the user clicked it in the object list: it is tinted in the viewport so the user sees which one you mean, the user\'s interactive paint tools then confine themselves to it, and it stays selected across runs while the part exists. No paint, no version. Pass exactly one of part / piece / unlabeled, or clear:true. (Your own paint calls are NOT implicitly scoped by the selection — pass `scope: { label }` to them.)',
+    description: 'Tint one part (by label name) or piece of the current object in the viewport so the user can see which one you mean. Visual only and transient: it does not change the user\'s selection or paint scope, and it disappears on the next mesh update. Pass exactly one of part / piece / unlabeled, or clear:true.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1553,8 +1553,10 @@ for (const tool of ALL_TOOLS) {
  *  across code edits (main.ts wraps the matching window.partwright methods). */
 export const PART_SCOPE_TOOLS = new Set<string>([
   'paintRegion', 'paintNearestRegion', 'paintFaces', 'paintSlab', 'paintInBox', 'paintInOrientedBox',
-  'paintNear', 'paintInCylinder', 'paintConnected', 'paintStroke', 'paintComponent',
+  'paintNear', 'paintInCylinder', 'paintConnected', 'paintStroke', 'paintComponent', 'paintImage',
 ]);
+// (main.ts's PART_SCOPED_PAINT_METHODS is the window.partwright side — it also
+// covers API-only verbs like paintAirbrush; paintImage handles scope itself.)
 const PART_SCOPE_PROP = {
   type: 'object',
   description: 'Optional. Confine this paint to one PART of the object: { label: "<part name>" } (an api.label region from listObjectParts). The selection is computed as usual, then clipped to that part — e.g. paintSlab on the top 5 mm with scope {label:"handle"} paints only the handle\'s top. The scope persists, so the paint stays inside the part when the code changes. When the user has a part selected (their message starts with "[Selected in the Objects list: part …]"), scope your paint to it.',
@@ -2208,6 +2210,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         detail: input.detail,
         removeBackground: input.removeBackground,
         name: input.name,
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
       });
     }
     case 'paintInBox':

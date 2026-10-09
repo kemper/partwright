@@ -84,7 +84,7 @@ function fmt(n: number): string {
   return a >= 100 ? n.toFixed(0) : a >= 10 ? n.toFixed(1) : n.toFixed(2);
 }
 
-const ACTION_BTN = 'px-1.5 py-1 min-h-[36px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
+const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
 
 /** Build the `#object-parts` section. Rebuilt wholesale on every mesh update
  *  and selection change (see refreshObjectParts in partList.ts). */
@@ -130,7 +130,12 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
         onPick: (hex) => a.setPartColor(partName, hex),
       });
       swatch.el.dataset.part = partName;
-      row.appendChild(swatch.el);
+      // ≥44px tap target on mobile around the small visual swatch.
+      const hit = document.createElement('span');
+      hit.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 cursor-pointer';
+      hit.addEventListener('click', (e) => { if (e.target === hit) { e.stopPropagation(); swatch.el.click(); } });
+      hit.appendChild(swatch.el);
+      row.appendChild(hit);
     } else {
       const sw = document.createElement('span');
       sw.className = 'shrink-0 ml-1 w-3 h-3 rounded-sm border border-zinc-600';
@@ -258,7 +263,7 @@ function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, 
       const reset = document.createElement('button');
       reset.type = 'button';
       reset.dataset.partAction = 'reset-color';
-      reset.className = 'px-1.5 py-0.5 rounded text-[10px] text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700';
+      reset.className = 'px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700';
       reset.textContent = '↺ Reset';
       reset.title = `Remove the paint that fills "${name}" and go back to the colour the code gives it`;
       reset.addEventListener('click', (e) => { e.stopPropagation(); a.resetPartColor(name); });
@@ -340,7 +345,7 @@ function appendUnmatchedPaint(section: HTMLElement, a: ObjectPartsActions, view:
     const yes = document.createElement('button');
     yes.type = 'button';
     yes.dataset.partAction = 'accept-rename';
-    yes.className = 'shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-100 [@media(hover:hover)]:hover:bg-amber-500/30';
+    yes.className = 'shrink-0 px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] bg-amber-500/20 text-amber-100 [@media(hover:hover)]:hover:bg-amber-500/30';
     yes.textContent = 'Move';
     yes.addEventListener('click', (e) => { e.stopPropagation(); a.acceptRename(s.from, s.to); });
     row.appendChild(yes);
@@ -365,11 +370,11 @@ function appendUnmatchedPaint(section: HTMLElement, a: ObjectPartsActions, view:
     top.appendChild(t);
     row.appendChild(top);
     const actions = document.createElement('div');
-    actions.className = 'flex items-center gap-1 pl-3.5';
+    actions.className = 'flex flex-wrap items-center gap-1 pl-3.5';
     if (opts.reassign && partNames.length > 0) {
       const sel = document.createElement('select');
       sel.dataset.partAction = 'reassign-paint';
-      sel.className = 'min-w-0 flex-1 text-[10px] bg-zinc-900 border border-zinc-600 rounded px-1 py-0.5 text-zinc-200';
+      sel.className = 'min-w-0 basis-full min-h-[44px] md:min-h-0 text-[10px] bg-zinc-900 border border-zinc-600 rounded px-1 py-0.5 text-zinc-200';
       sel.setAttribute('aria-label', `Reassign "${name}" to another part`);
       const ph = document.createElement('option');
       ph.value = '';
@@ -389,7 +394,7 @@ function appendUnmatchedPaint(section: HTMLElement, a: ObjectPartsActions, view:
       const b = document.createElement('button');
       b.type = 'button';
       b.dataset.partAction = action;
-      b.className = 'shrink-0 px-1.5 py-0.5 rounded text-[10px] text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700';
+      b.className = 'shrink-0 px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700';
       b.textContent = text;
       b.title = title;
       b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });

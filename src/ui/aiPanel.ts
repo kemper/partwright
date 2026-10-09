@@ -45,7 +45,7 @@ import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
-import { getSelectedPartKey, setSelectedPartKey, onPartSelectionChange, describePartKey, partSelectionChatContext } from './partSelection';
+import { getSelectedPartKey, setSelectedPartKey, onPartSelectionChange, describePartKey, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
 
 interface PanelState {
   open: boolean;
@@ -2564,7 +2564,19 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
-  bubble.textContent = text;
+  // The Objects-list selection rides along as a context line; show it as a
+  // chip rather than raw "[Selected in …]" text in the user's own bubble.
+  const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
+  if (context) {
+    const chip = document.createElement('div');
+    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+    chip.title = 'The part selected in the Objects list was sent as context';
+    chip.textContent = `◎ ${context}`;
+    bubble.appendChild(chip);
+    bubble.appendChild(document.createTextNode(rest));
+  } else {
+    bubble.textContent = text;
+  }
   return bubble;
 }
 
@@ -2906,7 +2918,7 @@ function renderPartContext(): void {
   chip.appendChild(t);
   const rm = document.createElement('button');
   rm.type = 'button';
-  rm.className = 'shrink-0 text-amber-200/70 hover:text-amber-50';
+  rm.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-3 -mr-2 md:min-w-0 md:min-h-0 md:my-0 md:mr-0 text-amber-200/70 [@media(hover:hover)]:hover:text-amber-50';
   rm.textContent = '✕';
   rm.title = 'Clear the selection';
   rm.setAttribute('aria-label', 'Clear the selected part');

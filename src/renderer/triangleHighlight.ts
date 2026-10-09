@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { getMeshGroup, requestRender } from './viewport';
 import type { MeshData } from '../geometry/types';
+import { getConfig } from '../config/appConfig';
 
 const HIGHLIGHT_NAME = 'object-part-highlight';
 let overlay: THREE.Mesh | null = null;
@@ -83,7 +84,6 @@ export function isTriangleHighlightActive(): boolean {
 // clears the group); the host re-applies it after each mesh update.
 
 const ISOLATE_NAME = 'object-part-isolate';
-const GHOST_OPACITY = 0.1;
 let isolateOverlay: THREE.Mesh | null = null;
 let ghosted: { material: THREE.Material; transparent: boolean; opacity: number; depthWrite: boolean } | null = null;
 
@@ -129,7 +129,7 @@ export function showIsolation(mesh: MeshData, triangles: Iterable<number>): numb
   const m = solid.material;
   ghosted = { material: m, transparent: m.transparent, opacity: m.opacity, depthWrite: m.depthWrite };
   m.transparent = true;
-  m.opacity = GHOST_OPACITY;
+  m.opacity = getConfig().renderer.isolateGhostOpacity;
   m.depthWrite = false;
   m.needsUpdate = true;
 

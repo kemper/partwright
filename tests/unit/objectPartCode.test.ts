@@ -24,16 +24,24 @@ describe('findLabelSource', () => {
 describe('renameLabelInCode', () => {
   it('renames every literal naming the part, keeping each quote style', () => {
     const { code, count } = renameLabelInCode(CODE, 'handle', 'grip');
-    expect(count).toBe(4);
+    expect(count).toBe(3); // label call, paint.label, label: scope — not the comment's 'handle'
     expect(code).toContain(`"grip", { color`);
     expect(code).toContain(`api.paint.label('grip'`);
     expect(code).toContain(`{ label: 'grip', depth`);
     expect(code).toContain('const handle ='); // identifiers untouched
-    expect(code).not.toContain("'handle'");
+    expect(code).toContain("// the 'handle' sticks out"); // prose untouched
   });
   it('escapes quotes in the new name and ignores interpolated templates', () => {
     const { code } = renameLabelInCode("api.label(x, 'a'); `a${1}`", 'a', "it's");
     expect(code).toBe("api.label(x, 'it\\'s'); `a${1}`");
+  });
+  it('leaves ordinary strings that merely equal the part name alone', () => {
+    const src = "const t = api.text('top', { align: 'top' });\nconst lid = api.label(Manifold.cube([1, 2, 3]).rotate([0, 0, 1]), 'top');\napi.surface.knurl({ label: 'top' });\nreturn lid.add(t);";
+    const { code, count } = renameLabelInCode(src, 'top', 'lid');
+    expect(count).toBe(2);
+    expect(code).toContain("api.text('top', { align: 'top' })");
+    expect(code).toContain("rotate([0, 0, 1]), 'lid')");
+    expect(code).toContain("{ label: 'lid' }");
   });
   it('is a no-op when nothing matches', () => {
     expect(renameLabelInCode(CODE, 'zzz', 'q')).toEqual({ code: CODE, count: 0 });
@@ -59,7 +67,7 @@ describe('wrapWithPieceFilter', () => {
   it('wraps the code once and appends to an existing filter of the same mode', () => {
     const once = wrapWithPieceFilter(CODE, 'drop', [[1, 2, 3, 4, 5, 6]])!;
     expect(parsePieceFilter(once)).toMatchObject({ mode: 'drop', boxes: [[1, 2, 3, 4, 5, 6]] });
-    expect(once).toContain('  return body.add(handle);'); // original indented inside the IIFE
+    expect(once).toContain('\nreturn body.add(handle);\n})();'); // original verbatim inside the IIFE
     const twice = wrapWithPieceFilter(once, 'drop', [[7, 8, 9, 1, 1, 1]])!;
     expect(parsePieceFilter(twice)!.boxes).toHaveLength(2);
     expect(twice.match(/__pwFilterPieces/g)).toHaveLength(1);

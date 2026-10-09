@@ -76,3 +76,26 @@ a map built from the base mesh. It now re-resolves from the descriptor.
 **Schema 1.20** for the additive `scope` / `colorMatch`. Unknown descriptor
 kinds now resolve to an empty region instead of throwing, which protects the
 next bump.
+
+## Review fixes
+
+From the work-reviewer pass:
+
+**Correctness:**
+- **Export uses the right object's labels.** The resolver takes an explicit label and colour context (`ResolveContext`). The multi-object export bake passes each object's OWN labels and composite instead of the live object's.
+- **No broken saves.** Rename, bake and the piece filters dry-run the rewritten code with `executeIsolated` first, so a rewrite that fails changes nothing. They also detect a run that failed inside `runAndSave`, instead of reporting success.
+- **Rename only touches label references.** It rewrites literals in label contexts only: direct arguments of a `…label(` call, or `label:` values. A part named `top` no longer rewrites `align: 'top'`.
+- **Chained replaces stay put.** `colorMatch` resolves against the layers beneath it, so stacked replaces don't unravel.
+- **Piece filters fail safe.** They throw when the remembered piece no longer matches, rather than dropping another piece. They also insert the code verbatim, because indenting it changed multi-line template literals.
+
+**Behaviour:**
+- The selection clears on object or session switch.
+- Interactive paint outside the part now shows a toast, and hover previews are clipped to the part.
+- `highlightObjectPart` is a transient tint again. It no longer silently becomes the user's paint scope.
+- Unmatched paint counts only labels that are gone from the code, not declared labels that are empty.
+
+**Parity and UI:**
+- `scope` on `replaceColor` and `paintImage`.
+- The chat selection context shows as a chip in the user's message bubble.
+- 44px mobile tap targets.
+- The ghost opacity is in `appConfig`.

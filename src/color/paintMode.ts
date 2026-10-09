@@ -7,7 +7,7 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addPaintRegion, getRegions, buildTriColors, isPainted } from './regions';
+import { addPaintRegion, getRegions, buildTriColors, isPainted, clipToActivePaintScope } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -595,6 +595,9 @@ function processMouseMove(event: MouseEvent): void {
       region = findColorRegion(result.triangleIndex, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
     }
   }
+
+  // Preview what will actually be painted: with a part selected, only its share.
+  region = clipToActivePaintScope(region);
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
     // Triangles unchanged — just update ring position without rebuilding highlight.

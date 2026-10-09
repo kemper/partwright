@@ -450,7 +450,7 @@ function createPickerPanel(): HTMLElement {
     const rm = document.createElement('button');
     rm.type = 'button';
     rm.dataset.action = 'clear-part-scope';
-    rm.className = 'shrink-0 text-amber-200/70 hover:text-amber-50';
+    rm.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-3 -mr-2 md:min-w-0 md:min-h-0 md:my-0 md:mr-0 text-amber-200/70 [@media(hover:hover)]:hover:text-amber-50';
     rm.textContent = '✕';
     rm.title = 'Paint the whole object again (clears the part selection)';
     rm.setAttribute('aria-label', 'Clear the part scope');

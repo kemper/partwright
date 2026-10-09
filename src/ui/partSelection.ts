@@ -56,3 +56,11 @@ export function partSelectionChatContext(key: string): string {
   }
   return `[Selected in the Objects list: ${describePartKey(key)} of the current object (see listObjectParts). "It" / "this" refers to it.]`;
 }
+
+/** Split a user chat message into the selection context line the panel
+ *  prepended (see partSelectionChatContext) and the user's own text, so the
+ *  transcript can show the context as a chip instead of raw bracket text. */
+export function splitPartSelectionContext(text: string): { context: string | null; rest: string } {
+  const m = /^\[Selected in the Objects list: ([\s\S]*?) of the current object[\s\S]*?\]\n\n/.exec(text);
+  return m ? { context: m[1], rest: text.slice(m[0].length) } : { context: null, rest: text };
+}

@@ -21,6 +21,35 @@ function quotedLiteralRanges(code: string, name: string): Array<[number, number]
   return out;
 }
 
+/** Is the literal at `start` naming a part? True when it is a direct argument
+ *  of a `…label(` call (`api.label(shape, 'x')`, SCAD `label("x")`,
+ *  `BREP.label(s, 'x')`, `api.paint.label('x', …)`) or the value of a
+ *  `label:` property (`{ label: 'x' }` surface / paint scopes). Ordinary
+ *  strings that merely equal the name (`axis: 'x'`, `api.text('top')`) are
+ *  not. */
+function isLabelContext(code: string, start: number): boolean {
+  const before = code.slice(Math.max(0, start - 200), start);
+  if (/\blabel\s*:\s*$/.test(before)) return true;
+  // Walk back to the innermost open bracket enclosing the literal.
+  let depth = 0;
+  for (let i = start - 1, n = 0; i >= 0 && n < 4000; i--, n++) {
+    const c = code[i];
+    if (c === ')' || c === ']' || c === '}') depth++;
+    else if (c === '(' || c === '[' || c === '{') {
+      if (depth > 0) { depth--; continue; }
+      return c === '(' && /\blabel\s*$/.test(code.slice(Math.max(0, i - 40), i));
+    } else if (c === ';' && depth === 0) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Literals naming part `name` (see isLabelContext). */
+function labelLiteralRanges(code: string, name: string): Array<[number, number]> {
+  return quotedLiteralRanges(code, name).filter(([a]) => isLabelContext(code, a));
+}
+
 /** Where part `name` is declared: the first quoted literal on a line that
  *  calls `label(` (api.label / SCAD label / BREP.label), else the first literal
  *  anywhere. Returns 1-based `line` plus the literal's offsets, or null. */
@@ -28,16 +57,18 @@ export function findLabelSource(code: string, name: string): { from: number; to:
   const ranges = quotedLiteralRanges(code, name);
   if (ranges.length === 0) return null;
   const lineStart = (i: number) => code.lastIndexOf('\n', i - 1) + 1;
-  const declares = ranges.find(([from]) => /\blabel\s*\(/.test(code.slice(lineStart(from), from)) && !/paint\s*\.\s*label\s*\($/.test(code.slice(lineStart(from), from).trimEnd()));
-  const [from, to] = declares ?? ranges[0];
+  const labelled = ranges.filter(([a]) => isLabelContext(code, a));
+  const declares = labelled.find(([a]) => !/paint\s*\.\s*label\s*\(\s*$/.test(code.slice(lineStart(a), a)));
+  const [from, to] = declares ?? labelled[0] ?? ranges[0];
   const line = code.slice(0, from).split('\n').length;
   return { from, to, line };
 }
 
-/** Rename part `from` → `to` everywhere it's named by a string literal (its
- *  label, paint and surface scopes), keeping each literal's quote style. */
+/** Rename part `from` → `to` wherever a string literal names it as a PART —
+ *  its label call, `api.paint.label`, `label:` scopes — keeping each literal's
+ *  quote style. Other strings that happen to equal the name are left alone. */
 export function renameLabelInCode(code: string, from: string, to: string): { code: string; count: number } {
-  const ranges = quotedLiteralRanges(code, from);
+  const ranges = labelLiteralRanges(code, from);
   if (ranges.length === 0 || from === to) return { code, count: 0 };
   let out = '';
   let last = 0;
@@ -94,7 +125,8 @@ export function wrapWithPieceFilter(code: string, mode: 'keep' | 'drop', boxes: 
     return code.replace(existing.specLine, specLine(mode, all));
   }
   if (lastTopLevelReturn(code) < 0) return null;
-  const body = code.replace(/\s+$/, '').split('\n').map(l => (l.length > 0 ? `  ${l}` : l)).join('\n');
+  // Verbatim — indenting would change multi-line template literals.
+  const body = code.replace(/\s+$/, '');
   return [
     `${FILTER_MARK} — ${mode === 'keep' ? 'keeps only' : 'removes'} the listed pieces (matched by bounding box).`,
     specLine(mode, boxes.map(round)),
@@ -110,7 +142,13 @@ export function wrapWithPieceFilter(code: string, mode: 'keep' | 'drop', boxes: 
     '    for (let k = 0; k < 3; k++) s += Math.abs((min[k] + max[k]) / 2 - b[k]) + Math.abs(max[k] - min[k] - b[k + 3]);',
     '    return s;',
     '  };',
-    '  const hit = new Set(spec.boxes.map(b => pieces.reduce((best, m, i) => (score(m, b) < score(pieces[best], b) ? i : best), 0)));',
+    '  const hit = new Set(spec.boxes.map(b => {',
+    '    const best = pieces.reduce((bi, m, i) => (score(m, b) < score(pieces[bi], b) ? i : bi), 0);',
+    '    // No piece close to the remembered one (the edit moved or removed it):',
+    '    // stop rather than silently keep/drop a different piece.',
+    "    if (score(pieces[best], b) > 0.5 * (b[3] + b[4] + b[5]) + 1e-6) throw new Error('Piece filter: a filtered piece no longer matches the model — edit or remove the __pwPieces list.');",
+    '    return best;',
+    '  }));',
     "  const kept = pieces.filter((_, i) => (spec.mode === 'keep') === hit.has(i));",
     "  if (kept.length === 0) throw new Error('Piece filter: no pieces left.');",
     '  return kept.length === 1 ? kept[0] : api.Manifold.compose(kept);',

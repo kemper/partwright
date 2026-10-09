@@ -590,6 +590,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'interactionRenderScale', v)}
         />
         <Field
+          label="Isolate ghost opacity"
+          hint="How visible the rest of the object stays when one part is isolated (0–1)."
+          tooltip="Isolating a part from the Objects list (◐ Isolate) draws that part solid and the rest of the object as a translucent ghost — a part fused into a solid can't be hidden on its own. This is the ghost's opacity: lower makes the rest fainter, higher keeps more context. Takes effect the next time you isolate."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.isolateGhostOpacity}
+          value={c.renderer.isolateGhostOpacity}
+          min={0} max={0.9} step={0.05}
+          onChange={v => set('renderer', 'isolateGhostOpacity', v)}
+        />
+        <Field
           label="Grid room factor"
           unit="× model"
           tooltip="How far the ground grid extends, as a multiple of the model's largest dimension. The grid now scales with the model — spanning the studio 'room' around it — instead of being a fixed-size patch, so it stays useful from tiny parts to large models. Higher = a bigger grid around the model. Takes effect on the next render or 'Reset view'."
