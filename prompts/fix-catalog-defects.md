@@ -136,3 +136,7 @@ fix is done well.
   label, distinct from the brass straps, as the request names them. The
   lock-plate rivets now stand proud of the plate. The entry was re-baked
   without the persisted texture (2642 KB -> 132 KB).
+- **surfer round 2.** The reviewer counted the near-upright stance against the
+  request's "low riding crouch". The crouch is deepened: hips about 16 above
+  the soles, a wide stance, and spine lean 27. The crown now sits about 43
+  above the deck, against about 55 standing.

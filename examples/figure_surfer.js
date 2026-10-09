@@ -25,22 +25,24 @@ const rig = F.ground(F.rig({
   pose: {
     // Arms spread wide out to the sides for balance, slight bend, open hands.
     arms: { raiseSide: 80, bend: 12 },
-    // Low surf crouch: legs bent, a modest sideways spread, staggered fore/aft
-    // (left foot leads −Y, right trails +Y) so both soles sit along the board's
-    // long (Y) axis — a surf riding stance the board can span.
-    legL: { raiseSide: 10, bend: 55, raiseFwd: 22 },
-    legR: { raiseSide: 10, bend: 55, raiseFwd: -20 },
-    // Torso leans slightly forward into the ride; head up, gaze ahead.
-    spine: { lean: 10, turn: 6 },
-    head: { pitch: -8, yaw: 6 },
+    // LOW surf crouch: a wide stance (raiseSide 24) with the front (-Y) leg
+    // lunged forward and the rear leg folded deeper (knee flexion about 80 front /
+    // 105 rear after the ground drop below). Staggered fore/aft so both soles sit
+    // along the board's long (Y) axis.
+    legL: { raiseSide: 24, bend: 38, raiseFwd: 48 },
+    legR: { raiseSide: 24, bend: 50, raiseFwd: 20 },
+    // Torso leans well forward into the ride; the head pitches back up so the
+    // gaze stays forward.
+    spine: { lean: 27, turn: 6 },
+    head: { pitch: -24, yaw: 6 },
   },
   // 'drop' re-poses each leg (2-bone IK, hips fixed) so BOTH feet land coplanar on
-  // one ground plane. The rear (+Y) leg is already at full reach, so the default
-  // plane (the lowest sole, 1.74) is unreachable for it and the soles stayed
-  // ~1.3 apart. Targeting z = 4.0 (just above the reachable rear sole) keeps the
-  // crouch and stance and puts both soles on one plane, so the flat deck seats
-  // under BOTH feet.
-}), { mode: 'drop', z: 4.0 });
+  // one ground plane. The rig's hips stay at standing height, so the crouch is
+  // made by dropping the soles to z = 10: both ankles are pulled up toward the
+  // hips (knees fold), leaving the hips about 16 above the soles and the crown
+  // about 43 above the deck (vs ~55 standing). The flat deck then seats under
+  // BOTH feet.
+}), { mode: 'drop', z: 10 });
 const j = rig.joints,
   r = rig.r;
 
