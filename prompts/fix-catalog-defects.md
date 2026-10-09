@@ -40,3 +40,8 @@ fix is done well.
   diameters the knob bore reached the knurl valleys. Both now clamp so at least
   1.2 mm of wall survives across the whole parameter range. The defaults look
   the same.
+- **honeycomb-planter, d20-die.** The planter's cells now cut through the wall,
+  and the hex is rotated 30° so the lattice really is a honeycomb. The d20's
+  numerals were engraved pockets with gold fills, which produced 16 sliver
+  components. The request asks for raised gold numerals, so they are now
+  proud extrusions unioned into the body, leaving one component.
