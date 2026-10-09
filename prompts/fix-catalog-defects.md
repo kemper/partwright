@@ -88,3 +88,10 @@ fix is done well.
 - **pacman-ghost round 4.** The pupils are placed in world coordinates with one
   shared offset, so both look left; in the rotated eye frames they diverged.
   The pellets were enlarged so they read, and the stale comments fixed.
+- **coffee-mug, machine-knob (BREP).** The mug's `shell` grew outward, and its
+  baked label colours landed on the wrong triangles. So the cavity is now a
+  plain cut, the handle stands off the wall with a real finger gap, and the
+  coffee fills the cavity. Colours are analytic cylinder paint regions, because
+  multi-label `BREP.label` sets come back scrambled in replicad sessions (filed
+  as a separate bug). The knob got the fluted skirt and chamfered top its
+  description promised. Both manifest descriptions were updated to match.
