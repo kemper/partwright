@@ -91,13 +91,21 @@ test.describe('Catalog — shared page', () => {
         await expect(chips).toHaveCount(1);
       }
 
-      // With nothing marked print-tested yet, every chip reads "Untested".
-      await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+      // Entries flagged `printTested` in the manifest (e.g. the Cloud Guitar)
+      // read "✓ Print-tested"; every other chip reads "Untested".
+      const tested = page.locator('main a[data-catalog-tile]:has(span:has-text("Print-tested"))');
+      const testedCount = await tested.count();
+      expect(testedCount).toBeGreaterThan(0);
+      await expect(tested.filter({ hasText: 'Cloud Guitar' })).toHaveCount(1);
+      await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount - testedCount);
 
-      // The status is searchable: filtering on "untested" keeps the untested tiles.
+      // The status is searchable: "untested" keeps the untested tiles, and
+      // "print-tested" surfaces only the verified ones.
       const search = page.locator('[data-catalog-search]');
       await search.fill('untested');
-      expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+      expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBe(tileCount - testedCount);
+      await search.fill('print-tested');
+      await expect(page.locator('main a[data-catalog-tile]:not(.hidden)')).toHaveCount(testedCount);
       await search.fill('');
     });
 
