@@ -77,3 +77,7 @@ fix is done well.
 - **d20-die round 3.** The die now rests on a face at z=0, with the "20" face
   down. That face's numeral stands 0.3 mm proud (one print layer), so the die
   rests on its strokes and every face stays visibly raised.
+- **voxel-castle round 4.** The gates got lintels, so they read as a wall with
+  a door in it. The garden hedge is cleared around the fountain basin again; it
+  had been narrowed by mistake in round 3. The mirrored battlements now have a
+  double crenel at the centre line instead of a double merlon.
