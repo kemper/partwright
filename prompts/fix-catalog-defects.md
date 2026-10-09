@@ -71,3 +71,6 @@ fix is done well.
   equal to the wall. The d20 was scaled to about 25 mm so its numeral strokes
   reach the 0.8 mm minimum. The glyphs are seated on the measured face plane so
   their relief is real, and each numeral's ink is centred on its face.
+- **pacman-ghost round 3.** Pac-Man's eye sat inside his head, and his mouth
+  pointed toward the camera instead of the pellets. The eye now sits on the
+  head surface and the mouth faces the pellet line.
