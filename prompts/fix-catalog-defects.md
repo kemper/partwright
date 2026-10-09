@@ -35,3 +35,8 @@ fix is done well.
   I kept the model and corrected the description, which is the less
   destructive fix; the ghost's hem "teeth" were a real defect and were rebuilt
   as a scalloped ring.
+- **Review round 2 (jar, knob).** The reviewer's minor findings were param-range
+  edge cases: at thin walls the lid flutes cut into the thread, and at small
+  diameters the knob bore reached the knurl valleys. Both now clamp so at least
+  1.2 mm of wall survives across the whole parameter range. The defaults look
+  the same.

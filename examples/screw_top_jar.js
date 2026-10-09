@@ -46,9 +46,18 @@ let lid = Manifold.cylinder(lidH, lidR, lidR, 96);
 // Tap internal threads: subtract an oversized rod (open at the bottom face).
 const tap = threads.rod({ diameter: p.diameter + 2 * p.clearance, pitch: p.pitch, length: neckH + 1, chamfer: false });
 lid = lid.subtract(tap);
-// Knurled grip: scallop the rim with a ring of flutes.
-const flute = Manifold.cylinder(lidH + 2, 1.6, 1.6, 16).translate([lidR, 0, -1]);
-lid = lid.subtract(circularPattern(flute, p.knurls, { axis: 'z' }));
+// Knurled grip: scallop the rim with a ring of flutes. Keep at least
+// MIN_FLUTE_WALL of solid between the tap's major radius (the thread groove) and
+// the flute floor, so the flutes never break into the thread. The flute circle
+// is shifted outward as the allowed depth shrinks (a shallower scallop).
+const MIN_FLUTE_WALL = 1.2;
+const FLUTE_R = 1.6;
+const fluteDepth = Math.min(FLUTE_R, p.wall - p.clearance - MIN_FLUTE_WALL);
+if (fluteDepth >= 0.3) {
+  const flute = Manifold.cylinder(lidH + 2, FLUTE_R, FLUTE_R, 16)
+    .translate([lidR + (FLUTE_R - fluteDepth), 0, -1]);
+  lid = lid.subtract(circularPattern(flute, p.knurls, { axis: 'z' }));
+}
 lid = lid.translate([p.diameter + 24, 0, 0]);
 
 return labeledUnion([

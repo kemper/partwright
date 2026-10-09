@@ -41,13 +41,17 @@ let knob = grip.add(dome);
 
 // --- Mount bore from the bottom (the knob core is already solid) ---
 const boreDepth = H + capH - 2;
+// Largest bore radius that still leaves 1.2 mm of wall under the knurl valleys
+// (valley radius = D/2 - depth). Caps oversized shaft/insert sizes on small knobs.
+const MIN_WALL = 1.2;
+const maxBoreR = D / 2 - p.depth - MIN_WALL;
 if (p.mount === 'insert') {
   // Heat-set threaded insert: a melt-in bore sized from the metric table. The
   // "Shaft dia / insert screw size" param is read as the screw's nominal size
   // and snapped to the nearest of M3/M4/M5/M6/M8 (so 3-12 all map sensibly),
-  // then capped so the bore leaves a solid wall inside the knob.
+  // then capped so the bore leaves a solid wall inside the knob (maxBoreR).
   const sizes = [3, 4, 5, 6, 8];
-  const maxHole = D * 0.6;
+  const maxHole = 2 * maxBoreR;
   let nominal = sizes.reduce((best, s) => (Math.abs(s - p.shaftDia) < Math.abs(best - p.shaftDia) ? s : best), sizes[0]);
   while (nominal > sizes[0] && fasteners.fastener('M' + nominal).insert.hole > maxHole) {
     nominal = sizes[sizes.indexOf(nominal) - 1];
@@ -57,7 +61,7 @@ if (p.mount === 'insert') {
   knob = knob.subtract(bore);
 } else {
   // Bore radius = shaft radius + print clearance (FDM holes shrink).
-  const r = p.shaftDia / 2 + p.clearance;
+  const r = Math.min(p.shaftDia / 2 + p.clearance, maxBoreR);
   let bore = Manifold.cylinder(boreDepth, r, r, seg).translate([0, 0, -0.1]);
   if (p.mount === 'D-shaft') {
     // Flatten one side of the bore for a D-shaped potentiometer shaft. Standard
@@ -65,7 +69,7 @@ if (p.mount === 'insert') {
     // side (4.5 mm on a 6 mm shaft), so the flat sits 0.25 x diameter from the
     // axis (1.5 mm for 6 mm). The knob's flat is that plus the print clearance;
     // the circular segment beyond the chord is removed from the bore.
-    const flat = 0.25 * p.shaftDia + p.clearance;
+    const flat = Math.min(0.25 * p.shaftDia + p.clearance, r - 0.3);
     const cut = Manifold.cube([D, r + 1, boreDepth + 1], false).translate([-D / 2, flat, -0.5]);
     bore = bore.subtract(cut);
   }
