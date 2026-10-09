@@ -140,3 +140,13 @@ fix is done well.
   request's "low riding crouch". The crouch is deepened: hips about 16 above
   the soles, a wide stance, and spine lean 27. The crown now sits about 43
   above the deck, against about 55 standing.
+- **pocket-watch.** All six defects are fixed:
+  - the bow is now a standing ring;
+  - the crown and pendant overlap instead of leaving a gap;
+  - nothing sits below z=0;
+  - the rubies sit seated and proud;
+  - the beaded lip rests on the bezel;
+  - the gear trains are phased by solving each follower's spin, verified with
+    empty tooth intersections.
+  Heavy SCAD meshing under load ran past the review harness's 360 s per-entry
+  timeout, so it is raised to 900 s.
