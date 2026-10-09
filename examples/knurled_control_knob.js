@@ -13,7 +13,8 @@ const p = api.params({
   pitch:    { type: 'number', default: 2.2, min: 1, max: 5, step: 0.1, unit: 'mm', label: 'Grip pitch' },
   depth:    { type: 'number', default: 0.8, min: 0.3, max: 2, step: 0.1, unit: 'mm', label: 'Grip depth' },
   mount:    { type: 'select', default: 'D-shaft', options: ['shaft', 'D-shaft', 'insert'], label: 'Mount' },
-  shaftDia: { type: 'number', default: 6, min: 3, max: 12, step: 0.5, unit: 'mm', label: 'Shaft / insert size' },
+  shaftDia: { type: 'number', default: 6, min: 3, max: 12, step: 0.5, unit: 'mm', label: 'Shaft dia / insert screw size' },
+  clearance: { type: 'number', default: 0.15, min: 0, max: 0.5, step: 0.05, unit: 'mm', label: 'Bore print clearance (radial)' },
   pointer:  { type: 'boolean', default: true, label: 'Pointer notch' },
 });
 
@@ -40,21 +41,32 @@ let knob = grip.add(dome);
 
 // --- Mount bore from the bottom (the knob core is already solid) ---
 const boreDepth = H + capH - 2;
-const r = p.shaftDia / 2;
 if (p.mount === 'insert') {
-  // Heat-set threaded insert: a melt-in bore sized from the metric table
-  // (nearest of M3/M4/M5). The screw threads into the brass insert.
-  const size = p.shaftDia <= 3.5 ? 'M3' : p.shaftDia <= 4.5 ? 'M4' : 'M5';
-  const hole = fasteners.fastener(size).insert.hole;
+  // Heat-set threaded insert: a melt-in bore sized from the metric table. The
+  // "Shaft dia / insert screw size" param is read as the screw's nominal size
+  // and snapped to the nearest of M3/M4/M5/M6/M8 (so 3-12 all map sensibly),
+  // then capped so the bore leaves a solid wall inside the knob.
+  const sizes = [3, 4, 5, 6, 8];
+  const maxHole = D * 0.6;
+  let nominal = sizes.reduce((best, s) => (Math.abs(s - p.shaftDia) < Math.abs(best - p.shaftDia) ? s : best), sizes[0]);
+  while (nominal > sizes[0] && fasteners.fastener('M' + nominal).insert.hole > maxHole) {
+    nominal = sizes[sizes.indexOf(nominal) - 1];
+  }
+  const hole = fasteners.fastener('M' + nominal).insert.hole;
   const bore = Manifold.cylinder(boreDepth, hole / 2, hole / 2, seg).translate([0, 0, -0.1]);
   knob = knob.subtract(bore);
 } else {
+  // Bore radius = shaft radius + print clearance (FDM holes shrink).
+  const r = p.shaftDia / 2 + p.clearance;
   let bore = Manifold.cylinder(boreDepth, r, r, seg).translate([0, 0, -0.1]);
   if (p.mount === 'D-shaft') {
-    // Flatten one side of the bore for a D-shaped potentiometer shaft: remove
-    // the circular segment beyond a chord at distance `flat` from the axis.
-    const flat = r * 0.7;
-    const cut = Manifold.cube([D, r, boreDepth + 1], false).translate([-D / 2, flat, -0.5]);
+    // Flatten one side of the bore for a D-shaped potentiometer shaft. Standard
+    // D-shafts measure 0.75 x diameter from the flat to the opposite round
+    // side (4.5 mm on a 6 mm shaft), so the flat sits 0.25 x diameter from the
+    // axis (1.5 mm for 6 mm). The knob's flat is that plus the print clearance;
+    // the circular segment beyond the chord is removed from the bore.
+    const flat = 0.25 * p.shaftDia + p.clearance;
+    const cut = Manifold.cube([D, r + 1, boreDepth + 1], false).translate([-D / 2, flat, -0.5]);
     bore = bore.subtract(cut);
   }
   knob = knob.subtract(bore);

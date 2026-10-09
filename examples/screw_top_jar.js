@@ -18,13 +18,25 @@ const bodyR = p.diameter / 2;
 const innerR = bodyR - p.wall;
 const neckH = Math.max(3 * p.pitch, 10);   // a few threads of engagement
 
+// The neck's thread root sits one thread-depth inside the outer diameter. Bore
+// the neck so at least MIN_NECK_WALL of solid stays under that root — otherwise
+// a thin wall (or, at wall=2, a through-slot) opens along the helix.
+const MIN_NECK_WALL = 1.6;
+const rootR = bodyR - threads.depth(p.pitch);
+const neckInnerR = Math.min(innerR, rootR - MIN_NECK_WALL);
+const step = innerR - neckInnerR;          // radial step from barrel bore to neck bore
+
 // ---- Jar body: smooth barrel + threaded neck, then hollowed out ----
 const barrel = Manifold.cylinder(p.height, bodyR, bodyR, 96);
 const neck = threads.rod({ diameter: p.diameter, pitch: p.pitch, length: neckH })
   .translate([0, 0, p.height]);
 let jar = barrel.add(neck);
-// Hollow from just above the base up through the open neck.
-const cavity = Manifold.cylinder(p.height + neckH, innerR, innerR, 96).translate([0, 0, p.wall]);
+// Hollow from just above the base up through the open neck. The bore narrows
+// to neckInnerR through a 45-degree cone (printable, no flat ceiling).
+const cavPts = [[0, p.wall], [innerR, p.wall]];
+if (step > 1e-6) cavPts.push([innerR, p.height - step]);
+cavPts.push([neckInnerR, p.height], [neckInnerR, p.height + neckH + 1], [0, p.height + neckH + 1]);
+const cavity = Manifold.revolve(new api.CrossSection([cavPts]), 96, 360);
 jar = jar.subtract(cavity);
 
 // ---- Lid: capped cylinder, internal threads tapped by subtraction, knurled ----
