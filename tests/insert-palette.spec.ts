@@ -93,7 +93,9 @@ test.describe('Insert palette', () => {
 
     const finalCode = await getCode(page);
     expect(finalCode).toContain('.subtract(');
-    expect(finalCode).toMatch(/return\s+cut\s*;/);
+    // Arrange-mode results fold in under their own label so they show up as
+    // named parts of the object.
+    expect(finalCode).toMatch(/return\s+api\.label\(cut, 'cut'\)\s*;/);
 
     // Result still renders without error.
     await expect
@@ -192,21 +194,22 @@ test.describe('Insert palette', () => {
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // First insert: the default constructor-call return gets *replaced* by
-    // the new part, so the placeholder cube doesn't double up.
+    // the new part, so the placeholder cube doesn't double up. Each inserted
+    // shape is wrapped in api.label so it lists as a named part of the object.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+box\s*;/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+api\.label\(box, 'box'\)\s*;/);
 
     // Second insert: the bare-identifier return folds into a readable
-    // `Manifold.union([box, ball])` so both shapes stay visible.
+    // `Manifold.union([…box, …ball])` so both shapes stay visible.
     await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball\]\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[api\.label\(box, 'box'\), api\.label\(ball, 'ball'\)\]\);/);
 
     // Third insert: the union array grows.
     await page.locator(palette).getByRole('button', { name: 'Cylinder' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball, cyl\]\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[api\.label\(box, 'box'\), api\.label\(ball, 'ball'\), api\.label\(cyl, 'cyl'\)\]\);/);
 
     // The geometry still renders cleanly (the engine accepted the union).
     const geo = await getGeo(page);

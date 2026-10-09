@@ -608,8 +608,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
         <Field
           label="Assembly build workers"
-          hint="Parts the Assembly (all-parts) view builds in parallel. Clamped to CPU cores − 1."
-          tooltip="The Assembly view meshes every part of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
+          hint="Objects the Assembly (all-objects) view builds in parallel. Clamped to CPU cores − 1."
+          tooltip="The Assembly view meshes every object of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyPoolSize}
           value={c.renderer.assemblyPoolSize}
           min={1} max={16} integer
@@ -617,8 +617,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
         <Field
           label="Export build workers"
-          hint="Parts a multi-part export bakes in parallel. Clamped to CPU cores − 1 and the part count."
-          tooltip="A multi-part export (3MF / OBJ / STL / GLB) re-runs each part's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes parts one at a time. Clamped at runtime to your CPU core count minus one and to the number of parts you're exporting."
+          hint="Objects a multi-object export bakes in parallel. Clamped to CPU cores − 1 and the object count."
+          tooltip="A multi-object export (3MF / OBJ / STL / GLB) re-runs each object's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes objects one at a time. Clamped at runtime to your CPU core count minus one and to the number of objects you're exporting."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.exportPoolSize}
           value={c.renderer.exportPoolSize}
           min={1} max={16} integer
@@ -627,8 +627,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Assembly grid gutter"
           unit="× cell"
-          hint="Spacing between parts in the Assembly grid, as a fraction of the largest part."
-          tooltip="How much empty space sits between cells in the all-parts grid, as a fraction of the largest part's footprint. 0.25 leaves a quarter-cell gap; 0 packs parts edge to edge."
+          hint="Spacing between objects in the Assembly grid, as a fraction of the largest object."
+          tooltip="How much empty space sits between cells in the all-objects grid, as a fraction of the largest object's footprint. 0.25 leaves a quarter-cell gap; 0 packs objects edge to edge."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyGridGutter}
           value={c.renderer.assemblyGridGutter}
           min={0} max={2} step={0.05}

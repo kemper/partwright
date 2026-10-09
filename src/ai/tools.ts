@@ -872,57 +872,75 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'listParts',
-    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is the default target for runCode / runAndSave / paint / export, but those tools also take an optional `part` target (name, id, or index) so you can act on any part directly without switching focus first.',
+    name: 'listObjects',
+    description: 'List the OBJECTS in the active session: [{id, name, order, isCurrent}]. A session can hold multiple objects — independent printable things, each with its own code and version history (each becomes its own object in a multi-object 3MF). The current object is the default target for runCode / runAndSave / paint / export, but those tools also take an optional `object` target (name, id, or index) so you can act on any object directly without switching focus first. Not to be confused with PARTS — the api.label regions inside one object (see listObjectParts).',
     input_schema: { type: 'object', properties: {} },
   },
   {
-    name: 'getCurrentPart',
-    description: "Return the active part {id, name, order}, or null when no session is open. You rarely need this: changePart returns the part it switched to, listParts marks the current one (isCurrent), and every part-scoped tool takes a `part` target — so prefer addressing parts by name/index over reading the current selection (which the user can change while you work).",
+    name: 'getCurrentObject',
+    description: "Return the active object {id, name, order}, or null when no session is open. You rarely need this: changeObject returns the object it switched to, listObjects marks the current one (isCurrent), and every object-scoped tool takes an `object` target — so prefer addressing objects by name/index over reading the current selection (which the user can change while you work).",
     input_schema: { type: 'object', properties: {} },
   },
   {
-    name: 'createPart',
-    description: 'Create a new, empty part in the active session and switch to it. The editor resets to a starter snippet; call runAndSave to commit its first version. Use to model a second (third, …) object in the same session.',
+    name: 'createObject',
+    description: 'Create a new, empty OBJECT in the active session and switch to it. The editor resets to a starter snippet; call runAndSave to commit its first version. Use for a second (third, …) separately-versioned, separately-printed thing in the same session (e.g. a box and its lid). To add a piece to the CURRENT model (a handle on a mug), edit its code instead — wrap the new shape in api.label(shape, "handle") so it shows up as a part.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Optional part name (e.g. "Lid"). Auto-named "Part N" when omitted.' },
+        name: { type: 'string', description: 'Optional object name (e.g. "Lid"). Auto-named "Object N" when omitted.' },
       },
     },
   },
   {
-    name: 'changePart',
-    description: "Switch the active part — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listParts), or 0-based index. Loads that part's latest version. You usually do NOT need this just to work on a different part: every part-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `part` target that addresses a part directly. Use changePart only when you want to move the user's focus, or to reset the editor to a part's latest saved version.",
+    name: 'changeObject',
+    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Loads that object's latest version. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only when you want to move the user's focus, or to reset the editor to an object's latest saved version.",
     input_schema: {
       type: 'object',
       properties: {
-        part: { description: 'The part to switch to — its name, id (from listParts), or 0-based index.' },
-        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
+        object: { description: 'The object to switch to — its name, id (from listObjects), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `object` — an object id from listObjects().' },
       },
     },
   },
   {
-    name: 'renamePart',
-    description: 'Rename a part. Address it by name, id (from listParts), or 0-based index, and give the new name.',
+    name: 'renameObject',
+    description: 'Rename an object. Address it by name, id (from listObjects), or 0-based index, and give the new name.',
     input_schema: {
       type: 'object',
       properties: {
-        part: { description: 'The part to rename — its name, id (from listParts), or 0-based index.' },
-        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
-        name: { type: 'string', description: 'New part name.' },
+        object: { description: 'The object to rename — its name, id (from listObjects), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `object` — an object id from listObjects().' },
+        name: { type: 'string', description: 'New object name.' },
       },
       required: ['name'],
     },
   },
   {
-    name: 'deletePart',
-    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active. Address it by name, id (from listParts), or 0-based index.",
+    name: 'deleteObject',
+    description: "Delete an object and all its versions. Refuses to delete a session's last remaining object. If the active object is deleted, an adjacent object becomes active. Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
-        part: { description: 'The part to delete — its name, id (from listParts), or 0-based index.' },
-        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
+        object: { description: 'The object to delete — its name, id (from listObjects), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `object` — an object id from listObjects().' },
+      },
+    },
+  },
+  {
+    name: 'listObjectParts',
+    description: "List the current object's PARTS and PIECES, exactly as the object list in the left rail shows them. Parts are the api.label(shape, name) regions (SCAD label(), BREP.label) — tracked through every union/cut, so they survive several shapes fusing into one solid; each has {name, triangleCount, color?}. lostParts are labels that ended with no triangles. unlabeledTriangleCount is geometry no part covers. Pieces are the physically separate solids (connected components), each named by the part covering most of it — use them to check a print-in-place mechanism really splits into N moving pieces. When the user says \"the handle\" or \"the lid part\", this is where those names live.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'highlightObjectPart',
+    description: 'Tint one part (by label name) or piece of the current object in the viewport so the user can see which one you mean — the same as clicking it in the object list. Visual only (no paint, no version); cleared on the next run. Pass exactly one of part / piece / unlabeled, or clear:true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        unlabeled: { type: 'boolean', description: 'true = tint the geometry no part covers.' },
+        clear: { type: 'boolean', description: 'true = remove the highlight.' },
       },
     },
   },
@@ -1400,17 +1418,19 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
 ];
 
-/** Tools whose effect is scoped to a single part — they read or mutate the
- *  active part's code, geometry, paint, or version history. Each gains an
- *  optional `part` target (injected below) so the model can address a part
- *  directly instead of leaning on the shared "current part" pointer, which the
- *  human can move from the part menu mid-turn. When `part` is supplied,
+/** Tools whose effect is scoped to a single OBJECT — they read or mutate the
+ *  active object's code, geometry, paint, or version history. Each gains an
+ *  optional `object` target (injected below) so the model can address an object
+ *  directly instead of leaning on the shared "current object" pointer, which
+ *  the human can move from the object list mid-turn. When `object` is supplied,
  *  executeTool switches focus to it *before* running the op (see
- *  `focusTargetPart`), so the op always acts on the part the model named — not
- *  on whatever the user last clicked. The part-management tools (listParts /
- *  changePart / createPart / …) are deliberately excluded: they already take an
- *  explicit target or operate at the session level. */
-export const PART_TARGETABLE_TOOLS = new Set<string>([
+ *  `focusTargetObject`), so the op always acts on the object the model named —
+ *  not on whatever the user last clicked. The object-management tools
+ *  (listObjects / changeObject / createObject / …) are deliberately excluded:
+ *  they already take an explicit target or operate at the session level.
+ *  (Objects were called "parts" before the rename; the legacy `part` key is
+ *  still accepted as the target.) */
+export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getActiveLanguage', 'setActiveLanguage',
   'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
@@ -1426,15 +1446,15 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
 ]);
 
-// The shared `part` target schema, injected into every targetable tool so the
+// The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
-const PART_TARGET_PROP = {
-  description: 'Optional. The part to act on — addressed by its name, its id (from listParts), or its 0-based index. Defaults to the current part. Pass this to target a specific part directly instead of relying on the current selection; it also makes a separate changePart call unnecessary. Switching focus to the part is visible to the user.',
+const OBJECT_TARGET_PROP = {
+  description: 'Optional. The OBJECT to act on — addressed by its name, its id (from listObjects), or its 0-based index. Defaults to the current object. Pass this to target a specific object directly instead of relying on the current selection; it also makes a separate changeObject call unnecessary. Switching focus to the object is visible to the user.',
 };
 for (const tool of ALL_TOOLS) {
-  if (PART_TARGETABLE_TOOLS.has(tool.name) && !('part' in tool.input_schema.properties)) {
-    tool.input_schema.properties.part = PART_TARGET_PROP;
+  if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
+    tool.input_schema.properties.object = OBJECT_TARGET_PROP;
   }
 }
 
@@ -1480,12 +1500,14 @@ const ALWAYS_AVAILABLE = new Set([
   'query',
   'modifyAndTest',
   'probeRay',
-  'listParts',
-  'getCurrentPart',
-  'createPart',
-  'changePart',
-  'renamePart',
-  'deletePart',
+  'listObjects',
+  'getCurrentObject',
+  'createObject',
+  'changeObject',
+  'renameObject',
+  'deleteObject',
+  'listObjectParts',
+  'highlightObjectPart',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1508,7 +1530,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 /** Pure-read tools the model may call during plan mode to ground its plan in
  *  the current session state (open code, versions, geometry, notes, docs).
  *  Deliberately excludes anything that mutates the session (setCode,
- *  modifyAndTest, forkVersion, createPart, importImageAsRelief,
+ *  modifyAndTest, forkVersion, createObject, importImageAsRelief,
  *  setActiveLanguage, setPrinterSettings, setReliefPreviewMode) AND anything
  *  that executes user code (runCode, runAndAssert, runAndExplain, runIsolated)
  *  — the point of plan mode is to plan, not to build. renderView/renderViews
@@ -1521,7 +1543,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
@@ -1536,7 +1558,7 @@ const PLAN_MODE_TOOLS = new Set([
  *  double-paint or stack a second region), `addSessionNote` (would append
  *  twice), the relief imports (already confirmed once — a retry skips the
  *  prompt), the surface modifiers (re-bake), `modifyAndTest` (a patch won't
- *  re-match after it's applied), and the part/code mutators. Anything not in
+ *  re-match after it's applied), and the object/code mutators. Anything not in
  *  this set runs exactly once even when the user opted into retries. */
 export const RETRY_SAFE_TOOLS = new Set([
   // Pure reads / queries
@@ -1545,8 +1567,10 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
+  // A visual-only tint; re-applying it is idempotent.
+  'highlightObjectPart',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -1621,29 +1645,30 @@ function getApi(): PartwrightAPI {
   return w.partwright;
 }
 
-/** Switch focus to the part a part-scoped tool named via its `part` target, so
- *  the op runs against that part rather than whatever the user last selected in
- *  the part menu. `target` is a part name, id, or 0-based index (mirrors
- *  resolvePartTarget on the API side). No-op when the target is already current
- *  — which avoids reloading the part and clobbering any in-progress editor draft
- *  on it. Returns an error string on a bad target, or null on success. */
-async function focusTargetPart(api: PartwrightAPI, target: string | number): Promise<string | null> {
-  const parts = api.listParts() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
-  if (!Array.isArray(parts) || parts.length === 0) {
-    return `Cannot target part ${JSON.stringify(target)}: no active session with parts. Open a session first.`;
+/** Switch focus to the object an object-scoped tool named via its `object`
+ *  target, so the op runs against that object rather than whatever the user
+ *  last selected in the object list. `target` is an object name, id, or 0-based
+ *  index (mirrors resolvePartTarget on the API side). No-op when the target is
+ *  already current — which avoids reloading the object and clobbering any
+ *  in-progress editor draft on it. Returns an error string on a bad target, or
+ *  null on success. */
+async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
+  const objects = api.listObjects() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
+  if (!Array.isArray(objects) || objects.length === 0) {
+    return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
   }
   let match: { id: string; isCurrent: boolean } | undefined;
   if (typeof target === 'number') {
-    if (!Number.isInteger(target) || target < 0) return `Cannot target part: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
-    match = [...parts].sort((a, b) => a.order - b.order)[target];
+    if (!Number.isInteger(target) || target < 0) return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    match = [...objects].sort((a, b) => a.order - b.order)[target];
   } else {
-    match = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
+    match = objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
   }
-  if (!match) return `Cannot target part ${JSON.stringify(target)}: no matching part (by name, id, or index). Call listParts() to see what's available.`;
+  if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
   if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
-  const switched = await api.changePart(match.id) as { error?: string } | undefined;
+  const switched = await api.changeObject(match.id) as { error?: string } | undefined;
   if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
-    return `Cannot target part ${JSON.stringify(target)}: ${switched.error}`;
+    return `Cannot target object ${JSON.stringify(target)}: ${switched.error}`;
   }
   return null;
 }
@@ -1673,15 +1698,17 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
     }
     const api = getApi();
-    // Part addressing: a part-scoped tool may name a `part` target (name, id, or
-    // 0-based index). Switch focus to it before running so the op acts on the
-    // addressed part — not whatever the user last clicked. Strip the key first so
-    // the per-tool APIs (which reject unknown keys) never see it.
-    if (PART_TARGETABLE_TOOLS.has(name)) {
-      const target = input.part as string | number | undefined;
+    // Object addressing: an object-scoped tool may name an `object` target (name,
+    // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
+    // Switch focus to it before running so the op acts on the addressed object —
+    // not whatever the user last clicked. Strip the keys first so the per-tool
+    // APIs (which reject unknown keys) never see them.
+    if (OBJECT_TARGETABLE_TOOLS.has(name)) {
+      const target = (input.object ?? input.part) as string | number | undefined;
+      delete input.object;
       delete input.part;
       if (target != null) {
-        const focusErr = await focusTargetPart(api, target);
+        const focusErr = await focusTargetObject(api, target);
         if (focusErr) return { content: focusErr, isError: true };
       }
     }
@@ -2180,18 +2207,35 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'probeRay':
       return api.probeRay(input.origin, input.direction);
+    // Pre-rename tool names (`listParts` …) still dispatch, so a chat whose
+    // history carries them — or a model that reaches for the old name — works.
+    case 'listObjects':
     case 'listParts':
-      return api.listParts();
+      return api.listObjects();
+    case 'getCurrentObject':
     case 'getCurrentPart':
-      return api.getCurrentPart();
+      return api.getCurrentObject();
+    case 'createObject':
     case 'createPart':
-      return api.createPart(input.name as string | undefined);
+      return api.createObject(input.name as string | undefined);
+    case 'changeObject':
     case 'changePart':
-      return api.changePart((input.part ?? input.id) as string | number);
+      return api.changeObject((input.object ?? input.part ?? input.id) as string | number);
+    case 'renameObject':
     case 'renamePart':
-      return api.renamePart((input.part ?? input.id) as string | number, input.name as string);
+      return api.renameObject((input.object ?? input.part ?? input.id) as string | number, input.name as string);
+    case 'deleteObject':
     case 'deletePart':
-      return api.deletePart((input.part ?? input.id) as string | number);
+      return api.deleteObject((input.object ?? input.part ?? input.id) as string | number);
+    case 'listObjectParts':
+      return api.listObjectParts();
+    case 'highlightObjectPart': {
+      if (input.clear === true) return api.highlightObjectPart(null);
+      if (typeof input.part === 'string') return api.highlightObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.highlightObjectPart({ piece: input.piece });
+      if (input.unlabeled === true) return api.highlightObjectPart({ unlabeled: true });
+      return { error: 'highlightObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
+    }
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

@@ -514,8 +514,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Parts pane — gives the parts list its own full-width mobile view so it's
   // reachable from anywhere (the rail isn't a usable left column on a phone).
   const mobilePartsBtn = document.createElement('button');
-  mobilePartsBtn.textContent = 'Parts';
-  mobilePartsBtn.title = 'Show the parts list';
+  mobilePartsBtn.textContent = 'Objects';
+  mobilePartsBtn.title = 'Show the objects list';
   const mobileViewportBtn = document.createElement('button');
   mobileViewportBtn.textContent = 'Viewport';
   mobileViewportBtn.title = 'Show 3D viewport';
@@ -653,8 +653,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const railExpandBtn = document.createElement('button');
   railExpandBtn.className = 'absolute left-0 top-0 z-20 px-1.5 py-1 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-br border-r border-b border-zinc-700 text-xs leading-none hidden';
   railExpandBtn.textContent = '»'; // »
-  railExpandBtn.title = 'Show parts';
-  railExpandBtn.setAttribute('aria-label', 'Show parts');
+  railExpandBtn.title = 'Show objects';
+  railExpandBtn.setAttribute('aria-label', 'Show objects');
   editorGroup.appendChild(railExpandBtn);
 
   function togglePartsRail(): void {

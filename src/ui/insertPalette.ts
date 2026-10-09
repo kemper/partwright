@@ -68,6 +68,7 @@ import {
   duplicatePartJs,
   duplicatePartScad,
   removeManagedPart,
+  partCarriesLabels,
   removeScadStatement,
 } from '../insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../insert/spatial';
@@ -1619,7 +1620,7 @@ function applyPrimitive(spec: PrimitiveSpec, lang: InsertLanguage): void {
       // (never dropping existing geometry). Auto-combine off inserts the const
       // but leaves the return alone until the user combines explicitly.
       const result = addManagedDeclaration(code, emitPrimitive(spec, lang), {
-        lang, addNames: [spec.name], combine: autoCombine,
+        lang, addNames: [spec.name], combine: autoCombine, label: true,
       });
       cb!.setCode(result.code);
       if (!result.returnSet) {
@@ -1703,7 +1704,7 @@ function applyEnclosure(spec: EnclosureSpec, size: Vec3): void {
     const { decl, names } = emitEnclosure(spec);
     // Enclosures are manifold-js only; fold their part(s) into the managed union.
     const result = addManagedDeclaration(cb!.getCode(), decl, {
-      lang: 'manifold-js', addNames: names, combine: autoCombine,
+      lang: 'manifold-js', addNames: names, combine: autoCombine, label: true,
     });
     cb!.setCode(result.code);
     // Approximate AABB for 3D-pick: footprint x×y, base on z=0. (Enclosure parts
@@ -1933,8 +1934,11 @@ function applyOperation(op: BooleanOpKind, operands: Operand[], lang: InsertLang
         const snippet = lang === 'replicad'
           ? emitOperationBrep(op, names, resultName)
           : emitOperationJs(op, names, resultName);
+        // Label the result as a part — unless an operand already carries labels
+        // (labelling would re-ID its triangles and erase them).
+        const label = !operands.some(o => partCarriesLabels(code, o.expr ?? o.name));
         const result = addManagedDeclaration(code, snippet, {
-          lang, addNames: [resultName], replaceNames: operands.map(o => o.name), combine: true,
+          lang, addNames: [resultName], replaceNames: operands.map(o => o.name), combine: true, label,
         });
         cb!.setCode(result.code);
       }

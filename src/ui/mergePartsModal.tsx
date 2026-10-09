@@ -26,8 +26,8 @@ interface ModeSpec {
 }
 
 const MODES: ModeSpec[] = [
-  { mode: 'new', title: 'Combine into a new part', desc: 'Keeps the selected parts and adds a new part holding the combination.' },
-  { mode: 'replace', title: 'Merge into one part', desc: 'Replaces the selected parts (and their history) with a single combined part.' },
+  { mode: 'new', title: 'Combine into a new object', desc: 'Keeps the selected objects and adds a new object holding the combination.' },
+  { mode: 'replace', title: 'Merge into one object', desc: 'Replaces the selected objects (and their history) with a single combined object.' },
 ];
 
 function MergeBody(props: { partNames: string[]; selected: Signal<MergeMode> }) {
@@ -73,7 +73,7 @@ export function showMergePartsModal(opts: MergePartsOptions): Promise<MergeChoic
 
     mountPreactModal(
       {
-        title: 'Merge parts',
+        title: 'Merge objects',
         onClose: () => resolve(result),
       },
       close => ({

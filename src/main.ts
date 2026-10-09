@@ -68,7 +68,9 @@ import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
-import { createPartList } from './ui/partList';
+import { createPartList, refreshObjectParts, type ObjectPartsView } from './ui/partList';
+import { summarizeObjectParts, type ObjectPartsSummary } from './geometry/meshPieces';
+import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive } from './renderer/triangleHighlight';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
 import { openPartsOverview } from './ui/partsOverview';
 import { createGalleryView, refreshGallery } from './ui/gallery';
@@ -437,7 +439,7 @@ async function openAssembly(): Promise<void> {
   if (isAssemblyViewOpen() || !assemblyMount) return;
   const st = getState();
   if (!st.session || st.parts.length < 2) {
-    showToast('Add a second part to view all parts together.', { variant: 'neutral' });
+    showToast('Add a second object to view all objects together.', { variant: 'neutral' });
     return;
   }
   syncAssemblyToggle(true);
@@ -642,6 +644,13 @@ let currentLabelMap: Map<string, Set<number>> | null = null;
  *  mismatch. Surfaced to agent callers via `runAndSave().lostLabels` and
  *  `listLabels().lostLabels` so they don't have to diff by hand. */
 let currentLostLabels: string[] | null = null;
+/** The mesh `currentLabelMap`'s triangle ids index — the run's own mesh.
+ *  Paint subdivision, simplify, texture and preview passes later swap
+ *  `currentMeshData` for a re-tessellated mesh WITHOUT rebuilding the label
+ *  map, so anything that reads label triangle ids (the object list's parts /
+ *  pieces, the part highlight) must pair the map with this mesh, not the
+ *  displayed one. */
+let currentLabelMesh: MeshData | null = null;
 
 // Per-version mesh cache: avoids recompiling SCAD (or any engine) when
 // switching between parts whose last-loaded version is unchanged. Keyed by
@@ -655,6 +664,116 @@ type PartMeshCacheEntry = {
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
+
+// === Object parts + pieces (the object list's expandable section) ===
+// A "part" is an api.label region of the current object's mesh; a "piece" is a
+// connected component. Summarized lazily (only when the rail asks or an agent
+// calls listObjectParts) and memoized on the mesh + label-map identity, which
+// every run / version load / texture pass replaces.
+let objectPartsCache: { mesh: MeshData; labels: Map<string, Set<number>> | null; summary: ObjectPartsSummary } | null = null;
+/** Which part/piece is tinted in the viewport: `part:<name>` | `piece:<n>` |
+ *  `unlabeled`, or null. Cleared implicitly when a mesh update sweeps the tint. */
+let objectPartHighlightKey: string | null = null;
+
+/** The mesh the parts/pieces summary is computed against: the mesh the label
+ *  map indexes (see currentLabelMesh), falling back to the displayed mesh. */
+function objectPartsMesh(): MeshData | null {
+  return currentLabelMesh ?? currentMeshData;
+}
+
+function currentObjectPartsSummary(): ObjectPartsSummary | null {
+  const mesh = objectPartsMesh();
+  if (!mesh) return null;
+  const c = objectPartsCache;
+  if (c && c.mesh === mesh && c.labels === currentLabelMap) return c.summary;
+  const summary = summarizeObjectParts(mesh, currentLabelMap);
+  objectPartsCache = { mesh, labels: currentLabelMap, summary };
+  return summary;
+}
+
+/** The colour a triangle set is actually drawn in (model colours + paint), as
+ *  `#rrggbb` — the most common colour among a sample of its triangles. Null
+ *  when the object is unpainted (the swatch then shows the neutral model). */
+function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>): string | null {
+  if (!triColors) return null;
+  const counts = new Map<number, number>();
+  let n = 0;
+  for (const t of tris) {
+    const o = t * 3;
+    if (o + 2 >= triColors.length) continue;
+    const key = (triColors[o] << 16) | (triColors[o + 1] << 8) | triColors[o + 2];
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (++n >= 256) break;
+  }
+  let best = -1;
+  let bestCount = 0;
+  for (const [k, c] of counts) if (c > bestCount) { best = k; bestCount = c; }
+  return best < 0 ? null : `#${best.toString(16).padStart(6, '0')}`;
+}
+
+/** The rail/API view of the current object's parts and pieces. */
+function currentObjectPartsView(): ObjectPartsView | null {
+  const summary = currentObjectPartsSummary();
+  const mesh = objectPartsMesh();
+  if (!summary || !mesh) return null;
+  // Swatch colours come from the drawn per-triangle colours when they index
+  // the same mesh as the labels; after a re-tessellation (paint refine,
+  // simplify, texture) fall back to the code-declared label colour.
+  const sameMesh = mesh === currentMeshData;
+  const triColors = sameMesh ? (currentMeshData?.triColors ?? buildTriColors(mesh.numTri)) : null;
+  const declared = sameMesh ? null : new Map(getModelRegions().map(r => [r.name, r.color] as const));
+  const toHex = (c: readonly number[]) => `#${c.map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('')}`;
+  // A label that resolved to zero triangles (fully swallowed by a union, or a
+  // cutter that never touched the solid) is listed as lost, not as a part —
+  // alongside the labels the engine already reports as lost.
+  const lost = new Set(currentLostLabels ?? []);
+  for (const p of summary.parts) if (p.triangles.size === 0) lost.add(p.name);
+  return {
+    parts: summary.parts.filter(p => p.triangles.size > 0).map(p => {
+      const decl = declared?.get(p.name);
+      const color = triColors ? dominantTriColor(triColors, p.triangles) : decl ? toHex(decl) : null;
+      return { name: p.name, triangleCount: p.triangles.size, ...(color ? { color } : {}) };
+    }),
+    lostParts: [...lost],
+    unlabeledTriangleCount: summary.unlabeled.length,
+    pieces: summary.pieces.map(p => ({ index: p.index, triangleCount: p.triangles.length, ...(p.part ? { part: p.part } : {}) })),
+  };
+}
+
+/** Tint one part (`part:<name>`), piece (`piece:<n>`), or the unlabeled
+ *  remainder (`unlabeled`) in the viewport; null clears. Returns the number of
+ *  triangles tinted, or an error string for an unknown key. */
+function setObjectPartHighlight(key: string | null): number | string {
+  if (key === null) {
+    clearTriangleHighlight();
+    objectPartHighlightKey = null;
+    refreshObjectParts();
+    return 0;
+  }
+  const summary = currentObjectPartsSummary();
+  const mesh = objectPartsMesh();
+  if (!summary || !mesh) return 'No geometry loaded — run code first.';
+  let tris: Iterable<number> | null = null;
+  if (key.startsWith('part:')) {
+    tris = summary.parts.find(p => p.name === key.slice(5))?.triangles ?? null;
+  } else if (key.startsWith('piece:')) {
+    tris = summary.pieces[Number(key.slice(6))]?.triangles ?? null;
+  } else if (key === 'unlabeled') {
+    tris = summary.unlabeled.length > 0 ? summary.unlabeled : null;
+  }
+  if (!tris) return `Unknown part or piece "${key}".`;
+  // Drawn from the label mesh's own triangles — the same surface as the
+  // displayed mesh even when that one was re-tessellated since the run.
+  const count = showTriangleHighlight(mesh, tris);
+  objectPartHighlightKey = count > 0 ? key : null;
+  refreshObjectParts();
+  return count;
+}
+
+function getObjectPartHighlightKey(): string | null {
+  if (objectPartHighlightKey && !isTriangleHighlightActive()) objectPartHighlightKey = null;
+  return objectPartHighlightKey;
+}
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
@@ -2227,15 +2346,15 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
     }
     const ordered = [...parts].sort((a, b) => a.order - b.order);
     const part = ordered[target];
-    if (!part) return { error: `${caller}: no part at index ${target}. Use listParts() to see available parts.` };
+    if (!part) return { error: `${caller}: no object at index ${target}. Use listObjects() to see available objects.` };
     return part;
   }
   // A bare string is ambiguous between an id and a human-facing name, so try
   // both (id first — ids are unique). Object form keeps the field explicit.
   if (typeof target === 'string') {
-    if (target.length === 0) return { error: `${caller}: part must be a non-empty string.` };
+    if (target.length === 0) return { error: `${caller}: object must be a non-empty string.` };
     const part = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
-    if (!part) return { error: `${caller}: no part matching ${JSON.stringify(target)} (by id or name). Use listParts() to see available parts.` };
+    if (!part) return { error: `${caller}: no object matching ${JSON.stringify(target)} (by id or name). Use listObjects() to see available objects.` };
     return part;
   }
   let id: string | undefined;
@@ -2243,7 +2362,7 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
   if (target && typeof target === 'object') {
     ({ id, name } = target as { id?: string; name?: string });
   } else {
-    return { error: `${caller}(target): pass a part name, id string, or 0-based index — or { id } / { name } from listParts().` };
+    return { error: `${caller}(target): pass an object name, id string, or 0-based index — or { id } / { name } from listObjects().` };
   }
   let part: Part | undefined;
   if (id !== undefined) {
@@ -2253,9 +2372,9 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
     if (typeof name !== 'string' || name.length === 0) return { error: `${caller}: name must be a non-empty string.` };
     part = parts.find(p => p.name === name);
   } else {
-    return { error: `${caller}(target): pass { id } or { name } from listParts().` };
+    return { error: `${caller}(target): pass { id } or { name } from listObjects().` };
   }
-  if (!part) return { error: `${caller}: no matching part. Use listParts() to see available parts.` };
+  if (!part) return { error: `${caller}: no matching object. Use listObjects() to see available objects.` };
   return part;
 }
 
@@ -2976,7 +3095,7 @@ async function main() {
         filename: `${sourceName}.relief`,
         currentPartName: getState().currentPart?.name ?? null,
         canAddToCurrent: false,
-        addDisabledReason: 'Relief colours are keyed to this mesh, so it can only become its own part or session.',
+        addDisabledReason: 'Relief colours are keyed to this mesh, so it can only become its own object or session.',
         recommend: 'new-part',
       });
       // Cancel: leave the current part untouched and skip relief-state persistence.
@@ -3356,13 +3475,13 @@ async function main() {
         }
         const sessionId = sel.session?.id;
         if (sessionId) void backfillThumbnailsForParts(sessionId, result.addedParts.map(p => p.id));
-        const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
+        const partWord = result.addedParts.length === 1 ? 'object' : 'objects';
         showToast(`Added ${result.addedParts.length} ${partWord} to this session.`, { variant: 'success' });
         return true;
       }
       // Nothing importable (e.g. every imported part was empty) — report it.
       if (result) {
-        showToast('That file had no parts to add.', { variant: 'warn', source: 'import' });
+        showToast('That file had no objects to add.', { variant: 'warn', source: 'import' });
         return false;
       }
     }
@@ -3710,7 +3829,7 @@ async function main() {
         filename: file.name,
         currentPartName: state.currentPart?.name ?? null,
         canAddToCurrent: false,
-        addDisabledReason: 'A BREP shape can’t be combined into an existing part — choose a new part or session.',
+        addDisabledReason: 'A BREP shape can’t be combined into an existing object — choose a new object or session.',
         recommend: 'new-part',
       });
       if (!choice) return false;
@@ -4278,7 +4397,7 @@ async function main() {
     if (!cur) return false;
     const curBaked = await bakePartComponents(cur.id, cur.name);
     if (!curBaked) {
-      showToast('Couldn’t read the current part’s geometry to combine.', { variant: 'warn' });
+      showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
     await applyImportWrapper([...curBaked, ...baked], true);
@@ -4291,7 +4410,7 @@ async function main() {
     if (!cur) return false;
     const baked = await bakePartComponents(cur.id, cur.name);
     if (!baked) {
-      showToast('Couldn’t read the current part’s geometry to combine.', { variant: 'warn' });
+      showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
     await applyImportWrapper([...baked, mesh], true);
@@ -4342,7 +4461,7 @@ async function main() {
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: parsed.isManifold && !!state.currentPart,
       addDisabledReason: !parsed.isManifold
-        ? 'Render-only meshes can’t be combined into an existing part.'
+        ? 'Render-only meshes can’t be combined into an existing object.'
         : undefined,
       // Default to a new part so an import never silently overwrites the
       // current part's real work.
@@ -4408,14 +4527,14 @@ async function main() {
       }
       return true;
     }
-    const partLabel = state.currentPart?.name ? `"${state.currentPart.name}"` : 'the current part';
+    const partLabel = state.currentPart?.name ? `"${state.currentPart.name}"` : 'the current object';
     const target = await showImportTargetModal({
       filename,
       title: 'Import code',
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: true,
-      currentPartTitle: `Replace current part — ${partLabel}`,
-      currentPartDesc: "Replace this part's code with the imported file. The current code is saved as a version first.",
+      currentPartTitle: `Replace current object — ${partLabel}`,
+      currentPartDesc: "Replace this object's code with the imported file. The current code is saved as a version first.",
       // Companion attach only makes sense for a .scad imported into a SCAD part.
       canAddAsCompanion: lang === 'scad' && getActiveLanguage() === 'scad',
       recommend: 'new-part',
@@ -4427,7 +4546,7 @@ async function main() {
       await preserveCurrentEditsIfNeeded();
       const companionPath = normalizeCompanionPath(filename);
       await applyCompanions({ path: companionPath, content: code });
-      showToast(`Added ${companionPath} as a companion of this part.`, { variant: 'success', source: 'import' });
+      showToast(`Added ${companionPath} as a companion of this object.`, { variant: 'success', source: 'import' });
       return true;
     }
     if (target === 'new-session') {
@@ -4446,7 +4565,7 @@ async function main() {
 
   function mergedPartName(names: string[]): string {
     const joined = names.join(' + ');
-    return joined.length <= 40 ? joined : `Merged (${names.length} parts)`;
+    return joined.length <= 40 ? joined : `Merged (${names.length} objects)`;
   }
 
   /** Build a new part holding the composed geometry of `components`. Probes the
@@ -4462,7 +4581,7 @@ async function main() {
     const probe = await executeCodeAsync(code);
     if (probe.error || !probe.mesh) {
       setActiveImports(saved);
-      showToast(`Couldn’t combine parts: ${probe.error ?? 'no geometry produced'}`, { variant: 'warn' });
+      showToast(`Couldn’t combine objects: ${probe.error ?? 'no geometry produced'}`, { variant: 'warn' });
       return false;
     }
     const part = await createPart(name);
@@ -4492,7 +4611,7 @@ async function main() {
 
     const parts = getState().parts.filter(p => ids.includes(p.id));
     if (parts.length < 2) {
-      showToast('Select at least two parts to merge.', { variant: 'warn' });
+      showToast('Select at least two objects to merge.', { variant: 'warn' });
       return;
     }
     const choice = await showMergePartsModal({ partNames: parts.map(p => p.name) });
@@ -4504,7 +4623,7 @@ async function main() {
       if (baked) components.push(...baked);
     }
     if (components.length < 2) {
-      showToast('Couldn’t merge — at least two parts need usable geometry (render-only parts can’t be combined).', { variant: 'warn' });
+      showToast('Couldn’t merge — at least two objects need usable geometry (render-only objects can’t be combined).', { variant: 'warn' });
       return;
     }
 
@@ -4780,8 +4899,8 @@ async function main() {
   const notifyMultiPartExport = () => {
     const parts = getState().parts;
     if (parts.length > 1) {
-      const partName = getState().currentPart?.name ?? 'the current part';
-      showToast(`Exporting only "${partName}" — ${parts.length} parts in this session. Merge parts first to export them together.`, { variant: 'neutral' });
+      const partName = getState().currentPart?.name ?? 'the current object';
+      showToast(`Exporting only "${partName}" — ${parts.length} objects in this session. Merge objects first to export them together.`, { variant: 'neutral' });
     }
   };
 
@@ -4870,10 +4989,10 @@ async function main() {
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
+      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : 'Export objects to 3MF',
       description: bambu
-        ? 'Choose which parts to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
-        : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+        ? 'Choose which objects to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+        : 'Choose which objects to include. Each selected object is added as a separate 3MF object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
       bambu: bambu ? {
         printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
@@ -4909,7 +5028,7 @@ async function main() {
         onStatus: (id, status) => progress.setStatus(id, status),
       });
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
       progress.setTitle('Writing 3MF…');
 
       const bed = loadPrinterSettings().bed;
@@ -4921,7 +5040,7 @@ async function main() {
       downloadBlob(built.blob, built.filename, '3MF');
       const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
@@ -4947,7 +5066,7 @@ async function main() {
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: `Export parts to ${formatTag}`,
+      title: `Export objects to ${formatTag}`,
       description,
     });
     if (!selected || selected.partIds.length === 0) return;
@@ -4973,14 +5092,14 @@ async function main() {
         onStatus: (id, status) => progress.setStatus(id, status),
       });
       if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
-      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+      if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
       progress.setTitle(`Writing ${formatTag}…`);
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
       const skipped = bakeParts.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
@@ -4994,11 +5113,11 @@ async function main() {
    *  builder, so the per-format API twins just supply the builder. */
   async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
     const allParts = getState().parts;
-    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
     if (ids !== undefined) {
       if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'partIds must be an array of part-id strings.' };
+        return { error: 'objectIds must be an array of object-id strings.' };
       }
     } else {
       ids = allParts.map(p => p.id);
@@ -5008,11 +5127,11 @@ async function main() {
     const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
-      if (!part) return { error: `Unknown part id "${id}".` };
+      if (!part) return { error: `Unknown object id "${id}".` };
       bakeParts.push({ id: part.id, name: part.name });
     }
     const { baked } = await bakePartsParallel(bakeParts);
-    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
     return { baked };
   }
 
@@ -5023,14 +5142,14 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}Parts(partIds, filename)`, { optional: true });
+  ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true });
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
     try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     downloadBlob(built.blob, built.filename, formatTag);
-    return { ok: true as const, filename: built.filename, parts: r.baked.length };
+    return { ok: true as const, filename: built.filename, objects: r.baked.length, parts: r.baked.length };
   }
 
   /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
@@ -5040,8 +5159,8 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}PartsData(partIds, filename)`, { optional: true });
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true });
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
@@ -5051,6 +5170,7 @@ async function main() {
       mimeType: built.mimeType,
       sizeBytes: built.blob.size,
       base64: await blobToBase64(built.blob),
+      objects: r.baked.length,
       parts: r.baked.length,
     };
   }
@@ -5060,9 +5180,9 @@ async function main() {
   const buildSTLPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildSTLProject(baked, filename);
   const buildGLBPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildGLBProject(baked, { customName: filename });
 
-  const OBJ_PARTS_DESC = 'Choose which parts to include. Each part becomes a named object in one .obj file, arranged in a grid so they don’t overlap. Painted colours export as materials (.mtl, bundled in a .zip).';
-  const STL_PARTS_DESC = 'Choose which parts to include. Each part is saved as its own .stl file, bundled in a .zip. STL has no colour or part names, so separate files keep the parts distinct.';
-  const GLB_PARTS_DESC = 'Choose which parts to include. Each part becomes a named node in one .glb scene, arranged in a grid. Painted colours export as vertex colours.';
+  const OBJ_PARTS_DESC = 'Choose which objects to include. Each object becomes a named object in one .obj file, arranged in a grid so they don’t overlap. Painted colours export as materials (.mtl, bundled in a .zip).';
+  const STL_PARTS_DESC = 'Choose which objects to include. Each object is saved as its own .stl file, bundled in a .zip. STL has no colour or object names, so separate files keep the objects distinct.';
+  const GLB_PARTS_DESC = 'Choose which objects to include. Each object becomes a named node in one .glb scene, arranged in a grid. Painted colours export as vertex colours.';
 
   /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
    *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
@@ -5092,11 +5212,11 @@ async function main() {
     if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
       return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
     const allParts = getState().parts;
-    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
     if (ids !== undefined) {
       if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'export3MFParts(partIds): partIds must be an array of part-id strings.' };
+        return { error: 'export3MFObjects(objectIds): objectIds must be an array of object-id strings.' };
       }
     } else {
       ids = allParts.map(p => p.id);
@@ -5106,11 +5226,11 @@ async function main() {
     const bakeParts: ExportBakePart[] = [];
     for (const id of ids) {
       const part = byId.get(id);
-      if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
+      if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
       bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
     const { baked } = await bakePartsParallel(bakeParts);
-    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, {
@@ -5128,19 +5248,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, parts: r.parts };
+    return { ok: true as const, filename: r.built.filename, objects: r.parts, parts: r.parts };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     return {
@@ -5148,6 +5268,7 @@ async function main() {
       mimeType: r.built.mimeType,
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
+      objects: r.parts,
       parts: r.parts,
     };
   }
@@ -5302,7 +5423,7 @@ async function main() {
       // after the current part.
       const partName = state.currentPart?.name;
       if (partName) exported.session = { ...exported.session, name: partName };
-      notify(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`);
+      notify(`Sharing only "${partName ?? 'the current object'}" — multi-object designs share one object per link.`);
     }
 
     try {
@@ -5796,6 +5917,9 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await setPartGroup(partIds, group);
     },
+    getObjectParts: () => currentObjectPartsView(),
+    getHighlightKey: () => getObjectPartHighlightKey(),
+    onHighlight: (key: string | null) => { setObjectPartHighlight(key); },
     onReorderParts: async (layout) => {
       if (isReadOnlyViewer()) return;
       await reorderParts(layout);
@@ -5976,9 +6100,9 @@ async function main() {
       }
     }
     if (failed > 0) {
-      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}, ${failed} failed`, { variant: 'warn' });
+      showToast(`Saved ${saved} object${saved === 1 ? '' : 's'}, ${failed} failed`, { variant: 'warn' });
     } else {
-      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}`, { variant: 'success' });
+      showToast(`Saved ${saved} object${saved === 1 ? '' : 's'}`, { variant: 'success' });
     }
     return { saved, failed };
   };
@@ -6041,7 +6165,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
-    { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate parts multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate objects parts multi-object multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
     // action, which also toasts if there's nothing to export. (Re-running the
@@ -6305,6 +6429,7 @@ async function main() {
         currentManifold = null;
       }
       currentLabelMap = cachedEntry.labelMap;
+      currentLabelMesh = currentMeshData;
       currentLostLabels = cachedEntry.lostLabels;
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
@@ -7290,7 +7415,7 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
+  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); refreshObjectParts(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -7353,8 +7478,8 @@ async function main() {
   assemblyMount = viewportPane;
   assemblyToggleBtn = document.createElement('button');
   assemblyToggleBtn.id = 'assembly-toggle';
-  assemblyToggleBtn.textContent = '⧉ All parts';
-  assemblyToggleBtn.title = 'View all parts together in a 3D grid (Assembly)';
+  assemblyToggleBtn.textContent = '⧉ All objects';
+  assemblyToggleBtn.title = 'View all objects together in a 3D grid (Assembly)';
   assemblyToggleBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
   assemblyToggleBtn.addEventListener('click', () => toggleAssembly());
   clipControls.appendChild(assemblyToggleBtn);
@@ -10347,12 +10472,12 @@ async function main() {
       };
     },
 
-    /** Open the Assembly view — show every part of the session laid out in a
-     *  non-overlapping grid, built in parallel. Needs ≥ 2 parts. */
+    /** Open the Assembly view — show every object of the session laid out in a
+     *  non-overlapping grid, built in parallel. Needs ≥ 2 objects. */
     async openAssembly() {
       const st = getState();
       if (!st.session) return { error: 'No session open.' };
-      if (st.parts.length < 2) return { error: 'The session has only one part — add another to view all parts together.' };
+      if (st.parts.length < 2) return { error: 'The session has only one object — add another to view all objects together.' };
       await openAssembly();
       return { status: 'ok', ...getAssemblySnapshot() };
     },
@@ -10543,7 +10668,7 @@ async function main() {
      *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
      *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
      *  `{ ok, filename, parts }` or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -10553,7 +10678,7 @@ async function main() {
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
      *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -10563,12 +10688,12 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportOBJParts(partIds?: string[], filename?: string) {
+    exportOBJObjects(partIds?: string[], filename?: string) {
       return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
     },
     /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
      *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
-    exportOBJPartsData(partIds?: string[], filename?: string) {
+    exportOBJObjectsData(partIds?: string[], filename?: string) {
       return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
     },
 
@@ -10577,11 +10702,11 @@ async function main() {
      *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
      *  an array of part ids (default: every part). `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportSTLParts(partIds?: string[], filename?: string) {
+    exportSTLObjects(partIds?: string[], filename?: string) {
       return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
     },
     /** Bytes-returning twin of {@link exportSTLParts}. */
-    exportSTLPartsData(partIds?: string[], filename?: string) {
+    exportSTLObjectsData(partIds?: string[], filename?: string) {
       return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
     },
 
@@ -10589,13 +10714,29 @@ async function main() {
      *  scene, grid-arranged; painted parts export as vertex colours. The UI
      *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
      *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
-    exportGLBParts(partIds?: string[], filename?: string) {
+    exportGLBObjects(partIds?: string[], filename?: string) {
       return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
     },
     /** Bytes-returning twin of {@link exportGLBParts}. */
-    exportGLBPartsData(partIds?: string[], filename?: string) {
+    exportGLBObjectsData(partIds?: string[], filename?: string) {
       return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
     },
+
+    // Deprecated pre-rename aliases — "parts" were renamed to "objects" (a part
+    // is now a labelled piece inside one object). Kept so older prompts, agents,
+    // and scripts keep working; prefer the *Objects* names.
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+      return partwrightAPI.export3MFObjects(partIds, filename, opts);
+    },
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+      return partwrightAPI.export3MFObjectsData(partIds, filename, opts);
+    },
+    exportOBJParts(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjects(partIds, filename); },
+    exportOBJPartsData(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjectsData(partIds, filename); },
+    exportSTLParts(partIds?: string[], filename?: string) { return partwrightAPI.exportSTLObjects(partIds, filename); },
+    exportSTLPartsData(partIds?: string[], filename?: string) { return partwrightAPI.exportSTLObjectsData(partIds, filename); },
+    exportGLBParts(partIds?: string[], filename?: string) { return partwrightAPI.exportGLBObjects(partIds, filename); },
+    exportGLBPartsData(partIds?: string[], filename?: string) { return partwrightAPI.exportGLBObjectsData(partIds, filename); },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
      *  sessions only (the integer grid is re-derived from the current code, or
@@ -11874,43 +12015,47 @@ async function main() {
       await deleteSession(id);
     },
 
-    // === Part API ===
-    // A session holds one or more parts; each part has its own code + version
-    // history. The "current part" determines what every other method (run,
-    // save, paint, export, …) acts on.
+    // === Object API ===
+    // A session holds one or more OBJECTS; each object has its own code +
+    // version history (and becomes its own object in a multi-object 3MF). The
+    // "current object" determines what every other method (run, save, paint,
+    // export, …) acts on. A "part" is a labelled piece INSIDE one object
+    // (`api.label`) — see listObjectParts(). The storage layer still names these
+    // records `Part` (`parts` store, `Version.partId`, the exported `parts`
+    // array), so the internal helpers below keep that name.
 
     /** Open the parts-overview modal (a thumbnail contact-sheet of every
      *  part; click a tile to switch). Same view as the part rail's grid
      *  button. Returns { error } when there is no session or no parts. */
-    showPartsOverview() {
+    showObjectsOverview() {
       const opened = openPartsOverview((id) => { void selectPart(id); });
-      return opened ? { ok: true } : { error: 'showPartsOverview: no session with parts is open' };
+      return opened ? { ok: true } : { error: 'showObjectsOverview: no session with objects is open' };
     },
 
     /** List the parts in the active session, each flagged with `isCurrent`.
      *  `group` (present only when the part is in one) threads same-group parts
      *  under a collapsible header in the part list. */
-    listParts() {
+    listObjects() {
       const current = getCurrentPart();
       return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}), isCurrent: p.id === current?.id }));
     },
 
     /** The active part, or null when no session is open. */
-    getCurrentPart() {
+    getCurrentObject() {
       const p = getCurrentPart();
       return p ? { id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}) } : null;
     },
 
     /** Create a new, empty part and switch to it. Resets the editor to a starter
      *  snippet; call runAndSave/saveVersion to commit its first version. */
-    async createPart(name?: string) {
-      const check = guard(() => assertString(name, 'createPart(name)', { optional: true }));
+    async createObject(name?: string) {
+      const check = guard(() => assertString(name, 'createObject(name)', { optional: true }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!getState().session) {
         return { error: 'No active session. Call createSession() or openSession(id) first.' };
       }
       const part = await createPart(name);
-      if (!part) return { error: 'Could not create part (no active session).' };
+      if (!part) return { error: 'Could not create object (no active session).' };
       startNewPartInEditor();
       return { id: part.id, name: part.name, order: part.order };
     },
@@ -11918,8 +12063,8 @@ async function main() {
     /** Switch the active part. Pass a part name, id string, or 0-based index —
      *  or { id } / { name } from listParts(). Loads that part's latest version
      *  into the editor. */
-    async changePart(target: string | number | { id?: string; name?: string }) {
-      const part = resolvePartTarget(target, 'changePart');
+    async changeObject(target: string | number | { id?: string; name?: string }) {
+      const part = resolvePartTarget(target, 'changeObject');
       if ('error' in part) return part;
       const version = await changePart(part.id);
       await loadPartIntoEditor(version);
@@ -11931,10 +12076,10 @@ async function main() {
     },
 
     /** Rename a part. Pass a part name, id string, 0-based index, or { id } / { name }. */
-    async renamePart(target: string | number | { id?: string; name?: string }, newName: string) {
-      const check = guard(() => assertString(newName, 'renamePart(newName)', { allowEmpty: false }));
+    async renameObject(target: string | number | { id?: string; name?: string }, newName: string) {
+      const check = guard(() => assertString(newName, 'renameObject(newName)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      const part = resolvePartTarget(target, 'renamePart');
+      const part = resolvePartTarget(target, 'renameObject');
       if ('error' in part) return part;
       await renamePart(part.id, newName);
       return { id: part.id, name: newName };
@@ -11945,17 +12090,17 @@ async function main() {
      *  { id } / { name }) or an array of them; `group` is the group name, or
      *  `null`/`''` to ungroup. Grouping is a display-only threading — it doesn't
      *  change any part's version history. */
-    async setPartGroup(targets: unknown, group: string | null) {
+    async setObjectGroup(targets: unknown, group: string | null) {
       if (!getState().session) {
         return { error: 'No active session. Call createSession() or openSession(id) first.' };
       }
-      const check = guard(() => assertString(group, 'setPartGroup(group)', { optional: true, allowEmpty: true }));
+      const check = guard(() => assertString(group, 'setObjectGroup(group)', { optional: true, allowEmpty: true }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const list = Array.isArray(targets) ? targets : [targets];
-      if (list.length === 0) return { error: 'setPartGroup(targets): pass at least one part.' };
+      if (list.length === 0) return { error: 'setObjectGroup(targets): pass at least one object.' };
       const ids: string[] = [];
       for (const t of list) {
-        const part = resolvePartTarget(t, 'setPartGroup');
+        const part = resolvePartTarget(t, 'setObjectGroup');
         if ('error' in part) return part;
         if (!ids.includes(part.id)) ids.push(part.id);
       }
@@ -11967,12 +12112,12 @@ async function main() {
     /** Delete a part and its versions. Refuses to delete a session's last part.
      *  Deleting the active part activates and loads an adjacent one. Pass a part
      *  name, id string, 0-based index, or { id } / { name }. */
-    async deletePart(target: string | number | { id?: string; name?: string }) {
-      const part = resolvePartTarget(target, 'deletePart');
+    async deleteObject(target: string | number | { id?: string; name?: string }) {
+      const part = resolvePartTarget(target, 'deleteObject');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
       const result = await deletePart(part.id);
-      if (!result) return { error: 'Cannot delete the last part of a session.' };
+      if (!result) return { error: 'Cannot delete the last object of a session.' };
       if (wasCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
@@ -11995,13 +12140,57 @@ async function main() {
      *  call — the non-interactive twin of the 💾 button's multi-part save
      *  modal. Each part is loaded, saved, and the originally-active part is
      *  restored. Returns how many parts were saved (and how many failed). */
-    async saveAllParts() {
+    async saveAllObjects() {
       if (!getState().session) {
         return { error: 'No active session. Call createSession() or openSession(id) first.' };
       }
       const unsaved = await gatherUnsavedParts();
       if (unsaved.length === 0) return { saved: 0, failed: 0 };
       return saveSelectedParts(unsaved.map(p => p.id));
+    },
+
+    // Deprecated pre-rename aliases — the session's "parts" are now called
+    // "objects" (a part is a labelled piece inside one object). Kept so older
+    // prompts, agents, and scripts keep working; prefer the *Object* names.
+    showPartsOverview() { return partwrightAPI.showObjectsOverview(); },
+    listParts() { return partwrightAPI.listObjects(); },
+    getCurrentPart() { return partwrightAPI.getCurrentObject(); },
+    createPart(name?: string) { return partwrightAPI.createObject(name); },
+    changePart(target: string | number | { id?: string; name?: string }) { return partwrightAPI.changeObject(target); },
+    renamePart(target: string | number | { id?: string; name?: string }, newName: string) { return partwrightAPI.renameObject(target, newName); },
+    setPartGroup(targets: unknown, group: string | null) { return partwrightAPI.setObjectGroup(targets, group); },
+    deletePart(target: string | number | { id?: string; name?: string }) { return partwrightAPI.deleteObject(target); },
+    saveAllParts() { return partwrightAPI.saveAllObjects(); },
+
+    /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
+     *  `BREP.label`), tracked through every boolean so they survive fusing into
+     *  one solid — and its PIECES (physically separate solids), exactly as the
+     *  object list's expandable section shows them. `color` is the colour the
+     *  part is drawn in (model colours + paint). `lostParts` are labels the code
+     *  declared that ended up with no triangles. `unlabeledTriangleCount` counts
+     *  geometry no label covers (0 when the object declares no parts). Each piece
+     *  names the part covering most of it. */
+    listObjectParts() {
+      const obj = getCurrentPart();
+      const view = currentObjectPartsView();
+      if (!obj || !view) return { error: 'No geometry loaded — run code first.' };
+      return { object: { id: obj.id, name: obj.name }, ...view };
+    },
+
+    /** Tint one part (by label name) or piece (`{ piece: index }`, from
+     *  listObjectParts) of the current object in the viewport — the same as
+     *  clicking it in the object list. `{ unlabeled: true }` tints the geometry
+     *  no part covers; `null` clears. The tint is visual only and disappears on
+     *  the next run. -> { ok, triangles } or { error } */
+    highlightObjectPart(target: string | { piece?: number; unlabeled?: boolean } | null) {
+      let key: string | null;
+      if (target === null || target === undefined) key = null;
+      else if (typeof target === 'string' && target.length > 0) key = `part:${target}`;
+      else if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) key = `piece:${target.piece}`;
+      else if (target && typeof target === 'object' && target.unlabeled === true) key = 'unlabeled';
+      else return { error: 'highlightObjectPart(target): pass a part name, { piece: index }, { unlabeled: true }, or null.' };
+      const r = setObjectPartHighlight(key);
+      return typeof r === 'string' ? { error: r } : { ok: true, triangles: r };
     },
 
     /** Commit the current state, routing between `runAndSave` and
@@ -15756,7 +15945,7 @@ async function main() {
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
         'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted human figure from a Character Creator spec (body/pose/face/hair/clothing/colors). save:true commits a version. Same engine as the 🧍 Character panel.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
-        'saveAllParts':    { signature: 'await saveAllParts() -- Save every part with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
+        'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
@@ -15767,15 +15956,27 @@ async function main() {
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },
-        // Parts (multiple objects per session)
-        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, group?, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
-        'showPartsOverview': { signature: 'showPartsOverview() -- Open the all-parts thumbnail overview modal', docs: '/ai.md#console-api--windowpartwright' },
-        'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
-        'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
-        'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
-        'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
-        'setPartGroup':    { signature: 'await setPartGroup(target|target[], group|null) -- Group parts under a collapsible header in the part list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
-        'deletePart':      { signature: 'await deletePart(name|id|index) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        // Objects (multiple objects per session; each has its own code + versions)
+        'listObjects':     { signature: 'listObjects() -- List objects in the session -> [{id, name, order, group?, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'showObjectsOverview': { signature: 'showObjectsOverview() -- Open the all-objects thumbnail overview modal', docs: '/ai.md#console-api--windowpartwright' },
+        'getCurrentObject': { signature: 'getCurrentObject() -- Active object -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
+        'createObject':    { signature: 'await createObject(name?) -- New empty object + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
+        'changeObject':    { signature: 'await changeObject(name|id|index) -- Switch active object (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
+        'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
+        'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
+        'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
+        // Deprecated pre-rename aliases ("parts" are now "objects")
+        'listParts':       { signature: 'listParts() -- DEPRECATED alias of listObjects()', docs: '/ai.md#console-api--windowpartwright' },
+        'showPartsOverview': { signature: 'showPartsOverview() -- DEPRECATED alias of showObjectsOverview()', docs: '/ai.md#console-api--windowpartwright' },
+        'getCurrentPart':  { signature: 'getCurrentPart() -- DEPRECATED alias of getCurrentObject()', docs: '/ai.md#console-api--windowpartwright' },
+        'createPart':      { signature: 'await createPart(name?) -- DEPRECATED alias of createObject()', docs: '/ai.md#console-api--windowpartwright' },
+        'changePart':      { signature: 'await changePart(name|id|index) -- DEPRECATED alias of changeObject()', docs: '/ai.md#console-api--windowpartwright' },
+        'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- DEPRECATED alias of renameObject()', docs: '/ai.md#console-api--windowpartwright' },
+        'setPartGroup':    { signature: 'await setPartGroup(target|target[], group|null) -- DEPRECATED alias of setObjectGroup()', docs: '/ai.md#console-api--windowpartwright' },
+        'deletePart':      { signature: 'await deletePart(name|id|index) -- DEPRECATED alias of deleteObject()', docs: '/ai.md#console-api--windowpartwright' },
+        'saveAllParts':    { signature: 'await saveAllParts() -- DEPRECATED alias of saveAllObjects()', docs: '/ai.md#console-api--windowpartwright' },
         'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
@@ -15822,8 +16023,8 @@ async function main() {
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
         // Assembly view (all parts in a grid)
-        'openAssembly':         { signature: 'openAssembly() -- Show every part of the session in a non-overlapping grid, built in parallel (needs ≥2 parts) -> snapshot', docs: '/ai.md#assembly-view' },
-        'closeAssembly':        { signature: 'closeAssembly() -- Close the Assembly view, return to the single part', docs: '/ai.md#assembly-view' },
+        'openAssembly':         { signature: 'openAssembly() -- Show every object of the session in a non-overlapping grid, built in parallel (needs ≥2 objects) -> snapshot', docs: '/ai.md#assembly-view' },
+        'closeAssembly':        { signature: 'closeAssembly() -- Close the Assembly view, return to the single object', docs: '/ai.md#assembly-view' },
         'getAssembly':          { signature: 'getAssembly() -- Assembly snapshot: {open, parts:[{id,name,placed}], sharedParams}', docs: '/ai.md#assembly-view' },
         // Insert & arrange palette (Tinkercad-style direct manipulation)
         'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
@@ -15863,14 +16064,22 @@ async function main() {
         'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
-        'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
-        'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'exportSTLPartsData': { signature: 'await exportSTLPartsData(partIds?, filename?) -- Same as exportSTLParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
-        'exportGLBParts':  { signature: 'await exportGLBParts(partIds?, filename?) -- Bundle parts into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'exportGLBPartsData': { signature: 'await exportGLBPartsData(partIds?, filename?) -- Same as exportGLBParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, objects}', docs: '/ai/file-io.md' },
+        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
+        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?) -- Bundle objects into a .zip of one .stl per object -> {ok, filename, objects}', docs: '/ai/file-io.md' },
+        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
+        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(...) -- DEPRECATED alias of export3MFObjects()', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(...) -- DEPRECATED alias of export3MFObjectsData()', docs: '/ai/file-io.md' },
+        'exportOBJParts':  { signature: 'await exportOBJParts(...) -- DEPRECATED alias of exportOBJObjects()', docs: '/ai/file-io.md' },
+        'exportOBJPartsData': { signature: 'await exportOBJPartsData(...) -- DEPRECATED alias of exportOBJObjectsData()', docs: '/ai/file-io.md' },
+        'exportSTLParts':  { signature: 'await exportSTLParts(...) -- DEPRECATED alias of exportSTLObjects()', docs: '/ai/file-io.md' },
+        'exportSTLPartsData': { signature: 'await exportSTLPartsData(...) -- DEPRECATED alias of exportSTLObjectsData()', docs: '/ai/file-io.md' },
+        'exportGLBParts':  { signature: 'await exportGLBParts(...) -- DEPRECATED alias of exportGLBObjects()', docs: '/ai/file-io.md' },
+        'exportGLBPartsData': { signature: 'await exportGLBPartsData(...) -- DEPRECATED alias of exportGLBObjectsData()', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
@@ -17200,6 +17409,7 @@ async function main() {
       // region descriptors look up their triangles here; rehydrating a
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
+      currentLabelMesh = currentMeshData;
       currentLostLabels = result.lostLabels ?? null;
       setPaintLabels(currentLabelMap);
 

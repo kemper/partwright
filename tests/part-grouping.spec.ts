@@ -28,7 +28,7 @@ async function seedThreeParts(page: Page, sessionName: string) {
   await page.evaluate(async ({ code, sessionName }) => {
     const pw = (window as unknown as { partwright: GroupAPI }).partwright;
     await pw.createSession(sessionName);
-    await pw.runAndSave(code, 'a1');   // Part 1
+    await pw.runAndSave(code, 'a1');   // Object 1
     await pw.createPart('Helmet');
     await pw.createPart('Chestplate');
   }, { code: cube(10, 'A1'), sessionName });
@@ -138,11 +138,11 @@ test.describe('Part grouping', () => {
     await page.goto('/editor');
     await waitForEngine(page);
 
-    // Two ungrouped parts (Part 1, Beta) plus a two-member Armor group.
+    // Two ungrouped parts (Object 1, Beta) plus a two-member Armor group.
     await page.evaluate(async ({ code }) => {
       const pw = (window as unknown as { partwright: GroupAPI }).partwright;
       await pw.createSession('collapsed-reorder');
-      await pw.runAndSave(code, 'a1');   // Part 1
+      await pw.runAndSave(code, 'a1');   // Object 1
       await pw.createPart('Beta');
       await pw.createPart('Helmet');
       await pw.createPart('Chestplate');
@@ -158,12 +158,12 @@ test.describe('Part grouping', () => {
 
     const initial = await page.evaluate(() =>
       (window as unknown as { partwright: GroupAPI }).partwright.listParts().map(p => p.name));
-    expect(initial).toEqual(['Part 1', 'Beta', 'Helmet', 'Chestplate']);
+    expect(initial).toEqual(['Object 1', 'Beta', 'Helmet', 'Chestplate']);
 
-    // Drag "Part 1" to the bottom of the list. Previously a collapsed group made
+    // Drag "Object 1" to the bottom of the list. Previously a collapsed group made
     // this a no-op (the hidden members shortened the computed layout, failing the
     // length guard); now the layout is built from the full part list.
-    const p1Grip = list.locator('[data-part-id]', { hasText: 'Part 1' }).locator('[aria-label="Drag to reorder"]');
+    const p1Grip = list.locator('[data-part-id]', { hasText: 'Object 1' }).locator('[aria-label="Drag to reorder"]');
     const g = await p1Grip.boundingBox();
     const listBox = await list.boundingBox();
     if (!g || !listBox) throw new Error('missing drag boxes');
@@ -172,11 +172,11 @@ test.describe('Part grouping', () => {
     await page.mouse.move(g.x + g.width / 2, listBox.y + listBox.height - 4, { steps: 10 });
     await page.mouse.up();
 
-    // Part 1 dropped to the end; the collapsed Armor members are untouched.
+    // Object 1 dropped to the end; the collapsed Armor members are untouched.
     await expect
       .poll(() => page.evaluate(() =>
         (window as unknown as { partwright: GroupAPI }).partwright.listParts().map(p => p.name)))
-      .toEqual(['Beta', 'Helmet', 'Chestplate', 'Part 1']);
+      .toEqual(['Beta', 'Helmet', 'Chestplate', 'Object 1']);
     // And the group survived the reorder.
     await expect
       .poll(() => page.evaluate(() =>
@@ -199,8 +199,8 @@ test.describe('Part grouping', () => {
     const body = list.locator('[data-group-body="Armor"]');
     await expect(body).toBeVisible();
 
-    // Drag the ungrouped "Part 1" onto a member row inside the Armor body.
-    const p1Grip = list.locator('[data-part-id]', { hasText: 'Part 1' }).locator('[aria-label="Drag to reorder"]');
+    // Drag the ungrouped "Object 1" onto a member row inside the Armor body.
+    const p1Grip = list.locator('[data-part-id]', { hasText: 'Object 1' }).locator('[aria-label="Drag to reorder"]');
     const helmetRow = body.locator('[data-part-id]', { hasText: 'Helmet' });
     const g = await p1Grip.boundingBox();
     const h = await helmetRow.boundingBox();
@@ -211,11 +211,11 @@ test.describe('Part grouping', () => {
     await page.mouse.move(h.x + h.width / 2, h.y + h.height * 0.75, { steps: 10 });
     await page.mouse.up();
 
-    // Part 1 now carries the Armor group.
+    // Object 1 now carries the Armor group.
     await expect
       .poll(() => page.evaluate(() =>
         (window as unknown as { partwright: GroupAPI }).partwright.listParts()
-          .find(p => p.name === 'Part 1')?.group ?? null))
+          .find(p => p.name === 'Object 1')?.group ?? null))
       .toBe('Armor');
   });
 

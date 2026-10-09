@@ -44,20 +44,20 @@ interface Choice {
 
 function buildChoices(opts: ImportTargetOptions): Choice[] {
   const recommend = opts.recommend ?? 'new-part';
-  const partLabel = opts.currentPartName ? `"${opts.currentPartName}"` : 'the current part';
+  const partLabel = opts.currentPartName ? `"${opts.currentPartName}"` : 'the current object';
   const raw: Omit<Choice, 'recommended'>[] = [
     {
       target: 'new-part',
-      title: 'New part',
-      desc: 'Add it as a separate part in this session, with its own version history.',
+      title: 'New object',
+      desc: 'Add it as a separate object in this session, with its own version history.',
       disabled: false,
     },
     {
       target: 'current-part',
-      title: opts.currentPartTitle ?? (opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`),
+      title: opts.currentPartTitle ?? (opts.addReplacesStarter ? `Use for current object — ${partLabel}` : `Add to current object — ${partLabel}`),
       desc: opts.currentPartDesc ?? (opts.addReplacesStarter
-        ? 'Make this mesh the contents of the current (empty) part.'
-        : 'Combine it with the geometry already in this part (composed as separate components).'),
+        ? 'Make this mesh the contents of the current (empty) object.'
+        : 'Combine it with the geometry already in this object (composed as separate pieces).'),
       disabled: !opts.canAddToCurrent,
       disabledReason: opts.addDisabledReason,
     },
@@ -71,8 +71,8 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
   if (opts.canAddAsCompanion) {
     raw.push({
       target: 'companion-file',
-      title: opts.companionTitle ?? `Companion file of current part — ${partLabel}`,
-      desc: opts.companionDesc ?? `Attach it as a dependency the current part's code can include <…> — it won't replace your code.`,
+      title: opts.companionTitle ?? `Companion file of current object — ${partLabel}`,
+      desc: opts.companionDesc ?? `Attach it as a dependency the current object's code can include <…> — it won't replace your code.`,
       disabled: false,
     });
   }

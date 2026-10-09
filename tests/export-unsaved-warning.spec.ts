@@ -110,7 +110,7 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
   // (the part chooser) — the export does NOT fire (no "Exported" toast).
   await dialog.getByRole('button', { name: 'Save…' }).click();
   const saveModal = page.getByRole('dialog');
-  await expect(saveModal.getByText('Save unsaved parts')).toBeVisible({ timeout: 10_000 });
+  await expect(saveModal.getByText('Save unsaved objects')).toBeVisible({ timeout: 10_000 });
   // All parts pre-checked → the primary button reads "Save all". Commit.
   await saveModal.getByRole('button', { name: /Save all|Save selected/ }).click();
 
@@ -148,7 +148,7 @@ test('Export anyway proceeds despite unsaved non-current parts', async ({ page }
   // The unsaved warning is dismissed and the export proceeds. With ≥2 parts an
   // STL export opens the multi-part part picker ("Export parts to STL") rather
   // than a direct download — its appearance proves we got past the warning.
-  await expect(page.getByRole('dialog').getByText(/Export parts to STL/i)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('dialog').getByText(/Export objects to STL/i)).toBeVisible({ timeout: 10_000 });
 });
 
 // The reported case: paint the CURRENT part (saved earlier) and export without

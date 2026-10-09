@@ -56,7 +56,7 @@ test.describe('Multi-part sessions', () => {
     const result = await page.evaluate(async ({ codeA1, codeA2, codeB1 }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('multi');
-      // Part 1 (default): two versions.
+      // Object 1 (default): two versions.
       await pw.runAndSave(codeA1, 'a1');
       await pw.runAndSave(codeA2, 'a2');
 
@@ -118,7 +118,7 @@ test.describe('Multi-part sessions', () => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       return { parts: pw.listParts().map(p => p.name).sort() };
     });
-    expect(after.parts).toEqual(['Handle', 'Part 1']);
+    expect(after.parts).toEqual(['Handle', 'Object 1']);
   });
 
   test('parts rail renders, switches, and adds parts; editor title shows the part', async ({ page }) => {
@@ -138,12 +138,12 @@ test.describe('Multi-part sessions', () => {
     await expect(list.locator('[data-part-id]')).toHaveCount(2);
     await expect(page.locator('#editor-title')).toHaveText('Lid');
 
-    // Click "Part 1" in the rail to switch; editor + title update.
-    await list.getByText('Part 1', { exact: true }).click();
+    // Click "Object 1" in the rail to switch; editor + title update.
+    await list.getByText('Object 1', { exact: true }).click();
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { partwright: PartsAPI }).partwright.getCode()))
       .toContain('A1');
-    await expect(page.locator('#editor-title')).toHaveText('Part 1');
+    await expect(page.locator('#editor-title')).toHaveText('Object 1');
 
     // The add-part button (rail header) increases the part count.
     await page.locator('#btn-add-part').click();
@@ -159,7 +159,7 @@ test.describe('Multi-part sessions', () => {
     await page.evaluate(async ({ codeA1, codeB1 }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('previews');
-      await pw.runAndSave(codeA1, 'a1');   // Part 1 gets a saved version (+thumbnail)
+      await pw.runAndSave(codeA1, 'a1');   // Object 1 gets a saved version (+thumbnail)
       await pw.createPart('Lid');
       await pw.runAndSave(codeB1, 'b1');   // Lid (now current) gets its own
     }, { codeA1: cube(10, 'A1'), codeB1: cube(6, 'LID') });
@@ -168,7 +168,7 @@ test.describe('Multi-part sessions', () => {
     await expect(list.locator('[data-part-id]')).toHaveCount(2);
 
     // Both rows render an <img> preview in their thumbnail slot: the current part
-    // (Lid) is painted synchronously from in-memory state, the other (Part 1) via
+    // (Lid) is painted synchronously from in-memory state, the other (Object 1) via
     // the cached async fetch. toHaveCount auto-waits for the async paint to land.
     const thumbs = list.locator('[data-part-id] [data-thumb] img');
     await expect(thumbs).toHaveCount(2);
@@ -183,17 +183,17 @@ test.describe('Multi-part sessions', () => {
     await page.evaluate(async ({ code }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('reorder');
-      await pw.runAndSave(code, 'a1');     // Part 1
+      await pw.runAndSave(code, 'a1');     // Object 1
       await pw.createPart('Beta');
       await pw.createPart('Gamma');
     }, { code: cube(10, 'A1') });
 
     const list = page.locator('#parts-list');
     await expect(list.locator('[data-part-id]')).toHaveCount(3);
-    // Initial order: Part 1, Beta, Gamma.
+    // Initial order: Object 1, Beta, Gamma.
     const initial = await page.evaluate(() =>
       (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name));
-    expect(initial).toEqual(['Part 1', 'Beta', 'Gamma']);
+    expect(initial).toEqual(['Object 1', 'Beta', 'Gamma']);
 
     // Drag the first row's grip below the last row.
     const firstGrip = list.locator('[data-part-id]').first().locator('[aria-label="Drag to reorder"]');
@@ -206,11 +206,11 @@ test.describe('Multi-part sessions', () => {
     await page.mouse.move(l.x + l.width / 2, l.y + l.height + 6, { steps: 10 });
     await page.mouse.up();
 
-    // Part 1 should now be last; order persists in state.
+    // Object 1 should now be last; order persists in state.
     await expect
       .poll(() => page.evaluate(() =>
         (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name)))
-      .toEqual(['Beta', 'Gamma', 'Part 1']);
+      .toEqual(['Beta', 'Gamma', 'Object 1']);
   });
 
   test('adding a part after painting clears stale regions', async ({ page }) => {
@@ -241,7 +241,7 @@ test.describe('Multi-part sessions', () => {
     await page.evaluate(async ({ code }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('bulk');
-      await pw.runAndSave(code, 'a1');     // Part 1
+      await pw.runAndSave(code, 'a1');     // Object 1
       await pw.createPart('Beta');
       await pw.createPart('Gamma');        // becomes the current part
     }, { code: cube(10, 'A1') });
@@ -273,9 +273,9 @@ test.describe('Multi-part sessions', () => {
     await expect
       .poll(() => page.evaluate(() =>
         (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name)))
-      .toEqual(['Part 1']);
+      .toEqual(['Object 1']);
     await expect(page.locator('#parts-bulk-actions')).toHaveCount(0);
-    await expect(page.locator('#editor-title')).toHaveText('Part 1');
+    await expect(page.locator('#editor-title')).toHaveText('Object 1');
   });
 
   test('bulk delete refuses to remove every part', async ({ page }) => {
@@ -311,7 +311,7 @@ test.describe('Multi-part sessions', () => {
     await page.evaluate(async ({ codeA, codeB }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('merge-new');
-      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.runAndSave(codeA, 'a');     // Object 1
       await pw.createPart('Beta');
       await pw.runAndSave(codeB, 'b');     // Beta (offset so it stays distinct)
     }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
@@ -321,7 +321,7 @@ test.describe('Multi-part sessions', () => {
 
     const checkbox = (name: string) =>
       list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
-    await checkbox('Part 1').click();
+    await checkbox('Object 1').click();
     await checkbox('Beta').click();
 
     // The action bar offers a matching merge.
@@ -332,7 +332,7 @@ test.describe('Multi-part sessions', () => {
     // Default mode ("combine into a new part") keeps the originals.
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('Merge parts');
+    await expect(dialog).toContainText('Merge objects');
     await dialog.locator('[data-action="merge"]').click();
 
     // A third (combined) part appears; the two originals remain.
@@ -358,7 +358,7 @@ test.describe('Multi-part sessions', () => {
     await page.evaluate(async ({ codeA, codeB }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createSession('merge-replace');
-      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.runAndSave(codeA, 'a');     // Object 1
       await pw.createPart('Beta');
       await pw.runAndSave(codeB, 'b');     // Beta
     }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
@@ -366,7 +366,7 @@ test.describe('Multi-part sessions', () => {
     const list = page.locator('#parts-list');
     const checkbox = (name: string) =>
       list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
-    await checkbox('Part 1').click();
+    await checkbox('Object 1').click();
     await checkbox('Beta').click();
     await page.locator('#btn-merge-parts').click();
 

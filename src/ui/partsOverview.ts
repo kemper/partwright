@@ -30,7 +30,7 @@ export function openPartsOverview(
   const urls: string[] = [];
   let closed = false;
   const shell = createModalShell({
-    title: `All parts (${state.parts.length})`,
+    title: `All objects (${state.parts.length})`,
     widthClass: 'max-w-lg sm:max-w-3xl lg:max-w-5xl',
     scrollable: true,
     onClose: () => {
@@ -52,7 +52,7 @@ export function openPartsOverview(
       (isCurrent
         ? 'border-blue-500/70 bg-zinc-800'
         : 'border-zinc-700/70 bg-zinc-800/60 hover:bg-zinc-700/60 hover:border-zinc-600');
-    tile.title = `Open part "${part.name}"`;
+    tile.title = `Open object "${part.name}"`;
 
     const thumb = document.createElement('div');
     thumb.className = 'aspect-square w-full bg-zinc-900 flex items-center justify-center';
@@ -90,7 +90,7 @@ export function openPartsOverview(
   const hint = document.createElement('p');
   hint.className = 'text-[11px] text-zinc-500 mt-3';
   hint.textContent =
-    'Previews are each part’s saved thumbnail — nothing is rebuilt to show this view. Click a tile to open that part.';
+    'Previews are each object’s saved thumbnail — nothing is rebuilt to show this view. Click a tile to open that object.';
   shell.body.appendChild(hint);
 
   return true;

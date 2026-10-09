@@ -58,7 +58,7 @@ test.describe('plan-mode tool list', () => {
     expect(result.planOn).toEqual(expect.arrayContaining([
       'getCode', 'getSessionContext', 'listVersions', 'getGeometryData',
       'getMeshSummary', 'listComponents', 'listLabels', 'listRegions',
-      'listSessionNotes', 'readDoc', 'checkPrintability', 'listParts',
+      'listSessionNotes', 'readDoc', 'checkPrintability', 'listObjects', 'listObjectParts',
     ]));
 
     // Renders ride along when the Views toggle is on…
@@ -69,7 +69,7 @@ test.describe('plan-mode tool list', () => {
     // Mutations and code execution stay hidden until approval.
     for (const forbidden of [
       'setCode', 'setActiveLanguage', 'modifyAndTest', 'forkVersion',
-      'createPart', 'deletePart', 'saveVersion', 'runAndSave', 'runCode',
+      'createObject', 'deleteObject', 'saveVersion', 'runAndSave', 'runCode',
       'runAndAssert', 'runAndExplain', 'runIsolated', 'importImageAsRelief',
       'importSvgAsRelief', 'setPrinterSettings', 'setReliefPreviewMode',
       'paintRegion', 'paintFaces', 'paintInBox', 'undoLastPaint',

@@ -91,7 +91,7 @@ test.describe('export progress modal is cancellable', () => {
     await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
 
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to STL/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to STL/i)).toBeVisible({ timeout: 10000 });
     await modal.getByRole('button', { name: /select all/i }).click();
     const download = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
     await modal.getByRole('button', { name: /^export/i }).click();
