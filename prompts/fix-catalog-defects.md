@@ -161,3 +161,9 @@ fix is done well.
 - **surfer round 4.** The extra genus handle was traced by part-subset
   bisection to the additive lips ridge welding into the face. A slightly
   narrower mouth closes it, and genus is back to the intended 1.
+- **pocket-watch round 2.** The bezel screws were shrunk and recentred on the
+  flat rim so they clear the beaded lip, and a stale "upper-right" comment was
+  fixed. The reviewer also asked for the 27 labelled components to be fused
+  into one solid. That was declined: the watch is an intentional multi-part,
+  per-label-coloured assembly, which CLAUDE.md lists as a legitimate
+  componentCount > 1 subject.
