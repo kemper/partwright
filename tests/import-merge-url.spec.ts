@@ -30,7 +30,7 @@ type PW = {
 };
 
 test.describe('Import: merge + from-URL', () => {
-  test('JSON import defaults to "Add as new part(s)" and appends the parts', async ({ page }) => {
+  test('JSON import defaults to "Add as new object(s)" and appends the objects', async ({ page }) => {
     await openEditor(page);
 
     // Build an exported session payload from a throwaway session.

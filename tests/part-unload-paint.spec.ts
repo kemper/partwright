@@ -130,7 +130,7 @@ test.describe('Part-unload paint persistence', () => {
     // the button is clicked (before the save loop runs), so the real completion
     // signal is the success toast the save loop fires once every part lands.
     await dialog.getByRole('button', { name: 'Save all' }).click();
-    await expect(page.locator('[role="status"]', { hasText: /Saved \d+ part/ })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[role="status"]', { hasText: /Saved \d+ object/ })).toBeVisible({ timeout: 10_000 });
 
     // Switch back to Object 1 and verify its latest version has color regions.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
