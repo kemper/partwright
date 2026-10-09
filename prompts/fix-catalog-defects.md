@@ -127,3 +127,8 @@ fix is done well.
   crisp; paint alone always notched at the cylinder seam. The white body paint
   is applied, but the viewport's ACES tone mapping caps it at mid-grey, so it
   can't read as bright white without a renderer change.
+- **Catalog size gate.** `build-catalog-entry.cjs` had started writing
+  `Version.surfaceTexture` (the full textured mesh, multiple MB), which pushed
+  the two api.surface entries past the 1500 KB `lint:catalog` limit. The bake
+  now drops it, because the app recomputes the texture from the stored code on
+  open. castle-tower was re-baked with it (2871 KB -> 66 KB).
