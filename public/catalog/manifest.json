@@ -286,7 +286,7 @@
    "name": "Pipe Tee Fitting",
    "file": "pipe_tee_fitting.partwright.json",
    "language": "scad",
-   "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges.",
+   "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer=) for the flared collar edges.",
    "tags": [
     "mechanical"
    ]

@@ -52,3 +52,9 @@ fix is done well.
   first fix were checked with a grid diff: they were the mirrored copy of the
   black path cut, minus voxels the fountain repaints, so nothing intended was
   lost.
+- **pipe-tee-fitting, spur-gear-pair.** The tee's vertical bore started below
+  the run and punched a fourth hole through its floor. It now starts at z=0
+  (genus 3 -> 2), and the right/top collar chamfers moved to the outer lips.
+  The gear plate is re-centred on the two tip circles, with about 6 mm of
+  margin on each side. The manifest description now says cyl(chamfer=),
+  because the collars use both chamfer ends.
