@@ -45,3 +45,10 @@ fix is done well.
   numerals were engraved pockets with gold fills, which produced 16 sliver
   components. The request asks for raised gold numerals, so they are now
   proud extrusions unioned into the body, leaving one component.
+- **voxel-castle round 2.** The garden path was buried under the fountain, the
+  inner-wall windows were half inside a tower, and one ivy voxel was buried in
+  the keep. All three were moved to visible spots. The front-tower banners
+  turned gold to match "golden banners". The "6 extra" voxels removed by the
+  first fix were checked with a grid diff: they were the mirrored copy of the
+  black path cut, minus voxels the fountain repaints, so nothing intended was
+  lost.
