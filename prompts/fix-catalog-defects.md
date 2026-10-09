@@ -122,3 +122,8 @@ fix is done well.
     lotus, and the manifest description now says so (rig gap filed separately).
   - All three now rest on z=0 by translating by the built mesh's real min z.
     Missing `lips` palette colours were added for the lotus-yogi and the surfer.
+- **coffee-mug round 2.** The handle moved out to leave an 18.5 mm finger gap.
+  The rim band became a 0.4 mm-proud geometric ring, so its paint edge is
+  crisp; paint alone always notched at the cylinder seam. The white body paint
+  is applied, but the viewport's ACES tone mapping caps it at mid-grey, so it
+  can't read as bright white without a renderer change.
