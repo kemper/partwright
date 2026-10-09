@@ -132,3 +132,7 @@ fix is done well.
   the two api.surface entries past the 1500 KB `lint:catalog` limit. The bake
   now drops it, because the app recomputes the texture from the stored code on
   open. castle-tower was re-baked with it (2871 KB -> 66 KB).
+- **treasure-chest round 2.** The corner caps and ball feet got their own gold
+  label, distinct from the brass straps, as the request names them. The
+  lock-plate rivets now stand proud of the plate. The entry was re-baked
+  without the persisted texture (2642 KB -> 132 KB).
