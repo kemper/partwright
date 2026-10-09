@@ -393,7 +393,7 @@
    "name": "Machine Tool Knob",
    "file": "machine_knob.partwright.json",
    "language": "replicad",
-   "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore \u2014 showcasing BREP's exact chamfers and fillets on rotational geometry.",
+   "description": "A precision machine-tool grip knob with a fluted finger-grip skirt, chamfered and domed crown, and a shaft bore \u2014 showcasing BREP's exact chamfers and fillets on rotational geometry.",
    "tags": [
     "mechanical"
    ]
@@ -483,7 +483,7 @@
    "name": "Coffee Mug",
    "file": "coffee_mug.partwright.json",
    "language": "replicad",
-   "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle \u2014 showcasing BREP's shell op + paint.",
+   "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle \u2014 showcasing BREP booleans + paint.",
    "tags": [
     "decor"
    ]
