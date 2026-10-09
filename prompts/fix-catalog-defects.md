@@ -154,3 +154,7 @@ fix is done well.
   follows the dome at constant proudness instead of standing out as a flat
   block. The strap comment was corrected, and the strap brass brightened while
   staying distinct from the gold.
+- **surfer round 3.** The wider stance had also widened the board, because
+  its width came from the foot span. The board is now sized from the figure
+  height, 24 × 66 (ratio 2.75), with a pointed nose and pin tail. The cream
+  board colour read as grey, so it is now coral.

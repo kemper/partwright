@@ -2,9 +2,11 @@
 // wide for balance, looking ahead with a relaxed sun-squint grin. Bare chest,
 // board shorts, barefoot. The SURFBOARD is the base/stand the figure rides.
 //
-// The board replaces F.base: it is one long rounded board centred under the
-// stance, dropped onto the lower sole's ground plane and welded to BOTH feet so
-// the whole thing stays ONE component and rests flat on the ground.
+// The board replaces F.base: one long, narrow surfboard (24 wide x 66 long,
+// 2.75x longer than wide) with a pointed nose at -Y and a rounded tail, centred
+// under the stance. Its flat deck sits 0.75 above the coplanar soles, so BOTH
+// feet are planted on it (sunk ~0.5) and the whole thing stays ONE component,
+// resting flat on z = 0.
 //
 // Front = −Y, Z up, figure's left = +X, right = −X.
 //
@@ -25,12 +27,12 @@ const rig = F.ground(F.rig({
   pose: {
     // Arms spread wide out to the sides for balance, slight bend, open hands.
     arms: { raiseSide: 80, bend: 12 },
-    // LOW surf crouch: a wide stance (raiseSide 24) with the front (-Y) leg
-    // lunged forward and the rear leg folded deeper (knee flexion about 80 front /
-    // 105 rear after the ground drop below). Staggered fore/aft so both soles sit
+    // LOW surf crouch: a wide stance (raiseSide 18, kept inside the board's width) with the front (-Y) leg
+    // lunged forward and the rear leg folded deeper (knee flexion about 85 front /
+    // 108 rear after the ground drop below). Staggered fore/aft so both soles sit
     // along the board's long (Y) axis.
-    legL: { raiseSide: 24, bend: 38, raiseFwd: 48 },
-    legR: { raiseSide: 24, bend: 50, raiseFwd: 20 },
+    legL: { raiseSide: 18, bend: 38, raiseFwd: 48 },
+    legR: { raiseSide: 18, bend: 46, raiseFwd: 22 },
     // Torso leans well forward into the ride; the head pitches back up so the
     // gaze stays forward.
     spine: { lean: 27, turn: 6 },
@@ -90,28 +92,27 @@ const shorts = F.clothing.pants(rig, {
 // 5. HAIR — short, tousled wavy.
 const hair = F.hair(rig, { style: 'short', texture: 'wavy' }).label('hair');
 
-// 6. SURFBOARD — the base/stand. One long, narrow surfboard (about 2.6x longer
-//    than wide) spanning both feet, welded to BOTH so the figure is ONE
-//    component. The deck is FLAT at a height just above the higher sole, so each
-//    foot is planted on the top surface and overlaps it ~0.5 (they weld); the
-//    hull below narrows to rounded rails.
+// 6. SURFBOARD — the base/stand. One long, narrow surfboard (24 wide x 66 long,
+//    2.75x longer than wide) with a POINTED nose at −Y (the direction the
+//    figure faces) and a rounded tail, spanning both feet and welded to BOTH so
+//    the figure is ONE component. The deck is FLAT at a height just above the
+//    (coplanar) soles, so each foot is planted on the top surface and sunk ~0.5
+//    into it; the hull below narrows to rounded rails.
 const soleL = rig.sole.L,
   soleR = rig.sole.R;
 const groundZ = Math.min(soleL.groundZ, soleR.groundZ);
 const highSole = Math.max(soleL.groundZ, soleR.groundZ);
 
-// Board footprint centred between the two soles (in X/Y), board long axis along
-// −Y/+Y (the direction of travel) so the fore/aft surf stance straddles it.
+// Board centred between the two soles in X/Y; long axis along Y (travel).
 const midX = (soleL.point[0] + soleR.point[0]) * 0.5;
 const midY = (soleL.point[1] + soleR.point[1]) * 0.5;
 
-// Size the board off the ACTUAL stance footprint so it spans both feet in X and
-// Y (with margin).
-const footSpanX = Math.abs(soleL.point[0] - soleR.point[0]);
-const footSpanY = Math.abs(soleL.point[1] - soleR.point[1]);
-
-const boardWidth = footSpanX + r.foot * 4.6; // covers the sideways spread + foot width
-const boardLen = Math.max(rig.opts.height * 0.95, footSpanY + r.foot * 9); // long board, spans stagger
+// Board size is decoupled from the foot span: a fixed surfboard proportion off
+// the figure height (the stance, raiseSide 18, is set to fit inside it).
+const boardWidth = rig.opts.height * 0.43; // 24
+const boardLen = rig.opts.height * 1.18; // 66
+const hw = boardWidth * 0.5;
+const hl = boardLen * 0.5;
 // Flat deck 0.75 above the (coplanar) sole plane: the foot hull's sole sits a
 // hair above its nominal groundZ, so this leaves ~0.5 of the foot sunk into the
 // deck and welded. The board's underside sits well below the soles.
@@ -119,17 +120,38 @@ const deckZ = highSole + 0.75;
 const boardBottomZ = groundZ - 1.6;
 const boardThick = deckZ - boardBottomZ;
 
-// Plan shape and rails: an ellipsoid whose EQUATOR is the deck (widest at the
-// deck plane, rounded rails curving in beneath), cut flat at the deck and at the
-// underside. A gentle +Y widening (rate 0.006 per unit => nose ~0.84x, tail
-// ~1.16x of the mid width, NOT the old 0.18 which collapsed the nose and
-// ballooned the tail into a wedge) leaves a narrow pointed nose at −Y, the
-// direction the figure faces.
-const hull = sdf.ellipsoid(boardWidth * 0.5, boardLen * 0.5, boardThick * 1.5)
-  .taper(0.006, 'y');
-const slab = sdf.box([boardWidth * 3, boardLen * 2, boardThick])
-  .translate([0, 0, -boardThick * 0.5]); // z in [-boardThick, 0]: deck at 0
-const board = hull.intersect(slab)
+// Rails: an ellipsoid whose EQUATOR is the deck (widest at the deck plane,
+// rounded rails curving in beneath), cut flat at the deck and at the underside.
+// It is a little longer than the board so it stays full-width up to the nose and
+// tail lenses below, which then give the planform its outline.
+const hull = sdf.ellipsoid(hw, hl * 1.25, boardThick * 1.5);
+const slab = sdf.box([boardWidth * 3, boardLen * 3, boardThick]).translate([0, 0, -boardThick * 0.5]); // z in [-boardThick, 0]: deck at 0
+
+// Planform outline. Each end is the intersection of two big discs (a lens), so it
+// ends in a point (nose) or a soft round (tail); a box keeps the middle full
+// width. noseStart/tailStart are where the lens takes over from the full width.
+const discH = boardThick * 6;
+
+function lens(tipY, startY, halfW) {
+  // circles of radius R centred at x = ±d pass through the tip (0, tipY) and have
+  // x-extent ±halfW at y = startY.
+  const run = Math.abs(startY - tipY);
+  const d = (run * run - halfW * halfW) / (2 * halfW);
+  const R = halfW + d;
+  const c = (sx) => sdf.cylinder(R, discH).translate([sx * d, startY, -boardThick * 0.5]);
+  return c(+1).intersect(c(-1));
+}
+const noseTip = -hl,
+  noseStart = -hl + 30; // long, sharp nose
+const tailTip = hl,
+  tailStart = hl - 18; // fuller, rounder tail
+const nose = lens(noseTip, noseStart, hw).union(sdf.box([boardWidth * 3, boardLen, discH]).translate([0, noseStart + boardLen / 2, -boardThick * 0.5]));
+const planform = nose.intersect(
+  lens(tailTip, tailStart, hw).union(sdf.box([boardWidth * 3, boardLen, discH]).translate([0, tailStart - boardLen / 2, -boardThick * 0.5])),
+);
+const board = hull
+  .intersect(slab)
+  .intersect(planform)
   .translate([midX, midY, deckZ])
   .label('board');
 
