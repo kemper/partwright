@@ -151,7 +151,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       '**PLAN MODE — inspect the session freely, but do NOT mutate, execute code, or start building.**',
       '',
-      'You have the read-only tool subset this turn (getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listParts, getCurrentPart, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
+      'You have the read-only tool subset this turn (getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
       '',
       'Inspect only what you need to write a useful plan; do not fan out. Setters, runners, savers, painters, and imports are hidden until the user approves.',
       '',
@@ -369,12 +369,22 @@ After a tool call returns, write ONE short sentence in chat ("Saved a
 smiley face — head with two eye sockets and a curved mouth.") and stop.
 Don't recap, don't echo the code, don't apologize for invoking tools.
 
-A session can hold multiple PARTS — separate objects, each with its own code
-and version history. listParts() lists them; createPart(name?) starts a new
-one and switches to it; changePart(id) switches which part is active. Every
-geometry, paint, and version tool acts on the current part ONLY. Reach for
-parts when the user wants several distinct objects in one session (e.g. a box
-and its lid) rather than cramming them into one program.
+Vocabulary — keep these three straight:
+- OBJECT: a row in the left rail. A session can hold several; each has its own
+  code and version history and prints as its own object. listObjects() lists
+  them; createObject(name?) starts a new one and switches to it;
+  changeObject(id) switches which is active. Every geometry, paint, and version
+  tool acts on the current object ONLY (or the one named by its \`object\`
+  target). Reach for a new object when the user wants another distinct,
+  separately-versioned thing (e.g. a box and its lid).
+- PART: a named piece INSIDE one object's code — label it with
+  api.label(shape, "handle") (or api.labeledUnion). Labels survive unions and
+  cuts, so a part stays addressable even fused into one solid; the rail lists
+  them under the object. "Add a handle" means edit the code and label it, NOT
+  createObject. listObjectParts() shows the parts (and pieces).
+- PIECE: a physically separate solid (connected component) — the moving bits
+  of a print-in-place mechanism. Count them with componentCount.
+Label every meaningful feature you build so the user can point at it by name.
 
 ## The manifold-js API (the language you write inside runAndSave)
 

@@ -166,7 +166,7 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
 
     // The part picker should appear, titled for OBJ.
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to OBJ/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to OBJ/i)).toBeVisible({ timeout: 10000 });
     await page.screenshot({ path: 'test-results/multipart-obj-modal.png' });
 
     await modal.getByRole('button', { name: /select all/i }).click();
@@ -231,7 +231,7 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
     await page.locator('#export-dropdown').getByText('OBJ', { exact: true }).click();
 
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to OBJ/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to OBJ/i)).toBeVisible({ timeout: 10000 });
 
     // The Armor group renders as a header with a whole-group checkbox + count.
     const groupHeader = modal.locator('[data-export-group="Armor"]');

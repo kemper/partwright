@@ -582,7 +582,7 @@ export function createToolbar(
 
   const threemfBambuOpt = createDescribedItem(
     '3MF — Bambu/Orca',
-    'Multi-plate project: pick parts, one per build plate, colors bound to AMS filaments. For Bambu Studio / OrcaSlicer (not a generic 3MF).',
+    'Multi-plate project: pick objects, one per build plate, colors bound to AMS filaments. For Bambu Studio / OrcaSlicer (not a generic 3MF).',
   );
   threemfBambuOpt.addEventListener('click', () => {
     dropdown.classList.add('hidden');

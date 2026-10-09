@@ -415,6 +415,12 @@ Each loader is idempotent and caches the resolved module. Vite splits each one i
 - **Right-handed, Z-up.** The XY plane is the ground, Z points up.
 - Units are arbitrary (no physical unit assumed). Use consistent scale.
 
+## Vocabulary — objects, parts, pieces
+
+- **Object** — a row in the left-rail **Objects** list: its own code + version history (one 3MF object on export). The UI/API call it an object (`listObjects`, `createObject`, …); the **storage layer still calls it `Part`** (`parts` IndexedDB store, `Version.partId`, the exported `parts` array, `?part=` URL param, `src/ui/partList.ts`, `#btn-add-part`). Those persisted names are deliberately unchanged — don't rename them without a schema migration. The pre-rename `*Part*` console methods / AI tool names survive as deprecated aliases.
+- **Part** — a named region *inside* one object, declared with `api.label(shape, name)` (SCAD `label()`, `BREP.label`). Tracked by manifold-3d provenance, so it survives unions/cuts. Listed under the open object in the rail (`listObjectParts()`); arrange-mode inserts are auto-labelled. Arrange mode's `listArrangeParts`/`selectParts` and `labeledUnion(parts)` already use "part" in this sense — keep them.
+- **Piece** — a connected component (a physically separate solid; `componentCount`). `src/geometry/meshPieces.ts`.
+
 ## Development Guidelines
 
 ### Planning Files
@@ -438,6 +444,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `?notes` — Notes tab
 - `?session=<id>` — Active session
 - `?session=<id>&v=3` — Specific version
+- `?part=<id>` — Active object (storage name; see [Vocabulary](#vocabulary--objects-parts-pieces))
 
 Any `/editor` URL bypasses the landing page entirely. Tab switching is handled in `src/ui/layout.ts` (`switchTab`). Session/version state is handled in `src/storage/sessionManager.ts` (`updateURL`). Page-level routing is in `src/main.ts`.
 

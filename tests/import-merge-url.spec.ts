@@ -63,10 +63,10 @@ test.describe('Import: merge + from-URL', () => {
     // The merge destination choice is offered because a session is open, AND it
     // is the pre-selected default — so the primary button already reads
     // "Add parts" without the user touching the radios.
-    await expect(dialog).toContainText('Add as new part(s) to current project');
+    await expect(dialog).toContainText('Add as new object(s) to current project');
     const mergeRadio = dialog.locator('input[type="radio"][value="merge"]');
     await expect(mergeRadio).toBeChecked();
-    const mergeBtn = dialog.getByRole('button', { name: 'Add parts' });
+    const mergeBtn = dialog.getByRole('button', { name: 'Add objects' });
     await expect(mergeBtn).toBeVisible();
     await mergeBtn.click();
     await expect(dialog).toBeHidden({ timeout: 10_000 });
@@ -162,7 +162,7 @@ test.describe('Import: merge + from-URL', () => {
     });
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible({ timeout: 6000 });
-    await dialog.getByRole('button', { name: 'Add parts' }).click();
+    await dialog.getByRole('button', { name: 'Add objects' }).click();
     await expect(dialog).toBeHidden({ timeout: 10_000 });
 
     await expect.poll(async () =>
@@ -241,7 +241,7 @@ test.describe('Import: merge + from-URL', () => {
     });
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible({ timeout: 6000 });
-    await dialog.getByRole('button', { name: 'Add parts' }).click();
+    await dialog.getByRole('button', { name: 'Add objects' }).click();
     await expect(dialog).toBeHidden({ timeout: 10_000 });
 
     // Two parts now: [0] = manifold-js host (unsaved starter), [1] = voxel.

@@ -14,6 +14,7 @@ export interface BuiltExport {
 
 const EXCLUDED_NAMES = new Set([
   'phantom-reference',
+  'object-part-highlight', // transient object-list part/piece tint (renderer/triangleHighlight.ts)
   'dimension-lines',
   'measure-overlay',
   'clip-cap',

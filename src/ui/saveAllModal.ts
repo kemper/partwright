@@ -42,7 +42,7 @@ export function showSaveAllModal(parts: UnsavedPartRow[]): Promise<SaveAllChoice
     };
 
     const shell = createModalShell({
-      title: 'Save unsaved parts',
+      title: 'Save unsaved objects',
       maxWidth: 'md',
       scrollable: true,
       // Escape / click-outside / ✕ all count as cancel.
@@ -52,7 +52,7 @@ export function showSaveAllModal(parts: UnsavedPartRow[]): Promise<SaveAllChoice
     const intro = document.createElement('p');
     intro.className = 'text-zinc-300';
     intro.textContent =
-      `${parts.length} parts have unsaved changes. Choose which to save — all are selected by default.`;
+      `${parts.length} objects have unsaved changes. Choose which to save — all are selected by default.`;
     shell.body.appendChild(intro);
 
     const listEl = document.createElement('div');
@@ -92,7 +92,7 @@ export function showSaveAllModal(parts: UnsavedPartRow[]): Promise<SaveAllChoice
         const badge = document.createElement('span');
         badge.className =
           'shrink-0 text-[10px] uppercase tracking-wide font-semibold text-blue-300 bg-blue-500/15 border border-blue-500/30 rounded px-1.5 py-0.5';
-        badge.textContent = 'Current part';
+        badge.textContent = 'Current object';
         row.appendChild(badge);
       }
 
@@ -109,7 +109,7 @@ export function showSaveAllModal(parts: UnsavedPartRow[]): Promise<SaveAllChoice
     if (currentId) {
       const currentBtn = document.createElement('button');
       currentBtn.className = BUTTON_SECONDARY;
-      currentBtn.textContent = 'Save current part only';
+      currentBtn.textContent = 'Save current object only';
       currentBtn.addEventListener('click', () => finish({ action: 'current' }));
       shell.footer.appendChild(currentBtn);
     }
