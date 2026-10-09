@@ -196,8 +196,16 @@ import { appPath } from '../deployment';
  *           sharing a group are threaded together under a collapsible header in
  *           the part list. Additive; older readers ignore it (parts import
  *           ungrouped).
+ *  - `1.20` — colour-region descriptors gain an optional part scope
+ *           (`colorRegions[].descriptor.scope.label`, the api.label region the
+ *           paint is clipped to) and a `colorMatch` kind (Replace within a
+ *           part). Both live inside the opaque descriptor, so serialize /
+ *           import carry them verbatim. Additive: pre-1.20 regions are
+ *           unscoped. Pre-1.20 builds paint a scoped region unclipped and do
+ *           not understand `colorMatch` (this build resolves any unknown kind
+ *           to an empty region rather than failing, for the next one).
  */
-export const SCHEMA_VERSION = '1.19';
+export const SCHEMA_VERSION = '1.20';
 
 const CURRENT_MAJOR = 1;
 

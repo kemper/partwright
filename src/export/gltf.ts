@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { getScene, withExportColors, meshGLToBufferGeometry } from '../renderer/viewport';
+import { suspendIsolation } from '../renderer/triangleHighlight';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import { assertFiniteMesh, DEFAULT_COLOR_HEX } from './meshClean';
@@ -15,6 +16,7 @@ export interface BuiltExport {
 const EXCLUDED_NAMES = new Set([
   'phantom-reference',
   'object-part-highlight', // transient object-list part/piece tint (renderer/triangleHighlight.ts)
+  'object-part-isolate',   // isolate-a-part overlay (renderer/triangleHighlight.ts)
   'dimension-lines',
   'measure-overlay',
   'clip-cap',
@@ -72,6 +74,8 @@ async function serializeSceneToGLB(customName?: string): Promise<BuiltExport> {
   const exporter = new GLTFExporter();
 
   const hidden: THREE.Object3D[] = [];
+  // An isolated part ghosts the solid's material; export it opaque.
+  const restoreIsolation = suspendIsolation();
   scene.traverse(obj => {
     if (obj.visible && shouldExcludeFromExport(obj)) {
       obj.visible = false;
@@ -87,6 +91,7 @@ async function serializeSceneToGLB(customName?: string): Promise<BuiltExport> {
     return { blob, filename: getExportFilename('glb', customName), mimeType };
   } finally {
     for (const obj of hidden) obj.visible = true;
+    restoreIsolation();
   }
 }
 

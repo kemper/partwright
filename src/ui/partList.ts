@@ -3,8 +3,8 @@
 // names). Supports create, select, inline rename, delete, multi-select bulk
 // delete/merge, grouping (a threaded view with collapsible group headers), and
 // pointer-based drag-to-reorder. The open object's row expands to show its
-// PARTS (api.label regions) and PIECES (separate solids); clicking one tints it
-// in the viewport. Renders into the rail container created by layout.ts and
+// PARTS (api.label regions) and PIECES (separate solids); clicking one selects
+// it as the scope for Paint / Surface / AI (see objectPartsPanel.ts). Renders into the rail container created by layout.ts and
 // re-renders on every session-state change (the parts section also refreshes on
 // every mesh update via refreshObjectParts).
 
@@ -14,6 +14,9 @@ import { buildPartTree, groupNames, type PartTreeNode } from './partTree';
 import { confirmDialog, promptDialog } from './dialogs';
 import { openPartsOverview } from './partsOverview';
 import { registerCommands } from './commandPalette';
+import { buildObjectPartsSection, type ObjectPartsActions } from './objectPartsPanel';
+
+export type { ObjectPartsView } from './objectPartsPanel';
 
 export interface PartListCallbacks {
   /** Switch the active part (loads its latest version into the editor). */
@@ -32,27 +35,11 @@ export interface PartListCallbacks {
   onReorderParts: (layout: PartLayoutEntry[]) => void | Promise<void>;
   /** Show all parts together in the grid Assembly view. */
   onViewAllParts: () => void;
-  /** Parts + pieces of the open object's current mesh (null before a run). */
-  getObjectParts: () => ObjectPartsView | null;
-  /** The part/piece currently tinted in the viewport (see onHighlight keys). */
-  getHighlightKey: () => string | null;
-  /** Tint `part:<name>` / `piece:<n>` / `unlabeled` in the viewport; null clears. */
-  onHighlight: (key: string | null) => void;
+  /** The open object's parts / pieces section: what it lists and the part
+   *  actions it offers (see objectPartsPanel.ts). */
+  objectParts: ObjectPartsActions;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
-}
-
-/** What the open object's expandable section lists. Mirrors
- *  `partwright.listObjectParts()` (minus the object id/name). */
-export interface ObjectPartsView {
-  /** api.label regions, in declaration order. `color` is the drawn colour. */
-  parts: { name: string; triangleCount: number; color?: string }[];
-  /** Labels the code declared that ended up with no triangles. */
-  lostParts: string[];
-  /** Triangles no part covers (0 when the object declares no parts). */
-  unlabeledTriangleCount: number;
-  /** Connected components; `part` names the part covering most of each. */
-  pieces: { index: number; triangleCount: number; part?: string }[];
 }
 
 let railEl: HTMLElement | null = null;
@@ -204,7 +191,7 @@ function render(state: SessionState): void {
     if (node.kind === 'part') {
       const isCurrent = node.part.id === state.currentPart?.id;
       list.appendChild(buildRow(node.part, isCurrent, state.parts.length, list, state.currentVersion, false));
-      if (isCurrent && objectPartsExpanded) list.appendChild(buildObjectPartsSection());
+      if (isCurrent && objectPartsExpanded) list.appendChild(buildObjectPartsSectionForRail());
     } else {
       list.appendChild(buildGroupNode(node, state, list));
     }
@@ -296,7 +283,7 @@ function buildGroupNode(node: PartTreeNode & { kind: 'group' }, state: SessionSt
     for (const part of node.parts) {
       const isCurrent = part.id === state.currentPart?.id;
       body.appendChild(buildRow(part, isCurrent, state.parts.length, list, state.currentVersion, true));
-      if (isCurrent && objectPartsExpanded) body.appendChild(buildObjectPartsSection());
+      if (isCurrent && objectPartsExpanded) body.appendChild(buildObjectPartsSectionForRail());
     }
     wrap.appendChild(body);
   }
@@ -346,7 +333,7 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     disclose.addEventListener('click', (e) => {
       e.stopPropagation();
       objectPartsExpanded = !objectPartsExpanded;
-      if (!objectPartsExpanded) cb.onHighlight(null);
+      if (!objectPartsExpanded) cb.objectParts.select(null);
       render(getState());
     });
     row.appendChild(disclose);
@@ -450,104 +437,14 @@ export function refreshObjectParts(): void {
     if (!existing) return;
     // Keep keyboard focus on the same part/piece across the rebuild.
     const focusedKey = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#object-parts [data-object-part]')?.dataset.objectPart;
-    const next = buildObjectPartsSection();
+    const next = buildObjectPartsSectionForRail();
     existing.replaceWith(next);
     if (focusedKey) next.querySelector<HTMLElement>(`[data-object-part="${CSS.escape(focusedKey)}"]`)?.focus();
   });
 }
 
-function compactCount(n: number): string {
-  return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-function buildObjectPartsSection(): HTMLElement {
-  const section = document.createElement('div');
-  section.id = 'object-parts';
-  section.className = 'ml-6 mr-1 mb-1 pl-2 border-l border-zinc-700/60 text-[11px]';
-  const view = cb.getObjectParts();
-  const active = cb.getHighlightKey();
-
-  const heading = (text: string, title: string) => {
-    const h = document.createElement('div');
-    h.className = 'px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500';
-    h.textContent = text;
-    h.title = title;
-    section.appendChild(h);
-  };
-  const note = (text: string) => {
-    const n = document.createElement('div');
-    n.className = 'px-1 py-0.5 text-[10px] text-zinc-600 italic leading-snug';
-    n.textContent = text;
-    section.appendChild(n);
-  };
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string }) => {
-    const b = document.createElement('button');
-    const on = active === key;
-    b.dataset.objectPart = key;
-    b.setAttribute('aria-pressed', String(on));
-    b.title = opts.title;
-    // ≥44px tall on mobile (the rail is a full-width touch pane there).
-    b.className = 'w-full flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
-      + (on ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 [@media(hover:hover)]:hover:text-zinc-200');
-    const sw = document.createElement('span');
-    sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-zinc-600';
-    sw.style.background = opts.color ?? '#71717a';
-    b.appendChild(sw);
-    const label = document.createElement('span');
-    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '');
-    label.textContent = name;
-    b.appendChild(label);
-    const c = document.createElement('span');
-    c.className = 'shrink-0 tabular-nums text-[10px] text-zinc-600';
-    c.textContent = compactCount(count);
-    b.appendChild(c);
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      cb.onHighlight(on ? null : key);
-    });
-    section.appendChild(b);
-  };
-
-  heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid.');
-  if (!view) {
-    note('Run the code to list this object’s parts.');
-    return section;
-  }
-  if (view.parts.length === 0 && view.lostParts.length === 0) {
-    note('No labelled parts — wrap shapes in api.label(shape, "name") to name them.');
-  }
-  for (const p of view.parts) {
-    item(`part:${p.name}`, p.name, p.triangleCount, { color: p.color, title: `Highlight part "${p.name}" (${p.triangleCount} triangles)` });
-  }
-  if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
-    item('unlabeled', 'Unlabeled', view.unlabeledTriangleCount, { italic: true, title: 'Highlight the geometry no part covers' });
-  }
-  for (const name of view.lostParts) {
-    const lost = document.createElement('div');
-    lost.className = 'flex items-center gap-1.5 px-1 py-1 text-zinc-600';
-    lost.title = `"${name}" was labelled in code but has no triangles left — an operation consumed it (e.g. it was fully subtracted, or a smoothing/level-set step dropped the label).`;
-    const sw = document.createElement('span');
-    sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-dashed border-zinc-600';
-    lost.appendChild(sw);
-    const label = document.createElement('span');
-    label.className = 'flex-1 min-w-0 truncate line-through';
-    label.textContent = name;
-    lost.appendChild(label);
-    const tag = document.createElement('span');
-    tag.className = 'shrink-0 text-[10px] uppercase tracking-wide';
-    tag.textContent = 'lost';
-    lost.appendChild(tag);
-    section.appendChild(lost);
-  }
-
-  if (view.pieces.length > 1) {
-    heading(`Pieces · ${view.pieces.length}`, 'Physically separate solids — what comes off the print bed as its own lump (e.g. the moving parts of a print-in-place mechanism).');
-    for (const piece of view.pieces) {
-      const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
-      item(`piece:${piece.index}`, name, piece.triangleCount, { title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}` });
-    }
-  }
-  return section;
+function buildObjectPartsSectionForRail(): HTMLElement {
+  return buildObjectPartsSection(cb.objectParts);
 }
 
 /** A small fixed-size preview slot for a part's latest geometry. */

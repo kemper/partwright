@@ -53,7 +53,6 @@ import {
   getSlabAxis,
   previewTriangles,
   refreshBucketPreview,
-  getCurrentMesh as getPaintMesh,
   type PaintTool,
   type BrushShape,
 } from './paintMode';
@@ -82,11 +81,14 @@ import {
   removeRegion,
   setRegionVisibility,
   updateRegionColor,
-  addRegion,
+  updateRegionName,
+  addPaintRegion,
+  resolveOnCurrentMesh,
+  type RegionDescriptor,
   replaceRegionColors,
   getDistinctRegionColors,
 } from './regions';
-import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
+import { getSelectedPartName, setSelectedPartKey, onPartSelectionChange } from '../ui/partSelection';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
@@ -99,6 +101,8 @@ import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
+import { showToast } from '../ui/toast';
+import { promptDialog } from '../ui/dialogs';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -176,7 +180,22 @@ function onPaintEscape(e: KeyboardEvent): void {
   togglePaintMode();
 }
 
+// Fired after the paint panel opens or closes (the part-selection tint is
+// suppressed while painting, so the strokes stay readable).
+const paintOpenListeners: (() => void)[] = [];
+export function onPaintOpenChange(fn: () => void): void {
+  paintOpenListeners.push(fn);
+}
+function notifyPaintOpen(): void {
+  for (const fn of paintOpenListeners) fn();
+}
+
 function togglePaintMode(): void {
+  togglePaintModeInner();
+  notifyPaintOpen();
+}
+
+function togglePaintModeInner(): void {
   if (isActive()) {
     deactivate();
     updateButtonState(false);
@@ -401,19 +420,46 @@ function createPickerPanel(): HTMLElement {
   replaceControls = createReplaceControls();
   content.appendChild(replaceControls);
 
-  // === Labels list ===
-  // Surfaces the named features `api.label(shape, name)` registered in the
-  // current run. Hovering a row highlights the label's triangles on the model
-  // (same translucent overlay the regions list uses); clicking paints them
-  // with the active color via a byLabel descriptor — identical to what
-  // `partwright.paintByLabel` produces from a script.
-  const labelList = document.createElement('div');
-  labelList.id = 'paint-label-list';
-  labelList.className = 'mt-2 border-t border-zinc-700 pt-2';
-  content.appendChild(labelList);
-  updateLabelList(labelList);
-  onPaintLabelsChange(() => updateLabelList(labelList));
-  onRegionsChange(() => updateLabelList(labelList));
+  // === Part scope (#1003) ===
+  // The Objects rail is the selector: with a part selected there, every paint
+  // tool (brush, spray, bucket, slab, shape, replace, image stamp) is confined
+  // to that part. This chip says so, and ✕ clears the selection. Filling a
+  // whole part with one colour lives on the part's swatch in the rail (this
+  // panel's old Labels list, retired so there's one place for it).
+  const scopeChip = document.createElement('div');
+  scopeChip.id = 'paint-part-scope';
+  scopeChip.className = 'mt-2 border-t border-zinc-700 pt-2';
+  content.appendChild(scopeChip);
+  const renderScope = () => {
+    scopeChip.replaceChildren();
+    const name = getSelectedPartName();
+    if (!name) {
+      const hint = document.createElement('div');
+      hint.className = 'text-[10px] text-zinc-500 leading-snug';
+      hint.textContent = 'Painting the whole object. Select a part in the Objects list to paint just that part.';
+      scopeChip.appendChild(hint);
+      return;
+    }
+    const chip = document.createElement('div');
+    chip.className = 'flex items-center gap-1.5 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-100';
+    chip.title = `Every paint tool is confined to the part "${name}" — strokes never bleed onto the rest of the object.`;
+    const t = document.createElement('span');
+    t.className = 'flex-1 min-w-0 truncate';
+    t.textContent = `Painting: ${name}`;
+    chip.appendChild(t);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.dataset.action = 'clear-part-scope';
+    rm.className = 'shrink-0 text-amber-200/70 hover:text-amber-50';
+    rm.textContent = '✕';
+    rm.title = 'Paint the whole object again (clears the part selection)';
+    rm.setAttribute('aria-label', 'Clear the part scope');
+    rm.addEventListener('click', () => setSelectedPartKey(null));
+    chip.appendChild(rm);
+    scopeChip.appendChild(chip);
+  };
+  renderScope();
+  onPartSelectionChange(renderScope);
 
   // === Region list ===
   // Flows inside the single scroll area; the sticky footer keeps the actions
@@ -737,6 +783,11 @@ function createReplaceControls(): HTMLElement {
   wrap.appendChild(actionRow);
 
   function syncSourceDisplay(): void {
+    const part = getSelectedPartName();
+    replaceBtn.textContent = part ? `Replace in ${part}` : 'Replace all';
+    replaceBtn.title = part
+      ? `Recolour the faces of "${part}" drawn in the source colour (the rest of the object is untouched)`
+      : 'Replace all regions of the source color with the active paint color';
     const src = getReplaceSourceColor();
     if (src) {
       sourceSwatch.style.backgroundColor = rgbToCSS(src);
@@ -772,11 +823,29 @@ function createReplaceControls(): HTMLElement {
   replaceBtn.addEventListener('click', () => {
     const src = getReplaceSourceColor();
     if (!src) return;
+    const part = getSelectedPartName();
+    if (part) {
+      // Within a part: recolouring whole regions would leak outside it, so add
+      // a colour-match region scoped to the part instead — every triangle of
+      // the part drawn in the source colour (re-matched by colour on reruns).
+      // The eyedropper reports the neutral model shade for unpainted faces.
+      const unpainted = Math.abs(src[0] - 0x4a / 255) < 0.003 && Math.abs(src[1] - 0x9e / 255) < 0.003 && Math.abs(src[2] - 1) < 0.003;
+      const descriptor: RegionDescriptor = { kind: 'colorMatch', seedColor: [...src] as [number, number, number], colorTolerance: 0.02, ...(unpainted ? { unpainted: true } : {}), scope: { label: part } };
+      const tris = resolveOnCurrentMesh(descriptor);
+      if (tris.size === 0) {
+        showToast(`No faces of "${part}" are drawn in ${rgbToHex(src)}.`, { variant: 'warn' });
+        return;
+      }
+      addPaintRegion(`Replace in ${part}`, [...getColor()] as [number, number, number], 'face-pick', descriptor, tris, true, getSlotId() ?? undefined);
+      setReplaceSourceColor(null);
+      return;
+    }
     const count = replaceRegionColors(src, getColor());
     if (count > 0) setReplaceSourceColor(null);
   });
 
   onReplaceSourceColorChange(syncSourceDisplay);
+  onPartSelectionChange(syncSourceDisplay);
   onRegionsChange(() => { syncSwatches(); syncSourceDisplay(); });
 
   syncSwatches();
@@ -1556,196 +1625,6 @@ function updateRedoButton(): void {
   redoBtn.classList.toggle('cursor-not-allowed', !can);
 }
 
-// Active hover-release closure for the labels list. Releasing it inside
-// `updateLabelList` before `innerHTML = ''` matters: if a fresh run fires
-// `setPaintLabels` while the user's pointer is over a row, the row DOM is
-// destroyed before its `mouseleave` handler can run, and the THREE highlight
-// mesh would otherwise stay parented to the viewport until the next preview.
-let activeLabelHoverRelease: (() => void) | null = null;
-
-function releaseLabelHover(): void {
-  if (activeLabelHoverRelease) {
-    activeLabelHoverRelease();
-    activeLabelHoverRelease = null;
-  }
-}
-
-function updateLabelList(container: HTMLElement): void {
-  const labels = getPaintLabels();
-  releaseLabelHover();
-  container.innerHTML = '';
-
-  const header = document.createElement('div');
-  header.className = 'flex items-center justify-between mb-1';
-  const headerLabel = document.createElement('div');
-  headerLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
-  headerLabel.textContent = 'Labels';
-  header.appendChild(headerLabel);
-  if (labels.length > 0) {
-    const count = document.createElement('span');
-    count.className = 'text-[10px] text-zinc-600 tabular-nums';
-    count.textContent = String(labels.length);
-    header.appendChild(count);
-  }
-  container.appendChild(header);
-
-  if (labels.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'text-[10px] text-zinc-500 leading-snug';
-    empty.innerHTML = 'No labels in this run. Wrap features with <code class="px-1 py-0.5 rounded bg-zinc-900/60 text-zinc-300 text-[10px]">api.label(shape, "name")</code> in your code to get clickable labelled regions here.';
-    container.appendChild(empty);
-    return;
-  }
-
-  // Which labels are already painted, so the row can show a "painted" hint
-  // instead of pretending nothing's there. A label may be painted multiple
-  // times (e.g. a different color over the same area); we only need to know
-  // that *something* paints it.
-  const paintedLabels = new Set<string>();
-  for (const r of getRegions()) {
-    if (r.descriptor.kind === 'byLabel') paintedLabels.add(r.descriptor.label);
-  }
-
-  for (const label of labels) {
-    container.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
-  }
-}
-
-// Triangle count of the *base* mesh the current label snapshot was built
-// against. The label rows are (re)built only when the labels snapshot changes
-// (a fresh run), at which point `getPaintMesh()` is that base mesh. Captured
-// here so the hover preview can detect later topology changes (subdivision)
-// that would make the snapshot's raw triangle ids stale. -1 = unknown.
-let labelBaseNumTri = -1;
-
-function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement {
-  // Rows are rebuilt on every labels-snapshot change, which coincides with the
-  // base mesh being the current paint mesh — record its triangle count so the
-  // hover handler can later tell whether the working mesh has been refined.
-  labelBaseNumTri = getPaintMesh()?.numTri ?? -1;
-
-  const row = document.createElement('div');
-  row.className = 'flex items-center gap-1.5 py-0.5 group rounded px-1 -mx-1 hover:bg-zinc-700/40 transition-colors cursor-pointer';
-  row.dataset.labelName = label.name;
-  row.title = alreadyPainted
-    ? `Paint label "${label.name}" again with the current color`
-    : `Paint label "${label.name}" with the current color`;
-
-  // Hover-to-highlight: render a 40%-opacity overlay over the label's
-  // triangles in the current paint color so the user can preview which
-  // region a click will paint. Skip the preview entirely when the active
-  // paint mesh is no longer the run's *base* mesh the label was built
-  // against — `paintByLabel`'s commit path remaps base ids to refined ids
-  // via `parentToChildren`, but `previewTriangles` doesn't, so indexing raw
-  // base ids into a refined mesh highlights the wrong triangles. A simple
-  // `maxTriId >= numTri` bound is NOT enough: smooth/slab/cylinder
-  // subdivision REBUILDS and RENUMBERS every triangle, usually producing
-  // *more* triangles, so the stale ids still fall inside the new range and
-  // pass that bound while pointing at unrelated triangles. Instead gate on
-  // the base-mesh triangle count captured when the labels were last built
-  // (see `labelBaseNumTri`): any change to the working mesh's topology means
-  // the label ids no longer line up, so the preview is suppressed.
-  row.addEventListener('mouseenter', () => {
-    if (label.triangles.size === 0) return;
-    const mesh = getPaintMesh();
-    if (!mesh) return;
-    // Topology changed since the labels were built (e.g. subdivision) — the
-    // label's triangle ids are stale, so don't preview against this mesh.
-    if (labelBaseNumTri < 0 || mesh.numTri !== labelBaseNumTri) return;
-    if (label.maxTriId >= mesh.numTri) return;
-    releaseLabelHover();
-    activeLabelHoverRelease = previewTriangles(label.triangles, getColor());
-  });
-  row.addEventListener('mouseleave', releaseLabelHover);
-
-  row.addEventListener('click', () => {
-    if (label.triangles.size === 0) return;
-    releaseLabelHover();
-    // Clone the triangle set so later region edits don't mutate the label
-    // snapshot. byLabel descriptor matches what partwright.paintByLabel emits,
-    // so re-hydration on session reload goes through the same resolve path
-    // — including refined-mesh remapping via `parentToChildren`.
-    addRegion(
-      label.name,
-      [...getColor()] as [number, number, number],
-      'paintbrush',
-      { kind: 'byLabel', label: label.name },
-      new Set(label.triangles),
-      true,
-      getSlotId() ?? undefined,
-    );
-  });
-
-  // Inline colour swatch — set the colour of this whole part directly, without
-  // first selecting the active paint colour. It doubles as the "already
-  // painted" indicator: when a byLabel region exists for this label the swatch
-  // shows its colour (the most recent one wins in compositing), so the user can
-  // tell a "blue eye" from a "red eye" at a glance. Editing it recolours that
-  // region in place instead of stacking a duplicate; for an unpainted label it
-  // commits a fresh byLabel region (the same descriptor partwright.paintByLabel
-  // emits, so it persists and re-resolves across runs). Defaults to the active
-  // paint colour so the swatch previews "the part will become this".
-  const lastPainted = alreadyPainted
-    ? [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name) ?? null
-    : null;
-  // The swatch opens the shared palette picker (createColorSwatch stops the
-  // click from bubbling to the row's paint-with-active-colour handler). Picking
-  // a colour recolours this part's existing byLabel region in place, or commits
-  // a fresh one — the same descriptor partwright.paintByLabel emits.
-  const swatch = createColorSwatch({
-    initialHex: rgbToHex(lastPainted ? lastPainted.color : getColor()),
-    title: lastPainted ? `Recolour the whole "${label.name}" part` : `Set the colour of the whole "${label.name}" part`,
-    modalTitle: `Colour for "${label.name}"`,
-    className: 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer',
-    dataAction: 'set-label-color',
-    onPick: (hex) => {
-      if (label.triangles.size === 0) return;
-      const rgb: [number, number, number] = [
-        parseInt(hex.slice(1, 3), 16) / 255,
-        parseInt(hex.slice(3, 5), 16) / 255,
-        parseInt(hex.slice(5, 7), 16) / 255,
-      ];
-      const existing = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
-      if (existing) {
-        updateRegionColor(existing.id, rgb);
-      } else {
-        addRegion(
-          label.name,
-          rgb,
-          'paintbrush',
-          { kind: 'byLabel', label: label.name },
-          new Set(label.triangles),
-          true,
-          getSlotId() ?? undefined,
-        );
-      }
-    },
-  });
-  const dot = swatch.el;
-
-  const nameEl = document.createElement('span');
-  nameEl.className = 'text-[11px] truncate flex-1 text-zinc-300';
-  nameEl.textContent = label.name;
-
-  const count = document.createElement('span');
-  count.className = 'text-[10px] text-zinc-600 tabular-nums';
-  count.textContent = `${label.triangleCount}△`;
-
-  row.appendChild(dot);
-  row.appendChild(nameEl);
-  row.appendChild(count);
-
-  if (alreadyPainted) {
-    const badge = document.createElement('span');
-    badge.className = 'shrink-0 text-[10px] text-emerald-400 leading-none';
-    badge.textContent = '✓';
-    badge.title = 'Already painted (click to paint again with the current color)';
-    row.appendChild(badge);
-  }
-
-  return row;
-}
-
 function updateRegionList(container: HTMLElement): void {
   const regions = getRegions();
   container.innerHTML = '';
@@ -1793,6 +1672,24 @@ function updateRegionList(container: HTMLElement): void {
     const label = document.createElement('span');
     label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;
     label.textContent = region.name;
+    label.dataset.action = 'rename-region';
+    // Part-scoped paint names its part, so it's clear the stroke stays inside it.
+    const scopeLabel = region.descriptor.kind === 'byLabel' ? null : region.descriptor.scope?.label;
+    label.title = `${region.name}${scopeLabel ? ` — inside part "${scopeLabel}"` : ''} (double-click to rename)`;
+    if (scopeLabel) {
+      const tag = document.createElement('span');
+      tag.className = 'text-zinc-600';
+      tag.textContent = ` · ${scopeLabel}`;
+      label.appendChild(tag);
+    }
+    // Double-click to rename (previously only Relief Studio could).
+    label.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      void promptDialog('Rename paint region:', { title: 'Rename region', initialValue: region.name, confirmLabel: 'Rename' }).then((next) => {
+        const v = next?.trim();
+        if (v && v !== region.name) updateRegionName(region.id, v);
+      });
+    });
 
     const count = document.createElement('span');
     count.className = 'text-[10px] text-zinc-600 tabular-nums';
@@ -1858,6 +1755,7 @@ export function forceDeactivate(): void {
     closeViewportPanel(paintRegistryEntry);
     document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
+    notifyPaintOpen();
   }
 }
 

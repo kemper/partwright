@@ -12,7 +12,9 @@ async function openEditorWithLabels(page: import('playwright/test').Page) {
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   await page.evaluate(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (window as any).partwright.run(`
+    const pw = (window as any).partwright;
+    await pw.createSession('picker');
+    await pw.run(`
       const { Manifold } = api;
       const body = api.label(Manifold.sphere(20, 32), 'body');
       const nose = api.label(Manifold.sphere(3, 16).translate([0, 19, 0]), 'nose');
@@ -27,7 +29,8 @@ test.describe('palette colour picker modal', () => {
   test('palette swatch commits, freeform pick records to Recent', async ({ page }) => {
     await openEditorWithLabels(page);
 
-    const noseSwatch = page.locator('#paint-label-list [data-label-name="nose"] button[data-action="set-label-color"]');
+    // The part swatch in the Objects list (the paint panel's old Labels list moved there).
+    const noseSwatch = page.locator('#parts-rail button[data-action="set-part-color"][data-part="nose"]');
 
     // Opening shows the palette grid + the freeform custom input.
     await noseSwatch.dispatchEvent('click');
