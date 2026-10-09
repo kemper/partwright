@@ -62,3 +62,7 @@ fix is done well.
   antennas are thick enough to print, its handle leaves finger room, and the
   unused `angleX` parameter is gone. The ghost's eyes are rotated tangent to
   the dome so they no longer stick out as flaps at the rim.
+- **voxel-castle round 3.** The reviewer kept turning up older hidden details:
+  a door slit, buried water highlights, and tree canopies fused into the wall.
+  Instead of another round of spot fixes, the fixer swept the whole grid with a
+  script for hidden accent voxels and see-through gaps, so the entry converges.
