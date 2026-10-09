@@ -85,3 +85,6 @@ fix is done well.
   rests on z=0, and the stale vert_len comment now matches the code.
 - **voxel-castle passed** on its fifth review. Stale dimension comments were
   corrected, with the geometry unchanged.
+- **pacman-ghost round 4.** The pupils are placed in world coordinates with one
+  shared offset, so both look left; in the rotated eye frames they diverged.
+  The pellets were enlarged so they read, and the stale comments fixed.
