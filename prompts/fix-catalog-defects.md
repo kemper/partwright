@@ -83,3 +83,5 @@ fix is done well.
   double crenel at the centre line instead of a double merlon.
 - **pipe-tee-fitting round 2.** The tee is lifted by the collar radius so it
   rests on z=0, and the stale vert_len comment now matches the code.
+- **voxel-castle passed** on its fifth review. Stale dimension comments were
+  corrected, with the geometry unchanged.
