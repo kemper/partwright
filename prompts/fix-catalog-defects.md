@@ -58,3 +58,7 @@ fix is done well.
   The gear plate is re-centred on the two tip circles, with about 6 mm of
   margin on each side. The manifest description now says cyl(chamfer=),
   because the collars use both chamfer ends.
+- **retro-tv, pacman-ghost round 2.** Both now rest on z=0. The TV's
+  antennas are thick enough to print, its handle leaves finger room, and the
+  unused `angleX` parameter is gone. The ghost's eyes are rotated tangent to
+  the dome so they no longer stick out as flaps at the rim.
