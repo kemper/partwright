@@ -19,9 +19,10 @@ const honeyWall = 2.4; // min material left between adjacent hex cells
 // Pointy-top hex honeycomb tessellation. If we wanted hexes touching edge-
 // to-edge, center spacing would be sqrt(3)*hexR horizontally (in a row) and
 // 1.5*hexR vertically (between staggered rows). To keep `honeyWall` of solid
-// material around every cell, inflate by an effective radius (hexR + wall/2)
-// so all six neighbor gaps (horizontal AND diagonal) are >= honeyWall.
-const effR = hexR + honeyWall / 2;
+// material around every cell, inflate the circumradius by wall/sqrt(3): the
+// flat-to-flat gap between neighbouring hexes is sqrt(3)*(effR - hexR), so this
+// makes all six neighbor gaps (horizontal AND diagonal) exactly honeyWall.
+const effR = hexR + honeyWall / Math.sqrt(3);
 const stepX = Math.sqrt(3) * effR; // center-to-center within a row
 const stepY = 1.5 * effR; // row-to-row (rows are half-step offset)
 

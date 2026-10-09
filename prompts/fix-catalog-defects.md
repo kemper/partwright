@@ -66,3 +66,8 @@ fix is done well.
   a door slit, buried water highlights, and tree canopies fused into the wall.
   Instead of another round of spot fixes, the fixer swept the whole grid with a
   script for hidden accent voxels and see-through gaps, so the entry converges.
+- **honeycomb-planter, d20-die round 2.** The planter's web now honours its
+  declared honeyWall: effR is inflated by wall/√3, giving a flat-to-flat gap
+  equal to the wall. The d20 was scaled to about 25 mm so its numeral strokes
+  reach the 0.8 mm minimum. The glyphs are seated on the measured face plane so
+  their relief is real, and each numeral's ink is centred on its face.
