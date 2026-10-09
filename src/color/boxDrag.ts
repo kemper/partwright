@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
-import { addRegion, getRegions } from './regions';
+import { addPaintRegion, getRegions } from './regions';
 import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
@@ -301,7 +301,7 @@ export function commitBox(): number {
 
   const existingCount = getRegions().length;
   const { smooth, maxEdge } = shapeSmoothDescriptorFields(mesh);
-  addRegion(
+  const region = addPaintRegion(
     `${shapeLabel(shapeType)} ${existingCount + 1}`,
     [...getColor()] as [number, number, number],
     'slab',
@@ -310,13 +310,15 @@ export function commitBox(): number {
     true,
     getSlotId() ?? undefined,
   );
+  // Entirely outside the selected part — nothing painted (the miss is toasted).
+  if (!region) return 0;
 
   // Dim the shape so the user can see the painted result underneath.
   // Stays faint until the user hovers a gizmo handle or drags again.
   boxCommitted = true;
   applyOpacity(0.08, 0.4);
 
-  return triangles.size;
+  return region.triangles.size;
 }
 
 function shapeLabel(s: ShapeType): string {

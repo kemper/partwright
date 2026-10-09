@@ -7,7 +7,7 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions, buildTriColors, isPainted } from './regions';
+import { addPaintRegion, getRegions, buildTriColors, isPainted, clipToActivePaintScope } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -596,6 +596,9 @@ function processMouseMove(event: MouseEvent): void {
     }
   }
 
+  // Preview what will actually be painted: with a part selected, only its share.
+  region = clipToActivePaintScope(region);
+
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
     // Triangles unchanged — just update ring position without rebuilding highlight.
     if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
@@ -692,7 +695,7 @@ function commitBrushStroke(): void {
     // Triangles are left empty here: adding a brushStroke region fires the
     // regions-change listener, which rebuilds the refined working mesh and
     // resolves every region (including this one) against it.
-    addRegion(
+    addPaintRegion(
       name,
       color,
       'paintbrush',
@@ -719,7 +722,7 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
+    addPaintRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
     if (onRegionPainted) onRegionPainted();
   }
 }
@@ -959,7 +962,7 @@ function onPointerUp(event: PointerEvent): void {
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
     const normal = getTriangleNormal(result.triangleIndex, adjacency);
     const existingCount = getRegions().length;
-    addRegion(
+    addPaintRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
@@ -981,7 +984,7 @@ function onPointerUp(event: PointerEvent): void {
       ? [triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255]
       : [0, 0, 0];
     const existingCount = getRegions().length;
-    addRegion(
+    addPaintRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',

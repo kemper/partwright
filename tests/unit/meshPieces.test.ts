@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeMeshPieces, summarizeObjectParts, type PieceMesh } from '../../src/geometry/meshPieces';
+import { computeMeshPieces, summarizeObjectParts, triangleSetStats, extractSubMesh, type PieceMesh } from '../../src/geometry/meshPieces';
 
 /** A closed tetrahedron at `offset`, with its OWN vertex indices (`base`), so
  *  several tets can be concatenated into one mesh. */
@@ -104,5 +104,23 @@ describe('summarizeObjectParts piece naming', () => {
     const s = summarizeObjectParts(m, new Map([['body', new Set([0])], ['handle', new Set([1, 2])]]));
     expect(s.pieces).toHaveLength(1);
     expect(s.pieces[0].part).toBe('body');
+  });
+});
+
+describe('triangleSetStats / extractSubMesh', () => {
+  const m = mesh([tet([0, 0, 0], 0), tet([10, 0, 0], 4)]);
+  it('measures a triangle subset', () => {
+    const st = triangleSetStats(m, [4, 5, 6, 7])!;
+    expect(st.min).toEqual([10, 0, 0]);
+    expect(st.max).toEqual([11, 1, 1]);
+    expect(st.area).toBeGreaterThan(0);
+    expect(triangleSetStats(m, [])).toBeNull();
+  });
+  it('extracts a compact standalone mesh', () => {
+    const sub = extractSubMesh(m, [4, 5, 6, 7]);
+    expect(sub.numTri).toBe(4);
+    expect(sub.numVert).toBe(4);
+    expect(Math.max(...sub.triVerts)).toBe(3);
+    expect(computeMeshPieces(sub).count).toBe(1);
   });
 });

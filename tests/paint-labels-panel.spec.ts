@@ -1,101 +1,41 @@
-// Verifies the labels list in the paint panel:
-//   1. After running code that calls api.label(...), the labels section in the
-//      open paint panel lists each label with its triangle count.
-//   2. Clicking a label row paints it — the resulting region uses a byLabel
-//      descriptor and the same triangle set the AI's paintByLabel produces,
-//      so re-hydration goes through the same code path.
-//   3. Unlabeled code surfaces the empty-state hint instead of a blank section.
+// Part colour + paint scope from the Objects list (#1003). The paint panel's
+// old Labels list retired into the rail:
+//   1. Each part's swatch in the Objects list fills the whole part (a byLabel
+//      region — the same descriptor partwright.paintByLabel / setObjectPartColor
+//      produce), re-picking recolours in place, the row flips to "painted", and
+//      ↺ Reset returns it to the code colour.
+//   2. With a part selected, the paint panel says so ("Painting: eye ✕") and
+//      every interactive tool is confined to it; ✕ clears the selection.
 //
 // Uses `dispatchEvent('click')` to dodge the first-paint onboarding backdrop.
 
 import { test, expect } from 'playwright/test';
 
 async function openEditorWithCode(page: import('playwright/test').Page, code: string) {
+  await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   await page.evaluate(async (src) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pw = (window as any).partwright;
-    await pw.run(src);
+    await pw.createSession('labels');
+    await pw.runAndSave(src, 'v1');
   }, code);
 }
 
-test.describe('paint labels panel', () => {
-  test('lists labels from the current run and paints on click', async ({ page }) => {
-    // Eye sticks out of the head by ~2 units so it has visible surface
-    // triangles after boolean union — `paintByLabel` returns 0 triangles if
-    // the labelled feature is fully buried.
-    await openEditorWithCode(page, `
-      const { Manifold } = api;
-      const head = api.label(Manifold.sphere(20, 32), 'head');
-      const eye = api.label(Manifold.sphere(5, 16).translate([-8, 14, 5]), 'eye');
-      return head.add(eye);
-    `);
+const HEAD = `
+  const { Manifold } = api;
+  const head = api.label(Manifold.sphere(20, 32), 'head');
+  const eye = api.label(Manifold.sphere(5, 16).translate([-8, 14, 5]), 'eye');
+  return head.add(eye);
+`;
 
-    await page.locator('#paint-toggle').dispatchEvent('click');
-    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
-
-    const labelList = page.locator('#paint-label-list');
-    await expect(labelList).toBeVisible();
-    // Header + row for each label
-    await expect(labelList.locator('text=Labels')).toBeVisible();
-    const rows = labelList.locator('[data-label-name]');
-    await expect(rows).toHaveCount(2);
-    await expect(labelList.locator('[data-label-name="head"]')).toBeVisible();
-    await expect(labelList.locator('[data-label-name="eye"]')).toBeVisible();
-
-    // Click the eye label — should create a byLabel region with the eye's
-    // triangle set. The triangle count must match what listLabels reports
-    // for that name (the snapshot is the source of truth for both).
-    const expectedTris = await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      const labels: { name: string; triangleCount: number }[] = pw.listLabels().labels;
-      return labels.find(l => l.name === 'eye')?.triangleCount ?? 0;
-    });
-    expect(expectedTris).toBeGreaterThan(0);
-
-    await labelList.locator('[data-label-name="eye"]').dispatchEvent('click');
-
-    // Wait for the new region to land in #paint-region-list (one row).
-    const regionRows = page.locator('#paint-region-list [data-region-id]');
-    await expect(regionRows).toHaveCount(1);
-    // Region name matches the label.
-    await expect(regionRows.first()).toContainText('eye');
-
-    // The new region is named after the label and covers the same triangle set
-    // (so it matches what `partwright.paintByLabel('eye', ...)` would produce).
-    const region = await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pw = (window as any).partwright;
-      const regions = pw.listRegions() as { name: string; triangles: number }[];
-      return regions[0];
-    });
-    expect(region.name).toBe('eye');
-    expect(region.triangles).toBe(expectedTris);
-
-    // The label row now shows the ✓ already-painted hint.
-    await expect(labelList.locator('[data-label-name="eye"]')).toContainText('✓');
-  });
-
-  test('per-part colour swatch sets a whole label colour and recolours in place', async ({ page }) => {
-    await openEditorWithCode(page, `
-      const { Manifold } = api;
-      const head = api.label(Manifold.sphere(20, 32), 'head');
-      const eye = api.label(Manifold.sphere(5, 16).translate([-8, 14, 5]), 'eye');
-      return head.add(eye);
-    `);
-
-    await page.locator('#paint-toggle').dispatchEvent('click');
-    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
-
-    const labelList = page.locator('#paint-label-list');
-    const swatch = labelList.locator('[data-label-name="eye"] button[data-action="set-label-color"]');
+test.describe('part colour and scope from the Objects list', () => {
+  test('the rail swatch fills the whole part, recolours in place, and resets', async ({ page }) => {
+    await openEditorWithCode(page, HEAD);
+    const swatch = page.locator('#parts-rail button[data-action="set-part-color"][data-part="eye"]');
     await expect(swatch).toHaveCount(1);
 
-    // The swatch opens the shared palette picker; choose a freeform colour and
-    // Apply. Picking on the unpainted "eye" part commits a byLabel region with
-    // that exact colour — no need to select the active colour first.
     const pickColor = async (hex: string) => {
       await swatch.dispatchEvent('click');
       await page.waitForSelector('[data-testid="color-picker"]');
@@ -109,40 +49,53 @@ test.describe('paint labels panel', () => {
       await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
     };
 
-    await pickColor('#00ff00');
-
-    let region = await page.evaluate(() => {
+    const expectedTris = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const regions = (window as any).partwright.listRegions() as { name: string; color: [number, number, number] }[];
-      return regions.find(r => r.name === 'eye');
+      const labels: { name: string; triangleCount: number }[] = (window as any).partwright.listLabels().labels;
+      return labels.find(l => l.name === 'eye')?.triangleCount ?? 0;
     });
-    expect(region).toBeTruthy();
-    expect(region!.color.map(c => Math.round(c * 255))).toEqual([0, 255, 0]);
+    expect(expectedTris).toBeGreaterThan(0);
 
-    // Only one region for the part — re-picking recolours in place rather than
-    // stacking a duplicate byLabel region.
-    await pickColor('#0000ff');
-
-    const eyeRegions = await page.evaluate(() => {
+    await pickColor('#00ff00');
+    const eyeRegions = () => page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const regions = (window as any).partwright.listRegions() as { name: string; color: [number, number, number] }[];
+      const regions = (window as any).partwright.listRegions() as { name: string; color: [number, number, number]; triangles: number }[];
       return regions.filter(r => r.name === 'eye');
     });
-    expect(eyeRegions).toHaveLength(1);
-    expect(eyeRegions[0].color.map(c => Math.round(c * 255))).toEqual([0, 0, 255]);
+    let regions = await eyeRegions();
+    expect(regions).toHaveLength(1);
+    expect(regions[0].color.map(c => Math.round(c * 255))).toEqual([0, 255, 0]);
+    expect(regions[0].triangles).toBe(expectedTris);
+    await expect(page.locator('#parts-rail [data-object-part="part:eye"] [data-color-source="painted"]')).toBeVisible();
+
+    // Re-picking recolours the same region rather than stacking a duplicate.
+    await pickColor('#0000ff');
+    regions = await eyeRegions();
+    expect(regions).toHaveLength(1);
+    expect(regions[0].color.map(c => Math.round(c * 255))).toEqual([0, 0, 255]);
+
+    // Select the part → its drawer offers ↺ Reset, which drops the fill.
+    await page.locator('#parts-rail [data-object-part="part:eye"]').click();
+    await page.locator('#object-part-drawer [data-part-action="reset-color"]').click();
+    await expect.poll(async () => (await eyeRegions()).length).toBe(0);
   });
 
-  test('empty state hints at api.label when no labels in the run', async ({ page }) => {
-    await openEditorWithCode(page, `return api.Manifold.cube([10, 10, 10], true);`);
-
+  test('the paint panel shows and clears the part scope', async ({ page }) => {
+    await openEditorWithCode(page, HEAD);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    const scope = page.locator('#paint-part-scope');
+    await expect(scope).toContainText('Painting the whole object');
 
-    const labelList = page.locator('#paint-label-list');
-    await expect(labelList).toBeVisible();
-    await expect(labelList).toContainText('No labels in this run');
-    await expect(labelList).toContainText('api.label');
-    // No row elements when empty.
-    await expect(labelList.locator('[data-label-name]')).toHaveCount(0);
+    await page.evaluate(() => (window as unknown as { partwright: { selectObjectPart(n: string): unknown } }).partwright.selectObjectPart('eye'));
+    await expect(scope).toContainText('Painting: eye');
+    // The Replace tool says it will stay inside the part.
+    await page.locator('#paint-picker-panel button', { hasText: 'Replace' }).first().dispatchEvent('click');
+    await expect(page.locator('#paint-picker-panel button', { hasText: 'Replace in eye' })).toHaveCount(1);
+
+    await scope.locator('[data-action="clear-part-scope"]').dispatchEvent('click');
+    await expect(scope).toContainText('Painting the whole object');
+    const selected = await page.evaluate(() => (window as unknown as { partwright: { getSelectedObjectPart(): unknown } }).partwright.getSelectedObjectPart());
+    expect(selected).toBeNull();
   });
 });

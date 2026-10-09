@@ -24,7 +24,16 @@ export interface ColorRegion {
   perTriColors?: Map<number, [number, number, number]>;
 }
 
-export type RegionDescriptor =
+/** Optional PART scope carried by any paint descriptor (#1003): the region is
+ *  resolved as usual and then intersected with the triangles of the
+ *  `api.label` region named `label`, so it never bleeds onto the rest of the
+ *  object. Keyed by name, so it survives code edits the way `byLabel` does —
+ *  and when that label disappears the region is reported as unmatched paint
+ *  instead of silently painting nothing. Absent ⇒ unscoped (pre-1.20 files).
+ *  The `pattern` kind's own `scope` (a {@link PatternScope}) is a superset. */
+export interface PartScope { label?: string }
+
+type BaseRegionDescriptor =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
   // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
   // is set, the mesh is locally subdivided near the region's boundary until
@@ -110,7 +119,23 @@ export type RegionDescriptor =
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
       scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
-      anchors?: [number, number, number][] };
+      anchors?: [number, number, number][] }
+  // Colour match (the Replace tool with a part selected): every triangle whose
+  // DRAWN colour (with this region excluded, like `colorFlood`) is within
+  // `colorTolerance` of `seedColor` — not just a connected patch. `unpainted`
+  // also matches triangles no layer colours (the neutral model shade the user
+  // picked as the source). Normally carries a `scope`, so a swap stays inside
+  // one part; re-resolved by colour on every reconcile.
+  | { kind: 'colorMatch'; seedColor: [number, number, number]; colorTolerance: number; unpainted?: boolean };
+
+export type RegionDescriptor = BaseRegionDescriptor & { scope?: PartScope };
+
+/** The part a descriptor is scoped to (`scope.label`), or null. `byLabel`
+ *  regions ARE the part, so they report their own label. */
+export function descriptorPartLabel(d: RegionDescriptor): string | null {
+  if (d.kind === 'byLabel') return d.label;
+  return d.scope?.label ?? null;
+}
 
 export interface SerializedColorRegion {
   id: number;
@@ -249,6 +274,107 @@ export function hasRegions(): boolean {
   return regions.length > 0;
 }
 
+// Clips a scoped region's triangles to its part on the CURRENT working mesh.
+// Published by main.ts (it owns the label map and the mesh it indexes); null
+// in headless contexts, where scoped regions are clipped by their resolver.
+let scopeClipper: ((label: string, triangles: Set<number>) => Set<number>) | null = null;
+
+export function setScopeClipper(fn: ((label: string, triangles: Set<number>) => Set<number>) | null): void {
+  scopeClipper = fn;
+}
+
+// The part the interactive paint tools are confined to (the rail selection).
+// Published by main.ts so this module stays a leaf.
+let implicitPaintScope: (() => string | null) | null = null;
+
+export function setImplicitPaintScope(fn: (() => string | null) | null): void {
+  implicitPaintScope = fn;
+}
+
+// Resolves a descriptor against the CURRENT working mesh (published by main.ts,
+// which owns the mesh, adjacency and label map). Lets the paint panel build
+// descriptor-driven regions (e.g. Replace-within-a-part) without importing main.
+let currentMeshResolver: ((d: RegionDescriptor) => Set<number>) | null = null;
+
+export function setCurrentMeshResolver(fn: ((d: RegionDescriptor) => Set<number>) | null): void {
+  currentMeshResolver = fn;
+}
+
+/** Resolve `d` on the current working mesh (empty when nothing is loaded). */
+export function resolveOnCurrentMesh(d: RegionDescriptor): Set<number> {
+  return currentMeshResolver?.(d) ?? new Set<number>();
+}
+
+// Told when an interactive paint landed entirely outside its part (so the UI
+// can say why nothing happened). Published by main.ts.
+let scopeMissHandler: ((label: string) => void) | null = null;
+
+export function setScopeMissHandler(fn: ((label: string) => void) | null): void {
+  scopeMissHandler = fn;
+}
+
+/** The part interactive paint is currently confined to, or null. */
+export function getImplicitPaintScope(): string | null {
+  return implicitPaintScope?.() ?? null;
+}
+
+/** The part of `tris` that interactive paint would actually land on — the
+ *  hover preview uses it so it never shows paint bleeding outside the
+ *  selected part. `tris` unchanged when nothing is selected. */
+export function clipToActivePaintScope(tris: Set<number>): Set<number> {
+  const label = getImplicitPaintScope();
+  return label && scopeClipper && tris.size > 0 ? scopeClipper(label, tris) : tris;
+}
+
+/** Add a scope to a descriptor (no-op for `byLabel`, which is already a whole
+ *  part, and when `label` is null). Pattern scopes keep their predicates. */
+export function withPartScope(descriptor: RegionDescriptor, label: string | null): RegionDescriptor {
+  if (!label || descriptor.kind === 'byLabel') return descriptor;
+  return { ...descriptor, scope: { ...(descriptor.scope ?? {}), label } } as RegionDescriptor;
+}
+
+// An explicit part scope for the duration of one SYNCHRONOUS script/agent paint
+// call (`partwright.paintInBox({ …, scope: { label } })`): every region the
+// call adds is scoped to that part. Set only via withExplicitPaintScope.
+let explicitPaintScope: string | null = null;
+
+/** Run a synchronous paint call with every region it adds scoped to `label`. */
+export function withExplicitPaintScope<T>(label: string, fn: () => T): T {
+  const prev = explicitPaintScope;
+  explicitPaintScope = label;
+  try {
+    return fn();
+  } finally {
+    explicitPaintScope = prev;
+  }
+}
+
+/** {@link addRegion} for the INTERACTIVE paint tools (brush, bucket, slab,
+ *  shape, image stamp, replace): applies the rail's part selection as the
+ *  region's scope, so every tool respects it the same way. Script/agent paint
+ *  goes through `addRegion` with an explicit `scope` instead — a UI selection
+ *  never silently narrows an API call. */
+export function addPaintRegion(
+  name: string,
+  color: [number, number, number],
+  source: ColorRegion['source'],
+  descriptor: RegionDescriptor,
+  triangles: Set<number>,
+  visible: boolean = true,
+  slotId?: string,
+  perTriColors?: Map<number, [number, number, number]>,
+): ColorRegion | null {
+  const scoped = descriptor.scope?.label ? descriptor : withPartScope(descriptor, getImplicitPaintScope());
+  // A click/stroke that lands entirely outside the selected part paints
+  // nothing — don't litter the region list with an empty region.
+  const label = scoped.kind === 'byLabel' || scoped.kind === 'pattern' ? null : scoped.scope?.label;
+  if (label && scopeClipper && triangles.size > 0 && scopeClipper(label, triangles).size === 0) {
+    scopeMissHandler?.(label);
+    return null;
+  }
+  return addRegion(name, color, source, scoped, triangles, visible, slotId, perTriColors);
+}
+
 export function addRegion(
   name: string,
   color: [number, number, number],
@@ -259,6 +385,18 @@ export function addRegion(
   slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
+  if (explicitPaintScope && !descriptor.scope?.label) descriptor = withPartScope(descriptor, explicitPaintScope);
+  // A scoped region never covers triangles outside its part — clip here so
+  // every add path (UI, API, rehydrate) agrees, whatever the caller resolved.
+  const scopeLabel = descriptor.kind === 'byLabel' || descriptor.kind === 'pattern' ? null : descriptor.scope?.label;
+  if (scopeLabel && scopeClipper && triangles.size > 0) {
+    triangles = scopeClipper(scopeLabel, triangles);
+    if (perTriColors) {
+      const kept = new Map<number, [number, number, number]>();
+      for (const [t, c] of perTriColors) if (triangles.has(t)) kept.set(t, c);
+      perTriColors = kept;
+    }
+  }
   const id = nextRegionId++;
   const region: ColorRegion = {
     id,
@@ -482,6 +620,25 @@ export function setRegionTriangles(
     region.triangles = triangles;
     region.perTriColors = perTriColors;
   }
+}
+
+/** Re-point a region at a new descriptor (e.g. reassigning unmatched paint to
+ *  another part) with its freshly resolved triangles, keeping its id, colour,
+ *  order and slot. Notifies so the viewport recolours. */
+export function setRegionDescriptor(
+  id: number,
+  descriptor: RegionDescriptor,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): boolean {
+  const region = regions.find(r => r.id === id);
+  if (!region) return false;
+  region.descriptor = descriptor;
+  region.triangles = triangles;
+  region.perTriColors = perTriColors;
+  clearRedoStack();
+  notify();
+  return true;
 }
 
 export function clearRegions(): void {

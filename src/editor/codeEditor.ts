@@ -595,6 +595,21 @@ export function revealFirstDiagnostic(): void {
   editorView.focus();
 }
 
+/** Select `[from, to)` and scroll it into the middle of the editor (e.g. the
+ *  Objects rail's "Go to code" on a part's api.label call). */
+export function revealRange(from: number, to: number): void {
+  if (!editorView) return;
+  const len = editorView.state.doc.length;
+  const a = Math.max(0, Math.min(from, len));
+  const b = Math.max(a, Math.min(to, len));
+  markEditorScrollIntent();
+  editorView.dispatch({
+    selection: { anchor: a, head: b },
+    effects: EditorView.scrollIntoView(a, { y: 'center' }),
+  });
+  editorView.focus();
+}
+
 export function setReadOnly(readOnly: boolean): void {
   if (!editorView) return;
   editorView.dispatch({

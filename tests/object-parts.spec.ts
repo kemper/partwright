@@ -2,7 +2,7 @@
 // open object lists its api.label regions as parts (tracked through unions and
 // cuts, so they survive fusing into one solid), the unlabeled remainder, and its
 // physically separate pieces; clicking a part tints it in the viewport. Also
-// covers the console twins (listObjectParts / highlightObjectPart) and the
+// covers the console twins (listObjectParts / highlightObjectPart / selectObjectPart) and the
 // Parts → Objects rename on the rail itself.
 
 import { test, expect, type Page } from 'playwright/test';
@@ -76,7 +76,13 @@ test.describe('Objects rail — parts and pieces', () => {
     // Clicking again clears it; the API can drive the same highlight.
     await rail.locator('[data-object-part="part:handle"]').click();
     await expect(rail.locator('[data-object-part="part:handle"]')).toHaveAttribute('aria-pressed', 'false');
-    const viaApi = await page.evaluate(() => (window as unknown as { partwright: { highlightObjectPart(t: unknown): { ok?: boolean; triangles?: number } } }).partwright.highlightObjectPart({ piece: 1 }));
+    // highlightObjectPart is a transient visual tint; selectObjectPart is the
+    // API twin of clicking the row.
+    const tint = await page.evaluate(() => (window as unknown as { partwright: { highlightObjectPart(t: unknown): { ok?: boolean; triangles?: number } } }).partwright.highlightObjectPart({ piece: 1 }));
+    expect(tint.ok).toBe(true);
+    expect(tint.triangles).toBeGreaterThan(0);
+    await expect(rail.locator('[data-object-part="piece:1"]')).toHaveAttribute('aria-pressed', 'false');
+    const viaApi = await page.evaluate(() => (window as unknown as { partwright: { selectObjectPart(t: unknown): { ok?: boolean; triangles?: number } } }).partwright.selectObjectPart({ piece: 1 }));
     expect(viaApi.ok).toBe(true);
     expect(viaApi.triangles).toBeGreaterThan(0);
     await expect(rail.locator('[data-object-part="piece:1"]')).toHaveAttribute('aria-pressed', 'true');
