@@ -95,3 +95,19 @@ fix is done well.
   multi-label `BREP.label` sets come back scrambled in replicad sessions (filed
   as a separate bug). The knob got the fluted skirt and chamfered top its
   description promised. Both manifest descriptions were updated to match.
+- **treasure-chest, castle-tower.** The texture defects had one root cause.
+  Scoped `api.surface` ops pick triangles near the label's base-mesh centroids,
+  and big flat triangles or slivers made that scope patchy, so gold bled into
+  the wood and brown into the stone. Rebuilding the base meshes with uniformly
+  fine triangles fixed both. The chest now has real ball feet it rests on, two
+  straps clear of the lock plate, and a dark keyhole. The tower got a pointed
+  gothic door recessed into the wall, inside an untextured stone surround, and
+  an untextured plinth so it sits flat on z=0. Trade-off: the bake now persists
+  the textured mesh (`surfaceTexture`), so each file is about 2.7-2.9 MB.
+- **dummy13-complete-kit.** Levelset "straddle pair" ledges were lerped across
+  a 0.15 mm marching-cubes grid that sat right on the ledge plane, which
+  shattered the flat step into hundreds of slivers. The ledge pairs are now
+  exact half-space unions blended into the lerp. Only the affected parts
+  (22, 25, 33, 34, 36) were re-run and spliced in. All 37 parts and the
+  58-piece total are unchanged, and the outer chest's chamfer error against
+  the source STL improved.
