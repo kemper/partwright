@@ -49,7 +49,9 @@ const j = rig.joints,
   r = rig.r;
 
 // 2. HEAD + FACE — square face, straight nose, relaxed grin with a sun-squint.
-const mouthOpts = { style: 'lips', lipShape: 'natural', expression: 'slightSmile', width: r.head * 0.5 };
+// (width 0.44 rather than 0.5: the wider lip ridge bridged to the cheek and made a
+// tiny extra handle — genus 2 instead of the 1 from the feet/board loop.)
+const mouthOpts = { style: 'lips', lipShape: 'natural', expression: 'slightSmile', width: r.head * 0.44 };
 const head = F.head(rig, { faceShape: 'square', jaw: 1.1 });
 const face = F.face.assemble(head, rig, {
   eyes: false,

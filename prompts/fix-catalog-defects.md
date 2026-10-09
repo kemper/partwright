@@ -158,3 +158,6 @@ fix is done well.
   its width came from the foot span. The board is now sized from the figure
   height, 24 × 66 (ratio 2.75), with a pointed nose and pin tail. The cream
   board colour read as grey, so it is now coral.
+- **surfer round 4.** The extra genus handle was traced by part-subset
+  bisection to the additive lips ridge welding into the face. A slightly
+  narrower mouth closes it, and genus is back to the intended 1.
