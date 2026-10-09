@@ -75,5 +75,5 @@ fix is done well.
   pointed toward the camera instead of the pellets. The eye now sits on the
   head surface and the mouth faces the pellet line.
 - **d20-die round 3.** The die now rests on a face at z=0, with the "20" face
-  down. That face's numeral is relieved to 0.05 mm so the die sits flat, and
-  it stays a separate gold region.
+  down. That face's numeral stands 0.3 mm proud (one print layer), so the die
+  rests on its strokes and every face stays visibly raised.
