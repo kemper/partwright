@@ -93,12 +93,12 @@ async function setupThreeUnsavedParts(page: Page) {
   await flushDraft(page, 'cylinder(9,5)');
   await page.evaluate((id) => (window as any).partwright.changePart(id), p2.id);
 
-  // Dirty Bracket, persist, switch to Part 1 → Bracket stays unsaved.
+  // Dirty Bracket, persist, switch to Object 1 → Bracket stays unsaved.
   await typeCode(page, 'const {Manifold}=api; return Manifold.sphere(7,32); // edit');
   await flushDraft(page, 'sphere(7,32)');
   await page.evaluate((id) => (window as any).partwright.changePart(id), p1.id);
 
-  // Dirty Part 1 (now current) — left live, unsaved. CodeMirror's docChanged
+  // Dirty Object 1 (now current) — left live, unsaved. CodeMirror's docChanged
   // listener (which drives the "unsaved" comparison against getValue()) fires
   // synchronously inside keyboard.type(), so no extra wait is needed here.
   await typeCode(page, 'const {Manifold}=api; return Manifold.cube([12,12,12],true); // edit');
@@ -152,10 +152,10 @@ test.describe('Multi-part save', () => {
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 5_000 });
-    await expect(dialog).toContainText('3 parts have unsaved changes');
-    await expect(dialog).toContainText('Current part');
+    await expect(dialog).toContainText('3 objects have unsaved changes');
+    await expect(dialog).toContainText('Current object');
     // All three unsaved parts are listed.
-    for (const name of ['Part 1', 'Bracket', 'Spacer']) {
+    for (const name of ['Object 1', 'Bracket', 'Spacer']) {
       await expect(dialog.getByText(name, { exact: true })).toBeVisible();
     }
     // Every checkbox starts checked.
@@ -173,8 +173,8 @@ test.describe('Multi-part save', () => {
     await expect(dialog).toBeVisible({ timeout: 5_000 });
     await dialog.getByRole('button', { name: 'Save all' }).click();
 
-    const counts = await waitForVersionCounts(page, { 'Part 1': 2, Bracket: 2, Spacer: 2 });
-    expect(counts['Part 1']).toBe(2);
+    const counts = await waitForVersionCounts(page, { 'Object 1': 2, Bracket: 2, Spacer: 2 });
+    expect(counts['Object 1']).toBe(2);
     expect(counts['Bracket']).toBe(2);
     expect(counts['Spacer']).toBe(2);
   });
@@ -248,17 +248,17 @@ test.describe('Multi-part save', () => {
     await page.keyboard.press('ControlOrMeta+s');
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 5_000 });
-    await dialog.getByRole('button', { name: 'Save current part only' }).click();
+    await dialog.getByRole('button', { name: 'Save current object only' }).click();
 
-    await waitForVersionCounts(page, { 'Part 1': 2, Bracket: 1, Spacer: 1 });
+    await waitForVersionCounts(page, { 'Object 1': 2, Bracket: 1, Spacer: 1 });
     // Negative check: a regression that ALSO saved the other parts would save
     // the current part first and the others hundreds of ms later (the
     // saveSelectedParts loop selects each part in turn), so the poll above can
     // return before they land. Hold a bounded window, then re-read.
     await page.waitForTimeout(1500);
     const counts = await readVersionCountsByName(page);
-    // Only Part 1 (the current part) gained a version; the others stay at v1.
-    expect(counts['Part 1']).toBe(2);
+    // Only Object 1 (the current part) gained a version; the others stay at v1.
+    expect(counts['Object 1']).toBe(2);
     expect(counts['Bracket']).toBe(1);
     expect(counts['Spacer']).toBe(1);
   });

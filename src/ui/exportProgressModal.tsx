@@ -157,7 +157,7 @@ function ExportProgressOverlay() {
           {st.title}
         </div>
         <div style="font-size:12px;color:#a1a1aa;margin-bottom:10px;">
-          {settled} of {total} part{total === 1 ? '' : 's'} done
+          {settled} of {total} object{total === 1 ? '' : 's'} done
         </div>
         <div style="height:6px;border-radius:3px;background:#3f3f46;overflow:hidden;margin-bottom:12px;">
           <div style={`height:100%;background:#60a5fa;width:${pct}%;transition:width 150ms ease-out;`} />

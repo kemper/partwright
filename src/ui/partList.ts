@@ -1,8 +1,12 @@
-// Parts rail — an IDE-style list of the active session's parts. Supports
-// create, select, inline rename, delete, multi-select bulk delete/merge,
-// grouping (a threaded view with collapsible group headers), and pointer-based
-// drag-to-reorder. Renders into the rail container created by layout.ts and
-// re-renders on every session-state change.
+// Objects rail — an IDE-style list of the active session's OBJECTS (each its
+// own code + version history; stored as `Part` records, hence the internal
+// names). Supports create, select, inline rename, delete, multi-select bulk
+// delete/merge, grouping (a threaded view with collapsible group headers), and
+// pointer-based drag-to-reorder. The open object's row expands to show its
+// PARTS (api.label regions) and PIECES (separate solids); clicking one tints it
+// in the viewport. Renders into the rail container created by layout.ts and
+// re-renders on every session-state change (the parts section also refreshes on
+// every mesh update via refreshObjectParts).
 
 import { getState, onStateChange, type SessionState, type Part, type Version, type PartLayoutEntry } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
@@ -28,11 +32,34 @@ export interface PartListCallbacks {
   onReorderParts: (layout: PartLayoutEntry[]) => void | Promise<void>;
   /** Show all parts together in the grid Assembly view. */
   onViewAllParts: () => void;
+  /** Parts + pieces of the open object's current mesh (null before a run). */
+  getObjectParts: () => ObjectPartsView | null;
+  /** The part/piece currently tinted in the viewport (see onHighlight keys). */
+  getHighlightKey: () => string | null;
+  /** Tint `part:<name>` / `piece:<n>` / `unlabeled` in the viewport; null clears. */
+  onHighlight: (key: string | null) => void;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
 
+/** What the open object's expandable section lists. Mirrors
+ *  `partwright.listObjectParts()` (minus the object id/name). */
+export interface ObjectPartsView {
+  /** api.label regions, in declaration order. `color` is the drawn colour. */
+  parts: { name: string; triangleCount: number; color?: string }[];
+  /** Labels the code declared that ended up with no triangles. */
+  lostParts: string[];
+  /** Triangles no part covers (0 when the object declares no parts). */
+  unlabeledTriangleCount: number;
+  /** Connected components; `part` names the part covering most of each. */
+  pieces: { index: number; triangleCount: number; part?: string }[];
+}
+
 let railEl: HTMLElement | null = null;
+// Whether the open object's parts/pieces section is expanded. A view
+// preference, kept across object switches; starts open so parts are discoverable.
+let objectPartsExpanded = true;
+let objectPartsRefreshQueued = false;
 let cb: PartListCallbacks;
 // True while a row is being dragged; suppresses re-render so the drag isn't
 // yanked out from under the pointer by a state-change event.
@@ -61,9 +88,9 @@ export function createPartList(container: HTMLElement, callbacks: PartListCallba
   registerCommands([
     {
       id: 'parts.overview',
-      title: 'Show all parts (overview)',
-      hint: 'Parts',
-      keywords: 'grid contact sheet preview thumbnails every part',
+      title: 'Show all objects (overview)',
+      hint: 'Objects',
+      keywords: 'grid contact sheet preview thumbnails every object part',
       enabled: () => getState().parts.length > 0,
       run: () => { openPartsOverview((id) => cb.onSelectPart(id)); },
     },
@@ -114,12 +141,12 @@ function render(state: SessionState): void {
 
   const title = document.createElement('span');
   title.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-500 flex-1 truncate';
-  title.textContent = 'Parts';
+  title.textContent = 'Objects';
   header.appendChild(title);
 
   // Overview — a lightweight thumbnail contact-sheet modal of all parts (instant,
   // no geometry rebuild). Complements the Assembly view below (live 3D grid).
-  const overviewBtn = iconBtn('▦', 'Overview of all parts (thumbnails)');
+  const overviewBtn = iconBtn('▦', 'Overview of all objects (thumbnails)');
   overviewBtn.id = 'btn-parts-overview';
   overviewBtn.disabled = !state.session;
   if (!state.session) overviewBtn.classList.add('opacity-30', 'cursor-default');
@@ -131,13 +158,13 @@ function render(state: SessionState): void {
   // "View all parts" — opens the live 3D Assembly grid in the viewport (builds
   // parts in parallel; shared-parameter panel). Only meaningful with 2+ parts.
   if (state.session && state.parts.length > 1) {
-    const viewAllBtn = iconBtn('⧉', 'View all parts together in 3D (Assembly)');
+    const viewAllBtn = iconBtn('⧉', 'View all objects together in 3D (Assembly)');
     viewAllBtn.id = 'btn-view-all-parts';
     viewAllBtn.addEventListener('click', () => cb.onViewAllParts());
     header.appendChild(viewAllBtn);
   }
 
-  const addBtn = iconBtn('＋', 'Add a new part');
+  const addBtn = iconBtn('＋', 'Add a new object');
   addBtn.id = 'btn-add-part';
   addBtn.disabled = !state.session;
   if (!state.session) addBtn.classList.add('opacity-30', 'cursor-default');
@@ -147,7 +174,7 @@ function render(state: SessionState): void {
   // Collapsing the rail to reclaim horizontal width is a desktop affordance; on
   // mobile the parts list is a full-width pane reached via the pane toggle, so
   // hide the collapse button there (it would otherwise leave the pane empty).
-  const collapseBtn = iconBtn('«', 'Hide parts panel'); // «
+  const collapseBtn = iconBtn('«', 'Hide objects panel'); // «
   collapseBtn.classList.remove('flex');
   collapseBtn.classList.add('hidden', 'md:flex');
   collapseBtn.addEventListener('click', () => cb.onToggleCollapse());
@@ -175,7 +202,9 @@ function render(state: SessionState): void {
   const tree = buildPartTree(state.parts);
   for (const node of tree) {
     if (node.kind === 'part') {
-      list.appendChild(buildRow(node.part, node.part.id === state.currentPart?.id, state.parts.length, list, state.currentVersion, false));
+      const isCurrent = node.part.id === state.currentPart?.id;
+      list.appendChild(buildRow(node.part, isCurrent, state.parts.length, list, state.currentVersion, false));
+      if (isCurrent && objectPartsExpanded) list.appendChild(buildObjectPartsSection());
     } else {
       list.appendChild(buildGroupNode(node, state, list));
     }
@@ -221,14 +250,14 @@ function buildGroupNode(node: PartTreeNode & { kind: 'group' }, state: SessionSt
   const gname = document.createElement('span');
   gname.className = 'flex-1 min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide';
   gname.textContent = node.name;
-  gname.title = `${node.name} — ${node.parts.length} part${node.parts.length === 1 ? '' : 's'}`;
+  gname.title = `${node.name} — ${node.parts.length} object${node.parts.length === 1 ? '' : 's'}`;
   head.appendChild(gname);
 
   // Active-part dot so a collapsed group still signals it holds the open part.
   if (containsCurrent && collapsed) {
     const dot = document.createElement('span');
     dot.className = 'shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500';
-    dot.title = 'The active part is in this group';
+    dot.title = 'The active object is in this group';
     head.appendChild(dot);
   }
 
@@ -265,7 +294,9 @@ function buildGroupNode(node: PartTreeNode & { kind: 'group' }, state: SessionSt
     body.dataset.groupBody = node.name;
     body.className = 'border-l border-zinc-700/60 ml-2.5';
     for (const part of node.parts) {
-      body.appendChild(buildRow(part, part.id === state.currentPart?.id, state.parts.length, list, state.currentVersion, true));
+      const isCurrent = part.id === state.currentPart?.id;
+      body.appendChild(buildRow(part, isCurrent, state.parts.length, list, state.currentVersion, true));
+      if (isCurrent && objectPartsExpanded) body.appendChild(buildObjectPartsSection());
     }
     wrap.appendChild(body);
   }
@@ -299,6 +330,33 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
         : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 border-l-2 border-transparent',
   ].join(' ');
 
+  // Disclosure for the open object's parts/pieces section. Non-current rows get
+  // a same-width spacer so names stay aligned.
+  // Fingertip-sized (44px) on mobile, compact on desktop (md+).
+  const discloseCls = 'shrink-0 flex items-center justify-center text-[10px] leading-none text-zinc-500 min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:w-4 md:h-7';
+  if (isCurrent) {
+    const disclose = document.createElement('button');
+    disclose.className = `${discloseCls} [@media(hover:hover)]:hover:text-zinc-200`;
+    disclose.id = 'btn-object-parts-toggle';
+    disclose.textContent = objectPartsExpanded ? '▾' : '▸';
+    const label = objectPartsExpanded ? 'Hide this object’s parts and pieces' : 'Show this object’s parts and pieces';
+    disclose.title = label;
+    disclose.setAttribute('aria-label', label);
+    disclose.setAttribute('aria-expanded', String(objectPartsExpanded));
+    disclose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      objectPartsExpanded = !objectPartsExpanded;
+      if (!objectPartsExpanded) cb.onHighlight(null);
+      render(getState());
+    });
+    row.appendChild(disclose);
+  } else {
+    const spacer = document.createElement('span');
+    spacer.className = `${discloseCls} pointer-events-none`;
+    spacer.setAttribute('aria-hidden', 'true');
+    row.appendChild(spacer);
+  }
+
   // Selection checkbox (multi-select bulk delete). Only offered when more than
   // one part exists — a session must always keep at least one. Subtle until
   // hover on pointer devices, but always shown on touch and whenever a
@@ -314,7 +372,7 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     cbx.type = 'checkbox';
     cbx.checked = isSelected;
     cbx.className = 'w-3.5 h-3.5 accent-blue-500 cursor-pointer';
-    cbx.setAttribute('aria-label', `Select part ${part.name}`);
+    cbx.setAttribute('aria-label', `Select object ${part.name}`);
     const onToggle = (e: Event) => {
       e.stopPropagation();
       toggleSelection(part.id, (e as MouseEvent).shiftKey);
@@ -362,13 +420,13 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
 
   // Delete (only when more than one part remains).
   if (partCount > 1) {
-    const del = iconBtn('✕', 'Delete this part'); // ✕
+    const del = iconBtn('✕', 'Delete this object'); // ✕
     // Visible by default so it's reachable on touch (no hover); only fade-until-
     // hover on hover-capable devices.
     del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
     del.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (await confirmDialog(`Delete part "${part.name}" and all of its versions? This cannot be undone.`, { title: 'Delete part', confirmLabel: 'Delete', danger: true })) {
+      if (await confirmDialog(`Delete object "${part.name}" and all of its versions? This cannot be undone.`, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
         void cb.onDeletePart(part.id);
       }
     });
@@ -376,6 +434,120 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   }
 
   return row;
+}
+
+// === Open object's parts + pieces ===
+
+/** Rebuild just the open object's parts/pieces section (coalesced to one frame)
+ *  — called on every mesh update and highlight change, so the list tracks the
+ *  live run without re-rendering the whole rail (thumbnails, drag state). */
+export function refreshObjectParts(): void {
+  if (objectPartsRefreshQueued) return;
+  objectPartsRefreshQueued = true;
+  requestAnimationFrame(() => {
+    objectPartsRefreshQueued = false;
+    const existing = railEl?.querySelector('#object-parts');
+    if (!existing) return;
+    // Keep keyboard focus on the same part/piece across the rebuild.
+    const focusedKey = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#object-parts [data-object-part]')?.dataset.objectPart;
+    const next = buildObjectPartsSection();
+    existing.replaceWith(next);
+    if (focusedKey) next.querySelector<HTMLElement>(`[data-object-part="${CSS.escape(focusedKey)}"]`)?.focus();
+  });
+}
+
+function compactCount(n: number): string {
+  return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+function buildObjectPartsSection(): HTMLElement {
+  const section = document.createElement('div');
+  section.id = 'object-parts';
+  section.className = 'ml-6 mr-1 mb-1 pl-2 border-l border-zinc-700/60 text-[11px]';
+  const view = cb.getObjectParts();
+  const active = cb.getHighlightKey();
+
+  const heading = (text: string, title: string) => {
+    const h = document.createElement('div');
+    h.className = 'px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500';
+    h.textContent = text;
+    h.title = title;
+    section.appendChild(h);
+  };
+  const note = (text: string) => {
+    const n = document.createElement('div');
+    n.className = 'px-1 py-0.5 text-[10px] text-zinc-600 italic leading-snug';
+    n.textContent = text;
+    section.appendChild(n);
+  };
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string }) => {
+    const b = document.createElement('button');
+    const on = active === key;
+    b.dataset.objectPart = key;
+    b.setAttribute('aria-pressed', String(on));
+    b.title = opts.title;
+    // ≥44px tall on mobile (the rail is a full-width touch pane there).
+    b.className = 'w-full flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
+      + (on ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 [@media(hover:hover)]:hover:text-zinc-200');
+    const sw = document.createElement('span');
+    sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-zinc-600';
+    sw.style.background = opts.color ?? '#71717a';
+    b.appendChild(sw);
+    const label = document.createElement('span');
+    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '');
+    label.textContent = name;
+    b.appendChild(label);
+    const c = document.createElement('span');
+    c.className = 'shrink-0 tabular-nums text-[10px] text-zinc-600';
+    c.textContent = compactCount(count);
+    b.appendChild(c);
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cb.onHighlight(on ? null : key);
+    });
+    section.appendChild(b);
+  };
+
+  heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid.');
+  if (!view) {
+    note('Run the code to list this object’s parts.');
+    return section;
+  }
+  if (view.parts.length === 0 && view.lostParts.length === 0) {
+    note('No labelled parts — wrap shapes in api.label(shape, "name") to name them.');
+  }
+  for (const p of view.parts) {
+    item(`part:${p.name}`, p.name, p.triangleCount, { color: p.color, title: `Highlight part "${p.name}" (${p.triangleCount} triangles)` });
+  }
+  if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
+    item('unlabeled', 'Unlabeled', view.unlabeledTriangleCount, { italic: true, title: 'Highlight the geometry no part covers' });
+  }
+  for (const name of view.lostParts) {
+    const lost = document.createElement('div');
+    lost.className = 'flex items-center gap-1.5 px-1 py-1 text-zinc-600';
+    lost.title = `"${name}" was labelled in code but has no triangles left — an operation consumed it (e.g. it was fully subtracted, or a smoothing/level-set step dropped the label).`;
+    const sw = document.createElement('span');
+    sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-dashed border-zinc-600';
+    lost.appendChild(sw);
+    const label = document.createElement('span');
+    label.className = 'flex-1 min-w-0 truncate line-through';
+    label.textContent = name;
+    lost.appendChild(label);
+    const tag = document.createElement('span');
+    tag.className = 'shrink-0 text-[10px] uppercase tracking-wide';
+    tag.textContent = 'lost';
+    lost.appendChild(tag);
+    section.appendChild(lost);
+  }
+
+  if (view.pieces.length > 1) {
+    heading(`Pieces · ${view.pieces.length}`, 'Physically separate solids — what comes off the print bed as its own lump (e.g. the moving parts of a print-in-place mechanism).');
+    for (const piece of view.pieces) {
+      const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
+      item(`piece:${piece.index}`, name, piece.triangleCount, { title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}` });
+    }
+  }
+  return section;
 }
 
 /** A small fixed-size preview slot for a part's latest geometry. */
@@ -496,14 +668,14 @@ function buildActionBar(state: SessionState): HTMLElement {
   groupBtn.id = 'btn-group-parts';
   groupBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-zinc-100 bg-zinc-600/70 hover:bg-zinc-600 transition-colors';
   groupBtn.textContent = 'Group…';
-  groupBtn.title = 'Put the selected parts into a group';
+  groupBtn.title = 'Put the selected objects into a group';
   groupBtn.addEventListener('click', async () => {
     const ids = [...selected];
     if (ids.length === 0) return;
     // Prefill with the common group when the whole selection already shares one.
     const groups = new Set(selectedParts.map(p => p.group?.trim() ?? ''));
     const prefill = groups.size === 1 ? [...groups][0] : '';
-    const name = await promptDialog('Group name', { title: 'Group parts', initialValue: prefill, confirmLabel: 'Group', placeholder: 'e.g. Armor' });
+    const name = await promptDialog('Group name', { title: 'Group objects', initialValue: prefill, confirmLabel: 'Group', placeholder: 'e.g. Armor' });
     const trimmed = name?.trim();
     if (!trimmed) return;
     clearSelection();
@@ -518,7 +690,7 @@ function buildActionBar(state: SessionState): HTMLElement {
     ungroupBtn.id = 'btn-ungroup-parts';
     ungroupBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 transition-colors';
     ungroupBtn.textContent = 'Ungroup';
-    ungroupBtn.title = 'Remove the selected parts from their group';
+    ungroupBtn.title = 'Remove the selected objects from their group';
     ungroupBtn.addEventListener('click', () => {
       const ids = [...selected];
       if (ids.length === 0) return;
@@ -535,7 +707,7 @@ function buildActionBar(state: SessionState): HTMLElement {
     mergeBtn.id = 'btn-merge-parts';
     mergeBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white bg-blue-600/80 hover:bg-blue-600 transition-colors';
     mergeBtn.textContent = `Merge ${selected.size}`;
-    mergeBtn.title = 'Combine the selected parts into one';
+    mergeBtn.title = 'Combine the selected objects into one';
     mergeBtn.addEventListener('click', () => {
       const ids = [...selected];
       if (ids.length < 2) return;
@@ -556,18 +728,18 @@ function buildActionBar(state: SessionState): HTMLElement {
   delBtn.textContent = `Delete ${selected.size}`;
   if (wouldEmptySession) {
     delBtn.disabled = true;
-    delBtn.title = 'At least one part must remain — deselect one to delete.';
+    delBtn.title = 'At least one object must remain — deselect one to delete.';
   } else {
-    delBtn.title = 'Delete the selected parts and all their versions';
+    delBtn.title = 'Delete the selected objects and all their versions';
   }
   delBtn.addEventListener('click', async () => {
     if (delBtn.disabled) return;
     const ids = [...selected];
     if (ids.length === 0) return;
     const msg = ids.length === 1
-      ? 'Delete this part and all of its versions? This cannot be undone.'
-      : `Delete ${ids.length} parts and all of their versions? This cannot be undone.`;
-    if (!(await confirmDialog(msg, { title: 'Delete parts', confirmLabel: 'Delete', danger: true }))) return;
+      ? 'Delete this object and all of its versions? This cannot be undone.'
+      : `Delete ${ids.length} objects and all of their versions? This cannot be undone.`;
+    if (!(await confirmDialog(msg, { title: 'Delete objects', confirmLabel: 'Delete', danger: true }))) return;
     clearSelection();
     render(getState()); // hide the bar immediately; the delete re-renders on commit
     void cb.onDeleteParts(ids);

@@ -1,3 +1,8 @@
+---
+name: scope
+description: "Capture a multi-deliverable session in a [tracking] GitHub issue with a task-list checklist the moment work fans out into 2+ deliverables, so unfinished siblings outlive the chat. Use at the start of multi-part work, not for single ad-hoc tasks."
+---
+
 # Scope (capture a multi-deliverable session before it leaks)
 
 Capture the **full intended set of work** the moment you recognize a request fans out into more than one deliverable — in a durable place that outlives the chat. This is the front-half counterpart to `/retro` and `/issue-reconcile`: it records the *plan* at the start, so the *outcome* checks have something to reconcile against.

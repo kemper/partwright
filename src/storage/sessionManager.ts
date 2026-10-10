@@ -207,15 +207,23 @@ const APP_VERSION = buildInfo.version;
 const stampedAppVersion: string | undefined =
   APP_VERSION && APP_VERSION !== 'unknown' ? APP_VERSION : undefined;
 
-/** Name given to the implicit first part of every session. */
-const DEFAULT_PART_NAME = 'Part 1';
+/** Name given to the implicit first object of every session. (The storage
+ *  layer still calls these records `Part` — `parts` store, `Version.partId`,
+ *  the exported `parts` array — but the UI and API call them **objects**; a
+ *  "part" is now a labelled piece *within* an object. Sessions saved before the
+ *  rename keep their "Part N" names.) */
+const DEFAULT_PART_NAME = 'Object 1';
 
-/** Suggest a unique "Part N" name for a new part, given the existing parts. */
+/** Matches an auto-assigned default name — the current "Object N" or the
+ *  pre-rename "Part N" — so imports can renumber it instead of colliding. */
+const DEFAULT_NAME_RE = /^(?:Object|Part) \d+$/;
+
+/** Suggest a unique "Object N" name for a new object, given the existing ones. */
 function suggestPartName(existing: Part[]): string {
   let n = existing.length + 1;
   const names = new Set(existing.map(p => p.name));
-  while (names.has(`Part ${n}`)) n++;
-  return `Part ${n}`;
+  while (names.has(`Object ${n}`)) n++;
+  return `Object ${n}`;
 }
 
 export interface ExportedSession {
@@ -2097,7 +2105,7 @@ export async function importSession(
   let firstPartId = '';
   for (let i = 0; i < partDefs.length; i++) {
     const def = partDefs[i];
-    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Part ${i + 1}`, i, def.group);
+    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Object ${i + 1}`, i, def.group);
     orderToPartId.set(def.order, part.id);
     if (i === 0) firstPartId = part.id;
   }
@@ -2265,17 +2273,17 @@ export interface MergePartsResult {
  * with no `parts[]` collapse into one part; the same color-region and
  * top-level-annotation back-compat fallbacks apply) but writes into the
  * existing session instead of a fresh one. Returns null if no session is open.
- *//** Pick a part name that doesn't collide with names already in the session.
- *  A meaningful imported name (anything that isn't the generic `Part N`) is kept
- *  when it's free; otherwise we assign the next free sequential `Part N`. This
- *  stops a merged default-named figure from importing as a second "Part 1"
- *  alongside the host's "Part 1". */
+ *//** Pick an object name that doesn't collide with names already in the session.
+ *  A meaningful imported name (anything that isn't a generic `Object N` / legacy
+ *  `Part N`) is kept when it's free; otherwise we assign the next free sequential
+ *  `Object N`. This stops a merged default-named figure from importing as a
+ *  second "Object 1" alongside the host's "Object 1". */
 function uniquePartName(desired: string, taken: Set<string>, order: number): string {
   const trimmed = desired.trim();
-  if (trimmed && !/^Part \d+$/.test(trimmed) && !taken.has(trimmed)) return trimmed;
+  if (trimmed && !DEFAULT_NAME_RE.test(trimmed) && !taken.has(trimmed)) return trimmed;
   let n = order + 1;
-  while (taken.has(`Part ${n}`)) n++;
-  return `Part ${n}`;
+  while (taken.has(`Object ${n}`)) n++;
+  return `Object ${n}`;
 }
 
 export async function importSessionPartsIntoActive(

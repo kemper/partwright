@@ -76,9 +76,9 @@ const STEPS: TourStep[] = [
   },
   {
     target: '#parts-rail',
-    title: 'Multi-Part Sessions',
+    title: 'Multi-Object Sessions',
     description:
-      'Hold several objects in one session — each part keeps its own code, versions, and preview. Select multiple parts to merge them into one or bulk-delete, and import external meshes as separate parts.',
+      'Hold several objects in one session — each object keeps its own code, versions, and preview. Expand the open object to see its labelled parts and separate pieces. Select multiple objects to merge them into one or bulk-delete, and import external meshes as separate objects.',
     placement: 'right',
   },
   {

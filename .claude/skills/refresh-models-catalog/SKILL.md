@@ -1,3 +1,8 @@
+---
+name: refresh-models-catalog
+description: "Weekly job: regenerate src/ai/generated/modelsCatalog.json from models.dev, validate (build + unit), and open or update a draft PR into main labelled ignore-for-release. Run from the weekly models-refresh routine or when the model catalog is stale."
+---
+
 # Refresh models catalog (weekly)
 
 You keep `src/ai/generated/modelsCatalog.json` current with models.dev. A

@@ -100,7 +100,7 @@ export async function openAssemblyView(h: AssemblyHost): Promise<void> {
   if (open) return;
   const state = getState();
   if (!state.session || state.parts.length < 2) {
-    showToast('Add a second part to view all parts together.', { variant: 'neutral' });
+    showToast('Add a second object to view all objects together.', { variant: 'neutral' });
     return;
   }
   open = true;
@@ -274,7 +274,7 @@ async function saveSharedParams(): Promise<void> {
       panel?.setDirty(isDirty());
     }
   }
-  showToast(saved > 0 ? `Saved parameters to ${saved} part${saved === 1 ? '' : 's'}.` : 'No changes to save.', {
+  showToast(saved > 0 ? `Saved parameters to ${saved} object${saved === 1 ? '' : 's'}.` : 'No changes to save.', {
     variant: saved > 0 ? 'success' : 'neutral',
     source: 'assembly',
   });

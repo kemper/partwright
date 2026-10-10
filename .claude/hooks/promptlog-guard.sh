@@ -9,7 +9,7 @@
 #
 # Reads the PreToolUse JSON payload on stdin; emits a `deny` decision with a
 # reason when the log is missing, otherwise stays silent (exit 0 = allow).
-# See .claude/skills/promptlog.md for the workflow this enforces.
+# See .claude/skills/promptlog/SKILL.md for the workflow this enforces.
 
 input=$(cat)
 
@@ -32,5 +32,5 @@ nonprompt=$(printf '%s\n' "$staged" | grep -v '^$' | grep -v '^prompts/' || true
 # A prompt log is already staged -> allow.
 printf '%s\n' "$staged" | grep -Eq '^prompts/.*\.md$' && exit 0
 
-reason='This commit changes non-prompt files but stages no prompts/*.md log. Per the promptlog workflow (.claude/skills/promptlog.md), write a sanitized prompt log at prompts/{YYYYMMDD-HHmmss}-{slug}.md capturing the human request and your key decisions behind these changes, stage it, then commit again. For a genuinely mechanical commit (merge/rebase/backfill) that needs no log, re-run the commit with --no-verify.'
+reason='This commit changes non-prompt files but stages no prompts/*.md log. Per the promptlog workflow (.claude/skills/promptlog/SKILL.md), write a sanitized prompt log at prompts/{YYYYMMDD-HHmmss}-{slug}.md capturing the human request and your key decisions behind these changes, stage it, then commit again. For a genuinely mechanical commit (merge/rebase/backfill) that needs no log, re-run the commit with --no-verify.'
 jq -nc --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'

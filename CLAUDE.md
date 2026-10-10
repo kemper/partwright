@@ -35,7 +35,7 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 
 1. Feature PRs merge into **`main`** (the integration branch). Cloudflare deploys the main preview immediately on push — that preview is intentionally *pre-test*, so it can be broken.
 2. On every push to main, the **`Gate main → staging`** GitHub Action (`.github/workflows/staging-gate.yml`) runs `npm run build`, `npm run test:unit`, and `npm run test:e2e`. **Only if all pass** does it fast-forward `staging` to that commit, which Cloudflare then deploys to the staging preview. A red gate leaves `staging` parked on the last known-good commit.
-3. **Release is manual:** once you've validated the staging preview, open a PR from **`staging` → `production`** and merge it. Cloudflare deploys `production` to `www.partwrightstudio.com`. The release PR must be a **pure promotion** — it carries only commits already on `main` (see the superset rule below); any changelog/release-note edits go through `main` *first*, never onto the release branch.
+3. **Release: run `/release`** (`.claude/skills/release/SKILL.md`). It bumps `package.json` and adds the What's New entry through a PR into `main`, waits for the gate to advance `staging`, opens and merges the `staging` → `production` promotion PR, and verifies the live deploy and the `vX.Y.Z` tag. Cloudflare deploys `production` to `www.partwrightstudio.com`. The promotion PR is a **pure promotion**: it carries only commits already on `main` (see the superset rule below). The skill also covers the pipeline's agent traps: the bot-held promotion guard, the known CodeQL sandbox alerts, bypass-merge authorization, and rollback.
 
 > **Feature work now targets `main`, not `staging`.** `staging` is written only by the gate Action — never push to it or open a PR into it directly. `production` is written only by the manual release PR.
 
@@ -415,6 +415,12 @@ Each loader is idempotent and caches the resolved module. Vite splits each one i
 - **Right-handed, Z-up.** The XY plane is the ground, Z points up.
 - Units are arbitrary (no physical unit assumed). Use consistent scale.
 
+## Vocabulary — objects, parts, pieces
+
+- **Object** — a row in the left-rail **Objects** list: its own code + version history (one 3MF object on export). The UI/API call it an object (`listObjects`, `createObject`, …); the **storage layer still calls it `Part`** (`parts` IndexedDB store, `Version.partId`, the exported `parts` array, `?part=` URL param, `src/ui/partList.ts`, `#btn-add-part`). Those persisted names are deliberately unchanged — don't rename them without a schema migration. The pre-rename `*Part*` console methods / AI tool names survive as deprecated aliases.
+- **Part** — a named region *inside* one object, declared with `api.label(shape, name)` (SCAD `label()`, `BREP.label`). Tracked by manifold-3d provenance, so it survives unions/cuts. Listed under the open object in the rail (`listObjectParts()`); arrange-mode inserts are auto-labelled. Arrange mode's `listArrangeParts`/`selectParts` and `labeledUnion(parts)` already use "part" in this sense — keep them.
+- **Piece** — a connected component (a physically separate solid; `componentCount`). `src/geometry/meshPieces.ts`.
+
 ## Development Guidelines
 
 ### Planning Files
@@ -438,6 +444,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `?notes` — Notes tab
 - `?session=<id>` — Active session
 - `?session=<id>&v=3` — Specific version
+- `?part=<id>` — Active object (storage name; see [Vocabulary](#vocabulary--objects-parts-pieces))
 
 Any `/editor` URL bypasses the landing page entirely. Tab switching is handled in `src/ui/layout.ts` (`switchTab`). Session/version state is handled in `src/storage/sessionManager.ts` (`updateURL`). Page-level routing is in `src/main.ts`.
 
@@ -564,12 +571,12 @@ This is boundary hygiene, not bureaucracy: the test is "could the next session p
 
 This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
 
-- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
-- **`/retro-review`** (`.claude/skills/retro-review.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro/SKILL.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
+- **`/retro-review`** (`.claude/skills/retro-review/SKILL.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
 
 ### Prompt Logs
 
-Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
+Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog/SKILL.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
 
 > **Stage the prompt log in its own step, before a compound commit command.** The guard has tripped multiple sessions by appearing to fire "too early": a chained `git add -A && git commit -m ...` gets denied before the `add` half ever stages the log, which reads as the guard being wrong about sequencing rather than about missing content. Run `git add <files> prompts/<log>.md` as its own call, then commit separately.
 

@@ -26,6 +26,48 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 10, 2026',
+    headline: 'Partwright 1.6 — objects and their parts, a print-tested Cloud Guitar, and a fairer AI reviewer',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.6',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working. Multi-part projects now call each model an object and list its named parts and separate pieces, the catalog gains a full-size printed guitar, and the AI assistant\'s end-of-task review is better calibrated.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Objects, parts, and pieces',
+            body: 'What the interface used to call a "part" is now an object. The left rail lists each object and, under the open one, its named parts and its physically separate pieces. Your saved sessions are unaffected.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Cloud Guitar',
+            body: 'A full-size (about 1.05 m) guitar inspired by Prince\'s Cloud, designed in Partwright and physically printed. The print kit splits it into body and neck pieces plus tuners, strap buttons, and friction-fit pins across five plates, and there is a single-piece display model. Fully parametric.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'A fairer automatic review',
+            body: 'The end-of-task reviewer now lets work that meets your request pass, settles checks it can compute from the code instead of leaving them unverified, and keeps rework tied to what you actually asked for.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 8, 2026',
     headline: 'Partwright 1.5 — a sturdier AI assistant that checks its own work, multi-part assemblies, and mesh-to-code',
     groups: [

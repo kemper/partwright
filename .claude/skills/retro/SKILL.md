@@ -1,3 +1,8 @@
+---
+name: retro
+description: "Write a short 4-Ls retro (Liked, Lacked, Learned, Longed for) into retros/inbox/ after finishing a meaningful task, typically one PR. Use when wrapping up notable work; skip for trivial changes."
+---
+
 # Retro
 
 Capture a short, engineer-minded retro when you finish a meaningful task (a feature, a fix, a non-trivial chunk of work — typically one PR). This is **not** an incident report. The goal is to make the *next* agent faster and more reliable, so think like a developer reflecting on their own toolchain: note what worked, what fought you, and — most importantly — what you wished existed.

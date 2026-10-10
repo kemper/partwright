@@ -74,7 +74,7 @@ test.describe('Part-unload paint persistence', () => {
     );
     expect(regionsBefore.length).toBeGreaterThan(0);
 
-    // Note the id of Part 1 so we can navigate back to it.
+    // Note the id of Object 1 so we can navigate back to it.
     const part1Id = await page.evaluate(() =>
       (window as any).partwright.listParts().find((p: any) => p.isCurrent)?.id
     );
@@ -88,7 +88,7 @@ test.describe('Part-unload paint persistence', () => {
     await page.locator('#btn-add-part').click();
     await waitForPartChange(page, part1Id); // let the new part initialize (WASM)
 
-    // Switch back to Part 1 by clicking its row in the parts rail.
+    // Switch back to Object 1 by clicking its row in the parts rail.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
     // Wait for the part switch + draft restore + rehydrate to complete.
     await waitForRegionsRestored(page);
@@ -103,7 +103,7 @@ test.describe('Part-unload paint persistence', () => {
   test('save-all captures stashed paint: painted+unswitched part appears in modal', async ({ page }) => {
     await openEditor(page);
 
-    // Create session, run+save Part 1, paint it.
+    // Create session, run+save Object 1, paint it.
     const part1Id = await page.evaluate(async (code) => {
       const pw = (window as any).partwright;
       await pw.createSession('PaintSaveAll');
@@ -119,20 +119,20 @@ test.describe('Part-unload paint persistence', () => {
     await page.locator('#btn-add-part').click();
     await waitForPartChange(page, part1Id);
 
-    // Trigger Cmd/Ctrl+S → should open the multi-part save modal listing Part 1 as unsaved.
+    // Trigger Cmd/Ctrl+S → should open the multi-part save modal listing Object 1 as unsaved.
     await page.keyboard.press('ControlOrMeta+s');
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 7_000 });
-    // Part 1 must appear (the painted draft makes it unsaved even though code matches saved).
-    await expect(dialog.getByText('Part 1', { exact: true })).toBeVisible();
+    // Object 1 must appear (the painted draft makes it unsaved even though code matches saved).
+    await expect(dialog.getByText('Object 1', { exact: true })).toBeVisible();
 
     // "Save all" commits every listed part. The modal itself closes the instant
     // the button is clicked (before the save loop runs), so the real completion
     // signal is the success toast the save loop fires once every part lands.
     await dialog.getByRole('button', { name: 'Save all' }).click();
-    await expect(page.locator('[role="status"]', { hasText: /Saved \d+ part/ })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[role="status"]', { hasText: /Saved \d+ object/ })).toBeVisible({ timeout: 10_000 });
 
-    // Switch back to Part 1 and verify its latest version has color regions.
+    // Switch back to Object 1 and verify its latest version has color regions.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
     await waitForRegionsRestored(page);
 
@@ -158,7 +158,7 @@ test.describe('Part-unload paint persistence', () => {
     // Blur to trigger autosave so the draft is flushed before clicking "+".
     await page.locator('.cm-content').blur();
 
-    // Click "+" — this stashes Part 1's draft (with paint) via the button path.
+    // Click "+" — this stashes Object 1's draft (with paint) via the button path.
     await page.locator('#btn-add-part').click();
     await waitForPartChange(page, part1Id);
 
@@ -169,7 +169,7 @@ test.describe('Part-unload paint persistence', () => {
     // Wait for both parts to actually render in the rail before clicking a row.
     await expect(page.locator('#parts-list [data-part-id]')).toHaveCount(2);
 
-    // The session should open on the last active part (Part 2). Switch to Part 1 —
+    // The session should open on the last active part (Object 2). Switch to Object 1 —
     // restoreDraftIfNewer should rehydrate its stashed paint from the draft.
     await page.locator(`#parts-list [data-part-id="${part1Id}"]`).click();
     await waitForRegionsRestored(page);

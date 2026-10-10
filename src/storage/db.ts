@@ -517,7 +517,7 @@ async function migratePartsData(targetDb: IDBDatabase): Promise<void> {
     newParts.push({
       id: partId,
       sessionId: session.id,
-      name: 'Part 1',
+      name: 'Object 1',
       order: 0,
       created: session.created,
       updated: session.updated,

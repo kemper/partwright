@@ -1,3 +1,8 @@
+---
+name: issue-reconcile
+description: "Weekly backstop against lost work: walk recently merged PRs and open [tracking] issues, and file/reopen issues for partial implementations, unticked scope-manifest siblings, and discoveries that were never tracked. Run from the weekly reconcile routine or when asked to reconcile issues."
+---
+
 # Issue Reconcile (weekly backstop against lost work)
 
 You are the issue reconciler. A scheduled trigger wakes you ~weekly to walk what actually shipped against what's tracked, and make sure **no work fell through a boundary** — partial implementations that closed silently, multi-part sessions that lost siblings, discoveries mentioned only in a PR body. This is the safety net behind `/scope` (front-half plan capture) and the *Issue hygiene* norm (per-session reconciliation): it catches what those missed.

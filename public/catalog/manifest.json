@@ -1609,6 +1609,17 @@
     "toys",
     "figures"
    ]
+  },
+  {
+   "id": "cloud-guitar",
+   "name": "Cloud Guitar",
+   "file": "cloud_guitar.partwright.json",
+   "language": "manifold-js",
+   "description": "A full-size (~1.05 m) guitar inspired by Prince's Cloud, designed in Partwright and physically printed. The print kit splits it into eight body/neck pieces plus tuners, strap buttons, and friction-fit pins (0.2 mm fit, confirmed on the real print) across five 325 \u00d7 320 mm plates; the second part is the single-piece display model. Fully parametric.",
+   "tags": [
+    "decor"
+   ],
+   "printTested": true
   }
  ]
 }

@@ -170,7 +170,7 @@ test.describe('multi-part 3MF export', () => {
 
     // The part picker should appear for a multi-part session.
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to 3MF/i)).toBeVisible({ timeout: 10000 });
     await page.screenshot({ path: 'test-results/multipart-3mf-modal.png' });
 
     // The Bambu export shows the printer/nozzle/filament dropdowns (not the generic).
@@ -181,7 +181,7 @@ test.describe('multi-part 3MF export', () => {
     // beside the part list, not stacked below it. Assert the "Bambu Studio
     // settings" heading is horizontally to the right of the part-list header
     // (its left edge starts past the list header's right edge) at desktop width.
-    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const listBox = await modal.getByText(/Objects \(\d+ of \d+ selected\)/).boundingBox();
     const optsBox = await modal.getByText(/Bambu Studio settings/i).boundingBox();
     expect(listBox).not.toBeNull();
     expect(optsBox).not.toBeNull();
@@ -440,14 +440,14 @@ test.describe('multi-part 3MF export', () => {
     await page.locator('#export-dropdown').getByText('3MF', { exact: true }).click();
 
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to 3MF/i)).toBeVisible({ timeout: 10000 });
     // Packing radios present; NO Bambu Studio settings (that's the Bambu export).
     await expect(modal.getByText('Packing', { exact: true })).toBeVisible();
     await expect(modal.getByText('Centered grid')).toBeVisible();
     await expect(modal.getByText(/Bambu Studio settings/i)).toHaveCount(0);
 
     // Two-pane layout: the Packing heading sits to the RIGHT of the part-list header.
-    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const listBox = await modal.getByText(/Objects \(\d+ of \d+ selected\)/).boundingBox();
     const packBox = await modal.getByText('Packing', { exact: true }).boundingBox();
     expect(listBox).not.toBeNull();
     expect(packBox).not.toBeNull();

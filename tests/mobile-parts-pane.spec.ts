@@ -21,14 +21,14 @@ test.describe('mobile parts pane', () => {
     const toggle = page.locator('#mobile-pane-toggle');
     await expect(toggle).toBeVisible();
     await expect(toggle.getByRole('button', { name: 'Code', exact: true })).toBeVisible();
-    await expect(toggle.getByRole('button', { name: 'Parts', exact: true })).toBeVisible();
+    await expect(toggle.getByRole('button', { name: 'Objects', exact: true })).toBeVisible();
     await expect(toggle.getByRole('button', { name: 'Viewport', exact: true })).toBeVisible();
 
     // Default mobile pane is the viewport — the parts rail is hidden.
     await expect(page.locator('#parts-rail')).toBeHidden();
 
     // Tapping Parts reveals the parts list (with at least one part row).
-    await toggle.getByRole('button', { name: 'Parts', exact: true }).click();
+    await toggle.getByRole('button', { name: 'Objects', exact: true }).click();
     const railEl = page.locator('#parts-rail');
     await expect(railEl).toBeVisible();
     await expect(page.locator('#parts-list [data-part-id]').first()).toBeVisible();

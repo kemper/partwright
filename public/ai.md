@@ -268,10 +268,10 @@ partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
 partwright.isAutoRunEnabled()        // Whether auto-run is active
 
-// Assembly view (all parts in a grid) -- see #assembly-view
-await partwright.openAssembly()      // Show every part in a non-overlapping grid, built in parallel (needs >=2 parts) -> snapshot
-partwright.closeAssembly()           // Close it, return to the single part
-partwright.getAssembly()             // -> {open, parts:[{id,name,placed}], sharedParams}
+// Assembly view (all objects in a grid) -- see #assembly-view
+await partwright.openAssembly()      // Show every object in a non-overlapping grid, built in parallel (needs >=2 objects) -> snapshot
+partwright.closeAssembly()           // Close it, return to the single object
+partwright.getAssembly()             // -> {open, parts:[{id,name,placed}], sharedParams}  (`parts` here = the session's objects; key kept for back-compat)
 
 // Arrange mode (Tinkercad-style direct manipulation) -- see #arrange-mode
 partwright.enterArrange()                 // Activate the click-to-select / drag-to-move tool -> {ok}
@@ -312,12 +312,13 @@ await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
-// Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
-await partwright.export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
-await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
-await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
-await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged
-// ...each has a *Data twin (export{3MF,OBJ,STL,GLB}PartsData) that RETURNS the bytes instead of downloading.
+// Multi-object: bundle several of the session's objects into one file (default: all objects). See /ai/file-io.md.
+await partwright.export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one object per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
+await partwright.exportOBJObjects(objectIds?, filename?)        // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
+await partwright.exportSTLObjects(objectIds?, filename?)        // STL: a .zip of one .stl per object
+await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named nodes in one scene, grid-arranged
+// ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
+// Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
@@ -378,7 +379,7 @@ await partwright.runAndSave(code, label?, assertions?) // Assert+save in one cal
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
 await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
 await partwright.saveVersion(label?)     // Save current state as version
-await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
+await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
@@ -394,21 +395,27 @@ await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
-// Parts -- multiple independent objects within one session. Each part has its
-// own code + version history; the CURRENT part is what every other method
-// (run, save, paint, export, listVersions, ...) acts on. Versions are scoped
-// per part. Use parts for several distinct objects in one session (e.g. a box
-// and its lid); save them as separate STLs/parts, or model each in isolation.
-// Address a part by its name, its id, or its 0-based index (changePart/
-// renamePart/deletePart all accept any of the three).
-partwright.listParts()                   // -> [{id, name, order, group?, isCurrent}]
-partwright.showPartsOverview()           // Open the all-parts thumbnail overview (contact sheet; click a tile to switch part)
-partwright.getCurrentPart()              // -> {id, name, order, group?} or null
-await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
-await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
-await partwright.renamePart(name|id|index, newName)  // Rename a part
-await partwright.setPartGroup(target|target[], group|null)  // Thread parts under a collapsible group header in the part list (null/'' ungroups) -> {grouped, group}
-await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
+// Objects -- multiple independent objects within one session (the left-rail
+// list). Each object has its own code + version history; the CURRENT object is
+// what every other method (run, save, paint, export, listVersions, ...) acts
+// on. Use objects for several distinct, separately-printed things in one
+// session (e.g. a box and its lid). Address an object by its name, its id, or
+// its 0-based index (changeObject/renameObject/deleteObject accept any of the
+// three). NOT the same as a PART (a labelled piece inside one object) -- see
+// #objects-parts-and-pieces.
+partwright.listObjects()                 // -> [{id, name, order, group?, isCurrent}]
+partwright.showObjectsOverview()         // Open the all-objects thumbnail overview (contact sheet; click a tile to switch)
+partwright.getCurrentObject()            // -> {id, name, order, group?} or null
+await partwright.createObject(name?)     // New empty object + switch to it -> {id, name, order}
+await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
+await partwright.renameObject(name|id|index, newName)  // Rename an object
+await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
+await partwright.deleteObject(name|id|index)   // Delete an object + its versions (refuses the last one)
+partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
+partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
+// Deprecated aliases from before the rename still work: listParts, getCurrentPart,
+// createPart, changePart, renamePart, setPartGroup, deletePart, saveAllParts,
+// showPartsOverview (each calls the *Object* method above).
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
@@ -569,23 +576,45 @@ return Manifold.cube([p.width, p.width, p.rows * 10], true);
 
 **Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved). A `color` param's value (a hex string) drives geometry color by passing it to `api.label(shape, name, { color: p.accent })` (see [Model-declared color](#model-declared-color-self-coloring-models) below) — so a color knob recolors the model live. `text` params are captured but have no geometry sink yet.
 
+### Objects, parts, and pieces
+
+<a id="objects-parts-and-pieces"></a>
+
+Three words, three different things — keep them straight, especially when a user asks you to "add a part":
+
+| Word | What it is | Where it lives | How you make one |
+|---|---|---|---|
+| **Object** | A separately-versioned thing in the session — its own code, version history, and (in a multi-object 3MF) its own slicer object/plate | A row in the left-rail **Objects** list | `createObject(name)` |
+| **Part** | A named region *inside* one object — "the handle", "the lid hinge" | Listed under the open object in the rail (expand ▾) | Wrap the shape in `api.label(shape, 'handle')` (or `api.labeledUnion`, SCAD `label("handle")`, `BREP.label`) |
+| **Piece** | A physically separate solid — what comes off the print bed as its own lump (the moving bits of a print-in-place mechanism) | Listed as **Pieces · N** under the object when there's more than one | Leave a clearance gap; check `componentCount` |
+
+**Parts are tracked, not detected.** A label is attached when the shape is made and rides through every union and cut (manifold-3d carries each triangle's source), so a mug built from a body, a handle, and a rim — unioned into ONE watertight solid — still knows exactly which triangles are the handle. That is why the rail can list parts of a fused model, and why `paintByLabel` / label-scoped textures work on it. So:
+
+- "Add a handle" → edit the current object's code and label the new shape (`api.label(handle, 'handle')`). **Not** `createObject`.
+- "Make a matching lid" (printed separately, versioned on its own) → `createObject('Lid')`.
+- **Label every meaningful feature you build** — it makes the parts list useful and lets the user say "make the handle thicker".
+
+`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, and the pieces, each named by the part covering most of it. `highlightObjectPart('handle')` tints a part in the viewport (the same as clicking it in the rail) so you can show the user which one you mean. Labels are surfaces, not volumes: a part fused into a solid can be highlighted or painted, but not hidden on its own.
+
+Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
+
 ### Assembly view
 
-A session can hold **multiple parts** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the part list** or the **"⧉ All parts" toggle in the viewport** (both appear only when the session has ≥ 2 parts; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
+A session can hold **multiple objects** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the object list** or the **"⧉ All objects" toggle in the viewport** (both appear only when the session has ≥ 2 objects; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
 
 ```js
-await partwright.openAssembly()   // build every part in parallel, fill the grid progressively
-partwright.getAssembly()          // { open, parts:[{id,name,placed}], sharedParams }
-partwright.closeAssembly()        // back to the single-part editor
+await partwright.openAssembly()   // build every object in parallel, fill the grid progressively
+partwright.getAssembly()          // { open, parts:[{id,name,placed}], sharedParams }  (parts = objects)
+partwright.closeAssembly()        // back to the single-object editor
 ```
 
-Each part's mesh is built in a **pool of Workers in parallel**, and the grid fills in progressively as parts finish (the current part appears instantly from its live mesh). Parts rest on a common floor, centred in their cells, with a name label.
+Each object's mesh is built in a **pool of Workers in parallel**, and the grid fills in progressively as objects finish (the current object appears instantly from its live mesh). Objects rest on a common floor, centred in their cells, with a name label.
 
-The Assembly view is **read-only**: the editing tools and cross-section are hidden while it's open (they act on a single part). **Clicking a part** — in the grid or the part list — leaves the overview and opens that part in the normal single-part editor. `Esc` or the `⧉` toggle also exits.
+The Assembly view is **read-only**: the editing tools and cross-section are hidden while it's open (they act on a single object). **Clicking an object** — in the grid or the object list — leaves the overview and opens that object in the normal single-object editor. `Esc` or the `⧉` toggle also exits.
 
-**Shared parameters.** The panel lists the **union** of every part's `api.params` knobs — one row per name. Each row shows **"affects N parts"** (hover for the part names); numeric ranges are the widest across the sharing parts. Changing a value **live-previews** across every part that declares that key; **Save** writes the tweaked values back to each of those parts' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
+**Shared parameters.** The panel lists the **union** of every object's `api.params` knobs — one row per name. Each row shows **"affects N objects"** (hover for the names); numeric ranges are the widest across the sharing objects. Changing a value **live-previews** across every object that declares that key; **Save** writes the tweaked values back to each of those objects' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
 
-> Note: the Assembly grid renders each part's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the part itself).
+> Note: the Assembly grid renders each object's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the object itself).
 
 ### Model-declared color (self-coloring models)
 
