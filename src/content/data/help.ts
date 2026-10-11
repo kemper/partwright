@@ -9,7 +9,7 @@
 
 import type { ContentSection } from './legal';
 import { buildInfo } from '../../buildInfo';
-import { discussionsUrl, featureRequestUrl, issueChooserUrl } from '../../feedbackLinks';
+import { DISCORD_INVITE_URL, discussionsUrl, featureRequestUrl, issueChooserUrl } from '../../feedbackLinks';
 
 export type { ContentSection };
 
@@ -305,8 +305,9 @@ export function helpDynamicSections(opts: {
         `<li><a href="${issueChooserUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Report a bug</a> — anything broken or behaving oddly. A screenshot, the code, or a share link helps a lot.</li>` +
         `<li><a href="${featureRequestUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Request a feature</a> — ideas for new capabilities or improvements.</li>` +
         `<li><a href="${discussionsUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discussions</a> — questions, tips, and things you've made.</li>` +
+        `<li><a href="${DISCORD_INVITE_URL}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discord</a> — chat with other makers and the Partwright team in real time.</li>` +
         '</ul>' +
-        'Posting needs a free GitHub account.',
+        'Bug reports, feature requests, and Discussions need a free GitHub account.',
     },
   ];
 }

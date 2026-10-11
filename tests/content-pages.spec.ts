@@ -66,6 +66,9 @@ test.describe('Shared content-page chrome', () => {
       expect(labels).toEqual(EXPECTED_LINKS);
       // The "Open editor" CTA.
       await expect(header.getByRole('link', { name: /Open editor/i })).toHaveAttribute('href', '/editor');
+      // The community Discord link, in the header and the footer.
+      await expect(header.getByRole('link', { name: 'Join the Partwright Discord' })).toHaveAttribute('href', 'https://discord.gg/vbUy95fP3Q');
+      await expect(page.locator('footer').getByRole('link', { name: 'Join our Discord' })).toHaveAttribute('href', 'https://discord.gg/vbUy95fP3Q');
       // The header bar is sticky so it stays visible on scroll / anchor jumps.
       const pos = await page.locator('.pw-headerbar').evaluate((el) => getComputedStyle(el).position);
       expect(pos).toBe('sticky');
