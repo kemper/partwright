@@ -45,6 +45,7 @@ import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
+import { getSelectedPartKey, setSelectedPartKey, onPartSelectionChange, describePartKey, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
 
 interface PanelState {
   open: boolean;
@@ -243,6 +244,7 @@ function pinTranscriptToBottom(): void {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 let pendingImagesEl: HTMLElement | null = null;
+let partContextEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
@@ -966,6 +968,15 @@ function buildDrawer(): void {
   pendingImagesEl = document.createElement('div');
   pendingImagesEl.className = 'px-3 pb-1.5 flex flex-wrap gap-1.5 shrink-0 hidden';
   bottomSection.appendChild(pendingImagesEl);
+
+  // Selected-part context chip (#1003): while a part / piece is selected in the
+  // Objects list, it rides along with the next message as context.
+  partContextEl = document.createElement('div');
+  partContextEl.id = 'ai-part-context';
+  partContextEl.className = 'px-3 pb-1.5 shrink-0 hidden';
+  bottomSection.appendChild(partContextEl);
+  renderPartContext();
+  onPartSelectionChange(renderPartContext);
 
   // In-progress indicator — shown while a turn is in flight so the user
   // knows we haven't frozen. Hidden by default; populated by
@@ -2553,7 +2564,19 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
-  bubble.textContent = text;
+  // The Objects-list selection rides along as a context line; show it as a
+  // chip rather than raw "[Selected in …]" text in the user's own bubble.
+  const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
+  if (context) {
+    const chip = document.createElement('div');
+    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+    chip.title = 'The part selected in the Objects list was sent as context';
+    chip.textContent = `◎ ${context}`;
+    bubble.appendChild(chip);
+    bubble.appendChild(document.createTextNode(rest));
+  } else {
+    bubble.textContent = text;
+  }
   return bubble;
 }
 
@@ -2878,6 +2901,30 @@ function captureChatImageAsAttachment(img: ImageSource): void {
   } catch (err) {
     console.warn('Session attachments: capture failed', err);
   }
+}
+
+function renderPartContext(): void {
+  if (!partContextEl) return;
+  const key = getSelectedPartKey();
+  partContextEl.replaceChildren();
+  partContextEl.classList.toggle('hidden', !key);
+  if (!key) return;
+  const chip = document.createElement('span');
+  chip.className = 'inline-flex items-center gap-1 max-w-full rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-100';
+  chip.title = 'Selected in the Objects list — sent with your message as context';
+  const t = document.createElement('span');
+  t.className = 'truncate';
+  t.textContent = `◎ ${describePartKey(key)}`;
+  chip.appendChild(t);
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-3 -mr-2 md:min-w-0 md:min-h-0 md:my-0 md:mr-0 text-amber-200/70 [@media(hover:hover)]:hover:text-amber-50';
+  rm.textContent = '✕';
+  rm.title = 'Clear the selection';
+  rm.setAttribute('aria-label', 'Clear the selected part');
+  rm.addEventListener('click', () => setSelectedPartKey(null));
+  chip.appendChild(rm);
+  partContextEl.appendChild(chip);
 }
 
 function renderPendingImages(): void {
@@ -3346,7 +3393,10 @@ async function sendMessage(): Promise<void> {
   const capturedImages = [...state.pendingImages];
 
   const blocks: ChatBlock[] = [];
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
+  // The Objects-list selection is chat context: "make it red" means the part
+  // the user has selected.
+  const partKey = getSelectedPartKey();
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKey ? `${partSelectionChatContext(partKey)}\n\n${capturedText}` : capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.

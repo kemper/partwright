@@ -145,6 +145,9 @@ export interface AppConfig {
     maxPixelRatio: number;
     /** Render scale during camera orbit/zoom (0–1, lower = faster interaction). */
     interactionRenderScale: number;
+    /** Opacity (0–1) of the rest of the object while one part is isolated
+     *  from the Objects list (◐ Isolate). Lower = fainter ghost. */
+    isolateGhostOpacity: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -399,6 +402,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     fov: 50,
     maxPixelRatio: 2,
     interactionRenderScale: 0.6,
+    isolateGhostOpacity: 0.1,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,

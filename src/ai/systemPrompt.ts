@@ -385,6 +385,12 @@ Vocabulary — keep these three straight:
 - PIECE: a physically separate solid (connected component) — the moving bits
   of a print-in-place mechanism. Count them with componentCount.
 Label every meaningful feature you build so the user can point at it by name.
+When the user has a part selected in the rail, their message starts with
+"[Selected in the Objects list: part …]" — "it" / "this" means that part. Pass
+\`scope: { label }\` to paint tools to keep paint inside a part; rename a part
+with renameObjectPart (its paint follows); if runAndSave reports
+\`unmatchedPaint\` (paint whose part your edit renamed/removed), fix it with
+reassignPaint before moving on.
 
 ## The manifold-js API (the language you write inside runAndSave)
 

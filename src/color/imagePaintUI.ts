@@ -16,6 +16,8 @@ import {
 import type { ImagePaintResult } from './imagePaint';
 import {
   addRegion,
+  withPartScope,
+  getImplicitPaintScope,
   getRegions,
   onChange as onRegionsChange,
   removeLastRegion,
@@ -366,6 +368,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     removeBackground: opts.removeBackground,
     manualBgColor: opts.manualBgColor,
     preprocess: opts.preprocess,
+    scope: getImplicitPaintScope(),
   });
 }
 
@@ -383,6 +386,9 @@ interface StampRun {
   manualBgColor?: [number, number, number];
   preprocess: PreprocessOptions;
   name?: string;
+  /** Part (api.label) the stamp is clipped to — the rail selection for the
+   *  click-driven tool, an explicit `scope` for the programmatic API. */
+  scope?: string | null;
 }
 
 /** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
@@ -424,7 +430,7 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
     name,
     result.avgColor,
     'imagePaint',
-    {
+    withPartScope({
       kind: 'imagePaint',
       entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
@@ -436,7 +442,7 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
         ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
-    },
+    }, r.scope ?? null),
     triangles,
     true,
     undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
@@ -465,6 +471,8 @@ export interface ProgrammaticStampParams {
   preprocess?: PreprocessOptions;
   /** Region label; defaults to "Stamp N". */
   name?: string;
+  /** Clip the stamp to this part (an api.label region). */
+  scope?: string;
 }
 
 /** Stamp `imageData` onto the current mesh programmatically — the engine behind
@@ -490,6 +498,7 @@ export function stampImageProgrammatic(
     manualBgColor: params.manualBgColor,
     preprocess: params.preprocess ?? defaultPreprocess(),
     name: params.name,
+    scope: params.scope ?? null,
   });
 }
 
