@@ -2,6 +2,11 @@
 /agent /ai.md 301
 /api /ai.md 301
 
+# Community Discord invite. 302 (not 301) so browsers don't cache it forever
+# if the invite ever changes. Keep in sync with DISCORD_INVITE_URL in
+# src/feedbackLinks.ts.
+/discord https://discord.gg/vbUy95fP3Q 302
+
 # Versioned deployments (see CLAUDE.md › Deployment). The site root is the
 # LATEST version served versionlessly (/, /editor, /catalog … — unchanged), and
 # each major is ALSO available as an immutable, pinned mount under /vN/ so a user

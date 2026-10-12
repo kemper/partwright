@@ -26,6 +26,39 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 11, 2026',
+    headline: 'Partwright 1.7 — a community Discord and a big catalog quality pass',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.7',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working. Adds a link to the community Discord and fixes a long list of catalog models.',
+          },
+        ],
+      },
+      {
+        label: 'Community',
+        items: [
+          {
+            title: 'Join the Discord',
+            body: 'There is now a Discord icon in the header and a link in the footer and the help page\'s Feedback & support section. The short link /discord also takes you to the invite.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog models fixed up',
+            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, Pac-Man ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 10, 2026',
     headline: 'Partwright 1.6 — objects and their parts, a print-tested Cloud Guitar, and a fairer AI reviewer',
     groups: [

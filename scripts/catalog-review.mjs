@@ -26,7 +26,7 @@ import { chromium } from 'playwright';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CATALOG = path.join(REPO, 'public', 'catalog');
 // Heavy SCAD/SDF entries can take minutes to mesh.
-const ENTRY_TIMEOUT_MS = 360_000;
+const ENTRY_TIMEOUT_MS = 900_000;
 // Pages are recycled this often; one page degrades over ~100 heavy imports.
 const RECYCLE_EVERY = 20;
 

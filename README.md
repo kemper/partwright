@@ -22,6 +22,7 @@ Partwright is live at [www.partwrightstudio.com](https://www.partwrightstudio.co
 - **Report a bug:** [open a bug report](https://github.com/kemper/partwright/issues/new?template=bug_report.yml). In the app, the **💬 Feedback** button in the editor's top toolbar opens the same form with your version and browser already filled in.
 - **Request a feature:** [open a feature request](https://github.com/kemper/partwright/issues/new?template=feature_request.yml).
 - **Questions, tips, and things you've made:** [GitHub Discussions](https://github.com/kemper/partwright/discussions).
+- **Chat with the community:** [join our Discord](https://discord.gg/vbUy95fP3Q) (also at [partwrightstudio.com/discord](https://www.partwrightstudio.com/discord)).
 - **Security issues:** please [report them privately](https://github.com/kemper/partwright/security/advisories/new) (see [SECURITY.md](SECURITY.md)).
 
 ## Quick start
