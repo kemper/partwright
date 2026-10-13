@@ -14,10 +14,18 @@
 //
 // CLIProxyAPI refuses to start while its config still holds the template
 // `your-api-key-N` values, so setting a real key is a *required* step, not a
-// nicety. We generate a strong random key in the browser, hand the user a
-// one-liner that writes it into the config and restarts the bridge, and offer
-// a button to paste that same key into the endpoint's API-key field — so the
-// value the proxy expects and the value Partwright sends always match.
+// nicety. We generate a strong random key in the browser (or reuse the one
+// already saved for the endpoint), hand the user a one-liner that writes it
+// into the config and restarts the bridge, and offer a button to paste that
+// same key into the endpoint's API-key field — so the value the proxy expects
+// and the value Partwright sends always match.
+//
+// The one-liner replaces the template placeholders AND any key Partwright
+// generated earlier (KEY_PATTERN), so re-running it re-syncs the two sides.
+// Matching only the placeholders made a re-run a silent no-op: after cleared
+// site data (or a second browser) the card showed a fresh key, the user ran
+// the command and pasted that key, but the config still held the old one —
+// every request then 401'd with "Invalid API key".
 //
 // This card is pure onboarding: the connection itself still flows through the
 // existing Custom provider — no new provider, transport, or settings.
@@ -36,6 +44,10 @@ const CLI_BRIDGE_ENDPOINT = DEFAULT_CUSTOM_BASE_URL;
 const CLI_BRIDGE_STATUS_URL = 'http://localhost:8317';
 
 const REPO_URL = 'https://github.com/router-for-me/CLIProxyAPI';
+
+/** sed -E pattern for the keys step 2 overwrites: CLIProxyAPI's template
+ *  placeholders, plus keys from generateApiKey(). */
+const KEY_PATTERN = '(your-api-key-[0-9]+|pw-[0-9a-f]{48})';
 
 /** A strong random API key, generated in the browser. Prefixed so it's
  *  recognizable in a config file; hex body has no shell/sed metacharacters,
@@ -65,7 +77,7 @@ const OS: Record<OsKey, OsSpec> = {
       note: 'Installs the bridge and starts it as a background service.',
     },
     fixAndRestart: key => ({
-      cmd: `sed -i '' -E "s/your-api-key-[0-9]+/${key}/g" "$(brew --prefix)/etc/cliproxyapi.conf" && brew services restart cliproxyapi`,
+      cmd: `sed -i '' -E "s/${KEY_PATTERN}/${key}/g" "$(brew --prefix)/etc/cliproxyapi.conf" && brew services restart cliproxyapi`,
     }),
   },
   windows: {
@@ -75,14 +87,14 @@ const OS: Record<OsKey, OsSpec> = {
       note: 'Then run cli-proxy-api in a terminal to start the server.',
     },
     fixAndRestart: () => ({
-      manual: 'Open the config file named on the status page, replace the three your-api-key-N values with the key above, then stop and re-run cli-proxy-api.',
+      manual: 'Open the config file named on the status page, replace the keys listed under api-keys (the your-api-key-N values, or a pw-… key from an earlier setup) with the key above, then stop and re-run cli-proxy-api.',
     }),
   },
   other: {
     label: 'Linux / other',
     install: { docs: true },
     fixAndRestart: key => ({
-      cmd: `sed -i -E "s/your-api-key-[0-9]+/${key}/g" <config-path-from-the-status-page>`,
+      cmd: `sed -i -E "s/${KEY_PATTERN}/${key}/g" <config-path-from-the-status-page>`,
     }),
   },
 };
@@ -95,6 +107,8 @@ function detectOs(): OsKey {
 }
 
 export function CliBridgeSetup(props: {
+  /** The key step 2 writes into the config: the one already saved for the
+   *  endpoint when there is one, else a freshly generated key. */
   apiKeyExample: string;
   onUseEndpoint: (url: string) => void;
 }) {
@@ -138,7 +152,7 @@ export function CliBridgeSetup(props: {
 
         <Step n={2} title="Set an API key (required)">
           <p class="text-[11px] text-zinc-400 leading-snug">
-            CLIProxyAPI won’t start while its config holds the template keys. Here’s a fresh random key — this one-liner writes it in and restarts the bridge:
+            CLIProxyAPI won’t start while its config holds the template keys. This one-liner writes the key shown here into it and restarts the bridge. Getting <em>“Invalid API key”</em>? Run it again — it also replaces a key from an earlier setup.
           </p>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] text-zinc-500">Your API key (used below too):</span>

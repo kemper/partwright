@@ -68,6 +68,26 @@ function modelsUrl(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, '')}/models`;
 }
 
+/** Explain a 401/403 from `/models`. The two causes need different fixes, so
+ *  say which one it is: no key was sent (none saved in this browser — e.g.
+ *  site data was cleared, or this is a different origin), or the key that was
+ *  sent doesn't match the server's list (CLIProxyAPI's `access.api-keys`, or
+ *  root `api-keys` in pre-v8 configs). The server's own reason is appended
+ *  when it gives one (CLIProxyAPI says "Missing API key" / "Invalid API key"). */
+async function authErrorMessage(res: Response, apiKey: string): Promise<string> {
+  const body = await res.text().catch(() => '');
+  let reason = '';
+  try {
+    const err = (JSON.parse(body) as { error?: unknown }).error;
+    if (typeof err === 'string') reason = err;
+    else if (err && typeof (err as { message?: unknown }).message === 'string') reason = (err as { message: string }).message;
+  } catch { reason = body.trim(); }
+  const said = reason ? ` (server: "${reason.slice(0, 120)}")` : '';
+  return apiKey.trim().length === 0
+    ? `${res.status}: the endpoint requires an API key, and none is saved here${said}. Paste the key from your bridge config into the API key field.`
+    : `${res.status}: the endpoint rejected the API key${said}. It doesn't match the key in your bridge config — re-run setup step 2 to write this key in, or paste the config's key here.`;
+}
+
 function authHeaders(apiKey: string): HeadersInit {
   const headers: Record<string, string> = {};
   if (apiKey && apiKey.trim().length > 0) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
@@ -127,9 +147,7 @@ export async function validateConnection(baseUrl: string, apiKey: string): Promi
   try {
     const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
     if (res.ok) return null;
-    if (res.status === 401 || res.status === 403) {
-      return `${res.status}: endpoint requires an API key (or the key is wrong).`;
-    }
+    if (res.status === 401 || res.status === 403) return await authErrorMessage(res, apiKey);
     const body = await res.text().catch(() => '');
     return `${res.status}: ${body.slice(0, 200) || res.statusText || 'request failed'}`;
   } catch (err) {
@@ -148,7 +166,7 @@ export async function listModels(baseUrl: string, apiKey: string): Promise<{ id:
   if (base.length === 0) throw new Error('Enter an endpoint URL first.');
   const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) throw new Error('Endpoint requires an API key (or the key is wrong).');
+    if (res.status === 401 || res.status === 403) throw new Error(await authErrorMessage(res, apiKey));
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status}: ${body.slice(0, 200) || res.statusText}`);
   }

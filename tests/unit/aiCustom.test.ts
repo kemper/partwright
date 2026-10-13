@@ -96,4 +96,24 @@ describe('Custom OpenAI-compatible endpoint', () => {
     expect(ids).toContain('my-local-llama-3.3');
     expect(ids).toContain('whisper-tiny');
   });
+  // A 401 from a bridge like CLIProxyAPI has two causes with different fixes:
+  // no key saved in this browser, or a key that doesn't match the bridge's
+  // config. The message must say which, and echo the server's own reason.
+  test('auth failures say whether a key was sent and echo the server reason', async () => {
+    vi.stubGlobal('fetch', async (_input: unknown, init: { headers?: Record<string, string> }) => {
+      const sent = new Headers(init?.headers as HeadersInit).get('authorization');
+      return new Response(JSON.stringify({ error: sent ? 'Invalid API key' : 'Missing API key' }), { status: 401 });
+    });
+
+    const missing = await custom.validateConnection('http://localhost:8317/v1', '');
+    expect(missing).toContain('none is saved here');
+    expect(missing).toContain('Missing API key');
+
+    const wrong = await custom.validateConnection('http://localhost:8317/v1', 'pw-stale');
+    expect(wrong).toContain('rejected the API key');
+    expect(wrong).toContain('Invalid API key');
+    expect(wrong).toContain('re-run setup step 2');
+
+    await expect(custom.listModels('http://localhost:8317/v1', 'pw-stale')).rejects.toThrow(/rejected the API key.*Invalid API key/);
+  });
 });

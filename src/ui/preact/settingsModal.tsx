@@ -591,11 +591,15 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   const url = useSignal(settings.toggles.customBaseUrl || DEFAULT_CUSTOM_BASE_URL);
   const model = useSignal(settings.toggles.customModel);
   const keyVal = useSignal('');
-  // One example key per modal open — shown in the bridge setup's "set an API
-  // key" command and reusable via the "Use this key" button below, so the value
-  // the proxy is configured with matches the one Partwright sends.
+  // The key the bridge setup's "set an API key" command writes — reusable via
+  // the "Use the bridge key" button below, so the value the proxy is configured
+  // with matches the one Partwright sends. A fresh one per modal open until a
+  // key is saved; from then on it's the saved key, so re-running the command
+  // re-syncs a bridge whose config drifted instead of minting a third key.
   const genKey = useSignal(generateApiKey());
   const hasKey = useSignal<boolean | null>(null);
+  const storedKey = useSignal('');
+  const showStoredKey = useSignal(false);
   // Seed from the last fetched list (persisted) so reopening the modal shows
   // the endpoint's models without a re-fetch — and so the AI panel dropdown
   // and these pills stay in sync.
@@ -608,7 +612,12 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
-    void getKey('custom').then(k => { if (!cancelled) hasKey.value = !!k; });
+    void getKey('custom').then(k => {
+      if (cancelled) return;
+      hasKey.value = !!k;
+      storedKey.value = k?.apiKey ?? '';
+      if (k?.apiKey) genKey.value = k.apiKey;
+    });
     return () => { cancelled = true; };
   }, [keyVersion.value]);
 
@@ -774,8 +783,16 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
       <Section label="API key (optional)">
         {hasKey.value === true ? (
           <div class="flex items-center justify-between gap-2">
-            <span class="text-[11px] text-emerald-300">A key is stored for this endpoint.</span>
-            <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
+            <span class="text-[11px] text-emerald-300 min-w-0">
+              A key is stored for this endpoint
+              {showStoredKey.value
+                ? <>: <code class="font-mono text-zinc-200 break-all">{storedKey.value}</code></>
+                : '.'}
+            </span>
+            <div class="flex items-center gap-3 shrink-0">
+              <button type="button" class="text-[11px] text-zinc-300 hover:text-zinc-100 underline" onClick={() => { showStoredKey.value = !showStoredKey.value; }}>{showStoredKey.value ? 'Hide' : 'Show'}</button>
+              <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
+            </div>
           </div>
         ) : (
           <div class="flex flex-col gap-1.5">
