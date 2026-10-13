@@ -26,6 +26,30 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 13, 2026',
+    headline: 'Partwright 1.7.1 — clearer custom-endpoint errors',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.7.1',
+            body: 'A backward-compatible fix release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Custom endpoint 401s explained',
+            body: 'When a custom OpenAI-compatible endpoint rejects your key with a 401, the error now explains what went wrong, and re-running the CLI bridge setup re-syncs its key so the connection recovers.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 11, 2026',
     headline: 'Partwright 1.7 — a community Discord and a big catalog quality pass',
     groups: [
