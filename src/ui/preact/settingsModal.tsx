@@ -55,7 +55,7 @@ import type { AnthropicModelId, Provider } from '../../ai/types';
 
 import { settingsSignal, setSettings, resyncSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton, TabBar, type TabSpec } from './primitives';
-import { CliBridgeSetup, generateApiKey } from './cliBridgeSetup';
+import { CliBridgeSetup, generateApiKey, isGeneratedApiKey } from './cliBridgeSetup';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -594,8 +594,8 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   // The key the bridge setup's "set an API key" command writes — reusable via
   // the "Use the bridge key" button below, so the value the proxy is configured
   // with matches the one Partwright sends. A fresh one per modal open until a
-  // key is saved; from then on it's the saved key, so re-running the command
-  // re-syncs a bridge whose config drifted instead of minting a third key.
+  // generated key is saved; from then on it's the saved key, so re-running the
+  // command re-syncs a bridge whose config drifted instead of minting another.
   const genKey = useSignal(generateApiKey());
   const hasKey = useSignal<boolean | null>(null);
   const storedKey = useSignal('');
@@ -616,7 +616,9 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
       if (cancelled) return;
       hasKey.value = !!k;
       storedKey.value = k?.apiKey ?? '';
-      if (k?.apiKey) genKey.value = k.apiKey;
+      // Only our own generated keys: they're safe to drop into the shell
+      // one-liner and match its KEY_PATTERN. A pasted key stays out of step 2.
+      if (k?.apiKey && isGeneratedApiKey(k.apiKey)) genKey.value = k.apiKey;
     });
     return () => { cancelled = true; };
   }, [keyVersion.value]);
@@ -698,6 +700,9 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   }
 
   async function removeKey(): Promise<void> {
+    // genKey keeps the removed key on purpose: the bridge config still holds
+    // it, so "Use the bridge key" can restore it.
+    showStoredKey.value = false;
     await deleteKey('custom');
     bumpKeyVersion();
     cb.onChange();

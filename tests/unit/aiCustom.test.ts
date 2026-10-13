@@ -115,5 +115,12 @@ describe('Custom OpenAI-compatible endpoint', () => {
     expect(wrong).toContain('re-run setup step 2');
 
     await expect(custom.listModels('http://localhost:8317/v1', 'pw-stale')).rejects.toThrow(/rejected the API key.*Invalid API key/);
+
+    // Other servers' shapes: FastAPI-style `detail`, and a non-JSON page whose
+    // whitespace is collapsed rather than echoed with newlines.
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ detail: 'Not authenticated' }), { status: 403 }));
+    expect(await custom.validateConnection('http://x.test/v1', 'k')).toContain('(server: "Not authenticated")');
+    vi.stubGlobal('fetch', async () => new Response('<h1>401</h1>\n\n  Unauthorized', { status: 401 }));
+    expect(await custom.validateConnection('http://x.test/v1', 'k')).toContain('(server: "<h1>401</h1> Unauthorized")');
   });
 });

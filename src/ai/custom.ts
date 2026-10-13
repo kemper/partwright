@@ -78,14 +78,21 @@ async function authErrorMessage(res: Response, apiKey: string): Promise<string> 
   const body = await res.text().catch(() => '');
   let reason = '';
   try {
-    const err = (JSON.parse(body) as { error?: unknown }).error;
-    if (typeof err === 'string') reason = err;
-    else if (err && typeof (err as { message?: unknown }).message === 'string') reason = (err as { message: string }).message;
-  } catch { reason = body.trim(); }
-  const said = reason ? ` (server: "${reason.slice(0, 120)}")` : '';
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown; detail?: unknown } | null;
+    const err = parsed?.error;
+    const msg = typeof err === 'string' ? err
+      : typeof (err as { message?: unknown } | null)?.message === 'string' ? (err as { message: string }).message
+      : typeof parsed?.message === 'string' ? parsed.message
+      : typeof parsed?.detail === 'string' ? parsed.detail
+      : '';
+    reason = msg;
+  } catch { /* not JSON — fall back to the raw body below */ }
+  if (!reason) reason = body;
+  reason = reason.replace(/\s+/g, ' ').trim().slice(0, 120);
+  const said = reason ? ` (server: "${reason}")` : '';
   return apiKey.trim().length === 0
-    ? `${res.status}: the endpoint requires an API key, and none is saved here${said}. Paste the key from your bridge config into the API key field.`
-    : `${res.status}: the endpoint rejected the API key${said}. It doesn't match the key in your bridge config — re-run setup step 2 to write this key in, or paste the config's key here.`;
+    ? `${res.status}: the endpoint requires an API key, and none is saved here${said}. Paste the key the endpoint expects into the API key field.`
+    : `${res.status}: the endpoint rejected the API key${said}. It doesn't match the key the endpoint expects — paste the right one here, or for a CLIProxyAPI bridge re-run setup step 2 to write this key into its config.`;
 }
 
 function authHeaders(apiKey: string): HeadersInit {

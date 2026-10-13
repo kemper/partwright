@@ -58,6 +58,12 @@ export function generateApiKey(): string {
   return 'pw-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** True for a key generateApiKey() made — the only kind step 2 reuses, since
+ *  it is shell/sed-safe and KEY_PATTERN can replace it on a later re-run. */
+export function isGeneratedApiKey(key: string): boolean {
+  return /^pw-[0-9a-f]{48}$/.test(key);
+}
+
 type OsKey = 'mac' | 'windows' | 'other';
 
 interface OsSpec {
@@ -107,8 +113,8 @@ function detectOs(): OsKey {
 }
 
 export function CliBridgeSetup(props: {
-  /** The key step 2 writes into the config: the one already saved for the
-   *  endpoint when there is one, else a freshly generated key. */
+  /** The key step 2 writes into the config: the saved endpoint key when it
+   *  is one generateApiKey() made, else a freshly generated key. */
   apiKeyExample: string;
   onUseEndpoint: (url: string) => void;
 }) {
@@ -179,7 +185,7 @@ export function CliBridgeSetup(props: {
             onClick={() => props.onUseEndpoint(CLI_BRIDGE_ENDPOINT)}
           />
           <p class="text-[10px] text-zinc-500">
-            Fills the <strong>Base URL</strong> below and tests it. Then paste your key with <strong>Use this key</strong> in the API key field, click <strong>Fetch models</strong>, and pick a <code>claude-…</code> model.
+            Fills the <strong>Base URL</strong> below and tests it. Then paste your key with <strong>Use the bridge key</strong> in the API key field, click <strong>Fetch models</strong>, and pick a <code>claude-…</code> model.
           </p>
         </Step>
 
