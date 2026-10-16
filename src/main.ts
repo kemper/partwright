@@ -126,6 +126,8 @@ import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
+import { parse3MF, weldMesh, type ThreeMFParseResult } from './import/parsers/threemf';
+import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
@@ -163,6 +165,7 @@ import {
   isPaletteConstrained, setPaletteConstrained,
   addFilament, updateFilament, removeFilament,
   listPalettes, createPalette, setActivePalette, getActivePaletteId, getActivePaletteName,
+  getPaletteSlots,
 } from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
@@ -2788,10 +2791,19 @@ async function main() {
   // mesh import's own regions) onto the just-run mesh and repaint. Shared by the
   // mesh-placement helpers so relief's colours survive into whatever
   // part/session the import-target modal sends them to.
-  function seedImportRegions(seedRegions: SeedRegion[] | undefined): void {
+  //
+  // A function seeder is evaluated against the mesh the import wrapper just
+  // produced — for imports whose colours are keyed to their SOURCE triangle
+  // order (3MF), which Manifold.ofMesh reorders, so ids can only be resolved
+  // after the run.
+  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData) => SeedRegion[]);
+  function seedImportRegions(seedInput: SeedRegionsInput | undefined): void {
+    const seedRegions = typeof seedInput === 'function'
+      ? (currentMeshData ? seedInput(currentMeshData) : [])
+      : seedInput;
     if (!seedRegions || seedRegions.length === 0) return;
     for (const seed of seedRegions) {
-      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
+      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
     }
     if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
   }
@@ -2803,7 +2815,7 @@ async function main() {
   // so the imports survive a reload and so future saveVersion calls (which
   // carry forward `importedMeshes` from the prior version) have something to
   // build on.
-  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegion[] } = { manifold: true }): Promise<{ sessionId: string }> {
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
     // Fresh session: drop the previous model's paint before running the import
@@ -3320,7 +3332,7 @@ async function main() {
     const source = classifyImportSource(file.name);
     if (!source) {
       showToast(
-        `Unsupported file type: ${file.name}. Supported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`,
+        `Unsupported file type: ${file.name}. Supported: .partwright.json, .js, .scad, .stl, .3mf, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`,
         { variant: 'warn', source: 'import' },
       );
       return false;
@@ -3368,6 +3380,9 @@ async function main() {
         if (parsed) {
           committed = await placeImportedMesh(parsed, file.name);
         }
+      } else if (source === '3MF') {
+        const parsed = await parse3MFFile(file);
+        if (parsed) committed = await place3MFImport(parsed, file.name);
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
@@ -3546,7 +3561,7 @@ async function main() {
     if (!source) {
       clearTimeout(timer);
       controller.abort();
-      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .step / .stp, .svg, .vox, or an image.');
+      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .3mf, .step / .stp, .svg, .vox, or an image.');
     }
 
     // Stream the body with a hard byte cap as a backstop for servers that omit
@@ -3945,11 +3960,16 @@ async function main() {
       return null;
     }
     if (parsed.isManifold) return { mesh: parsed.mesh, isManifold: true };
+    if (!(await confirmRenderOnlyImport(file.name, parsed))) return null;
+    return { mesh: parsed.mesh, isManifold: false };
+  }
 
-    // All tolerances failed. Offer render-only fallback — most users importing
-    // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
-    const accepted = await confirmDialog(
-      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+  /** All weld tolerances failed. Offer the render-only fallback — most users
+   *  importing a Baby Yoda / Eiffel Tower scan just want to look at it, not
+   *  boolean-op it. Shared by the STL and 3MF file paths. */
+  async function confirmRenderOnlyImport(filename: string, parsed: Extract<ParsedSTLProbe, { isManifold: false }>): Promise<boolean> {
+    return confirmDialog(
+      `${filename} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
       `${parsed.triCount.toLocaleString()} triangles · ${parsed.vertCount.toLocaleString()} vertices · tried weld tolerances up to ${parsed.maxTried.toExponential(1)} · ${parsed.manifoldError}`,
@@ -3959,9 +3979,153 @@ async function main() {
         cancelLabel: 'Cancel',
       }
     );
-    if (!accepted) return null;
+  }
 
-    return { mesh: parsed.mesh, isManifold: false };
+  /** A parsed 3MF: the (possibly welded) mesh probe, the parse result (palette,
+   *  per-triangle colours, object summary) and the source mesh in the SAME
+   *  triangle order as `result.triColor` — the colour seeder maps from it. */
+  interface Parsed3MF {
+    probe: ParsedSTLProbe;
+    result: ThreeMFParseResult;
+    source: MeshData;
+  }
+
+  /** Non-interactive 3MF parse: unzip + parse, then the same manifold probe as
+   *  STL (raw indexed mesh first, then the weld-tolerance ladder — welding keeps
+   *  triangle order, so colours stay aligned). Throws on an unreadable package. */
+  async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
+    const result = await parse3MF(bytes);
+    const raw = result.mesh;
+    const first = tryConstructManifold(raw);
+    if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: true }, result, source: raw };
+    const bbox = bboxFromMesh(raw);
+    const diag = bbox
+      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+      : 0;
+    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, Math.max(diag * 5e-6, 1e-6)];
+    let manifoldError: string | null = first.error;
+    let maxTried = 0;
+    for (const tol of tolerances) {
+      const welded = weldMesh(raw, tol);
+      const trial = tryConstructManifold(welded);
+      if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, '3mf'), isManifold: true }, result, source: welded };
+      manifoldError = trial.error;
+      if (tol > maxTried) maxTried = tol;
+    }
+    return {
+      probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: false, manifoldError, maxTried, triCount: raw.numTri, vertCount: raw.numVert },
+      result,
+      source: raw,
+    };
+  }
+
+  /** Interactive 3MF parse for the file picker / drop / re-import paths: toasts
+   *  on an unreadable file and asks before falling back to render-only. */
+  async function parse3MFFile(file: File): Promise<{ parsed: ParsedSTL; p3: Parsed3MF } | null> {
+    let p3: Parsed3MF;
+    try {
+      p3 = await parse3MFBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    } catch (e) {
+      showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
+      return null;
+    }
+    if (p3.probe.isManifold) return { parsed: { mesh: p3.probe.mesh, isManifold: true }, p3 };
+    if (!(await confirmRenderOnlyImport(file.name, p3.probe))) return null;
+    return { parsed: { mesh: p3.probe.mesh, isManifold: false }, p3 };
+  }
+
+  /** Bind a 3MF's palette to the user's palette collection and return the slot
+   *  id for each palette entry. Reuses an existing palette with the same name
+   *  and identical colours (re-importing the same file doesn't pile up
+   *  duplicates); otherwise creates one. Either way it becomes the ACTIVE
+   *  palette, so the imported colours read as on-palette filament slots and
+   *  export maps them back onto the same AMS/MMU slots. Very large material
+   *  palettes (per-vertex-coloured scans) aren't a filament set — skipped. */
+  function adopt3MFPalette(name: string, palette: ThreeMFParseResult['palette']): string[] | null {
+    if (palette.length === 0 || palette.length > 32) return null;
+    for (const p of listPalettes()) {
+      if (p.name !== name) continue;
+      const slots = getPaletteSlots(p.id);
+      if (slots && slots.length === palette.length && slots.every((s, i) => s.hex.toLowerCase() === palette[i].hex)) {
+        setActivePalette(p.id);
+        return slots.map(s => s.id);
+      }
+    }
+    createPalette(name, palette.map((entry, i) => ({ id: `3mf-${i}`, name: entry.name, hex: entry.hex, td: 1 })));
+    return listFilaments().map(s => s.id);
+  }
+
+  interface ThreeMFColorInfo { paletteName: string | null; coloredTriangles: number; colors: number }
+
+  /** Colour seeder for a 3MF import. Manifold.ofMesh reorders triangles, so the
+   *  source's per-triangle colours can only be keyed AFTER the import wrapper
+   *  runs: each output triangle maps to its nearest source triangle by centroid
+   *  and takes that triangle's palette entry, grouped into one region per
+   *  colour. Only exact centroid matches are coloured, so geometry composed in
+   *  from the current object keeps its own look. The palette is adopted lazily
+   *  here — i.e. only once the user actually placed the import (a cancelled
+   *  target modal never creates a palette). */
+  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData) => SeedRegion[]; info: ThreeMFColorInfo } | undefined {
+    const { result, source } = p3;
+    if (result.colorSource === 'none' || result.palette.length === 0) return undefined;
+    const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0 };
+    const seed = (out: MeshData): SeedRegion[] => {
+      const slotIds = adoptPalette ? adopt3MFPalette(paletteName, result.palette) : null;
+      if (slotIds) info.paletteName = paletteName;
+      const bbox = bboxFromMesh(source);
+      const diag = bbox
+        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+        : 1;
+      const eps2 = (Math.max(diag, 1e-3) * 1e-5) ** 2;
+      const nearest = nearestTriangleMap(source, out);
+      const sv = source.vertProperties, st = source.triVerts, sp = source.numProp;
+      const ov = out.vertProperties, ot = out.triVerts, op = out.numProp;
+      const groups = new Map<number, number[]>();
+      for (let t = 0; t < out.numTri; t++) {
+        const o = nearest[t];
+        if (o < 0) continue;
+        const colorIdx = result.triColor[o];
+        if (colorIdx < 0) continue;
+        let d2 = 0;
+        for (let k = 0; k < 3; k++) {
+          const sc = (sv[st[o * 3] * sp + k] + sv[st[o * 3 + 1] * sp + k] + sv[st[o * 3 + 2] * sp + k]) / 3;
+          const oc = (ov[ot[t * 3] * op + k] + ov[ot[t * 3 + 1] * op + k] + ov[ot[t * 3 + 2] * op + k]) / 3;
+          d2 += (sc - oc) ** 2;
+        }
+        if (d2 > eps2) continue;
+        let ids = groups.get(colorIdx);
+        if (!ids) { ids = []; groups.set(colorIdx, ids); }
+        ids.push(t);
+      }
+      const regions: SeedRegion[] = [];
+      for (const [idx, ids] of [...groups].sort((a, b) => a[0] - b[0])) {
+        const entry = result.palette[idx];
+        regions.push({ name: entry.name, color: hexToRgb(entry.hex), triangleIds: ids, slotId: slotIds?.[idx] });
+        info.coloredTriangles += ids.length;
+      }
+      info.colors = regions.length;
+      return regions;
+    };
+    return { seed, info };
+  }
+
+  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined): string {
+    const parts = [`Imported ${filename}: ${result.mesh.numTri.toLocaleString()} triangles`];
+    if (info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
+    let msg = parts.join(', ');
+    if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
+    if (result.skippedParts > 0) msg += `. Skipped ${result.skippedParts} modifier/support part${result.skippedParts === 1 ? '' : 's'}`;
+    return msg + '.';
+  }
+
+  /** Place a parsed 3MF through the shared mesh-import target flow, colouring it
+   *  from the file's filament / material assignments. */
+  async function place3MFImport({ parsed, p3 }: { parsed: ParsedSTL; p3: Parsed3MF }, filename: string): Promise<boolean> {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, true);
+    const placed = await placeImportedMesh(parsed, filename, seeder?.seed);
+    if (placed) showToast(describe3MFImport(filename, p3.result, seeder?.info), { variant: 'success', source: 'import' });
+    return placed;
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -4052,7 +4216,7 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -4264,7 +4428,7 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
    *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
     await applyImportWrapper([mesh], manifold, seedRegions);
@@ -4405,7 +4569,7 @@ async function main() {
   }
 
   /** Compose the imported mesh with the current part's existing geometry. */
-  async function composeMeshIntoCurrentPart(mesh: ImportedMesh): Promise<boolean> {
+  async function composeMeshIntoCurrentPart(mesh: ImportedMesh, seedRegions?: SeedRegionsInput): Promise<boolean> {
     const cur = getState().currentPart;
     if (!cur) return false;
     const baked = await bakePartComponents(cur.id, cur.name);
@@ -4413,15 +4577,15 @@ async function main() {
       showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
-    await applyImportWrapper([...baked, mesh], true);
+    await applyImportWrapper([...baked, mesh], true, seedRegions);
     return true;
   }
 
   /** Decide where a freshly-parsed STL mesh lands. With no session open it
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
-  async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
-    const placed = await placeImportedMeshInner(parsed, filename);
+  async function placeImportedMesh(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
+    const placed = await placeImportedMeshInner(parsed, filename, seedRegions);
     // Post-import ask: offer to rebuild a fresh STL import as editable code,
     // with the same settings panel the Tools pill opens. Interactive path only
     // (importMeshData / console imports stay prompt-free for agents); render-
@@ -4435,7 +4599,7 @@ async function main() {
     return placed;
   }
 
-  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string): Promise<boolean> {
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -4450,7 +4614,7 @@ async function main() {
     // a fresh session named after the file. The target modal only exists to
     // protect real work, and a fresh/expendable editor has none to protect.
     if (!state.session || currentPartIsExpendable()) {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
       return true;
     }
 
@@ -4470,17 +4634,17 @@ async function main() {
     if (!target) return false;
 
     if (target === 'new-session') {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
       return true;
     }
     if (target === 'new-part') {
       await preserveCurrentEditsIfNeeded();
-      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
+      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
       return true;
     }
     // current-part: compose the imported mesh into the existing real work.
     await preserveCurrentEditsIfNeeded();
-    return composeMeshIntoCurrentPart(parsed.mesh);
+    return composeMeshIntoCurrentPart(parsed.mesh, seedRegions);
   }
 
   /** Place an imported code file (JS / SCAD) into the session, showing a target
@@ -4653,6 +4817,12 @@ async function main() {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
         const parsed = await parseSTLFile(file);
         if (parsed) await placeImportedMesh(parsed, entry.filename);
+        return;
+      }
+      if (entry.source === '3MF') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        const parsed = await parse3MFFile(file);
+        if (parsed) await place3MFImport(parsed, entry.filename);
         return;
       }
       // Image / SVG re-imports reopen the same importer that produced them,
@@ -10962,7 +11132,14 @@ async function main() {
       return { sessionId: result.sessionId };
     },
 
-    /** Import an STL mesh (binary or ASCII) from base64-encoded bytes as a new
+    /** Import an STL mesh (binary or ASCII) or a 3MF package from base64-encoded
+     *  bytes as a new session. 3MF (detected by a `.3mf` filename or ZIP magic)
+     *  also carries its colours: Bambu/Orca/Prusa filament assignments + MMU
+     *  painting, or plain-3MF base materials / colour groups, land as paint
+     *  regions, and the file's filament palette becomes the active palette
+     *  (`opts.adoptPalette: false` to skip that); the return adds `format`,
+     *  `flavor`, `colorSource`, `palette`, `colorRegions`, `activePalette`, and
+     *  `objects`. STL is a new
      *  session — the programmatic equivalent of the Import → choose-file flow for
      *  STL (which an agent can't reach: there's no file picker). The mesh is
      *  welded across a tolerance ladder; when it forms a clean manifold it's
@@ -10972,12 +11149,13 @@ async function main() {
      *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
      *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
      *  vertexCount }` or `{ error }`. */
-    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string; adoptPalette?: boolean } = {}) {
       const check = guard(() => {
         assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
         assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
         assertObject(opts, 'importMeshData(opts)', { optional: true });
         assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
+        if (opts?.adoptPalette !== undefined) assertBoolean(opts.adoptPalette, 'importMeshData(opts.adoptPalette)');
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       let bytes: Uint8Array;
@@ -10988,6 +11166,30 @@ async function main() {
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       } catch {
         return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      }
+      if (/\.3mf$/i.test(filename) || looksLikeZip(bytes)) {
+        let p3: Parsed3MF;
+        try {
+          p3 = await parse3MFBytes(bytes, filename);
+        } catch (e) {
+          return { error: `Could not parse "${filename}" as a 3MF file: ${(e as Error).message}` };
+        }
+        const base = filename.replace(/\.[^.]+$/, '');
+        const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, opts?.adoptPalette !== false);
+        const { sessionId } = await importMeshPayload(p3.probe.mesh, opts?.sessionName ?? base, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
+        return {
+          sessionId,
+          isManifold: p3.probe.isManifold,
+          triangleCount: p3.probe.mesh.numTri,
+          vertexCount: p3.probe.mesh.numVert,
+          format: '3mf',
+          flavor: p3.result.flavor,
+          colorSource: p3.result.colorSource,
+          palette: p3.result.palette.map(e => ({ name: e.name, hex: e.hex })),
+          colorRegions: seeder?.info.colors ?? 0,
+          activePalette: seeder?.info.paletteName ?? null,
+          objects: p3.result.objects,
+        };
       }
       const parsed = parseSTLBytes(bytes, filename);
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
@@ -16092,7 +16294,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
-        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, adoptPalette?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried) as a new session -> {sessionId, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },

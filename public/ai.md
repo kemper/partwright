@@ -323,7 +323,7 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
-await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
+await partwright.importMeshData(base64, filename, {sessionName?, adoptPalette?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + makes its filament palette active (adds palette, colorRegions, activePalette, objects). isManifold:false = render-only (no booleans/paint/slicing).
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
