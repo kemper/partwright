@@ -136,4 +136,31 @@ test.describe('smooth bucket fills', () => {
     expect(r.noSmooth.error).toContain('smoothness only applies');
     expect(r.tooBig.error).toContain('smoothness must be');
   });
+
+  test('a smooth fill on a non-active object still exports in a multi-object 3MF', async () => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.createSession('smooth-fill-export');
+      pw.clearColors();
+      await pw.runAndSave('return api.Manifold.sphere(10, 32);', 'ball');
+      pw.paintConnected({ seed: { point: [0, 0, -10] }, maxDeviationDeg: 180, zMax: 0, color: [1, 0, 0], name: 'red', smooth: true });
+      await pw.runAndSave(pw.getCode(), 'ball painted');
+      // A second object becomes active; the ball is now baked off-editor.
+      await pw.createPart('Box');
+      await pw.runAndSave('return api.Manifold.cube([10, 10, 10], true).translate([100, 0, 0]);', 'box');
+      const r = await pw.export3MFPartsData(undefined, 'probe', {});
+      if (r.error) return { error: r.error as string };
+      const bin = atob(r.base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return { parts: r.parts as number, hasRed: /#FF0000/i.test(new TextDecoder('latin1').decode(bytes)) };
+    });
+    expect(out.error).toBeUndefined();
+    expect(out.parts).toBe(2);
+    // Before the fix the fill re-flooded on the ACTIVE object's mesh and the
+    // ball exported unpainted.
+    expect(out.hasRed).toBe(true);
+  });
 });

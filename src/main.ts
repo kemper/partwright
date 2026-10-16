@@ -1234,10 +1234,14 @@ function resolveDescriptorTriangles(
   /** Id of the region being resolved, when known. Used by `colorFlood` to read
    *  the surface color *beneath* itself (excluding its own stamp). */
   selfRegionId?: number,
+  /** Pristine base mesh `mesh` was refined from — what a smooth fill re-floods
+   *  and blurs on. Defaults to the live paint base; callers resolving a mesh
+   *  that isn't the active object's (multi-part export bake) pass that mesh. */
+  base?: MeshData,
 ): ResolveResult {
   switch (descriptor.kind) {
     case 'coplanar': {
-      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, paintBaseMesh ?? mesh, mesh, adjacency) };
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, base ?? paintBaseMesh ?? mesh, mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
@@ -1285,7 +1289,7 @@ function resolveDescriptorTriangles(
       return { triangles: ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>() };
     }
     case 'connectedFromSeed': {
-      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, paintBaseMesh ?? mesh, mesh, adjacency) };
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, base ?? paintBaseMesh ?? mesh, mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
       return { triangles: resolveConnectedFromSeed(descriptor, mesh, adjacency) };
     }
@@ -4197,7 +4201,7 @@ async function main() {
       for (const op of result.paintOps) {
         const d = op.descriptor as RegionDescriptor;
         if (needsAdjacency(d)) ensureAdjacency();
-        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, mesh);
         if (triangles.size > 0) modelLayer.push(mkRegion(op.color, triangles, perTriColors));
       }
     }
@@ -4207,7 +4211,10 @@ async function main() {
     for (const region of versionColorRegions(version)) {
       const d = region.descriptor;
       if (needsAdjacency(d)) ensureAdjacency();
-      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+      // This is a non-active object's own mesh — not the live paint base — so
+      // a smooth fill must re-flood on it. (Unclipped here: the bake has no
+      // refine step, so the fill resolves at this mesh's triangle resolution.)
+      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, mesh);
       if (triangles.size > 0) {
         manualLayer.push({
           id: ++order, name: region.name, color: region.color, source: region.source,

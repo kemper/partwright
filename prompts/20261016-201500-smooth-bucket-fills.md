@@ -62,3 +62,20 @@ cylinders along z. main.ts now uses the shared `descriptorRefines` /
 **Scope kept out:** the interactive bucket tool in the paint panel doesn't get
 a smooth toggle in this PR (API/AI only, as the agent asked) — tracked as a
 follow-up. Colour-mode bucket (`colorFlood`) isn't smoothable yet either.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**Multi-object export (blocking).** `resolveDescriptorTriangles` re-flooded a
+smooth fill on `paintBaseMesh` — the *active* object's base — so a non-active
+object baked for a multi-part 3MF/GLB exported its smooth fill blank (or onto
+the wrong faces if the objects overlapped). The resolver now takes an explicit
+`base`, and the export bake passes the object's own mesh. A new e2e test reads
+the exported 3MF back; verified it fails without the fix (no fill colour).
+
+**Documented, not fixed:** a later smooth image stamp re-bases the mesh, so a
+smooth fill's live edge can drift slightly from the reloaded one (the coverage
+field depends on the base tessellation, unlike the analytic smooth shapes);
+non-active objects export at triangle resolution (the bake has no clip step).
+Both are rare, and caching the field against the run base is a larger change.
