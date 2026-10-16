@@ -313,6 +313,8 @@ const ALL_TOOLS: ToolDefinition[] = [
         withinBox: { type: 'object', description: 'Spatial clamp {min?: [x,y,z], max?: [x,y,z]} — the flood never walks into a triangle whose centroid is outside this box. Use it to stop a fill leaking across a crease-less join (sleeve→hand, collar→neck, sock→leg). Either side may be omitted.' },
         zMin: { type: 'number', description: 'Shortcut clamp: never flood below this Z (AND-ed with withinBox).' },
         zMax: { type: 'number', description: 'Shortcut clamp: never flood above this Z (AND-ed with withinBox).' },
+        smooth: { type: 'boolean', description: 'Smooth the fill boundary: instead of stopping on whole triangles (a sawtooth edge on coarse/scanned meshes), the mesh is cut along a blurred version of the fill edge so it reads as a clean line. Only the boundary gains triangles. Use for hems, sock tops, hairlines, collars.' },
+        smoothness: { type: 'integer', description: 'With smooth: blur passes (0–32, default 4). Higher rounds the edge more and irons out bigger wiggles; very thin fills can blur away (the call then errors).' },
       },
       required: ['seed', 'color'],
     },
@@ -490,6 +492,8 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name.' },
         toleranceDeg: { type: 'number', description: 'Max bend angle in DEGREES (0–180) the flood may cross between ADJACENT faces. Default ≈1.8 (flat faces only); ~12 follows a 32-sided cylinder; 180 floods the whole connected mesh. On smooth/organic meshes this is all-or-nothing — use paintConnected instead.' },
+        smooth: { type: 'boolean', description: 'Smooth the fill boundary (cut the mesh along a blurred fill edge instead of stopping on whole triangles). Same as paintConnected.smooth.' },
+        smoothness: { type: 'integer', description: 'With smooth: blur passes (0–32, default 4).' },
       },
       required: ['point', 'color'],
     },
@@ -686,7 +690,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'editRegion',
-    description: 'Clean up an existing painted region IN PLACE (same id/name/colour/layer; one undoLastPaint step). op "grow": add `steps` rings of neighbouring triangles (closes hairline gaps; clamp with withinBox/zMin/zMax so it cannot leak). op "shrink": peel `steps` rings off its border (pulls a ragged fill back off a neighbour). op "despeckle": drop islands smaller than minIslandTriangles and fill enclosed unpainted holes of ≤ maxHoleTriangles (both default 10; 0 skips) — use after a bucket fill leaves specks. op "union"/"subtract"/"intersect": combine with the `with` region(s); only `region` changes. Tip: grow 1 then shrink 1 fills notches biting in from the border (despeckle only fills enclosed holes); shrink 1 then grow 1 removes thin spurs. These follow mesh triangles, so they clean specks and gaps but do NOT make a jagged edge smooth — for that use a smooth tool (paintSlab / paintInOrientedBox / paintStroke). Smooth (mesh-refining) and image/pattern regions cannot be edited.',
+    description: 'Clean up an existing painted region IN PLACE (same id/name/colour/layer; one undoLastPaint step). op "grow": add `steps` rings of neighbouring triangles (closes hairline gaps; clamp with withinBox/zMin/zMax so it cannot leak). op "shrink": peel `steps` rings off its border (pulls a ragged fill back off a neighbour). op "despeckle": drop islands smaller than minIslandTriangles and fill enclosed unpainted holes of ≤ maxHoleTriangles (both default 10; 0 skips) — use after a bucket fill leaves specks. op "union"/"subtract"/"intersect": combine with the `with` region(s); only `region` changes. Tip: grow 1 then shrink 1 fills notches biting in from the border (despeckle only fills enclosed holes); shrink 1 then grow 1 removes thin spurs. These follow mesh triangles, so they clean specks and gaps but do NOT make a jagged edge smooth — for that repaint the fill with smooth: true (paintConnected / paintRegion), or use paintSlab / paintInOrientedBox / paintStroke. Smooth (mesh-refining) and image/pattern regions cannot be edited.',
     input_schema: {
       type: 'object',
       properties: {

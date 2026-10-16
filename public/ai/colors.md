@@ -549,18 +549,31 @@ partwright.paintConnected({
 });
 ```
 
-**Clean (non-jagged) fill boundaries.** `paintRegion`, `paintConnected`, `paintNear`, `paintInBox` and `paintFaces` select *whole existing triangles*, so on a coarse or scanned mesh their boundary is a sawtooth that follows the triangulation. Recolouring specks afterwards doesn't fix that. The tools that cut the boundary through triangles instead (subdividing only along the edge) are:
+**Clean (non-jagged) fill boundaries — `smooth: true`.** `paintRegion`, `paintConnected`, `paintNear`, `paintInBox` and `paintFaces` select *whole existing triangles*, so on a coarse or scanned mesh their boundary is a sawtooth that follows the triangulation. Recolouring specks afterwards doesn't fix that. Pass **`smooth: true`** to `paintConnected` or `paintRegion` and the fill's edge is cut *through* the triangles instead:
+
+```js
+partwright.paintConnected({
+  seed: { point: hit.point, normal: hit.normal },
+  maxDeviationDeg: 70,
+  zMax: 18.5,                 // clamp so it can't leak (see above)
+  smooth: true,               // clean boundary instead of the triangle sawtooth
+  smoothness: 4,              // optional: blur passes 0–32 (default 4)
+  color: [0.95, 0.95, 0.95],
+  name: 'sock',
+});
+// -> { id, name, triangles, bbox, centroid, smooth: true, smoothness: 4 }
+```
+
+How it works: the fill is re-flooded on the original (pristine) mesh, each vertex gets the fraction of its surrounding area that's inside the fill, that coverage is blurred `smoothness` times across the surface (only near the edge), and the mesh is cut along where the blurred coverage crosses 50%. The teeth average out into a clean line that runs *through* triangles — one straight segment per triangle it crosses, so a very coarse mesh shows a gentle polyline rather than a curve. Only boundary triangles are split (no subdivision of the interior), and like the other smooth tools it replays on reload and survives undo/redo. Higher `smoothness` irons out bigger wiggles but rounds sharp corners of the fill and can erase a fill that's only a few triangles wide (the call then errors — lower it or drop `smooth`).
+
+Other tools that cut the boundary through triangles:
 
 | Boundary you want | Tool |
 |---|---|
-| Straight / planar cut — a hem, a sock roll, a belt line, a waterline | `paintSlab({normal, offset, thickness, smooth: true})` or `paintInOrientedBox({box, smooth: true})` (both smooth by default). Tilt the slab `normal` to follow a slanted hem. |
+| Follows the fill's own shape — a hem, a sock top, a hairline on a scan | `paintConnected` / `paintRegion` with `smooth: true` |
+| Straight / planar cut — a belt line, a waterline, a level hem | `paintSlab({normal, offset, thickness, smooth: true})` or `paintInOrientedBox({box, smooth: true})` (both smooth by default). Tilt the slab `normal` to follow a slanted hem. |
 | Cylindrical band — a cuff, a ring around a limb | `paintInCylinder({..., axis, smooth: true})` |
-| Free-form line with no crease to stop at — a hairline, a collar curve | `paintStroke` along `probePixel` points with `wrapAngleDeg: 90`: the stroke's outline is clipped exactly, so its edge is smooth however coarse the mesh. Sweep the stroke along the boundary to "trim" a jagged fill underneath it. |
-
-A practical recipe for a feature with one jagged edge (a sock whose top should be a clean line at `z = 18.5`):
-
-1. Flood the bulk with `paintConnected`, clamped a triangle-width **short** of the line (`zMax: 18.5 - edgeLen`, where `edgeLen` is roughly the mesh's edge length there) so none of its sawteeth cross the line.
-2. Fill the gap up to the line with a smooth tool in the **same colour** — e.g. `paintSlab({axis: 'z', offset: 17, thickness: 1.5, smooth: true, color})`. Later regions win where they overlap, so do this **after** any neighbouring fill (the skin), and the smooth tool's outline is the visible edge.
+| A line you draw yourself, independent of any fill — a curved stripe | `paintStroke` along `probePixel` points with `wrapAngleDeg: 90`: the stroke's outline is clipped exactly. |
 
 The seed point returned by `probePixel` is *exactly* on the mesh surface (raycast result, not a snap), so paint primitives that need precise seed placement (`paintRegion` in particular) work without seed-tolerance issues. The model's pixel-position estimation has built-in error (~±10-20px on a 320 render); `paintConnected` absorbs that fine since the seed normal anchors the flood. For `paintNear`, pick a radius generous enough for the same.
 
@@ -628,7 +641,8 @@ partwright.paintInOrientedBox({
 
 - **Re-resolvable analytic descriptors** — `paintSlab`, `paintInOrientedBox`, `paintInCylinder`, and `paintStroke` persist *what they meant* (the slab plane, oriented box, cylindrical shell, or brush path), not a fixed triangle list. On every reconcile they re-collect against the live mesh, so they **survive both subdivision and a model re-run**, and their boundary can be subdivided for a clean edge (smoothing is on by default for these). These are the robust choice.
 - **`paintByLabel`** is the most durable of all: it re-resolves by *name* from the label map each time, so it tracks the geometry through any re-tessellation as long as the label exists. If a feature is its own part, `api.label(part, "handle")` it in the model code and `paintByLabel("handle", color)` — no coordinates to guess.
-- **Id-baking selectors** — `paintInBox`, `paintNear`, `paintFaces`, `paintConnected` — lock onto the *current* tessellation and store raw triangle ids. They **cannot be smoothed** (refine the mesh first with `.refine(n)` if you need a finer edge), and their ids are valid only against the base mesh they were taken on. They are carried across in-session subdivision via a parent→children remap, but a **model re-run replaces the base mesh and the ids no longer point at the same surface** — that's the usual cause of a previously-good region reporting `triangleCount: 0` or landing on the wrong faces. After any code change, repaint id-baked regions or, better, re-express them as an analytic/`byLabel` descriptor.
+- **Seed fills** — `paintRegion`, `paintConnected` — store the seed point/normal and tolerance (plus any clamp), and re-flood from it on every reconcile. With `smooth: true` they also cut a clean edge and replay it like the analytic descriptors above.
+- **Id-baking selectors** — `paintInBox`, `paintNear`, `paintFaces` (and region edits like `growRegion`) — lock onto the *current* tessellation and store raw triangle ids. They **cannot be smoothed** (refine the mesh first with `.refine(n)` if you need a finer edge), and their ids are valid only against the base mesh they were taken on. They are carried across in-session subdivision via a parent→children remap, but a **model re-run replaces the base mesh and the ids no longer point at the same surface** — that's the usual cause of a previously-good region reporting `triangleCount: 0` or landing on the wrong faces. After any code change, repaint id-baked regions or, better, re-express them as an analytic/`byLabel` descriptor.
 
 > **Ordering heuristic:** prefer the durable forms (analytic descriptors, `paintByLabel`) so order doesn't matter. If you must use id-baked selectors alongside smoothing paints, commit the mesh-changing ops first (or keep them in a single saved version), since a later subdivision/re-run is what disturbs raw ids.
 
@@ -723,9 +737,9 @@ partwright.removeRegion(/* the touch-up's id */);
 - **One step = one ring of triangles** (triangles that share a corner). The ops follow the surface, so they don't jump across a gap the way a box would — but a grow will happily follow the surface across a crease-less join, so clamp it with `withinBox` / `zMin` / `zMax` (by triangle centroid).
 - **Close / open.** `growRegion(1)` then `shrinkRegion(1)` is a morphological *close*: it fills notches that bite into the region from its border (which despeckle leaves alone — they're open to the outside, not enclosed holes) while keeping the border where it was. `shrinkRegion(1)` then `growRegion(1)` is an *open*: it removes thin spurs and one-triangle slivers poking out of it.
 - **Despeckle never erases a region outright** — the largest piece is always kept, and a "hole" must touch the region (a separate mesh piece isn't filled). Pass `0` to skip either half.
-- **They clean up specks and gaps; they don't smooth a jagged edge.** Grow/shrink move a sawtooth boundary by one triangle — it's still a sawtooth. For a clean line use a smooth selector (see *Clean (non-jagged) fill boundaries* above).
+- **They clean up specks and gaps; they don't smooth a jagged edge.** Grow/shrink move a sawtooth boundary by one triangle — it's still a sawtooth. For a clean line repaint the fill with `smooth: true` (see *Clean (non-jagged) fill boundaries* above).
 - **Edits rebake the region as an id-baked triangle set** (the same kind `paintFaces` makes), so the original selector (seed, box, label) is no longer replayed for it — re-run the edit after a code change. On a mesh that smooth paint has subdivided, the stored ids are the *base* triangles under the edit, so after a later rebuild or reload the region snaps out to whole base triangles (same as the paint brush).
-- **Not editable:** smooth (mesh-refining) regions — smooth slabs/boxes/cylinders and brush strokes — because the edit would discard the refined edge they own, and image-stamp / pattern regions, which carry per-triangle colours.
+- **Not editable:** smooth (mesh-refining) regions — smooth fills, smooth slabs/boxes/cylinders and brush strokes — because the edit would discard the refined edge they own, and image-stamp / pattern regions, which carry per-triangle colours.
 
 In-app AI: one tool, `editRegion({op: 'grow'|'shrink'|'despeckle'|'union'|'subtract'|'intersect', region, …})`.
 
