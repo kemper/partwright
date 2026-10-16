@@ -140,3 +140,17 @@ describe('replaceRegion (region edit undo)', () => {
     expect(b.id).toBeGreaterThan(a.id);
   });
 });
+
+describe('despeckle on a low-poly closed piece', () => {
+  it('never fills the outside of a small region (cube top face)', () => {
+    // 12-triangle closed cube: the outside of a 2-triangle top face is one
+    // 10-triangle patch — under the default cap, but it is not a hole.
+    const v = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]].flat();
+    const f = [0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7];
+    const cube: MeshData = { vertProperties: new Float32Array(v), triVerts: new Uint32Array(f), numVert: 8, numTri: 12, numProp: 3 };
+    const { neighbors: nb } = buildAdjacency(cube);
+    const r = despeckleTriangles(new Set([2, 3]), nb, 12, { minIslandTriangles: 10, maxHoleTriangles: 10 });
+    expect(r.holesFilled).toBe(0);
+    expect([...r.triangles].sort()).toEqual([2, 3]);
+  });
+});

@@ -215,6 +215,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
+import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
@@ -1788,8 +1789,30 @@ function reresolveRegionsAgainstCurrentMesh(): void {
  *  then call this helper to do the same work the listener would have done —
  *  but inline, on the main thread, blocking until the refined region's
  *  triangles are populated. */
+/** Regions brought back by undo / redo / undo-clear carry the triangle set
+ *  they had when they left the list. If the working mesh changed meanwhile (a
+ *  re-run, a smooth stroke, a simplify), those ids point at the wrong faces, so
+ *  re-resolve them from their descriptors. On a refined mesh that needs the
+ *  base→refined map, i.e. a full rebuild. Returns true when it rebuilt (the
+ *  caller's reconcile is then already done). */
+function resolveStaleRestoredRegions(): boolean {
+  const stale = takeStaleRestoredRegions(currentMeshData);
+  if (stale.length === 0 || !currentMeshData) return false;
+  if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+    rebuildPaintedGeometry();
+    return true;
+  }
+  const adjacency = buildAdjacency(currentMeshData);
+  for (const r of stale) {
+    const { triangles, perTriColors } = resolveDescriptorTriangles(r.descriptor, currentMeshData, adjacency, null, r.id);
+    setRegionTriangles(r.id, triangles, perTriColors);
+  }
+  return false;
+}
+
 function reconcilePaintedGeometrySync(): void {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -1899,6 +1922,7 @@ async function reconcilePaintedGeometryAsync(): Promise<void> {
 
 async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -8543,6 +8567,9 @@ async function main() {
   // refine remaps them correctly. Reads live state: identity (no work) while the
   // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
   setTriangleToBaseMapper(currentToBaseTriangle);
+  // Lets the region store remember which mesh an off-list region's triangles
+  // index into (undo / clear / edit), so a stale restore can be detected.
+  setRegionMeshProvider(() => currentMeshData);
 
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
@@ -9749,6 +9776,9 @@ async function main() {
     if (result.added > 0 || result.removed > 0) {
       updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       syncLockState();
+    }
+    if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+      return { ...result, note: 'The mesh is subdivided by smooth paint: this edit is exact now, but it is stored as whole base triangles, so a later rebuild or reload snaps its edge out to them. Make region edits before adding smooth regions.' };
     }
     return result;
   }

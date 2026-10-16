@@ -168,4 +168,41 @@ test.describe('region clean-up ops', () => {
     // base triangles — still well clear of the equator band.
     expect(r.foot.bbox.max[2]).toBeLessThan(-2);
   });
+
+  test('undoing an edit after a re-run restores the original on the right faces, keeping later recolours', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run('return api.Manifold.cube([20, 20, 20], true);');
+      pw.paintRegion({ point: [0, 0, 10], normal: [0, 0, 1], color: [1, 0, 0], name: 'top' });
+      pw.growRegion({ region: 'top', steps: 1 });
+      pw.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] });
+      // Re-run with the cube flipped: every triangle id now means a different face.
+      await pw.run('return api.Manifold.cube([20, 20, 20], true).rotate([180, 0, 0]);');
+      const undo = pw.undoLastPaint();
+      const top = pw.listRegions().find((x: { name: string }) => x.name === 'top');
+      return { undo, top };
+    });
+    expect(r.undo.error).toBeUndefined();
+    // The original is a coplanar seed fill: re-resolved, it lands on the top
+    // face again (stale ids would have painted the bottom, z = -10).
+    expect(r.top.triangles).toBe(2);
+    expect(r.top.bbox.min[2]).toBeCloseTo(10, 4);
+    // Undo reverts the triangle edit only — the later recolour sticks.
+    expect(r.top.color).toEqual([0, 0, 1]);
+  });
+
+  test('despeckle on a low-poly cube leaves the rest of the cube alone', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run('return api.Manifold.cube([20, 20, 20], true);');
+      pw.paintRegion({ point: [0, 0, 10], color: [1, 0, 0], name: 'top' });
+      return pw.despeckleRegion({ region: 'top' });
+    });
+    expect(r.holesFilled).toBe(0);
+    expect(r.triangles).toBe(2);
+  });
 });

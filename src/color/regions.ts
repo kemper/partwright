@@ -27,6 +27,12 @@ export interface ColorRegion {
    *  restores this original instead of just deleting the edit. Never
    *  serialized. */
   replaces?: ColorRegion;
+  /** Transient: set when a region leaves the live list (undo, clear, or an
+   *  edit stashing its original) — the mesh its `triangles` index into then.
+   *  If the working mesh has changed by the time it comes back (redo, undo
+   *  clear, undoing an edit), its triangles are stale and the reconciler
+   *  re-resolves it from its descriptor (see `takeRestoredRegions`). */
+  trianglesFor?: MeshData;
   /** Transient op stamp: bumped when the region is added or edited, so undo
    *  reverses the most recent operation even when an edit kept the region in
    *  its original slot. Never serialized. */
@@ -152,6 +158,16 @@ let modelRegions: ColorRegion[] = [];
 let nextRegionId = 1;
 // Monotonic op counter behind `ColorRegion.seq` (see removeLastRegion).
 let opSeq = 0;
+// Supplies the live working mesh, so a region leaving the list (undo, clear,
+// edit) can remember which mesh its triangles index into (`trianglesFor`).
+// Registered by main.ts — the store itself never imports the paint pipeline.
+let meshTagProvider: () => MeshData | null = () => null;
+export function setRegionMeshProvider(fn: () => MeshData | null): void {
+  meshTagProvider = fn;
+}
+function tagOffList(r: ColorRegion): void {
+  r.trianglesFor = meshTagProvider() ?? undefined;
+}
 let visible = true;
 const listeners: ChangeListener[] = [];
 const visibilityListeners: ChangeListener[] = [];
@@ -325,8 +341,15 @@ export function removeLastRegion(): ColorRegion | null {
     if ((regions[i].seq ?? 0) > (regions[idx].seq ?? 0)) idx = i;
   }
   const region = regions[idx];
-  if (region.replaces) regions[idx] = region.replaces;
-  else regions.splice(idx, 1);
+  tagOffList(region);
+  if (region.replaces) {
+    // Carry later recolour / rename / visibility / slot changes back, so undo
+    // reverts only the triangle edit.
+    copyUserFields(region, region.replaces);
+    regions[idx] = region.replaces;
+  } else {
+    regions.splice(idx, 1);
+  }
   regionRedoStack.push(region);
   notifyRedo();
   notify();
@@ -338,11 +361,35 @@ export function redoLastRegion(): ColorRegion | null {
   const region = regionRedoStack.pop() ?? null;
   if (!region) return null;
   const slot = region.replaces ? regions.indexOf(region.replaces) : -1;
-  if (slot >= 0) regions[slot] = region;
-  else regions.push(region);
+  if (slot >= 0) {
+    copyUserFields(region.replaces!, region);
+    regions[slot] = region;
+  } else {
+    regions.push(region);
+  }
   notifyRedo();
   notify();
   return region;
+}
+
+function copyUserFields(from: ColorRegion, to: ColorRegion): void {
+  to.name = from.name;
+  to.color = from.color;
+  to.visible = from.visible;
+  to.slotId = from.slotId;
+}
+
+/** Regions back in the live list whose triangles were last valid for a
+ *  different mesh than `current` (see `trianglesFor`). Clears the tag on every
+ *  returned-or-checked region, so each restore is handled once. */
+export function takeStaleRestoredRegions(current: MeshData | null): ColorRegion[] {
+  const out: ColorRegion[] = [];
+  for (const r of regions) {
+    if (r.trianglesFor === undefined) continue;
+    if (r.trianglesFor !== current) out.push(r);
+    r.trianglesFor = undefined;
+  }
+  return out;
 }
 
 /** Replace a region's triangle set with an edited one (grow / shrink /
@@ -353,10 +400,17 @@ export function redoLastRegion(): ColorRegion | null {
  *  original back in. The new descriptor is normally `{ kind: 'triangles' }`
  *  — an edited set no longer matches the selector that first produced it.
  *  Returns null if `id` doesn't exist. */
-export function replaceRegion(id: number, triangles: Set<number>, descriptor: RegionDescriptor): ColorRegion | null {
+export function replaceRegion(
+  id: number,
+  triangles: Set<number>,
+  descriptor: RegionDescriptor,
+  /** The mesh `triangles` (and the original's current set) index into. */
+  mesh?: MeshData,
+): ColorRegion | null {
   const idx = regions.findIndex(r => r.id === id);
   if (idx < 0) return null;
   const original = regions[idx];
+  original.trianglesFor = mesh ?? meshTagProvider() ?? undefined;
   const edited: ColorRegion = {
     ...original,
     descriptor,
@@ -540,6 +594,7 @@ export function setRegionTriangles(
 export function clearRegions(): void {
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
+  for (const r of clearSnapshot) tagOffList(r);
   clearSnapshotPartial = false;
   regions = [];
   nextOrder = 1;
@@ -556,6 +611,7 @@ export function clearRegionsBySource(source: ColorRegion['source']): void {
   const removed = regions.filter(r => r.source === source);
   if (removed.length === 0) return;
   clearSnapshot = removed;
+  for (const r of removed) tagOffList(r);
   clearSnapshotPartial = true;
   regions = regions.filter(r => r.source !== source);
   clearRedoStack();
