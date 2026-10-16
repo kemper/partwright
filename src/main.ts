@@ -13601,16 +13601,28 @@ async function main() {
      *  includes a diagnostic — the nearest hit point, its normal, the angle
      *  off the requested normal, and a suggested tolerance value that would
      *  include it. Pair with `probeRay` to get a known-on-surface seed. */
-    paintRegion(opts: { point: [number, number, number]; normal: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number }) {
+    paintRegion(opts: { point: [number, number, number]; normal?: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      if (!opts || typeof opts !== 'object') return { error: 'paintRegion requires {point, normal, color}' };
-      const { point, normal, color, name, tolerance } = opts;
+      if (!opts || typeof opts !== 'object') return { error: 'paintRegion requires {point, normal?, color}' };
+      let { point, normal } = opts;
+      const { color, name, tolerance } = opts;
       if (!Array.isArray(point) || point.length !== 3) return { error: 'point must be [x,y,z]' };
-      if (!Array.isArray(normal) || normal.length !== 3) return { error: 'normal must be [nx,ny,nz]' };
+      if (normal !== undefined && (!Array.isArray(normal) || normal.length !== 3)) return { error: 'normal must be [nx,ny,nz] when provided' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      if (tolerance !== undefined && (typeof tolerance !== 'number' || !Number.isFinite(tolerance) || tolerance < -1 || tolerance > 1)) {
+        return { error: `tolerance must be a cosine in [-1, 1] (got ${String(tolerance)}). It is cos(max bend angle between adjacent faces): 0.9995 ≈ 1.8°, 0.98 ≈ 11°, -1 = whole connected mesh. To think in degrees, pass Math.cos(deg * Math.PI / 180).` };
+      }
 
       const normalTolerance = tolerance ?? 0.9995;
       const adjacency = buildAdjacency(currentMeshData);
+      if (normal === undefined) {
+        // No normal hint: snap to the nearest face and use its normal, the
+        // same convention paintConnected / paintNearestRegion use.
+        const nearest = findNearestTriangle(point as [number, number, number], currentMeshData, adjacency);
+        if (nearest.triIndex < 0) return { error: 'paintRegion: mesh has no triangles' };
+        point = nearest.closest;
+        normal = nearest.normal;
+      }
       const seedTri = resolveSeed(point as [number, number, number], normal as [number, number, number], currentMeshData, adjacency, normalTolerance);
       if (seedTri < 0) {
         return diagnoseSeedFailure(point as [number, number, number], normal as [number, number, number], currentMeshData, adjacency, normalTolerance);
@@ -16099,7 +16111,7 @@ async function main() {
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Color regions
-        'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
+        'paintRegion':     { signature: 'paintRegion({point, normal?, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). tolerance is a COSINE (default 0.9995 ≈ 1.8°). normal omitted = nearest face. Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
@@ -16132,7 +16144,7 @@ async function main() {
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
-        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinBox?, zMin?, zMax?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
         'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai/colors.md' },
