@@ -71,3 +71,29 @@ inherited the bug, so both `paintFaces` and the edits now store base ids via one
 shared helper, while the live region keeps the exact refined set. Trade-off
 (same as the brush): after a rebuild the region snaps out to whole base
 triangles — documented, and pinned by an e2e test.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**Stale restores (blocking).** Undoing an edit swapped the stashed original
+back with the triangle ids it had at edit time; any mesh change in between (a
+re-run, a smooth stroke, a simplify) made it paint the wrong faces — the
+reviewer's repro painted a cube's bottom instead of its top. The same latent
+problem existed for redo and undo-clear. Fix: the store tags a region with the
+live mesh whenever it leaves the list (via a provider main.ts registers, so the
+store stays a leaf), and both reconcilers first re-resolve any restored region
+whose tag no longer matches — directly on an unrefined mesh, via a full rebuild
+on a refined one (which needs the base→refined map). Verified the new e2e test
+fails without it (z = −10) and passes with it.
+
+**Despeckle on low-poly closed pieces (blocking).** On a closed surface the
+region's outside also touches it, so on a 12-triangle cube the whole rest of the
+cube counted as a "hole" under the default cap. Holes now exclude the largest
+touching patch and anything at least as big as the region — mirroring the
+"largest island is always kept" rule.
+
+**Smaller items:** undo of an edit now carries later recolour/rename/visibility
+back to the original instead of reverting them; the edit result warns when the
+mesh is smooth-refined (the stored base ids will snap out on rebuild);
+`editRegion.with` / `withinBox` got typed schemas so Gemini can send them.

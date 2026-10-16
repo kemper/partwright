@@ -179,7 +179,7 @@ export function applyRegionEdit(
     return { error: `${opts.op} would leave region "${region.name}" empty — nothing changed. Use removeRegion(${region.id}) to delete it.` };
   }
   if (added > 0 || removed > 0) {
-    replaceRegion(region.id, next, { kind: 'triangles', ids: descriptorIds(next) });
+    replaceRegion(region.id, next, { kind: 'triangles', ids: descriptorIds(next) }, mesh);
   }
   return { id: region.id, name: region.name, op: opts.op, triangles: next.size, before: before.size, added, removed, ...extra };
 }

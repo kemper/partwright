@@ -215,6 +215,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
+import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
@@ -1731,8 +1732,30 @@ function reresolveRegionsAgainstCurrentMesh(): void {
  *  then call this helper to do the same work the listener would have done —
  *  but inline, on the main thread, blocking until the refined region's
  *  triangles are populated. */
+/** Regions brought back by undo / redo / undo-clear carry the triangle set
+ *  they had when they left the list. If the working mesh changed meanwhile (a
+ *  re-run, a smooth stroke, a simplify), those ids point at the wrong faces, so
+ *  re-resolve them from their descriptors. On a refined mesh that needs the
+ *  base→refined map, i.e. a full rebuild. Returns true when it rebuilt (the
+ *  caller's reconcile is then already done). */
+function resolveStaleRestoredRegions(): boolean {
+  const stale = takeStaleRestoredRegions(currentMeshData);
+  if (stale.length === 0 || !currentMeshData) return false;
+  if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+    rebuildPaintedGeometry();
+    return true;
+  }
+  const adjacency = buildAdjacency(currentMeshData);
+  for (const r of stale) {
+    const { triangles, perTriColors } = resolveDescriptorTriangles(r.descriptor, currentMeshData, adjacency, null, r.id);
+    setRegionTriangles(r.id, triangles, perTriColors);
+  }
+  return false;
+}
+
 function reconcilePaintedGeometrySync(): void {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -1887,6 +1910,7 @@ async function reconcilePaintedGeometryAsync(): Promise<void> {
 
 async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -8531,6 +8555,9 @@ async function main() {
   // refine remaps them correctly. Reads live state: identity (no work) while the
   // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
   setTriangleToBaseMapper(currentToBaseTriangle);
+  // Lets the region store remember which mesh an off-list region's triangles
+  // index into (undo / clear / edit), so a stale restore can be detected.
+  setRegionMeshProvider(() => currentMeshData);
 
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
@@ -9737,6 +9764,9 @@ async function main() {
     if (result.added > 0 || result.removed > 0) {
       updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       syncLockState();
+    }
+    if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+      return { ...result, note: 'The mesh is subdivided by smooth paint: this edit is exact now, but it is stored as whole base triangles, so a later rebuild or reload snaps its edge out to them. Make region edits before adding smooth regions.' };
     }
     return result;
   }
@@ -13420,6 +13450,21 @@ async function main() {
         return { error: 'paintConnected.maxDeviationDeg must be a finite number in [0, 180]' };
       }
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintConnected.color must be [r,g,b] in 0..1' };
+      // The clamp is persisted on the descriptor, so reject junk instead of
+      // silently treating it as "no clamp".
+      if (opts.withinBox !== undefined) {
+        if (!opts.withinBox || typeof opts.withinBox !== 'object') return { error: 'paintConnected.withinBox must be { min?: [x,y,z], max?: [x,y,z] }' };
+        for (const side of ['min', 'max'] as const) {
+          const v = opts.withinBox[side];
+          if (v !== undefined && (!Array.isArray(v) || v.length !== 3 || v.some(c => typeof c !== 'number' || Number.isNaN(c)))) {
+            return { error: `paintConnected.withinBox.${side} must be [x,y,z] numbers` };
+          }
+        }
+      }
+      for (const k of ['zMin', 'zMax'] as const) {
+        const v = opts[k];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) return { error: `paintConnected.${k} must be a finite number` };
+      }
       if (!currentMeshData) return { error: 'No geometry loaded' };
 
       // Resolve the clamp into a single AABB the BFS predicate can use. Both
@@ -16584,7 +16629,7 @@ async function main() {
     const suggested = Math.max(-1, Math.floor(clamped * 10000) / 10000 - 0.0001);
     const suggestText = clamped >= tolerance
       ? `tolerance ${tolerance} should already match — the seed point may be too far off the surface (${nearest.distance.toFixed(3)} units). Use the hit point/normal from probeRay() instead, or call paintNearestRegion({point, color}) which auto-snaps.`
-      : `try tolerance ${suggested.toFixed(4)} (currently ${tolerance})`;
+      : `try tolerance ${suggested.toFixed(4)} (currently ${tolerance}; a cosine — ≈ toleranceDeg ${(Math.acos(Math.min(1, Math.max(-1, suggested))) * 180 / Math.PI).toFixed(1)} in the AI tool)`;
 
     return {
       error: `paintRegion: no face matched at point=[${point.map(n => n.toFixed(2)).join(', ')}], normal=[${requestedNormal.map(n => n.toFixed(3)).join(', ')}], tolerance=${tolerance}. Nearest face is at [${nearest.closest.map(n => n.toFixed(2)).join(', ')}] with normal [${nearest.normal.map(n => n.toFixed(3)).join(', ')}] (${angleDeg.toFixed(1)}° off requested, distance ${nearest.distance.toFixed(3)}). ${suggestText}`,

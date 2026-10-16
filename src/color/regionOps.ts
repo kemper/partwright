@@ -104,7 +104,10 @@ export interface DespeckleResult {
  *    most `maxHoleTriangles` triangles, that touches the region. Because a
  *    patch is a maximal component of the complement, touching the region means
  *    it is enclosed by it (or by the mesh border) — so it gets filled. Patches
- *    that don't touch the region (a separate mesh piece) are left alone.
+ *    that don't touch the region (a separate mesh piece) are left alone, and
+ *    so is the largest touching patch (the region's outside — on a low-poly
+ *    closed piece it can be under the cap) and any patch at least as big as
+ *    the region itself.
  *
  *  Pass 0 for either threshold to skip that half. */
 export function despeckleTriangles(
@@ -129,10 +132,12 @@ export function despeckleTriangles(
   }
 
   if (opts.maxHoleTriangles > 0 && out.size > 0) {
-    // Walk complement components that start next to the region. A component
-    // bigger than the cap is "outside", not a hole; it is still walked to the
-    // end once so every triangle in it is marked seen and never re-walked.
+    // Walk complement components that start next to the region. One bigger
+    // than the cap is "outside", not a hole; it is still walked to the end
+    // once so every triangle in it is marked seen and never re-walked.
     const seen = new Set<number>();
+    const candidates: number[][] = [];
+    let largestTouching = 0;
     for (const t of out) {
       const ns = neighbors[t];
       if (!ns) continue;
@@ -142,11 +147,9 @@ export function despeckleTriangles(
         const comp: number[] = [];
         const stack = [start];
         seen.add(start);
-        let tooBig = false;
         while (stack.length > 0) {
           const c = stack.pop()!;
           comp.push(c);
-          if (comp.length > opts.maxHoleTriangles) tooBig = true;
           const cn = neighbors[c];
           if (!cn) continue;
           for (let j = 0; j < cn.length; j++) {
@@ -156,11 +159,22 @@ export function despeckleTriangles(
             stack.push(n);
           }
         }
-        if (tooBig) continue;
-        for (const c of comp) out.add(c);
-        holesFilled++;
-        holeTrianglesFilled += comp.length;
+        largestTouching = Math.max(largestTouching, comp.length);
+        if (comp.length <= opts.maxHoleTriangles) candidates.push(comp);
       }
+    }
+    // On a closed surface the outside of the region touches it too, so on a
+    // low-poly piece the whole outside can be under the cap. Never fill the
+    // largest patch touching the region (the outside), nor anything at least
+    // as big as the region itself — a hole is a small gap *inside* it.
+    const regionSize = out.size;
+    let skippedLargest = false;
+    for (const comp of candidates) {
+      if (comp.length === largestTouching && !skippedLargest) { skippedLargest = true; continue; }
+      if (comp.length >= regionSize) continue;
+      for (const c of comp) out.add(c);
+      holesFilled++;
+      holeTrianglesFilled += comp.length;
     }
   }
 
