@@ -41,3 +41,7 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## Tool-history adjacency: an "OpenAI" endpoint may be strict-Anthropic
+
+The OpenAI and Custom (OpenAI-compatible) builders can be pointed at a gateway that proxies to Claude, so a "400" wrapped with `openai.ts`'s error prefix may carry an Anthropic-shaped body (`toolu_` ids, `tool_use`/`tool_result`). Those backends enforce Anthropic's *adjacency* rule: every `tool_result` must follow its `tool_use` immediately. Image-bearing tool results are the usual trap — OpenAI's `tool` role can't hold an image, so it rides on a following `user` message that can split a multi-tool `tool` run. Keep builders as pure shape-translation over `repairToolHistory` output, and when debugging a 4xx, check the request builder (not just persisted history) — the Repair button only inspects persisted `ChatMessage` history.

@@ -522,15 +522,6 @@ The only exceptions are values that are truly structural constants (array indice
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
 
-### Editing `src/main.ts` — NUL-byte zones
-
-`src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
-
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
-- **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
-
-If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
-
 ### Agent Tooling & Static Analysis
 
 This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
