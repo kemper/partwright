@@ -38,3 +38,7 @@ Concretely:
 - **App-level preferences** (units, render quality, editor auto-format) use `readPerTabPref`/`writePerTabPref` (`src/storage/perTabPref.ts`): live value in sessionStorage (per-tab) with a localStorage seed so a fresh tab still inherits the last choice. Don't attach a `storage` listener that live-mirrors them.
 - **`storage`-event and `BroadcastChannel` handlers** must gate on `msg.sessionId === currentState.session?.id` before acting — see `tabSync.ts` consumers and `sessionLock.ts`. Never adopt a peer's provider/model/toggles live.
 - **Truly-global state** (custom local models, system-prompt overrides) is the exception and must be additive/merge-friendly so a peer tab's write can't clobber another tab's addition.
+
+## New Worker clients — init/ready/error protocol
+
+`engineWorker.ts` requires an explicit `{type:'init'}` and replies `ready` before any `execute`. A worker that skips `init` answers `{type:'error', message:'Geometry engine not initialised'}` rather than rejecting the execute, so a client that only awaits the execute result hangs forever. Any new pool/worker client must (1) do the init→ready handshake and (2) handle the `error` message type.
