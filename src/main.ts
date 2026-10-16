@@ -1233,6 +1233,23 @@ interface ResolveResult {
   perTriColors?: Map<number, [number, number, number]>;
 }
 
+/** Base-mesh triangle a current working-mesh triangle was refined from —
+ *  identity while the mesh is unrefined, a base closest-point lookup once
+ *  smooth paint has subdivided it. */
+function currentToBaseTriangle(t: number): number {
+  const cm = currentMeshData, base = paintBaseMesh;
+  if (!cm || !base || cm === base) return t;
+  return baseTriangleOf(cm, base, t);
+}
+
+/** Ids for a `{ kind: 'triangles' }` descriptor from a current-mesh set. The
+ *  descriptor must hold BASE ids: every rebuild / reload re-resolves it as
+ *  base ids remapped onto the refined mesh, so refined-space ids would land on
+ *  the wrong faces (or none). The live region keeps the exact current set. */
+function triangleDescriptorIds(tris: Iterable<number>): number[] {
+  return [...new Set([...tris].map(currentToBaseTriangle))];
+}
+
 /** Resolve a single region descriptor to a triangle set on `mesh`. Shared by
  *  rehydration (loading a saved version) and the live rebuild after a smooth
  *  brush stroke changes the working mesh. Returns perTriColors for imagePaint
@@ -8525,11 +8542,7 @@ async function main() {
   // space; this maps them back to pristine-base ids before storage so a later
   // refine remaps them correctly. Reads live state: identity (no work) while the
   // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
-  setTriangleToBaseMapper((t) => {
-    const cm = currentMeshData, base = paintBaseMesh;
-    if (!cm || !base || cm === base) return t;
-    return baseTriangleOf(cm, base, t);
-  });
+  setTriangleToBaseMapper(currentToBaseTriangle);
 
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
@@ -9731,7 +9744,7 @@ async function main() {
    *  an immediate render/listRegions sees it. */
   function runRegionEdit(opts: RegionEditOptions) {
     if (!currentMeshData) return { error: 'No geometry loaded' };
-    const result = applyRegionEdit(currentMeshData, opts);
+    const result = applyRegionEdit(currentMeshData, opts, triangleDescriptorIds);
     if ('error' in result) return result;
     if (result.added > 0 || result.removed > 0) {
       updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
@@ -13747,7 +13760,7 @@ async function main() {
         regionName,
         color as [number, number, number],
         'paintbrush',
-        { kind: 'triangles', ids: [...triangles] },
+        { kind: 'triangles', ids: triangleDescriptorIds(triangles) },
         triangles,
       );
 

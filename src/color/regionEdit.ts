@@ -90,7 +90,13 @@ function uneditableReason(region: ColorRegion): string | null {
 
 /** Apply one clean-up edit to a region. Pure w.r.t. the mesh (it never
  *  refines it); mutates only the region store. The caller re-renders. */
-export function applyRegionEdit(mesh: MeshData, opts: RegionEditOptions): RegionEditResult | { error: string } {
+export function applyRegionEdit(
+  mesh: MeshData,
+  opts: RegionEditOptions,
+  /** Maps the edited current-mesh set to the ids the `triangles` descriptor
+   *  stores (base-mesh ids once the mesh is refined). Identity by default. */
+  descriptorIds: (tris: Set<number>) => number[] = (tris) => [...tris],
+): RegionEditResult | { error: string } {
   if (!opts || typeof opts !== 'object') return { error: 'region edit requires an options object' };
   if (!isRef(opts.region)) return { error: 'region must be a region id (integer) or name (string) — see listRegions()' };
   const found = findRegionByRef(opts.region);
@@ -173,7 +179,7 @@ export function applyRegionEdit(mesh: MeshData, opts: RegionEditOptions): Region
     return { error: `${opts.op} would leave region "${region.name}" empty — nothing changed. Use removeRegion(${region.id}) to delete it.` };
   }
   if (added > 0 || removed > 0) {
-    replaceRegion(region.id, next, { kind: 'triangles', ids: [...next] });
+    replaceRegion(region.id, next, { kind: 'triangles', ids: descriptorIds(next) });
   }
   return { id: region.id, name: region.name, op: opts.op, triangles: next.size, before: before.size, added, removed, ...extra };
 }

@@ -133,4 +133,39 @@ test.describe('region clean-up ops', () => {
     expect(r.smooth.error).toContain('smooth');
     expect(r.bad.error).toContain('editRegion.op');
   });
+
+  test('paintFaces + region edits on a smooth-refined mesh survive a later full rebuild', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run('return api.Manifold.sphere(10, 24);');
+      // A smooth slab subdivides the working mesh, so ids below are refined-space.
+      pw.paintSlab({ axis: 'z', offset: -2, thickness: 4, smooth: true, color: [1, 0, 0], name: 'band' });
+      const m = pw.getMesh();
+      const cap: number[] = [];
+      const foot: number[] = [];
+      for (let t = 0; t < m.numTri; t++) {
+        const z = m.centroids[t * 3 + 2];
+        if (z > 7) cap.push(t);
+        else if (z < -7) foot.push(t);
+      }
+      pw.paintFaces({ triangleIds: cap, color: [0, 0, 1], name: 'cap' });
+      pw.paintFaces({ triangleIds: foot, color: [0, 1, 0], name: 'foot' });
+      pw.growRegion({ region: 'foot', steps: 1 });
+      // A second smooth region forces a full rebuild from the base mesh, which
+      // re-resolves every `triangles` descriptor as base ids.
+      pw.paintSlab({ axis: 'x', offset: -1, thickness: 2, smooth: true, color: [1, 1, 0], name: 'band2' });
+      const byName = (n: string) => pw.listRegions().find((x: { name: string }) => x.name === n);
+      return { cap: byName('cap'), foot: byName('foot') };
+    });
+    // Before the fix both came back with 0 triangles (refined ids read as base ids).
+    expect(r.cap.triangles).toBeGreaterThan(0);
+    expect(r.cap.bbox.min[2]).toBeGreaterThan(4);
+    expect(r.foot.triangles).toBeGreaterThan(0);
+    // Id-baked regions survive a rebuild at base-triangle granularity (the
+    // same contract as the UI brush), so the grown foot snaps out to whole
+    // base triangles — still well clear of the equator band.
+    expect(r.foot.bbox.max[2]).toBeLessThan(-2);
+  });
 });

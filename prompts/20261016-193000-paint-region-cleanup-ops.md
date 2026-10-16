@@ -56,3 +56,18 @@ arrays that Gemini's schema subset would reject).
 **Not a smoothing tool.** These clean specks and gaps; they move a sawtooth by
 a ring but can't make it smooth. Said so in the tool description so an agent
 doesn't reach for grow/shrink expecting a clean line — that's the next PR.
+
+## Assistant
+
+## Follow-up: refined-mesh ids
+
+While starting the smooth-fill PR I found that a `triangles` region painted on a
+mesh already subdivided by smooth paint vanished (40 → 0 triangles) the moment
+another smooth region forced a full rebuild: the descriptor held refined-space
+ids, but rebuild/reload re-resolve `triangles` descriptors as *base* ids. This
+is pre-existing for `paintFaces`; the UI brush already avoids it by mapping ids
+back to base parents (`baseTriangleOf`) before storing. Region edits would have
+inherited the bug, so both `paintFaces` and the edits now store base ids via one
+shared helper, while the live region keeps the exact refined set. Trade-off
+(same as the brush): after a rebuild the region snaps out to whole base
+triangles — documented, and pinned by an e2e test.
