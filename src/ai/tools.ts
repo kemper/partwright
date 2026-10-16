@@ -310,7 +310,14 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxDeviationDeg: { type: 'number', description: 'Maximum angle (degrees) a neighbor\'s normal may deviate from the seed normal. Default 30. Use larger values to follow curved features; smaller values to stay on a single facet.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinBox: { type: 'object', description: 'Spatial clamp {min?: [x,y,z], max?: [x,y,z]} — the flood never walks into a triangle whose centroid is outside this box. Use it to stop a fill leaking across a crease-less join (sleeve→hand, collar→neck, sock→leg). Either side may be omitted.' },
+        withinBox: {
+          type: 'object',
+          description: 'Spatial clamp {min?: [x,y,z], max?: [x,y,z]} — the flood never walks into a triangle whose centroid is outside this box. Use it to stop a fill leaking across a crease-less join (sleeve→hand, collar→neck, sock→leg). Either side may be omitted.',
+          properties: {
+            min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+          },
+        },
         zMin: { type: 'number', description: 'Shortcut clamp: never flood below this Z (AND-ed with withinBox).' },
         zMax: { type: 'number', description: 'Shortcut clamp: never flood above this Z (AND-ed with withinBox).' },
       },

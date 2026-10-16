@@ -403,7 +403,7 @@ const r = partwright.paintRegion({ point: [50, 50, 50], normal: [0, 0, 1], color
 // r.nearest = { point, normal, distance, angleDeg, suggestedTolerance }
 ```
 
-**`paintRegion` is strict about seed placement** -- the point must lie on the surface within ~0.01 units. If you'd rather snap to the nearest face within a tolerance and skip the trial-and-error of placing a point exactly, use `paintNearestRegion`:
+**`paintRegion` is strict about seed placement when you pass a `normal`** -- the point must lie on the surface within ~0.01 units. Omit `normal` and it snaps to the nearest face (at any distance) and uses that face's normal. To snap only within a bounded distance, use `paintNearestRegion`:
 
 ```js
 // Snap [8, 0.39, 5] to whatever face is closest within 1.0 units, then paint.

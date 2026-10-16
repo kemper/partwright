@@ -45,3 +45,18 @@ to the line with a smooth tool" recipe. Verified the order semantics first —
 higher-order (later) regions win on overlap — and that the same-colour smooth
 band must sit *after* the neighbouring fill. A real `smooth` bucket fill is the
 third PR.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass over the stack)
+
+**Validate the clamp.** Exposing `withinBox`/`zMin`/`zMax` to the AI meant
+malformed values (`{min: 5}`, a string `zMax`) silently became "no clamp" and
+could be persisted onto the descriptor. They now return an error. Also gave
+`withinBox` real `min`/`max` properties in the tool schema — an untyped object
+sanitizes to `properties: {}` for Gemini, which then can't fill it in.
+
+**Unit hint.** The seed-failure diagnostic suggests a cosine; it now also
+quotes the equivalent `toleranceDeg` so the in-app agent isn't sent back to
+the cosine trap this PR fixes. Corrected the colors.md line claiming
+paintRegion always needs an exact seed (it snaps when `normal` is omitted).
