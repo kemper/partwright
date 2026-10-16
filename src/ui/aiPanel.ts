@@ -1192,12 +1192,13 @@ function buildDrawer(): void {
     root.classList.remove('ring-2', 'ring-blue-500');
     const files = Array.from(e.dataTransfer?.files ?? []);
     // Only claim drops that carry an image — those become chat attachments.
-    // preventDefault() (synchronously, before any await) tells main.ts's
-    // document-level drop import to stand down, so it doesn't also pop the
-    // relief/voxel chooser. A drop with no images (an STL, a session JSON)
-    // stays unclaimed and falls through to the general import.
+    // stopPropagation() (synchronously, before any await) keeps the drop from
+    // reaching main.ts's document-level import, which would otherwise also pop
+    // the relief/voxel chooser. A drop with no images (an STL, a session JSON)
+    // stays unclaimed and bubbles on to the general import.
     if (!files.some(f => f.type.startsWith('image/'))) return;
     e.preventDefault();
+    e.stopPropagation();
     for (const file of files) await attachFile(file);
   });
 

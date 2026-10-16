@@ -4720,12 +4720,11 @@ async function main() {
   });
 
   document.addEventListener('drop', async (e) => {
-    // A nested drop zone (AI chat attachments, the relief import modal, the
-    // image-paint preview) already consumed this drop and called
-    // preventDefault() — it bubbles here anyway, so bail rather than also
-    // running the generic import (which for images pops the relief/voxel
-    // chooser on top of the zone that just took the file).
-    if (e.defaultPrevented) return;
+    // Nested drop zones that own their drops (AI chat attachments, the relief
+    // import modal, the image-paint preview) stopPropagation() so they never
+    // reach this handler. Don't key off e.defaultPrevented: CodeMirror's own
+    // drop handler preventDefault()s every file drop on the code editor, and
+    // those must still import.
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
     // Always swallow a file drop: an unhandled one makes the browser navigate

@@ -6,7 +6,7 @@ import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
 // which used to treat it as a generic image import and pop the
 // "Import image as…" (relief / voxel) chooser on top of the chat — even
 // though the image was already attached. The panel now claims image drops
-// (preventDefault) and the document handler stands down for claimed drops.
+// (stopPropagation), so the document handler never sees them.
 
 // 1×1 red PNG.
 const PNG_B64 =
@@ -52,5 +52,21 @@ test.describe('AI panel image drop', () => {
   test('dropping an image on the viewport still opens the import chooser', async ({ page }) => {
     await dropFile(page, '#viewport', 'photo.png', 'image/png', PNG_B64);
     await expect(page.getByText('Import image as…')).toBeVisible();
+  });
+
+  // CodeMirror preventDefault()s every file drop on the editor, so the
+  // document import must not treat a prevented drop as already handled.
+  test('dropping an image on the code editor still opens the import chooser', async ({ page }) => {
+    await dropFile(page, '.cm-content', 'photo.png', 'image/png', PNG_B64);
+    await expect(page.getByText('Import image as…')).toBeVisible();
+  });
+
+  test('a non-image drop on the chat falls through to the general import', async ({ page }) => {
+    await openAiPanel(page);
+    await dropFile(page, '#ai-panel textarea', 'notes.xyz', 'application/octet-stream', btoa('hello'));
+    // The general import ran (and rejected the unsupported type) — it wasn't
+    // swallowed by the chat.
+    await expect(page.getByText(/unsupported file type/)).toBeVisible();
+    await expect(page.locator('#ai-panel img[src^="data:"]')).toHaveCount(0);
   });
 });

@@ -41,3 +41,18 @@ instead of silently ignoring them.
 **Test** `tests/ai-image-drop.spec.ts` synthesizes an OS-style DataTransfer drop:
 image on chat → attached, no chooser (verified failing on the unfixed code);
 image on viewport → chooser still opens (general path intact).
+
+## Assistant
+
+## Review follow-up
+
+**Switched the "claimed" signal from `defaultPrevented` to `stopPropagation()`.**
+The work-reviewer pass found that CodeMirror's built-in drop handler
+`preventDefault()`s every file drop on the code editor (it pastes text files,
+ignores binary ones), so the `defaultPrevented` check silently stopped file drops
+on the editor from importing at all. Verified in `@codemirror/view` and with a
+new e2e case that failed on the first version. The three zones that genuinely
+own their drops (AI chat, relief import modal, image-paint preview) now call
+`stopPropagation()` explicitly; the image-paint preview also claims only image
+drops now, matching the chat. Added e2e coverage for the editor drop and for a
+non-image chat drop falling through to the general import.
