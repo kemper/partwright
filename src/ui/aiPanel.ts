@@ -1189,10 +1189,16 @@ function buildDrawer(): void {
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
   root.addEventListener('dragleave', e => { if (e.target === root) root.classList.remove('ring-2', 'ring-blue-500'); });
   root.addEventListener('drop', async e => {
-    e.preventDefault();
     root.classList.remove('ring-2', 'ring-blue-500');
-    if (!e.dataTransfer) return;
-    for (const file of Array.from(e.dataTransfer.files)) await attachFile(file);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    // Only claim drops that carry an image — those become chat attachments.
+    // preventDefault() (synchronously, before any await) tells main.ts's
+    // document-level drop import to stand down, so it doesn't also pop the
+    // relief/voxel chooser. A drop with no images (an STL, a session JSON)
+    // stays unclaimed and falls through to the general import.
+    if (!files.some(f => f.type.startsWith('image/'))) return;
+    e.preventDefault();
+    for (const file of files) await attachFile(file);
   });
 
   (mountTarget ?? document.body).appendChild(root);
