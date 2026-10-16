@@ -289,6 +289,61 @@ describe('parse3MF — slicer projects', () => {
   });
 });
 
+describe('parse3MF — hostile / edge-case input', () => {
+  it('refuses component fan-out past the triangle budget', async () => {
+    // 12 levels, each object referencing its child twice → 2^12 tetras.
+    const levels = 12;
+    let objs = `<object id="1" type="model">${tetraMesh()}</object>`;
+    for (let i = 2; i <= levels + 1; i++) {
+      objs += `<object id="${i}" type="model"><components><component objectid="${i - 1}"/><component objectid="${i - 1}"/></components></object>`;
+    }
+    const model = `<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources>${objs}</resources><build><item objectid="${levels + 1}"/></build></model>`;
+    const bytes = pkg({ '3D/3dmodel.model': model });
+    await expect(parse3MF(bytes, { maxTriangles: 1000 })).rejects.toThrow(/more than 1,000 triangles/);
+    expect((await parse3MF(bytes, { maxTriangles: 1e6 })).mesh.numTri).toBe(4 * 2 ** levels);
+  });
+
+  it('refuses a part that inflates past maxEntryBytes', async () => {
+    const zip = openZip(await deflatedZip('big.txt', enc('x'.repeat(100_000))), { maxEntryBytes: 10_000 });
+    await expect(zip.read(zip.entries[0])).rejects.toThrow(/too large/);
+  });
+
+  it('drops Prusa modifier volumes from geometry, recentring and counts them', async () => {
+    // Object 1: printable tetra (tris 0–3, verts 0–3) + a far-away modifier
+    // tetra (tris 4–7, verts 4–7) sharing the object's vertex pool.
+    const v = [[0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10]];
+    const far = v.map(p => [p[0] + 1000, p[1], p[2]]);
+    const tris = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]];
+    const mesh = `<mesh><vertices>${[...v, ...far].map(p => `<vertex x="${p[0]}" y="${p[1]}" z="${p[2]}"/>`).join('')}</vertices>
+<triangles>${[...tris, ...tris.map(t => t.map(i => i + 4))].map(t => `<triangle v1="${t[0]}" v2="${t[1]}" v3="${t[2]}"/>`).join('')}</triangles></mesh>`;
+    const model = `<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources><object id="1" type="model">${mesh}</object></resources><build><item objectid="1"/></build></model>`;
+    const cfg = `<config><object id="1"><metadata type="object" key="extruder" value="1"/>
+<volume firstid="0" lastid="3"><metadata type="volume" key="volume_type" value="ModelPart"/></volume>
+<volume firstid="4" lastid="7"><metadata type="volume" key="volume_type" value="ParameterModifier"/></volume>
+</object></config>`;
+    const r = await parse3MF(pkg({ '3D/3dmodel.model': model, 'Metadata/Slic3r_PE_model.config': cfg }));
+    expect(r.mesh.numTri).toBe(4);
+    expect(r.mesh.numVert).toBe(4);
+    expect(r.skippedParts).toBe(1);
+    const xs = Array.from({ length: 4 }, (_, i) => r.mesh.vertProperties[i * 3]);
+    expect(Math.min(...xs)).toBeCloseTo(-5, 5);
+    expect(Math.max(...xs)).toBeCloseTo(5, 5);
+  });
+
+  it('skips printable="0" build items and tolerates bad character references', async () => {
+    const model = `<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<metadata name="Title">Bad &#x110000; ref</metadata>
+<resources><object id="1" type="model" name="&#x110000;">${tetraMesh()}</object></resources>
+<build><item objectid="1"/><item objectid="1" printable="0" transform="1 0 0 0 1 0 0 0 1 50 0 0"/></build></model>`;
+    const r = await parse3MF(pkg({ '3D/3dmodel.model': model }));
+    expect(r.title).toBe('Bad  ref');
+    expect(r.mesh.numTri).toBe(4);
+    expect(r.skippedParts).toBe(1);
+  });
+});
+
 describe('3MF helpers', () => {
   it('weldMesh merges coincident vertices without reordering triangles', () => {
     const m: MeshData = {

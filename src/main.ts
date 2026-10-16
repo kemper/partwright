@@ -3920,16 +3920,7 @@ async function main() {
     const probe = parseSTL(bytes);
     if (!probe || probe.numTri === 0) return null;
 
-    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
-    // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
-    // is either way too tight or way too loose.
-    const bbox = bboxFromMesh(probe);
-    const diag = bbox
-      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
-      : 0;
-    const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
-
-    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, scaleTolerance];
+    const tolerances = weldToleranceLadder(probe);
     let bestMesh = probe;
     let maxTried = 0;
     let manifoldError: string | null = null;
@@ -3950,6 +3941,18 @@ async function main() {
       triCount: probe.numTri,
       vertCount: probe.numVert,
     };
+  }
+
+  /** Weld tolerances to try, loosest last: the configured STL tolerance, two
+   *  fixed steps, then a scale-aware fallback — 5 ppm of the bounding-box
+   *  diagonal catches imports in unusual units (μm or m) where 1e-3 absolute is
+   *  either way too tight or way too loose. Shared by the STL and 3MF paths. */
+  function weldToleranceLadder(mesh: MeshData): number[] {
+    const bbox = bboxFromMesh(mesh);
+    const diag = bbox
+      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+      : 0;
+    return [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, Math.max(diag * 5e-6, 1e-6)];
   }
 
   async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
@@ -3994,15 +3997,15 @@ async function main() {
    *  STL (raw indexed mesh first, then the weld-tolerance ladder — welding keeps
    *  triangle order, so colours stay aligned). Throws on an unreadable package. */
   async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
-    const result = await parse3MF(bytes);
+    const cfg = getConfig().import;
+    const result = await parse3MF(bytes, {
+      maxTriangles: cfg.threeMfMaxTriangles,
+      maxEntryBytes: cfg.threeMfMaxEntryMB * 1048576,
+    });
     const raw = result.mesh;
     const first = tryConstructManifold(raw);
     if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: true }, result, source: raw };
-    const bbox = bboxFromMesh(raw);
-    const diag = bbox
-      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
-      : 0;
-    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, Math.max(diag * 5e-6, 1e-6)];
+    const tolerances = weldToleranceLadder(raw);
     let manifoldError: string | null = first.error;
     let maxTried = 0;
     for (const tol of tolerances) {
@@ -4055,7 +4058,7 @@ async function main() {
     return listFilaments().map(s => s.id);
   }
 
-  interface ThreeMFColorInfo { paletteName: string | null; coloredTriangles: number; colors: number }
+  interface ThreeMFColorInfo { paletteName: string | null; coloredTriangles: number; colors: number; skippedColors: number }
 
   /** Colour seeder for a 3MF import. Manifold.ofMesh reorders triangles, so the
    *  source's per-triangle colours can only be keyed AFTER the import wrapper
@@ -4068,7 +4071,12 @@ async function main() {
   function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData) => SeedRegion[]; info: ThreeMFColorInfo } | undefined {
     const { result, source } = p3;
     if (result.colorSource === 'none' || result.palette.length === 0) return undefined;
-    const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0 };
+    // A per-triangle-coloured scan can carry thousands of distinct colours;
+    // each would become its own paint region. Past the cap keep the mesh only.
+    if (result.palette.length > getConfig().import.threeMfMaxColors) {
+      return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: result.palette.length } };
+    }
+    const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0 };
     const seed = (out: MeshData): SeedRegion[] => {
       const slotIds = adoptPalette ? adopt3MFPalette(paletteName, result.palette) : null;
       if (slotIds) info.paletteName = paletteName;
@@ -4114,6 +4122,7 @@ async function main() {
     if (info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
     let msg = parts.join(', ');
     if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
+    if (info && info.skippedColors > 0) msg += `. Its ${info.skippedColors.toLocaleString()} colours exceed the ${getConfig().import.threeMfMaxColors}-colour import limit, so it came in uncoloured`;
     if (result.skippedParts > 0) msg += `. Skipped ${result.skippedParts} modifier/support part${result.skippedParts === 1 ? '' : 's'}`;
     return msg + '.';
   }
@@ -11139,9 +11148,11 @@ async function main() {
      *  regions, and the file's filament palette becomes the active palette
      *  (`opts.adoptPalette: false` to skip that); the return adds `format`,
      *  `flavor`, `colorSource`, `palette`, `colorRegions`, `activePalette`, and
-     *  `objects`. STL is a new
-     *  session — the programmatic equivalent of the Import → choose-file flow for
-     *  STL (which an agent can't reach: there's no file picker). The mesh is
+     *  `objects`.
+     *
+     *  STL is imported as a new session — the programmatic equivalent of the
+     *  Import → choose-file flow (which an agent can't reach: there's no file
+     *  picker). The mesh is
      *  welded across a tolerance ladder; when it forms a clean manifold it's
      *  imported as an editable manifold-js model, otherwise it lands render-only
      *  (display + export only — no booleans/paint/slicing), reflected by
@@ -11187,6 +11198,7 @@ async function main() {
           colorSource: p3.result.colorSource,
           palette: p3.result.palette.map(e => ({ name: e.name, hex: e.hex })),
           colorRegions: seeder?.info.colors ?? 0,
+          colorsSkipped: seeder?.info.skippedColors ?? 0,
           activePalette: seeder?.info.paletteName ?? null,
           objects: p3.result.objects,
         };

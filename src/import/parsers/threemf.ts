@@ -65,6 +65,12 @@ export interface ThreeMFParseOptions {
    *  (3MF build plates are placed in bed coordinates, e.g. (128,128) on a
    *  Bambu). Z is kept: build space z=0 is the plate. Default true. */
   recenter?: boolean;
+  /** Refuse files that expand past this many triangles once component
+   *  instancing is resolved (a tiny file can nest references that fan out to
+   *  billions). Default 20M. */
+  maxTriangles?: number;
+  /** Zip-bomb guard: max decompressed bytes of any part. Default unlimited. */
+  maxEntryBytes?: number;
 }
 
 // ── XML scanning ────────────────────────────────────────────────────────────
@@ -96,7 +102,7 @@ function decodeEntities(s: string): string {
     if (k === 'quot') return '"';
     if (k === 'apos') return "'";
     const code = k.startsWith('#x') ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+    return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
   });
 }
 
@@ -219,7 +225,7 @@ interface ModelFile {
   unitScale: number;
   objects: Map<number, ModelObject>;
   groups: Map<number, PropertyGroup>;
-  build: { objectId: number; path: string | null; transform: Mat }[];
+  build: { objectId: number; path: string | null; transform: Mat; printable: boolean }[];
   metadata: Map<string, string>;
 }
 
@@ -345,7 +351,7 @@ function parseModelXml(xml: string): ModelFile {
         case 'item': {
           if (!inBuild) return;
           const a = parseAttrs(attrStr);
-          file.build.push({ objectId: Number(a.objectid), path: a.path ?? null, transform: parseTransform(a.transform) });
+          file.build.push({ objectId: Number(a.objectid), path: a.path ?? null, transform: parseTransform(a.transform), printable: a.printable !== '0' });
           return;
         }
         case 'metadatagroup': depthInObjectMetadata++; return;
@@ -572,7 +578,8 @@ async function findRootModelPath(zip: ZipArchive): Promise<string> {
 
 /** Parse a .3mf package. Throws a human-readable Error on unreadable input. */
 export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions = {}): Promise<ThreeMFParseResult> {
-  const zip = openZip(bytes);
+  const zip = openZip(bytes, { maxEntryBytes: options.maxEntryBytes });
+  const maxTriangles = options.maxTriangles ?? 20_000_000;
   const rootPath = await findRootModelPath(zip);
 
   // Parse the root model, then every model file it (transitively) references
@@ -637,6 +644,9 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
 
   const emitMesh = (file: ModelFile, o: MeshObject, m: Mat, ctx: Ctx, settingsObjectId: number, meshId: number): void => {
     const s = file.unitScale;
+    if (triVerts.length / 3 + o.tris.length / 3 > maxTriangles) {
+      throw new Error(`3MF expands to more than ${maxTriangles.toLocaleString()} triangles (too large to import; the limit is in Advanced settings → Import).`);
+    }
     const base = positions.length / 3;
     const p = o.positions;
     for (let i = 0; i < p.length; i += 3) {
@@ -654,6 +664,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     const objExtruder = ctx.part?.extruder || ctx.settingsObject?.extruder || prusaObj?.extruder || 0;
     let volIdx = 0;
     const vols = prusaObj?.volumes ?? [];
+    const skippedVols = new Set<number>();
     const numTri = o.tris.length / 3;
     for (let t = 0; t < numTri; t++) {
       let extruder = objExtruder;
@@ -661,7 +672,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
         while (volIdx < vols.length - 1 && t > vols[volIdx].last) volIdx++;
         const v = vols[volIdx];
         if (t >= v.first && t <= v.last) {
-          if (!v.printable) continue;
+          if (!v.printable) { skippedVols.add(volIdx); continue; }
           if (v.extruder) extruder = v.extruder;
         }
       }
@@ -682,6 +693,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
       triColor.push(color);
     }
     splitPaintedTriangles += o.splitPainted;
+    skippedParts += skippedVols.size;
   };
 
   const emit = (filePath: string, objectId: number, m: Mat, ctx: Ctx, settingsObjectId: number, depth: number): void => {
@@ -703,6 +715,8 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   };
 
   for (const item of root.build) {
+    // printable="0" items sit on the plate but the slicer doesn't print them.
+    if (!item.printable) { skippedParts++; continue; }
     const startTri = triVerts.length / 3;
     const filePath = item.path ? normPath(item.path) : rootPath;
     const settingsObject = slicer?.flavor === 'bambu' ? slicer.objects.get(item.objectId) : undefined;
@@ -714,29 +728,46 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     });
   }
 
-  const numVert = positions.length / 3;
   const numTri = triVerts.length / 3;
   if (numTri === 0) throw new Error('3MF contains no printable triangles.');
-  for (let i = 0; i < positions.length; i++) {
-    if (!Number.isFinite(positions[i])) throw new Error('3MF contains a non-finite vertex coordinate.');
+
+  // Drop vertices no emitted triangle references (skipped Prusa modifier /
+  // support volumes share their object's vertex pool) so they neither shift
+  // the recentring box nor reach Manifold as stray points.
+  const remap = new Int32Array(positions.length / 3).fill(-1);
+  let numVert = 0;
+  for (let i = 0; i < triVerts.length; i++) {
+    const v = triVerts[i];
+    if (remap[v] < 0) remap[v] = numVert++;
+    triVerts[i] = remap[v];
+  }
+  const compact = new Float64Array(numVert * 3);
+  for (let v = 0; v < remap.length; v++) {
+    const r = remap[v];
+    if (r < 0) continue;
+    for (let k = 0; k < 3; k++) {
+      const c = positions[v * 3 + k];
+      if (!Number.isFinite(c)) throw new Error('3MF contains a non-finite vertex coordinate.');
+      compact[r * 3 + k] = c;
+    }
   }
 
-  const vertProperties = new Float32Array(positions.length);
+  const vertProperties = new Float32Array(numVert * 3);
   let dx = 0, dy = 0;
   if (options.recenter !== false) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let i = 0; i < positions.length; i += 3) {
-      const x = positions[i], y = positions[i + 1];
+    for (let i = 0; i < compact.length; i += 3) {
+      const x = compact[i], y = compact[i + 1];
       if (x < minX) minX = x; if (x > maxX) maxX = x;
       if (y < minY) minY = y; if (y > maxY) maxY = y;
     }
     dx = -(minX + maxX) / 2;
     dy = -(minY + maxY) / 2;
   }
-  for (let i = 0; i < positions.length; i += 3) {
-    vertProperties[i] = positions[i] + dx;
-    vertProperties[i + 1] = positions[i + 1] + dy;
-    vertProperties[i + 2] = positions[i + 2];
+  for (let i = 0; i < compact.length; i += 3) {
+    vertProperties[i] = compact[i] + dx;
+    vertProperties[i + 1] = compact[i + 1] + dy;
+    vertProperties[i + 2] = compact[i + 2];
   }
 
   return {

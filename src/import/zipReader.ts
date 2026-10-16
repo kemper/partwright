@@ -21,7 +21,7 @@ export interface ZipArchive {
   /** Case-insensitive lookup by path; a leading '/' is ignored (3MF part names
    *  are absolute, e.g. `/3D/3dmodel.model`). */
   find(path: string): ZipFileEntry | undefined;
-  /** Decompressed bytes of an entry. */
+  /** Decompressed bytes of an entry. Throws when it exceeds `maxEntryBytes`. */
   read(entry: ZipFileEntry): Promise<Uint8Array>;
   /** Decompressed UTF-8 text of an entry. */
   readText(entry: ZipFileEntry): Promise<string>;
@@ -42,8 +42,16 @@ function normalize(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
 }
 
+export interface OpenZipOptions {
+  /** Refuse to decompress any entry larger than this (zip-bomb guard). The
+   *  declared size is checked up front and the inflate stream is cut off past
+   *  it, so a lying header can't get further either. Default: unlimited. */
+  maxEntryBytes?: number;
+}
+
 /** Parse a ZIP archive's central directory. Throws on a malformed archive. */
-export function openZip(bytes: Uint8Array): ZipArchive {
+export function openZip(bytes: Uint8Array, options: OpenZipOptions = {}): ZipArchive {
+  const maxEntryBytes = options.maxEntryBytes ?? Infinity;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const len = bytes.byteLength;
   if (len < 22) throw new Error('Not a ZIP archive (file too small).');
@@ -116,9 +124,12 @@ export function openZip(bytes: Uint8Array): ZipArchive {
       throw new Error(`Corrupt ZIP archive (bad local header for ${entry.name}).`);
     }
     const start = off + 30 + view.getUint16(off + 26, true) + view.getUint16(off + 28, true);
+    if (entry.uncompressedSize > maxEntryBytes || (entry.method === 0 && entry.compressedSize > maxEntryBytes)) {
+      throw new Error(`${entry.name} is too large to import (${(entry.uncompressedSize / 1048576).toFixed(0)} MB uncompressed).`);
+    }
     const raw = bytes.subarray(start, start + entry.compressedSize);
     if (entry.method === 0) return raw;
-    if (entry.method === 8) return inflateRaw(raw);
+    if (entry.method === 8) return inflateRaw(raw, entry.uncompressedSize > 0 ? Math.min(maxEntryBytes, entry.uncompressedSize) : maxEntryBytes, entry.name);
     throw new Error(`Unsupported ZIP compression method ${entry.method} for ${entry.name}.`);
   }
 
@@ -130,10 +141,27 @@ export function openZip(bytes: Uint8Array): ZipArchive {
   };
 }
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
+/** Inflate a raw-DEFLATE entry, aborting once the output passes `limit` bytes
+ *  (the entry's declared size, capped by the caller's max). */
+async function inflateRaw(data: Uint8Array, limit: number, name: string): Promise<Uint8Array> {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('This browser cannot decompress ZIP data (DecompressionStream is unavailable).');
   }
-  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw new Error(`${name} decompresses past its declared or allowed size — refusing to import it.`);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out;
 }

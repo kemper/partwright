@@ -238,6 +238,16 @@ export interface AppConfig {
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
     stlWeldTolerance: number;
+    /** Max triangles a 3MF import may expand to (after component instancing) —
+     *  guards against tiny files whose nested component references fan out to
+     *  billions of triangles. */
+    threeMfMaxTriangles: number;
+    /** Max decompressed size (MB) of any single part inside a 3MF package —
+     *  zip-bomb guard. */
+    threeMfMaxEntryMB: number;
+    /** Max distinct colours a 3MF import is painted with. Files with more
+     *  (per-triangle-coloured scans) import as mesh only, with a notice. */
+    threeMfMaxColors: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -427,6 +437,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   },
   import: {
     stlWeldTolerance: 1e-5,
+    threeMfMaxTriangles: 20_000_000,
+    threeMfMaxEntryMB: 1024,
+    threeMfMaxColors: 256,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,
