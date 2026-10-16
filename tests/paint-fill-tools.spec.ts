@@ -103,4 +103,22 @@ test.describe('bucket-fill AI tools', () => {
     expect(bbox.max[2]).toBeLessThan(3.5);
     expect(bbox.min[2]).toBeLessThan(-9);
   });
+
+  test('paintConnected rejects a malformed clamp instead of ignoring it', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run('return api.Manifold.sphere(10, 32);');
+      const seed = { point: [0, 0, -10] };
+      return {
+        box: pw.paintConnected({ seed, color: [1, 0, 0], withinBox: { min: 5 } }),
+        z: pw.paintConnected({ seed, color: [1, 0, 0], zMax: 'high' }),
+        regions: pw.listRegions().length,
+      };
+    });
+    expect(r.box.error).toContain('withinBox.min');
+    expect(r.z.error).toContain('zMax');
+    expect(r.regions).toBe(0);
+  });
 });

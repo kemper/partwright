@@ -13424,6 +13424,21 @@ async function main() {
         return { error: 'paintConnected.maxDeviationDeg must be a finite number in [0, 180]' };
       }
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintConnected.color must be [r,g,b] in 0..1' };
+      // The clamp is persisted on the descriptor, so reject junk instead of
+      // silently treating it as "no clamp".
+      if (opts.withinBox !== undefined) {
+        if (!opts.withinBox || typeof opts.withinBox !== 'object') return { error: 'paintConnected.withinBox must be { min?: [x,y,z], max?: [x,y,z] }' };
+        for (const side of ['min', 'max'] as const) {
+          const v = opts.withinBox[side];
+          if (v !== undefined && (!Array.isArray(v) || v.length !== 3 || v.some(c => typeof c !== 'number' || Number.isNaN(c)))) {
+            return { error: `paintConnected.withinBox.${side} must be [x,y,z] numbers` };
+          }
+        }
+      }
+      for (const k of ['zMin', 'zMax'] as const) {
+        const v = opts[k];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) return { error: `paintConnected.${k} must be a finite number` };
+      }
       if (!currentMeshData) return { error: 'No geometry loaded' };
 
       // Resolve the clamp into a single AABB the BFS predicate can use. Both
@@ -16583,7 +16598,7 @@ async function main() {
     const suggested = Math.max(-1, Math.floor(clamped * 10000) / 10000 - 0.0001);
     const suggestText = clamped >= tolerance
       ? `tolerance ${tolerance} should already match — the seed point may be too far off the surface (${nearest.distance.toFixed(3)} units). Use the hit point/normal from probeRay() instead, or call paintNearestRegion({point, color}) which auto-snaps.`
-      : `try tolerance ${suggested.toFixed(4)} (currently ${tolerance})`;
+      : `try tolerance ${suggested.toFixed(4)} (currently ${tolerance}; a cosine — ≈ toleranceDeg ${(Math.acos(Math.min(1, Math.max(-1, suggested))) * 180 / Math.PI).toFixed(1)} in the AI tool)`;
 
     return {
       error: `paintRegion: no face matched at point=[${point.map(n => n.toFixed(2)).join(', ')}], normal=[${requestedNormal.map(n => n.toFixed(3)).join(', ')}], tolerance=${tolerance}. Nearest face is at [${nearest.closest.map(n => n.toFixed(2)).join(', ')}] with normal [${nearest.normal.map(n => n.toFixed(3)).join(', ')}] (${angleDeg.toFixed(1)}° off requested, distance ${nearest.distance.toFixed(3)}). ${suggestText}`,
