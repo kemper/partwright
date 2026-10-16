@@ -685,6 +685,25 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'editRegion',
+    description: 'Clean up an existing painted region IN PLACE (same id/name/colour/layer; one undoLastPaint step). op "grow": add `steps` rings of neighbouring triangles (closes hairline gaps; clamp with withinBox/zMin/zMax so it cannot leak). op "shrink": peel `steps` rings off its border (pulls a ragged fill back off a neighbour). op "despeckle": drop islands smaller than minIslandTriangles and fill enclosed unpainted holes of ≤ maxHoleTriangles (both default 10; 0 skips) — use after a bucket fill leaves specks. op "union"/"subtract"/"intersect": combine with the `with` region(s); only `region` changes. Tip: grow 1 then shrink 1 fills notches biting in from the border (despeckle only fills enclosed holes); shrink 1 then grow 1 removes thin spurs. These follow mesh triangles, so they clean specks and gaps but do NOT make a jagged edge smooth — for that use a smooth tool (paintSlab / paintInOrientedBox / paintStroke). Smooth (mesh-refining) and image/pattern regions cannot be edited.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['grow', 'shrink', 'despeckle', 'union', 'subtract', 'intersect'] },
+        region: { description: 'Target region id (integer) or name (string), from listRegions.' },
+        steps: { type: 'integer', description: 'grow/shrink: rings of triangles. Default 1.' },
+        withinBox: { type: 'object', description: 'grow only: {min?: [x,y,z], max?: [x,y,z]} — never add a triangle whose centroid is outside.' },
+        zMin: { type: 'number', description: 'grow only: never add triangles below this Z.' },
+        zMax: { type: 'number', description: 'grow only: never add triangles above this Z.' },
+        minIslandTriangles: { type: 'integer', description: 'despeckle: drop pieces of the region smaller than this (largest piece always kept). Default 10; 0 = skip.' },
+        maxHoleTriangles: { type: 'integer', description: 'despeckle: fill enclosed unpainted patches of at most this many triangles. Default 10; 0 = skip.' },
+        with: { description: 'union/subtract/intersect: the other region id/name, or an array of them.' },
+      },
+      required: ['op', 'region'],
+    },
+  },
+  {
     name: 'clearColors',
     description: 'Remove ALL color regions from the current version. Destructive — only use when you want a completely clean slate. To fix a single mistake, call undoLastPaint or removeRegion(id) instead.',
     input_schema: { type: 'object', properties: {} },
@@ -1442,7 +1461,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1582,7 +1601,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -2136,6 +2155,14 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.probePixel(input);
     case 'paintConnected':
       return api.paintConnected(input);
+    case 'editRegion': {
+      const { op, ...rest } = input;
+      if (op === 'grow') return api.growRegion(rest);
+      if (op === 'shrink') return api.shrinkRegion(rest);
+      if (op === 'despeckle') return api.despeckleRegion(rest);
+      if (op === 'union' || op === 'subtract' || op === 'intersect') return api.combineRegions({ ...rest, op });
+      return { error: `editRegion.op must be grow | shrink | despeckle | union | subtract | intersect (got ${JSON.stringify(op)})` };
+    }
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

@@ -443,6 +443,9 @@ partwright.getFeatureCentroids({maxGroups?, withinBox?}?)                 // lig
 partwright.listRegions() / listComponents() / listLabels()                // inventory
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
+partwright.growRegion({region, steps?, withinBox?, zMin?, zMax?}) / shrinkRegion({region, steps?})  // region clean-up: ±N rings of triangles
+partwright.despeckleRegion({region, minIslandTriangles?, maxHoleTriangles?})  // drop small islands + fill small holes
+partwright.combineRegions({region, op: 'union'|'subtract'|'intersect', with})  // boolean ops on region triangle sets
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
 await partwright.paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) // project a raster image onto the surface as paint (logo/graphic/text/decal) -> {ok, name, triangles, avgColor}; use view (+ optional label) OR explicit at+normal (from probeRay); see /ai/colors.md
