@@ -4720,11 +4720,21 @@ async function main() {
   });
 
   document.addEventListener('drop', async (e) => {
+    // Nested drop zones that own their drops (AI chat attachments, the relief
+    // import modal, the image-paint preview) stopPropagation() so they never
+    // reach this handler. Don't key off e.defaultPrevented: CodeMirror's own
+    // drop handler preventDefault()s every file drop on the code editor, and
+    // those must still import.
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    const all = Array.from(files).filter(isImportableFile);
-    if (all.length === 0) return;
+    // Always swallow a file drop: an unhandled one makes the browser navigate
+    // the tab to the file, discarding the editor.
     e.preventDefault();
+    const all = Array.from(files).filter(isImportableFile);
+    if (all.length === 0) {
+      showToast(`Can’t import “${files[0].name}” — unsupported file type.`, { variant: 'warn', source: 'import' });
+      return;
+    }
 
     // When multiple SCAD files are dropped at once, detect if one is a "main"
     // file (has top-level geometry) and the rest are companions.
