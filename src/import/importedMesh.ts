@@ -29,7 +29,9 @@ export interface ImportedMesh {
 }
 
 /** Detected parts committed on an import. Identity is per *source* triangle
- *  (this mesh's `triVerts` order), so the stored mesh is never re-meshed. */
+ *  (this mesh's `triVerts` order). An accept with smooth edges stores the
+ *  mesh re-meshed along the part boundaries, with parts for the new
+ *  triangles (see `source.edgeSmoothing`). */
 export interface ImportedMeshParts {
   /** Part name per part index (unique, non-empty). */
   names: string[];
@@ -45,6 +47,9 @@ export interface ImportedMeshParts {
     params: Record<string, unknown>;
     featureOptions?: Record<string, unknown>;
     seeds?: { label: string; point: [number, number, number] }[];
+    /** Edge-smoothing passes the accept cut the mesh along (the stored
+     *  mesh is then the refined one); absent/0 = not re-meshed. */
+    edgeSmoothing?: number;
   };
 }
 

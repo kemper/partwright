@@ -14,6 +14,7 @@ a real **label**. After that, `paintByLabel`, part colours, the object rail and
 
 - **The sculpted seams are the signal.** On sculpted/scanned figures, every colour change sits in a concave groove: around the eyes, under the brows, at each hair-lock tip, at hems and cuffs. Detection measures how sharply the surface folds inward between neighbouring triangles. These "creases" mark the likely boundaries; the default growth rule treats creases within 5° of each other as equal, so scan noise doesn't break them up.
 - **You provide the meaning; the algorithm provides the edges.** `crease-watershed` grows named seeds across the surface. Each boundary settles on the strongest groove between two competing seeds, so a small gap in a groove doesn't leak.
+- **No seeds yet? Start with Auto patches.** `auto-merge` splits the whole surface along its grooves into generic `patch N` parts. Name the patches you recognise, give two patches the same name to merge them, or turn every patch into a seed (`seedsFromParts`) and refine from there.
 - **It follows the surface, not the camera.** Seeds grow across the surface itself, so surfaces you can't see in any render get the right part too: the inner arm behind a held ball, or the palm wrapped around it.
 
 ## Workflow
@@ -24,6 +25,16 @@ partwright.listPartDetectors()
 
 // 1. Multi-body file? Try the instant one first
 await partwright.detectParts({ algorithm: 'pieces' })
+
+// 1b. Fused shell, no seeds yet: auto patches, then name/merge them
+await partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 6 } })   // higher = coarser
+await partwright.editParts({ ops: [
+  { op: 'rename', id: 1, name: 'hair' },
+  { op: 'merge', ids: [4, 7], name: 'shirt' },     // or rename a patch to an existing name
+]})
+// …or rank every preset of a detector and keep the best (draft untouched until you apply)
+await partwright.previewPartPresets({ algorithm: 'auto-merge' })   // -> { presets: [{ index, name, partCount, score }], image }
+await partwright.applyPartPreset(0)
 
 // 2. Fused shell: place named seeds. Get points by clicking in your own
 //    renders: renderViews → probePixel(view, [px, py]) → .point
@@ -56,10 +67,46 @@ await partwright.editParts({ ops: [
   { op: 'setColor', id: 'skin', color: '#f2cfb0' },                     // becomes the model colour
 ]})
 
+// 4b. Refine one area without disturbing the rest
+await partwright.editParts({ ops: [
+  { op: 'lock', id: 'skin' },          // locked parts keep their triangles when detection re-runs
+  { op: 'focus', id: 'shirt' },        // later detections only change the shirt's triangles
+]})
+await partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 3 } })  // splits only the shirt
+await partwright.editParts({ ops: [{ op: 'focus', id: null }] })  // clear the focus
+
 // 5. Show the user, get their OK, then commit
 await partwright.acceptParts({ label: 'Detected parts' })
 // The code becomes `return api.importWithParts(0);`, and each part is now a label.
+
+// Later: re-open the saved parts (with their seeds) to refine them
+await partwright.reopenParts({ importIndex: 0 })
 ```
+
+## The Part Detection panel (handing off to the user)
+
+`detectParts` (from the in-app AI) and `reopenParts` open the **Part Detection panel**,
+so the user can refine the draft by hand. `openPartsPanel()` opens it explicitly. In the panel the user can:
+
+- **Place seeds.** Each seed shows on the model as a dot with its name. Drag a dot to move it, right-click to delete it, and hold **H** (or use the 👁 toggle) to hide the markers. Seeds are placed on a click, so dragging still orbits the camera. `getPartSeeds()` / `setPartSeeds()` read and write the same working seed list.
+- **Try presets.** Every preset of the method runs and shows as a thumbnail strip, best first. Hover or press ←/→ to preview one on the model; click to keep it. This is `previewPartPresets` + `showPartPresetPreview` + `applyPartPreset`.
+- **Turn on Live** (off by default) to re-run detection automatically after each seed or setting change. Leave it off on heavy meshes.
+- **Lock, focus, pick, name.** Lock (🔒) or focus (◎) a part. Pick a part on the model to jump to its name. Typing an existing part's name merges the two. Convert to seeds is `seedsFromParts`.
+
+## Smooth edges
+
+By default, part boundaries are drawn **through** triangles instead of along their edges
+(`edgeSmoothing`, default 3 passes, 0–20; `editParts({ops:[{op:'setEdgeSmoothing', iterations}]})`).
+More passes give rounder curves; 0 gives the raw per-triangle stair-steps. A boundary that
+already runs along a hard fold (faces at least 60° apart, such as a box edge) stays where it is,
+since it is already on the seam. Sculpted grooves on scans fold less than that per edge, so their
+stair-steps still smooth. The overlay
+shows the smooth boundaries. `acceptParts()` then **re-meshes the import** along them:
+split triangles are cut and shared cut points are reused, so the mesh stays watertight. It
+gains a few percent more triangles, and the parts are stored for the new triangles.
+`acceptParts({ smoothEdges: false })` keeps the original triangles. If the model already
+had brush paint, check it after a smooth accept, because painted edges can shift slightly.
+A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is already cut.
 
 ## Choosing seeds
 
@@ -75,13 +122,16 @@ await partwright.acceptParts({ label: 'Detected parts' })
 | `boundaryCreaseMean` | Average groove strength (°) along part boundaries. Higher means the boundaries sit on real seams. Compare runs on the **same** feature options. |
 | `islandCount` / `islandAreaFrac` | Extra disconnected regions beyond one per part. These are expected for paired parts (two eyes, two shoes: check each part's `regions`). Anywhere else they're usually leaks; fix with `absorbSmall` or another seed. |
 | `unassignedAreaFrac` | Surface no seed reached (unseeded separate pieces). |
+| `grooveCoverage` | Share of the mesh's strong grooves (≥ 15°) that lie on a part boundary. This is recall: are the real seams being used? Finer splits raise it. |
+| `grooveFidelity` | Share of the boundary length that runs along strong grooves. This is precision: do boundaries sit on real seams? Coarser splits raise it. |
 | `sizeBalance`, `compactness` | Shape diagnostics, useful when comparing detectors. |
 
 ## Detectors
 
 | id | seeds | best for |
 |---|---|---|
-| `pieces` | none | Files that already ship one body per colour. Instant and exact. |
+| `pieces` | none | Files that already ship one body per colour. Instant and exact. Finds nothing inside one fused shell. |
+| `auto-merge` | none | **Auto patches**: a first pass on any fused sculpt. Over-segments into grid patches whose borders snap to grooves, then merges borders weaker than `mergeBelowDeg` (4°; higher is coarser). `patchSizePct` (1.5% of the diagonal) sets the starting patch size, and `minPatchPct` (0.02%) absorbs specks. The patch layout is cached, so changing `mergeBelowDeg` re-runs in a fraction of a second. |
 | `crease-watershed` | required | Fused sculpts with grooved seams. Params: `growth` (`hybrid` default: grooves decide, path length breaks ties; `minimax`: grooves only; `summed`: path length plus a crease toll), `creaseQuantumDeg` (5: creases within this many degrees count as equal), `creaseWeight` (1). |
 
 `comparePartDetectors([{algorithm, seeds, params}, …])` runs up to 6 configurations
@@ -91,5 +141,6 @@ side by side **without** touching the draft, and returns a quality table plus a 
 
 - **Detection runs on the import's own mesh** (`importIndex`, default 0), in a background Worker. On a 460k-triangle scan, the first run analyses the surface in about 1 s; re-runs and edits take a fraction of that. Nothing is saved until `acceptParts`.
 - **Code you've restructured is left alone.** `acceptParts` only rewrites `Manifold.ofMesh(api.imports[i])` to `api.importWithParts(i)`. If your code loads the import some other way, call `api.importWithParts(i)` yourself. It returns a Manifold like `ofMesh`, and the labels survive later booleans.
-- **Part edges are per-triangle.** On dense scans (0.3 mm triangles) that already looks smooth. On low-poly meshes the edges show stair-steps.
+- **Re-detection keeps the draft.** A second `detectParts` goes into the existing draft as an undoable step: colours carry over by name, and locked parts and anything outside a focus stay as they are. `editParts({ops:[{op:'undo'}]})` steps back.
+- **Presets are listed per detector** in `listPartDetectors()` (`presets: [{name, params, featureOptions?}]`). The ranking score balances `grooveCoverage` against `grooveFidelity` (F1), discounted by stray islands and unassigned area. It's a heuristic, so look at the thumbnails too.
 - **Some operations drop parts.** Baking a surface texture or rescaling rebuilds the import's mesh, and the parts don't carry over yet. Re-detect afterwards.

@@ -15,7 +15,7 @@ import { resolveSeeds } from './detectors';
 import { nearestTriangle } from './features';
 import { growFromSeeds, type GrowthRule } from './growth';
 import { getDetector, resolveParams } from './registry';
-import type { DetectorResult, FeatureOptions, MeshFeatures, ParamValues, SegMesh, SegSeed } from './types';
+import type { DetectorContext, DetectorResult, FeatureOptions, MeshFeatures, ParamValues, SegMesh, SegSeed } from './types';
 
 /** Distinct overlay colours for parts without an explicit colour. */
 const PALETTE = [
@@ -47,6 +47,8 @@ export interface PartSummary {
   neighbors: number[];
   /** Same-label connected regions (1 = one clean piece). */
   regions: number;
+  /** Locked parts keep their triangles when detection re-runs. */
+  locked: boolean;
 }
 
 export interface DraftQuality {
@@ -65,6 +67,12 @@ export interface DraftQuality {
   sizeBalance: number;
   /** Mean boundaryLength/√area per part (lower = more compact parts). */
   compactness: number;
+  /** Share of the mesh's strong-groove length (≥ STRONG_GROOVE_DEG) that
+   *  lies on a part boundary — recall: are the real seams used? */
+  grooveCoverage: number;
+  /** Share of the boundary length that runs along strong grooves —
+   *  precision: do boundaries sit on real seams? */
+  grooveFidelity: number;
 }
 
 export interface DraftSummary {
@@ -78,6 +86,10 @@ export interface DraftSummary {
   quality: DraftQuality;
   diagnostics?: Record<string, unknown>;
   canUndo: boolean;
+  /** Present while detection is focused on one area (see the 'focus' op). */
+  focus: { triCount: number } | null;
+  /** Boundary-smoothing passes for smooth (sub-triangle) part edges; 0 = off. */
+  edgeSmoothing: number;
 }
 
 export type PartRef = number | string;
@@ -94,6 +106,11 @@ export type PartEditOp =
   | { op: 'smoothBoundaries'; iterations?: number }
   | { op: 'addSeed'; seed: SegSeed; rerun?: boolean }
   | { op: 'removeSeed'; index: number; rerun?: boolean }
+  | { op: 'moveSeed'; index: number; point: [number, number, number]; rerun?: boolean }
+  | { op: 'seedsFromParts'; minRegionFrac?: number }
+  | { op: 'lock'; id: PartRef; locked?: boolean }
+  | { op: 'focus'; id: PartRef | null }
+  | { op: 'setEdgeSmoothing'; iterations: number }
   | { op: 'rerun' }
   | { op: 'undo' };
 
@@ -103,13 +120,41 @@ interface Snapshot {
   colors: (string | null)[];
   seeds: SegSeed[];
   diagnostics?: Record<string, unknown>;
+  locked: string[];
+  focusMask: Uint8Array | null;
+  detectorId: string;
+  params: ParamValues;
+  featureOptions: FeatureOptions;
+  edgeSmoothing: number;
+  /** Detection may switch the crease field (feature options): undo must
+   *  restore the one the restored partition was measured on. */
+  features: MeshFeatures;
 }
+
+/** A crease at least this sharp (°) counts as a real seam for the
+ *  grooveCoverage / grooveFidelity metrics. Part of the metrics' definition
+ *  (changing it changes what they mean), not a tuning knob. */
+const STRONG_GROOVE_DEG = 15;
+
+/** Default boundary-smoothing passes for smooth part edges. */
+export const DEFAULT_EDGE_SMOOTHING = 3;
+/** Upper bound on boundary-smoothing passes (cost guard). */
+export const MAX_EDGE_SMOOTHING = 20;
 
 
 export class PartDraftModel {
   readonly mesh: SegMesh;
-  readonly features: MeshFeatures;
+  /** Features of the last detection (crease strength depends on its feature
+   *  options; adjacency does not). */
+  features: MeshFeatures;
   readonly adjacency: TriAdjacency;
+  /** Part names whose triangles detection must not touch. */
+  lockedNames = new Set<string>();
+  /** When set, detection only relabels these triangles (a focused part). */
+  focusMask: Uint8Array | null = null;
+  edgeSmoothing = DEFAULT_EDGE_SMOOTHING;
+  /** Runner-owned per-mesh cache handed to detectors (see DetectorContext). */
+  cache?: Map<string, unknown>;
   detectorId: string;
   params: ParamValues;
   featureOptions: FeatureOptions;
@@ -141,6 +186,39 @@ export class PartDraftModel {
     this.names = [];
     this.colors = [];
     this.adoptResult(result);
+  }
+
+  /** Rebuild a draft from parts saved on an import (re-opening accepted
+   *  parts for editing): partition, names, colours and the seeds/params that
+   *  produced them. */
+  static fromSaved(
+    mesh: SegMesh,
+    features: MeshFeatures,
+    saved: { triPart: Int32Array; names: string[]; colors: (string | null)[]; detectorId: string; params: ParamValues; featureOptions: FeatureOptions; seeds: SegSeed[] },
+  ): PartDraftModel {
+    const model = new PartDraftModel(
+      mesh, features,
+      { detectorId: saved.detectorId, params: saved.params, featureOptions: saved.featureOptions, seeds: saved.seeds },
+      { triPart: saved.triPart.slice(), partNames: saved.names, diagnostics: { reopened: true } },
+    );
+    const byName = new Map(saved.names.map((nm, i) => [nm, saved.colors[i] ?? null] as const));
+    model.colors = model.names.map((nm) => byName.get(nm) ?? null);
+    return model;
+  }
+
+  /** Independent copy (previews run detection on a copy so the real draft —
+   *  with its locks and focus honoured — is untouched). */
+  clone(): PartDraftModel {
+    const c = PartDraftModel.fromSaved(this.mesh, this.features, {
+      triPart: this.triPart, names: this.names, colors: this.colors, detectorId: this.detectorId,
+      params: this.params, featureOptions: this.featureOptions, seeds: this.seeds,
+    });
+    c.lockedNames = new Set(this.lockedNames);
+    c.focusMask = this.focusMask ? this.focusMask.slice() : null;
+    c.edgeSmoothing = this.edgeSmoothing;
+    c.cache = this.cache;
+    c.undoDepth = this.undoDepth;
+    return c;
   }
 
   private adoptResult(result: DetectorResult): void {
@@ -184,10 +262,13 @@ export class PartDraftModel {
     // Boundaries, neighbours, crease strength.
     const nbrSets = Array.from({ length: n }, () => new Set<number>());
     const bLen = new Float64Array(n);
-    let boundaryLength = 0, creaseSum = 0;
+    let boundaryLength = 0, creaseSum = 0, strongLen = 0, strongOnBoundary = 0;
     for (let e = 0; e < f.edgeA.length; e++) {
       const la = this.triPart[f.edgeA[e]], lb = this.triPart[f.edgeB[e]];
+      const strong = f.creaseCost[e] >= STRONG_GROOVE_DEG;
+      if (strong) strongLen += f.edgeLen[e];
       if (la === lb || la < 0 || lb < 0) continue;
+      if (strong) strongOnBoundary += f.edgeLen[e];
       nbrSets[la].add(lb); nbrSets[lb].add(la);
       const len = f.edgeLen[e];
       bLen[la] += len; bLen[lb] += len;
@@ -218,11 +299,24 @@ export class PartDraftModel {
       compactSum += area[L] > 0 ? bLen[L] / Math.sqrt(area[L]) : 0;
     }
 
+    // Anchors: each part's triangle nearest its centroid, in one O(n) pass
+    // (a per-part scan is O(parts × n) — too slow with hundreds of patches).
+    const bestT = new Int32Array(n).fill(-1);
+    const bestD = new Float64Array(n).fill(Infinity);
+    for (let t = 0; t < f.triCount; t++) {
+      const L = this.triPart[t];
+      if (L < 0) continue;
+      const a = area[L] || 1;
+      const dx = f.triCentroid[t * 3] - cx[L] / a, dy = f.triCentroid[t * 3 + 1] - cy[L] / a, dz = f.triCentroid[t * 3 + 2] - cz[L] / a;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD[L]) { bestD[L] = d; bestT[L] = t; }
+    }
+
     const parts: PartSummary[] = [];
     for (let L = 0; L < n; L++) {
       const a = area[L] || 1;
       const centroid: [number, number, number] = [cx[L] / a, cy[L] / a, cz[L] / a];
-      const at = nearestTriangle(f, centroid, (t) => this.triPart[t] === L);
+      const at = bestT[L];
       const anchor: [number, number, number] = at >= 0
         ? [f.triCentroid[at * 3], f.triCentroid[at * 3 + 1], f.triCentroid[at * 3 + 2]]
         : centroid;
@@ -238,6 +332,7 @@ export class PartDraftModel {
         bbox: { min: round3v(bmin[L]), max: round3v(bmax[L]) },
         neighbors: [...nbrSets[L]].sort((x, y) => x - y).map((x) => x + 1),
         regions: regions[L],
+        locked: this.lockedNames.has(this.names[L]),
       });
     }
 
@@ -258,9 +353,13 @@ export class PartDraftModel {
         unassignedAreaFrac: round4(unArea / total),
         sizeBalance: round3(n > 1 ? entropy / Math.log(n) : 1),
         compactness: round3(n > 0 ? compactSum / n : 0),
+        grooveCoverage: round4(strongLen > 0 ? strongOnBoundary / strongLen : 0),
+        grooveFidelity: round4(boundaryLength > 0 ? strongOnBoundary / boundaryLength : 0),
       },
       diagnostics: this.diagnostics,
       canUndo: this.undoStack.length > 0,
+      focus: this.focusMask ? { triCount: countSet(this.focusMask) } : null,
+      edgeSmoothing: this.edgeSmoothing,
     };
   }
 
@@ -305,17 +404,22 @@ export class PartDraftModel {
         const idx = op.ids.map((r) => this.resolvePart(r));
         const keep = Math.min(...idx);
         const set = new Set(idx);
+        const anyLocked = idx.some((i) => this.lockedNames.has(this.names[i]));
         for (let t = 0; t < this.triPart.length; t++) if (set.has(this.triPart[t])) this.triPart[t] = keep;
         // keep is the lowest merged index, so compaction (which only drops the
         // now-empty merged parts) leaves it in place; name it afterwards so the
         // new name may reuse a merged part's name.
         this.compact();
         if (op.name !== undefined) this.names[keep] = this.uniqueNameFor(keep, op.name);
+        if (anyLocked) this.lockedNames.add(this.names[keep]);
+        this.pruneLocks();
         return;
       }
       case 'rename': {
         const i = this.resolvePart(op.id);
+        const was = this.names[i];
         this.names[i] = this.uniqueNameFor(i, op.name);
+        if (this.lockedNames.delete(was)) this.lockedNames.add(this.names[i]);
         return;
       }
       case 'setColor': {
@@ -328,6 +432,7 @@ export class PartDraftModel {
         const i = this.resolvePart(op.id);
         for (let t = 0; t < this.triPart.length; t++) if (this.triPart[t] === i) this.triPart[t] = -1;
         this.compact();
+        this.pruneLocks();
         return;
       }
       case 'reassign': {
@@ -392,6 +497,43 @@ export class PartDraftModel {
         this.seeds.splice(op.index, 1);
         if (op.rerun !== false) this.rerun();
         return;
+      case 'moveSeed':
+        if (!Number.isInteger(op.index) || op.index < 0 || op.index >= this.seeds.length) throw new Error(`moveSeed.index must be 0–${this.seeds.length - 1}`);
+        if (!Array.isArray(op.point) || op.point.length !== 3 || op.point.some((x) => !Number.isFinite(x))) throw new Error('moveSeed.point must be [x, y, z]');
+        this.seeds[op.index] = { label: this.seeds[op.index].label, point: [op.point[0], op.point[1], op.point[2]] };
+        if (op.rerun !== false) this.rerun();
+        return;
+      case 'seedsFromParts':
+        this.seeds = this.seedsFromParts(op.minRegionFrac);
+        // Seeds only mean something to a seeded detector: switch a seedless
+        // draft (auto patches, pieces) to crease-watershed so add/move/remove
+        // seed + rerun refine from here.
+        if (getDetector(this.detectorId)?.seeds === 'none') {
+          const cw = getDetector('crease-watershed')!;
+          this.detectorId = cw.id;
+          this.params = resolveParams(cw, {});
+        }
+        return;
+      case 'lock': {
+        const i = this.resolvePart(op.id);
+        if (op.locked === false) this.lockedNames.delete(this.names[i]);
+        else this.lockedNames.add(this.names[i]);
+        return;
+      }
+      case 'focus': {
+        if (op.id === null) { this.focusMask = null; return; }
+        const i = this.resolvePart(op.id);
+        const mask = new Uint8Array(this.triPart.length);
+        for (let t = 0; t < mask.length; t++) if (this.triPart[t] === i) mask[t] = 1;
+        this.focusMask = mask;
+        return;
+      }
+      case 'setEdgeSmoothing':
+        if (!Number.isInteger(op.iterations) || op.iterations < 0 || op.iterations > MAX_EDGE_SMOOTHING) {
+          throw new Error(`setEdgeSmoothing.iterations must be an integer 0–${MAX_EDGE_SMOOTHING}`);
+        }
+        this.edgeSmoothing = op.iterations;
+        return;
       case 'rerun':
         this.rerun();
         return;
@@ -406,15 +548,145 @@ export class PartDraftModel {
     }
   }
 
-  /** Re-run the draft's detector with its current seeds/params (manual
-   *  edits since the last run are replaced; part colours carry over by name). */
+  /** Re-run the draft's detector with its current seeds/params. Locked
+   *  parts (and everything outside a focused area) keep their triangles;
+   *  part colours carry over by name. */
   rerun(): void {
-    const d = getDetector(this.detectorId);
-    if (!d) throw new Error(`Unknown detector "${this.detectorId}"`);
+    this.applyDetection(this.detectorId, this.params, this.featureOptions, this.seeds, this.features);
+  }
+
+  /** Triangles a detection may relabel, or null when it may relabel all
+   *  (no locks, no focus). */
+  detectionMask(): Uint8Array | null {
+    if (!this.focusMask && this.lockedNames.size === 0) return null;
+    const allow = this.focusMask ? this.focusMask.slice() : new Uint8Array(this.triPart.length).fill(1);
+    if (this.lockedNames.size) {
+      const lockedIdx = new Set<number>();
+      this.names.forEach((nm, i) => { if (this.lockedNames.has(nm)) lockedIdx.add(i); });
+      for (let t = 0; t < allow.length; t++) if (lockedIdx.has(this.triPart[t])) allow[t] = 0;
+    }
+    return allow;
+  }
+
+  /**
+   * Run a detector and merge its result into this draft: triangles outside
+   * the detection mask keep their part; inside it, the detector's parts
+   * replace them — a detected name that matches an existing part joins that
+   * part (so a focused re-detection can grow "skin" into the existing skin).
+   * Without locks or focus this simply replaces the partition. Colours carry
+   * over by name either way.
+   */
+  /** Re-detect into this draft as an undoable step (the runner's path for
+   *  every detection after the first, so a preset flip can be undone). */
+  detectUndoable(
+    detectorId: string, params: ParamValues, featureOptions: FeatureOptions, seeds: SegSeed[], features: MeshFeatures,
+    run?: Pick<DetectorContext, 'signal' | 'progress'>,
+  ): void {
+    const before = this.snapshot();
+    this.applyDetection(detectorId, params, featureOptions, seeds, features, run);
+    this.undoStack.push(before);
+    if (this.undoStack.length > this.undoDepth) this.undoStack.shift();
+  }
+
+  applyDetection(
+    detectorId: string, params: ParamValues, featureOptions: FeatureOptions, seeds: SegSeed[], features: MeshFeatures,
+    run?: Pick<DetectorContext, 'signal' | 'progress'>,
+  ): void {
+    const d = getDetector(detectorId);
+    if (!d) throw new Error(`Unknown detector "${detectorId}"`);
+    const allow = this.detectionMask();
+    const result = d.run(this.mesh, features, { params, seeds, allow: allow ?? undefined, cache: this.cache, signal: run?.signal, progress: run?.progress });
     const keepColors = new Map(this.names.map((nm, i) => [nm, this.colors[i]] as const));
-    const result = d.run(this.mesh, this.features, { params: this.params, seeds: this.seeds });
-    this.adoptResult(result);
-    this.colors = this.names.map((nm) => keepColors.get(nm) ?? null);
+    if (!allow) {
+      this.adoptResult(result);
+    } else {
+      const index = new Map(this.names.map((nm, i) => [nm, i] as const));
+      const map = (result.partNames ?? []).map((raw, i) => {
+        let nm = (raw ?? `part ${i + 1}`).trim() || `part ${i + 1}`;
+        if (result.genericNames && index.has(nm)) {
+          // Placeholder names never join an existing part: take the next
+          // free number with the same prefix ("patch 3" → "patch 12").
+          const prefix = nm.replace(/\s*\d+$/, '') || 'part';
+          let k = 1;
+          while (index.has(`${prefix} ${k}`)) k++;
+          nm = `${prefix} ${k}`;
+        }
+        let j = index.get(nm);
+        if (j === undefined) { j = this.names.length; this.names.push(nm); this.colors.push(null); index.set(nm, j); }
+        return j;
+      });
+      for (let t = 0; t < this.triPart.length; t++) {
+        if (!allow[t]) continue;
+        const r = result.triPart[t];
+        this.triPart[t] = r >= 0 ? (map[r] ?? -1) : -1;
+      }
+      this.diagnostics = result.diagnostics;
+      this.compact();
+    }
+    this.colors = this.names.map((nm, i) => keepColors.get(nm) ?? this.colors[i] ?? null);
+    this.detectorId = d.id;
+    this.params = { ...params };
+    this.featureOptions = { ...featureOptions };
+    this.seeds = seeds.map(cloneSeed);
+    this.features = features;
+    this.pruneLocks();
+  }
+
+  /**
+   * One seed per sizeable region of every part, placed on the region's
+   * deepest triangle (farthest from its border) — turns auto patches or any
+   * edited partition into seeds the seeded detector can refine.
+   */
+  /** One seed per region of each part (regions under `minRegionFrac` of
+   *  their part are skipped — they follow the part's main seed). */
+  seedsFromParts(minRegionFrac = 0.01): SegSeed[] {
+    const n = this.triPart.length, adj = this.adjacency, part = this.triPart;
+    const dist = new Int32Array(n).fill(-1);
+    const queue = new Int32Array(n);
+    let head = 0, tail = 0;
+    for (let t = 0; t < n; t++) {
+      if (part[t] < 0) continue;
+      const deg = adj.start[t + 1] - adj.start[t];
+      let border = deg < 3; // open mesh edge
+      for (let j = adj.start[t]; j < adj.start[t + 1] && !border; j++) if (part[adj.nbr[j]] !== part[t]) border = true;
+      if (border) { dist[t] = 0; queue[tail++] = t; }
+    }
+    while (head < tail) {
+      const t = queue[head++];
+      for (let j = adj.start[t]; j < adj.start[t + 1]; j++) {
+        const o = adj.nbr[j];
+        if (dist[o] === -1 && part[o] === part[t]) { dist[o] = dist[t] + 1; queue[tail++] = o; }
+      }
+    }
+    const { compOf, count } = partitionRegions(part, adj);
+    const regionArea = new Float64Array(count);
+    const regionBest = new Int32Array(count).fill(-1);
+    const partArea = new Float64Array(this.names.length);
+    for (let t = 0; t < n; t++) {
+      if (part[t] < 0) continue;
+      const c = compOf[t];
+      regionArea[c] += this.features.triArea[t];
+      partArea[part[t]] += this.features.triArea[t];
+      // A region with no border at all (a whole closed piece) has dist −1:
+      // any triangle of it will do.
+      if (regionBest[c] < 0 || dist[t] > dist[regionBest[c]]) regionBest[c] = t;
+    }
+    const seeds: SegSeed[] = [];
+    for (let c = 0; c < count; c++) {
+      const t = regionBest[c];
+      if (t < 0) continue;
+      const L = part[t];
+      // Skip specks (they follow the part's main seed).
+      if (regionArea[c] < minRegionFrac * partArea[L]) continue;
+      const cen = this.features.triCentroid;
+      seeds.push({ label: this.names[L], point: [cen[t * 3], cen[t * 3 + 1], cen[t * 3 + 2]], triangle: t });
+    }
+    return seeds;
+  }
+
+  /** Forget locks on names that no longer exist. */
+  private pruneLocks(): void {
+    for (const nm of [...this.lockedNames]) if (!this.names.includes(nm)) this.lockedNames.delete(nm);
   }
 
   private growthOptions(allow?: Uint8Array) {
@@ -502,12 +774,25 @@ export class PartDraftModel {
   }
 
   private snapshot(): Snapshot {
-    return { triPart: this.triPart.slice(), names: [...this.names], colors: [...this.colors], seeds: this.seeds.map(cloneSeed), diagnostics: this.diagnostics };
+    return {
+      triPart: this.triPart.slice(), names: [...this.names], colors: [...this.colors], seeds: this.seeds.map(cloneSeed),
+      diagnostics: this.diagnostics, locked: [...this.lockedNames], focusMask: this.focusMask ? this.focusMask.slice() : null,
+      detectorId: this.detectorId, params: { ...this.params }, featureOptions: { ...this.featureOptions }, edgeSmoothing: this.edgeSmoothing,
+      features: this.features,
+    };
   }
 
   private restore(s: Snapshot): void {
     this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
+    this.lockedNames = new Set(s.locked); this.focusMask = s.focusMask;
+    this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features;
   }
+}
+
+function countSet(mask: Uint8Array): number {
+  let n = 0;
+  for (let i = 0; i < mask.length; i++) n += mask[i];
+  return n;
 }
 
 function cloneSeed(s: SegSeed): SegSeed {
