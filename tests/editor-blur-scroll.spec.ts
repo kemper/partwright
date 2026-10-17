@@ -57,7 +57,11 @@ const programmaticSet = (page: Page, to: number): Promise<void> =>
 
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
-  page = await openSharedEditor(browser, testInfo);
+  page = await openSharedEditor(browser, testInfo, {
+    // These tests scroll the CodeMirror view itself, so open the full editor
+    // rather than the default compact code map.
+    initScript: () => { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' })); },
+  });
 });
 test.afterAll(async () => {
   await page?.context().close();

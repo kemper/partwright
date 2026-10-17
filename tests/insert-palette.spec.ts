@@ -111,7 +111,7 @@ test.describe('Insert palette', () => {
     // `.cm-content`. This test specifically needs to select text in the
     // editor, so pin it open ahead of the page load.
     await page.addInitScript(() => {
-      try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
+      try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' })); } catch { /* ignore */ }
     });
     await gotoEditor(page);
     await page.locator('#btn-insert').dispatchEvent('click');

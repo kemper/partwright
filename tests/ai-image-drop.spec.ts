@@ -31,7 +31,11 @@ test.describe('AI panel image drop', () => {
   test.beforeEach(async ({ page }) => {
     // Suppress the first-run guided tour — its backdrop intercepts clicks.
     await page.addInitScript(() => {
-      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+      try {
+        localStorage.setItem('partwright-tour-completed', '1');
+        // The drop target below is the full code editor, not the compact map.
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
+      } catch { /* ignore */ }
     });
     await page.goto('/editor');
     await waitForEditorReady(page);

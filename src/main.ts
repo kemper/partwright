@@ -5798,7 +5798,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor, setCodeView, getCodeView } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -6207,6 +6207,9 @@ async function main() {
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
+    { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'full' },
+    { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'mini' },
+    { id: 'code-view-hidden', title: 'Hide code pane', hint: 'View', keywords: 'code editor hide collapse close', run: () => setCodeView('hidden', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'hidden' },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
@@ -13488,8 +13491,16 @@ async function main() {
     // === Phase 2: View State & Session Rename ===
 
     /** Get current view state — active tab, camera angle, zoom */
-    getViewState(): { tab: string; camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } } {
-      return { tab: getTabFromURL(), camera: getCameraState() };
+    getViewState(): { tab: string; codeView: 'hidden' | 'mini' | 'full'; camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } } {
+      return { tab: getTabFromURL(), codeView: getCodeView(), camera: getCameraState() };
+    },
+
+    /** Switch the desktop code pane: 'mini' (compact code map, the default),
+     *  'full' (the editor) or 'hidden'. Remembered across reloads like the UI
+     *  toggles. */
+    setCodeView(mode: 'hidden' | 'mini' | 'full'): void {
+      assertEnum(mode, ['hidden', 'mini', 'full'] as const, 'setCodeView(mode)');
+      setCodeView(mode, { persist: true });
     },
 
     /** Programmatic tab switching */
@@ -16064,7 +16075,8 @@ async function main() {
         'rotateSelection':      { signature: 'rotateSelection([rx,ry,rz]) -- Rotate selected parts in place (degrees); 2+ parts pivot around the group centroid (Z plane) -> {ok}', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
-        'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        'getViewState':    { signature: 'getViewState() -- Current tab, code-pane mode, and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#viewport-controls' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },

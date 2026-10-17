@@ -964,6 +964,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'paneSlideMs', v)}
         />
         <Field
+          label="Mini code map width"
+          unit="px"
+          hint="Width of the compact code map the code pane shows by default."
+          tooltip="The code pane starts as a narrow, syntax-colored map of the file — hover it to peek at the code, click to open the full editor there. This sets how wide that strip is. Wider shows more of each line; narrower leaves more room for the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeMinimapWidthPx}
+          value={c.ui.codeMinimapWidthPx}
+          min={80} max={320} integer
+          onChange={v => set('ui', 'codeMinimapWidthPx', v)}
+        />
+        <Field
           label="Default palette capacity"
           hint="How many filament slots the paint panel assumes your printer has."
           tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
