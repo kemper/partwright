@@ -55,3 +55,23 @@ both classes.
 entry, ai.md line, and three command-palette entries. The tour's first step now
 targets the whole code pane and explains the map. The mini width is an
 `appConfig.ui.codeMinimapWidthPx` knob exposed in Advanced Settings.
+
+## Assistant
+
+## Follow-up: CI + review fixes
+
+**CI root cause:** many e2e specs did `document.querySelector('canvas')` /
+`locator('canvas').first()` assuming the first canvas is the 3D viewport; the
+minimap's canvas now precedes it in DOM order. App code never relies on this,
+so the specs now scope to `#viewport-container canvas` (the same element they
+got before) rather than reshaping the DOM around a test assumption.
+
+**Review fixes:** mode buttons/palette commands are desktop-only (mobile ignores
+the mode); the mobile branch cancels an in-flight slide timer so a breakpoint
+flip can't stamp a desktop width on the stacked pane; the hover peek is
+dismissed on any mode change / keyboard open; a zero-width (hidden) map no
+longer rebuilds, so the "changed since you last looked" marker survives several
+AI edits while hidden; tokenization is clipped to the drawable/peekable columns
+(state still carried) so long inline-data lines don't allocate; the collapsed
+parts-rail chip no longer covers the map header; a splitter drag cancels the
+mini→full width animation and records the dragged width.

@@ -6143,6 +6143,8 @@ async function main() {
 
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
+  // The code-pane modes are a desktop affordance; mobile's Code pane is always the full editor.
+  const isDesktopLayout = () => window.matchMedia('(min-width: 768px)').matches;
 
   // Flip the permanent on/off for the hints ticker (also exposed in Advanced
   // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
@@ -6207,9 +6209,9 @@ async function main() {
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
-    { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'full' },
-    { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'mini' },
-    { id: 'code-view-hidden', title: 'Hide code pane', hint: 'View', keywords: 'code editor hide collapse close', run: () => setCodeView('hidden', { persist: true }), enabled: () => isEditorActive() && getCodeView() !== 'hidden' },
+    { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
+    { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'mini' },
+    { id: 'code-view-hidden', title: 'Hide code pane', hint: 'View', keywords: 'code editor hide collapse close', run: () => setCodeView('hidden', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'hidden' },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },

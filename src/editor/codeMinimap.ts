@@ -55,6 +55,11 @@ export interface CodeMinimap {
   refresh: () => void;
   /** Surface (or clear) the editor's current error message in the footer badge. */
   setError: (message: string | null) => void;
+  /** Dismiss the hover peek (call when the map is being hidden). */
+  dismissPeek: () => void;
+  /** Left padding for the header — keeps it clear of the collapsed parts
+   *  rail's floating » chip. */
+  setHeaderInset: (padding: string) => void;
 }
 
 const ICON_BTN = 'shrink-0 w-6 h-6 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 text-sm leading-none';
@@ -144,7 +149,9 @@ export function createCodeMinimap(opts: CodeMinimapOptions): CodeMinimap {
   let peekLine: number | null = null;
   let lastPointer: { x: number; y: number } | null = null;
 
-  const isShown = (): boolean => el.isConnected && !el.classList.contains('hidden') && el.offsetParent !== null;
+  // Zero width = the pane is collapsed (hidden mode keeps the map mounted at
+  // width 0): skip rebuilding so the change baseline stays what the user last saw.
+  const isShown = (): boolean => el.isConnected && !el.classList.contains('hidden') && el.offsetParent !== null && scroller.clientWidth > 0;
 
   function rebuild(): void {
     dirty = false;
@@ -155,7 +162,7 @@ export function createCodeMinimap(opts: CodeMinimapOptions): CodeMinimap {
     const contentChanged = prev.length !== next.length || prev.some((l, i) => l !== next[i]);
     if (contentChanged) changed = range;
     lines = next;
-    runs = tokenizeMinimapLines(lines, getEditorLanguage() === 'scad' ? 'scad' : 'js');
+    runs = tokenizeMinimapLines(lines, getEditorLanguage() === 'scad' ? 'scad' : 'js', PEEK_MAX_COLS);
     errorLines = getEditorErrorLines();
     const n = lines.length;
     lineCountEl.textContent = `${n} line${n === 1 ? '' : 's'}`;
@@ -230,7 +237,7 @@ export function createCodeMinimap(opts: CodeMinimapOptions): CodeMinimap {
 
   function render(): void {
     rafId = null;
-    if (!isShown()) return; // redrawn on the next refresh() once visible
+    if (!isShown()) { hidePeek(); return; } // redrawn on the next refresh() once visible
     if (dirty) rebuild();
     draw();
     if (peekLine !== null) updatePeek(true);
@@ -344,6 +351,7 @@ export function createCodeMinimap(opts: CodeMinimapOptions): CodeMinimap {
   scroller.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      hidePeek();
       opts.onOpenFull();
     }
   });
@@ -360,5 +368,7 @@ export function createCodeMinimap(opts: CodeMinimapOptions): CodeMinimap {
       errorBadge.classList.toggle('hidden', message === null);
       errorBadge.title = message ? `${message}\n\nClick to open the full editor` : '';
     },
+    dismissPeek: hidePeek,
+    setHeaderInset: (padding) => { header.style.paddingLeft = padding; },
   };
 }

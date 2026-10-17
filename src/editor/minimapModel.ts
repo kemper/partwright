@@ -58,8 +58,13 @@ function pushRun(runs: MinimapRun[], start: number, end: number, kind: MinimapTo
   else runs.push({ start, end, kind });
 }
 
-function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState): MinimapRun[] {
+function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState, maxCols: number): MinimapRun[] {
   const runs: MinimapRun[] = [];
+  // Past `maxCols` the scan still runs (to carry comment/string state onto the
+  // next line) but emits nothing, so a huge inline-data line costs no allocations.
+  const emit = (start: number, end: number, kind: MinimapTokenKind): void => {
+    if (start < maxCols) pushRun(runs, start, Math.min(end, maxCols), kind);
+  };
   const n = line.length;
   const keywords = lang === 'scad' ? SCAD_KEYWORDS : JS_KEYWORDS;
   let i = 0;
@@ -67,14 +72,14 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
   // Carry-over constructs from the previous line.
   if (state.inBlockComment) {
     const close = line.indexOf('*/');
-    if (close < 0) { pushRun(runs, 0, n, 'comment'); return runs; }
-    pushRun(runs, 0, close + 2, 'comment');
+    if (close < 0) { emit(0, n, 'comment'); return runs; }
+    emit(0, close + 2, 'comment');
     state.inBlockComment = false;
     i = close + 2;
   } else if (state.inTemplate) {
     const close = findClosingQuote(line, 0, '`');
-    if (close < 0) { pushRun(runs, 0, n, 'string'); return runs; }
-    pushRun(runs, 0, close, 'string');
+    if (close < 0) { emit(0, n, 'string'); return runs; }
+    emit(0, close, 'string');
     state.inTemplate = false;
     i = close;
   }
@@ -87,17 +92,17 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
     const next = line[i + 1] ?? '';
 
     if (c === '/' && next === '/') {
-      pushRun(runs, i, n, 'comment');
+      emit(i, n, 'comment');
       break;
     }
     if (c === '/' && next === '*') {
       const close = line.indexOf('*/', i + 2);
       if (close < 0) {
-        pushRun(runs, i, n, 'comment');
+        emit(i, n, 'comment');
         state.inBlockComment = true;
         break;
       }
-      pushRun(runs, i, close + 2, 'comment');
+      emit(i, close + 2, 'comment');
       i = close + 2;
       prevSignificant = '/';
       continue;
@@ -105,11 +110,11 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
     if (c === '"' || c === "'" || (c === '`' && lang === 'js')) {
       const close = findClosingQuote(line, i + 1, c);
       if (close < 0) {
-        pushRun(runs, i, n, 'string');
+        emit(i, n, 'string');
         if (c === '`') state.inTemplate = true;
         break;
       }
-      pushRun(runs, i, close, 'string');
+      emit(i, close, 'string');
       i = close;
       prevSignificant = c;
       continue;
@@ -117,7 +122,7 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
     if (isDigit(c) || (c === '.' && isDigit(next))) {
       let j = i + 1;
       while (j < n && /[0-9A-Za-z_.]/.test(line[j])) j++;
-      pushRun(runs, i, j, 'number');
+      emit(i, j, 'number');
       i = j;
       prevSignificant = '0';
       continue;
@@ -133,12 +138,12 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
       else if (line[k] === '(') kind = 'call';
       else if (prevSignificant === '.') kind = 'property';
       else kind = 'text';
-      pushRun(runs, i, j, kind);
+      emit(i, j, kind);
       i = j;
       prevSignificant = 'a';
       continue;
     }
-    pushRun(runs, i, i + 1, 'punct');
+    emit(i, i + 1, 'punct');
     prevSignificant = c;
     i++;
   }
@@ -146,10 +151,11 @@ function tokenizeLine(line: string, lang: MinimapLanguage, state: TokenizerState
 }
 
 /** Classify every line's non-whitespace runs. Tabs should already be expanded
- *  by the caller so run columns map 1:1 onto rendered columns. */
-export function tokenizeMinimapLines(lines: readonly string[], lang: MinimapLanguage): MinimapRun[][] {
+ *  by the caller so run columns map 1:1 onto rendered columns. Runs are
+ *  clipped to the first `maxCols` columns (nothing past them is ever drawn). */
+export function tokenizeMinimapLines(lines: readonly string[], lang: MinimapLanguage, maxCols = Infinity): MinimapRun[][] {
   const state: TokenizerState = { inBlockComment: false, inTemplate: false };
-  return lines.map((line) => tokenizeLine(line, lang, state));
+  return lines.map((line) => tokenizeLine(line, lang, state, maxCols));
 }
 
 /** The span of `next` lines (0-based, inclusive) that differ from `prev`,

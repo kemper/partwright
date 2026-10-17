@@ -262,14 +262,15 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Shrink back to the compact code map — the default code-pane mode.
   const minimizeEditorBtn = document.createElement('button');
   minimizeEditorBtn.id = 'btn-code-minimize';
-  minimizeEditorBtn.className = EDITOR_HEADER_BTN;
+  // Desktop-only: mobile's stacked Code pane always shows the full editor.
+  minimizeEditorBtn.className = `${EDITOR_HEADER_BTN} hidden md:block`;
   minimizeEditorBtn.textContent = 'Minimize';
   minimizeEditorBtn.title = 'Shrink the code pane to the compact code map';
   editorHeader.appendChild(minimizeEditorBtn);
 
   const collapseEditorBtn = document.createElement('button');
   collapseEditorBtn.id = 'btn-code-hide';
-  collapseEditorBtn.className = EDITOR_HEADER_BTN;
+  collapseEditorBtn.className = `${EDITOR_HEADER_BTN} hidden md:block`;
   collapseEditorBtn.textContent = 'Hide code';
   collapseEditorBtn.title = 'Hide the code editor pane';
   editorHeader.appendChild(collapseEditorBtn);
@@ -314,7 +315,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const splitterStripe = document.createElement('div');
   splitterStripe.className = 'absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   splitter.appendChild(splitterStripe);
-  initSplitter(splitter, editorGroup);
+  initSplitter(splitter, editorGroup, {
+    // A drag supersedes any in-flight mini→full width animation, and the
+    // dragged width is what full mode returns to.
+    onDragStart: () => { cancelEditorSlide(); editorGroup.style.overflow = ''; },
+    onDragEnd: () => { if (editorGroup.style.width) lastFullWidth = editorGroup.style.width; },
+  });
   // `md:flex` outranks `hidden` at desktop widths, so toggle both — toggling
   // `hidden` alone left a live (draggable) strip beside a collapsed pane.
   const setSplitterVisible = (visible: boolean): void => {
@@ -636,6 +642,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
       }
       codeView = next;
       if (next !== 'hidden') lastShownView = next;
+      if (next !== 'mini') minimap.dismissPeek();
       cancelEditorSlide();
       const ms = paneSlideMs();
       const animate = ms > 0 && mqDesktop.matches && !editorGroup.classList.contains('hidden');
@@ -731,6 +738,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     // collapsed (but the editor open) pad the header so it doesn't overlap the
     // title. Cleared when the rail returns.
     editorHeader.style.paddingLeft = railCollapsed ? '1.75rem' : '';
+    minimap.setHeaderInset(railCollapsed ? '1.75rem' : '');
     window.dispatchEvent(new Event('resize'));
   }
   railExpandBtn.addEventListener('click', togglePartsRail);
@@ -757,8 +765,10 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
-      // Also drop any in-flight desktop slide offset so a breakpoint flip mid-
-      // animation can't leave the stacked pane shifted off-screen.
+      // Also drop any in-flight desktop slide (offset + its settle timer) so a
+      // breakpoint flip mid-animation can't leave the stacked pane shifted
+      // off-screen or have the timer stamp a desktop width onto it.
+      cancelEditorSlide();
       editorGroup.style.width = '';
       editorGroup.style.overflow = '';
       editorGroup.style.marginLeft = '';
@@ -884,7 +894,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // panel itself lives in the (hidden) full editor while the map is showing.
   const syncMinimapError = (): void => {
     const visible = !editorErrorPanel.classList.contains('hidden');
-    const text = editorErrorPanel.textContent?.trim() ?? '';
+    const text = Array.from(editorErrorPanel.children, (c) => c.textContent?.trim() ?? '').filter(Boolean).join('\n');
     minimap.setError(visible && text ? text : null);
   };
   new MutationObserver(syncMinimapError).observe(editorErrorPanel, {
@@ -1088,7 +1098,11 @@ function createClipSlider(): HTMLElement {
   return anchor;
 }
 
-function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
+function initSplitter(
+  splitter: HTMLElement,
+  editorPane: HTMLElement,
+  hooks: { onDragStart?: () => void; onDragEnd?: () => void } = {},
+) {
   let startX = 0;
   let startWidth = 0;
   let activePointerId: number | null = null;
@@ -1106,6 +1120,7 @@ function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
     if (e.pointerId !== activePointerId) return;
     activePointerId = null;
     splitter.classList.remove('is-dragging');
+    hooks.onDragEnd?.();
     try { splitter.releasePointerCapture(e.pointerId); } catch { /* no capture */ }
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
@@ -1116,6 +1131,7 @@ function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.preventDefault();
     activePointerId = e.pointerId;
+    hooks.onDragStart?.();
     startX = e.clientX;
     startWidth = editorPane.getBoundingClientRect().width;
     splitter.setPointerCapture(e.pointerId);

@@ -55,6 +55,13 @@ describe('tokenizeMinimapLines', () => {
     ]);
   });
 
+  it('clips runs to maxCols but still carries comment state past the cap', () => {
+    const long = `const data = [${Array.from({ length: 200 }, (_, i) => i).join(', ')}]; /* open`;
+    const runs = tokenizeMinimapLines([long, 'still comment */ x'], 'js', 20);
+    expect(runs[0].every((r) => r.end <= 20)).toBe(true);
+    expect(runs[1][0]).toEqual({ start: 0, end: 16, kind: 'comment' });
+  });
+
   it('uses the SCAD keyword set (and no template literals) for scad', () => {
     const line = 'module m() { cube(3); } // `tick';
     const [runs] = tokenizeMinimapLines([line], 'scad');
