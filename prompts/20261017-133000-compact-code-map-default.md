@@ -75,3 +75,7 @@ AI edits while hidden; tokenization is clipped to the drawable/peekable columns
 (state still carried) so long inline-data lines don't allocate; the collapsed
 parts-rail chip no longer covers the map header; a splitter drag cancels the
 mini→full width animation and records the dragged width.
+
+**fast-preview-color crop:** that spec sampled a fixed-pixel crop tuned for the
+old 40%-wide editor; with the narrow map the viewport is wider and the figure
+moved right. The crop is now centred on the viewport screenshot.
