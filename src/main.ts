@@ -148,6 +148,8 @@ import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
+import { createPartDetection, type PartDetectionApi } from './segmentation/partDetection';
+import { initPartDetectionUI } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -638,6 +640,9 @@ let currentManifold: any = null;
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
 let currentLabelMap: Map<string, Set<number>> | null = null;
+/** Part-detection controller (#1025) — created with the console API; the run
+ *  pipeline re-applies its overlay after a re-render while a draft is open. */
+let partDetectionCtl: PartDetectionApi | null = null;
 /** Per-run list of label names the user wrote but that didn't make it into
  *  `currentLabelMap` — typically because the label sat inside a SCAD boolean
  *  the CGAL backend stripped, or a for-loop expansion produced a count
@@ -9734,6 +9739,41 @@ async function main() {
     return rest;
   }
 
+  // Part detection (#1025): one controller drives the panel AND the console /
+  // AI methods below, so the two surfaces can't drift.
+  const partDetection = createPartDetection({
+    getImports: () => getActiveImports(),
+    getDisplayedMesh: () => currentMeshData,
+    showOverlay: (mesh, triColors) => updateMesh({ ...mesh, triColors }, { skipAutoFrame: true }),
+    clearOverlay: () => paintedColorRefresh(),
+    getCode: () => getValue(),
+    getLanguage: () => getActiveLanguage(),
+    async commit(code, imports, label) {
+      const prevImports = getActiveImports();
+      const prevCode = getValue();
+      setActiveImports(imports);
+      setValue(code);
+      const ok = await runCodeSync(code);
+      const geo = getGeometryDataObj();
+      if (!ok || !geo || geo.status === 'error') {
+        setActiveImports(prevImports);
+        setValue(prevCode);
+        await runCodeSync(prevCode);
+        return { error: `Applying the parts failed: ${String(geo?.error ?? 'run superseded — retry')}` };
+      }
+      if (!getState().session) await createSession(label, getActiveLanguage());
+      const thumbnail = await captureThumbnail();
+      const version = await saveVersion(code, enrichGeometryDataWithColors(geo), thumbnail, label, undefined, {
+        importedMeshes: imports, paramValues: currentParamValues, companionFiles: getCompanionFiles(),
+      });
+      return {
+        version: version ? { id: version.id, index: version.index, label: version.label } : null,
+        labels: currentLabelMap ? [...currentLabelMap.keys()] : [],
+      };
+    },
+  });
+  partDetectionCtl = partDetection;
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
@@ -12180,6 +12220,19 @@ async function main() {
      *  declared that ended up with no triangles. `unlabeledTriangleCount` counts
      *  geometry no label covers (0 when the object declares no parts). Each piece
      *  names the part covering most of it. */
+    // --- Part detection (#1025): split an imported mesh into named parts. ---
+    // Thin delegates to the shared controller the Part Detection panel uses.
+    // Docs: /ai/segmentation.md
+    listPartDetectors() { return partDetection.listPartDetectors(); },
+    detectParts(options: unknown) { return partDetection.detectParts(options); },
+    getPartDraft() { return partDetection.getPartDraft(); },
+    editParts(options: unknown) { return partDetection.editParts(options); },
+    renderParts(options?: unknown) { return partDetection.renderParts(options); },
+    comparePartDetectors(configs: unknown, options?: unknown) { return partDetection.comparePartDetectors(configs, options); },
+    setPartsOverlay(visible: unknown) { return partDetection.setPartsOverlay(visible); },
+    acceptParts(options?: unknown) { return partDetection.acceptParts(options); },
+    discardParts() { return partDetection.discardParts(); },
+
     listObjectParts() {
       const obj = getCurrentPart();
       const view = currentObjectPartsView();
@@ -15975,6 +16028,15 @@ async function main() {
         'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
+        'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
+        'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
+        'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
+        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
+        'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
+        'acceptParts':       { signature: 'await acceptParts({label?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version -> {ok, parts, version, labels}', docs: '/ai/segmentation.md' },
+        'discardParts':      { signature: 'await discardParts() -- Drop the draft and its overlay', docs: '/ai/segmentation.md' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")
@@ -16265,6 +16327,8 @@ async function main() {
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
   // Character Creator UI (viewport 🧍 Character button + command-palette entry).
   initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
+  // Part Detection panel (viewport 🧩 Parts button + command-palette entry).
+  initPartDetectionUI(partDetection);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   initConvertToCodeUI(partwrightAPI as unknown as Parameters<typeof initConvertToCodeUI>[0]);
@@ -17518,6 +17582,8 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
+      // An open part-detection draft repaints its overlay on the fresh mesh.
+      if (partDetectionCtl?.hasDraft()) partDetectionCtl.refreshOverlay();
       setStatus(statusBar, 'ready', 'Ready');
       // Record the session this freshly-framed geometry belongs to, so the next
       // version switch within it preserves the user's camera angle (see

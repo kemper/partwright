@@ -62,7 +62,8 @@ import {
   loadFromSerialized as loadAnnotations,
   type SerializedAnnotation,
 } from '../annotations/annotations';
-import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
+import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
@@ -196,8 +197,15 @@ import { appPath } from '../deployment';
  *           sharing a group are threaded together under a collapsible header in
  *           the part list. Additive; older readers ignore it (parts import
  *           ungrouped).
+ *  - `1.20` — imported meshes gain optional detected **parts**
+ *           (`versions[].importedMeshes[].parts`): `{ names, colors,
+ *           triPart (base64 Int32Array, one part index per source triangle,
+ *           −1 unassigned), source? }`, committed by part detection's
+ *           `acceptParts` and turned into real labels by
+ *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
+ *           still imports). Additive; older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.19';
+export const SCHEMA_VERSION = '1.20';
 
 const CURRENT_MAJOR = 1;
 
@@ -370,6 +378,17 @@ export interface ExportedImportedMesh {
   vertProperties: string;
   /** base64 of the Uint32Array triangle-index buffer. */
   triVerts: string;
+  /** Detected parts committed on this mesh. @since 1.20 */
+  parts?: ExportedImportedMeshParts;
+}
+
+/** {@link ImportedMeshParts} with `triPart` base64-encoded. @since 1.20 */
+export interface ExportedImportedMeshParts {
+  names: string[];
+  colors: (string | null)[];
+  /** base64 of the Int32Array part-index-per-triangle buffer. */
+  triPart: string;
+  source?: ImportedMeshParts['source'];
 }
 
 /** A {@link PersistedSurfaceTexture} with its typed-array buffers
@@ -390,7 +409,7 @@ export interface ExportedSurfaceTexture {
 }
 
 /** Encode a typed array's bytes as base64. */
-function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array): string {
+function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array | Int32Array): string {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   let bin = '';
   const CHUNK = 0x8000; // avoid call-stack limits on String.fromCharCode.apply
@@ -419,7 +438,32 @@ function serializeImportedMeshes(meshes: ImportedMesh[] | undefined): ExportedIm
     numProp: m.numProp,
     vertProperties: typedArrayToBase64(m.vertProperties),
     triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.parts ? {
+      parts: {
+        names: [...m.parts.names],
+        colors: [...m.parts.colors],
+        triPart: typedArrayToBase64(m.parts.triPart),
+        ...(m.parts.source ? { source: m.parts.source } : {}),
+      },
+    } : {}),
   }));
+}
+
+/** Validating decode of exported parts; undefined (parts dropped, mesh kept)
+ *  when malformed or mismatched with the mesh. */
+function deserializeImportParts(raw: ExportedImportedMeshParts | undefined, numTri: number): ImportedMeshParts | undefined {
+  if (!raw || typeof raw !== 'object' || typeof raw.triPart !== 'string') return undefined;
+  try {
+    const parts = normalizeImportParts({
+      names: raw.names,
+      colors: raw.colors,
+      triPart: new Int32Array(base64ToArrayBuffer(raw.triPart)),
+      source: raw.source,
+    }, numTri);
+    return parts ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function serializeSurfaceTexture(tex: PersistedSurfaceTexture | undefined): ExportedSurfaceTexture | undefined {
@@ -476,6 +520,8 @@ function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): 
         vertProperties: new Float32Array(base64ToArrayBuffer(m.vertProperties)),
         triVerts: new Uint32Array(base64ToArrayBuffer(m.triVerts)),
       });
+      const parts = deserializeImportParts(m.parts, m.numTri);
+      if (parts) out[out.length - 1].parts = parts;
     } catch {
       // Skip a mesh we can't decode rather than failing the whole import.
     }
