@@ -17,6 +17,7 @@ import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
+import { normalizeImportParts, orderTrianglesByPart } from '../../import/importParts';
 import type { RegionDescriptor } from '../../color/regions';
 import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
@@ -659,6 +660,45 @@ export const manifoldJsEngine: Engine = {
       triVerts: m.triVerts,
     }));
 
+    // `api.importWithParts(i)` — `Manifold.ofMesh(api.imports[i])` plus the
+    // parts committed on that import by part detection (#1025), registered as
+    // real labels. Triangles are reordered into one contiguous run per part,
+    // each run tagged with an id from `Manifold.reserveIDs`, and each id is
+    // registered in this run's labelRegistry exactly like `api.label` — so
+    // byLabel / paintByLabel / listObjectParts work on the import and the
+    // labels survive later booleans. Without parts it is plain ofMesh.
+    const importWithParts = (index: unknown = 0): unknown => {
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+        throw new Error('api.importWithParts(index): index must be a non-negative integer (default 0)');
+      }
+      const src = getActiveImports()[index];
+      if (!src) {
+        throw new Error(`api.importWithParts(${index}): no imported mesh at that index (${getActiveImports().length} available)`);
+      }
+      // Validate against the REAL triangle count, not the stored numTri (a
+      // tampered file could otherwise make the reorder read past triVerts).
+      const parts = src.parts ? normalizeImportParts(src.parts, src.triVerts.length / 3) : null;
+      if (!parts || parts.names.length === 0) {
+        return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts: src.triVerts });
+      }
+      const { triVerts, runs } = orderTrianglesByPart(src.triVerts, parts.triPart, parts.names.length);
+      const base = Manifold.reserveIDs(runs.length);
+      const runIndex = new Uint32Array(runs.length + 1);
+      const runOriginalID = new Uint32Array(runs.length);
+      runs.forEach((run, k) => {
+        runIndex[k] = run.startTri * 3;
+        runIndex[k + 1] = run.endTri * 3;
+        runOriginalID[k] = base + k;
+        if (run.part < 0) return; // unassigned: its own run, no label
+        const name = parts.names[run.part];
+        labelRegistry.set(base + k, name);
+        const color = parts.colors[run.part];
+        const rgb = color ? parseLabelColor(color) : null;
+        if (rgb) labelColors.set(name, rgb);
+      });
+      return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts, runIndex, runOriginalID });
+    };
+
     // SDF namespace is constructed per-run because it needs to close over
     // the run's `label` function (so labelled SDF subtrees register with
     // the same labelRegistry as `api.label`-tagged Manifold parts).
@@ -751,6 +791,7 @@ export const manifoldJsEngine: Engine = {
       surface,
       material,
       imports,
+      importWithParts,
       renderMesh,
     };
 

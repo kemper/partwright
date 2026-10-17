@@ -97,3 +97,22 @@ touching patch and anything at least as big as the region — mirroring the
 back to the original instead of reverting them; the edit result warns when the
 mesh is smooth-refined (the stored base ids will snap out on rebuild);
 `editRegion.with` / `withinBox` got typed schemas so Gemini can send them.
+
+## Assistant
+
+## Rebase onto the shared triangle-set ops (after main moved)
+
+Main gained `src/geometry/triSetOps.ts` (part detection, #1025) whose header
+says it is meant to be shared with this paint-region clean-up — grow / shrink /
+union / subtract / intersect / despeckle over triangle masks. Keeping my
+separate `regionOps.ts` would have been exactly the duplicated logic CLAUDE.md
+forbids, so the region edits now run on triSetOps and regionOps.ts is gone.
+
+The review-hardened semantics this PR needs are added to triSetOps as opt-in
+options rather than changed defaults, so part detection's behaviour (and its
+existing tests) is untouched: `growMask(…, allow)` for the spatial clamp,
+`despeckleMaskReport` for the islands/holes counts, `keepLargestIsland`, and
+`protectOutside` (never fill the largest touching non-member patch or anything
+as big as the set — the low-poly-cube bug). The API's `maxHoleTriangles` stays
+inclusive ("at most N"), so regionEdit passes `maxHole + 1` to triSetOps'
+exclusive threshold. The old unit cases were ported onto triSetOps unchanged.

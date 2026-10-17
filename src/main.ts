@@ -148,6 +148,8 @@ import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
+import { createPartDetection, type PartDetectionApi } from './segmentation/partDetection';
+import { initPartDetectionUI } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -642,6 +644,9 @@ let currentManifold: any = null;
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
 let currentLabelMap: Map<string, Set<number>> | null = null;
+/** Part-detection controller (#1025) — created with the console API; the run
+ *  pipeline re-applies its overlay after a re-render while a draft is open. */
+let partDetectionCtl: PartDetectionApi | null = null;
 /** Per-run list of label names the user wrote but that didn't make it into
  *  `currentLabelMap` — typically because the label sat inside a SCAD boolean
  *  the CGAL backend stripped, or a for-loop expansion produced a count
@@ -4757,11 +4762,21 @@ async function main() {
   });
 
   document.addEventListener('drop', async (e) => {
+    // Nested drop zones that own their drops (AI chat attachments, the relief
+    // import modal, the image-paint preview) stopPropagation() so they never
+    // reach this handler. Don't key off e.defaultPrevented: CodeMirror's own
+    // drop handler preventDefault()s every file drop on the code editor, and
+    // those must still import.
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    const all = Array.from(files).filter(isImportableFile);
-    if (all.length === 0) return;
+    // Always swallow a file drop: an unhandled one makes the browser navigate
+    // the tab to the file, discarding the editor.
     e.preventDefault();
+    const all = Array.from(files).filter(isImportableFile);
+    if (all.length === 0) {
+      showToast(`Can’t import “${files[0].name}” — unsupported file type.`, { variant: 'warn', source: 'import' });
+      return;
+    }
 
     // When multiple SCAD files are dropped at once, detect if one is a "main"
     // file (has top-level geometry) and the rest are companions.
@@ -5825,7 +5840,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor, setCodeView, getCodeView } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -6170,6 +6185,8 @@ async function main() {
 
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
+  // The code-pane modes are a desktop affordance; mobile's Code pane is always the full editor.
+  const isDesktopLayout = () => window.matchMedia('(min-width: 768px)').matches;
 
   // Flip the permanent on/off for the hints ticker (also exposed in Advanced
   // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
@@ -6234,6 +6251,9 @@ async function main() {
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
+    { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
+    { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'mini' },
+    { id: 'code-view-hidden', title: 'Hide code pane', hint: 'View', keywords: 'code editor hide collapse close', run: () => setCodeView('hidden', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'hidden' },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
@@ -9760,6 +9780,41 @@ async function main() {
     return rest;
   }
 
+  // Part detection (#1025): one controller drives the panel AND the console /
+  // AI methods below, so the two surfaces can't drift.
+  const partDetection = createPartDetection({
+    getImports: () => getActiveImports(),
+    getDisplayedMesh: () => currentMeshData,
+    showOverlay: (mesh, triColors) => updateMesh({ ...mesh, triColors }, { skipAutoFrame: true }),
+    clearOverlay: () => paintedColorRefresh(),
+    getCode: () => getValue(),
+    getLanguage: () => getActiveLanguage(),
+    async commit(code, imports, label) {
+      const prevImports = getActiveImports();
+      const prevCode = getValue();
+      setActiveImports(imports);
+      setValue(code);
+      const ok = await runCodeSync(code);
+      const geo = getGeometryDataObj();
+      if (!ok || !geo || geo.status === 'error') {
+        setActiveImports(prevImports);
+        setValue(prevCode);
+        await runCodeSync(prevCode);
+        return { error: `Applying the parts failed: ${String(geo?.error ?? 'run superseded — retry')}` };
+      }
+      if (!getState().session) await createSession(label, getActiveLanguage());
+      const thumbnail = await captureThumbnail();
+      const version = await saveVersion(code, enrichGeometryDataWithColors(geo), thumbnail, label, undefined, {
+        importedMeshes: imports, paramValues: currentParamValues, companionFiles: getCompanionFiles(),
+      });
+      return {
+        version: version ? { id: version.id, index: version.index, label: version.label } : null,
+        labels: currentLabelMap ? [...currentLabelMap.keys()] : [],
+      };
+    },
+  });
+  partDetectionCtl = partDetection;
+
   // === Expose window.partwright console API ===
   /** Shared body of the region clean-up API (grow/shrink/despeckle/combine):
    *  apply the edit to the live mesh's adjacency, then recolour synchronously so
@@ -12215,6 +12270,19 @@ async function main() {
     deletePart(target: string | number | { id?: string; name?: string }) { return partwrightAPI.deleteObject(target); },
     saveAllParts() { return partwrightAPI.saveAllObjects(); },
 
+    // --- Part detection (#1025): split an imported mesh into named parts. ---
+    // Thin delegates to the shared controller the Part Detection panel uses.
+    // Docs: /ai/segmentation.md
+    listPartDetectors() { return partDetection.listPartDetectors(); },
+    detectParts(options: unknown) { return partDetection.detectParts(options); },
+    getPartDraft() { return partDetection.getPartDraft(); },
+    editParts(options: unknown) { return partDetection.editParts(options); },
+    renderParts(options?: unknown) { return partDetection.renderParts(options); },
+    comparePartDetectors(configs: unknown, options?: unknown) { return partDetection.comparePartDetectors(configs, options); },
+    setPartsOverlay(visible: unknown) { return partDetection.setPartsOverlay(visible); },
+    acceptParts(options?: unknown) { return partDetection.acceptParts(options); },
+    discardParts() { return partDetection.discardParts(); },
+
     /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
      *  `BREP.label`), tracked through every boolean so they survive fusing into
      *  one solid — and its PIECES (physically separate solids), exactly as the
@@ -13557,8 +13625,16 @@ async function main() {
     // === Phase 2: View State & Session Rename ===
 
     /** Get current view state — active tab, camera angle, zoom */
-    getViewState(): { tab: string; camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } } {
-      return { tab: getTabFromURL(), camera: getCameraState() };
+    getViewState(): { tab: string; codeView: 'hidden' | 'mini' | 'full'; camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } } {
+      return { tab: getTabFromURL(), codeView: getCodeView(), camera: getCameraState() };
+    },
+
+    /** Switch the desktop code pane: 'mini' (compact code map, the default),
+     *  'full' (the editor) or 'hidden'. Remembered across reloads like the UI
+     *  toggles. */
+    setCodeView(mode: 'hidden' | 'mini' | 'full'): void {
+      assertEnum(mode, ['hidden', 'mini', 'full'] as const, 'setCodeView(mode)');
+      setCodeView(mode, { persist: true });
     },
 
     /** Programmatic tab switching */
@@ -16099,6 +16175,15 @@ async function main() {
         'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
+        'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
+        'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
+        'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
+        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
+        'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
+        'acceptParts':       { signature: 'await acceptParts({label?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version -> {ok, parts, version, labels}', docs: '/ai/segmentation.md' },
+        'discardParts':      { signature: 'await discardParts() -- Drop the draft and its overlay', docs: '/ai/segmentation.md' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")
@@ -16188,7 +16273,8 @@ async function main() {
         'rotateSelection':      { signature: 'rotateSelection([rx,ry,rz]) -- Rotate selected parts in place (degrees); 2+ parts pivot around the group centroid (Z plane) -> {ok}', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
-        'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        'getViewState':    { signature: 'getViewState() -- Current tab, code-pane mode, and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#viewport-controls' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
@@ -16393,6 +16479,8 @@ async function main() {
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
   // Character Creator UI (viewport 🧍 Character button + command-palette entry).
   initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
+  // Part Detection panel (viewport 🧩 Parts button + command-palette entry).
+  initPartDetectionUI(partDetection);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   initConvertToCodeUI(partwrightAPI as unknown as Parameters<typeof initConvertToCodeUI>[0]);
@@ -17646,6 +17734,8 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
+      // An open part-detection draft repaints its overlay on the fresh mesh.
+      if (partDetectionCtl?.hasDraft()) partDetectionCtl.refreshOverlay();
       setStatus(statusBar, 'ready', 'Ready');
       // Record the session this freshly-framed geometry belongs to, so the next
       // version switch within it preserves the user's camera angle (see

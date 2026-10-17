@@ -65,7 +65,7 @@ test.describe('Static, app-free landing route', () => {
 
     // The editor loads and imports the entry: code pane shows, the app booted,
     // and importSessionPayload's openSession rewrites the URL to ?session=.
-    await expect(page.locator('.cm-content')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('#code-pane')).toBeVisible({ timeout: 30000 });
     await page.waitForFunction(() => 'partwright' in window, null, { timeout: 30000 });
     await expect(page).toHaveURL(/\/editor\?session=/, { timeout: 30000 });
   });

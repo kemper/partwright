@@ -11,7 +11,7 @@ async function openEditor(page: Page) {
     try {
       localStorage.setItem('partwright-tour-completed', '1');
       // Keep the code pane visible (the AI drawer otherwise collapses it).
-      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
     } catch { /* ignore */ }
   });
   await page.goto('/editor');

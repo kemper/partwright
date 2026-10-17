@@ -193,6 +193,7 @@ const API_MEMBERS: Completion[] = [
   val('fasteners', 'namespace', 'Hardware fits: screw/tap holes, insert bosses, nut pockets, clearance presets, calibration coupon. See /ai/fasteners.md.', 'variable'),
   val('joints', 'namespace', 'Part-to-part joinery: pins, dovetails, snap-fits, print-in-place hinges, ball joints, snap rims. See /ai/joints.md.', 'variable'),
   val('imports', 'Mesh[]', 'Imported meshes (e.g. STL) — pass to Manifold.ofMesh(api.imports[i]).', 'variable'),
+  fn('importWithParts', '(index = 0)', 'Manifold.ofMesh(api.imports[i]) plus the parts committed by part detection, registered as labels.'),
   fn('label', '(shape, name)', 'Tag a shape so painted regions can target it by name.'),
   fn('labeledUnion', '(parts)', 'Union [{name, shape}, …], tagging each part for later paint-by-label.'),
   // Flat aliases of meshOps verbs — same functions, promoted for shorter agent code.
