@@ -30,7 +30,7 @@ test.describe('api.surface.* (textures declared in code)', () => {
       // Keep the code pane visible (the AI drawer auto-open collapses it),
       // so the stale-export test can click into .cm-content.
       try {
-        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
       } catch { /* ignore */ }
     });
   });

@@ -328,6 +328,9 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Width (px) of the code pane in its compact "mini" mode — the
+     *  syntax-colored code map shown by default instead of the full editor. */
+    codeMinimapWidthPx: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -351,6 +354,24 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+  };
+  segmentation: {
+    /** Part detection: islands below this fraction of the total surface area
+     *  are folded into their neighbours by the panel's "Absorb specks" action
+     *  (the absorbSmall edit op default). */
+    absorbMinAreaFrac: number;
+    /** Part detection: majority-filter passes the panel's "Smooth edges"
+     *  action runs over part boundaries (smoothBoundaries default). */
+    smoothBoundaryIterations: number;
+    /** Part detection: parts listed in console/AI summaries before the list
+     *  is truncated (keeps tool results small on over-segmented meshes). */
+    maxListedParts: number;
+    /** Part detection: edit batches kept for Undo in a draft. */
+    undoDepth: number;
+    /** Part detection: cells per side of the coarse depth buffer that decides
+     *  where renderParts draws each part's number (higher = finds smaller
+     *  visible slivers, slightly slower). */
+    labelGridResolution: number;
   };
 }
 
@@ -460,6 +481,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,
@@ -468,6 +490,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+  },
+  segmentation: {
+    absorbMinAreaFrac: 0.002,
+    smoothBoundaryIterations: 2,
+    maxListedParts: 80,
+    undoDepth: 20,
+    labelGridResolution: 160,
   },
 };
 

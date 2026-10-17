@@ -107,7 +107,7 @@ test.describe('smooth paintbrush — UI interactions', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       const before = pw.getMesh().numTri;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>

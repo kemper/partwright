@@ -44,7 +44,7 @@ test.describe('Multi-part sessions', () => {
     await page.addInitScript(() => {
       localStorage.setItem('partwright-tour-completed', '1');
       try {
-        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
       } catch { /* ignore */ }
     });
   });

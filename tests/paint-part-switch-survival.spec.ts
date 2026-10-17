@@ -42,7 +42,7 @@ const regionCount = (page: Page) =>
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('partwright-tour-completed', '1');
-    try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
+    try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' })); } catch { /* ignore */ }
   });
 });
 
