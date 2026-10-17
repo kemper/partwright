@@ -416,7 +416,7 @@ await partwright.deleteObject(name|id|index)   // Delete an object + its version
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
 await partwright.detectParts({algorithm:'crease-watershed'|'pieces', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}
-await partwright.autoDetectParts({importIndex?}) // seedless first pass (what an STL import runs): first automatic detector that splits it into 2+ parts -> draft {proposed:true, proposedBy, parts…} | {proposed:false, reason} (one solid: seed it)
+await partwright.autoDetectParts({importIndex?}) // seedless first pass (what an STL import runs): first automatic detector that splits it into 2+ parts REPLACES the draft {proposed:true, proposedBy, parts…} | {proposed:false, reason} (draft untouched; one solid: seed it)
 partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
 await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'rerun'|'undo', ...}]}) // atomic batch edit
 await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched

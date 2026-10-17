@@ -22,9 +22,11 @@ a real **label**. After that, `paintByLabel`, part colours, the object rail and
 // 0. What's available (params, defaults, which need seeds, bestFor)
 partwright.listPartDetectors()
 
-// 1. Seedless first pass: tries every automatic detector (cheapest first) and
-//    keeps the first that splits the mesh into 2+ parts. A multi-body file
-//    (one body per colour) is done here; a fused shell returns proposed:false.
+// 1. Seedless first pass: previews every automatic detector (cheapest first);
+//    the first that splits the mesh into 2+ parts becomes the draft (replacing
+//    any current one). A multi-body file (one body per colour) is done here; a
+//    fused shell returns proposed:false and leaves the draft untouched. More
+//    parts than segmentation.autoDetectMaxParts (loose debris) is not proposed.
 await partwright.autoDetectParts()
 // -> { proposed: true, proposedBy: 'pieces', tried, parts, quality }
 //  | { proposed: false, tried, reason }   → go to step 2
@@ -69,8 +71,10 @@ await partwright.acceptParts({ label: 'Detected parts' })
 
 An interactive STL import already runs `autoDetectParts` (setting:
 **Advanced settings → Part detection → Detect parts on STL import**, on by
-default). If it splits the mesh, the Detect parts panel opens on that proposal
-and a draft already exists, so check `getPartDraft()` before detecting again.
+default; skipped above **Auto-detect triangle limit**). If it splits the mesh,
+the Detect parts panel opens on that proposal and a draft already exists, so
+check `getPartDraft()` before detecting again. Closing the panel without
+touching the proposal discards it.
 If the mesh is one solid, the convert-to-code prompt opens instead, with a
 **Detect parts…** button. Imports made through the console
 (`importMeshData`) never prompt: call `autoDetectParts` yourself.

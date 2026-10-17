@@ -27,6 +27,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
   return n;
 }
 
+/** Full-height touch target on mobile for small secondary buttons. */
+const TOUCH_TARGET = 'min-h-11 md:min-h-0';
 const INPUT = 'bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[12px] text-zinc-200';
 const SECTION = 'text-[11px] uppercase tracking-wide text-zinc-400 font-semibold mt-1';
 /** Row ✕ buttons: a full-size touch target around a small glyph. */
@@ -54,6 +56,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     closeOpen();
   }
   const info = ctl.listPartDetectors();
+  const opened = ctl.getPartDraft();
+  const proposedBy = isDraft(opened) ? opened.detector : null;
   const seeds: { label: string; point: [number, number, number] }[] = [];
   let stopPick: (() => void) | null = null;
 
@@ -64,6 +68,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       endPick();
       unsubscribe();
       closeOpen = null;
+      // Dismissing an import-time proposal the user never touched means "no
+      // thanks" — don't leave its colours on the model with no panel open.
+      // An edited draft stays (reopen from Tools → Parts).
+      if (opts?.context) {
+        const d = ctl.getPartDraft();
+        if (isDraft(d) && !d.canUndo && d.detector === proposedBy) void ctl.discardParts();
+      }
     },
   });
   closeOpen = shell.close;
@@ -75,7 +86,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     banner.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug', opts.context));
     if (opts.secondaryAction) {
       const action = opts.secondaryAction;
-      const alt = el('button', `${BUTTON_SMALL_SECONDARY} self-start`, action.label);
+      const alt = el('button', `${BUTTON_SMALL_SECONDARY} ${TOUCH_TARGET} self-start`, action.label);
       alt.addEventListener('click', () => { shell.close(); action.run(); });
       banner.appendChild(alt);
     }
@@ -97,10 +108,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   }
   // Show the method that produced the current draft (an import-time proposal
   // comes from a seedless detector); otherwise default to the seeded one.
-  const existing = ctl.getPartDraft();
-  const draftDetector = isDraft(existing) ? existing.detector : null;
-  algoSelect.value = draftDetector && info.detectors.some((d) => d.id === draftDetector) ? draftDetector
+  algoSelect.value = proposedBy && info.detectors.some((d) => d.id === proposedBy) ? proposedBy
     : info.detectors.find((d) => d.id === 'crease-watershed') ? 'crease-watershed' : info.detectors[0].id;
+  let shownDetector = proposedBy;
   const algoHint = el('div', 'text-[11px] text-zinc-500 leading-snug');
   const paramBox = el('div', 'flex flex-col gap-1.5');
   body.append(algoSelect, algoHint, paramBox);
@@ -247,6 +257,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     acceptBtn.disabled = !isDraft(d);
     discardBtn.disabled = !isDraft(d);
     if (!isDraft(d)) return;
+    // A draft replaced from elsewhere (console / AI detectParts with another
+    // detector) switches the method shown, so Detect re-runs what's on screen.
+    if (d.detector !== shownDetector && info.detectors.some((x) => x.id === d.detector)) {
+      shownDetector = d.detector;
+      if (algoSelect.value !== d.detector) { algoSelect.value = d.detector; buildParams(); }
+    }
     const q = d.quality;
     draftBox.appendChild(el('div', SECTION, `Parts (${d.parts.length})`));
     draftBox.appendChild(el('div', 'text-[11px] text-zinc-500',
@@ -330,18 +346,23 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   });
   footer.append(discardBtn, acceptBtn);
 
-  const unsubscribe = ctl.subscribe((ev) => {
-    if (ev === 'draft') renderDraft();
+  function syncBusy(): void {
     const b = ctl.isBusy();
     detectBtn.disabled = !!b;
     cancelBtn.classList.toggle('hidden', !b?.cancellable);
     status.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : '';
+  }
+  const unsubscribe = ctl.subscribe((ev) => {
+    if (ev === 'draft') renderDraft();
+    syncBusy();
   });
 
   algoSelect.addEventListener('change', buildParams);
   buildParams();
   renderSeeds();
   renderDraft();
+  // Opened mid-run (e.g. during the import-time pass): show it and its Cancel now.
+  syncBusy();
 }
 
 /** Wire Part Detection into the command palette, the viewport Tools menu and

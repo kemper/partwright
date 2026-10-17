@@ -985,7 +985,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'autoDetectParts',
-    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and keeps the first that splits the mesh into 2+ parts as the DRAFT (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} when the mesh is one solid piece: then place named seeds and call detectParts with a seeded detector.',
+    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
     input_schema: {
       type: 'object',
       properties: {

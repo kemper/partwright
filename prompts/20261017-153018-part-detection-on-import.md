@@ -47,3 +47,20 @@ prompt), and the feature analysis it computes is cached for the seeded run
 that follows. Kept the scope to the deliverable; the owner's follow-up plan
 items (seed markers, Lock/Focus, the one-solid hint inside the panel, live
 mode) are left to their PRs.
+
+## Human (follow-up)
+
+(Review pass from the work-reviewer subagent on the draft PR.)
+
+## Assistant
+
+**Review fixes.** The import no longer waits on detection (fire-and-forget +
+a "Looking for separate parts…" toast; triangle budget
+`autoDetectMaxTriangles`, part cap `autoDetectMaxParts` for debris /
+assemblies). Trials are now previews, so a pass that proposes nothing leaves
+an existing draft alone (no discard race with a user's Detect). Errors other
+than cancel are logged and fall back to the convert ask; cancel stays quiet.
+Guarded the null draft after `refreshOverlay` (also in `detectParts`).
+Closing an untouched import proposal discards it so no orphan overlay
+remains. Shared button styles + mobile touch targets; the Paint entry skips
+relief imports; the method dropdown follows draft changes.

@@ -935,6 +935,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('segmentation', 'autoDetectOnImport', v)}
         />
         <Field
+          label="Auto-detect triangle limit"
+          unit="triangles"
+          hint="Larger imports skip the automatic pass."
+          tooltip="The automatic import-time pass analyses the whole surface before the next-step prompt appears, which takes a few seconds on very large scans (about 1 s for 460k triangles). Imports above this size skip it; the Detect parts button still works."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxTriangles}
+          value={c.segmentation.autoDetectMaxTriangles}
+          min={10_000} max={20_000_000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxTriangles', v)}
+        />
+        <Field
+          label="Auto-detect part limit"
+          unit="parts"
+          hint="Proposals with more parts are dropped."
+          tooltip="An automatic proposal with more parts than this (an assembly, or a scan with loose debris) is not shown; the convert-to-code prompt appears instead. Running Separate pieces yourself is not limited."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxParts}
+          value={c.segmentation.autoDetectMaxParts}
+          min={2} max={1000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxParts', v)}
+        />
+        <Field
           label="Absorb-specks threshold"
           unit="of surface"
           hint="Islands smaller than this fraction are folded into neighbours."

@@ -13,6 +13,7 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 import { deriveOptions } from '../reconstruct/sectionCode';
+import { BUTTON_SMALL_SECONDARY } from './styleConstants';
 
 type Quality = 'draft' | 'standard' | 'fine';
 
@@ -122,7 +123,7 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   if (secondary) {
     const row = el('div', 'flex items-center gap-2 mb-3');
     if (secondary.hint) row.append(el('span', 'text-xs text-zinc-400 flex-1', secondary.hint));
-    secondaryBtn = el('button', 'shrink-0 whitespace-nowrap px-2.5 py-1 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600 transition-colors', secondary.label);
+    secondaryBtn = el('button', `${BUTTON_SMALL_SECONDARY} shrink-0 whitespace-nowrap min-h-11 md:min-h-0`, secondary.label);
     row.append(secondaryBtn);
     body.append(row);
   }

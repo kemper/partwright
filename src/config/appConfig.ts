@@ -362,6 +362,14 @@ export interface AppConfig {
      *  on the proposal; otherwise the usual convert-to-code ask appears, with
      *  a "Detect parts…" button. Off = always the convert ask. */
     autoDetectOnImport: boolean;
+    /** Part detection: imports above this many triangles skip the automatic
+     *  import-time pass (it would delay the next-step prompt on huge scans);
+     *  the convert ask's "Detect parts…" button still works. */
+    autoDetectMaxTriangles: number;
+    /** Part detection: an automatic proposal with more parts than this is
+     *  dropped (an assembly or a scan with loose debris, not colour bodies).
+     *  Explicit `detectParts` calls are not limited. */
+    autoDetectMaxParts: number;
     /** Part detection: islands below this fraction of the total surface area
      *  are folded into their neighbours by the panel's "Absorb specks" action
      *  (the absorbSmall edit op default). */
@@ -499,6 +507,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   },
   segmentation: {
     autoDetectOnImport: true,
+    autoDetectMaxTriangles: 2_000_000,
+    autoDetectMaxParts: 40,
     absorbMinAreaFrac: 0.002,
     smoothBoundaryIterations: 2,
     maxListedParts: 80,

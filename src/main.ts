@@ -148,7 +148,7 @@ import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
-import { createPartDetection, type PartDetectionApi } from './segmentation/partDetection';
+import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
@@ -4430,7 +4430,9 @@ async function main() {
     // Post-import ask. Interactive path only (importMeshData / console imports
     // stay prompt-free for agents); render-only meshes skip it — they can't
     // carry parts or convert (their slices don't close).
-    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) await offerPostImportTools(filename);
+    // Not awaited: the automatic part pass runs in the background so the
+    // import itself (and its Recent Imports entry) completes immediately.
+    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
     return placed;
   }
 
@@ -4449,18 +4451,30 @@ async function main() {
         ...(offerDetect && ctl ? { secondaryAction: { label: 'Detect parts…', hint: 'Painting it? Split it into named parts first.', run: () => openPartDetectionPanel(ctl) } } : {}),
       });
     };
-    if (!ctl || !getConfig().segmentation.autoDetectOnImport) { openConvert(true); return; }
+    const cfg = getConfig().segmentation;
     // The fresh mesh is the last import: alone for a new object/session, after
     // the current object's baked geometry when composed into it.
-    const importIndex = getActiveImports().length - 1;
-    const partIdBefore = getState().currentPart?.id;
+    const imports = getActiveImports();
+    const importIndex = imports.length - 1;
+    const target = imports[importIndex];
+    if (!ctl || !cfg.autoDetectOnImport || !target || target.numTri > cfg.autoDetectMaxTriangles) { openConvert(true); return; }
+    const targetKey = importMeshKey(target);
+    showToast('Looking for separate parts…', { variant: 'neutral', source: 'parts' });
     const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; parts?: unknown[]; partsTruncated?: number; error?: string };
-    // The user moved on while detection ran — don't pop a panel over their work.
-    if (getState().currentPart?.id !== partIdBefore) return;
+    // The user moved on while detection ran (another version, object or
+    // session) — don't pop a panel over a different model.
+    const now = getActiveImports()[importIndex];
+    if (!now || importMeshKey(now) !== targetKey) return;
+    if (r.error) {
+      if (/cancelled/i.test(r.error)) return; // the user cancelled from the panel
+      errorLog.capture({ level: 'warn', source: 'parts', message: `Automatic part detection failed: ${r.error}` });
+      openConvert(true);
+      return;
+    }
     if (!r.proposed) { openConvert(true); return; }
     const count = (r.parts?.length ?? 0) + (r.partsTruncated ?? 0);
     openPartDetectionPanel(ctl, {
-      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or switch Method to Crease watershed to split them further with seeds.`,
+      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or re-detect with seeds (Crease watershed) for finer parts.`,
       secondaryAction: {
         label: 'Convert to code instead',
         run: () => { void ctl.discardParts(); openConvert(false); },
@@ -16072,7 +16086,7 @@ async function main() {
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
-        'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): tries each automatic detector, cheapest first, and keeps the first that splits the mesh into 2+ parts as the draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
+        'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
         'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
         'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },

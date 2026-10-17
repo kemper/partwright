@@ -62,6 +62,20 @@ test.describe('Part detection on import', () => {
     });
   });
 
+  test('dismissing an untouched import proposal discards it', async ({ page }) => {
+    test.setTimeout(90_000);
+    await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    await panel.getByRole('button', { name: /close/i }).first().click();
+    await expect(panel).toBeHidden();
+    await page.waitForFunction(() => {
+      const d = (window as unknown as { partwright: PW }).partwright.getPartDraft() as { draft?: null };
+      return d.draft === null;
+    });
+
+  });
+
   test('a single solid gets the convert ask with a Detect parts button', async ({ page }) => {
     test.setTimeout(90_000);
     await importStl(page, 'one-block.stl', boxesStl([[[0, 0, 0], [10, 10, 10]]]));
@@ -72,6 +86,15 @@ test.describe('Part detection on import', () => {
     expect(auto.proposed).toBe(false);
     expect(auto.reason).toMatch(/one solid piece/);
     expect(auto.tried?.[0]).toEqual({ detector: 'pieces', partCount: 1 });
+    // ...and a draft that already exists survives a proposal that finds nothing.
+    const survived = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.detectParts({ algorithm: 'crease-watershed', seeds: [{ label: 'block', point: [5, 5, 10] }] });
+      await pw.autoDetectParts();
+      return (pw.getPartDraft() as { detector?: string }).detector;
+    });
+    expect(survived).toBe('crease-watershed');
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.discardParts());
 
     await page.getByRole('button', { name: 'Detect parts…' }).click();
     await expect(page.getByRole('dialog', { name: 'Detect parts' })).toBeVisible();

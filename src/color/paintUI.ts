@@ -1589,7 +1589,8 @@ function updateLabelList(container: HTMLElement): void {
   releaseLabelHover();
   container.innerHTML = '';
   const openDetect = detectPartsEntry;
-  const offerDetect = openDetect !== null && getActiveImports().length > 0;
+  // Relief imports are render-only colour plates — they can't carry parts.
+  const offerDetect = openDetect !== null && getActiveImports().some((m) => m.format !== 'relief');
 
   const header = document.createElement('div');
   header.className = 'flex items-center justify-between gap-2 mb-1';
@@ -1609,7 +1610,7 @@ function updateLabelList(container: HTMLElement): void {
     const detectBtn = document.createElement('button');
     detectBtn.type = 'button';
     detectBtn.id = 'paint-detect-parts';
-    detectBtn.className = BUTTON_SMALL_SECONDARY;
+    detectBtn.className = `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0`;
     detectBtn.textContent = '🧩 Detect parts';
     detectBtn.title = labels.length > 0
       ? 'Re-detect the parts of this imported mesh'
