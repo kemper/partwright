@@ -15,7 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
-npm run pr:screenshots -- a.png b.png  # attach screenshots to a PR body from a cloud session — see Visual proof in the PR
+npm run pr:screenshots -- a.png b.png  # push screenshots to the pr-assets branch + print PR-body links (cloud sessions) — see Visual proof in the PR
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -220,7 +220,7 @@ What to capture:
 How to attach — pick the first that works:
 
 - **`gh --attach` (preferred; gh ≥ 2.99).** `gh pr comment <n> --attach 'shot.png#alt text'` (also on `gh pr create` / `gh pr edit` for the body) uploads the image to GitHub and inlines it. Put the shots in a `## Visual proof` comment or the body. **This does not work in cloud Claude Code sessions** — gh resolves the PR over GraphQL, which the session proxy blocks (HTTP 403) — so there use:
-- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Commits the images under `pr-assets/`, deletes them again in a second commit (so they never reach `main`'s tree), and prints Markdown links pinned to the first commit's SHA. Push, then paste the links into the PR body's `## Visual proof` section (`update_pull_request`). The repo merges with merge commits, so the pinned commit stays reachable after merge.
+- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Pushes the images to the shared, never-merged **`pr-assets`** branch (one folder per PR branch) using git plumbing — your checkout, index and branch are untouched, so `main`'s history never gets screenshot commits, squash or not — and prints Markdown links pinned to that commit's SHA. Paste them into the PR body's `## Visual proof` section (`update_pull_request`). Never merge, rebase or delete `pr-assets`; old PR links depend on its commits.
 
 Lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
 
@@ -233,7 +233,7 @@ Lay changed-behavior shots out as a before/after table with a one-line caption o
 
 Re-shoot when a later push changes the visuals — the proof must match the current head. "Visual proof is in the PR" is part of the mark-ready gate.
 
-An example using the cloud fallback: kemper/partwright#1021.
+(kemper/partwright#1021 used an earlier variant that committed screenshots onto the PR branch itself; prefer the helper.)
 
 **Scope by change type:**
 

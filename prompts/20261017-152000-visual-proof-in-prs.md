@@ -47,3 +47,25 @@ instructions now prefer `gh --attach` and fall back to the SHA-pinned approach.
 (`scripts/pr-screenshots.sh`) does the add-commit / delete-commit dance and prints
 ready-to-paste Markdown links, so the CLAUDE.md recipe is two bullets instead of
 a four-step procedure.
+
+## Human
+
+Doesn't merging without squashing put crazy noise in the history? — Yes, use
+one shared pr-assets branch.
+
+## Assistant
+
+**Moved the images off PR branches onto a shared orphan `pr-assets` branch.**
+The first version committed + deleted screenshots on the PR branch, which with
+merge commits leaves two commits per visual PR in main's history (and squash
+merges could eventually break the links). The helper now writes the images with
+git plumbing (temporary index → `commit-tree` on the `pr-assets` tip → push),
+so it never touches the checkout or the PR branch, works the same for squash and
+merge, and retries on a non-fast-forward when agents push concurrently. Links
+pin to the `pr-assets` commit SHA. Verified from this cloud session: the push is
+allowed and the `blob/<sha>/…?raw=true` link serves the identical PNG.
+
+**Reverted the promptlog-guard `pr-assets/` exemption** — nothing commits
+screenshots to PR branches anymore. No GitHub workflow triggers on `pr-assets`
+pushes; Cloudflare Pages will attempt (and fail) a preview build of it, which the
+owner can silence by excluding the branch in Pages settings.

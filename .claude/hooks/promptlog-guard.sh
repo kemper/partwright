@@ -26,9 +26,7 @@ printf '%s' "$cmd" | grep -q -- '--no-verify' && exit 0
 staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -v '^$' || true)
 
 # Commit touches only prompt files (or nothing) -> no log needed (backfills).
-# pr-assets/ screenshots are transient PR visual proof (committed, linked from
-# the PR body by SHA, then deleted) — mechanical, so they need no log either.
-nonprompt=$(printf '%s\n' "$staged" | grep -v '^$' | grep -v '^prompts/' | grep -v '^pr-assets/' || true)
+nonprompt=$(printf '%s\n' "$staged" | grep -v '^$' | grep -v '^prompts/' || true)
 [ -z "$nonprompt" ] && exit 0
 
 # A prompt log is already staged -> allow.
