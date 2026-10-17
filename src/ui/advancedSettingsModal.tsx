@@ -26,6 +26,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     import: { ...c.import },
     ui: { ...c.ui },
     geometry: { ...c.geometry },
+    segmentation: { ...c.segmentation },
   };
 }
 
@@ -925,6 +926,59 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
       </Section>
 
+      <Section title="Part detection">
+        <Field
+          label="Absorb-specks threshold"
+          unit="of surface"
+          hint="Islands smaller than this fraction are folded into neighbours."
+          tooltip="The Part Detection panel's Absorb specks action reassigns every disconnected fragment of a part whose area is below this fraction of the whole surface to the neighbouring part it touches most. 0.002 = 0.2%. Raise it to clean up larger leaks; lower it to keep small genuine parts such as buttons or pupils."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.absorbMinAreaFrac}
+          value={c.segmentation.absorbMinAreaFrac}
+          min={0} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'absorbMinAreaFrac', v)}
+        />
+        <Field
+          label="Smooth-edges passes"
+          unit="passes"
+          hint="Boundary clean-up passes per Smooth edges click."
+          tooltip="Each pass switches a boundary triangle to the part held by a majority of its neighbours, shaving single-triangle stair-steps and spurs. More passes give smoother but slightly shifted boundaries."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.smoothBoundaryIterations}
+          value={c.segmentation.smoothBoundaryIterations}
+          min={1} max={20} integer
+          onChange={v => set('segmentation', 'smoothBoundaryIterations', v)}
+        />
+        <Field
+          label="Parts listed in summaries"
+          unit="parts"
+          hint="Console/AI part lists truncate beyond this."
+          tooltip="detectParts / editParts / getPartDraft list at most this many parts (the rest are counted in partsTruncated) so an over-segmented mesh doesn't flood the AI's context."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.maxListedParts}
+          value={c.segmentation.maxListedParts}
+          min={10} max={1000} integer
+          onChange={v => set('segmentation', 'maxListedParts', v)}
+        />
+        <Field
+          label="Undo depth"
+          unit="edits"
+          hint="Edit batches the part draft can undo."
+          tooltip="How many editParts batches (merge, rename, reassign, re-run…) a part-detection draft keeps for Undo. Each step holds a copy of the per-triangle part map, so very high values use more memory on large meshes."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.undoDepth}
+          value={c.segmentation.undoDepth}
+          min={1} max={200} integer
+          onChange={v => set('segmentation', 'undoDepth', v)}
+        />
+        <Field
+          label="Part-number placement grid"
+          unit="cells"
+          hint="Resolution used to find where each part is visible."
+          tooltip="renderParts draws each part's number on a spot where that part is visible. Visibility is decided on a coarse depth grid this many cells across; raise it to label smaller visible slivers, lower it for speed."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.labelGridResolution}
+          value={c.segmentation.labelGridResolution}
+          min={40} max={600} integer
+          onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
+      </Section>
+
       <Section title="UI">
         <ToggleField
           label="Show editor hints"
@@ -962,6 +1016,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paneSlideMs}
           min={0} max={600} integer
           onChange={v => set('ui', 'paneSlideMs', v)}
+        />
+        <Field
+          label="Mini code map width"
+          unit="px"
+          hint="Width of the compact code map the code pane shows by default."
+          tooltip="The code pane starts as a narrow, syntax-colored map of the file — hover it to peek at the code, click to open the full editor there. This sets how wide that strip is. Wider shows more of each line; narrower leaves more room for the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeMinimapWidthPx}
+          value={c.ui.codeMinimapWidthPx}
+          min={80} max={320} integer
+          onChange={v => set('ui', 'codeMinimapWidthPx', v)}
         />
         <Field
           label="Default palette capacity"

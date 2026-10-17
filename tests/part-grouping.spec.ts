@@ -39,7 +39,7 @@ test.describe('Part grouping', () => {
     await page.addInitScript(() => {
       localStorage.setItem('partwright-tour-completed', '1');
       try {
-        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
       } catch { /* ignore */ }
     });
     // A tall viewport so the parts-list isn't a short scroll box — the drag

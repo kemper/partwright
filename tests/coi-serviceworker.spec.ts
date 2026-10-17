@@ -36,7 +36,7 @@ test.describe('COI service worker', () => {
     await page.locator('[data-catalog-tile]').first().click();
     // The catalog deep-link imports the entry and rewrites to ?session=…; the
     // editor must be present and the inline landing hero must NOT be showing.
-    await expect(page.locator('.cm-editor, #code-editor').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('#code-pane')).toBeVisible({ timeout: 20_000 });
     await expect(page).toHaveURL(/\/editor\?/);
     expect(await page.locator('#landing-inline').isVisible().catch(() => false)).toBe(false);
   });

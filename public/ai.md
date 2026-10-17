@@ -177,6 +177,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
 | `spending` | To understand the user's compute budget and what each mode enforces or advises. |
 | `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
+| `segmentation` | Before painting an IMPORTED mesh (STL figurine, scan) — split it into named parts first with `detectParts` (seeded crease watershed / separate pieces), check with `renderParts` (numbered set-of-marks render), fix with `editParts`, then `acceptParts` so every part becomes a real label (`api.importWithParts`) you can paint by. |
 | `reconstruction` | Before converting an imported mesh into editable code (`convertToCode` / `evalAgainstImport` / the /reconstruct workflow) — how to read the chamfer/hausdorff metrics, the noise floor, and the measured refinement tactics. |
 
 ## Common agent mistakes
@@ -263,6 +264,7 @@ partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
 partwright.isOrbitLocked()           // Whether camera orbit is locked
 partwright.resetView()               // Reset camera to the default framing of the current model
+partwright.setCodeView('mini'|'full'|'hidden') // Code pane: compact code map (default), full editor, or hidden; getViewState().codeView reads it
 partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
@@ -411,6 +413,14 @@ await partwright.changeObject(name|id|index)   // Switch active object (loads it
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
 await partwright.deleteObject(name|id|index)   // Delete an object + its versions (refuses the last one)
+// Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
+partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
+await partwright.detectParts({algorithm:'crease-watershed'|'pieces', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}
+partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
+await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'rerun'|'undo', ...}]}) // atomic batch edit
+await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched
+partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.discardParts()
+await partwright.acceptParts({label?})   // commit: parts become labels via api.importWithParts(i); saves a version
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,

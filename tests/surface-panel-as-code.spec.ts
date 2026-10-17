@@ -231,7 +231,7 @@ test.describe('surface textures applied as code', () => {
 
     // Dispatch a pointerdown at the canvas center, where the auto-framed model is.
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       canvas.dispatchEvent(new PointerEvent('pointerdown', {
         bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,

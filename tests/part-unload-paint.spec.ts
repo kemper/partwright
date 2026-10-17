@@ -13,7 +13,7 @@ async function openEditor(page: Page) {
   await page.addInitScript(() => {
     try {
       localStorage.setItem('partwright-tour-completed', '1');
-      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
     } catch { /* ignore */ }
   });
   await page.goto('/editor');
