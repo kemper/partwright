@@ -2,12 +2,47 @@ import { describe, it, expect } from 'vitest';
 import { buildAdjacency } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 import {
-  growTriangles,
-  shrinkTriangles,
-  connectedComponents,
-  despeckleTriangles,
-  combineTriangles,
-} from '../../src/color/regionOps';
+  adjacencyFromNeighborLists,
+  despeckleMaskReport,
+  growMask,
+  intersectMask,
+  maskComponents,
+  maskFromIndices,
+  maskToIndices,
+  shrinkMask,
+  subtractMask,
+  unionMask,
+} from '../../src/geometry/triSetOps';
+
+// Paint-region clean-up (growRegion / shrinkRegion / despeckleRegion /
+// combineRegions) runs on the shared triangle-set ops in triSetOps.ts. These
+// thin Set-based wrappers use the same options src/color/regionEdit.ts passes
+// (inclusive maxHole, keepLargestIsland, protectOutside) so the cases below
+// pin the paint semantics on real mesh adjacency.
+type Nb = ArrayLike<ArrayLike<number>>;
+const sz = (nb: Nb) => nb.length;
+const toMask = (s: Iterable<number>, nb: Nb) => maskFromIndices(sz(nb), s);
+const toSet = (m: Uint8Array) => new Set(maskToIndices(m));
+const growTriangles = (s: Set<number>, nb: Nb, steps: number, allow?: (t: number) => boolean) =>
+  toSet(growMask(toMask(s, nb), adjacencyFromNeighborLists(nb), steps, allow));
+const shrinkTriangles = (s: Set<number>, nb: Nb, steps: number) =>
+  toSet(shrinkMask(toMask(s, nb), adjacencyFromNeighborLists(nb), steps));
+const connectedComponents = (s: Set<number>, nb: Nb) =>
+  ({ length: maskComponents(toMask(s, nb), adjacencyFromNeighborLists(nb)).count });
+const despeckleTriangles = (s: Set<number>, nb: Nb, _numTri: number, o: { minIslandTriangles: number; maxHoleTriangles: number }) => {
+  const r = despeckleMaskReport(toMask(s, nb), adjacencyFromNeighborLists(nb), {
+    minIsland: o.minIslandTriangles, maxHole: o.maxHoleTriangles > 0 ? o.maxHoleTriangles + 1 : 0,
+    keepLargestIsland: true, protectOutside: true,
+  });
+  return { triangles: toSet(r.mask), islandsRemoved: r.islandsRemoved, holesFilled: r.holesFilled };
+};
+const combineTriangles = (a: Set<number>, others: Set<number>[], op: 'union' | 'subtract' | 'intersect') => {
+  const n = Math.max(...[a, ...others].flatMap(s => [...s]), 0) + 1;
+  const f = op === 'union' ? unionMask : op === 'subtract' ? subtractMask : intersectMask;
+  let m = maskFromIndices(n, a);
+  for (const o of others) m = f(m, maskFromIndices(n, o));
+  return toSet(m);
+};
 import { addRegion, clearRegions, getRegions, replaceRegion, removeLastRegion, redoLastRegion, serialize } from '../../src/color/regions';
 
 /** Flat n×n grid of unit quads, two triangles each. Triangle index for cell
@@ -43,7 +78,7 @@ const N = 12;
 const mesh = grid(N);
 const { neighbors } = buildAdjacency(mesh);
 
-describe('regionOps', () => {
+describe('paint-region clean-up on triSetOps', () => {
   it('grow adds rings and respects the allow filter', () => {
     const seed = cells(N, 5, 6, 5, 6);
     const g1 = growTriangles(seed, neighbors, 1);

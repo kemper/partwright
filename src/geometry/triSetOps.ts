@@ -67,16 +67,24 @@ export function intersectMask(a: Uint8Array, b: Uint8Array): Uint8Array {
   return o;
 }
 
-/** Dilate by `steps` rings of neighbours. */
-export function growMask(mask: Uint8Array, adj: TriAdjacency, steps = 1): Uint8Array {
+/** Dilate by `steps` rings of neighbours. `allow` (optional) vetoes
+ *  individual triangles, so a grow can't leak past a clamp. */
+export function growMask(mask: Uint8Array, adj: TriAdjacency, steps = 1, allow?: (t: number) => boolean): Uint8Array {
   let cur = mask.slice();
   for (let s = 0; s < steps; s++) {
     const next = cur.slice();
+    let grew = false;
     for (let t = 0; t < cur.length; t++) {
       if (!cur[t]) continue;
-      for (let j = adj.start[t]; j < adj.start[t + 1]; j++) next[adj.nbr[j]] = 1;
+      for (let j = adj.start[t]; j < adj.start[t + 1]; j++) {
+        const o = adj.nbr[j];
+        if (next[o] || (allow && !allow(o))) continue;
+        next[o] = 1;
+        grew = true;
+      }
     }
     cur = next;
+    if (!grew) break;
   }
   return cur;
 }
@@ -135,25 +143,59 @@ export function partitionRegions(triPart: Int32Array, adj: TriAdjacency): { comp
   return components(triPart.length, adj, () => true, (t, o) => triPart[t] === triPart[o]);
 }
 
+export interface DespeckleOptions {
+  /** Drop islands (member components) smaller than this many triangles. */
+  minIsland?: number;
+  /** Fill holes (non-member components touching the set) smaller than this. */
+  maxHole?: number;
+  /** Never drop the largest island, so despeckle can't erase a small set. */
+  keepLargestIsland?: boolean;
+  /** Never fill the set's *outside*: on a closed surface the outside also
+   *  touches the set, and on a low-poly piece it can be under `maxHole`. With
+   *  this on, the largest non-member patch touching the set — and any patch at
+   *  least as big as the set — is never treated as a hole. */
+  protectOutside?: boolean;
+}
+
+export interface DespeckleReport {
+  mask: Uint8Array;
+  islandsRemoved: number;
+  islandTrianglesRemoved: number;
+  holesFilled: number;
+  holeTrianglesFilled: number;
+}
+
 /** Drop islands smaller than `minIsland` triangles and fill holes (enclosed
  *  non-member regions) smaller than `maxHole` triangles. */
-export function despeckleMask(
-  mask: Uint8Array,
-  adj: TriAdjacency,
-  opts: { minIsland?: number; maxHole?: number },
-): Uint8Array {
+export function despeckleMask(mask: Uint8Array, adj: TriAdjacency, opts: DespeckleOptions): Uint8Array {
+  return despeckleMaskReport(mask, adj, opts).mask;
+}
+
+/** `despeckleMask`, plus counts of what it removed and filled. */
+export function despeckleMaskReport(mask: Uint8Array, adj: TriAdjacency, opts: DespeckleOptions): DespeckleReport {
   const out = mask.slice();
   const minIsland = opts.minIsland ?? 0;
   const maxHole = opts.maxHole ?? 0;
+  let islandsRemoved = 0, islandTrianglesRemoved = 0, holesFilled = 0, holeTrianglesFilled = 0;
   if (minIsland > 0) {
     const { compOf, count } = maskComponents(mask, adj);
     const size = new Int32Array(count);
     for (let t = 0; t < compOf.length; t++) if (compOf[t] >= 0) size[compOf[t]]++;
-    for (let t = 0; t < compOf.length; t++) if (compOf[t] >= 0 && size[compOf[t]] < minIsland) out[t] = 0;
+    let largest = -1;
+    if (opts.keepLargestIsland) for (let c = 0; c < count; c++) if (largest < 0 || size[c] > size[largest]) largest = c;
+    const drop = new Uint8Array(count);
+    for (let c = 0; c < count; c++) {
+      if (c === largest || size[c] >= minIsland) continue;
+      drop[c] = 1;
+      islandsRemoved++;
+      islandTrianglesRemoved += size[c];
+    }
+    for (let t = 0; t < compOf.length; t++) if (compOf[t] >= 0 && drop[compOf[t]]) out[t] = 0;
   }
   if (maxHole > 0) {
     const inv = new Uint8Array(out.length);
-    for (let i = 0; i < out.length; i++) inv[i] = out[i] ^ 1;
+    let setSize = 0;
+    for (let i = 0; i < out.length; i++) { inv[i] = out[i] ^ 1; setSize += out[i]; }
     const { compOf, count } = maskComponents(inv, adj);
     const size = new Int32Array(count);
     const touchesSet = new Uint8Array(count);
@@ -161,14 +203,24 @@ export function despeckleMask(
       const c = compOf[t];
       if (c < 0) continue;
       size[c]++;
+      if (touchesSet[c]) continue;
       for (let j = adj.start[t]; j < adj.start[t + 1]; j++) if (out[adj.nbr[j]]) { touchesSet[c] = 1; break; }
     }
-    for (let t = 0; t < compOf.length; t++) {
-      const c = compOf[t];
-      if (c >= 0 && touchesSet[c] && size[c] < maxHole) out[t] = 1;
+    let outside = -1;
+    if (opts.protectOutside) {
+      for (let c = 0; c < count; c++) if (touchesSet[c] && (outside < 0 || size[c] > size[outside])) outside = c;
     }
+    const fill = new Uint8Array(count);
+    for (let c = 0; c < count; c++) {
+      if (!touchesSet[c] || size[c] >= maxHole) continue;
+      if (opts.protectOutside && (c === outside || size[c] >= setSize)) continue;
+      fill[c] = 1;
+      holesFilled++;
+      holeTrianglesFilled += size[c];
+    }
+    for (let t = 0; t < compOf.length; t++) if (compOf[t] >= 0 && fill[compOf[t]]) out[t] = 1;
   }
-  return out;
+  return { mask: out, islandsRemoved, islandTrianglesRemoved, holesFilled, holeTrianglesFilled };
 }
 
 /**

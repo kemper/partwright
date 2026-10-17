@@ -1,5 +1,6 @@
-// Region clean-up edits — the glue between the pure set morphology in
-// `regionOps.ts` and the region store. Backs `partwright.growRegion` /
+// Region clean-up edits — the glue between the shared triangle-set morphology
+// in `src/geometry/triSetOps.ts` (also used by part detection) and the region
+// store. Backs `partwright.growRegion` /
 // `shrinkRegion` / `despeckleRegion` / `combineRegions` and the `editRegion`
 // AI tool. Each edit swaps the region's triangle set via `replaceRegion`
 // (one undoable step) and rebakes it as a `triangles` descriptor, the same
@@ -10,12 +11,16 @@ import { buildAdjacency } from './adjacency';
 import { getRegions, replaceRegion, type ColorRegion } from './regions';
 import { descriptorRefines } from './refinePipeline';
 import {
-  growTriangles,
-  shrinkTriangles,
-  despeckleTriangles,
-  combineTriangles,
-  type RegionSetOp,
-} from './regionOps';
+  adjacencyFromNeighborLists,
+  despeckleMaskReport,
+  growMask,
+  intersectMask,
+  maskFromIndices,
+  maskToIndices,
+  shrinkMask,
+  subtractMask,
+  unionMask,
+} from '../geometry/triSetOps';
 
 type RegionRef = number | string;
 
@@ -107,7 +112,10 @@ export function applyRegionEdit(
 
   const before = region.triangles;
   const { neighbors, centroids } = buildAdjacency(mesh);
+  const adj = adjacencyFromNeighborLists(neighbors);
+  const beforeMask = maskFromIndices(mesh.numTri, before);
   let next: Set<number>;
+  const toSet = (m: Uint8Array) => new Set(maskToIndices(m));
   const extra: Partial<RegionEditResult> = {};
 
   switch (opts.op) {
@@ -133,13 +141,13 @@ export function applyRegionEdit(
             return true;
           }
         : undefined;
-      next = growTriangles(before, neighbors, Math.min(steps, MAX_STEPS), allow);
+      next = toSet(growMask(beforeMask, adj, Math.min(steps, MAX_STEPS), allow));
       break;
     }
     case 'shrink': {
       const steps = readCount(opts.steps, 'steps', 1, 1);
       if (typeof steps !== 'number') return steps;
-      next = shrinkTriangles(before, neighbors, Math.min(steps, MAX_STEPS));
+      next = toSet(shrinkMask(beforeMask, adj, Math.min(steps, MAX_STEPS)));
       break;
     }
     case 'despeckle': {
@@ -147,8 +155,13 @@ export function applyRegionEdit(
       if (typeof minIsland !== 'number') return minIsland;
       const maxHole = readCount(opts.maxHoleTriangles, 'maxHoleTriangles', DEFAULT_SPECK, 0);
       if (typeof maxHole !== 'number') return maxHole;
-      const r = despeckleTriangles(before, neighbors, mesh.numTri, { minIslandTriangles: minIsland, maxHoleTriangles: maxHole });
-      next = r.triangles;
+      // The API's maxHoleTriangles is inclusive ("at most N"); triSetOps'
+      // maxHole is exclusive. Keep the largest piece and never fill the
+      // region's outside (see DespeckleOptions).
+      const r = despeckleMaskReport(beforeMask, adj, {
+        minIsland, maxHole: maxHole > 0 ? maxHole + 1 : 0, keepLargestIsland: true, protectOutside: true,
+      });
+      next = toSet(r.mask);
       extra.islandsRemoved = r.islandsRemoved;
       extra.holesFilled = r.holesFilled;
       break;
@@ -158,14 +171,15 @@ export function applyRegionEdit(
     case 'intersect': {
       const refs = Array.isArray(opts.with) ? opts.with : [opts.with];
       if (refs.length === 0 || !refs.every(isRef)) return { error: 'with must be a region id/name or a non-empty array of them' };
-      const others: Set<number>[] = [];
+      let m = beforeMask;
+      const combine = opts.op === 'union' ? unionMask : opts.op === 'subtract' ? subtractMask : intersectMask;
       for (const ref of refs) {
         const o = findRegionByRef(ref);
         if ('error' in o) return o;
         if (o.id === region.id) return { error: `with cannot include the target region "${region.name}" itself` };
-        others.push(o.triangles);
+        m = combine(m, maskFromIndices(mesh.numTri, o.triangles));
       }
-      next = combineTriangles(before, others, opts.op as RegionSetOp);
+      next = toSet(m);
       break;
     }
     default:
