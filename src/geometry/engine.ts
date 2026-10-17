@@ -5,7 +5,7 @@ import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine } from './engines/openscad';
 import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
-import { getActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { cloneImportForWorker, getActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
@@ -590,17 +590,7 @@ export async function executeCodeAsync(
   // A caller may pass an explicit set (offscreen thumbnail backfill) to run a
   // specific version's code without disturbing — or depending on — the live
   // active-imports register, which another tab/run may be mutating.
-  const imports = (explicitImports ?? getActiveImports()).map(m => ({
-    id:             m.id,
-    filename:       m.filename,
-    format:         m.format,
-    numProp:        m.numProp,
-    numVert:        m.numVert,
-    numTri:         m.numTri,
-    // Copy typed arrays so the main thread retains ownership.
-    vertProperties: m.vertProperties.slice(),
-    triVerts:       m.triVerts.slice(),
-  }));
+  const imports = (explicitImports ?? getActiveImports()).map(cloneImportForWorker);
 
   return new Promise<MeshResult>((resolve, reject) => {
     // No hard timeout on the render path: a slow model is bounded by the user,
