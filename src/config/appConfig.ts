@@ -328,6 +328,9 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Width (px) of the code pane in its compact "mini" mode — the
+     *  syntax-colored code map shown by default instead of the full editor. */
+    codeMinimapWidthPx: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -460,6 +463,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,

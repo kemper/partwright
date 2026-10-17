@@ -263,6 +263,7 @@ partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
 partwright.isOrbitLocked()           // Whether camera orbit is locked
 partwright.resetView()               // Reset camera to the default framing of the current model
+partwright.setCodeView('mini'|'full'|'hidden') // Code pane: compact code map (default), full editor, or hidden; getViewState().codeView reads it
 partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
