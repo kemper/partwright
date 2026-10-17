@@ -23,6 +23,10 @@ export interface FeatureOptions {
    *  best on segment:bench, including its noisy-mesh variants). Try ~3× the
    *  median edge length on very noisy scans whose grooves come out broken. */
   normalSmoothRadius?: number;
+  /** The same denoising radius given in median edge lengths instead of world
+   *  units (scale-independent — what presets use). Ignored when
+   *  `normalSmoothRadius` is set. */
+  normalSmoothEdgeLengths?: number;
 }
 
 /** `FeatureOptions` with every default resolved — what the cache keys on. */
@@ -96,8 +100,25 @@ export type ParamValues = Record<string, number | boolean | string>;
 export interface DetectorContext {
   params: ParamValues;
   seeds: SegSeed[];
+  /** Only triangles with allow[t] = 1 may be labelled (locked parts and the
+   *  area outside a focused part are excluded). Detectors leave the rest −1;
+   *  the draft merges the result into the existing partition. Seeds whose
+   *  nearest triangle is not allowed are ignored. */
+  allow?: Uint8Array;
+  /** Per-mesh scratch cache that survives between runs (same mesh, any
+   *  params). Detectors memoize expensive stages here so a slider change
+   *  re-runs only the cheap part — keys must include everything the cached
+   *  value depends on. */
+  cache?: Map<string, unknown>;
   signal?: AbortSignal;
   progress?: (frac: number, msg?: string) => void;
+}
+
+/** A named parameter set shown in the preset filmstrip. */
+export interface DetectorPreset {
+  name: string;
+  params: ParamValues;
+  featureOptions?: FeatureOptions;
 }
 
 /** Per-vertex top-two growth costs, for clipping smooth sub-triangle part
@@ -119,6 +140,10 @@ export interface DetectorResult {
   triPart: Int32Array;
   /** Optional name per part index. */
   partNames?: (string | null)[];
+  /** The names are placeholders ("patch 3", "piece 2"), not user labels:
+   *  when merged into an existing draft they never join a same-named part —
+   *  they are renumbered to free names instead. */
+  genericNames?: boolean;
   vertexCosts?: VertexCostField;
   diagnostics?: Record<string, unknown>;
 }
@@ -134,5 +159,20 @@ export interface PartDetector {
   params: ParamSpec[];
   /** Feature options this detector wants (user overrides win). */
   featureOptions?: FeatureOptions;
+  /** Curated variations for the preset filmstrip (params are partial —
+   *  unspecified keys take their defaults). */
+  presets?: DetectorPreset[];
   run(mesh: SegMesh, f: MeshFeatures, ctx: DetectorContext): DetectorResult;
+}
+
+/** Parts saved on an import, re-opened as the draft. */
+export interface SavedPartsPayload {
+  triPart: Int32Array;
+  names: string[];
+  colors: (string | null)[];
+  detectorId?: string;
+  params?: Record<string, unknown>;
+  featureOptions?: FeatureOptions;
+  seeds?: SegSeed[];
+  edgeSmoothing?: number;
 }

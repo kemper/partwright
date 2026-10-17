@@ -85,6 +85,8 @@ function normalizePartOps(ops: unknown): unknown {
     if ('id' in o) o.id = ref(o.id);
     if ('to' in o) o.to = ref(o.to);
     if (Array.isArray(o.ids)) o.ids = o.ids.map(ref);
+    // focus with no id (or "none") clears the focus.
+    if (o.op === 'focus' && (o.id === undefined || o.id === '' || o.id === 'none')) o.id = null;
     return o;
   });
 }
@@ -955,7 +957,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectParts',
-    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved) and shows a coloured overlay. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
     input_schema: {
       type: 'object',
       properties: {
@@ -976,12 +978,43 @@ const ALL_TOOLS: ToolDefinition[] = [
         featureOptions: {
           type: 'object',
           description: 'Shared surface analysis. Usually omit.',
-          properties: { normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' } },
+          properties: {
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+          },
         },
         importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
       },
       required: ['algorithm'],
     },
+  },
+  {
+    name: 'reopenParts',
+    description: 'Re-open the parts saved on an import (by acceptParts) as the draft, with the seeds that produced them, so they can be refined (editParts / detectParts) and accepted again.',
+    input_schema: { type: 'object', properties: { importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' } } },
+  },
+  {
+    name: 'previewPartPresets',
+    description: 'Run every preset of a detector (listPartDetectors shows them) WITHOUT changing the draft — locked parts and a focus are honoured — and return them ranked best-first by a groove/island score, with a contact-sheet image. Pick one with applyPartPreset. Also fills the panel\'s preset strip for the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'Detector (default: the draft\'s, else auto-merge).' },
+        seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } }, description: 'Seeds for a seeded detector (default: the current seeds).' },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] },
+        importIndex: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+  {
+    name: 'applyPartPreset',
+    description: 'Make one of the previewPartPresets results the draft (by its index in that ranked list).',
+    input_schema: { type: 'object', properties: { index: { type: 'integer', minimum: 0 } }, required: ['index'] },
+  },
+  {
+    name: 'openPartsPanel',
+    description: 'Open the Part Detection panel for the user (detectParts and reopenParts already open it). Use when handing a draft over for manual refinement.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'getPartDraft',
@@ -990,7 +1023,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'editParts',
-    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Ops: {op:"merge", ids:[...], name?} · {op:"rename", id, name} · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (re-runs the detector) · {op:"removeSeed", index} · {op:"rerun"} · {op:"undo"}.',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Ops: {op:"merge", ids:[...], name?} · {op:"rename", id, name} · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (re-runs the detector) · {op:"removeSeed", index} · {op:"moveSeed", index, point} · {op:"seedsFromParts"} (one seed per part, named after it; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"rerun"} · {op:"undo"}.',
     input_schema: {
       type: 'object',
       properties: {
@@ -999,7 +1032,7 @@ const ALL_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'rerun', 'undo'] },
+              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'rerun', 'undo'] },
               id: { type: 'string', description: 'Part id ("4") or name.' },
               ids: { type: 'array', items: { type: 'string' }, description: 'merge: part ids or names.' },
               name: { type: 'string' },
@@ -1012,6 +1045,8 @@ const ALL_TOOLS: ToolDefinition[] = [
               index: { type: 'integer' },
               minAreaFrac: { type: 'number' },
               iterations: { type: 'integer' },
+              locked: { type: 'boolean', description: 'lock: false unlocks.' },
+              minRegionFrac: { type: 'number', description: 'seedsFromParts: regions smaller than this fraction of their part get no seed (default 0.01).' },
             },
             required: ['op'],
           },
@@ -1053,7 +1088,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'acceptParts',
     description: 'Commit the part draft: the parts are stored on the import and the code switches to api.importWithParts(i), so every part becomes a real label (paintByLabel, listObjectParts, the object rail) and any part colours set with editParts setColor become the model colours. Saves a version. Show the user renderParts and get their OK first.',
-    input_schema: { type: 'object', properties: { label: { type: 'string', description: 'Version label (default "Detected parts").' } } },
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Version label (default "Detected parts").' },
+        smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
+      },
+    },
   },
   {
     name: 'discardParts',
@@ -1719,8 +1760,8 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySu
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
  *  image-returning ones additionally need the Views vision toggle. */
-const PARTS_GATED = new Set(['detectParts', 'editParts', 'discardParts', 'setPartsOverlay']);
-const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors']);
+const PARTS_GATED = new Set(['detectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel']);
+const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
@@ -2373,20 +2414,36 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.deleteObject((input.object ?? input.part ?? input.id) as string | number);
     case 'listPartDetectors':
       return api.listPartDetectors();
-    case 'detectParts':
-      return api.detectParts(input);
+    case 'detectParts': {
+      const result = await api.detectParts(input);
+      // Hand the draft to the user: the panel opens so they can refine it.
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'reopenParts': {
+      const result = await api.reopenParts(input);
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'applyPartPreset':
+      return api.applyPartPreset(input.index);
+    case 'openPartsPanel':
+      return api.openPartsPanel();
     case 'getPartDraft':
       return api.getPartDraft();
     case 'editParts':
       return api.editParts({ ops: normalizePartOps(input.ops) });
     case 'renderParts':
-    case 'comparePartDetectors': {
+    case 'comparePartDetectors':
+    case 'previewPartPresets': {
       const result = (name === 'renderParts'
         ? await api.renderParts(input)
-        : await api.comparePartDetectors(input.configs, {
-          ...(input.view !== undefined ? { view: input.view } : {}),
-          ...(input.size !== undefined ? { size: input.size } : {}),
-        })) as Record<string, unknown>;
+        : name === 'previewPartPresets'
+          ? await api.previewPartPresets(input)
+          : await api.comparePartDetectors(input.configs, {
+            ...(input.view !== undefined ? { view: input.view } : {}),
+            ...(input.size !== undefined ? { size: input.size } : {}),
+          })) as Record<string, unknown>;
       if (!result || typeof result !== 'object' || 'error' in result) return result;
       const image = result.image as string | undefined;
       delete result.image;

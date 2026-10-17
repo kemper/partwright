@@ -89,9 +89,87 @@ test.describe('Part detection', () => {
     await page.reload();
     await page.waitForSelector('text=Ready', { timeout: 30_000 });
     await page.waitForFunction(() => {
-      const r = (window as unknown as { partwright: PW }).partwright.listObjectParts() as { parts?: { name: string }[] };
-      return (r.parts ?? []).some((p) => p.name === 'cap');
+      // `Ready` can paint before window.partwright is assigned after a reload.
+      const r = (window as unknown as { partwright?: PW }).partwright?.listObjectParts() as { parts?: { name: string }[] } | undefined;
+      return (r?.parts ?? []).some((p) => p.name === 'cap');
     }, undefined, { timeout: 30_000 });
+  });
+
+  test('auto patches, presets, lock, smooth accept and reopen', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+
+    // Seedless auto patches: generic names, at least the two crease-split faces.
+    const auto = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 30 } })) as { parts?: { name: string; triCount: number }[]; edgeSmoothing?: number; error?: string };
+    expect(auto.error).toBeUndefined();
+    expect(auto.parts!.length).toBeGreaterThanOrEqual(2);
+    expect(auto.parts!.every((p) => /^patch \d+$/.test(p.name))).toBe(true);
+    expect(auto.edgeSmoothing).toBe(3);
+
+    // Presets run without touching the draft, ranked best-first.
+    const pre = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.previewPartPresets({ algorithm: 'auto-merge', image: false })) as { presets?: { score: number }[]; error?: string };
+    expect(pre.error).toBeUndefined();
+    expect(pre.presets!.length).toBeGreaterThanOrEqual(4);
+    const scores = pre.presets!.map((p) => p.score);
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores);
+    const still = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as { parts: unknown[] };
+    expect(still.parts.length).toBe(auto.parts!.length);
+
+    // Name the biggest patch, lock it, and re-detect finer: it keeps its triangles.
+    const locked = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.editParts({ ops: [{ op: 'rename', id: 1, name: 'body' }, { op: 'lock', id: 'body' }] });
+      const before = (pw.getPartDraft() as { parts: { name: string; triCount: number }[] }).parts.find((p) => p.name === 'body')!.triCount;
+      const r = await pw.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 1 } }) as { parts: { name: string; triCount: number; locked?: boolean }[] };
+      const body = r.parts.find((p) => p.name === 'body')!;
+      return { before, after: body.triCount, locked: body.locked };
+    });
+    expect(locked.after).toBe(locked.before);
+    expect(locked.locked).toBe(true);
+
+    // Seeds round-trip through the working list.
+    const seeds = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      pw.setPartSeeds([{ label: 'top', point: [10, 10, 20] }]);
+      return pw.getPartSeeds();
+    }) as { label: string }[];
+    expect(seeds.map((s) => s.label)).toEqual(['top']);
+
+    // The block's patch boundaries sit on 90° box edges: smooth edges pin
+    // them, so accept keeps the original mesh.
+    const pinnedAcc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts({ label: 'pinned' })) as { smoothEdges?: unknown; error?: string };
+    expect(pinnedAcc.error).toBeUndefined();
+    expect(pinnedAcc.smoothEdges).toBeUndefined();
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+
+    // With pinning off, the same boundaries are smoothed: accept re-meshes
+    // the import and it stays manifold.
+    await page.evaluate(async () => {
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, segmentation: { ...c.segmentation, edgePinCreaseDeg: 0 } });
+    });
+    const reopened = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.reopenParts()) as { edgeSmoothing?: number; error?: string };
+    expect(reopened.error).toBeUndefined();
+    expect(reopened.edgeSmoothing).toBe(3); // not re-meshed, so smoothing starts on
+    const acc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts()) as { smoothEdges?: { fromTris: number; toTris: number }; error?: string };
+    expect(acc.error).toBeUndefined();
+    expect(acc.smoothEdges!.toTris).toBeGreaterThan(acc.smoothEdges!.fromTris);
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    const geo = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData()) as { isManifold?: boolean };
+    expect(geo.isManifold).toBe(true);
+
+    // Reopen the saved parts: same names, smoothing off (mesh already cut).
+    const re = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.reopenParts()) as { parts?: { name: string }[]; edgeSmoothing?: number; error?: string };
+    expect(re.error).toBeUndefined();
+    expect(re.parts!.some((p) => p.name === 'body')).toBe(true);
+    expect(re.edgeSmoothing).toBe(0);
+    await expect(page.getByRole('dialog', { name: 'Detect parts' })).toHaveCount(0);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    await expect(page.getByRole('dialog', { name: 'Detect parts' })).toBeVisible();
+    await expect(page.getByLabel('Edge smoothness')).toHaveValue('0');
   });
 
   test('detectParts without an import explains what to do', async ({ page }) => {
