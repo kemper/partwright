@@ -10,7 +10,8 @@ import type { DraftSummary, PartEditOp } from './draft';
 import { AbortedError } from './growth';
 import { SegmentationRunner, type DetectRequest } from './runner';
 import type { SegWorkerRequest, SegWorkerResponse } from './segmentationWorker';
-import type { SegMesh } from './types';
+import type { EdgeCut } from './smoothEdges';
+import type { SavedPartsPayload, SegMesh } from './types';
 
 export interface SegCallResult {
   summary: DraftSummary | null;
@@ -42,8 +43,17 @@ function getWorker(): Worker {
   return worker;
 }
 
+type Reply = Extract<SegWorkerResponse, { type: 'result' } | { type: 'cut' }>;
+
 function call(body: RequestBody, ctl?: SegCallControl): Promise<SegCallResult> {
-  return new Promise<SegCallResult>((resolve, reject) => {
+  return callRaw(body, ctl).then((m) => {
+    if (m.type !== 'result') throw new Error('part detection worker: unexpected reply');
+    return { summary: m.summary, triPart: m.triPart };
+  });
+}
+
+function callRaw(body: RequestBody, ctl?: SegCallControl): Promise<Reply> {
+  return new Promise<Reply>((resolve, reject) => {
     if (ctl?.signal?.aborted) { reject(new AbortedError()); return; }
     const w = getWorker();
     const callId = nextCallId++;
@@ -67,8 +77,8 @@ function call(body: RequestBody, ctl?: SegCallControl): Promise<SegCallResult> {
       if (settled) return;
       settled = true;
       cleanup();
-      if (m.type === 'result') resolve({ summary: m.summary, triPart: m.triPart });
-      else reject(new Error(m.message));
+      if (m.type === 'error') reject(new Error(m.message));
+      else resolve(m);
     };
     w.onerror = (e) => {
       if (settled) return;
@@ -160,5 +170,31 @@ export function discardPartsDraft(): Promise<void> {
   return serialized(async () => {
     if (!hasWorker()) { if (local) local.runner.draft = null; return; }
     if (worker) await call({ type: 'discard' });
+  });
+}
+
+/** Make parts saved on an import the draft (re-opening accepted parts). */
+export function adoptPartsAsync(meshKey: string, mesh: () => SegMesh, saved: SavedPartsPayload): Promise<SegCallResult> {
+  return serialized(async () => {
+    await ensureLoaded(meshKey, mesh);
+    if (!hasWorker()) {
+      const summary = local!.runner.adopt(saved);
+      return { summary, triPart: local!.runner.draft!.triPart.slice() };
+    }
+    return call({ type: 'adopt', saved: { ...saved, triPart: saved.triPart.slice() } });
+  });
+}
+
+/** Smooth part edges for the current draft (null when smoothing is off). */
+export function edgeCutAsync(meshKey: string, iterations?: number): Promise<EdgeCut | null> {
+  return serialized(async () => {
+    if (!hasWorker()) {
+      if (local?.key !== meshKey) throw new Error('No part draft — call detectParts first.');
+      return local.runner.cut(iterations);
+    }
+    if (loadedKey !== meshKey || !worker) throw new Error('No part draft — call detectParts first.');
+    const m = await callRaw(iterations === undefined ? { type: 'cut' } : { type: 'cut', iterations });
+    if (m.type !== 'cut') throw new Error('part detection worker: unexpected reply');
+    return m.cut;
   });
 }

@@ -372,6 +372,14 @@ export interface AppConfig {
      *  where renderParts draws each part's number (higher = finds smaller
      *  visible slivers, slightly slower). */
     labelGridResolution: number;
+    /** Live mode: wait this long (ms) after the last seed/setting change
+     *  before re-running detection. */
+    liveDebounceMs: number;
+    /** Wait this long (ms) after the last Edge-smoothness change before
+     *  recomputing the smooth part edges. */
+    edgeSmoothingDebounceMs: number;
+    /** Preset filmstrip tile size (px). */
+    presetThumbSize: number;
   };
 }
 
@@ -497,6 +505,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxListedParts: 80,
     undoDepth: 20,
     labelGridResolution: 160,
+    liveDebounceMs: 450,
+    edgeSmoothingDebounceMs: 250,
+    presetThumbSize: 112,
   },
 };
 

@@ -5,10 +5,11 @@
 // are cached per resolved FeatureOptions so re-running with new seeds or a
 // different detector is cheap.
 
-import { PartDraftModel, type DraftSummary, type PartEditOp } from './draft';
-import { computeMeshFeatures, featureOptionsKey, resolveFeatureOptions } from './features';
+import { MAX_EDGE_SMOOTHING, PartDraftModel, type DraftSummary, type PartEditOp } from './draft';
+import { computeMeshFeatures, featureOptionsKey, medianEdgeLength, resolveFeatureOptions } from './features';
 import { getDetector, resolveParams } from './registry';
-import type { FeatureOptions, MeshFeatures, SegMesh, SegSeed } from './types';
+import { computeEdgeCut, type EdgeCut } from './smoothEdges';
+import type { FeatureOptions, MeshFeatures, ParamValues, SavedPartsPayload, SegMesh, SegSeed } from './types';
 
 export interface DetectRequest {
   algorithm: string;
@@ -21,9 +22,13 @@ export interface DetectRequest {
 
 export class SegmentationRunner {
   readonly mesh: SegMesh;
-  private cache = new Map<string, MeshFeatures>();
+  private featureCache = new Map<string, MeshFeatures>();
+  /** Detector scratch cache (DetectorContext.cache), per mesh. */
+  private detectorCache: Map<string, unknown> = new BoundedCache(4);
   draft: PartDraftModel | null = null;
   private undoDepth: number;
+  private medianEdge = -1;
+  private cutCache: { key: string; cut: EdgeCut } | null = null;
 
   constructor(mesh: SegMesh, opts: { undoDepth?: number } = {}) {
     this.mesh = mesh;
@@ -31,29 +36,68 @@ export class SegmentationRunner {
   }
 
   features(opts: FeatureOptions = {}): MeshFeatures {
-    const resolved = resolveFeatureOptions(opts);
+    // Resolve edge-length-relative options against this mesh so the cache
+    // key is the actual radius.
+    if (this.medianEdge < 0) this.medianEdge = medianEdgeLength(this.mesh);
+    const resolved = resolveFeatureOptions(opts, this.medianEdge);
     const key = featureOptionsKey(resolved);
-    let f = this.cache.get(key);
+    let f = this.featureCache.get(key);
     if (!f) {
       f = computeMeshFeatures(this.mesh, resolved);
-      if (this.cache.size >= 3) this.cache.delete(this.cache.keys().next().value!);
-      this.cache.set(key, f);
+      if (this.featureCache.size >= 3) this.featureCache.delete(this.featureCache.keys().next().value!);
+      this.featureCache.set(key, f);
     }
     return f;
   }
 
+  /**
+   * Run a detector and make it the draft. With an existing draft the result
+   * goes into it as an undoable step: locked parts and triangles outside a
+   * focus keep their parts, colours carry over by name, and the
+   * edge-smoothing setting stays.
+   */
   detect(req: DetectRequest): DraftSummary {
-    this.draft = this.build(req);
+    const { d, params, seeds, featureOptions, f } = this.prepare(req);
+    if (this.draft) {
+      this.draft.detectUndoable(d.id, params, featureOptions, seeds, f, {
+        signal: req.signal, progress: (frac, msg) => req.progress?.(0.15 + 0.85 * frac, msg),
+      });
+      return this.draft.summary();
+    }
+    this.draft = this.newModel(d.id, params, featureOptions, seeds, f, req);
     return this.draft.summary();
   }
 
-  /** Run a detector WITHOUT replacing the current draft (comparisons). */
+  /** Run a detector WITHOUT replacing the current draft (comparisons and the
+   *  preset filmstrip). Locks and focus of the current draft are honoured. */
   preview(req: DetectRequest): { summary: DraftSummary; triPart: Int32Array } {
-    const m = this.build(req);
+    const { d, params, seeds, featureOptions, f } = this.prepare(req);
+    const m = this.draft && this.draft.detectionMask()
+      ? this.draft.clone()
+      : this.newModel(d.id, params, featureOptions, seeds, f, req);
+    if (m !== this.draft && this.draft?.detectionMask()) m.applyDetection(d.id, params, featureOptions, seeds, f);
     return { summary: m.summary(), triPart: m.triPart };
   }
 
-  private build(req: DetectRequest): PartDraftModel {
+  /** Re-open parts saved on an import as the draft. */
+  adopt(saved: SavedPartsPayload): DraftSummary {
+    if (saved.triPart.length !== this.mesh.triVerts.length / 3) throw new Error('Saved parts do not match this mesh.');
+    const d = getDetector(saved.detectorId ?? '') ?? getDetector('crease-watershed')!;
+    let params;
+    try { params = resolveParams(d, saved.params); } catch { params = resolveParams(d, {}); }
+    const featureOptions = saved.featureOptions ?? {};
+    const model = PartDraftModel.fromSaved(this.mesh, this.features(featureOptions), {
+      triPart: saved.triPart, names: saved.names, colors: saved.colors, detectorId: d.id, params, featureOptions,
+      seeds: saved.seeds ?? [],
+    });
+    model.cache = this.detectorCache;
+    model.undoDepth = this.undoDepth;
+    if (typeof saved.edgeSmoothing === 'number') model.edgeSmoothing = Math.max(0, Math.min(MAX_EDGE_SMOOTHING, Math.round(saved.edgeSmoothing)));
+    this.draft = model;
+    return model.summary();
+  }
+
+  private prepare(req: DetectRequest) {
     const d = getDetector(req.algorithm);
     if (!d) throw new Error(`Unknown detector "${req.algorithm}"`);
     const params = resolveParams(d, req.params);
@@ -65,13 +109,31 @@ export class SegmentationRunner {
     req.progress?.(0, 'Analysing surface…');
     const f = this.features(featureOptions);
     req.progress?.(0.15, 'Detecting parts…');
+    return { d, params, seeds, featureOptions, f };
+  }
+
+  private newModel(detectorId: string, params: ParamValues, featureOptions: FeatureOptions, seeds: SegSeed[], f: MeshFeatures, req: DetectRequest): PartDraftModel {
+    const d = getDetector(detectorId)!;
     const result = d.run(this.mesh, f, {
-      params, seeds, signal: req.signal,
+      params, seeds, signal: req.signal, cache: this.detectorCache,
       progress: (frac, msg) => req.progress?.(0.15 + 0.85 * frac, msg),
     });
     const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds }, result);
     model.undoDepth = this.undoDepth;
+    model.cache = this.detectorCache;
     return model;
+  }
+
+  /** Smooth (sub-triangle) part edges for the current draft at its
+   *  edge-smoothing setting; null when smoothing is off. Cached on the
+   *  partition's content so the overlay and accept share one computation. */
+  cut(iterations?: number): EdgeCut | null {
+    if (!this.draft) throw new Error('No part draft — call detectParts first.');
+    const it = iterations ?? this.draft.edgeSmoothing;
+    if (it <= 0) return null;
+    const key = `${it}:${partitionHash(this.draft.triPart)}`;
+    if (this.cutCache?.key !== key) this.cutCache = { key, cut: computeEdgeCut(this.mesh, this.draft.triPart, it) };
+    return this.cutCache.cut;
   }
 
   edit(ops: PartEditOp[]): DraftSummary {
@@ -79,4 +141,21 @@ export class SegmentationRunner {
     this.draft.edit(ops);
     return this.draft.summary();
   }
+}
+
+/** Map that evicts its oldest entry beyond `max` entries. */
+class BoundedCache<K, V> extends Map<K, V> {
+  private max: number;
+  constructor(max: number) { super(); this.max = max; }
+  override set(key: K, value: V): this {
+    if (!this.has(key) && this.size >= this.max) this.delete(this.keys().next().value as K);
+    return super.set(key, value);
+  }
+}
+
+/** Content hash of a partition (FNV-1a over the labels). */
+function partitionHash(triPart: Int32Array): string {
+  let h = 2166136261;
+  for (let t = 0; t < triPart.length; t++) h = Math.imul(h ^ (triPart[t] + 2), 16777619);
+  return `${triPart.length}:${(h >>> 0).toString(36)}`;
 }

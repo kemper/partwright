@@ -938,9 +938,9 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('segmentation', 'absorbMinAreaFrac', v)}
         />
         <Field
-          label="Smooth-edges passes"
+          label="Tidy-edges passes"
           unit="passes"
-          hint="Boundary clean-up passes per Smooth edges click."
+          hint="Boundary clean-up passes per Tidy edges click."
           tooltip="Each pass switches a boundary triangle to the part held by a majority of its neighbours, shaving single-triangle stair-steps and spurs. More passes give smoother but slightly shifted boundaries."
           defaultValue={APP_CONFIG_DEFAULTS.segmentation.smoothBoundaryIterations}
           value={c.segmentation.smoothBoundaryIterations}
@@ -976,6 +976,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.segmentation.labelGridResolution}
           min={40} max={600} integer
           onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
+        <Field
+          label="Live re-detect delay"
+          unit="ms"
+          hint="Live mode waits this long after your last change."
+          tooltip="With Live on in the Part Detection panel, detection re-runs automatically once you stop moving seeds or changing settings for this long. Raise it on very large meshes so a re-run doesn't start mid-adjustment."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.liveDebounceMs}
+          value={c.segmentation.liveDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'liveDebounceMs', v)}
+        />
+        <Field
+          label="Edge-smoothness delay"
+          unit="ms"
+          hint="Wait after the Edge smoothness slider before recomputing."
+          tooltip="Smooth part edges are recomputed (in the background) once the Edge smoothness slider has been still for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgeSmoothingDebounceMs}
+          value={c.segmentation.edgeSmoothingDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'edgeSmoothingDebounceMs', v)}
+        />
+        <Field
+          label="Preset thumbnail size"
+          unit="px"
+          hint="Size of the preset filmstrip tiles."
+          tooltip="The Presets strip renders each preset's result as a small thumbnail of this size. Larger tiles show more detail but take longer to draw."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.presetThumbSize}
+          value={c.segmentation.presetThumbSize}
+          min={64} max={320} integer
+          onChange={v => set('segmentation', 'presetThumbSize', v)}
         />
       </Section>
 

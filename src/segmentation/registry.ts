@@ -2,10 +2,11 @@
 // AI tool schema, CLI flags) reads detectors and their ParamSpecs from here,
 // so registering a detector updates all of them at once.
 
+import { autoMergeDetector } from './autoPatches';
 import { creaseWatershedDetector, piecesDetector } from './detectors';
-import type { ParamSpec, ParamValues, PartDetector } from './types';
+import type { DetectorPreset, ParamSpec, ParamValues, PartDetector } from './types';
 
-const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector];
+const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, autoMergeDetector];
 
 export function listDetectors(): readonly PartDetector[] {
   return DETECTORS;
@@ -22,9 +23,13 @@ export function detectorIds(): string[] {
 /** JSON-friendly description of a detector (for listPartDetectors / docs). */
 export function describeDetector(d: PartDetector): {
   id: string; name: string; description: string; bestFor: string;
-  seeds: PartDetector['seeds']; params: ParamSpec[];
+  seeds: PartDetector['seeds']; params: ParamSpec[]; presets: DetectorPreset[];
 } {
-  return { id: d.id, name: d.name, description: d.description, bestFor: d.bestFor, seeds: d.seeds, params: d.params.map((p) => ({ ...p })) };
+  return {
+    id: d.id, name: d.name, description: d.description, bestFor: d.bestFor, seeds: d.seeds,
+    params: d.params.map((p) => ({ ...p })),
+    presets: (d.presets ?? []).map((p) => ({ name: p.name, params: { ...p.params }, ...(p.featureOptions ? { featureOptions: { ...p.featureOptions } } : {}) })),
+  };
 }
 
 /** Fill defaults and validate user params against a detector's ParamSpecs.

@@ -162,3 +162,9 @@ function drawTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: stri
   ctx.textAlign = 'start';
   ctx.textBaseline = 'alphabetic';
 }
+
+/** One small un-numbered view of a partition (preset filmstrip tiles). */
+export function renderPartsThumbnail(mesh: MeshData, triColors: Uint8Array, view: string, size: number): string {
+  const v = PARTS_RENDER_VIEWS[view] ?? PARTS_RENDER_VIEWS.front;
+  return renderSingleViewCanvas({ ...mesh, triColors }, { elevation: v.elevation, azimuth: v.azimuth, size, edges: 'none' }).toDataURL('image/png');
+}
