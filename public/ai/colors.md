@@ -403,7 +403,7 @@ const r = partwright.paintRegion({ point: [50, 50, 50], normal: [0, 0, 1], color
 // r.nearest = { point, normal, distance, angleDeg, suggestedTolerance }
 ```
 
-**`paintRegion` is strict about seed placement** -- the point must lie on the surface within ~0.01 units. If you'd rather snap to the nearest face within a tolerance and skip the trial-and-error of placing a point exactly, use `paintNearestRegion`:
+**`paintRegion` is strict about seed placement when you pass a `normal`** -- the point must lie on the surface within ~0.01 units. Omit `normal` and it snaps to the nearest face (at any distance) and uses that face's normal. To snap only within a bounded distance, use `paintNearestRegion`:
 
 ```js
 // Snap [8, 0.39, 5] to whatever face is closest within 1.0 units, then paint.
@@ -538,6 +538,31 @@ if ('point' in hit) {
   });
 }
 ```
+
+**Stop a fill leaking (`withinBox` / `zMin` / `zMax`).** On a scan or a unioned figure the whole surface is one connected mesh, so a flood that should stop at a sleeve cuff or a sock roll can walk on up the arm or leg wherever there's no crease to stop it. `paintConnected` takes a spatial clamp: the flood never enters a triangle whose centroid is outside `withinBox: {min?, max?}`, and `zMin`/`zMax` are shorthands for a Z band (all AND-ed together). The seed itself must lie inside the clamp.
+
+```js
+partwright.paintConnected({
+  seed: { point: hit.point, normal: hit.normal },
+  maxDeviationDeg: 70,       // follow the curve of the leg
+  zMax: 18.5,                // ...but never above the sock roll
+  color: [0.95, 0.95, 0.95],
+  name: 'sock',
+});
+```
+
+**Clean (non-jagged) fill boundaries.** `paintRegion`, `paintConnected`, `paintNear`, `paintInBox` and `paintFaces` select *whole existing triangles*, so on a coarse or scanned mesh their boundary is a sawtooth that follows the triangulation. Recolouring specks afterwards doesn't fix that. The tools that cut the boundary through triangles instead (subdividing only along the edge) are:
+
+| Boundary you want | Tool |
+|---|---|
+| Straight / planar cut — a hem, a sock roll, a belt line, a waterline | `paintSlab({normal, offset, thickness, smooth: true})` or `paintInOrientedBox({box, smooth: true})` (both smooth by default). Tilt the slab `normal` to follow a slanted hem. |
+| Cylindrical band — a cuff, a ring around a limb | `paintInCylinder({..., axis, smooth: true})` |
+| Free-form line with no crease to stop at — a hairline, a collar curve | `paintStroke` along `probePixel` points with `wrapAngleDeg: 90`: the stroke's outline is clipped exactly, so its edge is smooth however coarse the mesh. Sweep the stroke along the boundary to "trim" a jagged fill underneath it. |
+
+A practical recipe for a feature with one jagged edge (a sock whose top should be a clean line at `z = 18.5`):
+
+1. Flood the bulk with `paintConnected`, clamped a triangle-width **short** of the line (`zMax: 18.5 - edgeLen`, where `edgeLen` is roughly the mesh's edge length there) so none of its sawteeth cross the line.
+2. Fill the gap up to the line with a smooth tool in the **same colour** — e.g. `paintSlab({axis: 'z', offset: 17, thickness: 1.5, smooth: true, color})`. Later regions win where they overlap, so do this **after** any neighbouring fill (the skin), and the smooth tool's outline is the visible edge.
 
 The seed point returned by `probePixel` is *exactly* on the mesh surface (raycast result, not a snap), so paint primitives that need precise seed placement (`paintRegion` in particular) work without seed-tolerance issues. The model's pixel-position estimation has built-in error (~±10-20px on a 320 render); `paintConnected` absorbs that fine since the seed normal anchors the flood. For `paintNear`, pick a radius generous enough for the same.
 
