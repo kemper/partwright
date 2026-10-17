@@ -430,8 +430,8 @@ partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tin
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
 partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
-partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinBox?, zMin?, zMax?}) // BFS-flood by seed-normal deviation (organic meshes); withinBox/zMin/zMax clamp the flood so it can't leak
-partwright.paintRegion({point, normal?, color, name?, tolerance?})        // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
+partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinBox?, zMin?, zMax?, smooth?, smoothness?}) // BFS-flood by seed-normal deviation (organic meshes); withinBox/zMin/zMax clamp the flood so it can't leak; smooth: true = clean boundary instead of a triangle sawtooth
+partwright.paintRegion({point, normal?, color, name?, tolerance?, smooth?, smoothness?})        // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
 partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, wrapAngleDeg?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance, see note below)

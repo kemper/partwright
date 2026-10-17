@@ -573,3 +573,48 @@ export function resolveSeed(
 
   return bestTri;
 }
+
+/** Re-resolve a `paintConnected` flood (the `connectedFromSeed` descriptor) on
+ *  `mesh`: snap the stored world-space seed to its nearest triangle, then BFS
+ *  gated by deviation from the stored seed normal and the optional AABB clamp.
+ *  Pure — shared by the main-thread region resolver and the smooth-fill field
+ *  builder (which runs it against the pristine base mesh, in the worker too). */
+export function resolveConnectedFromSeed(
+  d: {
+    seedPoint: [number, number, number];
+    seedNormal: [number, number, number];
+    maxDeviationDeg: number;
+    clampMin?: [number, number, number];
+    clampMax?: [number, number, number];
+  },
+  mesh: MeshData,
+  adjacency: AdjacencyGraph,
+): Set<number> {
+  const { seedPoint, seedNormal, maxDeviationDeg, clampMin, clampMax } = d;
+  // Find the closest triangle to the seed point — robust across re-runs
+  // because triangle indices are unstable but world-space points are not.
+  const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
+  if (nearest.triIndex < 0) return new Set<number>();
+  const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
+  // Restore the original clamp predicate so re-resolution after a
+  // geometry edit walks the same bounded region the user painted.
+  const predicate = (clampMin || clampMax)
+    ? (cx: number, cy: number, cz: number) =>
+        cx >= (clampMin?.[0] ?? -Infinity) && cx <= (clampMax?.[0] ?? Infinity) &&
+        cy >= (clampMin?.[1] ?? -Infinity) && cy <= (clampMax?.[1] ?? Infinity) &&
+        cz >= (clampMin?.[2] ?? -Infinity) && cz <= (clampMax?.[2] ?? Infinity)
+    : undefined;
+  const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, predicate);
+  const sNorm = adjacency.normals;
+  const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
+                + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
+                + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
+  if (dotSeed >= cos) return triangles;
+  // Surface re-orientation between runs — re-filter conservatively.
+  const filtered = new Set<number>();
+  for (const t of triangles) {
+    const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
+    if (seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz >= cos) filtered.add(t);
+  }
+  return filtered;
+}

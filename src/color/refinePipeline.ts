@@ -22,11 +22,17 @@ import {
 import { slabRefineRegion } from './slabPaint';
 import { shapeRefineRegion } from './boxPaint';
 import { cylinderRefineRegion } from './cylinderPaint';
+import { isSmoothFill, smoothFillFor } from './smoothFill';
 
-/** True when a descriptor drives mesh subdivision — see the same predicate in
- *  main.ts for the user-facing notion. */
+/** True when a descriptor drives mesh subdivision: any brush stroke, a slab /
+ *  oriented shape / cylinder with smoothing enabled (`smooth` + a positive
+ *  `maxEdge`), or a bucket fill with `smooth` set. Descriptors saved before
+ *  smoothing existed omit those fields and refine nothing, preserving their
+ *  original blocky edges. Shared by the main thread and the subdivision worker
+ *  so both always agree on the refine set. */
 export function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
+  if (isSmoothFill(d)) return true;
   if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
     return !!d.smooth && (d.maxEdge ?? 0) > 0;
   }
@@ -92,7 +98,9 @@ export function collectRefineRegions(
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
+    } else if (isSmoothFill(d)) {
+      regions.push(smoothFillFor(d, base).refine);
     }
   }
   return regions;
