@@ -15,6 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
+npm run pr:screenshots -- a.png b.png  # attach screenshots to a PR body from a cloud session — see Visual proof in the PR
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -52,7 +53,7 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. **Any visual change must also carry that screenshot in the PR body** — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change). (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
 3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
 4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 8 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
@@ -202,8 +203,37 @@ The pattern:
 
 4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
 5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+6. **Attach the same proof to the PR** when the change is visual — chat is ephemeral and the reviewer may never see it. See the next section.
 
 This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
+
+### Visual proof in the PR — required for any visual change
+
+**Every PR that changes what a user sees must embed screenshots in its PR body, in addition to posting them in the chat.** "Visual" means anything that alters rendered pixels or visible UI: layout, styling, new/changed panels, modals, buttons, labels or copy, viewport/renderer output, catalog thumbnails or models, theme changes. The PR is the durable record a reviewer (or a later agent) reads; a screenshot that only lived in the chat is lost when the session ends. Pure-logic, test-only, and docs-only changes are exempt.
+
+What to capture:
+
+- **New feature** → the feature in its key state(s) (e.g. opened panel, result rendered).
+- **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
+- **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
+
+How to attach — pick the first that works:
+
+- **`gh --attach` (preferred; gh ≥ 2.99).** `gh pr comment <n> --attach 'shot.png#alt text'` (also on `gh pr create` / `gh pr edit` for the body) uploads the image to GitHub and inlines it. Put the shots in a `## Visual proof` comment or the body. **This does not work in cloud Claude Code sessions** — gh resolves the PR over GraphQL, which the session proxy blocks (HTTP 403) — so there use:
+- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Commits the images under `pr-assets/`, deletes them again in a second commit (so they never reach `main`'s tree), and prints Markdown links pinned to the first commit's SHA. Push, then paste the links into the PR body's `## Visual proof` section (`update_pull_request`). The repo merges with merge commits, so the pinned commit stays reachable after merge.
+
+Lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
+
+```md
+## Visual proof
+| Before (main) | After (this PR) |
+|---|---|
+| ![before](…) | ![after](…) |
+```
+
+Re-shoot when a later push changes the visuals — the proof must match the current head. "Visual proof is in the PR" is part of the mark-ready gate.
+
+An example using the cloud fallback: kemper/partwright#1021.
 
 **Scope by change type:**
 
@@ -663,12 +693,12 @@ Guardrails for automated work, learned the hard way:
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
 1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 8 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
-2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works. For a visual change, also confirm the PR body carries the same screenshots — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change).
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
 5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
 6. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
-7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green and the review pass is clean: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
+7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green, the review pass is clean, and (for a visual change) the PR body's `## Visual proof` matches the current head: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
 
 ## Common Errors
 
