@@ -217,6 +217,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
+import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
@@ -261,6 +262,7 @@ import {
   apiGetSnapToGrid,
   apiRotateSelection,
 } from './ui/insertPalette';
+import { applyRegionEdit, type RegionEditOptions } from './color/regionEdit';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
@@ -1237,6 +1239,23 @@ interface ResolveResult {
   perTriColors?: Map<number, [number, number, number]>;
 }
 
+/** Base-mesh triangle a current working-mesh triangle was refined from —
+ *  identity while the mesh is unrefined, a base closest-point lookup once
+ *  smooth paint has subdivided it. */
+function currentToBaseTriangle(t: number): number {
+  const cm = currentMeshData, base = paintBaseMesh;
+  if (!cm || !base || cm === base) return t;
+  return baseTriangleOf(cm, base, t);
+}
+
+/** Ids for a `{ kind: 'triangles' }` descriptor from a current-mesh set. The
+ *  descriptor must hold BASE ids: every rebuild / reload re-resolves it as
+ *  base ids remapped onto the refined mesh, so refined-space ids would land on
+ *  the wrong faces (or none). The live region keeps the exact current set. */
+function triangleDescriptorIds(tris: Iterable<number>): number[] {
+  return [...new Set([...tris].map(currentToBaseTriangle))];
+}
+
 /** Resolve a single region descriptor to a triangle set on `mesh`. Shared by
  *  rehydration (loading a saved version) and the live rebuild after a smooth
  *  brush stroke changes the working mesh. Returns perTriColors for imagePaint
@@ -1775,8 +1794,30 @@ function reresolveRegionsAgainstCurrentMesh(): void {
  *  then call this helper to do the same work the listener would have done —
  *  but inline, on the main thread, blocking until the refined region's
  *  triangles are populated. */
+/** Regions brought back by undo / redo / undo-clear carry the triangle set
+ *  they had when they left the list. If the working mesh changed meanwhile (a
+ *  re-run, a smooth stroke, a simplify), those ids point at the wrong faces, so
+ *  re-resolve them from their descriptors. On a refined mesh that needs the
+ *  base→refined map, i.e. a full rebuild. Returns true when it rebuilt (the
+ *  caller's reconcile is then already done). */
+function resolveStaleRestoredRegions(): boolean {
+  const stale = takeStaleRestoredRegions(currentMeshData);
+  if (stale.length === 0 || !currentMeshData) return false;
+  if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+    rebuildPaintedGeometry();
+    return true;
+  }
+  const adjacency = buildAdjacency(currentMeshData);
+  for (const r of stale) {
+    const { triangles, perTriColors } = resolveDescriptorTriangles(r.descriptor, currentMeshData, adjacency, null, r.id);
+    setRegionTriangles(r.id, triangles, perTriColors);
+  }
+  return false;
+}
+
 function reconcilePaintedGeometrySync(): void {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -1886,6 +1927,7 @@ async function reconcilePaintedGeometryAsync(): Promise<void> {
 
 async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   syncLockState();
+  if (resolveStaleRestoredRegions()) { lastStrokeList = strokeDescriptors(); return; }
   const strokesNow = strokeDescriptors();
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
@@ -8544,11 +8586,10 @@ async function main() {
   // space; this maps them back to pristine-base ids before storage so a later
   // refine remaps them correctly. Reads live state: identity (no work) while the
   // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
-  setTriangleToBaseMapper((t) => {
-    const cm = currentMeshData, base = paintBaseMesh;
-    if (!cm || !base || cm === base) return t;
-    return baseTriangleOf(cm, base, t);
-  });
+  setTriangleToBaseMapper(currentToBaseTriangle);
+  // Lets the region store remember which mesh an off-list region's triangles
+  // index into (undo / clear / edit), so a stale restore can be detected.
+  setRegionMeshProvider(() => currentMeshData);
 
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
@@ -9780,6 +9821,23 @@ async function main() {
   partDetectionCtl = partDetection;
 
   // === Expose window.partwright console API ===
+  /** Shared body of the region clean-up API (grow/shrink/despeckle/combine):
+   *  apply the edit to the live mesh's adjacency, then recolour synchronously so
+   *  an immediate render/listRegions sees it. */
+  function runRegionEdit(opts: RegionEditOptions) {
+    if (!currentMeshData) return { error: 'No geometry loaded' };
+    const result = applyRegionEdit(currentMeshData, opts, triangleDescriptorIds);
+    if ('error' in result) return result;
+    if (result.added > 0 || result.removed > 0) {
+      updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      syncLockState();
+    }
+    if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
+      return { ...result, note: 'The mesh is subdivided by smooth paint: this edit is exact now, but it is stored as whole base triangles, so a later rebuild or reload snaps its edge out to them. Make region edits before adding smooth regions.' };
+    }
+    return result;
+  }
+
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
      *  color-clearing modifier, or offer "preserve colors"). */
@@ -13823,7 +13881,7 @@ async function main() {
         regionName,
         color as [number, number, number],
         'paintbrush',
-        { kind: 'triangles', ids: [...triangles] },
+        { kind: 'triangles', ids: triangleDescriptorIds(triangles) },
         triangles,
       );
 
@@ -14758,6 +14816,47 @@ async function main() {
       scheduleColorRefresh();
       syncLockState();
       return { removed: true, id };
+    },
+
+    /** Grow a painted region by `steps` rings of neighbouring triangles —
+     *  closes hairline gaps along a fill boundary. `withinBox` / `zMin` /
+     *  `zMax` clamp the growth (by triangle centroid) so it can't leak.
+     *  Like every region edit, the region keeps its id/name/colour/layer,
+     *  becomes an id-baked `triangles` region, and is one `undoLastPaint()`
+     *  step. Smooth (mesh-refining) and per-triangle-colour regions are
+     *  rejected. Returns `{ id, name, op, triangles, before, added, removed }`. */
+    growRegion(opts: { region: number | string; steps?: number; withinBox?: { min?: [number, number, number]; max?: [number, number, number] }; zMin?: number; zMax?: number }) {
+      return runRegionEdit({ ...(opts ?? {}), op: 'grow' } as RegionEditOptions);
+    },
+
+    /** Shrink a painted region by `steps` rings — every step drops the
+     *  triangles on its border. Pulls a ragged fill back off its neighbour.
+     *  See `growRegion` for the shared edit semantics. */
+    shrinkRegion(opts: { region: number | string; steps?: number }) {
+      return runRegionEdit({ ...(opts ?? {}), op: 'shrink' } as RegionEditOptions);
+    },
+
+    /** Clean specks out of a painted region: drop connected islands smaller
+     *  than `minIslandTriangles` (default 10; the largest piece is always
+     *  kept) and fill enclosed unpainted holes of at most `maxHoleTriangles`
+     *  (default 10). Pass 0 to skip either half. Returns the edit result plus
+     *  `{ islandsRemoved, holesFilled }`. See `growRegion` for the shared
+     *  edit semantics. */
+    despeckleRegion(opts: { region: number | string; minIslandTriangles?: number; maxHoleTriangles?: number }) {
+      return runRegionEdit({ ...(opts ?? {}), op: 'despeckle' } as RegionEditOptions);
+    },
+
+    /** Boolean-combine regions: `op: 'union'` adds the `with` region(s)'
+     *  triangles to `region`, `'subtract'` removes them, `'intersect'` keeps
+     *  only triangles also in every `with` region. Only `region` changes; the
+     *  `with` regions are left as they are (removeRegion them if no longer
+     *  needed). See `growRegion` for the shared edit semantics. */
+    combineRegions(opts: { region: number | string; op: 'union' | 'subtract' | 'intersect'; with: number | string | (number | string)[] }) {
+      if (!opts || typeof opts !== 'object') return { error: 'combineRegions requires { region, op, with }' };
+      if (opts.op !== 'union' && opts.op !== 'subtract' && opts.op !== 'intersect') {
+        return { error: `combineRegions.op must be 'union' | 'subtract' | 'intersect' (got ${JSON.stringify(opts.op)})` };
+      }
+      return runRegionEdit(opts as RegionEditOptions);
     },
 
     /** Toggle whether a single region is rendered in the viewport. Hidden
@@ -16248,6 +16347,10 @@ async function main() {
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinBox?, zMin?, zMax?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
+        'growRegion':      { signature: 'growRegion({region, steps?, withinBox?, zMin?, zMax?}) -- Grow a region by N rings of neighbouring triangles (clamp so it cannot leak). Undoable.', docs: '/ai/colors.md' },
+        'shrinkRegion':    { signature: 'shrinkRegion({region, steps?}) -- Peel N rings of triangles off a region\'s border. Undoable.', docs: '/ai/colors.md' },
+        'despeckleRegion': { signature: 'despeckleRegion({region, minIslandTriangles?, maxHoleTriangles?}) -- Drop small islands + fill small enclosed holes (defaults 10/10). Undoable.', docs: '/ai/colors.md' },
+        'combineRegions':  { signature: "combineRegions({region, op: 'union'|'subtract'|'intersect', with}) -- Boolean-combine region triangle sets; only `region` changes. Undoable.", docs: '/ai/colors.md' },
         'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai/colors.md' },
         'hideRegion':      { signature: 'hideRegion(id) -- Shorthand for setRegionVisibility(id, false).', docs: '/ai/colors.md' },
         'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai/colors.md' },
