@@ -10,13 +10,10 @@
 // bury the model in labels.
 
 import * as THREE from 'three';
+import { getConfig } from '../config/appConfig';
 import { getCamera, getCanvas, getMeshGroup, getScene, requestRender } from '../renderer/viewport';
 import type { SegSeed } from './types';
 
-/** Dot radius as a fraction of the model's bounding-box diagonal. */
-const DOT_FRACTION = 0.008;
-/** Tag height as a fraction of the viewport height. */
-const TAG_SCREEN_FRACTION = 0.026;
 
 export interface SeedMarkers {
   update(seeds: SegSeed[], colorFor: (label: string) => string, highlight?: number | null): void;
@@ -48,7 +45,8 @@ export function createSeedMarkers(): SeedMarkers {
   }
 
   function clear(): void {
-    for (const d of dots) { d.geometry.dispose(); (d.material as THREE.Material).dispose(); }
+    // Each dot carries a rim child mesh: dispose the whole subtree.
+    for (const d of dots) d.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
     for (const t of tags) if (t) { t.material.map?.dispose(); t.material.dispose(); }
     dots.length = 0;
     tags.length = 0;
@@ -81,10 +79,11 @@ export function createSeedMarkers(): SeedMarkers {
     update(seeds, colorFor, highlight = null) {
       clear();
       const diag = diagonal();
-      const r = diag * DOT_FRACTION;
+      const { seedDotFraction, seedTagScreenFraction } = getConfig().segmentation;
+      const r = diag * seedDotFraction;
       // sizeAttenuation:false sprites are sized in view space at distance 1.
       const cam = getCamera();
-      const tagH = TAG_SCREEN_FRACTION * 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      const tagH = seedTagScreenFraction * 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
       const tagged = new Set<string>();
       seeds.forEach((s, i) => {
         const color = colorFor(s.label);

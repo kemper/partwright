@@ -39,8 +39,8 @@ const INPUT = 'bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[12
 const SECTION = 'text-[11px] uppercase tracking-wide text-zinc-400 font-semibold mt-1';
 const HINT = 'text-[11px] text-zinc-500 leading-snug';
 /** Row icon buttons: a full-size touch target around a small glyph. */
-const ICON_BTN = 'shrink-0 w-8 h-8 md:w-6 md:h-6 flex items-center justify-center rounded text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60';
-const ICON_BTN_ON = 'shrink-0 w-8 h-8 md:w-6 md:h-6 flex items-center justify-center rounded text-blue-300 bg-blue-500/20 [@media(hover:hover)]:hover:bg-blue-500/30';
+const ICON_BTN = 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center rounded text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60';
+const ICON_BTN_ON = 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center rounded text-blue-300 bg-blue-500/20 [@media(hover:hover)]:hover:bg-blue-500/30';
 const TOGGLE_ON = 'px-2 py-1 rounded text-[11px] text-blue-200 bg-blue-500/30 border border-blue-500/50';
 /** A press that moves less than this (px) counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 6;
@@ -117,6 +117,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   const strip = el('div', 'shrink-0 flex gap-1.5 overflow-x-auto pb-1 hidden');
   strip.setAttribute('role', 'listbox');
   strip.setAttribute('aria-label', 'Preset results');
+  strip.setAttribute('aria-orientation', 'horizontal');
   body.append(presetRow, strip);
 
   const paramBox = el('div', 'flex flex-col gap-1.5');
@@ -386,6 +387,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     if (!strip.contains(e.relatedTarget as Node | null)) void ctl.showPresetPreview(null);
   });
   strip.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      (document.activeElement as HTMLElement | null)?.blur();
+      void ctl.showPresetPreview(null);
+      return;
+    }
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const tiles = [...strip.querySelectorAll<HTMLButtonElement>('button[data-index]')];
     if (!tiles.length) return;
@@ -399,6 +406,34 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   // --- Draft: parts list + clean-up -------------------------------------------
   const draftBox = el('div', 'flex flex-col gap-1.5');
   body.appendChild(draftBox);
+
+  // Edge smoothness: sub-triangle part boundaries (shown on the overlay, cut
+  // into the mesh on Accept). Built once, outside draftBox, so a draft
+  // update (including the one its own edit causes) never replaces it
+  // mid-drag.
+  const edgeRange = el('input', 'w-28 accent-blue-500');
+  edgeRange.type = 'range';
+  edgeRange.min = '0';
+  edgeRange.max = String(MAX_EDGE_SMOOTHING);
+  edgeRange.step = '1';
+  edgeRange.setAttribute('aria-label', 'Edge smoothness');
+  const edgeVal = el('span', 'text-[11px] text-zinc-400 w-6 text-right');
+  let edgeDragging = false;
+  edgeRange.addEventListener('pointerdown', () => { edgeDragging = true; });
+  edgeRange.addEventListener('pointerup', () => { edgeDragging = false; });
+  edgeRange.addEventListener('input', () => {
+    edgeVal.textContent = edgeRange.value;
+    if (edgeTimer) clearTimeout(edgeTimer);
+    edgeTimer = setTimeout(() => {
+      edgeTimer = null;
+      void edit([{ op: 'setEdgeSmoothing', iterations: Number(edgeRange.value) }]);
+    }, getConfig().segmentation.edgeSmoothingDebounceMs);
+  });
+  const edgeRow = paramRow('Edge smoothness',
+    'Draws part boundaries through triangles instead of along their edges, so stair-stepped boundaries curve smoothly (boundaries on a hard edge, such as a box corner, stay put). 0 = off (triangle edges). Accept cuts the mesh along these boundaries.',
+    edgeRange, edgeVal);
+  edgeRow.classList.add('hidden');
+  body.appendChild(edgeRow);
   const pickPartBtn = el('button', BUTTON_SMALL_SECONDARY, 'Pick part');
   pickPartBtn.title = 'Click a part on the model to jump to its name. Type a name to label it; give two parts the same name to merge them.';
   pickPartBtn.addEventListener('click', () => setMode(mode === 'pick' ? null : 'pick'));
@@ -416,8 +451,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     const key = JSON.stringify([d.detector, d.params, d.featureOptions]);
     if (key === lastSyncedRun) return;
     lastSyncedRun = key;
-    if (algoSelect.value !== d.detector && info.detectors.some((x) => x.id === d.detector)) algoSelect.value = d.detector;
-    buildParams(d.params as Record<string, unknown>);
+    const params = d.params as Record<string, unknown>;
+    const matches = algoSelect.value === d.detector
+      && [...paramInputs].every(([k, io]) => String(io.get()) === String(params[k]));
+    // Rebuilding would replace a slider the user may be dragging (Live).
+    if (!matches) {
+      if (algoSelect.value !== d.detector && info.detectors.some((x) => x.id === d.detector)) algoSelect.value = d.detector;
+      buildParams(params);
+    }
     const fo = d.featureOptions as { normalSmoothRadius?: number; normalSmoothEdgeLengths?: number };
     smoothInput.value = typeof fo.normalSmoothRadius === 'number' && fo.normalSmoothRadius > 0 ? String(fo.normalSmoothRadius) : '';
     carriedEdgeLengths = !smoothInput.value && typeof fo.normalSmoothEdgeLengths === 'number' && fo.normalSmoothEdgeLengths > 0 ? fo.normalSmoothEdgeLengths : null;
@@ -429,6 +470,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     nameInputs.clear();
     acceptBtn.disabled = !isDraft(d);
     discardBtn.disabled = !isDraft(d);
+    edgeRow.classList.toggle('hidden', !isDraft(d));
+    if (isDraft(d) && !edgeDragging && !edgeTimer) {
+      edgeRange.value = String(d.edgeSmoothing);
+      edgeVal.textContent = String(d.edgeSmoothing);
+    }
     if (!isDraft(d)) {
       const saved = ctl.importsWithParts();
       if (saved.length) {
@@ -533,28 +579,6 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     undoBtn.addEventListener('click', () => { void edit([{ op: 'undo' }]); });
     tools.append(mergeBtn, absorbBtn, tidyBtn, seedsBtn, undoBtn);
     draftBox.appendChild(tools);
-
-    // Edge smoothness: sub-triangle part boundaries (shown on the overlay,
-    // cut into the mesh on Accept).
-    const edgeRange = el('input', 'w-28 accent-blue-500');
-    edgeRange.type = 'range';
-    edgeRange.min = '0';
-    edgeRange.max = String(MAX_EDGE_SMOOTHING);
-    edgeRange.step = '1';
-    edgeRange.value = String(d.edgeSmoothing);
-    edgeRange.setAttribute('aria-label', 'Edge smoothness');
-    const edgeVal = el('span', 'text-[11px] text-zinc-400 w-6 text-right', String(d.edgeSmoothing));
-    edgeRange.addEventListener('input', () => {
-      edgeVal.textContent = edgeRange.value;
-      if (edgeTimer) clearTimeout(edgeTimer);
-      edgeTimer = setTimeout(() => {
-        edgeTimer = null;
-        void edit([{ op: 'setEdgeSmoothing', iterations: Number(edgeRange.value) }]);
-      }, getConfig().segmentation.edgeSmoothingDebounceMs);
-    });
-    draftBox.appendChild(paramRow('Edge smoothness',
-      'Draws part boundaries through triangles instead of along their edges, so they curve smoothly. 0 = off (triangle edges). Accept cuts the mesh along these boundaries.',
-      edgeRange, edgeVal));
 
     const overlayRow = el('label', 'flex items-center gap-1.5 text-[12px] text-zinc-300');
     const overlay = el('input');

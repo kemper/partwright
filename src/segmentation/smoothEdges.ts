@@ -13,6 +13,14 @@
 // mesh stays watertight/manifold. A triangle whose three corners all differ
 // gets a centre point and splits into three quads.
 //
+// Boundaries that already run along a sharp fold are PINNED: a vertex whose
+// boundary edges all fold at least `pinCreaseDeg` (groove or ridge — the
+// angle between the two faces' normals; default 60°, so CAD/box edges pin
+// while a sculpted groove's 30–60° stair-steps still smooth) keeps out of
+// the vote (it belongs to both sides) and edges touching it are never split,
+// so a seeded boundary that sits exactly on a seam stays there. Only the
+// stair-stepped stretches (boundaries crossing flat or faint surface) move.
+//
 // The same cut drives both the on-screen overlay (sub-triangles mapped onto
 // the displayed mesh) and acceptParts' re-mesh of the import (buildCutMesh),
 // so what you see is what gets saved. Pure + Worker-safe.
@@ -24,6 +32,10 @@ const K = 3;
 /** Crossing points are kept this far from an edge's ends so a split never
  *  produces zero-area sliver triangles. Structural guard, not a knob. */
 const T_MIN = 0.08;
+
+/** Default for EdgeCutOptions.pinCreaseDeg (appConfig.segmentation.edgePinCreaseDeg
+ *  overrides it from the main thread). */
+export const DEFAULT_PIN_CREASE_DEG = 60;
 
 export interface EdgeCut {
   /** Smoothed part per triangle; −2 where the triangle is split. */
@@ -97,10 +109,52 @@ function weightOf(m: Membership, v: number, L: number): number {
   return 0;
 }
 
-export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: number): EdgeCut {
+export interface EdgeCutOptions {
+  /** Triangle adjacency (edge-sharing triangle pairs) — MeshFeatures. */
+  adjacency?: { edgeA: Int32Array; edgeB: Int32Array };
+  /** Boundary edges folding at least this much (°, convex or concave) pin
+   *  their vertices (see header). */
+  pinCreaseDeg?: number;
+}
+
+function faceNormal(p: Float32Array, tv: Uint32Array, t: number, out: number[]): void {
+  const a = tv[t * 3] * 3, b = tv[t * 3 + 1] * 3, c = tv[t * 3 + 2] * 3;
+  const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2];
+  const wx = p[c] - p[a], wy = p[c + 1] - p[a + 1], wz = p[c + 2] - p[a + 2];
+  const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+  const l = Math.hypot(nx, ny, nz) || 1;
+  out[0] = nx / l; out[1] = ny / l; out[2] = nz / l;
+}
+
+/** Vertices whose part-boundary edges are all strong creases. */
+function pinnedVertices(p: Float32Array, tv: Uint32Array, triPart: Int32Array, nVert: number, opts: EdgeCutOptions): Uint8Array {
+  const pinned = new Uint8Array(nVert);
+  const c = opts.adjacency;
+  const thr = opts.pinCreaseDeg;
+  if (!c || thr === undefined || !(thr > 0)) return pinned;
+  const cosThr = Math.cos((thr * Math.PI) / 180);
+  const na = [0, 0, 0], nb = [0, 0, 0];
+  const strong = new Uint8Array(nVert), weak = new Uint8Array(nVert);
+  for (let e = 0; e < c.edgeA.length; e++) {
+    const ta = c.edgeA[e], tb = c.edgeB[e];
+    if (triPart[ta] === triPart[tb]) continue;
+    faceNormal(p, tv, ta, na); faceNormal(p, tv, tb, nb);
+    const isStrong = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] <= cosThr;
+    for (let k = 0; k < 3; k++) {
+      const v = tv[ta * 3 + k];
+      if (v !== tv[tb * 3] && v !== tv[tb * 3 + 1] && v !== tv[tb * 3 + 2]) continue;
+      if (isStrong) strong[v] = 1; else weak[v] = 1;
+    }
+  }
+  for (let v = 0; v < nVert; v++) if (strong[v] && !weak[v]) pinned[v] = 1;
+  return pinned;
+}
+
+export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: number, opts: EdgeCutOptions = {}): EdgeCut {
   const tv = mesh.triVerts, p = mesh.positions;
   const nTri = triPart.length, nVert = p.length / 3;
   const vt = vertexTriangles(tv, nVert);
+  const pinned = pinnedVertices(p, tv, triPart, nVert, opts);
 
   // --- Initial membership: area share of each incident part. Unassigned
   // (−1) is a label like any other so it gets clean edges too.
@@ -143,6 +197,7 @@ export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: n
     const next: Membership = { lab: m.lab.slice(), w: m.w.slice() };
     for (let it = 0; it < iterations; it++) {
       for (const v of bandVerts) {
+        if (pinned[v]) continue; // keeps its two-sided membership
         labs.length = 0; ws.length = 0;
         for (let k = 0; k < K; k++) if (m.lab[v * K + k] !== -2) addTo(labs, ws, m.lab[v * K + k], 0.5 * m.w[v * K + k]);
         const deg = vn.start[v + 1] - vn.start[v];
@@ -152,7 +207,10 @@ export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: n
         }
         storeTopK(next, v, labs, ws);
       }
-      for (const v of bandVerts) for (let k = 0; k < K; k++) { m.lab[v * K + k] = next.lab[v * K + k]; m.w[v * K + k] = next.w[v * K + k]; }
+      for (const v of bandVerts) {
+        if (pinned[v]) continue;
+        for (let k = 0; k < K; k++) { m.lab[v * K + k] = next.lab[v * K + k]; m.w[v * K + k] = next.w[v * K + k]; }
+      }
     }
   }
 
@@ -170,6 +228,9 @@ export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: n
     if (id === undefined) { id = pointKind.length; pointKind.push(0); pointA.push(v); pointB.push(-1); pointT.push(0); vertexPoint.set(v, id); }
     return id;
   };
+  /** Crossing point on edge a–b. Only called when neither end is pinned
+   *  and their dominant parts differ — a per-edge rule, so both triangles
+   *  sharing the edge agree on it. */
   const ep = (a: number, b: number): number => {
     const lo = a < b ? a : b, hi = a < b ? b : a;
     const key = lo * nVert + hi;
@@ -191,13 +252,16 @@ export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: n
   };
 
   for (let t = 0; t < nTri; t++) {
-    const v0 = tv[t * 3], v1 = tv[t * 3 + 1], v2 = tv[t * 3 + 2];
-    const l0 = dom[v0], l1 = dom[v1], l2 = dom[v2];
-    if (l0 === l1 && l1 === l2) { triLabel[t] = l0; continue; }
+    const vs = [tv[t * 3], tv[t * 3 + 1], tv[t * 3 + 2]];
+    const ls = vs.map((v) => dom[v]);
+    const pin = vs.map((v) => pinned[v] === 1);
+    // Parts voted by the unpinned corners (pinned corners side with anyone).
+    const voted: number[] = [];
+    for (let i = 0; i < 3; i++) if (!pin[i] && !voted.includes(ls[i])) voted.push(ls[i]);
+    if (voted.length <= 1) { triLabel[t] = voted.length ? voted[0] : triPart[t]; continue; }
     triLabel[t] = -2;
     splitTris.push(t);
-    const vs = [v0, v1, v2], ls = [l0, l1, l2];
-    if (l0 !== l1 && l1 !== l2 && l0 !== l2) {
+    if (voted.length === 3) {
       // Three parts meet: centre point, one quad per corner.
       const c = pointKind.length; pointKind.push(2); pointA.push(t); pointB.push(-1); pointT.push(0);
       for (let i = 0; i < 3; i++) {
@@ -205,16 +269,18 @@ export function computeEdgeCut(mesh: SegMesh, triPart: Int32Array, iterations: n
         emitFan([vp(vs[i]), ep(vs[i], vs[next]), c, ep(vs[prev], vs[i])], ls[i]);
       }
     } else {
-      // Two parts: walk the boundary, giving each part its corners plus the
-      // two crossing points, in winding order.
-      const polys = new Map<number, number[]>();
+      // Two parts: walk the corners in winding order; each part gets its
+      // corners, a pinned corner goes to both, and a crossing point sits on
+      // every edge whose unpinned ends disagree.
+      const polys = new Map<number, number[]>(voted.map((L) => [L, []] as const));
       for (let i = 0; i < 3; i++) {
         const next = (i + 1) % 3;
-        (polys.get(ls[i]) ?? polys.set(ls[i], []).get(ls[i])!).push(vp(vs[i]));
-        if (ls[i] !== ls[next]) {
+        if (pin[i]) for (const poly of polys.values()) poly.push(vp(vs[i]));
+        else polys.get(ls[i])!.push(vp(vs[i]));
+        if (!pin[i] && !pin[next] && ls[i] !== ls[next]) {
           const x = ep(vs[i], vs[next]);
           polys.get(ls[i])!.push(x);
-          (polys.get(ls[next]) ?? polys.set(ls[next], []).get(ls[next])!).push(x);
+          polys.get(ls[next])!.push(x);
         }
       }
       for (const [L, poly] of polys) emitFan(rotateToCorner(poly, pointKind), L);

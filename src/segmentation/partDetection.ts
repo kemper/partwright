@@ -14,6 +14,7 @@
 // centroid.
 
 import { getConfig } from '../config/appConfig';
+import { errorLog } from '../diagnostics/errorLog';
 import type { MeshData } from '../geometry/types';
 import { rewriteImportsWithParts } from '../import/codegen';
 import { normalizeImportParts } from '../import/importParts';
@@ -23,7 +24,7 @@ import {
   ValidationError, assertArray, assertBoolean, assertEnum, assertNumber, assertNumberTuple,
   assertObject, assertNoUnknownKeys, assertString,
 } from '../validation/apiValidation';
-import { DEFAULT_EDGE_SMOOTHING, MAX_EDGE_SMOOTHING, hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
+import { MAX_EDGE_SMOOTHING, hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
 import { medianEdgeLength, toSegMesh } from './features';
 import { AbortedError } from './growth';
 import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts, renderPartsThumbnail } from './partsRender';
@@ -173,6 +174,14 @@ export function createPartDetection(host: PartDetectionHost) {
     emit('presets');
   }
 
+  /** With no draft here, make sure the Worker holds none either: a draft
+   *  dropped on this side (version switch, mesh change) still sits in the
+   *  Worker, and detection would otherwise merge into it under its old
+   *  locks and focus. */
+  async function dropOrphanedWorkerDraft(): Promise<void> {
+    if (!draft) await discardPartsDraft();
+  }
+
   function sameSeeds(a: SegSeed[], b: SegSeed[]): boolean {
     return a.length === b.length && a.every((x, i) => x.label === b[i].label && x.point.every((v, k) => v === b[i].point[k]));
   }
@@ -220,8 +229,11 @@ export function createPartDetection(host: PartDetectionHost) {
         if (want !== gen || !cut) return;
         cutState = { gen: want, cut, splitIndex: splitIndexOf(cut, draft!.triPart.length) };
         refreshOverlay();
-      } catch {
-        // Draft gone (cancel / discard) — the per-triangle overlay stays.
+      } catch (e) {
+        // A draft dropped meanwhile (cancel / discard) is expected — the
+        // per-triangle overlay stays. Anything else is a real failure.
+        const message = e instanceof Error ? e.message : String(e);
+        if (!/No part draft/.test(message)) errorLog.capture({ level: 'warn', source: 'parts', message: `Smooth part edges failed: ${message}` });
       }
     };
     if (delayMs > 0) cutTimer = setTimeout(run, delayMs);
@@ -536,7 +548,12 @@ export function createPartDetection(host: PartDetectionHost) {
       case 'setEdgeSmoothing':
         keys('iterations');
         return { op, iterations: assertNumber(x.iterations, `${where}.iterations`, { integer: true, min: 0, max: MAX_EDGE_SMOOTHING })! };
-      case 'seedsFromParts':
+      case 'seedsFromParts': {
+        keys('minRegionFrac');
+        const minRegionFrac = assertNumber(x.minRegionFrac, `${where}.minRegionFrac`, { optional: true, min: 0, max: 1 })
+          ?? getConfig().segmentation.seedsFromPartsMinRegionFrac;
+        return { op, minRegionFrac };
+      }
       case 'rerun':
       case 'undo':
         keys();
@@ -630,6 +647,7 @@ export function createPartDetection(host: PartDetectionHost) {
         // The Worker holds one draft: detecting on a different import
         // starts that import's draft fresh.
         if (draft && draft.meshKey !== meshKey) clearDraftState();
+        await dropOrphanedWorkerDraft();
         const r = await withBusy('Detecting parts…', true, (ctl) => detectPartsAsync(meshKey, () => segMeshOf(m), {
           algorithm: o.algorithm, params: o.params, featureOptions: o.featureOptions, seeds: o.seeds,
         }, ctl));
@@ -661,7 +679,7 @@ export function createPartDetection(host: PartDetectionHost) {
         const r = await withBusy('Opening parts…', false, () => adoptPartsAsync(meshKey, () => segMeshOf(m), {
           triPart: m.parts!.triPart, names: m.parts!.names, colors: m.parts!.colors,
           detectorId: src?.detectorId, params: src?.params, featureOptions: src?.featureOptions as FeatureOptions | undefined,
-          seeds: src?.seeds, edgeSmoothing: applied ? 0 : DEFAULT_EDGE_SMOOTHING,
+          seeds: src?.seeds, edgeSmoothing: applied ? 0 : getConfig().segmentation.defaultEdgeSmoothing,
         }));
         setDraft({ importIndex, meshKey, summary: r.summary!, triPart: r.triPart! });
         return compact(r.summary!);
@@ -735,6 +753,7 @@ export function createPartDetection(host: PartDetectionHost) {
           clearDraftState();
           draftDiscarded = true;
         }
+        await dropOrphanedWorkerDraft();
         const displayed = host.getDisplayedMesh();
         const results: Record<string, unknown>[] = [];
         const tiles: HTMLCanvasElement[] = [];
@@ -787,6 +806,7 @@ export function createPartDetection(host: PartDetectionHost) {
         const m = importAt(importIndex);
         const meshKey = importMeshKey(m);
         if (draft && draft.meshKey !== meshKey) clearDraftState();
+        await dropOrphanedWorkerDraft();
         const size = getConfig().segmentation.presetThumbSize;
         presets = { importIndex, meshKey, algorithm, items: [] };
         previewIndex = null;
@@ -808,8 +828,11 @@ export function createPartDetection(host: PartDetectionHost) {
             };
             const shown = displayedPartsAndColors({ importIndex, meshKey, summary, triPart: item.triPart });
             if (shown) item.image = renderPartsThumbnail(shown.mesh, shown.triColors, view, size);
+            // Keep the hovered preview on the same preset while the strip re-sorts.
+            const hovered = previewIndex !== null ? mine.items[previewIndex] : null;
             mine.items.push(item);
             mine.items.sort((x, y) => y.score - x.score);
+            if (hovered) previewIndex = mine.items.indexOf(hovered);
             emit('presets');
           }
         } finally {
@@ -819,7 +842,8 @@ export function createPartDetection(host: PartDetectionHost) {
         const items = mine.items;
         let image: string | undefined;
         if (wantSheet && items.some((x) => x.image)) {
-          const tiles = await Promise.all(items.filter((x) => x.image).map((x, i) => loadCanvas(x.image!, `${i + 1}. ${x.name}`)));
+          // Captions number presets by their index in `presets` (0-based, as applyPartPreset takes).
+          const tiles = await Promise.all(items.flatMap((x, i) => (x.image ? [loadCanvas(x.image, `${i}. ${x.name}`)] : [])));
           image = contactSheet(tiles);
         }
         return {
@@ -915,12 +939,23 @@ export function createPartDetection(host: PartDetectionHost) {
         if (smooth) {
           // Smooth edges: re-mesh the import along the cut, so the part
           // boundaries the overlay showed are real triangle edges.
+          const genAtStart = gen;
           const cut = await withBusy('Cutting smooth edges…', false, () => edgeCutAsync(d.meshKey));
-          if (cut && cut.splitTris.length > 0) {
+          // The names/colours above index the draft as it was; an edit that
+          // landed meanwhile (the AI and the user both active) re-indexes it.
+          if (gen !== genAtStart) throw new ValidationError('The parts changed while accepting — accept again.');
+          if (cut) {
             const built = buildCutMesh({ vertProperties: m.vertProperties, triVerts: m.triVerts, numProp: m.numProp }, cut, parts.names, parts.colors);
-            parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
-            nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
-            remeshed = { fromTris: m.numTri, toTris: built.numTri };
+            if (cut.splitTris.length > 0) {
+              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
+              nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
+              remeshed = { fromTris: m.numTri, toTris: built.numTri };
+            } else {
+              // Nothing split, but smoothing can still relabel whole sliver
+              // triangles — save what the overlay showed, on the same mesh.
+              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source };
+              nextImport = { ...m, parts };
+            }
           }
         }
         if (!normalizeImportParts(parts, nextImport.triVerts.length / 3)) {

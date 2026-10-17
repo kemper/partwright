@@ -1046,6 +1046,7 @@ const ALL_TOOLS: ToolDefinition[] = [
               minAreaFrac: { type: 'number' },
               iterations: { type: 'integer' },
               locked: { type: 'boolean', description: 'lock: false unlocks.' },
+              minRegionFrac: { type: 'number', description: 'seedsFromParts: regions smaller than this fraction of their part get no seed (default 0.01).' },
             },
             required: ['op'],
           },

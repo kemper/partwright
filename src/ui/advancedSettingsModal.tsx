@@ -1007,6 +1007,56 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={64} max={320} integer
           onChange={v => set('segmentation', 'presetThumbSize', v)}
         />
+        <Field
+          label="Default edge smoothness"
+          unit="passes"
+          hint="Edge-smoothing passes a new part draft starts with."
+          tooltip="Smooth part edges draw boundaries through triangles so stair-stepped boundaries curve, and Accept cuts the mesh along them. This is the starting value of the panel's Edge smoothness slider (and of drafts the AI creates). 0 = keep boundaries on triangle edges and never re-mesh on accept."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.defaultEdgeSmoothing}
+          value={c.segmentation.defaultEdgeSmoothing}
+          min={0} max={20} integer
+          onChange={v => set('segmentation', 'defaultEdgeSmoothing', v)}
+        />
+        <Field
+          label="Keep boundaries on sharp folds"
+          unit="°"
+          hint="Smoothing leaves boundaries on folds this sharp alone."
+          tooltip="Where a part boundary runs along an edge whose faces meet at least this many degrees apart (a hard edge such as a box corner), it already sits on the seam, so smooth edges leave it there. Sculpted grooves on scans usually fold 30–60° per edge, so they still smooth at the default 60°. Lower it to keep more boundaries in place; 0 smooths every boundary."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgePinCreaseDeg}
+          value={c.segmentation.edgePinCreaseDeg}
+          min={0} max={90} step={1}
+          onChange={v => set('segmentation', 'edgePinCreaseDeg', v)}
+        />
+        <Field
+          label="Convert-to-seeds speck size"
+          unit="of part"
+          hint="Smaller regions of a part get no seed of their own."
+          tooltip="Convert to seeds drops one seed in each separate region of every part. Regions smaller than this fraction of their part are skipped, so stray specks follow the part's main seed. 0.01 = 1%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedsFromPartsMinRegionFrac}
+          value={c.segmentation.seedsFromPartsMinRegionFrac}
+          min={0} max={0.5} step={0.005}
+          onChange={v => set('segmentation', 'seedsFromPartsMinRegionFrac', v)}
+        />
+        <Field
+          label="Seed dot size"
+          unit="of model"
+          hint="Seed-marker dot radius, as a fraction of the model's size."
+          tooltip="Seed dots are sized from the model's bounding-box diagonal so they read the same on a small figurine and a large scan. 0.008 = 0.8% of the diagonal."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedDotFraction}
+          value={c.segmentation.seedDotFraction}
+          min={0.001} max={0.05} step={0.001}
+          onChange={v => set('segmentation', 'seedDotFraction', v)}
+        />
+        <Field
+          label="Seed label size"
+          unit="of view"
+          hint="Seed name-tag height, as a fraction of the viewport height."
+          tooltip="Seed name tags stay the same size on screen however far you zoom. 0.026 ≈ 2.6% of the viewport height."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedTagScreenFraction}
+          value={c.segmentation.seedTagScreenFraction}
+          min={0.01} max={0.08} step={0.002}
+          onChange={v => set('segmentation', 'seedTagScreenFraction', v)}
+        />
       </Section>
 
       <Section title="UI">

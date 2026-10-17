@@ -102,22 +102,24 @@ const hasWorker = () => typeof Worker !== 'undefined';
 
 /** Read on the main thread and threaded into the Worker (getConfig() there
  *  only sees static defaults). */
-const undoDepth = () => getConfig().segmentation.undoDepth;
+const pinCreaseDeg = () => getConfig().segmentation.edgePinCreaseDeg;
+const runnerOpts = () => ({ undoDepth: getConfig().segmentation.undoDepth, defaultEdgeSmoothing: getConfig().segmentation.defaultEdgeSmoothing });
 
 async function ensureLoaded(meshKey: string, mesh: () => SegMesh): Promise<void> {
   if (!hasWorker()) {
-    if (local?.key !== meshKey) local = { key: meshKey, runner: new SegmentationRunner(mesh(), { undoDepth: undoDepth() }) };
+    if (local?.key !== meshKey) local = { key: meshKey, runner: new SegmentationRunner(mesh(), runnerOpts()) };
     return;
   }
   if (loadedKey === meshKey && worker) return;
   const m = mesh();
   // Clone so the caller's arrays stay usable (structured clone, not transfer).
-  await call({ type: 'load', meshKey, mesh: { positions: m.positions.slice(), triVerts: m.triVerts.slice() }, undoDepth: undoDepth() });
+  await call({ type: 'load', meshKey, mesh: { positions: m.positions.slice(), triVerts: m.triVerts.slice() }, ...runnerOpts() });
   loadedKey = meshKey;
 }
 
 /** Run a detector on `mesh` (identified by `meshKey`, which must change when
- *  the geometry does). Replaces the current draft. */
+ *  the geometry does). The first run creates the draft; later runs go into
+ *  it as an undoable step (honouring its locks and focus). */
 export function detectPartsAsync(
   meshKey: string,
   mesh: () => SegMesh,
@@ -190,10 +192,10 @@ export function edgeCutAsync(meshKey: string, iterations?: number): Promise<Edge
   return serialized(async () => {
     if (!hasWorker()) {
       if (local?.key !== meshKey) throw new Error('No part draft — call detectParts first.');
-      return local.runner.cut(iterations);
+      return local.runner.cut(iterations, pinCreaseDeg());
     }
     if (loadedKey !== meshKey || !worker) throw new Error('No part draft — call detectParts first.');
-    const m = await callRaw(iterations === undefined ? { type: 'cut' } : { type: 'cut', iterations });
+    const m = await callRaw(iterations === undefined ? { type: 'cut', pinCreaseDeg: pinCreaseDeg() } : { type: 'cut', iterations, pinCreaseDeg: pinCreaseDeg() });
     if (m.type !== 'cut') throw new Error('part detection worker: unexpected reply');
     return m.cut;
   });

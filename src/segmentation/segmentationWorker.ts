@@ -13,12 +13,12 @@ import type { SavedPartsPayload, SegMesh } from './types';
 
 
 export type SegWorkerRequest =
-  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number }
+  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number; defaultEdgeSmoothing: number }
   | { type: 'detect'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'preview'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'edit'; callId: number; ops: PartEditOp[] }
   | { type: 'adopt'; callId: number; saved: SavedPartsPayload }
-  | { type: 'cut'; callId: number; iterations?: number }
+  | { type: 'cut'; callId: number; iterations?: number; pinCreaseDeg: number }
   | { type: 'discard'; callId: number };
 
 export type SegWorkerResponse =
@@ -43,7 +43,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'load':
-        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth });
+        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth, defaultEdgeSmoothing: msg.defaultEdgeSmoothing });
         reply({ type: 'result', callId: msg.callId, summary: null, triPart: null });
         return;
       case 'detect': {
@@ -78,7 +78,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
         if (!runner) throw new Error('No mesh loaded');
         // Structured-cloned, not transferred: the runner keeps the cut cached
         // for the accept that usually follows.
-        reply({ type: 'cut', callId: msg.callId, cut: runner.cut(msg.iterations) });
+        reply({ type: 'cut', callId: msg.callId, cut: runner.cut(msg.iterations, msg.pinCreaseDeg) });
         return;
       }
       case 'discard':

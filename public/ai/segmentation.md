@@ -97,7 +97,10 @@ so the user can refine the draft by hand. `openPartsPanel()` opens it explicitly
 
 By default, part boundaries are drawn **through** triangles instead of along their edges
 (`edgeSmoothing`, default 3 passes, 0–20; `editParts({ops:[{op:'setEdgeSmoothing', iterations}]})`).
-More passes give rounder curves; 0 gives the raw per-triangle stair-steps. The overlay
+More passes give rounder curves; 0 gives the raw per-triangle stair-steps. A boundary that
+already runs along a hard fold (faces at least 60° apart, such as a box edge) stays where it is,
+since it is already on the seam. Sculpted grooves on scans fold less than that per edge, so their
+stair-steps still smooth. The overlay
 shows the smooth boundaries. `acceptParts()` then **re-meshes the import** along them:
 split triangles are cut and shared cut points are reused, so the mesh stays watertight. It
 gains a few percent more triangles, and the parts are stored for the new triangles.

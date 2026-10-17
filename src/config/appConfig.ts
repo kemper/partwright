@@ -380,6 +380,21 @@ export interface AppConfig {
     edgeSmoothingDebounceMs: number;
     /** Preset filmstrip tile size (px). */
     presetThumbSize: number;
+    /** Edge-smoothing passes a new part draft starts with (0 = triangle
+     *  edges; acceptParts then keeps the original mesh). */
+    defaultEdgeSmoothing: number;
+    /** Smooth edges leave a part boundary alone where it runs along a fold
+     *  at least this sharp (°, groove or ridge) — a hard edge such as a CAD
+     *  box edge already IS the seam. Sculpted grooves (often 30–60° per edge
+     *  on scans) still smooth at the default. */
+    edgePinCreaseDeg: number;
+    /** "Convert to seeds": regions smaller than this fraction of their part
+     *  get no seed of their own. */
+    seedsFromPartsMinRegionFrac: number;
+    /** Seed-marker dot radius as a fraction of the model's diagonal. */
+    seedDotFraction: number;
+    /** Seed-marker name-tag height as a fraction of the viewport height. */
+    seedTagScreenFraction: number;
   };
 }
 
@@ -508,6 +523,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     liveDebounceMs: 450,
     edgeSmoothingDebounceMs: 250,
     presetThumbSize: 112,
+    defaultEdgeSmoothing: 3,
+    edgePinCreaseDeg: 60,
+    seedsFromPartsMinRegionFrac: 0.01,
+    seedDotFraction: 0.008,
+    seedTagScreenFraction: 0.026,
   },
 };
 

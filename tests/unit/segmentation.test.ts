@@ -491,3 +491,50 @@ describe('re-detection and conversion', () => {
     expect(q.grooveFidelity).toBeGreaterThan(0.9);
   });
 });
+
+describe('smooth edges keep crease boundaries', () => {
+  // Folded grid: floor (z=0) and wall (x=1) meeting at a 90° fold (a ridge),
+  // split exactly along it — smoothing must not pull the boundary off it.
+  function folded(N: number): { mesh: SegMesh; part: Int32Array } {
+    const pos: number[] = [], tris: number[] = [], part: number[] = [];
+    const idx = new Map<string, number>();
+    const v = (x: number, y: number, z: number) => {
+      const k = `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+      let i = idx.get(k);
+      if (i === undefined) { i = pos.length / 3; pos.push(x, y, z); idx.set(k, i); }
+      return i;
+    };
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const a = v(i / N, j / N, 0), b = v((i + 1) / N, j / N, 0), c = v((i + 1) / N, (j + 1) / N, 0), d = v(i / N, (j + 1) / N, 0);
+      tris.push(a, b, c, a, c, d); part.push(0, 0);
+    }
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const a = v(1, j / N, i / N), b = v(1, (j + 1) / N, i / N), c = v(1, (j + 1) / N, (i + 1) / N), d = v(1, j / N, (i + 1) / N);
+      tris.push(a, b, c, a, c, d); part.push(1, 1);
+    }
+    return { mesh: { positions: Float32Array.from(pos), triVerts: Uint32Array.from(tris) }, part: Int32Array.from(part) };
+  }
+
+  it('leaves a boundary that sits on a strong crease untouched', async () => {
+    const { computeEdgeCut } = await import('../../src/segmentation/smoothEdges');
+    const { mesh, part } = folded(8);
+    const f = computeMeshFeatures(mesh);
+    for (const it of [0, 3, 8]) {
+      const cut = computeEdgeCut(mesh, part, it, { adjacency: f, pinCreaseDeg: 60 }); // the default
+      expect(cut.splitTris.length).toBe(0);
+      expect([...cut.triLabel]).toEqual([...part]);
+    }
+    // Without the crease information the same boundary would be cut.
+    expect(computeEdgeCut(mesh, part, 3).splitTris.length).toBeGreaterThan(0);
+  });
+
+  it('runner cut pins a seeded boundary that settled on a groove', () => {
+    const r = new SegmentationRunner(groove(21));
+    const s = r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'left', point: [0.1, 0.5, 0.12] }, { label: 'right', point: [0.9, 0.5, 0.12] },
+    ] });
+    expect(s.quality.boundaryCreaseMean).toBeGreaterThan(20);
+    expect(r.cut(3, 15)!.splitTris.length).toBe(0);
+    expect(r.cut(3, 0)!.splitTris.length).toBeGreaterThan(0); // pinning off
+  });
+});

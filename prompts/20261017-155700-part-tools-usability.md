@@ -71,3 +71,34 @@ labels when zoomed in.
 setEdgeSmoothing), `acceptParts({smoothEdges})`, help entries, AI tools
 (detectParts / reopenParts open the panel for hand-off), docs, and three
 appConfig knobs exposed in Advanced Settings.
+
+## Assistant
+
+## Review follow-up (work-reviewer pass on #1033)
+
+**Smooth edges must not pull a boundary off a fold it already sits on.**
+Per-vertex labelling assigns a vertex on a clean boundary to one side, so the
+first row of triangles on the other side was split, moving the boundary about
+0.05 of an edge length off a crease. Every default accept then baked that in.
+Boundary vertices whose boundary edges all fold at least a threshold are now
+pinned: they don't vote and edges touching them aren't split. Pinning uses the
+absolute dihedral, because the feature crease cost is concave-only and a box
+edge is a ridge. On the figurine, a 15° pin also froze the hair grooves'
+stair-steps (30–60° per edge), so the default is 60°, which pins CAD/box
+edges and still smooths sculpted grooves. It's an appConfig knob.
+
+**Other fixes.**
+- Detection and previews first discard a Worker draft the controller has
+  already dropped, so it no longer merges under stale locks and focus.
+- Undo restores the crease field (features) with the partition.
+- Seed-marker rim meshes are disposed.
+- A smooth accept bails if the draft changed while the cut was computing, and
+  saves the overlay's relabelling even when nothing was split.
+- Cut failures go to the diagnostic log.
+- Panel sliders are no longer rebuilt mid-drag.
+- Touch targets are 44 px.
+- New appConfig knobs: default smoothing, pin angle, speck size, marker sizes.
+- The cut cache is keyed by draft revision, not a 32-bit hash.
+
+Auto patches over-segments jittered meshes on the bench (mean IoU 0.63 clean,
+0.19 noisy); that's filed as #1034 rather than widening this PR.

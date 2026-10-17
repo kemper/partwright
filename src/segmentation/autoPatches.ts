@@ -11,7 +11,7 @@
 //
 // Step 1 is the expensive part (~0.5 s on a 460k-triangle scan) and depends
 // only on (features, patch size, allowed area), so it is cached in the
-// runner's per-mesh cache: dragging the Coarser ↔ Finer slider only re-runs
+// runner's per-mesh cache: dragging the Finer ↔ Coarser slider only re-runs
 // steps 2–3 (tens of ms). Prototype numbers on the test figurine (2.5 mm
 // cells, 4° merge): eyes, brows, nose, ears, both arms incl. their hidden
 // inner sides, ball, shirt, shorts, socks and shoes came out as separate
@@ -103,12 +103,12 @@ function oversegment(f: MeshFeatures, cell: number, allow: Uint8Array | undefine
 export const autoMergeDetector: PartDetector = {
   id: 'auto-merge',
   name: 'Auto patches',
-  description: 'No seeds needed: splits the surface into patches along its grooves. Name a patch to label it; give two patches the same name to merge them. Coarser ↔ Finer (merge threshold) is instant to adjust.',
+  description: 'No seeds needed: splits the surface into patches along its grooves. Name a patch to label it; give two patches the same name to merge them. Finer ↔ Coarser (merge threshold) is instant to adjust.',
   bestFor: 'A quick first pass on any fused sculpt or scan — then name, merge, or convert the patches to seeds for refinement.',
   seeds: 'none',
   params: [
     {
-      key: 'mergeBelowDeg', label: 'Coarser ↔ Finer', type: 'number', default: 4, min: 0.5, max: 40, step: 0.5,
+      key: 'mergeBelowDeg', label: 'Finer ↔ Coarser', type: 'number', default: 4, min: 0.5, max: 40, step: 0.5,
       hint: 'Patch borders whose average groove is shallower than this many degrees dissolve. Higher = fewer, bigger patches (coarser); lower = more, smaller patches (finer).',
     },
     {

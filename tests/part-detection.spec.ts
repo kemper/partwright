@@ -89,8 +89,9 @@ test.describe('Part detection', () => {
     await page.reload();
     await page.waitForSelector('text=Ready', { timeout: 30_000 });
     await page.waitForFunction(() => {
-      const r = (window as unknown as { partwright: PW }).partwright.listObjectParts() as { parts?: { name: string }[] };
-      return (r.parts ?? []).some((p) => p.name === 'cap');
+      // `Ready` can paint before window.partwright is assigned after a reload.
+      const r = (window as unknown as { partwright?: PW }).partwright?.listObjectParts() as { parts?: { name: string }[] } | undefined;
+      return (r?.parts ?? []).some((p) => p.name === 'cap');
     }, undefined, { timeout: 30_000 });
   });
 
@@ -136,7 +137,23 @@ test.describe('Part detection', () => {
     }) as { label: string }[];
     expect(seeds.map((s) => s.label)).toEqual(['top']);
 
-    // Smooth accept re-meshes the import and stays manifold.
+    // The block's patch boundaries sit on 90° box edges: smooth edges pin
+    // them, so accept keeps the original mesh.
+    const pinnedAcc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts({ label: 'pinned' })) as { smoothEdges?: unknown; error?: string };
+    expect(pinnedAcc.error).toBeUndefined();
+    expect(pinnedAcc.smoothEdges).toBeUndefined();
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+
+    // With pinning off, the same boundaries are smoothed: accept re-meshes
+    // the import and it stays manifold.
+    await page.evaluate(async () => {
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, segmentation: { ...c.segmentation, edgePinCreaseDeg: 0 } });
+    });
+    const reopened = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.reopenParts()) as { edgeSmoothing?: number; error?: string };
+    expect(reopened.error).toBeUndefined();
+    expect(reopened.edgeSmoothing).toBe(3); // not re-meshed, so smoothing starts on
     const acc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts()) as { smoothEdges?: { fromTris: number; toTris: number }; error?: string };
     expect(acc.error).toBeUndefined();
     expect(acc.smoothEdges!.toTris).toBeGreaterThan(acc.smoothEdges!.fromTris);

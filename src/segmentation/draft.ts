@@ -107,7 +107,7 @@ export type PartEditOp =
   | { op: 'addSeed'; seed: SegSeed; rerun?: boolean }
   | { op: 'removeSeed'; index: number; rerun?: boolean }
   | { op: 'moveSeed'; index: number; point: [number, number, number]; rerun?: boolean }
-  | { op: 'seedsFromParts' }
+  | { op: 'seedsFromParts'; minRegionFrac?: number }
   | { op: 'lock'; id: PartRef; locked?: boolean }
   | { op: 'focus'; id: PartRef | null }
   | { op: 'setEdgeSmoothing'; iterations: number }
@@ -126,6 +126,9 @@ interface Snapshot {
   params: ParamValues;
   featureOptions: FeatureOptions;
   edgeSmoothing: number;
+  /** Detection may switch the crease field (feature options): undo must
+   *  restore the one the restored partition was measured on. */
+  features: MeshFeatures;
 }
 
 /** A crease at least this sharp (°) counts as a real seam for the
@@ -501,7 +504,7 @@ export class PartDraftModel {
         if (op.rerun !== false) this.rerun();
         return;
       case 'seedsFromParts':
-        this.seeds = this.seedsFromParts();
+        this.seeds = this.seedsFromParts(op.minRegionFrac);
         // Seeds only mean something to a seeded detector: switch a seedless
         // draft (auto patches, pieces) to crease-watershed so add/move/remove
         // seed + rerun refine from here.
@@ -634,7 +637,9 @@ export class PartDraftModel {
    * deepest triangle (farthest from its border) — turns auto patches or any
    * edited partition into seeds the seeded detector can refine.
    */
-  seedsFromParts(): SegSeed[] {
+  /** One seed per region of each part (regions under `minRegionFrac` of
+   *  their part are skipped — they follow the part's main seed). */
+  seedsFromParts(minRegionFrac = 0.01): SegSeed[] {
     const n = this.triPart.length, adj = this.adjacency, part = this.triPart;
     const dist = new Int32Array(n).fill(-1);
     const queue = new Int32Array(n);
@@ -671,8 +676,8 @@ export class PartDraftModel {
       const t = regionBest[c];
       if (t < 0) continue;
       const L = part[t];
-      // Skip specks: regions under 1% of their part (they follow the main seed).
-      if (regionArea[c] < 0.01 * partArea[L]) continue;
+      // Skip specks (they follow the part's main seed).
+      if (regionArea[c] < minRegionFrac * partArea[L]) continue;
       const cen = this.features.triCentroid;
       seeds.push({ label: this.names[L], point: [cen[t * 3], cen[t * 3 + 1], cen[t * 3 + 2]], triangle: t });
     }
@@ -773,13 +778,14 @@ export class PartDraftModel {
       triPart: this.triPart.slice(), names: [...this.names], colors: [...this.colors], seeds: this.seeds.map(cloneSeed),
       diagnostics: this.diagnostics, locked: [...this.lockedNames], focusMask: this.focusMask ? this.focusMask.slice() : null,
       detectorId: this.detectorId, params: { ...this.params }, featureOptions: { ...this.featureOptions }, edgeSmoothing: this.edgeSmoothing,
+      features: this.features,
     };
   }
 
   private restore(s: Snapshot): void {
     this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
     this.lockedNames = new Set(s.locked); this.focusMask = s.focusMask;
-    this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing;
+    this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features;
   }
 }
 
