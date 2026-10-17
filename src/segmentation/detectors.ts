@@ -13,6 +13,8 @@ export const piecesDetector: PartDetector = {
   bestFor: 'Multi-body STLs (many multi-colour figure files ship one body per colour). Always worth trying first.',
   seeds: 'none',
   params: [],
+  // Cheapest exact answer, so it is always the first automatic proposal.
+  autoPropose: { priority: 0 },
   run(_mesh, f): DetectorResult {
     const partNames = Array.from({ length: f.pieceCount }, (_, i) => `piece ${i + 1}`);
     return { triPart: Int32Array.from(f.pieceOfTri), partNames, diagnostics: { pieceCount: f.pieceCount } };

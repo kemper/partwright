@@ -356,6 +356,12 @@ export interface AppConfig {
     aspectRatioWarn: number;
   };
   segmentation: {
+    /** Part detection: after an interactive STL import, try the automatic
+     *  detectors (`autoDetectParts`). When they split the mesh (e.g. a
+     *  multi-body figure, one body per colour) the Part Detection panel opens
+     *  on the proposal; otherwise the usual convert-to-code ask appears, with
+     *  a "Detect parts…" button. Off = always the convert ask. */
+    autoDetectOnImport: boolean;
     /** Part detection: islands below this fraction of the total surface area
      *  are folded into their neighbours by the panel's "Absorb specks" action
      *  (the absorbSmall edit op default). */
@@ -492,6 +498,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     aspectRatioWarn: 12,
   },
   segmentation: {
+    autoDetectOnImport: true,
     absorbMinAreaFrac: 0.002,
     smoothBoundaryIterations: 2,
     maxListedParts: 80,

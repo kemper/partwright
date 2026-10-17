@@ -27,7 +27,7 @@ import { hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from '
 import { medianEdgeLength, toSegMesh } from './features';
 import { AbortedError } from './growth';
 import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts } from './partsRender';
-import { describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
+import { autoProposeDetectors, describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
 import {
   detectPartsAsync, discardPartsDraft, editPartsAsync, previewPartsAsync, type SegCallControl,
 } from './segmentationClient';
@@ -365,6 +365,50 @@ export function createPartDetection(host: PartDetectionHost) {
         refreshOverlay();
         emit('draft');
         return compact(draft.summary);
+      } catch (e) {
+        if (e instanceof AbortedError) return { error: 'Part detection cancelled.' };
+        return err(e);
+      }
+    },
+
+    /** Unattended proposal (import-time auto-detect, the autoDetectParts
+     *  console/AI method): try every detector that opted into `autoPropose`,
+     *  cheapest first, and keep the first result with at least two parts as
+     *  the draft. A mesh none of them can split (one fused solid, until a
+     *  seedless detector for fused shells registers) leaves no draft — a
+     *  one-part draft is noise — and says to use a seeded detector. */
+    async autoDetectParts(opts?: unknown) {
+      try {
+        const o = opts === undefined ? {} : assertObject(opts, 'autoDetectParts(options)')!;
+        assertNoUnknownKeys(o, ['importIndex'], 'autoDetectParts(options)');
+        const importIndex = assertNumber(o.importIndex, 'autoDetectParts(options).importIndex', { optional: true, integer: true, min: 0 }) ?? 0;
+        const m = importAt(importIndex);
+        const meshKey = importMeshKey(m);
+        const tried: { detector: string; partCount: number }[] = [];
+        for (const d of autoProposeDetectors()) {
+          const r = await withBusy(`Detecting parts (${d.name})…`, true, (ctl) => detectPartsAsync(meshKey, () => segMeshOf(m), { algorithm: d.id }, ctl));
+          const partCount = r.summary!.parts.length;
+          tried.push({ detector: d.id, partCount });
+          if (partCount >= 2) {
+            draft = { importIndex, meshKey, summary: r.summary!, triPart: r.triPart! };
+            refreshOverlay();
+            emit('draft');
+            return { proposed: true, proposedBy: d.id, tried, ...compact(draft.summary) };
+          }
+        }
+        // The Worker now holds a one-part draft (and any earlier draft is
+        // gone with it) — drop both so the panel and API agree there is none.
+        if (tried.length > 0) {
+          await discardPartsDraft();
+          clearDraftState();
+        }
+        return {
+          proposed: false,
+          tried,
+          reason: tried.length === 0
+            ? 'No automatic detector is registered.'
+            : 'The mesh is one solid piece, so automatic detection found nothing to split. Place named seeds and use a seeded detector, e.g. detectParts({algorithm: "crease-watershed", seeds: [{label, point}]}).',
+        };
       } catch (e) {
         if (e instanceof AbortedError) return { error: 'Part detection cancelled.' };
         return err(e);

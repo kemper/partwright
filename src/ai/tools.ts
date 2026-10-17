@@ -984,6 +984,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'autoDetectParts',
+    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and keeps the first that splits the mesh into 2+ parts as the DRAFT (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} when the mesh is one solid piece: then place named seeds and call detectParts with a seeded detector.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+    },
+  },
+  {
     name: 'getPartDraft',
     description: 'Summary of the current part-detection draft (parts, quality, seeds), or {draft:null}.',
     input_schema: { type: 'object', properties: {} },
@@ -1719,7 +1729,7 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySu
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
  *  image-returning ones additionally need the Views vision toggle. */
-const PARTS_GATED = new Set(['detectParts', 'editParts', 'discardParts', 'setPartsOverlay']);
+const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
@@ -2375,6 +2385,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listPartDetectors();
     case 'detectParts':
       return api.detectParts(input);
+    case 'autoDetectParts':
+      return api.autoDetectParts(input);
     case 'getPartDraft':
       return api.getPartDraft();
     case 'editParts':

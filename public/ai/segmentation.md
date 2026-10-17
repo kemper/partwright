@@ -22,8 +22,12 @@ a real **label**. After that, `paintByLabel`, part colours, the object rail and
 // 0. What's available (params, defaults, which need seeds, bestFor)
 partwright.listPartDetectors()
 
-// 1. Multi-body file? Try the instant one first
-await partwright.detectParts({ algorithm: 'pieces' })
+// 1. Seedless first pass: tries every automatic detector (cheapest first) and
+//    keeps the first that splits the mesh into 2+ parts. A multi-body file
+//    (one body per colour) is done here; a fused shell returns proposed:false.
+await partwright.autoDetectParts()
+// -> { proposed: true, proposedBy: 'pieces', tried, parts, quality }
+//  | { proposed: false, tried, reason }   → go to step 2
 
 // 2. Fused shell: place named seeds. Get points by clicking in your own
 //    renders: renderViews → probePixel(view, [px, py]) → .point
@@ -61,6 +65,16 @@ await partwright.acceptParts({ label: 'Detected parts' })
 // The code becomes `return api.importWithParts(0);`, and each part is now a label.
 ```
 
+## When the user imports an STL themselves
+
+An interactive STL import already runs `autoDetectParts` (setting:
+**Advanced settings → Part detection → Detect parts on STL import**, on by
+default). If it splits the mesh, the Detect parts panel opens on that proposal
+and a draft already exists, so check `getPartDraft()` before detecting again.
+If the mesh is one solid, the convert-to-code prompt opens instead, with a
+**Detect parts…** button. Imports made through the console
+(`importMeshData`) never prompt: call `autoDetectParts` yourself.
+
 ## Choosing seeds
 
 - **Seed every colour region, including small ones.** Each eye, each brow and the logo need their own seed. An unseeded feature is absorbed by whichever neighbour reaches it first.
@@ -81,7 +95,7 @@ await partwright.acceptParts({ label: 'Detected parts' })
 
 | id | seeds | best for |
 |---|---|---|
-| `pieces` | none | Files that already ship one body per colour. Instant and exact. |
+| `pieces` | none | Files that already ship one body per colour. Instant and exact. The first automatic proposal (`autoPropose`). |
 | `crease-watershed` | required | Fused sculpts with grooved seams. Params: `growth` (`hybrid` default: grooves decide, path length breaks ties; `minimax`: grooves only; `summed`: path length plus a crease toll), `creaseQuantumDeg` (5: creases within this many degrees count as equal), `creaseWeight` (1). |
 
 `comparePartDetectors([{algorithm, seeds, params}, …])` runs up to 6 configurations

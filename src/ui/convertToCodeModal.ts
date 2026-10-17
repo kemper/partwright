@@ -87,6 +87,10 @@ export interface ConvertToCodeModalOpts {
   context?: string;
   /** Cancel-button label override ("Keep mesh only" on the import ask). */
   cancelLabel?: string;
+  /** An alternative next step offered under the context line (the import
+   *  ask's "Detect parts…"), with an optional one-line pitch. Closes the
+   *  panel before running. */
+  secondaryAction?: { label: string; hint?: string; run: () => void };
 }
 
 export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: ConvertToCodeModalOpts): void {
@@ -112,6 +116,15 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
 
   if (modalOpts?.context) {
     body.append(el('p', 'text-xs text-zinc-200 mb-2', modalOpts.context));
+  }
+  const secondary = modalOpts?.secondaryAction;
+  let secondaryBtn: HTMLButtonElement | null = null;
+  if (secondary) {
+    const row = el('div', 'flex items-center gap-2 mb-3');
+    if (secondary.hint) row.append(el('span', 'text-xs text-zinc-400 flex-1', secondary.hint));
+    secondaryBtn = el('button', 'shrink-0 whitespace-nowrap px-2.5 py-1 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600 transition-colors', secondary.label);
+    row.append(secondaryBtn);
+    body.append(row);
   }
   body.append(
     el(
@@ -243,6 +256,7 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   currentClose = close;
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
+  secondaryBtn?.addEventListener('click', () => { close(); secondary!.run(); });
   document.addEventListener('keydown', onEscape);
 
   container.appendChild(panel);

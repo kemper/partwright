@@ -87,6 +87,8 @@ import {
   getDistinctRegionColors,
 } from './regions';
 import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
+import { getActiveImports } from '../import/importedMesh';
+import { BUTTON_SMALL_SECONDARY } from '../ui/styleConstants';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
@@ -1570,29 +1572,62 @@ function releaseLabelHover(): void {
   }
 }
 
+// Opens the Part Detection panel. Registered by the part-detection UI (#1025)
+// rather than imported, so the paint layer never depends on segmentation.
+let detectPartsEntry: (() => void) | null = null;
+
+/** Offer "Detect parts" in the Labels section whenever the model is an import
+ *  (imported meshes carry no labels until their parts are detected). */
+export function setDetectPartsEntry(open: (() => void) | null): void {
+  detectPartsEntry = open;
+  const list = document.getElementById('paint-label-list');
+  if (list) updateLabelList(list);
+}
+
 function updateLabelList(container: HTMLElement): void {
   const labels = getPaintLabels();
   releaseLabelHover();
   container.innerHTML = '';
+  const openDetect = detectPartsEntry;
+  const offerDetect = openDetect !== null && getActiveImports().length > 0;
 
   const header = document.createElement('div');
-  header.className = 'flex items-center justify-between mb-1';
+  header.className = 'flex items-center justify-between gap-2 mb-1';
   const headerLabel = document.createElement('div');
   headerLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
   headerLabel.textContent = 'Labels';
   header.appendChild(headerLabel);
+  const headerRight = document.createElement('div');
+  headerRight.className = 'flex items-center gap-2';
   if (labels.length > 0) {
     const count = document.createElement('span');
     count.className = 'text-[10px] text-zinc-600 tabular-nums';
     count.textContent = String(labels.length);
-    header.appendChild(count);
+    headerRight.appendChild(count);
   }
+  if (offerDetect) {
+    const detectBtn = document.createElement('button');
+    detectBtn.type = 'button';
+    detectBtn.id = 'paint-detect-parts';
+    detectBtn.className = BUTTON_SMALL_SECONDARY;
+    detectBtn.textContent = '🧩 Detect parts';
+    detectBtn.title = labels.length > 0
+      ? 'Re-detect the parts of this imported mesh'
+      : 'Split this imported mesh into named parts (hair, face, shirt…) so paint follows them';
+    detectBtn.addEventListener('click', () => openDetect!());
+    headerRight.appendChild(detectBtn);
+  }
+  header.appendChild(headerRight);
   container.appendChild(header);
 
   if (labels.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'text-[10px] text-zinc-500 leading-snug';
-    empty.innerHTML = 'No labels in this run. Wrap features with <code class="px-1 py-0.5 rounded bg-zinc-900/60 text-zinc-300 text-[10px]">api.label(shape, "name")</code> in your code to get clickable labelled regions here.';
+    if (offerDetect) {
+      empty.textContent = 'This imported mesh has no labels yet. Detect parts to split it into named parts you can paint one at a time, without colour bleeding across their edges.';
+    } else {
+      empty.innerHTML = 'No labels in this run. Wrap features with <code class="px-1 py-0.5 rounded bg-zinc-900/60 text-zinc-300 text-[10px]">api.label(shape, "name")</code> in your code to get clickable labelled regions here.';
+    }
     container.appendChild(empty);
     return;
   }

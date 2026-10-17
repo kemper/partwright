@@ -7,6 +7,7 @@
 // registry's ParamSpecs: registering a detector adds it here automatically.
 
 import { pickFace } from '../color/facePicker';
+import { setDetectPartsEntry } from '../color/paintUI';
 import { getConfig } from '../config/appConfig';
 import { addPointerSuppressor } from '../renderer/viewport';
 import type { PartDetectionApi } from '../segmentation/partDetection';
@@ -37,8 +38,21 @@ function isDraft(x: unknown): x is Draft {
   return !!x && typeof x === 'object' && Array.isArray((x as Draft).parts);
 }
 
-export function openPartDetectionPanel(ctl: PartDetectionApi): void {
-  if (closeOpen) return;
+export interface PartDetectionPanelOpts {
+  /** Context line shown at the top (e.g. what an import just proposed). */
+  context?: string;
+  /** An alternative next step offered beside the context line (the import
+   *  flow's "Convert to code instead"). Closes the panel before running. */
+  secondaryAction?: { label: string; run: () => void };
+}
+
+export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetectionPanelOpts): void {
+  // Re-opening with a new context (a fresh import) replaces the open panel so
+  // the context line is never stale; a plain re-open keeps it as is.
+  if (closeOpen) {
+    if (!opts?.context) return;
+    closeOpen();
+  }
   const info = ctl.listPartDetectors();
   const seeds: { label: string; point: [number, number, number] }[] = [];
   let stopPick: (() => void) | null = null;
@@ -55,6 +69,19 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   closeOpen = shell.close;
   const { body, footer } = shell;
 
+  if (opts?.context) {
+    const banner = el('div', 'flex flex-col gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-2');
+    banner.dataset.partsContext = '';
+    banner.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug', opts.context));
+    if (opts.secondaryAction) {
+      const action = opts.secondaryAction;
+      const alt = el('button', `${BUTTON_SMALL_SECONDARY} self-start`, action.label);
+      alt.addEventListener('click', () => { shell.close(); action.run(); });
+      banner.appendChild(alt);
+    }
+    body.appendChild(banner);
+  }
+
   const intro = el('div', 'text-[12px] text-zinc-400 leading-snug',
     'Split an imported mesh into named parts (hair, face, shirt…) so paint can follow them. Nothing is saved until you Accept.');
   body.appendChild(intro);
@@ -68,7 +95,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     o.value = d.id;
     algoSelect.appendChild(o);
   }
-  algoSelect.value = info.detectors.find((d) => d.id === 'crease-watershed') ? 'crease-watershed' : info.detectors[0].id;
+  // Show the method that produced the current draft (an import-time proposal
+  // comes from a seedless detector); otherwise default to the seeded one.
+  const existing = ctl.getPartDraft();
+  const draftDetector = isDraft(existing) ? existing.detector : null;
+  algoSelect.value = draftDetector && info.detectors.some((d) => d.id === draftDetector) ? draftDetector
+    : info.detectors.find((d) => d.id === 'crease-watershed') ? 'crease-watershed' : info.detectors[0].id;
   const algoHint = el('div', 'text-[11px] text-zinc-500 leading-snug');
   const paramBox = el('div', 'flex flex-col gap-1.5');
   body.append(algoSelect, algoHint, paramBox);
@@ -312,8 +344,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   renderDraft();
 }
 
-/** Wire Part Detection into the command palette and the viewport Tools menu. */
+/** Wire Part Detection into the command palette, the viewport Tools menu and
+ *  the Paint panel's Labels section. */
 export function initPartDetectionUI(ctl: PartDetectionApi): void {
+  setDetectPartsEntry(() => openPartDetectionPanel(ctl));
   registerCommands([
     {
       id: 'detect-parts',

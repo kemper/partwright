@@ -927,6 +927,13 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="Part detection">
+        <ToggleField
+          label="Detect parts on STL import"
+          hint="After importing an STL, look for separate parts automatically. When it finds some (e.g. one body per colour), the Detect parts panel opens on them; otherwise the convert-to-code prompt offers a Detect parts button."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectOnImport}
+          value={c.segmentation.autoDetectOnImport}
+          onChange={v => set('segmentation', 'autoDetectOnImport', v)}
+        />
         <Field
           label="Absorb-specks threshold"
           unit="of surface"
