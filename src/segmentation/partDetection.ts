@@ -16,6 +16,7 @@
 import { getConfig } from '../config/appConfig';
 import type { MeshData } from '../geometry/types';
 import { rewriteImportsWithParts } from '../import/codegen';
+import { normalizeImportParts } from '../import/importParts';
 import type { ImportedMesh, ImportedMeshParts } from '../import/importedMesh';
 import { nearestTriangleMap } from '../surface/colorTransfer';
 import {
@@ -69,8 +70,10 @@ function err(e: unknown): { error: string } {
 
 export function createPartDetection(host: PartDetectionHost) {
   let draft: DraftState | null = null;
-  let busy: { message: string; fraction: number } | null = null;
-  let abort: AbortController | null = null;
+  let busy: { message: string; fraction: number; cancellable: boolean } | null = null;
+  /** Controllers of in-flight cancellable calls (detect / compare). */
+  const active = new Set<AbortController>();
+  let pending = 0;
   let overlayVisible = true;
   const listeners = new Set<(ev: PartDetectionEvent) => void>();
   const emit = (ev: PartDetectionEvent) => listeners.forEach((fn) => { try { fn(ev); } catch { /* listener must not break detection */ } });
@@ -115,7 +118,17 @@ export function createPartDetection(host: PartDetectionHost) {
     const map = nearestTriangleMap(src, displayed);
     // Displayed triangles far from every import triangle (geometry the code
     // added beyond the import) map to nothing rather than a random part.
-    const tol = 2 * medianEdgeLength(segMeshOf(m)) || 1e-6;
+    const floor = 2 * medianEdgeLength(segMeshOf(m)) || 1e-6;
+    // Per matched source triangle: a big flat CAD triangle (or a paint-refined
+    // child far from its parent's centroid) is still a match.
+    const reach = (mesh: MeshData, t: number, c: number[]) => {
+      let r = 0;
+      for (let k = 0; k < 3; k++) {
+        const v = mesh.triVerts[t * 3 + k] * mesh.numProp;
+        r = Math.max(r, Math.hypot(mesh.vertProperties[v] - c[0], mesh.vertProperties[v + 1] - c[1], mesh.vertProperties[v + 2] - c[2]));
+      }
+      return r;
+    };
     const c = (mesh: MeshData, t: number, out: number[]) => {
       out[0] = out[1] = out[2] = 0;
       for (let k = 0; k < 3; k++) {
@@ -127,7 +140,7 @@ export function createPartDetection(host: PartDetectionHost) {
     for (let t = 0; t < map.length; t++) {
       if (map[t] < 0) continue;
       c(displayed, t, a); c(src, map[t], b);
-      if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > tol) map[t] = -1;
+      if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > Math.max(floor, 1.5 * reach(src, map[t], b))) map[t] = -1;
     }
     mapCache = { key, mesh: displayed, map };
     return map;
@@ -155,25 +168,34 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function refreshOverlay(): void {
+    if (draft) {
+      // A version/session switch can put a different mesh at the same import
+      // index — the draft's triangle ids no longer mean anything there.
+      const m = host.getImports()[draft.importIndex];
+      if (!m || importMeshKey(m) !== draft.meshKey) { clearDraftState(); return; }
+    }
     if (!draft || !overlayVisible) { host.clearOverlay(); return; }
     const d = displayedPartsAndColors(draft);
     if (d) host.showOverlay(d.mesh, d.triColors);
   }
 
-  async function withBusy<T>(message: string, fn: (ctl: SegCallControl) => Promise<T>): Promise<T> {
-    // Calls queue in the client; each gets its own controller so cancel()
-    // stops the one in flight.
-    abort = new AbortController();
-    busy = { message, fraction: 0 };
+  /** Run a Worker call with the busy indicator. Cancellable calls (detect,
+   *  compare) get their own AbortController; edits are not cancellable —
+   *  aborting one would tear down the Worker mid-edit and orphan the draft. */
+  async function withBusy<T>(message: string, cancellable: boolean, fn: (ctl: SegCallControl) => Promise<T>): Promise<T> {
+    const ctl = cancellable ? new AbortController() : null;
+    if (ctl) active.add(ctl);
+    pending++;
+    busy = { message, fraction: 0, cancellable };
     emit('busy');
     try {
       return await fn({
-        signal: abort.signal,
-        onProgress: (fraction, msg) => { busy = { message: msg ?? message, fraction }; emit('busy'); },
+        signal: ctl?.signal,
+        onProgress: (fraction, msg) => { busy = { message: msg ?? message, fraction, cancellable }; emit('busy'); },
       });
     } finally {
-      busy = null;
-      abort = null;
+      if (ctl) active.delete(ctl);
+      if (--pending === 0) busy = null;
       emit('busy');
     }
   }
@@ -221,6 +243,73 @@ export function createPartDetection(host: PartDetectionHost) {
     return r === undefined ? {} : { normalSmoothRadius: r };
   }
 
+  function parseRef(v: unknown, where: string): number | string {
+    if (typeof v === 'number' && Number.isInteger(v)) return v;
+    if (typeof v === 'string' && v.trim()) return v;
+    throw new ValidationError(`${where} must be a 1-based part id or a part name`);
+  }
+
+  function parseSeed(v: unknown, where: string): SegSeed {
+    return parseSeeds([v], where)![0];
+  }
+
+  /** Strict per-op validation: known keys only, typed fields. */
+  function parseEditOp(raw: unknown, where: string): PartEditOp {
+    const x = assertObject(raw, where)!;
+    const op = assertEnum(x.op, EDIT_OPS, `${where}.op`);
+    const keys = (...k: string[]) => assertNoUnknownKeys(x, ['op', ...k], where);
+    switch (op) {
+      case 'merge': {
+        keys('ids', 'name');
+        const ids = assertArray(x.ids, `${where}.ids`).map((r, j) => parseRef(r, `${where}.ids[${j}]`));
+        const name = assertString(x.name, `${where}.name`, { optional: true });
+        return name === undefined ? { op, ids } : { op, ids, name };
+      }
+      case 'rename':
+        keys('id', 'name');
+        return { op, id: parseRef(x.id, `${where}.id`), name: assertString(x.name, `${where}.name`)! };
+      case 'setColor':
+        keys('id', 'color');
+        return { op, id: parseRef(x.id, `${where}.id`), color: x.color === null ? null : assertString(x.color, `${where}.color`)! };
+      case 'delete':
+        keys('id');
+        return { op, id: parseRef(x.id, `${where}.id`) };
+      case 'reassign': {
+        keys('point', 'to', 'radius');
+        const radius = assertNumber(x.radius, `${where}.radius`, { optional: true, min: 0 });
+        const base = { op, point: assertNumberTuple(x.point, 3, `${where}.point`) as [number, number, number], to: parseRef(x.to, `${where}.to`) };
+        return radius === undefined ? base : { ...base, radius };
+      }
+      case 'split':
+        keys('id', 'seeds');
+        return { op, id: parseRef(x.id, `${where}.id`), seeds: parseSeeds(x.seeds, `${where}.seeds`) ?? [] };
+      case 'absorbSmall':
+        keys('minAreaFrac');
+        return { op, minAreaFrac: assertNumber(x.minAreaFrac, `${where}.minAreaFrac`, { min: 0, max: 0.999 })! };
+      case 'smoothBoundaries': {
+        keys('iterations');
+        const iterations = assertNumber(x.iterations, `${where}.iterations`, { optional: true, integer: true, min: 1, max: 50 });
+        return iterations === undefined ? { op } : { op, iterations };
+      }
+      case 'addSeed': {
+        keys('seed', 'rerun');
+        const rerun = assertBoolean(x.rerun, `${where}.rerun`, { optional: true });
+        const seed = parseSeed(x.seed, `${where}.seed`);
+        return rerun === undefined ? { op, seed } : { op, seed, rerun };
+      }
+      case 'removeSeed': {
+        keys('index', 'rerun');
+        const rerun = assertBoolean(x.rerun, `${where}.rerun`, { optional: true });
+        const index = assertNumber(x.index, `${where}.index`, { integer: true, min: 0 })!;
+        return rerun === undefined ? { op, index } : { op, index, rerun };
+      }
+      case 'rerun':
+      case 'undo':
+        keys();
+        return { op };
+    }
+  }
+
   function parseDetect(opts: unknown) {
     const o = assertObject(opts, 'detectParts(options)')!;
     assertNoUnknownKeys(o, ['algorithm', 'params', 'featureOptions', 'seeds', 'importIndex'], 'detectParts(options)');
@@ -247,8 +336,12 @@ export function createPartDetection(host: PartDetectionHost) {
     hasDraft() { return draft !== null; },
     /** Cancel an in-flight detection (terminates the Worker; the draft is lost). */
     cancel(): void {
-      if (abort) { abort.abort(); clearDraftState(); }
+      if (active.size === 0) return;
+      for (const c of active) c.abort();
+      // The Worker is torn down by the abort, taking its draft with it.
+      clearDraftState();
     },
+    isOverlayVisible() { return overlayVisible; },
 
     listPartDetectors() {
       return {
@@ -265,7 +358,7 @@ export function createPartDetection(host: PartDetectionHost) {
         const o = parseDetect(opts);
         const m = importAt(o.importIndex);
         const meshKey = importMeshKey(m);
-        const r = await withBusy('Detecting parts…', (ctl) => detectPartsAsync(meshKey, () => segMeshOf(m), {
+        const r = await withBusy('Detecting parts…', true, (ctl) => detectPartsAsync(meshKey, () => segMeshOf(m), {
           algorithm: o.algorithm, params: o.params, featureOptions: o.featureOptions, seeds: o.seeds,
         }, ctl));
         draft = { importIndex: o.importIndex, meshKey, summary: r.summary!, triPart: r.triPart! };
@@ -287,14 +380,10 @@ export function createPartDetection(host: PartDetectionHost) {
       try {
         const o = assertObject(opts, 'editParts(options)')!;
         assertNoUnknownKeys(o, ['ops'], 'editParts(options)');
-        const ops = assertArray(o.ops, 'editParts(options).ops').map((op, i) => {
-          const x = assertObject(op, `ops[${i}]`)!;
-          assertEnum(x.op, EDIT_OPS, `ops[${i}].op`);
-          return x as unknown as PartEditOp;
-        });
+        const ops = assertArray(o.ops, 'editParts(options).ops').map((op, i) => parseEditOp(op, `ops[${i}]`));
         if (ops.length === 0) throw new ValidationError('editParts(options).ops must contain at least one op');
         const d = currentDraft();
-        const r = await withBusy('Updating parts…', () => editPartsAsync(d.meshKey, ops));
+        const r = await withBusy('Updating parts…', false, () => editPartsAsync(d.meshKey, ops));
         draft = { ...d, summary: r.summary!, triPart: r.triPart! };
         refreshOverlay();
         emit('draft');
@@ -338,13 +427,20 @@ export function createPartDetection(host: PartDetectionHost) {
         const view = o.view === undefined ? 'front' : assertEnum(o.view, Object.keys(PARTS_RENDER_VIEWS), 'comparePartDetectors(options).view');
         const size = assertNumber(o.size, 'comparePartDetectors(options).size', { optional: true, integer: true, min: 128, max: 800 }) ?? 360;
         const parsed = list.map((c) => parseDetect(c));
+        // The Worker holds one mesh: previewing a different import reloads it
+        // and drops the draft there, so drop it here too rather than strand it.
+        let draftDiscarded = false;
+        if (draft && parsed.some((c) => importMeshKey(importAt(c.importIndex)) !== draft!.meshKey)) {
+          clearDraftState();
+          draftDiscarded = true;
+        }
         const displayed = host.getDisplayedMesh();
         const results: Record<string, unknown>[] = [];
         const tiles: HTMLCanvasElement[] = [];
         for (const [i, c] of parsed.entries()) {
           const m = importAt(c.importIndex);
           const meshKey = importMeshKey(m);
-          const r = await withBusy(`Comparing ${i + 1}/${parsed.length}…`, (ctl) => previewPartsAsync(meshKey, () => segMeshOf(m), {
+          const r = await withBusy(`Comparing ${i + 1}/${parsed.length}…`, true, (ctl) => previewPartsAsync(meshKey, () => segMeshOf(m), {
             algorithm: c.algorithm, params: c.params, featureOptions: c.featureOptions, seeds: c.seeds,
           }, ctl));
           const s = r.summary!;
@@ -359,7 +455,7 @@ export function createPartDetection(host: PartDetectionHost) {
             }
           }
         }
-        return { results, ...(tiles.length ? { image: contactSheet(tiles) } : {}) };
+        return { results, ...(tiles.length ? { image: contactSheet(tiles) } : {}), ...(draftDiscarded ? { draftDiscarded: true } : {}) };
       } catch (e) {
         if (e instanceof AbortedError) return { error: 'Comparison cancelled.' };
         return err(e);
@@ -401,6 +497,9 @@ export function createPartDetection(host: PartDetectionHost) {
           triPart: d.triPart.slice(),
           source: { detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => ({ label: x.label, point: x.point })) },
         };
+        if (!normalizeImportParts(parts, m.triVerts.length / 3)) {
+          throw new ValidationError('The draft parts are inconsistent (duplicate or empty names?) — fix them with editParts before accepting.');
+        }
         const nextImports = imports.map((x, i) => (i === d.importIndex ? { ...m, parts } : x));
         const rewrite = rewriteImportsWithParts(code, d.importIndex);
         const usesHelper = rewrite.changed || new RegExp(`api\\.importWithParts\\(\\s*${d.importIndex}\\s*\\)`).test(code);

@@ -990,7 +990,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'editParts',
-    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"). Ops: {op:"merge", ids:[...], name?} · {op:"rename", id, name} · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (re-runs the detector) · {op:"removeSeed", index} · {op:"rerun"} · {op:"undo"}.',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Ops: {op:"merge", ids:[...], name?} · {op:"rename", id, name} · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (re-runs the detector) · {op:"removeSeed", index} · {op:"rerun"} · {op:"undo"}.',
     input_schema: {
       type: 'object',
       properties: {

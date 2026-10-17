@@ -57,9 +57,19 @@ test.describe('Part detection', () => {
     ] })) as { parts: { name: string; color: string | null }[] };
     expect(edited.parts.map((p) => [p.name, p.color])).toEqual([['base', null], ['cap', '#3b82f6']]);
 
-    // Bad input returns { error } rather than throwing.
-    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.editParts({ ops: [{ op: 'explode' }] })) as { error?: string };
-    expect(bad.error).toMatch(/op/);
+    // Bad input returns { error } rather than throwing — unknown ops, bad
+    // shapes, and a duplicate name (names become labels, so must be unique).
+    const bad = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      return [
+        await pw.editParts({ ops: [{ op: 'explode' }] }),
+        await pw.editParts({ ops: [{ op: 'reassign', point: [1, 2], to: 'cap' }] }),
+        await pw.editParts({ ops: [{ op: 'rename', id: 1, name: 'cap' }] }),
+      ];
+    }) as { error?: string }[];
+    expect(bad[0].error).toMatch(/op/);
+    expect(bad[1].error).toMatch(/point/);
+    expect(bad[2].error).toMatch(/already named/);
 
     // The panel reflects the same draft.
     await page.evaluate(() => document.getElementById('parts-viewport-toggle')?.click());

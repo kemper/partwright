@@ -5,6 +5,7 @@
 // respawn — the engrave/surface Worker idiom). Falls back to running the
 // SegmentationRunner in-process where Workers don't exist (Node / unit tier).
 
+import { getConfig } from '../config/appConfig';
 import type { DraftSummary, PartEditOp } from './draft';
 import { AbortedError } from './growth';
 import { SegmentationRunner, type DetectRequest } from './runner';
@@ -89,15 +90,19 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
 
 const hasWorker = () => typeof Worker !== 'undefined';
 
+/** Read on the main thread and threaded into the Worker (getConfig() there
+ *  only sees static defaults). */
+const undoDepth = () => getConfig().segmentation.undoDepth;
+
 async function ensureLoaded(meshKey: string, mesh: () => SegMesh): Promise<void> {
   if (!hasWorker()) {
-    if (local?.key !== meshKey) local = { key: meshKey, runner: new SegmentationRunner(mesh()) };
+    if (local?.key !== meshKey) local = { key: meshKey, runner: new SegmentationRunner(mesh(), { undoDepth: undoDepth() }) };
     return;
   }
   if (loadedKey === meshKey && worker) return;
   const m = mesh();
   // Clone so the caller's arrays stay usable (structured clone, not transfer).
-  await call({ type: 'load', meshKey, mesh: { positions: m.positions.slice(), triVerts: m.triVerts.slice() } });
+  await call({ type: 'load', meshKey, mesh: { positions: m.positions.slice(), triVerts: m.triVerts.slice() }, undoDepth: undoDepth() });
   loadedKey = meshKey;
 }
 

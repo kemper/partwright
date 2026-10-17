@@ -23,9 +23,11 @@ export class SegmentationRunner {
   readonly mesh: SegMesh;
   private cache = new Map<string, MeshFeatures>();
   draft: PartDraftModel | null = null;
+  private undoDepth: number;
 
-  constructor(mesh: SegMesh) {
+  constructor(mesh: SegMesh, opts: { undoDepth?: number } = {}) {
     this.mesh = mesh;
+    this.undoDepth = opts.undoDepth ?? 20;
   }
 
   features(opts: FeatureOptions = {}): MeshFeatures {
@@ -67,7 +69,9 @@ export class SegmentationRunner {
       params, seeds, signal: req.signal,
       progress: (frac, msg) => req.progress?.(0.15 + 0.85 * frac, msg),
     });
-    return new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds }, result);
+    const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds }, result);
+    model.undoDepth = this.undoDepth;
+    return model;
   }
 
   edit(ops: PartEditOp[]): DraftSummary {

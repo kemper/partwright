@@ -66,3 +66,29 @@ three.js raycasts are far too slow on 400k+ triangles.
 
 **Deferred (tracked on #1025):** import-time auto-detect, `withinPart` paint
 gates + smooth clip, detector duels, parts surviving bake paths.
+
+## Assistant
+
+## Review follow-up (work-reviewer pass on the PR)
+
+**Part names must stay unique — they become labels.** `rename`/`merge` now
+reject a name another part holds (merge may reuse a merged part's own name),
+the duplicate-suffix pass picks a free "name N", and `acceptParts` validates
+the parts with the same `normalizeImportParts` the sandbox uses before
+committing — previously a duplicate name made `importWithParts` silently drop
+every part.
+
+**Draft lifecycle hardening.** The overlay refresh drops a draft whose import
+changed under it (version/session switch); edits are no longer "cancellable"
+(cancel tears down the Worker, which would orphan the draft mid-edit) and each
+detect/compare call owns its AbortController; comparing a different import
+discards the draft instead of stranding it; edit ops are validated per op
+(known keys, typed fields) like the rest of the console API; `undo` must be
+sent alone.
+
+**Smaller fixes.** Sandbox + deserialize validate parts against the real
+`triVerts` length (not the stored `numTri`); overlay match tolerance scales
+with the matched source triangle; undo depth and the label-placement grid are
+appConfig knobs (undo depth threaded into the Worker); panel ✕ buttons got
+touch-size targets, closing mid-pick resets the cursor, the overlay checkbox
+reflects controller state.

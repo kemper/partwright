@@ -11,7 +11,7 @@ import { SegmentationRunner, type DetectRequest } from './runner';
 import type { SegMesh } from './types';
 
 export type SegWorkerRequest =
-  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh }
+  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number }
   | { type: 'detect'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'preview'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'edit'; callId: number; ops: PartEditOp[] }
@@ -38,7 +38,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'load':
-        runner = new SegmentationRunner(msg.mesh);
+        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth });
         reply({ type: 'result', callId: msg.callId, summary: null, triPart: null });
         return;
       case 'detect': {

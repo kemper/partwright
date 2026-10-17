@@ -12212,14 +12212,6 @@ async function main() {
     deletePart(target: string | number | { id?: string; name?: string }) { return partwrightAPI.deleteObject(target); },
     saveAllParts() { return partwrightAPI.saveAllObjects(); },
 
-    /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
-     *  `BREP.label`), tracked through every boolean so they survive fusing into
-     *  one solid — and its PIECES (physically separate solids), exactly as the
-     *  object list's expandable section shows them. `color` is the colour the
-     *  part is drawn in (model colours + paint). `lostParts` are labels the code
-     *  declared that ended up with no triangles. `unlabeledTriangleCount` counts
-     *  geometry no label covers (0 when the object declares no parts). Each piece
-     *  names the part covering most of it. */
     // --- Part detection (#1025): split an imported mesh into named parts. ---
     // Thin delegates to the shared controller the Part Detection panel uses.
     // Docs: /ai/segmentation.md
@@ -12233,6 +12225,14 @@ async function main() {
     acceptParts(options?: unknown) { return partDetection.acceptParts(options); },
     discardParts() { return partDetection.discardParts(); },
 
+    /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
+     *  `BREP.label`), tracked through every boolean so they survive fusing into
+     *  one solid — and its PIECES (physically separate solids), exactly as the
+     *  object list's expandable section shows them. `color` is the colour the
+     *  part is drawn in (model colours + paint). `lostParts` are labels the code
+     *  declared that ended up with no triangles. `unlabeledTriangleCount` counts
+     *  geometry no label covers (0 when the object declares no parts). Each piece
+     *  names the part covering most of it. */
     listObjectParts() {
       const obj = getCurrentPart();
       const view = currentObjectPartsView();

@@ -160,6 +160,30 @@ describe('part draft edits', () => {
     expect(s.parts.map((p) => p.name)).toEqual(['hair', 'right']);
   });
 
+  it('keeps part names unique (they become labels)', () => {
+    const r = fresh();
+    expect(() => r.edit([{ op: 'rename', id: 1, name: 'right' }])).toThrow(/already named "right".*merge/);
+    // merge may reuse a merged part's own name
+    const s = r.edit([{ op: 'merge', ids: ['left', 'right'], name: 'right' }]);
+    expect(s.parts.map((p) => p.name)).toEqual(['right']);
+  });
+
+  it('suffixes duplicate detector names with a free number', () => {
+    const r = new SegmentationRunner(groove(11));
+    const s = r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'a 2', point: [0.1, 0.5, 0.12] }, { label: 'a', point: [0.5, 0.5, 0] }, { label: 'a ', point: [0.9, 0.5, 0.12] },
+    ] });
+    // 'a ' trims to 'a' (same label as seed 2), so only two distinct parts
+    expect(new Set(s.parts.map((p) => p.name)).size).toBe(s.parts.length);
+  });
+
+  it('rejects undo inside a multi-op batch', () => {
+    const r = fresh();
+    r.edit([{ op: 'rename', id: 1, name: 'x' }]);
+    expect(() => r.edit([{ op: 'rename', id: 1, name: 'y' }, { op: 'undo' }])).toThrow(/on its own/);
+    expect(r.edit([{ op: 'undo' }]).parts[0].name).toBe('left');
+  });
+
   it('a failing op rolls back the whole batch', () => {
     const r = fresh();
     expect(() => r.edit([{ op: 'rename', id: 1, name: 'x' }, { op: 'rename', id: 9, name: 'y' }])).toThrow(/No part with id 9/);

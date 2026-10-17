@@ -957,6 +957,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10} max={1000} integer
           onChange={v => set('segmentation', 'maxListedParts', v)}
         />
+        <Field
+          label="Undo depth"
+          unit="edits"
+          hint="Edit batches the part draft can undo."
+          tooltip="How many editParts batches (merge, rename, reassign, re-run…) a part-detection draft keeps for Undo. Each step holds a copy of the per-triangle part map, so very high values use more memory on large meshes."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.undoDepth}
+          value={c.segmentation.undoDepth}
+          min={1} max={200} integer
+          onChange={v => set('segmentation', 'undoDepth', v)}
+        />
+        <Field
+          label="Part-number placement grid"
+          unit="cells"
+          hint="Resolution used to find where each part is visible."
+          tooltip="renderParts draws each part's number on a spot where that part is visible. Visibility is decided on a coarse depth grid this many cells across; raise it to label smaller visible slivers, lower it for speed."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.labelGridResolution}
+          value={c.segmentation.labelGridResolution}
+          min={40} max={600} integer
+          onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
       </Section>
 
       <Section title="UI">

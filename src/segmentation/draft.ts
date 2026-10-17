@@ -102,9 +102,9 @@ interface Snapshot {
   names: string[];
   colors: (string | null)[];
   seeds: SegSeed[];
+  diagnostics?: Record<string, unknown>;
 }
 
-const MAX_UNDO = 20;
 
 export class PartDraftModel {
   readonly mesh: SegMesh;
@@ -119,6 +119,9 @@ export class PartDraftModel {
   colors: (string | null)[];
   diagnostics?: Record<string, unknown>;
   private undoStack: Snapshot[] = [];
+  /** Snapshots kept for undo (appConfig.segmentation.undoDepth, threaded in
+   *  by the runner because the model lives in a Worker). */
+  undoDepth = 20;
 
   constructor(
     mesh: SegMesh,
@@ -279,6 +282,9 @@ export class PartDraftModel {
   /** Apply a batch of ops atomically (all-or-nothing for validation errors:
    *  the pre-batch state is restored if any op throws). */
   edit(ops: PartEditOp[]): void {
+    if (ops.length > 1 && ops.some((o) => o.op === 'undo')) {
+      throw new Error('undo must be sent on its own (it reverts the previous batch).');
+    }
     const before = this.snapshot();
     try {
       for (const op of ops) this.applyOp(op);
@@ -288,7 +294,7 @@ export class PartDraftModel {
     }
     if (ops.length && !(ops.length === 1 && ops[0].op === 'undo')) {
       this.undoStack.push(before);
-      if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
+      if (this.undoStack.length > this.undoDepth) this.undoStack.shift();
     }
   }
 
@@ -300,13 +306,18 @@ export class PartDraftModel {
         const keep = Math.min(...idx);
         const set = new Set(idx);
         for (let t = 0; t < this.triPart.length; t++) if (set.has(this.triPart[t])) this.triPart[t] = keep;
-        if (op.name !== undefined) this.names[keep] = cleanName(op.name);
+        // keep is the lowest merged index, so compaction (which only drops the
+        // now-empty merged parts) leaves it in place; name it afterwards so the
+        // new name may reuse a merged part's name.
         this.compact();
+        if (op.name !== undefined) this.names[keep] = this.uniqueNameFor(keep, op.name);
         return;
       }
-      case 'rename':
-        this.names[this.resolvePart(op.id)] = cleanName(op.name);
+      case 'rename': {
+        const i = this.resolvePart(op.id);
+        this.names[i] = this.uniqueNameFor(i, op.name);
         return;
+      }
       case 'setColor': {
         const i = this.resolvePart(op.id);
         if (op.color !== null && !/^#[0-9a-fA-F]{6}$/.test(op.color)) throw new Error('setColor.color must be "#rrggbb" or null');
@@ -434,6 +445,17 @@ export class PartDraftModel {
     throw new Error('Part reference must be a 1-based id or a part name');
   }
 
+  /** Validate a new name for part `i`: part names are labels, so they must
+   *  stay unique — two parts that should share a name are one part (merge). */
+  private uniqueNameFor(i: number, name: unknown): string {
+    const nm = cleanName(name);
+    const holder = this.names.indexOf(nm);
+    if (holder >= 0 && holder !== i) {
+      throw new Error(`Another part (id ${holder + 1}) is already named "${nm}" — names must be unique; merge the two parts instead.`);
+    }
+    return nm;
+  }
+
   private resolveOrCreate(ref: PartRef): number {
     if (typeof ref === 'string' && !this.names.includes(ref)) return this.createPart(ref);
     return this.resolvePart(ref);
@@ -464,23 +486,27 @@ export class PartDraftModel {
     if (names.length !== this.names.length) {
       for (let t = 0; t < this.triPart.length; t++) if (this.triPart[t] >= 0) this.triPart[t] = remap[this.triPart[t]];
     }
-    // Disambiguate duplicate names so name-refs and labels stay unique.
-    const seen = new Map<string, number>();
+    // Disambiguate duplicate names (e.g. two detector outputs with one
+    // label) so name-refs and labels stay unique: later duplicates get the
+    // first free "name N" suffix.
+    const taken = new Set<string>();
     for (let i = 0; i < names.length; i++) {
-      const k = seen.get(names[i]) ?? 0;
-      seen.set(names[i], k + 1);
-      if (k > 0) names[i] = `${names[i]} ${k + 1}`;
+      if (!taken.has(names[i])) { taken.add(names[i]); continue; }
+      let k = 2;
+      while (taken.has(`${names[i]} ${k}`) || names.includes(`${names[i]} ${k}`)) k++;
+      names[i] = `${names[i]} ${k}`;
+      taken.add(names[i]);
     }
     this.names = names;
     this.colors = colors;
   }
 
   private snapshot(): Snapshot {
-    return { triPart: this.triPart.slice(), names: [...this.names], colors: [...this.colors], seeds: this.seeds.map(cloneSeed) };
+    return { triPart: this.triPart.slice(), names: [...this.names], colors: [...this.colors], seeds: this.seeds.map(cloneSeed), diagnostics: this.diagnostics };
   }
 
   private restore(s: Snapshot): void {
-    this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds;
+    this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
   }
 }
 

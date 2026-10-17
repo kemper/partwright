@@ -675,7 +675,9 @@ export const manifoldJsEngine: Engine = {
       if (!src) {
         throw new Error(`api.importWithParts(${index}): no imported mesh at that index (${getActiveImports().length} available)`);
       }
-      const parts = src.parts ? normalizeImportParts(src.parts, src.numTri) : null;
+      // Validate against the REAL triangle count, not the stored numTri (a
+      // tampered file could otherwise make the reorder read past triVerts).
+      const parts = src.parts ? normalizeImportParts(src.parts, src.triVerts.length / 3) : null;
       if (!parts || parts.names.length === 0) {
         return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts: src.triVerts });
       }

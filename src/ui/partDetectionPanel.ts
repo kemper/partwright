@@ -28,6 +28,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: stri
 
 const INPUT = 'bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[12px] text-zinc-200';
 const SECTION = 'text-[11px] uppercase tracking-wide text-zinc-400 font-semibold mt-1';
+/** Row ✕ buttons: a full-size touch target around a small glyph. */
+const REMOVE_BTN = 'shrink-0 w-8 h-8 md:w-6 md:h-6 flex items-center justify-center rounded text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60';
 
 type Draft = Exclude<ReturnType<PartDetectionApi['getPartDraft']>, { draft: null }>;
 
@@ -45,7 +47,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     title: 'Detect parts',
     width: 'w-[22rem]',
     onClose: () => {
-      stopPick?.();
+      endPick();
       unsubscribe();
       closeOpen = null;
     },
@@ -142,8 +144,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     seeds.forEach((s, i) => {
       const row = el('div', 'flex items-center gap-1 text-[11px] text-zinc-300');
       row.append(el('span', 'flex-1 truncate', `${s.label} · (${s.point.map((v) => v.toFixed(1)).join(', ')})`));
-      const x = el('button', 'text-zinc-500 hover:text-zinc-200 px-1', '✕');
+      const x = el('button', REMOVE_BTN, '✕');
       x.title = 'Remove seed';
+      x.setAttribute('aria-label', `Remove ${s.label} seed`);
       x.addEventListener('click', () => { seeds.splice(i, 1); renderSeeds(); });
       row.appendChild(x);
       seedList.appendChild(row);
@@ -240,8 +243,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       });
       const pct = el('span', 'text-[10px] text-zinc-500 w-10 text-right shrink-0', `${(p.areaFrac * 100).toFixed(1)}%`);
       pct.title = `${p.triCount} triangles${p.regions > 1 ? `, ${p.regions} separate regions` : ''}`;
-      const del = el('button', 'text-zinc-500 hover:text-zinc-200 px-1 shrink-0', '✕');
+      const del = el('button', REMOVE_BTN, '✕');
       del.title = 'Remove part (its triangles become unassigned)';
+      del.setAttribute('aria-label', `Remove part ${p.name}`);
       del.addEventListener('click', () => { void edit([{ op: 'delete', id: p.id }]); });
       row.append(check, sw.el, num, name, pct, del);
       list.appendChild(row);
@@ -270,7 +274,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     const overlayRow = el('label', 'flex items-center gap-1.5 text-[12px] text-zinc-300');
     const overlay = el('input');
     overlay.type = 'checkbox';
-    overlay.checked = true;
+    overlay.checked = ctl.isOverlayVisible();
     overlay.addEventListener('change', () => ctl.setPartsOverlay(overlay.checked));
     overlayRow.append(overlay, el('span', '', 'Show parts overlay'));
     draftBox.appendChild(overlayRow);
@@ -298,7 +302,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     if (ev === 'draft') renderDraft();
     const b = ctl.isBusy();
     detectBtn.disabled = !!b;
-    cancelBtn.classList.toggle('hidden', !b);
+    cancelBtn.classList.toggle('hidden', !b?.cancellable);
     status.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : '';
   });
 

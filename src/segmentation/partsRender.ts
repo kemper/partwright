@@ -10,6 +10,7 @@
 // so a part hidden from every view (an inner arm behind a ball) is flagged.
 
 import * as THREE from 'three';
+import { getConfig } from '../config/appConfig';
 import type { MeshData } from '../geometry/types';
 import { buildViewCamera, renderSingleViewCanvas } from '../renderer/multiview';
 
@@ -29,8 +30,6 @@ export const DEFAULT_PARTS_VIEWS = ['front', 'right', 'back', 'iso'];
 
 export interface PartLegendEntry { id: number; name: string; color: string }
 
-/** Depth-buffer resolution used for label visibility (cells per side). */
-const VIS_GRID = 160;
 
 export function renderNumberedParts(
   mesh: MeshData,
@@ -107,6 +106,7 @@ function visibleAnchors(
   partCount: number,
   camera: THREE.Camera,
 ): ([number, number] | null)[] {
+  const VIS_GRID = getConfig().segmentation.labelGridResolution;
   camera.updateMatrixWorld();
   const m = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
   const n = triPart.length;

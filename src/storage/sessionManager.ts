@@ -520,7 +520,7 @@ function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): 
         vertProperties: new Float32Array(base64ToArrayBuffer(m.vertProperties)),
         triVerts: new Uint32Array(base64ToArrayBuffer(m.triVerts)),
       });
-      const parts = deserializeImportParts(m.parts, m.numTri);
+      const parts = deserializeImportParts(m.parts, out[out.length - 1].triVerts.length / 3);
       if (parts) out[out.length - 1].parts = parts;
     } catch {
       // Skip a mesh we can't decode rather than failing the whole import.
