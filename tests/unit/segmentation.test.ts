@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeMeshFeatures, toSegMesh } from '../../src/segmentation/features';
 import { SegmentationRunner } from '../../src/segmentation/runner';
-import { getDetector, resolveParams } from '../../src/segmentation/registry';
+import { autoProposeDetectors, describeDetector, getDetector, listDetectors, resolveParams } from '../../src/segmentation/registry';
 import { jitterMesh, scorePartition, seedsFromTruth } from '../../src/segmentation/scoring';
 import type { SegMesh } from '../../src/segmentation/types';
 
@@ -134,6 +134,23 @@ describe('registry params', () => {
     expect(() => resolveParams(d, { growth: 'fast' })).toThrow(/one of/);
     expect(() => resolveParams(d, { creaseQuantumDeg: 0 })).toThrow(/≥ 0.5/);
     expect(() => resolveParams(d, { creaseWeight: '2' })).toThrow(/number/);
+  });
+});
+
+describe('registry auto-propose', () => {
+  it('only seedless opted-in detectors run unattended, cheapest first', () => {
+    const auto = autoProposeDetectors();
+    expect(auto[0]?.id).toBe('pieces');
+    expect(auto.every((d) => d.seeds !== 'required' && d.autoPropose !== undefined)).toBe(true);
+    for (let i = 1; i < auto.length; i++) expect(auto[i].autoPropose!.priority).toBeGreaterThanOrEqual(auto[i - 1].autoPropose!.priority);
+    // Seeded detectors can't run without the user's seeds, so never auto-propose.
+    expect(auto.some((d) => d.id === 'crease-watershed')).toBe(false);
+  });
+
+  it('describeDetector reports the flag for listPartDetectors', () => {
+    const flags = Object.fromEntries(listDetectors().map((d) => [d.id, describeDetector(d).autoPropose]));
+    expect(flags.pieces).toBe(true);
+    expect(flags['crease-watershed']).toBe(false);
   });
 });
 

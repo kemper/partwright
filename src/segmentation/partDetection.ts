@@ -27,7 +27,7 @@ import { hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from '
 import { medianEdgeLength, toSegMesh } from './features';
 import { AbortedError } from './growth';
 import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts } from './partsRender';
-import { describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
+import { autoProposeDetectors, describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
 import {
   detectPartsAsync, discardPartsDraft, editPartsAsync, previewPartsAsync, type SegCallControl,
 } from './segmentationClient';
@@ -363,8 +363,60 @@ export function createPartDetection(host: PartDetectionHost) {
         }, ctl));
         draft = { importIndex: o.importIndex, meshKey, summary: r.summary!, triPart: r.triPart! };
         refreshOverlay();
+        // refreshOverlay drops a draft whose import changed meanwhile.
+        if (!draft) return { error: 'The imported mesh changed during part detection — run it again.' };
         emit('draft');
         return compact(draft.summary);
+      } catch (e) {
+        if (e instanceof AbortedError) return { error: 'Part detection cancelled.' };
+        return err(e);
+      }
+    },
+
+    /** Unattended proposal (import-time auto-detect, the autoDetectParts
+     *  console/AI method): try every detector that opted into `autoPropose`,
+     *  cheapest first. The trials are previews, so a run that proposes
+     *  nothing leaves any existing draft alone; the first result with 2 to
+     *  `segmentation.autoDetectMaxParts` parts is re-run as the draft (it
+     *  replaces the current one; features are cached, so that is cheap). A
+     *  mesh none of them can split (one fused solid, until a seedless
+     *  detector for fused shells registers) says to use a seeded detector. */
+    async autoDetectParts(opts?: unknown) {
+      try {
+        const o = opts === undefined ? {} : assertObject(opts, 'autoDetectParts(options)')!;
+        assertNoUnknownKeys(o, ['importIndex'], 'autoDetectParts(options)');
+        const importIndex = assertNumber(o.importIndex, 'autoDetectParts(options).importIndex', { optional: true, integer: true, min: 0 }) ?? 0;
+        const m = importAt(importIndex);
+        const meshKey = importMeshKey(m);
+        const maxParts = getConfig().segmentation.autoDetectMaxParts;
+        // The Worker holds one mesh: previewing another import drops a draft
+        // on a different one there, so drop it here too (as compare does).
+        if (draft && draft.meshKey !== meshKey) clearDraftState();
+        const tried: { detector: string; partCount: number }[] = [];
+        let tooMany: { detector: string; partCount: number } | null = null;
+        for (const d of autoProposeDetectors()) {
+          const p = await withBusy(`Detecting parts (${d.name})…`, true, (ctl) => previewPartsAsync(meshKey, () => segMeshOf(m), { algorithm: d.id }, ctl));
+          const partCount = p.summary!.parts.length;
+          tried.push({ detector: d.id, partCount });
+          if (partCount < 2) continue;
+          if (partCount > maxParts) { tooMany ??= { detector: d.id, partCount }; continue; }
+          const r = await withBusy(`Detecting parts (${d.name})…`, true, (ctl) => detectPartsAsync(meshKey, () => segMeshOf(m), { algorithm: d.id }, ctl));
+          draft = { importIndex, meshKey, summary: r.summary!, triPart: r.triPart! };
+          refreshOverlay();
+          // refreshOverlay drops a draft whose import changed meanwhile.
+          if (!draft) return { error: 'The imported mesh changed during part detection — run it again.' };
+          emit('draft');
+          return { proposed: true, proposedBy: d.id, tried, ...compact(draft.summary) };
+        }
+        return {
+          proposed: false,
+          tried,
+          reason: tried.length === 0
+            ? 'No automatic detector is registered.'
+            : tooMany
+              ? `"${tooMany.detector}" found ${tooMany.partCount} parts, more than segmentation.autoDetectMaxParts (${maxParts}), so nothing was proposed (likely an assembly or loose debris). Run detectParts({algorithm: "${tooMany.detector}"}) to use them anyway.`
+              : 'The mesh is one solid piece, so automatic detection found nothing to split. Place named seeds and use a seeded detector, e.g. detectParts({algorithm: "crease-watershed", seeds: [{label, point}]}).',
+        };
       } catch (e) {
         if (e instanceof AbortedError) return { error: 'Part detection cancelled.' };
         return err(e);

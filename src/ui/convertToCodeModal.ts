@@ -13,6 +13,7 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 import { deriveOptions } from '../reconstruct/sectionCode';
+import { BUTTON_SMALL_SECONDARY } from './styleConstants';
 
 type Quality = 'draft' | 'standard' | 'fine';
 
@@ -87,6 +88,10 @@ export interface ConvertToCodeModalOpts {
   context?: string;
   /** Cancel-button label override ("Keep mesh only" on the import ask). */
   cancelLabel?: string;
+  /** An alternative next step offered under the context line (the import
+   *  ask's "Detect parts…"), with an optional one-line pitch. Closes the
+   *  panel before running. */
+  secondaryAction?: { label: string; hint?: string; run: () => void };
 }
 
 export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: ConvertToCodeModalOpts): void {
@@ -112,6 +117,15 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
 
   if (modalOpts?.context) {
     body.append(el('p', 'text-xs text-zinc-200 mb-2', modalOpts.context));
+  }
+  const secondary = modalOpts?.secondaryAction;
+  let secondaryBtn: HTMLButtonElement | null = null;
+  if (secondary) {
+    const row = el('div', 'flex items-center gap-2 mb-3');
+    if (secondary.hint) row.append(el('span', 'text-xs text-zinc-400 flex-1', secondary.hint));
+    secondaryBtn = el('button', `${BUTTON_SMALL_SECONDARY} shrink-0 whitespace-nowrap min-h-11 md:min-h-0`, secondary.label);
+    row.append(secondaryBtn);
+    body.append(row);
   }
   body.append(
     el(
@@ -243,6 +257,7 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   currentClose = close;
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
+  secondaryBtn?.addEventListener('click', () => { close(); secondary!.run(); });
   document.addEventListener('keydown', onEscape);
 
   container.appendChild(panel);

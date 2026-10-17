@@ -134,5 +134,10 @@ export interface PartDetector {
   params: ParamSpec[];
   /** Feature options this detector wants (user overrides win). */
   featureOptions?: FeatureOptions;
+  /** Opt in to automatic proposals (the import-time auto-detect and
+   *  `autoDetectParts`). Candidates run in ascending `priority`; the first
+   *  whose result has at least two parts becomes the draft. Only detectors
+   *  that can run without seeds may opt in. */
+  autoPropose?: { priority: number };
   run(mesh: SegMesh, f: MeshFeatures, ctx: DetectorContext): DetectorResult;
 }
