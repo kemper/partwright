@@ -159,15 +159,16 @@ export function previewPartsAsync(
 
 /** Apply edit ops to the current draft. Throws when the draft is gone
  *  (e.g. after a cancel tore the Worker down). */
-export function editPartsAsync(meshKey: string, ops: PartEditOp[]): Promise<SegCallResult> {
+/** `stroke`: batches with the same id share one undo step (a brush drag). */
+export function editPartsAsync(meshKey: string, ops: PartEditOp[], stroke?: string): Promise<SegCallResult> {
   return serialized(async () => {
     if (!hasWorker()) {
       if (local?.key !== meshKey) throw new Error('No part draft — call detectParts first.');
-      const summary = local.runner.edit(ops);
+      const summary = local.runner.edit(ops, stroke);
       return { summary, triPart: local.runner.draft!.triPart.slice() };
     }
     if (loadedKey !== meshKey || !worker) throw new Error('No part draft — call detectParts first.');
-    return call({ type: 'edit', ops });
+    return call(stroke ? { type: 'edit', ops, stroke } : { type: 'edit', ops });
   });
 }
 

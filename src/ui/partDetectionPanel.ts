@@ -59,6 +59,9 @@ const ROW_SELECTED = 'bg-blue-500/15 ring-1 ring-blue-500/40';
 const ROW_HOVER = 'bg-zinc-700/50';
 /** A press that moves less than this (px) counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 6;
+/** Holding a pin this long without dragging deletes it (touch has no
+ *  right-click). An interaction convention, not a tuning knob. */
+const PIN_LONG_PRESS_MS = 600;
 /** How long the "Applied preset · Undo" banner stays up (ms). */
 const APPLIED_BANNER_MS = 8000;
 
@@ -90,7 +93,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
    *  scan" preset) — carried into the next Detect while the box is blank. */
   let carriedEdgeLengths: number | null = null;
   const markers = createSeedMarkers();
-  const cursorTag = el('div', 'fixed z-50 pointer-events-none px-1.5 py-0.5 rounded text-[11px] text-white bg-zinc-900/90 border border-zinc-600 hidden');
+  const cursorTag = el('div', 'fixed z-30 pointer-events-none px-1.5 py-0.5 rounded text-[11px] text-white bg-zinc-900/90 border border-zinc-600 hidden');
   document.body.appendChild(cursorTag);
 
   const shell = createToolPanelShell({
@@ -113,7 +116,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       if (hoverRaf) cancelAnimationFrame(hoverRaf);
       ctl.setHoveredPart(null);
       void ctl.showPresetPreview(null);
-      document.body.style.cursor = '';
+      getCanvas().style.cursor = '';
+      if (brushing?.timer) clearTimeout(brushing.timer);
+      brushing = null;
+      // The selection and solo view are the panel's; don't leave the model
+      // greyed out with no control on screen.
+      ctl.setPartSelection(null);
+      ctl.setPartsView({ mode: 'all' });
       cursorTag.remove();
       markers.dispose();
       unsubscribe();
@@ -364,7 +373,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       setStripOpen(false);
       const r = await ctl.applyPartPreset(i);
       if ('error' in r) { showToast(String(r.error), { variant: 'warn', source: 'parts' }); return; }
-      showAppliedBanner(name);
+      // Undo only makes sense when the preset replaced an earlier draft.
+      if ('canUndo' in r && r.canUndo) showAppliedBanner(name);
     });
     return tile;
   }
@@ -438,7 +448,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
 
   const TOOL_HINTS: Record<Tool, string> = {
     select: 'Click a part to select it · Shift-click toggles · Alt-click removes · Shift-drag paints a selection · Esc clears. Hover the model to find a part in the list.',
-    pin: 'Click the model to add a pin for the part above (type a new name to start a new part). Only nearby parts re-grow. Drag a pin to move it; right-click it to delete.',
+    pin: 'Click the model to add a pin for the part above (type a new name to start a new part). Only nearby parts re-grow. Drag a pin to move it; right-click (or long-press) it to delete.',
     fix: 'Drag on the model to paint triangles into the part above. Fixed triangles stay put when pins move. Right-drag still pans; switch tool to orbit.',
   };
 
@@ -451,7 +461,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     toolHint.textContent = TOOL_HINTS[tool];
     targetRow.classList.toggle('hidden', tool === 'select');
     brushRange.classList.toggle('hidden', tool !== 'fix');
-    document.body.style.cursor = tool === 'select' ? '' : 'crosshair';
+    getCanvas().style.cursor = tool === 'select' ? '' : 'crosshair';
     if (tool !== 'select' && !targetInput.value) {
       const sel = ctl.getPartSelection().parts[0];
       targetInput.value = sel?.name ?? (isDraft(ctl.getPartDraft()) ? '' : 'part 1');
@@ -632,7 +642,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       row.dataset.partId = String(p.id);
       row.dataset.partName = p.name;
       rowsByName.set(p.name, row);
-      const handle = el('span', 'shrink-0 w-6 h-11 md:h-6 flex items-center justify-center text-zinc-500 cursor-grab touch-none select-none', '⋮⋮');
+      const handle = el('span', 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center text-zinc-500 cursor-grab touch-none select-none', '⋮⋮');
       handle.title = 'Drag to reorder (or Alt+↑/↓ in the name box)';
       handle.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -662,8 +672,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       };
       handle.addEventListener('pointerup', endDrag);
       handle.addEventListener('pointercancel', () => { dragRow = null; dropLine.classList.add('hidden'); });
+      // A 44 px touch target around the native checkbox.
+      const checkWrap = el('label', 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center cursor-pointer');
       const check = el('input');
       check.type = 'checkbox';
+      checkWrap.appendChild(check);
       check.checked = selected.has(p.name);
       check.title = 'Select';
       check.setAttribute('aria-label', `Select ${p.name}`);
@@ -711,9 +724,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       del.title = 'Remove part (its triangles become unassigned)';
       del.setAttribute('aria-label', `Remove part ${p.name}`);
       del.addEventListener('click', () => { void edit([{ op: 'delete', id: p.id }]); });
-      row.addEventListener('mouseenter', () => ctl.setHoveredPart(p.name));
-      row.addEventListener('mouseleave', () => { if (ctl.getHoveredPart() === p.name) ctl.setHoveredPart(null); });
-      row.append(handle, check, sw.el, num, name, pct, pins, lock, solo, del);
+      // Mouse only: a tap would leave the hover stuck.
+      row.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') ctl.setHoveredPart(p.name); });
+      row.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && ctl.getHoveredPart() === p.name) ctl.setHoveredPart(null); });
+      row.append(handle, checkWrap, sw.el, num, name, pct, pins, lock, solo, del);
       list.appendChild(row);
     }
     draftBox.appendChild(list);
@@ -784,29 +798,22 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   }
 
   // ======================================================== viewport interaction
-  /** Overlay colour for a pin label: its part's colour when one exists. */
-  function colorFor(label: string): string {
-    const d = ctl.getPartDraft();
-    if (isDraft(d)) {
-      const p = d.parts.find((x) => x.name === label);
-      if (p) return p.displayColor;
-    }
-    const labels = [...new Set(ctl.getSeeds().map((s) => s.label))];
-    return overlayColor(Math.max(0, labels.indexOf(label)), null);
-  }
-
   /** Pins are rebuilt only when they, their colours or the emphasised set
    *  change (hovering would otherwise rebuild every pin mesh per part). */
   let pinsKey = '';
   function renderPins(): void {
+    // Selected parts' pins are emphasised (hover is shown on the overlay
+    // only: rebuilding every pin mesh per hovered part is too costly).
     const emphasize = new Set(ctl.getPartSelection().parts.map((p) => p.name));
-    const h = ctl.getHoveredPart();
-    if (h) emphasize.add(h);
     const seeds = ctl.getSeeds();
-    const key = JSON.stringify([seeds, [...emphasize], [...new Set(seeds.map((x) => x.label))].map(colorFor)]);
+    const d = ctl.getPartDraft();
+    const partColor = new Map(isDraft(d) ? d.parts.map((p) => [p.name, p.displayColor] as const) : []);
+    const labels = [...new Set(seeds.map((x) => x.label))];
+    const colorOf = (label: string) => partColor.get(label) ?? overlayColor(Math.max(0, labels.indexOf(label)), null);
+    const key = JSON.stringify([seeds, [...emphasize], labels.map(colorOf)]);
     if (key === pinsKey) return;
     pinsKey = key;
-    markers.update(seeds, colorFor, emphasize);
+    markers.update(seeds, colorOf, emphasize);
   }
 
   /** Pin edits: with a draft they are draft ops (only nearby parts re-grow);
@@ -828,10 +835,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     renderDraft();
   }
 
-  let pinDrag: { index: number; point: [number, number, number] | null; x: number; y: number } | null = null;
+  let pinDrag: { index: number; point: [number, number, number] | null; x: number; y: number; at: number } | null = null;
   let press: { x: number; y: number; shift: boolean; alt: boolean; additive: boolean } | null = null;
   let paintSelect: Set<string> | null = null;
-  let brushing: { target: string; pending: [number, number, number][]; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  let brushing: { target: string; stroke: string; pending: [number, number, number][]; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  let strokeSeq = 0;
 
   const partUnder = (evt: MouseEvent): string | null => {
     const hit = pickFace(evt);
@@ -843,7 +851,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     const idx = markers.hitTest(evt);
     if (idx >= 0) {
       if (evt.button === 2) { void removePin(idx); return true; }
-      if (evt.button === 0) { pinDrag = { index: idx, point: null, x: evt.clientX, y: evt.clientY }; return true; }
+      if (evt.button === 0) { pinDrag = { index: idx, point: null, x: evt.clientX, y: evt.clientY, at: performance.now() }; return true; }
     }
     if (evt.button !== 0) return false;
     if (tool === 'select' && evt.shiftKey && isDraft(ctl.getPartDraft())) {
@@ -856,7 +864,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     if (tool === 'fix' && isDraft(ctl.getPartDraft())) {
       const target = targetInput.value.trim();
       if (!target) { showToast('Type the part to paint into first', { variant: 'warn', source: 'parts' }); return true; }
-      brushing = { target, pending: [], timer: null };
+      brushing = { target, stroke: `fix-${Date.now()}-${++strokeSeq}`, pending: [], timer: null };
       brushAt(evt);
       return true;
     }
@@ -880,7 +888,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
     const pts = brushing.pending.splice(0);
     if (!pts.length) return;
     const radius = brushRadius() * Number(brushRange.value);
-    void edit(pts.map((point) => ({ op: 'reassign', point, to: brushing!.target, radius })));
+    // One drag = one undo step: every batch of the stroke shares its id.
+    void ctl.editParts({ ops: pts.map((point) => ({ op: 'reassign', point, to: brushing!.target, radius })), stroke: brushing.stroke })
+      .then((r) => { if ('error' in r) showToast(String(r.error), { variant: 'warn', source: 'parts' }); });
   }
   let cachedDiag = 0;
   function brushRadius(): number {
@@ -913,9 +923,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
 
   function onWindowUp(evt: PointerEvent): void {
     if (pinDrag) {
-      const { index, point, x, y } = pinDrag;
+      const { index, point, x, y, at } = pinDrag;
       pinDrag = null;
-      if (point && Math.hypot(evt.clientX - x, evt.clientY - y) > CLICK_SLOP_PX) { void movePin(index, point); return; }
+      const moved = Math.hypot(evt.clientX - x, evt.clientY - y) > CLICK_SLOP_PX;
+      if (point && moved) { void movePin(index, point); return; }
+      // Long-press a pin (no drag) deletes it — the touch twin of right-click.
+      if (!moved && performance.now() - at >= PIN_LONG_PRESS_MS) { void removePin(index); return; }
       // A click on a pin (no drag) acts like a click on the model there.
       press = { x, y, shift: evt.shiftKey, alt: evt.altKey, additive: evt.shiftKey || evt.ctrlKey || evt.metaKey };
     }
@@ -1044,7 +1057,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   footer.append(discardBtn, acceptBtn);
 
   const unsubscribe = ctl.subscribe((ev) => {
-    if (ev === 'draft') { cachedDiag = 0; renderDraft(); renderPins(); }
+    if (ev === 'draft') {
+      cachedDiag = 0;
+      // Any later change makes the banner's Undo undo something else.
+      appliedBanner.classList.add('hidden');
+      renderDraft();
+      renderPins();
+    }
     if (ev === 'seeds') { renderPins(); if (!isDraft(ctl.getPartDraft())) renderDraft(); }
     if (ev === 'presets') renderStrip();
     if (ev === 'view') {

@@ -620,3 +620,69 @@ describe('parts own pins', () => {
     expect(again.parts.slice(1).map((p) => p.displayColor)).toEqual(s.parts.slice(1).map((p) => p.displayColor));
   });
 });
+
+describe('pin edge cases (review round)', () => {
+  const seedsLR = [
+    { label: 'left', point: [0.1, 0.5, 0.12] as [number, number, number] },
+    { label: 'right', point: [0.9, 0.5, 0.12] as [number, number, number] },
+  ];
+  const fresh = () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    return r;
+  };
+
+  it('re-detecting under a lock does not duplicate pins', () => {
+    const r = fresh();
+    r.edit([{ op: 'lock', id: 'left' }]);
+    const a = r.edit([{ op: 'rerun' }]);
+    expect(a.seeds.length).toBe(2);
+    // The panel passes the full pin list back in.
+    const b = r.detect({ algorithm: 'crease-watershed', seeds: a.seeds });
+    expect(b.seeds.length).toBe(2);
+  });
+
+  it('a part whose pin sits in its own fixed region keeps its unfixed rest', () => {
+    const r = fresh();
+    const before = r.draft!.summary().parts.find((p) => p.name === 'right')!.triCount;
+    // Hand-fix a blob around the right pin (a fix of right into right).
+    r.edit([{ op: 'reassign', point: [0.9, 0.5, 0.12], to: 'right', radius: 0.12 }]);
+    const left = r.draft!.seeds.findIndex((sd) => sd.label === 'left');
+    const s = r.edit([{ op: 'moveSeed', index: left, point: [0.15, 0.45, 0.105] }]);
+    expect(s.parts.find((p) => p.name === 'right')!.triCount).toBeGreaterThan(before * 0.9);
+  });
+
+  it('a pin on unassigned triangles grows a real part (after clear / delete)', () => {
+    const r = fresh();
+    r.edit([{ op: 'clear' }]);
+    const s = r.edit([{ op: 'addSeed', seed: { label: 'all', point: [0.5, 0.5, 0] } }]);
+    expect(s.parts.map((p) => [p.name, p.triCount > 0])).toEqual([['all', true]]);
+    const r2 = fresh();
+    r2.edit([{ op: 'delete', id: 'right' }]);
+    const s2 = r2.edit([{ op: 'addSeed', seed: { label: 'again', point: [0.9, 0.5, 0.12] } }]);
+    expect(s2.parts.find((p) => p.name === 'again')!.triCount).toBeGreaterThan(0);
+  });
+
+  it('a pin on a locked part is refused with a clear error', () => {
+    const r = fresh();
+    r.edit([{ op: 'lock', id: 'right' }]);
+    expect(() => r.edit([{ op: 'addSeed', seed: { label: 'new', point: [0.9, 0.5, 0.12] } }])).toThrow(/locked part "right"/);
+  });
+
+  it('addSeed with rerun:false keeps the pin (and its new part) for a later re-grow', () => {
+    const r = fresh();
+    const s = r.edit([{ op: 'addSeed', seed: { label: 'later', point: [0.9, 0.9, 0.12] }, rerun: false }]);
+    expect(s.seeds.some((sd) => sd.label === 'later')).toBe(true);
+    const after = r.edit([{ op: 'rerun' }]);
+    expect(after.parts.find((p) => p.name === 'later')!.triCount).toBeGreaterThan(0);
+  });
+
+  it('edits sharing a stroke id are one undo step', () => {
+    const r = fresh();
+    const base = r.draft!.triPart.slice();
+    r.edit([{ op: 'reassign', point: [0.2, 0.3, 0.09], to: 'right', radius: 0.05 }], 'stroke-1');
+    r.edit([{ op: 'reassign', point: [0.2, 0.7, 0.09], to: 'right', radius: 0.05 }], 'stroke-1');
+    r.edit([{ op: 'undo' }]);
+    expect([...r.draft!.triPart]).toEqual([...base]);
+  });
+});

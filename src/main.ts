@@ -16068,7 +16068,7 @@ async function main() {
         'previewPartPresets': { signature: 'await previewPartPresets({algorithm?, seeds?, view?, importIndex?, image?}) -- Run every preset of a detector without touching the draft, ranked best-first -> {presets:[{index,name,params,partCount,score}], image}', docs: '/ai/segmentation.md' },
         'showPartPresetPreview': { signature: 'showPartPresetPreview(index | null) -- Show one preset result in the viewport (null = back to the draft)', docs: '/ai/segmentation.md' },
         'applyPartPreset':   { signature: 'await applyPartPreset(index) -- Make a previewPartPresets result the draft -> draft summary', docs: '/ai/segmentation.md' },
-        'getPartSeeds':      { signature: 'getPartSeeds() -- Working seeds (the panel markers; the next detection uses them) -> [{label, point}]', docs: '/ai/segmentation.md' },
+        'getPartSeeds':      { signature: 'getPartSeeds() -- The parts\' pins (the panel markers; auto = placed by the draft) -> [{label, point, auto?}]', docs: '/ai/segmentation.md' },
         'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z]}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
         'openPartsPanel':    { signature: 'openPartsPanel() -- Open the Part Detection panel', docs: '/ai/segmentation.md' },
         'getPartSelection':  { signature: 'getPartSelection() -- Selected draft parts (shared with the panel and the model) -> {parts:[{id,name}]}', docs: '/ai/segmentation.md' },

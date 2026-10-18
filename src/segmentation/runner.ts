@@ -134,7 +134,8 @@ export class SegmentationRunner {
       params, seeds, signal: req.signal, cache: this.detectorCache,
       progress: (frac, msg) => req.progress?.(0.15 + 0.85 * frac, msg),
     });
-    const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds }, result);
+    // A seedless detector's parts get automatic pins, not the caller's seeds.
+    const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds: d.seeds === 'none' ? [] : seeds }, result);
     model.undoDepth = this.undoDepth;
     model.anchorMinRegionFrac = this.anchorMinRegionFrac;
     model.edgeSmoothing = this.defaultEdgeSmoothing;
@@ -157,10 +158,10 @@ export class SegmentationRunner {
     return this.cutCache.cut;
   }
 
-  edit(ops: PartEditOp[]): DraftSummary {
+  edit(ops: PartEditOp[], stroke?: string): DraftSummary {
     if (!this.draft) throw new Error('No part draft — call detectParts first.');
     this.revision++;
-    this.draft.edit(ops);
+    this.draft.edit(ops, stroke);
     return this.draft.summary();
   }
 }

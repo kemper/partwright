@@ -141,6 +141,9 @@ export function createPartDetection(host: PartDetectionHost) {
   /** Part index per triangle of the mesh the overlay currently shows (for
    *  picking a part by clicking it). */
   let overlayLabels: { mesh: MeshData | null; labels: Int32Array } | null = null;
+  /** Part per displayed triangle when the overlay is hidden (partAtFace
+   *  hit-tests the plain model then); rebuilt only on a draft change. */
+  let labelCache: { gen: number; mesh: MeshData; labels: Int32Array } | null = null;
   let presets: { importIndex: number; meshKey: string; algorithm: string; items: PresetPreview[] } | null = null;
   let previewIndex: number | null = null;
   let panelOpener: (() => void) | null = null;
@@ -179,13 +182,23 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function clearDraftState(): void {
+    const hadDraft = draft !== null;
     draft = null;
     gen++;
     cutState = null;
     overlayLabels = null;
+    labelCache = null;
     clearPresets();
+    // The draft's pins and the view (selection, solo, hover) belong to it.
+    // Pins placed before any detection (no draft yet) survive, e.g. a
+    // cancelled first detection.
+    const hadPins = hadDraft && seeds.length > 0;
+    if (hadDraft) seeds = [];
+    selection.clear(); soloNames.clear(); hovered = null; viewMode = 'all';
     host.clearOverlay();
     emit('draft');
+    if (hadPins) emit('seeds');
+    emit('view');
   }
 
   function clearPresets(): void {
@@ -209,6 +222,7 @@ export function createPartDetection(host: PartDetectionHost) {
 
   function copySeed(x: SegSeed): SegSeed {
     const out: SegSeed = { label: x.label, point: [x.point[0], x.point[1], x.point[2]] };
+    if (typeof x.triangle === 'number') out.triangle = x.triangle;
     if (x.auto) out.auto = true;
     return out;
   }
@@ -339,7 +353,9 @@ export function createPartDetection(host: PartDetectionHost) {
    *  solo) — in place when the host can, else a full refresh. */
   function applyView(): void {
     emit('view');
-    if (!draft || !overlayVisible || previewIndex !== null || !overlayLabels) { refreshOverlay(); return; }
+    // Nothing coloured to restyle: the overlay is hidden or not shown yet.
+    if (!draft || !overlayVisible) return;
+    if (previewIndex !== null || !overlayLabels) { refreshOverlay(); return; }
     const colors = colorsFromLabels(overlayLabels.labels, partPalette(draft, true));
     if (!host.recolorOverlay?.(colors)) refreshOverlay();
   }
@@ -707,8 +723,15 @@ export function createPartDetection(host: PartDetectionHost) {
      *  shows (overlay or model), or null. */
     partAtFace(triangleIndex: number): { id: number; name: string } | null {
       if (!draft) return null;
-      let labels = overlayLabels?.labels ?? null;
-      if (!labels || previewIndex !== null) labels = displayedPartsAndColors(draft)?.triPart ?? null;
+      let labels = previewIndex === null ? overlayLabels?.labels ?? null : null;
+      if (!labels) {
+        const shown = host.getDisplayedMesh();
+        if (shown && (!labelCache || labelCache.gen !== gen || labelCache.mesh !== shown)) {
+          const d = displayedPartsAndColors(draft);
+          labelCache = d ? { gen, mesh: shown, labels: d.triPart } : null;
+        }
+        labels = labelCache?.labels ?? null;
+      }
       const L = labels && triangleIndex >= 0 && triangleIndex < labels.length ? labels[triangleIndex] : -1;
       const p = L >= 0 ? draft.summary.parts[L] : undefined;
       return p ? { id: p.id, name: p.name } : null;
@@ -787,11 +810,13 @@ export function createPartDetection(host: PartDetectionHost) {
     async editParts(opts: unknown) {
       try {
         const o = assertObject(opts, 'editParts(options)')!;
-        assertNoUnknownKeys(o, ['ops'], 'editParts(options)');
+        assertNoUnknownKeys(o, ['ops', 'stroke'], 'editParts(options)');
         const ops = assertArray(o.ops, 'editParts(options).ops').map((op, i) => parseEditOp(op, `ops[${i}]`));
         if (ops.length === 0) throw new ValidationError('editParts(options).ops must contain at least one op');
+        // Batches sharing a stroke id (one brush drag) are one undo step.
+        const stroke = assertString(o.stroke, 'editParts(options).stroke', { optional: true });
         const d = currentDraft();
-        const r = await withBusy('Updating parts…', false, () => editPartsAsync(d.meshKey, ops));
+        const r = await withBusy('Updating parts…', false, () => editPartsAsync(d.meshKey, ops, stroke));
         setDraft({ ...d, summary: r.summary!, triPart: r.triPart! });
         return compact(r.summary!);
       } catch (e) {
@@ -974,7 +999,7 @@ export function createPartDetection(host: PartDetectionHost) {
         return await api.detectParts({
           algorithm: item.algorithm, params: item.params, importIndex: presets.importIndex,
           ...(item.featureOptions ? { featureOptions: item.featureOptions } : {}),
-          ...(item.summary.seeds.length ? { seeds: item.summary.seeds.map((x) => ({ label: x.label, point: x.point })) } : {}),
+          ...(item.summary.seeds.length ? { seeds: item.summary.seeds.map(copySeed) } : {}),
         });
       } catch (e) {
         keepPresetsOnce = false;
@@ -1074,12 +1099,10 @@ export function createPartDetection(host: PartDetectionHost) {
     async discardParts() {
       const had = draft !== null;
       await discardPartsDraft();
+      // Discard starts over: pins, selection and view go too — including
+      // pins placed before any detection.
       clearDraftState();
-      // Discard starts over: pins, selection and view go too.
-      seeds = [];
-      selection.clear(); soloNames.clear(); hovered = null; viewMode = 'all';
-      emit('seeds');
-      emit('view');
+      if (seeds.length) { seeds = []; emit('seeds'); }
       return { ok: true, discarded: had };
     },
 
@@ -1125,7 +1148,8 @@ export function createPartDetection(host: PartDetectionHost) {
       }
     },
     getPartsView() {
-      return { mode: viewMode, parts: [...(soloNames.size ? soloNames : viewMode === 'solo' ? selection : [])] };
+      if (viewMode === 'all') return { mode: viewMode, parts: [] as string[] };
+      return { mode: viewMode, parts: [...(soloNames.size ? soloNames : selection)] };
     },
     /** Hover highlight (UI-only state; the panel drives it). */
     setHoveredPart(name: string | null): void {

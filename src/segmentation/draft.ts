@@ -229,7 +229,7 @@ export class PartDraftModel {
     this.detectorId = run.detectorId;
     this.params = run.params;
     this.featureOptions = run.featureOptions;
-    this.seeds = getDetector(run.detectorId)?.seeds === 'none' ? [] : run.seeds.map(cloneSeed);
+    this.seeds = run.seeds.map(cloneSeed);
     this.diagnostics = result.diagnostics;
     this.triPart = result.triPart;
     this.names = [];
@@ -253,8 +253,6 @@ export class PartDraftModel {
     );
     const byName = new Map(saved.names.map((nm, i) => [nm, saved.colors[i] ?? null] as const));
     model.colors = model.names.map((nm) => byName.get(nm) ?? null);
-    model.seeds = saved.seeds.map(cloneSeed);
-    model.syncAnchors();
     return model;
   }
 
@@ -269,6 +267,7 @@ export class PartDraftModel {
     c.focusMask = this.focusMask ? this.focusMask.slice() : null;
     c.fixedTri = this.fixedTri ? this.fixedTri.slice() : null;
     c.anchorMinRegionFrac = this.anchorMinRegionFrac;
+    c.colorMemo = new Map(this.colorMemo);
     c.edgeSmoothing = this.edgeSmoothing;
     c.cache = this.cache;
     c.undoDepth = this.undoDepth;
@@ -438,7 +437,12 @@ export class PartDraftModel {
 
   /** Apply a batch of ops atomically (all-or-nothing for validation errors:
    *  the pre-batch state is restored if any op throws). */
-  edit(ops: PartEditOp[]): void {
+  /** Stroke id of the last coalesced batch (see edit's `stroke`). */
+  private lastStroke: string | null = null;
+
+  /** Apply a batch. Batches sent with the same `stroke` id (one Fix-brush
+   *  drag) share a single undo step. */
+  edit(ops: PartEditOp[], stroke?: string): void {
     if (ops.length > 1 && ops.some((o) => o.op === 'undo')) {
       throw new Error('undo must be sent on its own (it reverts the previous batch).');
     }
@@ -450,7 +454,10 @@ export class PartDraftModel {
       this.restore(before);
       throw e;
     }
-    if (ops.length && !(ops.length === 1 && ops[0].op === 'undo')) {
+    const isUndo = ops.length === 1 && ops[0].op === 'undo';
+    const continuing = !!stroke && stroke === this.lastStroke;
+    this.lastStroke = isUndo ? null : stroke ?? null;
+    if (ops.length && !isUndo && !continuing) {
       this.undoStack.push(before);
       if (this.undoStack.length > this.undoDepth) this.undoStack.shift();
     }
@@ -544,7 +551,7 @@ export class PartDraftModel {
         // The split's seeds become the new parts' pins.
         const splitNames = new Set(names);
         this.seeds = this.seeds.filter((sd) => !(sd.auto && splitNames.has(sd.label)));
-        for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: sd.label.trim(), point: [sd.point[0], sd.point[1], sd.point[2]] });
+        for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] });
         return;
       }
       case 'absorbSmall': {
@@ -567,13 +574,13 @@ export class PartDraftModel {
         const sd = cloneSeed(op.seed);
         sd.label = cleanName(sd.label);
         delete sd.auto;
+        this.assertPinPlaceable(sd.label, sd.point);
         this.seeds.push(sd);
-        if (op.rerun !== false) {
-          // A pin for an existing part grows it there; a new name makes a new
-          // part. Either way only the parts around the pin re-grow.
-          this.createPart(sd.label);
-          this.regrowAround([sd.label, this.partNameAt(sd.point)]);
-        }
+        // A pin for an existing part grows it there; a new name makes a new
+        // part. Either way only the parts around the pin re-grow (with
+        // rerun:false the new part waits, empty, for a later re-grow).
+        this.createPart(sd.label);
+        if (op.rerun !== false) this.regrowAround([sd.label, this.partNameAt(sd.point)]);
         return;
       }
       case 'removeSeed': {
@@ -586,6 +593,7 @@ export class PartDraftModel {
         if (!Number.isInteger(op.index) || op.index < 0 || op.index >= this.seeds.length) throw new Error(`moveSeed.index must be 0–${this.seeds.length - 1}`);
         if (!Array.isArray(op.point) || op.point.length !== 3 || op.point.some((x) => !Number.isFinite(x))) throw new Error('moveSeed.point must be [x, y, z]');
         const was = this.seeds[op.index];
+        this.assertPinPlaceable(was.label, op.point);
         // A moved pin is the user's now, even if the draft placed it.
         this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]] };
         if (op.rerun !== false) this.regrowAround([was.label, this.partNameAt(was.point), this.partNameAt(op.point)]);
@@ -737,9 +745,19 @@ export class PartDraftModel {
     // Pins: a seeded detector's seeds are the detected parts' pins; outside a
     // detection mask the existing pins stay. syncAnchors drops pins whose
     // part vanished and gives anchorless parts automatic ones.
-    const used = d.seeds === 'none' ? [] : seeds.map(cloneSeed);
-    const kept = allow ? this.seeds.filter((sd) => { const t = this.pinTriangle(sd); return t >= 0 && !allow[t]; }) : [];
-    this.seeds = [...kept, ...used];
+    // Masked: pins outside the mask stay; of the detector's seeds only those
+    // inside it are new (the panel and rerun pass the full pin list back in,
+    // which would otherwise duplicate the outside pins).
+    const inside = (sd: SegSeed) => { const t = this.pinTriangle(sd); return t >= 0 && !!allow![t]; };
+    const used = d.seeds === 'none' ? [] : (allow ? seeds.map(cloneSeed).filter(inside) : seeds.map(cloneSeed));
+    const kept = allow ? this.seeds.filter((sd) => !inside(sd)) : [];
+    const seen = new Set<string>();
+    this.seeds = [...kept, ...used].filter((sd) => {
+      const key = `${sd.label}|${sd.point.join(',')}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     this.features = features;
     // A full re-detection replaces hand fixes too; a masked one keeps those
     // outside the mask.
@@ -808,7 +826,10 @@ export class PartDraftModel {
   /** Triangle a pin sits on (its resolved triangle, else the nearest). */
   private pinTriangle(sd: SegSeed): number {
     if (typeof sd.triangle === 'number' && sd.triangle >= 0 && sd.triangle < this.triPart.length) return sd.triangle;
-    return nearestTriangle(this.features, sd.point);
+    // Resolve once and remember: the lookup is a linear scan of the mesh.
+    const t = nearestTriangle(this.features, sd.point);
+    if (t >= 0) sd.triangle = t;
+    return t;
   }
 
   private partNameAt(point: [number, number, number]): string | null {
@@ -848,8 +869,9 @@ export class PartDraftModel {
       const i = this.names.indexOf(nm);
       if (i >= 0 && !this.lockedNames.has(nm)) core.add(i);
     }
-    if (core.size === 0) return;
+    if (core.size === 0) { this.compact(); return; }
     const f = this.features;
+    const fixed = this.fixedTri;
     const area = new Set(core);
     for (let e = 0; e < f.edgeA.length; e++) {
       const a = this.triPart[f.edgeA[e]], b = this.triPart[f.edgeB[e]];
@@ -857,29 +879,69 @@ export class PartDraftModel {
       if (core.has(a) && b >= 0 && !this.lockedNames.has(this.names[b])) area.add(b);
       if (core.has(b) && a >= 0 && !this.lockedNames.has(this.names[a])) area.add(a);
     }
-    const allow = new Uint8Array(this.triPart.length);
     // Brand-new parts (a pin with a new name) have no triangles yet: their
     // pins decide which region they compete for.
-    const newParts = [...core].filter((i) => !this.triPart.includes(i));
+    const present = new Uint8Array(this.names.length);
+    for (let t = 0; t < this.triPart.length; t++) if (this.triPart[t] >= 0) present[this.triPart[t]] = 1;
+    const newParts = new Set([...core].filter((i) => !present[i]));
+    const pinsHere = this.seeds
+      .map((sd) => ({ sd, L: this.names.indexOf(sd.label), t: this.pinTriangle(sd) }))
+      .filter((x) => x.L >= 0 && x.t >= 0 && (area.has(x.L) || newParts.has(x.L)));
+    // Unassigned triangles join the re-grow when a pin sits on one (a pin
+    // placed after "Clear all", or where a deleted part was).
+    const withUnassigned = pinsHere.some((x) => this.triPart[x.t] < 0);
+    const allow = new Uint8Array(this.triPart.length);
     // Fixed (hand-fixed) triangles stay as they are: out of the re-grow.
-    for (let t = 0; t < allow.length; t++) if (area.has(this.triPart[t]) && !(this.fixedTri && this.fixedTri[t] >= 0)) allow[t] = 1;
+    for (let t = 0; t < allow.length; t++) {
+      const L = this.triPart[t];
+      if ((area.has(L) || (withUnassigned && L < 0)) && !(fixed && fixed[t] >= 0)) allow[t] = 1;
+    }
+    // A focus confines every edit, pin edits included.
+    if (this.focusMask) for (let t = 0; t < allow.length; t++) if (!this.focusMask[t]) allow[t] = 0;
     const seedTris: number[] = [], seedLabels: number[] = [];
     const taken = new Set<number>();
+    const seeded = new Set<number>();
     // Placed pins first: where a placed pin and an automatic pin land on the
     // same triangle, the placed one wins (an auto pin is only a stand-in).
-    const ordered = [...this.seeds.filter((sd) => !sd.auto), ...this.seeds.filter((sd) => sd.auto)];
-    for (const sd of ordered) {
-      const L = this.names.indexOf(sd.label);
-      if (L < 0 || (!area.has(L) && !newParts.includes(L))) continue;
-      const t = this.pinTriangle(sd);
-      if (t < 0 || !allow[t] || taken.has(t)) continue;
+    pinsHere.sort((x, y) => Number(!!x.sd.auto) - Number(!!y.sd.auto));
+    for (const { L, t } of pinsHere) {
+      if (!allow[t] || taken.has(t)) continue;
       taken.add(t);
       seedTris.push(t); seedLabels.push(L);
+      seeded.add(L);
     }
-    if (seedTris.length === 0) return;
+    // A part whose pins all sit on its own fixed triangles grows from those
+    // fixed triangles instead (else its unfixed rest would go to neighbours).
+    if (fixed) {
+      for (const L of area) {
+        if (seeded.has(L)) continue;
+        for (let t = 0; t < fixed.length; t++) {
+          if (fixed[t] !== L || taken.has(t)) continue;
+          allow[t] = 1;
+          taken.add(t);
+          seedTris.push(t); seedLabels.push(L);
+        }
+      }
+    }
+    if (seedTris.length === 0) { this.compact(); return; }
     const g = growFromSeeds(f, seedTris, seedLabels, this.growthOptions(allow));
     for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = g.triLabel[t];
     this.compact();
+  }
+
+  /** Throw a clear error when a pin for part `label` can't take effect
+   *  where it is: on a locked part, or on triangles fixed to another part. */
+  private assertPinPlaceable(label: string, point: [number, number, number]): void {
+    const t = nearestTriangle(this.features, point);
+    if (t < 0) throw new Error('Pin point is not on the mesh');
+    const L = this.triPart[t];
+    if (L >= 0 && this.names[L] !== label && this.lockedNames.has(this.names[L])) {
+      throw new Error(`That spot belongs to the locked part "${this.names[L]}" — unlock it first.`);
+    }
+    const fx = this.fixedTri?.[t] ?? -1;
+    if (fx >= 0 && this.names[fx] !== label) {
+      throw new Error(`That spot is fixed to part "${this.names[fx]}" (a hand fix) — reassign it first.`);
+    }
   }
 
   private fix(t: number, part: number): void {

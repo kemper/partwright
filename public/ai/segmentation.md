@@ -59,7 +59,7 @@ partwright.renderParts({ views: ['front', 'right', 'back', 'iso'] })
 
 // 4. Fix what's wrong (atomic batch; ids are the legend numbers, or part names)
 await partwright.editParts({ ops: [
-  { op: 'addSeed', seed: { label: 'shirt', point: [140, 140, 50] } },   // re-runs detection
+  { op: 'addSeed', seed: { label: 'shirt', point: [140, 140, 50] } },   // a pin: re-grows only nearby parts
   { op: 'merge', ids: [7, 9], name: 'shorts' },
   { op: 'reassign', point: [120, 140, 44], to: 'skin' },               // the region under the point
   { op: 'split', id: 'hair', seeds: [{ label: 'hair', point: [...] }, { label: 'brows', point: [...] }] },
