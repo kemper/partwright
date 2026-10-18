@@ -40,6 +40,9 @@ export interface PartDetectionHost {
   /** The mesh currently shown in the viewport (null when nothing rendered). */
   getDisplayedMesh(): MeshData | null;
   showOverlay(mesh: MeshData, triColors: Uint8Array): void;
+  /** Repaint the shown overlay in place (same mesh, new colours); false when
+   *  it can't, and the controller falls back to showOverlay. */
+  recolorOverlay?(triColors: Uint8Array): boolean;
   clearOverlay(): void;
   getCode(): string;
   getLanguage(): string;
@@ -50,15 +53,27 @@ export interface PartDetectionHost {
   modelHasPaint?(): boolean;
 }
 
-/** 'draft' = the draft changed; 'busy' = progress; 'seeds' = the working
- *  seed list changed; 'presets' = preset previews changed / which one is
- *  being previewed. */
-export type PartDetectionEvent = 'draft' | 'busy' | 'seeds' | 'presets';
+/** 'draft' = the draft changed; 'busy' = progress; 'seeds' = the pins
+ *  changed; 'presets' = preset previews changed / which one is being
+ *  previewed; 'view' = selection, hover or solo changed. */
+export type PartDetectionEvent = 'draft' | 'busy' | 'seeds' | 'presets' | 'view';
 
 const EDIT_OPS = [
   'merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries',
-  'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'rerun', 'undo',
+  'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo',
 ] as const;
+
+/** How the overlay draws parts: everything, or only a solo set (the rest
+ *  greyed out). */
+export type PartsViewMode = 'all' | 'solo';
+
+/** Mix an RGB colour toward another (t = 0 keeps a, 1 gives b). */
+function mixRgb(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
+  return [Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t)];
+}
+const WHITE: [number, number, number] = [255, 255, 255];
+/** Solo view: parts outside the solo set are drawn in this grey. */
+const SOLO_DIM_RGB: [number, number, number] = [88, 88, 92];
 
 /** One preset's result in the filmstrip. */
 export interface PresetPreview {
@@ -129,6 +144,12 @@ export function createPartDetection(host: PartDetectionHost) {
   let presets: { importIndex: number; meshKey: string; algorithm: string; items: PresetPreview[] } | null = null;
   let previewIndex: number | null = null;
   let panelOpener: (() => void) | null = null;
+  /** Selected parts (by name — ids shift when parts are merged/deleted). */
+  let selection = new Set<string>();
+  let hovered: string | null = null;
+  let viewMode: PartsViewMode = 'all';
+  /** Solo set; empty = solo the selection. */
+  let soloNames = new Set<string>();
   let keepPresetsOnce = false;
   let presetRun: { stop: boolean } | null = null;
 
@@ -183,7 +204,13 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function sameSeeds(a: SegSeed[], b: SegSeed[]): boolean {
-    return a.length === b.length && a.every((x, i) => x.label === b[i].label && x.point.every((v, k) => v === b[i].point[k]));
+    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.point.every((v, k) => v === b[i].point[k]));
+  }
+
+  function copySeed(x: SegSeed): SegSeed {
+    const out: SegSeed = { label: x.label, point: [x.point[0], x.point[1], x.point[2]] };
+    if (x.auto) out.auto = true;
+    return out;
   }
 
   /** Install a new draft state: bump the generation, sync working seeds when
@@ -203,12 +230,16 @@ export function createPartDetection(host: PartDetectionHost) {
     // Preset previews describe the draft they were computed against; applying
     // one of them keeps the strip so the user can keep flipping.
     if (keepPresetsOnce) { keepPresetsOnce = false; previewIndex = null; emit('presets'); } else clearPresets();
+    // Parts own their pins: the pins are the draft's.
     if (!prevSeeds || !sameSeeds(prevSeeds, next.summary.seeds)) {
-      if (next.summary.seeds.length > 0 || getDetector(next.summary.detectorId)?.seeds !== 'none') {
-        seeds = next.summary.seeds.map((x) => ({ label: x.label, point: [...x.point] as [number, number, number] }));
-        emit('seeds');
-      }
+      seeds = next.summary.seeds.map(copySeed);
+      emit('seeds');
     }
+    // Selection and solo follow names; drop names that are gone.
+    const names = new Set(next.summary.parts.map((p) => p.name));
+    selection = new Set([...selection].filter((nm) => names.has(nm)));
+    soloNames = new Set([...soloNames].filter((nm) => names.has(nm)));
+    if (hovered && !names.has(hovered)) hovered = null;
     refreshOverlay();
     emit('draft');
     if (!keepCut) scheduleCut(0);
@@ -276,14 +307,50 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   /** Part index per displayed triangle + overlay colours for the displayed mesh. */
-  function displayedPartsAndColors(d: DraftState): { mesh: MeshData; triPart: Int32Array; triColors: Uint8Array } | null {
+  /** RGB per part for the overlay. `styled` applies the view (solo, the
+   *  selection and the hovered part); renders for the AI and preset tiles
+   *  pass false. */
+  function partPalette(d: DraftState, styled: boolean): { rgb: [number, number, number][]; un: [number, number, number] } {
+    const base = d.summary.parts.map((p) => hexToRgb(p.displayColor));
+    const un = hexToRgb(UNASSIGNED_COLOR);
+    if (!styled) return { rgb: base, un };
+    const solo = viewMode === 'solo' ? (soloNames.size ? soloNames : selection) : null;
+    const rgb = d.summary.parts.map((p, i) => {
+      let c = base[i];
+      if (solo && solo.size && !solo.has(p.name)) c = SOLO_DIM_RGB;
+      if (selection.has(p.name)) c = mixRgb(c, WHITE, 0.35);
+      if (hovered === p.name) c = mixRgb(c, WHITE, 0.5);
+      return c;
+    });
+    return { rgb, un: solo && solo.size ? SOLO_DIM_RGB : un };
+  }
+
+  function colorsFromLabels(labels: Int32Array, pal: { rgb: [number, number, number][]; un: [number, number, number] }): Uint8Array {
+    const out = new Uint8Array(labels.length * 3);
+    for (let t = 0; t < labels.length; t++) {
+      const L = labels[t];
+      const c = L >= 0 ? pal.rgb[L] ?? pal.un : pal.un;
+      out[t * 3] = c[0]; out[t * 3 + 1] = c[1]; out[t * 3 + 2] = c[2];
+    }
+    return out;
+  }
+
+  /** Re-colour the shown overlay for a view change (selection, hover,
+   *  solo) — in place when the host can, else a full refresh. */
+  function applyView(): void {
+    emit('view');
+    if (!draft || !overlayVisible || previewIndex !== null || !overlayLabels) { refreshOverlay(); return; }
+    const colors = colorsFromLabels(overlayLabels.labels, partPalette(draft, true));
+    if (!host.recolorOverlay?.(colors)) refreshOverlay();
+  }
+
+  function displayedPartsAndColors(d: DraftState, styled = false): { mesh: MeshData; triPart: Int32Array; triColors: Uint8Array } | null {
     const displayed = host.getDisplayedMesh();
     if (!displayed) return null;
     const m = host.getImports()[d.importIndex];
     if (!m) return null;
     const map = sourceMap(m, displayed);
-    const rgb = d.summary.parts.map((p) => hexToRgb(p.displayColor));
-    const un = hexToRgb(UNASSIGNED_COLOR);
+    const { rgb, un } = partPalette(d, styled);
     const triPart = new Int32Array(displayed.numTri);
     const triColors = new Uint8Array(displayed.numTri * 3);
     for (let t = 0; t < displayed.numTri; t++) {
@@ -306,7 +373,7 @@ export function createPartDetection(host: PartDetectionHost) {
     if (!overlayVisible) { overlayLabels = null; host.clearOverlay(); return; }
     const shownDraft = previewIndex !== null && presets?.items[previewIndex] ? previewDraftState(presets.items[previewIndex]) : draft;
     if (!shownDraft) { overlayLabels = null; host.clearOverlay(); return; }
-    const d = displayedPartsAndColors(shownDraft);
+    const d = displayedPartsAndColors(shownDraft, shownDraft === draft);
     if (!d) return;
     if (shownDraft === draft && cutState && cutState.gen === gen) {
       const smooth = smoothOverlay(shownDraft, d.mesh, cutState);
@@ -333,8 +400,7 @@ export function createPartDetection(host: PartDetectionHost) {
     if (!m) return null;
     const map = sourceMap(m, displayed);
     const cut = cs.cut;
-    const rgb = d.summary.parts.map((p) => hexToRgb(p.displayColor));
-    const un = hexToRgb(UNASSIGNED_COLOR);
+    const { rgb, un } = partPalette(d, true);
     const emitted = new Uint8Array(cs.splitIndex.length);
     let outTri = 0;
     for (let t = 0; t < displayed.numTri; t++) {
@@ -427,6 +493,7 @@ export function createPartDetection(host: PartDetectionHost) {
     const parts = summary.parts.slice(0, MAX_LISTED_PARTS).map((p) => ({
       id: p.id, name: p.name, color: p.color, displayColor: p.displayColor, triCount: p.triCount,
       areaFrac: p.areaFrac, regions: p.regions, neighbors: p.neighbors, anchor: p.anchor, bbox: p.bbox,
+      pins: p.pins,
       ...(p.locked ? { locked: true } : {}),
     }));
     return {
@@ -452,11 +519,14 @@ export function createPartDetection(host: PartDetectionHost) {
     if (raw === undefined) return undefined;
     return assertArray(raw, where).map((s, i) => {
       const o = assertObject(s, `${where}[${i}]`)!;
-      assertNoUnknownKeys(o, ['label', 'point', 'triangle'], `${where}[${i}]`);
+      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto'], `${where}[${i}]`);
       const label = assertString(o.label, `${where}[${i}].label`)!;
       const point = assertNumberTuple(o.point, 3, `${where}[${i}].point`) as [number, number, number];
       const triangle = assertNumber(o.triangle, `${where}[${i}].triangle`, { optional: true, integer: true, min: 0 });
-      return triangle === undefined ? { label, point } : { label, point, triangle };
+      const auto = assertBoolean(o.auto, `${where}[${i}].auto`, { optional: true });
+      const out: SegSeed = triangle === undefined ? { label, point } : { label, point, triangle };
+      if (auto) out.auto = true;
+      return out;
     });
   }
 
@@ -473,6 +543,17 @@ export function createPartDetection(host: PartDetectionHost) {
     if (typeof v === 'number' && Number.isInteger(v)) return v;
     if (typeof v === 'string' && v.trim()) return v;
     throw new ValidationError(`${where} must be a 1-based part id or a part name`);
+  }
+
+  /** Part refs (1-based ids or names) → current part names. */
+  function resolveNames(refs: unknown[], where: string): string[] {
+    const parts = draft?.summary.parts ?? [];
+    return refs.map((r, i) => {
+      const ref = parseRef(r, `${where}[${i}]`);
+      const p = typeof ref === 'number' ? parts[ref - 1] : parts.find((x) => x.name === ref);
+      if (!p) throw new ValidationError(`${where}[${i}]: no part ${JSON.stringify(ref)}`);
+      return p.name;
+    });
   }
 
   function parseSeed(v: unknown, where: string): SegSeed {
@@ -548,6 +629,12 @@ export function createPartDetection(host: PartDetectionHost) {
       case 'setEdgeSmoothing':
         keys('iterations');
         return { op, iterations: assertNumber(x.iterations, `${where}.iterations`, { integer: true, min: 0, max: MAX_EDGE_SMOOTHING })! };
+      case 'reorder':
+        keys('id', 'position');
+        return { op, id: parseRef(x.id, `${where}.id`), position: assertNumber(x.position, `${where}.position`, { integer: true, min: 1 })! };
+      case 'clear':
+        keys();
+        return { op };
       case 'seedsFromParts': {
         keys('minRegionFrac');
         const minRegionFrac = assertNumber(x.minRegionFrac, `${where}.minRegionFrac`, { optional: true, min: 0, max: 1 })
@@ -604,7 +691,7 @@ export function createPartDetection(host: PartDetectionHost) {
 
     // ------------------------------------------------------- working seeds
 
-    getSeeds(): SegSeed[] { return seeds.map((x) => ({ label: x.label, point: [...x.point] as [number, number, number] })); },
+    getSeeds(): SegSeed[] { return seeds.map(copySeed); },
     /** Replace the working seed list (the panel's markers; the next
      *  detection uses it). Does not re-run detection by itself. */
     setSeeds(list: unknown) {
@@ -926,7 +1013,7 @@ export function createPartDetection(host: PartDetectionHost) {
         const imports = host.getImports();
         const m = imports[d.importIndex];
         const source: NonNullable<ImportedMeshParts['source']> = {
-          detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => ({ label: x.label, point: x.point })),
+          detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
         };
         let parts: ImportedMeshParts = {
           names: s.parts.map((p) => p.name),
@@ -988,7 +1075,87 @@ export function createPartDetection(host: PartDetectionHost) {
       const had = draft !== null;
       await discardPartsDraft();
       clearDraftState();
+      // Discard starts over: pins, selection and view go too.
+      seeds = [];
+      selection.clear(); soloNames.clear(); hovered = null; viewMode = 'all';
+      emit('seeds');
+      emit('view');
       return { ok: true, discarded: had };
+    },
+
+    // ------------------------------------------------- selection and view
+
+    /** Selected parts (shared by the panel list and the model). */
+    getPartSelection() {
+      const parts = draft?.summary.parts ?? [];
+      return { parts: parts.filter((p) => selection.has(p.name)).map((p) => ({ id: p.id, name: p.name })) };
+    },
+    /** Replace (or with `mode`, add to / toggle / remove from) the selection.
+     *  Parts are 1-based ids or names; null clears. */
+    setPartSelection(parts: unknown, opts?: unknown) {
+      try {
+        const o = opts === undefined ? {} : assertObject(opts, 'setPartSelection(parts, options)')!;
+        assertNoUnknownKeys(o, ['mode'], 'setPartSelection(parts, options)');
+        const mode = o.mode === undefined ? 'replace' : assertEnum(o.mode, ['replace', 'add', 'toggle', 'remove'] as const, 'setPartSelection options.mode');
+        const names = parts === null ? [] : resolveNames(assertArray(parts, 'setPartSelection(parts)'), 'setPartSelection(parts)');
+        if (mode === 'replace') selection = new Set(names);
+        else for (const nm of names) {
+          if (mode === 'add') selection.add(nm);
+          else if (mode === 'remove') selection.delete(nm);
+          else if (selection.has(nm)) selection.delete(nm); else selection.add(nm);
+        }
+        applyView();
+        return api.getPartSelection();
+      } catch (e) {
+        return err(e);
+      }
+    },
+    /** Overlay view: 'all' parts, or 'solo' — only the given parts (default:
+     *  the selection) in colour, the rest greyed out. */
+    setPartsView(opts: unknown) {
+      try {
+        const o = assertObject(opts, 'setPartsView(options)')!;
+        assertNoUnknownKeys(o, ['mode', 'parts'], 'setPartsView(options)');
+        viewMode = assertEnum(o.mode, ['all', 'solo'] as const, 'setPartsView(options).mode');
+        soloNames = new Set(o.parts === undefined ? [] : resolveNames(assertArray(o.parts, 'setPartsView(options).parts'), 'setPartsView(options).parts'));
+        applyView();
+        return api.getPartsView();
+      } catch (e) {
+        return err(e);
+      }
+    },
+    getPartsView() {
+      return { mode: viewMode, parts: [...(soloNames.size ? soloNames : viewMode === 'solo' ? selection : [])] };
+    },
+    /** Hover highlight (UI-only state; the panel drives it). */
+    setHoveredPart(name: string | null): void {
+      if (hovered === name) return;
+      hovered = name;
+      applyView();
+    },
+    getHoveredPart(): string | null { return hovered; },
+    /** The draft part nearest a world point (e.g. from probePixel). */
+    partAt(point: unknown) {
+      try {
+        const p = assertNumberTuple(point, 3, 'partAt(point)') as [number, number, number];
+        const d = currentDraft();
+        const m = host.getImports()[d.importIndex];
+        let best = -1, bestD = Infinity;
+        for (let t = 0; t < m.numTri; t++) {
+          let cx = 0, cy = 0, cz = 0;
+          for (let k = 0; k < 3; k++) {
+            const v = m.triVerts[t * 3 + k] * m.numProp;
+            cx += m.vertProperties[v]; cy += m.vertProperties[v + 1]; cz += m.vertProperties[v + 2];
+          }
+          const dd = (cx / 3 - p[0]) ** 2 + (cy / 3 - p[1]) ** 2 + (cz / 3 - p[2]) ** 2;
+          if (dd < bestD) { bestD = dd; best = t; }
+        }
+        const L = best >= 0 ? d.triPart[best] : -1;
+        const part = L >= 0 ? d.summary.parts[L] : undefined;
+        return part ? { id: part.id, name: part.name } : { id: null, name: null };
+      } catch (e) {
+        return err(e);
+      }
     },
   };
   return api;

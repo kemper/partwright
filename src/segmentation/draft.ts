@@ -7,6 +7,14 @@
 // Public part ids are 1-based (the numbers drawn on the overlay legend), so
 // a user or AI can say "part 4". Internally triPart holds 0-based indices
 // (-1 = unassigned).
+//
+// Parts own their PINS (`seeds`, keyed by part name): every part has at least
+// one — the user's/AI's, or an automatic one in the middle of each region.
+// Renaming or merging a part carries its pins along. The partition stays the
+// source of truth; pins steer it: adding, moving or removing a pin re-grows
+// only that part and its neighbours, and hand fixes (`reassign`) become FIXED
+// triangles a re-grow leaves alone. Re-detecting the whole model stays explicit
+// (detect / rerun).
 
 import {
   absorbSmallRegions, adjacencyFromPairs, majorityFilter, partitionRegions, type TriAdjacency,
@@ -17,12 +25,39 @@ import { growFromSeeds, type GrowthRule } from './growth';
 import { getDetector, resolveParams } from './registry';
 import type { DetectorContext, DetectorResult, FeatureOptions, MeshFeatures, ParamValues, SegMesh, SegSeed } from './types';
 
-/** Distinct overlay colours for parts without an explicit colour. */
-const PALETTE = [
-  '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6',
-  '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3',
-  '#808000', '#ffd8b1', '#000075', '#808080',
-];
+/** Overlay colour candidates: 36 hues around the wheel in three
+ *  lightness/saturation tiers (displayColors picks among them so neighbours
+ *  stay distinct). */
+const PALETTE: string[] = (() => {
+  const out: string[] = [];
+  const tiers: [number, number][] = [[0.72, 0.55], [0.85, 0.38], [0.55, 0.7]];
+  for (let k = 0; k < 36; k++) {
+    const [sat, light] = tiers[k % 3];
+    out.push(hslToHex((k * 137.508) % 360, sat, light));
+  }
+  return out;
+})();
+/** "Redmean" RGB distance below which two neighbouring parts' colours count
+ *  as clashing. Part of the colour metric's definition, not a knob. */
+const MIN_NEIGHBOR_COLOR_DISTANCE = 120;
+
+function hslToHex(h: number, s: number, l: number): string {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/** Perceptual-ish RGB distance ("redmean" weighting). */
+function colorDistance(a: [number, number, number], b: [number, number, number]): number {
+  const rm = (a[0] + b[0]) / 2;
+  const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db);
+}
+
 export const UNASSIGNED_COLOR = '#3a3a3a';
 
 export function overlayColor(index: number, explicit: string | null | undefined): string {
@@ -49,6 +84,8 @@ export interface PartSummary {
   regions: number;
   /** Locked parts keep their triangles when detection re-runs. */
   locked: boolean;
+  /** Pins this part owns (see `seeds`). */
+  pins: number;
 }
 
 export interface DraftQuality {
@@ -111,6 +148,8 @@ export type PartEditOp =
   | { op: 'lock'; id: PartRef; locked?: boolean }
   | { op: 'focus'; id: PartRef | null }
   | { op: 'setEdgeSmoothing'; iterations: number }
+  | { op: 'reorder'; id: PartRef; position: number }
+  | { op: 'clear' }
   | { op: 'rerun' }
   | { op: 'undo' };
 
@@ -129,6 +168,7 @@ interface Snapshot {
   /** Detection may switch the crease field (feature options): undo must
    *  restore the one the restored partition was measured on. */
   features: MeshFeatures;
+  fixedTri: Int32Array | null;
 }
 
 /** A crease at least this sharp (°) counts as a real seam for the
@@ -153,6 +193,15 @@ export class PartDraftModel {
   /** When set, detection only relabels these triangles (a focused part). */
   focusMask: Uint8Array | null = null;
   edgeSmoothing = DEFAULT_EDGE_SMOOTHING;
+  /** Part index per triangle a hand fix pinned there (−1 = not fixed): a
+   *  local re-grow leaves these triangles alone, so it can't undo the fix. */
+  fixedTri: Int32Array | null = null;
+  /** Automatic pins skip regions smaller than this fraction of their part
+   *  (appConfig.segmentation.seedsFromPartsMinRegionFrac, threaded in). */
+  anchorMinRegionFrac = 0.01;
+  /** Overlay colour remembered per part name, so colours stay put across
+   *  edits (see displayColors). */
+  private colorMemo = new Map<string, string>();
   /** Runner-owned per-mesh cache handed to detectors (see DetectorContext). */
   cache?: Map<string, unknown>;
   detectorId: string;
@@ -180,12 +229,13 @@ export class PartDraftModel {
     this.detectorId = run.detectorId;
     this.params = run.params;
     this.featureOptions = run.featureOptions;
-    this.seeds = run.seeds.map(cloneSeed);
+    this.seeds = getDetector(run.detectorId)?.seeds === 'none' ? [] : run.seeds.map(cloneSeed);
     this.diagnostics = result.diagnostics;
     this.triPart = result.triPart;
     this.names = [];
     this.colors = [];
     this.adoptResult(result);
+    this.syncAnchors();
   }
 
   /** Rebuild a draft from parts saved on an import (re-opening accepted
@@ -203,6 +253,8 @@ export class PartDraftModel {
     );
     const byName = new Map(saved.names.map((nm, i) => [nm, saved.colors[i] ?? null] as const));
     model.colors = model.names.map((nm) => byName.get(nm) ?? null);
+    model.seeds = saved.seeds.map(cloneSeed);
+    model.syncAnchors();
     return model;
   }
 
@@ -215,6 +267,8 @@ export class PartDraftModel {
     });
     c.lockedNames = new Set(this.lockedNames);
     c.focusMask = this.focusMask ? this.focusMask.slice() : null;
+    c.fixedTri = this.fixedTri ? this.fixedTri.slice() : null;
+    c.anchorMinRegionFrac = this.anchorMinRegionFrac;
     c.edgeSmoothing = this.edgeSmoothing;
     c.cache = this.cache;
     c.undoDepth = this.undoDepth;
@@ -312,6 +366,9 @@ export class PartDraftModel {
       if (d < bestD[L]) { bestD[L] = d; bestT[L] = t; }
     }
 
+    const display = this.displayColors(nbrSets);
+    const pinCount = new Map<string, number>();
+    for (const sd of this.seeds) pinCount.set(sd.label, (pinCount.get(sd.label) ?? 0) + 1);
     const parts: PartSummary[] = [];
     for (let L = 0; L < n; L++) {
       const a = area[L] || 1;
@@ -324,7 +381,7 @@ export class PartDraftModel {
         id: L + 1,
         name: this.names[L],
         color: this.colors[L],
-        displayColor: overlayColor(L, this.colors[L]),
+        displayColor: display[L],
         triCount: tris[L],
         areaFrac: round4(area[L] / total),
         centroid: round3v(centroid),
@@ -333,6 +390,7 @@ export class PartDraftModel {
         neighbors: [...nbrSets[L]].sort((x, y) => x - y).map((x) => x + 1),
         regions: regions[L],
         locked: this.lockedNames.has(this.names[L]),
+        pins: pinCount.get(this.names[L]) ?? 0,
       });
     }
 
@@ -366,7 +424,7 @@ export class PartDraftModel {
   /** RGB (0–255) per source triangle for the overlay. */
   triColors(): Uint8Array {
     const out = new Uint8Array(this.triPart.length * 3);
-    const rgb = this.names.map((_, i) => hexToRgb(overlayColor(i, this.colors[i])));
+    const rgb = this.summary().parts.map((p) => hexToRgb(p.displayColor));
     const un = hexToRgb(UNASSIGNED_COLOR);
     for (let t = 0; t < this.triPart.length; t++) {
       const L = this.triPart[t];
@@ -387,6 +445,7 @@ export class PartDraftModel {
     const before = this.snapshot();
     try {
       for (const op of ops) this.applyOp(op);
+      if (!(ops.length === 1 && ops[0].op === 'undo')) this.syncAnchors();
     } catch (e) {
       this.restore(before);
       throw e;
@@ -405,21 +464,33 @@ export class PartDraftModel {
         const keep = Math.min(...idx);
         const set = new Set(idx);
         const anyLocked = idx.some((i) => this.lockedNames.has(this.names[i]));
+        const mergedNames = new Set(idx.map((i) => this.names[i]));
         for (let t = 0; t < this.triPart.length; t++) if (set.has(this.triPart[t])) this.triPart[t] = keep;
+        if (this.fixedTri) for (let t = 0; t < this.fixedTri.length; t++) if (set.has(this.fixedTri[t])) this.fixedTri[t] = keep;
         // keep is the lowest merged index, so compaction (which only drops the
         // now-empty merged parts) leaves it in place; name it afterwards so the
         // new name may reuse a merged part's name.
         this.compact();
         if (op.name !== undefined) this.names[keep] = this.uniqueNameFor(keep, op.name);
         if (anyLocked) this.lockedNames.add(this.names[keep]);
+        // The merged part owns every merged part's pins.
+        for (const sd of this.seeds) if (mergedNames.has(sd.label)) sd.label = this.names[keep];
         this.pruneLocks();
         return;
       }
       case 'rename': {
         const i = this.resolvePart(op.id);
+        const nm = cleanName(op.name);
+        const holder = this.names.indexOf(nm);
+        // Giving a part another part's name merges the two (names are labels:
+        // two parts that share one are one part).
+        if (holder >= 0 && holder !== i) { this.applyOp({ op: 'merge', ids: [holder + 1, i + 1], name: nm }); return; }
         const was = this.names[i];
-        this.names[i] = this.uniqueNameFor(i, op.name);
-        if (this.lockedNames.delete(was)) this.lockedNames.add(this.names[i]);
+        this.names[i] = nm;
+        if (this.lockedNames.delete(was)) this.lockedNames.add(nm);
+        for (const sd of this.seeds) if (sd.label === was) sd.label = nm;
+        const memo = this.colorMemo.get(was);
+        if (memo) this.colorMemo.set(nm, memo);
         return;
       }
       case 'setColor': {
@@ -447,13 +518,13 @@ export class PartDraftModel {
           for (let t = 0; t < f.triCount; t++) {
             if (f.pieceOfTri[t] !== piece) continue;
             const dx = f.triCentroid[t * 3] - op.point[0], dy = f.triCentroid[t * 3 + 1] - op.point[1], dz = f.triCentroid[t * 3 + 2] - op.point[2];
-            if (dx * dx + dy * dy + dz * dz <= r2) this.triPart[t] = target;
+            if (dx * dx + dy * dy + dz * dz <= r2) { this.triPart[t] = target; this.fix(t, target); }
           }
         } else {
           // Flood the same-label connected region under the point.
           const { compOf } = partitionRegions(this.triPart, this.adjacency);
           const c = compOf[seedTri];
-          for (let t = 0; t < f.triCount; t++) if (compOf[t] === c) this.triPart[t] = target;
+          for (let t = 0; t < f.triCount; t++) if (compOf[t] === c) { this.triPart[t] = target; this.fix(t, target); }
         }
         this.compact();
         return;
@@ -470,6 +541,10 @@ export class PartDraftModel {
         if (names[0] !== this.names[i]) this.names[i] = names[0];
         for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = map[g.triLabel[t]];
         this.compact();
+        // The split's seeds become the new parts' pins.
+        const splitNames = new Set(names);
+        this.seeds = this.seeds.filter((sd) => !(sd.auto && splitNames.has(sd.label)));
+        for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: sd.label.trim(), point: [sd.point[0], sd.point[1], sd.point[2]] });
         return;
       }
       case 'absorbSmall': {
@@ -485,26 +560,40 @@ export class PartDraftModel {
         this.compact();
         return;
       }
-      case 'addSeed':
+      case 'addSeed': {
         if (!op.seed || typeof op.seed.label !== 'string' || !Array.isArray(op.seed.point) || op.seed.point.length !== 3) {
           throw new Error('addSeed.seed must be { label, point: [x,y,z] }');
         }
-        this.seeds.push(cloneSeed(op.seed));
-        if (op.rerun !== false) this.rerun();
+        const sd = cloneSeed(op.seed);
+        sd.label = cleanName(sd.label);
+        delete sd.auto;
+        this.seeds.push(sd);
+        if (op.rerun !== false) {
+          // A pin for an existing part grows it there; a new name makes a new
+          // part. Either way only the parts around the pin re-grow.
+          this.createPart(sd.label);
+          this.regrowAround([sd.label, this.partNameAt(sd.point)]);
+        }
         return;
-      case 'removeSeed':
+      }
+      case 'removeSeed': {
         if (!Number.isInteger(op.index) || op.index < 0 || op.index >= this.seeds.length) throw new Error(`removeSeed.index must be 0–${this.seeds.length - 1}`);
-        this.seeds.splice(op.index, 1);
-        if (op.rerun !== false) this.rerun();
+        const [gone] = this.seeds.splice(op.index, 1);
+        if (op.rerun !== false) this.regrowAround([gone.label, this.partNameAt(gone.point)]);
         return;
-      case 'moveSeed':
+      }
+      case 'moveSeed': {
         if (!Number.isInteger(op.index) || op.index < 0 || op.index >= this.seeds.length) throw new Error(`moveSeed.index must be 0–${this.seeds.length - 1}`);
         if (!Array.isArray(op.point) || op.point.length !== 3 || op.point.some((x) => !Number.isFinite(x))) throw new Error('moveSeed.point must be [x, y, z]');
-        this.seeds[op.index] = { label: this.seeds[op.index].label, point: [op.point[0], op.point[1], op.point[2]] };
-        if (op.rerun !== false) this.rerun();
+        const was = this.seeds[op.index];
+        // A moved pin is the user's now, even if the draft placed it.
+        this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]] };
+        if (op.rerun !== false) this.regrowAround([was.label, this.partNameAt(was.point), this.partNameAt(op.point)]);
         return;
+      }
       case 'seedsFromParts':
-        this.seeds = this.seedsFromParts(op.minRegionFrac);
+        // Reset every part to automatic pins (one per sizeable region).
+        this.seeds = this.seedsFromParts(op.minRegionFrac).map((sd) => ({ ...sd, auto: true }));
         // Seeds only mean something to a seeded detector: switch a seedless
         // draft (auto patches, pieces) to crease-watershed so add/move/remove
         // seed + rerun refine from here.
@@ -533,6 +622,24 @@ export class PartDraftModel {
           throw new Error(`setEdgeSmoothing.iterations must be an integer 0–${MAX_EDGE_SMOOTHING}`);
         }
         this.edgeSmoothing = op.iterations;
+        return;
+      case 'reorder': {
+        const i = this.resolvePart(op.id);
+        if (!Number.isInteger(op.position) || op.position < 1 || op.position > this.names.length) throw new Error(`reorder.position must be 1–${this.names.length}`);
+        const order = this.names.map((_, k) => k);
+        order.splice(i, 1);
+        order.splice(op.position - 1, 0, i);
+        this.permute(order);
+        return;
+      }
+      case 'clear':
+        this.triPart.fill(-1);
+        this.names = [];
+        this.colors = [];
+        this.seeds = [];
+        this.fixedTri = null;
+        this.lockedNames.clear();
+        this.focusMask = null;
         return;
       case 'rerun':
         this.rerun();
@@ -627,9 +734,21 @@ export class PartDraftModel {
     this.detectorId = d.id;
     this.params = { ...params };
     this.featureOptions = { ...featureOptions };
-    this.seeds = seeds.map(cloneSeed);
+    // Pins: a seeded detector's seeds are the detected parts' pins; outside a
+    // detection mask the existing pins stay. syncAnchors drops pins whose
+    // part vanished and gives anchorless parts automatic ones.
+    const used = d.seeds === 'none' ? [] : seeds.map(cloneSeed);
+    const kept = allow ? this.seeds.filter((sd) => { const t = this.pinTriangle(sd); return t >= 0 && !allow[t]; }) : [];
+    this.seeds = [...kept, ...used];
     this.features = features;
+    // A full re-detection replaces hand fixes too; a masked one keeps those
+    // outside the mask.
+    if (this.fixedTri) {
+      if (!allow) this.fixedTri = null;
+      else for (let t = 0; t < this.fixedTri.length; t++) if (allow[t]) this.fixedTri[t] = -1;
+    }
     this.pruneLocks();
+    this.syncAnchors();
   }
 
   /**
@@ -682,6 +801,137 @@ export class PartDraftModel {
       seeds.push({ label: this.names[L], point: [cen[t * 3], cen[t * 3 + 1], cen[t * 3 + 2]], triangle: t });
     }
     return seeds;
+  }
+
+  // ------------------------------------------------------------------ pins
+
+  /** Triangle a pin sits on (its resolved triangle, else the nearest). */
+  private pinTriangle(sd: SegSeed): number {
+    if (typeof sd.triangle === 'number' && sd.triangle >= 0 && sd.triangle < this.triPart.length) return sd.triangle;
+    return nearestTriangle(this.features, sd.point);
+  }
+
+  private partNameAt(point: [number, number, number]): string | null {
+    const t = nearestTriangle(this.features, point);
+    const L = t >= 0 ? this.triPart[t] : -1;
+    return L >= 0 ? this.names[L] : null;
+  }
+
+  /** Keep the "every part owns ≥ 1 pin" invariant: drop pins of vanished
+   *  parts and automatic pins their part no longer covers, then give each
+   *  anchorless part automatic pins (one per sizeable region). */
+  private syncAnchors(): void {
+    const index = new Map(this.names.map((nm, i) => [nm, i] as const));
+    this.seeds = this.seeds.filter((sd) => {
+      const L = index.get(sd.label);
+      if (L === undefined) return false;
+      if (!sd.auto) return true;
+      const t = this.pinTriangle(sd);
+      return t >= 0 && this.triPart[t] === L;
+    });
+    const anchored = new Set(this.seeds.map((sd) => sd.label));
+    if (this.names.every((nm) => anchored.has(nm))) return;
+    for (const sd of this.seedsFromParts(this.anchorMinRegionFrac)) {
+      if (!anchored.has(sd.label)) this.seeds.push({ ...sd, auto: true });
+    }
+  }
+
+  /**
+   * Re-grow the named parts and their neighbours from their pins, leaving
+   * the rest of the model alone. Locked parts and fixed (hand-fixed)
+   * triangles are kept out; triangles no pin reaches keep their part.
+   */
+  private regrowAround(names: Iterable<string | null>): void {
+    const core = new Set<number>();
+    for (const nm of names) {
+      if (nm === null) continue;
+      const i = this.names.indexOf(nm);
+      if (i >= 0 && !this.lockedNames.has(nm)) core.add(i);
+    }
+    if (core.size === 0) return;
+    const f = this.features;
+    const area = new Set(core);
+    for (let e = 0; e < f.edgeA.length; e++) {
+      const a = this.triPart[f.edgeA[e]], b = this.triPart[f.edgeB[e]];
+      if (a === b) continue;
+      if (core.has(a) && b >= 0 && !this.lockedNames.has(this.names[b])) area.add(b);
+      if (core.has(b) && a >= 0 && !this.lockedNames.has(this.names[a])) area.add(a);
+    }
+    const allow = new Uint8Array(this.triPart.length);
+    // Brand-new parts (a pin with a new name) have no triangles yet: their
+    // pins decide which region they compete for.
+    const newParts = [...core].filter((i) => !this.triPart.includes(i));
+    // Fixed (hand-fixed) triangles stay as they are: out of the re-grow.
+    for (let t = 0; t < allow.length; t++) if (area.has(this.triPart[t]) && !(this.fixedTri && this.fixedTri[t] >= 0)) allow[t] = 1;
+    const seedTris: number[] = [], seedLabels: number[] = [];
+    const taken = new Set<number>();
+    // Placed pins first: where a placed pin and an automatic pin land on the
+    // same triangle, the placed one wins (an auto pin is only a stand-in).
+    const ordered = [...this.seeds.filter((sd) => !sd.auto), ...this.seeds.filter((sd) => sd.auto)];
+    for (const sd of ordered) {
+      const L = this.names.indexOf(sd.label);
+      if (L < 0 || (!area.has(L) && !newParts.includes(L))) continue;
+      const t = this.pinTriangle(sd);
+      if (t < 0 || !allow[t] || taken.has(t)) continue;
+      taken.add(t);
+      seedTris.push(t); seedLabels.push(L);
+    }
+    if (seedTris.length === 0) return;
+    const g = growFromSeeds(f, seedTris, seedLabels, this.growthOptions(allow));
+    for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = g.triLabel[t];
+    this.compact();
+  }
+
+  private fix(t: number, part: number): void {
+    if (!this.fixedTri) this.fixedTri = new Int32Array(this.triPart.length).fill(-1);
+    this.fixedTri[t] = part;
+  }
+
+  /** Reorder parts: `order[k]` is the old index of the part now at k. */
+  private permute(order: number[]): void {
+    const inv = new Int32Array(order.length);
+    order.forEach((old, k) => { inv[old] = k; });
+    this.names = order.map((k) => this.names[k]);
+    this.colors = order.map((k) => this.colors[k]);
+    for (let t = 0; t < this.triPart.length; t++) if (this.triPart[t] >= 0) this.triPart[t] = inv[this.triPart[t]];
+    if (this.fixedTri) for (let t = 0; t < this.fixedTri.length; t++) if (this.fixedTri[t] >= 0) this.fixedTri[t] = inv[this.fixedTri[t]];
+  }
+
+  /**
+   * Overlay colour per part: an explicit colour wins; otherwise the part
+   * keeps the colour it had (remembered by name) unless a neighbour now has
+   * a near-identical one, and new parts get the candidate farthest from
+   * their neighbours' colours — so adjacent parts never look alike, even
+   * with dozens of parts.
+   */
+  private displayColors(neighbors: Set<number>[]): string[] {
+    const out: string[] = new Array(this.names.length);
+    const rgbOf = (hex: string) => hexToRgb(hex);
+    const order = this.names.map((_, i) => i);
+    // Explicit and remembered colours first, so new parts fit around them.
+    order.sort((a, b) => Number(!(this.colors[a] ?? this.colorMemo.get(this.names[a]))) - Number(!(this.colors[b] ?? this.colorMemo.get(this.names[b]))));
+    const useCount = new Map<string, number>();
+    for (const i of order) {
+      const nbrCols = [...neighbors[i]].map((j) => out[j]).filter((c): c is string => !!c).map(rgbOf);
+      const explicit = this.colors[i];
+      if (explicit) { out[i] = explicit; continue; }
+      const memo = this.colorMemo.get(this.names[i]);
+      if (memo && nbrCols.every((c) => colorDistance(c, rgbOf(memo)) >= MIN_NEIGHBOR_COLOR_DISTANCE)) {
+        out[i] = memo;
+      } else {
+        let best = PALETTE[0], bestScore = -Infinity;
+        for (const cand of PALETTE) {
+          const c = rgbOf(cand);
+          const nearest = nbrCols.length ? Math.min(...nbrCols.map((n) => colorDistance(c, n))) : 1000;
+          const score = Math.min(nearest, 300) - 25 * (useCount.get(cand) ?? 0);
+          if (score > bestScore) { bestScore = score; best = cand; }
+        }
+        out[i] = best;
+        this.colorMemo.set(this.names[i], best);
+      }
+      useCount.set(out[i], (useCount.get(out[i]) ?? 0) + 1);
+    }
+    return out;
   }
 
   /** Forget locks on names that no longer exist. */
@@ -757,6 +1007,7 @@ export class PartDraftModel {
     }
     if (names.length !== this.names.length) {
       for (let t = 0; t < this.triPart.length; t++) if (this.triPart[t] >= 0) this.triPart[t] = remap[this.triPart[t]];
+      if (this.fixedTri) for (let t = 0; t < this.fixedTri.length; t++) if (this.fixedTri[t] >= 0) this.fixedTri[t] = remap[this.fixedTri[t]];
     }
     // Disambiguate duplicate names (e.g. two detector outputs with one
     // label) so name-refs and labels stay unique: later duplicates get the
@@ -779,13 +1030,14 @@ export class PartDraftModel {
       diagnostics: this.diagnostics, locked: [...this.lockedNames], focusMask: this.focusMask ? this.focusMask.slice() : null,
       detectorId: this.detectorId, params: { ...this.params }, featureOptions: { ...this.featureOptions }, edgeSmoothing: this.edgeSmoothing,
       features: this.features,
+      fixedTri: this.fixedTri ? this.fixedTri.slice() : null,
     };
   }
 
   private restore(s: Snapshot): void {
     this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
     this.lockedNames = new Set(s.locked); this.focusMask = s.focusMask;
-    this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features;
+    this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features; this.fixedTri = s.fixedTri;
   }
 }
 
@@ -798,6 +1050,7 @@ function countSet(mask: Uint8Array): number {
 function cloneSeed(s: SegSeed): SegSeed {
   const out: SegSeed = { label: s.label, point: [s.point[0], s.point[1], s.point[2]] };
   if (typeof s.triangle === 'number') out.triangle = s.triangle;
+  if (s.auto) out.auto = true;
   return out;
 }
 

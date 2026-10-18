@@ -77,6 +77,10 @@ export interface SegSeed {
   point: [number, number, number];
   /** Pre-resolved triangle index (skips the nearest-triangle lookup). */
   triangle?: number;
+  /** A pin the draft placed itself (one per part region, so every part has
+   *  one) rather than one the user or AI placed. Auto pins are dropped when
+   *  their part no longer covers them; user pins always stay. */
+  auto?: boolean;
 }
 
 /** One declared detector parameter. The panel controls, the

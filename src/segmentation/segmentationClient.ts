@@ -103,7 +103,10 @@ const hasWorker = () => typeof Worker !== 'undefined';
 /** Read on the main thread and threaded into the Worker (getConfig() there
  *  only sees static defaults). */
 const pinCreaseDeg = () => getConfig().segmentation.edgePinCreaseDeg;
-const runnerOpts = () => ({ undoDepth: getConfig().segmentation.undoDepth, defaultEdgeSmoothing: getConfig().segmentation.defaultEdgeSmoothing });
+const runnerOpts = () => {
+  const c = getConfig().segmentation;
+  return { undoDepth: c.undoDepth, defaultEdgeSmoothing: c.defaultEdgeSmoothing, anchorMinRegionFrac: c.seedsFromPartsMinRegionFrac };
+};
 
 async function ensureLoaded(meshKey: string, mesh: () => SegMesh): Promise<void> {
   if (!hasWorker()) {
