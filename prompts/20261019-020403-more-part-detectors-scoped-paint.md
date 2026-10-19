@@ -46,3 +46,12 @@ every tool.
   that smooth edge.
 - api.paint.box/slab/cylinder accept `withinPart` too, resolved headlessly by
   paintOpsResolve.
+
+**absorbSmallRegions swap bug** (reported by the planar-groups worker): when
+two small regions border each other, each voted for the other's label, so
+they traded labels every round and never merged. Votes now favour big
+neighbours, and a region with only small neighbours flows only into a larger
+one, so merges are one-directional. A regression test fails on the old code.
+The noisy-mesh auto-merge bench is unchanged (0.189). Its ~2,400 patches are
+all above the 0.02% absorb threshold, so that low score is a threshold
+question, not this bug.
