@@ -55,3 +55,8 @@ one, so merges are one-directional. A regression test fails on the old code.
 The noisy-mesh auto-merge bench is unchanged (0.189). Its ~2,400 patches are
 all above the 0.02% absorb threshold, so that low score is a threshold
 question, not this bug.
+
+**/parts slash command** (alias /segment): prefills the part-detection loop,
+modelled on /reconstruct: look → propose (autoDetect, seeds, auto-merge,
+thickness or random-walker, compare) → show numbered renders → refine from
+feedback → accept → paint per part, with withinPart for groove-less details.
