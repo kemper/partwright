@@ -109,3 +109,11 @@ planar-groups on organic shapes).
   folding every body to one face. thickness converts the EDT to radii in
   place (−4 B/voxel peak), checks abort before the allow skip, and handles
   an empty allowed set. 4- and 5-level classes get names.
+
+**random-walker merged**: bench 0.769 / 0.707 (clean / noisy) vs
+crease-watershed hybrid 0.768 / 0.652. It fixes the Tsubasa sleeve leak at
+the default 300 CG iterations, but costs ~17 s for 9 labels on the 460k
+scan. The default stays at 300: the user asked for detectors to compare
+quality by hand, and below ~200 iterations the sleeve fix is lost. The
+"Fast solve" preset (80 iterations, ~7 s) covers quick iteration, and the
+docs recommend placing seeds with crease-watershed first.

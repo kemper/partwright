@@ -5,10 +5,11 @@
 import { autoMergeDetector } from './autoPatches';
 import { creaseWatershedDetector, piecesDetector } from './detectors';
 import { planarGroupsDetector } from './planarGroups';
+import { randomWalkerDetector } from './randomWalker';
 import { thicknessDetector } from './thickness';
 import type { DetectorPreset, ParamSpec, ParamValues, PartDetector } from './types';
 
-const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, autoMergeDetector, thicknessDetector, planarGroupsDetector];
+const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, randomWalkerDetector, autoMergeDetector, thicknessDetector, planarGroupsDetector];
 
 export function listDetectors(): readonly PartDetector[] {
   return DETECTORS;
