@@ -20,15 +20,28 @@ export function detectorIds(): string[] {
   return DETECTORS.map((d) => d.id);
 }
 
+/** Detectors that may run unattended (import-time auto-detect,
+ *  `autoDetectParts`), in the order they should be tried: opted in via
+ *  `autoPropose`, able to run without seeds, ascending priority (registry
+ *  order breaks ties). */
+export function autoProposeDetectors(): PartDetector[] {
+  return DETECTORS
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => d.autoPropose !== undefined && d.seeds !== 'required')
+    .sort((a, b) => a.d.autoPropose!.priority - b.d.autoPropose!.priority || a.i - b.i)
+    .map(({ d }) => d);
+}
+
 /** JSON-friendly description of a detector (for listPartDetectors / docs). */
 export function describeDetector(d: PartDetector): {
   id: string; name: string; description: string; bestFor: string;
-  seeds: PartDetector['seeds']; params: ParamSpec[]; presets: DetectorPreset[];
+  seeds: PartDetector['seeds']; params: ParamSpec[]; presets: DetectorPreset[]; autoPropose: boolean;
 } {
   return {
     id: d.id, name: d.name, description: d.description, bestFor: d.bestFor, seeds: d.seeds,
     params: d.params.map((p) => ({ ...p })),
     presets: (d.presets ?? []).map((p) => ({ name: p.name, params: { ...p.params }, ...(p.featureOptions ? { featureOptions: { ...p.featureOptions } } : {}) })),
+    autoPropose: d.autoPropose !== undefined && d.seeds !== 'required',
   };
 }
 

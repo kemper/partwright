@@ -24,6 +24,7 @@
 //     (except the Fix brush and Shift-drag select, which own the drag).
 
 import { pickFace } from '../color/facePicker';
+import { setDetectPartsEntry } from '../color/paintUI';
 import { getConfig } from '../config/appConfig';
 import { addPointerSuppressor, getCanvas } from '../renderer/viewport';
 import { MAX_EDGE_SMOOTHING, overlayColor } from '../segmentation/draft';
@@ -77,9 +78,24 @@ function isTyping(t: EventTarget | null): boolean {
   return !!n && (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' || n.tagName === 'SELECT' || n.isContentEditable);
 }
 
-export function openPartDetectionPanel(ctl: PartDetectionApi): void {
-  if (closeOpen) return;
+export interface PartDetectionPanelOpts {
+  /** Context line shown at the top (e.g. what an import just proposed). */
+  context?: string;
+  /** An alternative next step offered beside the context line (the import
+   *  flow's "Convert to code instead"). Closes the panel before running. */
+  secondaryAction?: { label: string; run: () => void };
+}
+
+export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetectionPanelOpts): void {
+  // Re-opening with a new context (a fresh import) replaces the open panel so
+  // the context line is never stale; a plain re-open keeps it as is.
+  if (closeOpen) {
+    if (!opts?.context) return;
+    closeOpen();
+  }
   const info = ctl.listPartDetectors();
+  const opened = ctl.getPartDraft();
+  const proposedBy = isDraft(opened) ? opened.detector : null;
   let tool: Tool = 'select';
   let live = false; // "always manual" default: Live starts off every time
   let liveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -127,6 +143,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       markers.dispose();
       unsubscribe();
       closeOpen = null;
+      // Dismissing an import-time proposal the user never touched means "no
+      // thanks" — don't leave its colours on the model with no panel open.
+      // An edited draft stays (reopen from Tools → Parts).
+      if (opts?.context) {
+        const d = ctl.getPartDraft();
+        if (isDraft(d) && !d.canUndo && d.detector === proposedBy) void ctl.discardParts();
+      }
     },
   });
   closeOpen = shell.close;
@@ -143,6 +166,19 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   window.addEventListener('resize', onResize);
   // The header drag moves the panel; refit when it's dropped.
   shell.panel.addEventListener('pointerup', onResize);
+
+  if (opts?.context) {
+    const banner = el('div', 'flex flex-col gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-2');
+    banner.dataset.partsContext = '';
+    banner.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug', opts.context));
+    if (opts.secondaryAction) {
+      const action = opts.secondaryAction;
+      const alt = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0 self-start`, action.label);
+      alt.addEventListener('click', () => { shell.close(); action.run(); });
+      banner.appendChild(alt);
+    }
+    body.appendChild(banner);
+  }
 
   function step(n: number, label: string): HTMLElement {
     const h = el('div', STEP);
@@ -1056,6 +1092,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   });
   footer.append(discardBtn, acceptBtn);
 
+  function syncBusy(): void {
+    const b = ctl.isBusy();
+    detectBtn.disabled = !!b;
+    presetBtn.disabled = !!b && !stripOpen;
+    cancelBtn.classList.toggle('hidden', !b?.cancellable);
+    status.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : '';
+  }
   const unsubscribe = ctl.subscribe((ev) => {
     if (ev === 'draft') {
       cachedDiag = 0;
@@ -1084,11 +1127,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
       markHover();
       renderPins();
     }
-    const b = ctl.isBusy();
-    detectBtn.disabled = !!b;
-    presetBtn.disabled = !!b && !stripOpen;
-    cancelBtn.classList.toggle('hidden', !b?.cancellable);
-    status.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : '';
+    syncBusy();
   });
 
   algoSelect.addEventListener('change', () => {
@@ -1104,12 +1143,15 @@ export function openPartDetectionPanel(ctl: PartDetectionApi): void {
   renderPins();
   applyMarkerVisibility();
   requestAnimationFrame(fitToWindow);
+  // Opened mid-run (e.g. during the import-time pass): show it and its Cancel now.
+  syncBusy();
 }
 
-/** Wire Part Detection into the command palette, the viewport Tools menu and
- *  the controller's openPartsPanel(). */
+/** Wire Part Detection into the command palette, the viewport Tools menu,
+ *  the Paint panel's Labels section and the controller's openPartsPanel(). */
 export function initPartDetectionUI(ctl: PartDetectionApi): void {
   ctl.setPanelOpener(() => openPartDetectionPanel(ctl));
+  setDetectPartsEntry(() => openPartDetectionPanel(ctl));
   registerCommands([
     {
       id: 'detect-parts',

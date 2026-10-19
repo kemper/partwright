@@ -148,8 +148,8 @@ import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
-import { createPartDetection, type PartDetectionApi } from './segmentation/partDetection';
-import { initPartDetectionUI } from './ui/partDetectionPanel';
+import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
+import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -4427,17 +4427,59 @@ async function main() {
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
     const placed = await placeImportedMeshInner(parsed, filename);
-    // Post-import ask: offer to rebuild a fresh STL import as editable code,
-    // with the same settings panel the Tools pill opens. Interactive path only
-    // (importMeshData / console imports stay prompt-free for agents); render-
-    // only meshes skip it — their slices don't close, so conversion would fail.
-    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) {
+    // Post-import ask. Interactive path only (importMeshData / console imports
+    // stay prompt-free for agents); render-only meshes skip it — they can't
+    // carry parts or convert (their slices don't close).
+    // Not awaited: the automatic part pass runs in the background so the
+    // import itself (and its Recent Imports entry) completes immediately.
+    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
+    return placed;
+  }
+
+  /** After an interactive STL import, offer the next step. With
+   *  `segmentation.autoDetectOnImport` on, the automatic part detectors run
+   *  first: when they split the mesh (a multi-body figure, one body per
+   *  colour) the Part Detection panel opens on the proposal, with "Convert to
+   *  code instead" beside it. Otherwise the convert-to-code ask opens as
+   *  before, with a "Detect parts…" button so either path stays one click. */
+  async function offerPostImportTools(filename: string): Promise<void> {
+    const ctl = partDetectionCtl;
+    const openConvert = (offerDetect: boolean) => {
       openConvertToCodeModal(partwrightAPI as unknown as Parameters<typeof openConvertToCodeModal>[0], {
         context: `Imported ${filename} as a mesh. Convert it to smooth, editable code?`,
         cancelLabel: 'Keep mesh only',
+        ...(offerDetect && ctl ? { secondaryAction: { label: 'Detect parts…', hint: 'Painting it? Split it into named parts first.', run: () => openPartDetectionPanel(ctl) } } : {}),
       });
+    };
+    const cfg = getConfig().segmentation;
+    // The fresh mesh is the last import: alone for a new object/session, after
+    // the current object's baked geometry when composed into it.
+    const imports = getActiveImports();
+    const importIndex = imports.length - 1;
+    const target = imports[importIndex];
+    if (!ctl || !cfg.autoDetectOnImport || !target || target.numTri > cfg.autoDetectMaxTriangles) { openConvert(true); return; }
+    const targetKey = importMeshKey(target);
+    showToast('Looking for separate parts…', { variant: 'neutral', source: 'parts' });
+    const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; parts?: unknown[]; partsTruncated?: number; error?: string };
+    // The user moved on while detection ran (another version, object or
+    // session) — don't pop a panel over a different model.
+    const now = getActiveImports()[importIndex];
+    if (!now || importMeshKey(now) !== targetKey) return;
+    if (r.error) {
+      if (/cancelled/i.test(r.error)) return; // the user cancelled from the panel
+      errorLog.capture({ level: 'warn', source: 'parts', message: `Automatic part detection failed: ${r.error}` });
+      openConvert(true);
+      return;
     }
-    return placed;
+    if (!r.proposed) { openConvert(true); return; }
+    const count = (r.parts?.length ?? 0) + (r.partsTruncated ?? 0);
+    openPartDetectionPanel(ctl, {
+      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
+      secondaryAction: {
+        label: 'Convert to code instead',
+        run: () => { void ctl.discardParts(); openConvert(false); },
+      },
+    });
   }
 
   async function placeImportedMeshInner(parsed: ParsedSTL, filename: string): Promise<boolean> {
@@ -12224,6 +12266,7 @@ async function main() {
     // Docs: /ai/segmentation.md
     listPartDetectors() { return partDetection.listPartDetectors(); },
     detectParts(options: unknown) { return partDetection.detectParts(options); },
+    autoDetectParts(options?: unknown) { return partDetection.autoDetectParts(options); },
     getPartDraft() { return partDetection.getPartDraft(); },
     editParts(options: unknown) { return partDetection.editParts(options); },
     renderParts(options?: unknown) { return partDetection.renderParts(options); },
@@ -16057,6 +16100,7 @@ async function main() {
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
+        'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
         'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
         'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },

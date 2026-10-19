@@ -995,6 +995,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'autoDetectParts',
+    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+    },
+  },
+  {
     name: 'reopenParts',
     description: 'Re-open the parts saved on an import (by acceptParts) as the draft, with the seeds that produced them, so they can be refined (editParts / detectParts) and accepted again.',
     input_schema: { type: 'object', properties: { importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' } } },
@@ -1795,7 +1805,7 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySu
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
  *  image-returning ones additionally need the Views vision toggle. */
-const PARTS_GATED = new Set(['detectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
+const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
@@ -2474,6 +2484,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.partAt(input.point);
     case 'openPartsPanel':
       return api.openPartsPanel();
+    case 'autoDetectParts': {
+      const result = await api.autoDetectParts(input) as Record<string, unknown>;
+      // A proposal is a draft too: hand it to the user like detectParts does.
+      if (result && typeof result === 'object' && result.proposed === true) api.openPartsPanel();
+      return result;
+    }
     case 'getPartDraft':
       return api.getPartDraft();
     case 'editParts':

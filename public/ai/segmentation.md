@@ -23,8 +23,14 @@ a real **label**. After that, `paintByLabel`, part colours, the object rail and
 // 0. What's available (params, defaults, which need seeds, bestFor)
 partwright.listPartDetectors()
 
-// 1. Multi-body file? Try the instant one first
-await partwright.detectParts({ algorithm: 'pieces' })
+// 1. Seedless first pass: previews every automatic detector (cheapest first);
+//    the first that splits the mesh into 2+ parts becomes the draft (replacing
+//    any current one). A multi-body file (one body per colour) is done here; a
+//    fused shell returns proposed:false and leaves the draft untouched. More
+//    parts than segmentation.autoDetectMaxParts (loose debris) is not proposed.
+await partwright.autoDetectParts()
+// -> { proposed: true, proposedBy: 'pieces', tried, parts, quality }
+//  | { proposed: false, tried, reason }   → go to step 2
 
 // 1b. Fused shell, no seeds yet: auto patches, then name/merge them
 await partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 6 } })   // higher = coarser
@@ -82,6 +88,18 @@ await partwright.acceptParts({ label: 'Detected parts' })
 // Later: re-open the saved parts (with their seeds) to refine them
 await partwright.reopenParts({ importIndex: 0 })
 ```
+
+## When the user imports an STL themselves
+
+An interactive STL import already runs `autoDetectParts` (setting:
+**Advanced settings → Part detection → Detect parts on STL import**, on by
+default; skipped above **Auto-detect triangle limit**). If it splits the mesh,
+the Detect parts panel opens on that proposal and a draft already exists, so
+check `getPartDraft()` before detecting again. Closing the panel without
+touching the proposal discards it.
+If the mesh is one solid, the convert-to-code prompt opens instead, with a
+**Detect parts…** button. Imports made through the console
+(`importMeshData`) never prompt: call `autoDetectParts` yourself.
 
 ## Parts own their pins
 
@@ -147,7 +165,7 @@ A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is
 
 | id | seeds | best for |
 |---|---|---|
-| `pieces` | none | Files that already ship one body per colour. Instant and exact. Finds nothing inside one fused shell. |
+| `pieces` | none | Files that already ship one body per colour. Instant and exact. Finds nothing inside one fused shell. The first automatic proposal (`autoPropose`). |
 | `auto-merge` | none | **Auto patches**: a first pass on any fused sculpt. Over-segments into grid patches whose borders snap to grooves, then merges borders weaker than `mergeBelowDeg` (4°; higher is coarser). `patchSizePct` (1.5% of the diagonal) sets the starting patch size, and `minPatchPct` (0.02%) absorbs specks. The patch layout is cached, so changing `mergeBelowDeg` re-runs in a fraction of a second. |
 | `crease-watershed` | required | Fused sculpts with grooved seams. Params: `growth` (`hybrid` default: grooves decide, path length breaks ties; `minimax`: grooves only; `summed`: path length plus a crease toll), `creaseQuantumDeg` (5: creases within this many degrees count as equal), `creaseWeight` (1). |
 
