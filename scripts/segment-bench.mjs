@@ -35,6 +35,8 @@ const CONFIGS = [
   { name: 'crease-watershed hybrid q10', algorithm: 'crease-watershed', params: { growth: 'hybrid', creaseQuantumDeg: 10 } },
   { name: 'crease-watershed hybrid smooth3', algorithm: 'crease-watershed', params: { growth: 'hybrid' }, smooth: 3 },
   { name: 'auto-merge (no seeds)', algorithm: 'auto-merge' },
+  { name: 'thickness (no seeds)', algorithm: 'thickness', noSeeds: true },
+  { name: 'thickness seeded', algorithm: 'thickness' },
   { name: 'planar-groups', algorithm: 'planar-groups' },
 ];
 
@@ -67,7 +69,7 @@ try {
       for (const c of CONFIGS) {
         const t0 = performance.now();
         const featureOptions = c.smooth ? { normalSmoothRadius: c.smooth * f.medianEdgeLen } : undefined;
-        const out = mod.segmentMesh(mesh, { algorithm: c.algorithm, params: c.params, featureOptions, seeds: c.algorithm === 'pieces' ? undefined : seeds });
+        const out = mod.segmentMesh(mesh, { algorithm: c.algorithm, params: c.params, featureOptions, seeds: c.algorithm === 'pieces' || c.noSeeds ? undefined : seeds });
         const score = mod.scorePartition(out.triPart, lm.truth, f.triArea);
         rows.push({
           model: basename(file), variant, tris: f.triCount, labels: lm.names.length, config: c.name,

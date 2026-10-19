@@ -60,6 +60,19 @@ export function featureOptionsKey(o: ResolvedFeatureOptions): string {
   return `r=${o.normalSmoothRadius.toPrecision(6)}`;
 }
 
+/** Cheap content hash of an allow mask (so the cache can't serve a patch
+ *  layout computed for a different focus/lock area). */
+export function maskKey(allow: Uint8Array | undefined): string {
+  if (!allow) return 'all';
+  let h = 2166136261, n = 0;
+  for (let t = 0; t < allow.length; t++) {
+    if (!allow[t]) continue;
+    n++;
+    h = Math.imul(h ^ t, 16777619);
+  }
+  return `${n}:${(h >>> 0).toString(36)}`;
+}
+
 export function computeMeshFeatures(mesh: SegMesh, options: FeatureOptions = {}): MeshFeatures {
   const resolved = resolveFeatureOptions(options, medianEdgeLength(mesh));
   const { positions: p, triVerts: tv } = mesh;

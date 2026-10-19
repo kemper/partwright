@@ -31,8 +31,7 @@
 // mode fuses the whole surface into one part and flat mode shatters it into
 // shards. Use auto-merge / crease-watershed there.
 
-import { maskKey } from './autoPatches';
-import { featureOptionsKey } from './features';
+import { featureOptionsKey, maskKey } from './features';
 import { AbortedError } from './growth';
 import type { DetectorContext, DetectorResult, MeshFeatures, PartDetector } from './types';
 
