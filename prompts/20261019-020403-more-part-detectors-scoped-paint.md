@@ -60,3 +60,12 @@ question, not this bug.
 modelled on /reconstruct: look → propose (autoDetect, seeds, auto-merge,
 thickness or random-walker, compare) → show numbered renders → refine from
 feedback → accept → paint per part, with withinPart for groove-less details.
+
+**Picker placement**: the browser check on the scan showed the "Paint within"
+picker at the bottom of the long Paint panel, below the fold. It moved up
+under the tool buttons, since it changes what every tool does.
+
+**Stale import banner**: in the same run, the Detect parts panel kept saying
+"found 2 separate parts" after a seeded re-detection and an accept. The
+banner now drops once the draft it described is replaced, accepted or
+discarded.

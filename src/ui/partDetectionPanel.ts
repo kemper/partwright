@@ -167,8 +167,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   // The header drag moves the panel; refit when it's dropped.
   shell.panel.addEventListener('pointerup', onResize);
 
+  let contextBanner: HTMLElement | null = null;
   if (opts?.context) {
     const banner = el('div', 'flex flex-col gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-2');
+    contextBanner = banner;
     banner.dataset.partsContext = '';
     banner.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug', opts.context));
     if (opts.secondaryAction) {
@@ -1101,6 +1103,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   }
   const unsubscribe = ctl.subscribe((ev) => {
     if (ev === 'draft') {
+      // The import banner describes the proposal it opened with; once that
+      // draft is replaced, accepted or discarded it no longer applies.
+      const d = ctl.getPartDraft();
+      if (contextBanner && (!isDraft(d) || d.detector !== proposedBy)) { contextBanner.remove(); contextBanner = null; }
       cachedDiag = 0;
       // Any later change makes the banner's Undo undo something else.
       appliedBanner.classList.add('hidden');
