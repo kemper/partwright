@@ -18,9 +18,9 @@
 //   2. Merge up: repeatedly fold the SMALLEST face into the neighbour it
 //      shares the most boundary with, until every face is ≥ minPartPct of the
 //      surface and at most maxParts remain (so the cap is exact, not "bar
-//      ties"). Smallest-first matters on noisy meshes: a jittered scan breaks
-//      into 10^4–10^5 specks, and `absorbSmallRegions`' simultaneous
-//      reassignment ping-pongs mutual-neighbour specks instead of merging them.
+//      ties"). Smallest-first, one merge at a time, matters on noisy meshes:
+//      a jittered scan breaks into 10^4–10^5 specks, which round-based
+//      `absorbSmallRegions` clears slowly and can't cap at a part count.
 //   3. Number faces by descending area.
 //
 // Step 1 is the expensive part and depends only on (features, mode, angle,
