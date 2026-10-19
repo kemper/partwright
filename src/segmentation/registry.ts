@@ -4,9 +4,10 @@
 
 import { autoMergeDetector } from './autoPatches';
 import { creaseWatershedDetector, piecesDetector } from './detectors';
+import { planarGroupsDetector } from './planarGroups';
 import type { DetectorPreset, ParamSpec, ParamValues, PartDetector } from './types';
 
-const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, autoMergeDetector];
+const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, autoMergeDetector, planarGroupsDetector];
 
 export function listDetectors(): readonly PartDetector[] {
   return DETECTORS;

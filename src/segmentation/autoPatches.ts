@@ -34,7 +34,7 @@ interface Oversegmentation {
 
 /** Cheap content hash of an allow mask (so the cache can't serve a patch
  *  layout computed for a different focus/lock area). */
-function maskKey(allow: Uint8Array | undefined): string {
+export function maskKey(allow: Uint8Array | undefined): string {
   if (!allow) return 'all';
   let h = 2166136261, n = 0;
   for (let t = 0; t < allow.length; t++) {

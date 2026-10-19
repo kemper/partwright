@@ -3,6 +3,7 @@ import { computeMeshFeatures, toSegMesh } from '../../src/segmentation/features'
 import { SegmentationRunner } from '../../src/segmentation/runner';
 import { autoProposeDetectors, describeDetector, getDetector, listDetectors, resolveParams } from '../../src/segmentation/registry';
 import { jitterMesh, scorePartition, seedsFromTruth } from '../../src/segmentation/scoring';
+import { planarGroupsDetector } from '../../src/segmentation/planarGroups';
 import type { SegMesh } from '../../src/segmentation/types';
 
 /** Heightfield over [0,1]² with z = h(x), N×N vertices, normals +Z. */
@@ -298,6 +299,116 @@ describe('auto-merge (auto patches)', () => {
     // Re-detecting from those seeds reproduces three parts.
     const again = r.detect({ algorithm: 'crease-watershed', seeds: s.seeds });
     expect(again.parts.length).toBe(3);
+  });
+});
+
+describe('planar-groups', () => {
+  /** Unit cube: 8 shared vertices, 12 outward-wound triangles (2 per face). */
+  const cube = (): SegMesh => {
+    const positions = Float32Array.from([0,0,0, 1,0,0, 1,1,0, 0,1,0, 0,0,1, 1,0,1, 1,1,1, 0,1,1]);
+    const quads = [[0,3,2,1], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,4,7,3], [1,2,6,5]];
+    const tris: number[] = [];
+    for (const [a, b, c, d] of quads) tris.push(a, b, c, a, c, d);
+    return { positions, triVerts: Uint32Array.from(tris) };
+  };
+  /** Closed n-gon prism (radius 1, height 2) with fan caps: 2n wall + 2n cap triangles. */
+  const prism = (n = 32): SegMesh => {
+    const positions: number[] = [];
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; positions.push(Math.cos(a), Math.sin(a), 0); }
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; positions.push(Math.cos(a), Math.sin(a), 2); }
+    positions.push(0, 0, 0, 0, 0, 2);
+    const bc = 2 * n, tc = 2 * n + 1, tris: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      tris.push(i, j, n + j, i, n + j, n + i); // wall, outward
+      tris.push(bc, j, i); // bottom cap, faces −Z
+      tris.push(tc, n + i, n + j); // top cap, faces +Z
+    }
+    return { positions: Float32Array.from(positions), triVerts: Uint32Array.from(tris) };
+  };
+  const run = (m: SegMesh, params: Record<string, unknown>, allow?: Uint8Array) => {
+    const f = computeMeshFeatures(m);
+    return planarGroupsDetector.run(m, f, { params: resolveParams(planarGroupsDetector, params), seeds: [], allow });
+  };
+  const partCount = (triPart: Int32Array) => new Set([...triPart].filter((p) => p >= 0)).size;
+
+  it('is registered, seedless, and not an auto-propose candidate', () => {
+    expect(getDetector('planar-groups')!.seeds).toBe('none');
+    expect(autoProposeDetectors().map((d) => d.id)).not.toContain('planar-groups');
+    expect(planarGroupsDetector.presets!.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('smooth mode finds the six faces of a cube', () => {
+    const r = run(cube(), {});
+    expect(partCount(r.triPart)).toBe(6);
+    expect(r.partNames).toEqual(['face 1', 'face 2', 'face 3', 'face 4', 'face 5', 'face 6']);
+    expect(r.genericNames).toBe(true);
+    expect(r.diagnostics).toEqual({ rawGroups: 6, parts: 6 });
+  });
+
+  it('keeps a tessellated cylinder wall as one face; flat mode facets it', () => {
+    const m = prism(32);
+    expect(partCount(run(m, {}).triPart)).toBe(3); // wall + 2 caps
+    // 5° < the 11.25° between neighbouring wall quads: one facet per quad.
+    const flat = run(m, { surfaces: 'flat', angleDeg: 5, minPartPct: 0 });
+    expect(partCount(flat.triPart)).toBe(34);
+    // A looser tolerance gives coarser facets (arcs of the wall), never one smooth face.
+    const arcs = partCount(run(m, { surfaces: 'flat', angleDeg: 20 }).triPart);
+    expect(arcs).toBeGreaterThan(3);
+    expect(arcs).toBeLessThan(34);
+  });
+
+  it('respects the allow mask', () => {
+    const m = cube();
+    // Allow the first three faces (triangles 0..5).
+    const allow = new Uint8Array(12);
+    allow.fill(1, 0, 6);
+    for (const surfaces of ['smooth', 'flat']) {
+      const r = run(m, { surfaces }, allow);
+      expect(partCount(r.triPart)).toBe(3);
+      for (let t = 0; t < 12; t++) expect(r.triPart[t] >= 0).toBe(t < 6);
+    }
+  });
+
+  it('maxParts caps the part count, and numbering is by descending area', () => {
+    // Terraces of unequal width, so the smallest are unambiguous to absorb.
+    const m = heightfield(61, (x) => 0.2 * Math.floor(6 * x * x));
+    const loose = run(m, { minPartPct: 0 });
+    expect(partCount(loose.triPart)).toBeGreaterThan(5);
+    const capped = run(m, { minPartPct: 0, maxParts: 4 });
+    expect(partCount(capped.triPart)).toBe(4); // one connected piece: the cap is exact
+    const f = computeMeshFeatures(m);
+    const area = new Float64Array(8);
+    for (let t = 0; t < f.triCount; t++) if (capped.triPart[t] >= 0) area[capped.triPart[t]] += f.triArea[t];
+    for (let p = 1; p < partCount(capped.triPart); p++) expect(area[p]).toBeLessThanOrEqual(area[p - 1] + 1e-9);
+  });
+
+  it('caps a noisy mesh that shatters into specks', () => {
+    const f0 = computeMeshFeatures(heightfield(41, () => 0));
+    const noisy = jitterMesh(heightfield(41, () => 0), 0.6 * f0.medianEdgeLen, 7);
+    expect(partCount(run(noisy, { minPartPct: 0, maxParts: 500 }).triPart)).toBeGreaterThan(20);
+    const r = run(noisy, { maxParts: 7 });
+    expect(partCount(r.triPart)).toBe(7);
+    expect(r.diagnostics!.rawGroups).toBeGreaterThan(20);
+  });
+
+  it('reuses the cached grouping when only the size sliders change', () => {
+    const m = prism(16), f = computeMeshFeatures(m), cache = new Map<string, unknown>();
+    const go = (params: Record<string, unknown>) =>
+      planarGroupsDetector.run(m, f, { params: resolveParams(planarGroupsDetector, params), seeds: [], cache });
+    go({});
+    expect(cache.size).toBe(1);
+    go({ minPartPct: 5, maxParts: 3 });
+    expect(cache.size).toBe(1);
+    go({ angleDeg: 5 });
+    expect(cache.size).toBe(2);
+  });
+
+  it('runs through the runner like any detector', () => {
+    const r = new SegmentationRunner(cube());
+    const s = r.detect({ algorithm: 'planar-groups' });
+    expect(s.parts.length).toBe(6);
+    expect(s.parts.every((p) => /^face \d+$/.test(p.name))).toBe(true);
   });
 });
 
