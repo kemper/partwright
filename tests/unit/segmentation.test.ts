@@ -274,3 +274,284 @@ describe('bench scoring', () => {
     for (let i = 0; i < m.positions.length; i++) expect(Math.abs(a.positions[i] - m.positions[i])).toBeLessThanOrEqual(0.01 + 1e-6);
   });
 });
+
+describe('auto-merge (auto patches)', () => {
+  // Two grooves split the strip into three flat bands.
+  const twoGrooves = () => heightfield(61, (x) => 0.25 * Math.min(Math.abs(x - 0.33), Math.abs(x - 0.66)));
+
+  it('merges across faint borders but keeps real grooves', () => {
+    const r = new SegmentationRunner(twoGrooves());
+    const s = r.detect({ algorithm: 'auto-merge', params: { patchSizePct: 6, mergeBelowDeg: 8, minPatchPct: 0 } });
+    expect(s.parts.length).toBe(3);
+    expect(s.parts.every((p) => /^patch \d+$/.test(p.name))).toBe(true);
+    // Coarser threshold dissolves the grooves too.
+    const coarse = r.detect({ algorithm: 'auto-merge', params: { patchSizePct: 6, mergeBelowDeg: 40, minPatchPct: 0 } });
+    expect(coarse.parts.length).toBe(1);
+  });
+
+  it('seedsFromParts places one seed inside each part', () => {
+    const r = new SegmentationRunner(twoGrooves());
+    r.detect({ algorithm: 'auto-merge', params: { patchSizePct: 6, mergeBelowDeg: 8, minPatchPct: 0 } });
+    const s = r.edit([{ op: 'seedsFromParts' }]);
+    expect(s.seeds.map((x) => x.label).sort()).toEqual(['patch 1', 'patch 2', 'patch 3']);
+    // Re-detecting from those seeds reproduces three parts.
+    const again = r.detect({ algorithm: 'crease-watershed', seeds: s.seeds });
+    expect(again.parts.length).toBe(3);
+  });
+});
+
+describe('locks and focus', () => {
+  const seedsLR = [
+    { label: 'left', point: [0.1, 0.5, 0.12] as [number, number, number] },
+    { label: 'right', point: [0.9, 0.5, 0.12] as [number, number, number] },
+  ];
+
+  it('a locked part keeps its triangles through re-detection', () => {
+    const r = new SegmentationRunner(groove(21));
+    const s0 = r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    const leftTris = s0.parts[0].triCount;
+    r.edit([{ op: 'lock', id: 'left' }]);
+    // A seed-free "everything" run would otherwise relabel all of it.
+    const s1 = r.detect({ algorithm: 'crease-watershed', seeds: [{ label: 'other', point: [0.9, 0.5, 0.12] }] });
+    expect(s1.parts.find((p) => p.name === 'left')!.triCount).toBe(leftTris);
+    expect(s1.parts.find((p) => p.name === 'left')!.locked).toBe(true);
+    expect(s1.parts.map((p) => p.name)).toContain('other');
+  });
+
+  it('focus confines detection to one part; seeds elsewhere are ignored', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    const s = r.edit([{ op: 'focus', id: 'right' }]);
+    expect(s.focus!.triCount).toBe(s.parts.find((p) => p.name === 'right')!.triCount);
+    const out = r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'top', point: [0.9, 0.9, 0.12] }, { label: 'bottom', point: [0.9, 0.1, 0.12] },
+      { label: 'ignored', point: [0.1, 0.5, 0.12] },
+    ] });
+    expect(out.parts.map((p) => p.name).sort()).toEqual(['bottom', 'left', 'top']);
+    expect(r.edit([{ op: 'focus', id: null }]).focus).toBeNull();
+  });
+
+  it('placeholder names from a focused run never merge into existing parts', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'auto-merge', params: { patchSizePct: 10, mergeBelowDeg: 0.5, minPatchPct: 0 } });
+    const before = r.draft!.summary().parts.map((p) => p.name);
+    r.edit([{ op: 'focus', id: 1 }]);
+    const s = r.detect({ algorithm: 'auto-merge', params: { patchSizePct: 10, mergeBelowDeg: 0.5, minPatchPct: 0 } });
+    expect(new Set(s.parts.map((p) => p.name)).size).toBe(s.parts.length);
+    for (const nm of before.slice(1)) expect(s.parts.map((p) => p.name)).toContain(nm);
+  });
+
+  it('preview honours locks without touching the draft', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    r.edit([{ op: 'lock', id: 'left' }]);
+    const before = r.draft!.triPart.slice();
+    const p = r.preview({ algorithm: 'crease-watershed', seeds: [{ label: 'x', point: [0.9, 0.5, 0.12] }] });
+    expect(p.summary.parts.map((x) => x.name).sort()).toEqual(['left', 'x']);
+    expect([...r.draft!.triPart]).toEqual([...before]);
+  });
+});
+
+describe('reopen saved parts', () => {
+  it('adopts a saved partition with names, colours and seeds', () => {
+    const m = groove(11);
+    const r = new SegmentationRunner(m);
+    const s = r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'a', point: [0.1, 0.5, 0.12] }, { label: 'b', point: [0.9, 0.5, 0.12] },
+    ] });
+    const triPart = r.draft!.triPart.slice();
+    const r2 = new SegmentationRunner(m);
+    const back = r2.adopt({ triPart, names: ['a', 'b'], colors: ['#ff0000', null], detectorId: 'crease-watershed', params: {}, seeds: s.seeds });
+    expect(back.parts.map((p) => [p.name, p.color, p.triCount])).toEqual(s.parts.map((p, i) => [p.name, i === 0 ? '#ff0000' : null, p.triCount]));
+    expect(back.seeds.length).toBe(2);
+    expect(() => r2.adopt({ triPart: new Int32Array(3), names: [], colors: [] })).toThrow(/match/);
+  });
+});
+
+/** Closed unit sphere: subdivided octahedron with welded vertices. */
+function sphere(levels: number): SegMesh {
+  let verts: number[][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  let tris: number[][] = [[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]];
+  for (let l = 0; l < levels; l++) {
+    const mid = new Map<string, number>();
+    const m = (a: number, b: number) => {
+      const key = a < b ? `${a},${b}` : `${b},${a}`;
+      let id = mid.get(key);
+      if (id === undefined) {
+        const v = verts[a].map((x, k) => (x + verts[b][k]) / 2);
+        const len = Math.hypot(...v);
+        id = verts.length; verts.push(v.map((x) => x / len)); mid.set(key, id);
+      }
+      return id;
+    };
+    const next: number[][] = [];
+    for (const [a, b, c] of tris) {
+      const ab = m(a, b), bc = m(b, c), ca = m(c, a);
+      next.push([a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]);
+    }
+    tris = next;
+  }
+  return { positions: Float32Array.from(verts.flat()), triVerts: Uint32Array.from(tris.flat()) };
+}
+
+function triArea(p: ArrayLike<number>, a: number, b: number, c: number, stride = 3): number {
+  const ux = p[b * stride] - p[a * stride], uy = p[b * stride + 1] - p[a * stride + 1], uz = p[b * stride + 2] - p[a * stride + 2];
+  const wx = p[c * stride] - p[a * stride], wy = p[c * stride + 1] - p[a * stride + 1], wz = p[c * stride + 2] - p[a * stride + 2];
+  return Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+}
+
+describe('smooth edges (edge cut)', () => {
+  // Three parts on a sphere: two hemispheres, one split again by x — gives
+  // two-part splits and triple junctions.
+  const m = sphere(4);
+  const nTri = m.triVerts.length / 3;
+  const triPart = new Int32Array(nTri);
+  for (let t = 0; t < nTri; t++) {
+    let cx = 0, cz = 0;
+    for (let k = 0; k < 3; k++) { cx += m.positions[m.triVerts[t * 3 + k] * 3]; cz += m.positions[m.triVerts[t * 3 + k] * 3 + 2]; }
+    triPart[t] = cz > 0.1 ? (cx > 0 ? 0 : 1) : 2;
+  }
+
+  it('re-meshes into a watertight, consistently wound mesh that keeps the area', async () => {
+    const { computeEdgeCut, buildCutMesh } = await import('../../src/segmentation/smoothEdges');
+    const cut = computeEdgeCut(m, triPart, 3);
+    expect(cut.splitTris.length).toBeGreaterThan(0);
+    const out = buildCutMesh({ vertProperties: m.positions, triVerts: m.triVerts, numProp: 3 }, cut, ['a', 'b', 'c'], ['#f00', null, '#00f']);
+    expect(out.names).toEqual(['a', 'b', 'c']);
+    expect(out.colors).toEqual(['#f00', null, '#00f']);
+    // Every directed edge appears once and its reverse once.
+    const directed = new Map<string, number>();
+    for (let t = 0; t < out.numTri; t++) for (let k = 0; k < 3; k++) {
+      const a = out.triVerts[t * 3 + k], b = out.triVerts[t * 3 + (k + 1) % 3];
+      const key = `${a},${b}`;
+      directed.set(key, (directed.get(key) ?? 0) + 1);
+    }
+    for (const [key, n] of directed) {
+      expect(n).toBe(1);
+      const [a, b] = key.split(',');
+      expect(directed.get(`${b},${a}`)).toBe(1);
+    }
+    let before = 0, after = 0, minArea = Infinity;
+    for (let t = 0; t < nTri; t++) before += triArea(m.positions, m.triVerts[t * 3], m.triVerts[t * 3 + 1], m.triVerts[t * 3 + 2]);
+    for (let t = 0; t < out.numTri; t++) {
+      const a = triArea(out.vertProperties, out.triVerts[t * 3], out.triVerts[t * 3 + 1], out.triVerts[t * 3 + 2]);
+      after += a; minArea = Math.min(minArea, a);
+    }
+    expect(after).toBeCloseTo(before, 5);
+    expect(minArea).toBeGreaterThan(0);
+    expect([...new Set(out.triPart)].sort()).toEqual([0, 1, 2]);
+  });
+
+  it('smooths stair-steps and leaves triangles away from boundaries alone', async () => {
+    const { computeEdgeCut } = await import('../../src/segmentation/smoothEdges');
+    // Flat grid with a jagged vertical boundary near x = 0.5 (rows alternate).
+    const g = heightfield(41, () => 0);
+    const n = g.triVerts.length / 3;
+    const jag = new Int32Array(n);
+    for (let t = 0; t < n; t++) {
+      const row = Math.floor(t / 80);
+      jag[t] = centroidX(g, t) > 0.5 + (row % 2 ? 0.05 : -0.05) ? 1 : 0;
+    }
+    const crossingSpread = (iters: number) => {
+      const cut = computeEdgeCut(g, jag, iters);
+      // x of each crossing point on the boundary.
+      const xs: number[] = [];
+      for (let id = 0; id < cut.pointKind.length; id++) {
+        if (cut.pointKind[id] !== 1) continue;
+        const a = cut.pointA[id], b = cut.pointB[id], tt = cut.pointT[id];
+        xs.push(g.positions[a * 3] * (1 - tt) + g.positions[b * 3] * tt);
+      }
+      const mean = xs.reduce((s, x) => s + x, 0) / xs.length;
+      return Math.sqrt(xs.reduce((s, x) => s + (x - mean) ** 2, 0) / xs.length);
+    };
+    expect(crossingSpread(6)).toBeLessThan(crossingSpread(0) * 0.6);
+    // Interior triangles far from the boundary are never split.
+    const cut = computeEdgeCut(g, jag, 3);
+    for (let t = 0; t < n; t++) if (Math.abs(centroidX(g, t) - 0.5) > 0.3) expect(cut.triLabel[t]).toBe(jag[t]);
+  });
+});
+
+describe('re-detection and conversion', () => {
+  const seedsLR = [
+    { label: 'left', point: [0.1, 0.5, 0.12] as [number, number, number] },
+    { label: 'right', point: [0.9, 0.5, 0.12] as [number, number, number] },
+  ];
+
+  it('a second detection is undoable and keeps colours by name', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    r.edit([{ op: 'setColor', id: 'left', color: '#ff0000' }]);
+    const s1 = r.detect({ algorithm: 'pieces' });
+    expect(s1.detectorId).toBe('pieces');
+    expect(s1.canUndo).toBe(true);
+    const s2 = r.edit([{ op: 'undo' }]);
+    expect(s2.detectorId).toBe('crease-watershed');
+    expect(s2.parts.map((p) => [p.name, p.color])).toEqual([['left', '#ff0000'], ['right', null]]);
+  });
+
+  it('seedsFromParts turns a seedless draft into a seeded one', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'auto-merge', params: { mergeBelowDeg: 30 } });
+    const s = r.edit([{ op: 'seedsFromParts' }]);
+    expect(s.detectorId).toBe('crease-watershed');
+    expect(s.seeds.length).toBeGreaterThanOrEqual(s.parts.length);
+    // Re-running from the generated seeds reproduces the parts.
+    const again = r.edit([{ op: 'rerun' }]);
+    expect(again.parts.map((p) => p.name).sort()).toEqual(s.parts.map((p) => p.name).sort());
+  });
+
+  it('reports groove coverage and fidelity', () => {
+    const r = new SegmentationRunner(groove(21));
+    const q = r.detect({ algorithm: 'crease-watershed', seeds: seedsLR }).quality;
+    // The only strong groove is the valley and the boundary sits on it.
+    expect(q.grooveCoverage).toBeGreaterThan(0.9);
+    expect(q.grooveFidelity).toBeGreaterThan(0.9);
+  });
+});
+
+describe('smooth edges keep crease boundaries', () => {
+  // Folded grid: floor (z=0) and wall (x=1) meeting at a 90° fold (a ridge),
+  // split exactly along it — smoothing must not pull the boundary off it.
+  function folded(N: number): { mesh: SegMesh; part: Int32Array } {
+    const pos: number[] = [], tris: number[] = [], part: number[] = [];
+    const idx = new Map<string, number>();
+    const v = (x: number, y: number, z: number) => {
+      const k = `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+      let i = idx.get(k);
+      if (i === undefined) { i = pos.length / 3; pos.push(x, y, z); idx.set(k, i); }
+      return i;
+    };
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const a = v(i / N, j / N, 0), b = v((i + 1) / N, j / N, 0), c = v((i + 1) / N, (j + 1) / N, 0), d = v(i / N, (j + 1) / N, 0);
+      tris.push(a, b, c, a, c, d); part.push(0, 0);
+    }
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const a = v(1, j / N, i / N), b = v(1, (j + 1) / N, i / N), c = v(1, (j + 1) / N, (i + 1) / N), d = v(1, j / N, (i + 1) / N);
+      tris.push(a, b, c, a, c, d); part.push(1, 1);
+    }
+    return { mesh: { positions: Float32Array.from(pos), triVerts: Uint32Array.from(tris) }, part: Int32Array.from(part) };
+  }
+
+  it('leaves a boundary that sits on a strong crease untouched', async () => {
+    const { computeEdgeCut } = await import('../../src/segmentation/smoothEdges');
+    const { mesh, part } = folded(8);
+    const f = computeMeshFeatures(mesh);
+    for (const it of [0, 3, 8]) {
+      const cut = computeEdgeCut(mesh, part, it, { adjacency: f, pinCreaseDeg: 60 }); // the default
+      expect(cut.splitTris.length).toBe(0);
+      expect([...cut.triLabel]).toEqual([...part]);
+    }
+    // Without the crease information the same boundary would be cut.
+    expect(computeEdgeCut(mesh, part, 3).splitTris.length).toBeGreaterThan(0);
+  });
+
+  it('runner cut pins a seeded boundary that settled on a groove', () => {
+    const r = new SegmentationRunner(groove(21));
+    const s = r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'left', point: [0.1, 0.5, 0.12] }, { label: 'right', point: [0.9, 0.5, 0.12] },
+    ] });
+    expect(s.quality.boundaryCreaseMean).toBeGreaterThan(20);
+    expect(r.cut(3, 15)!.splitTris.length).toBe(0);
+    expect(r.cut(3, 0)!.splitTris.length).toBeGreaterThan(0); // pinning off
+  });
+});

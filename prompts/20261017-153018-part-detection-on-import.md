@@ -64,3 +64,21 @@ Guarded the null draft after `refreshOverlay` (also in `detectParts`).
 Closing an untouched import proposal discards it so no orphan overlay
 remains. Shared button styles + mobile touch targets; the Paint entry skips
 relief imports; the method dropdown follows draft changes.
+
+## Human (follow-up 2)
+
+"you already have tons of conflicts. Please fix."
+
+## Assistant
+
+**Merged main's part-tools PR (#1033) into the branch.** Kept both sides:
+`autoPropose` sits beside upstream's detector `presets`; `autoDetectParts`
+now commits its proposal through upstream's `setDraft` (seed sync, smooth-cut
+scheduling) and, as an AI tool, opens the panel on a proposal like
+`detectParts` does. Took upstream's rewritten panel wholesale and re-applied
+only this PR's additions (context banner + secondary action, discard of an
+untouched import proposal on close, busy sync on open, Paint-entry hook);
+upstream's `syncControls` already covers the method-follows-draft fix.
+Deliberately did NOT opt the new `auto-merge` detector into `autoPropose`:
+that would turn every single-solid import (CAD parts included) into a
+parts proposal — a UX call for the owner.

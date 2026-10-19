@@ -965,9 +965,9 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('segmentation', 'absorbMinAreaFrac', v)}
         />
         <Field
-          label="Smooth-edges passes"
+          label="Tidy-edges passes"
           unit="passes"
-          hint="Boundary clean-up passes per Smooth edges click."
+          hint="Boundary clean-up passes per Tidy edges click."
           tooltip="Each pass switches a boundary triangle to the part held by a majority of its neighbours, shaving single-triangle stair-steps and spurs. More passes give smoother but slightly shifted boundaries."
           defaultValue={APP_CONFIG_DEFAULTS.segmentation.smoothBoundaryIterations}
           value={c.segmentation.smoothBoundaryIterations}
@@ -1003,6 +1003,86 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.segmentation.labelGridResolution}
           min={40} max={600} integer
           onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
+        <Field
+          label="Live re-detect delay"
+          unit="ms"
+          hint="Live mode waits this long after your last change."
+          tooltip="With Live on in the Part Detection panel, detection re-runs automatically once you stop moving seeds or changing settings for this long. Raise it on very large meshes so a re-run doesn't start mid-adjustment."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.liveDebounceMs}
+          value={c.segmentation.liveDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'liveDebounceMs', v)}
+        />
+        <Field
+          label="Edge-smoothness delay"
+          unit="ms"
+          hint="Wait after the Edge smoothness slider before recomputing."
+          tooltip="Smooth part edges are recomputed (in the background) once the Edge smoothness slider has been still for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgeSmoothingDebounceMs}
+          value={c.segmentation.edgeSmoothingDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'edgeSmoothingDebounceMs', v)}
+        />
+        <Field
+          label="Preset thumbnail size"
+          unit="px"
+          hint="Size of the preset filmstrip tiles."
+          tooltip="The Presets strip renders each preset's result as a small thumbnail of this size. Larger tiles show more detail but take longer to draw."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.presetThumbSize}
+          value={c.segmentation.presetThumbSize}
+          min={64} max={320} integer
+          onChange={v => set('segmentation', 'presetThumbSize', v)}
+        />
+        <Field
+          label="Default edge smoothness"
+          unit="passes"
+          hint="Edge-smoothing passes a new part draft starts with."
+          tooltip="Smooth part edges draw boundaries through triangles so stair-stepped boundaries curve, and Accept cuts the mesh along them. This is the starting value of the panel's Edge smoothness slider (and of drafts the AI creates). 0 = keep boundaries on triangle edges and never re-mesh on accept."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.defaultEdgeSmoothing}
+          value={c.segmentation.defaultEdgeSmoothing}
+          min={0} max={20} integer
+          onChange={v => set('segmentation', 'defaultEdgeSmoothing', v)}
+        />
+        <Field
+          label="Keep boundaries on sharp folds"
+          unit="°"
+          hint="Smoothing leaves boundaries on folds this sharp alone."
+          tooltip="Where a part boundary runs along an edge whose faces meet at least this many degrees apart (a hard edge such as a box corner), it already sits on the seam, so smooth edges leave it there. Sculpted grooves on scans usually fold 30–60° per edge, so they still smooth at the default 60°. Lower it to keep more boundaries in place; 0 smooths every boundary."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgePinCreaseDeg}
+          value={c.segmentation.edgePinCreaseDeg}
+          min={0} max={90} step={1}
+          onChange={v => set('segmentation', 'edgePinCreaseDeg', v)}
+        />
+        <Field
+          label="Convert-to-seeds speck size"
+          unit="of part"
+          hint="Smaller regions of a part get no seed of their own."
+          tooltip="Convert to seeds drops one seed in each separate region of every part. Regions smaller than this fraction of their part are skipped, so stray specks follow the part's main seed. 0.01 = 1%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedsFromPartsMinRegionFrac}
+          value={c.segmentation.seedsFromPartsMinRegionFrac}
+          min={0} max={0.5} step={0.005}
+          onChange={v => set('segmentation', 'seedsFromPartsMinRegionFrac', v)}
+        />
+        <Field
+          label="Seed dot size"
+          unit="of model"
+          hint="Seed-marker dot radius, as a fraction of the model's size."
+          tooltip="Seed dots are sized from the model's bounding-box diagonal so they read the same on a small figurine and a large scan. 0.008 = 0.8% of the diagonal."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedDotFraction}
+          value={c.segmentation.seedDotFraction}
+          min={0.001} max={0.05} step={0.001}
+          onChange={v => set('segmentation', 'seedDotFraction', v)}
+        />
+        <Field
+          label="Seed label size"
+          unit="of view"
+          hint="Seed name-tag height, as a fraction of the viewport height."
+          tooltip="Seed name tags stay the same size on screen however far you zoom. 0.026 ≈ 2.6% of the viewport height."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedTagScreenFraction}
+          value={c.segmentation.seedTagScreenFraction}
+          min={0.01} max={0.08} step={0.002}
+          onChange={v => set('segmentation', 'seedTagScreenFraction', v)}
         />
       </Section>
 
