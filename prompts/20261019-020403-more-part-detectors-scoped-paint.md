@@ -74,3 +74,13 @@ discarded.
 and kept the first detector's hint, so a key shared by two detectors (e.g.
 minPartPct) would show the AI only one meaning. It now lists every detector's
 meaning and widens the bounds; per-detector validation is unchanged.
+
+**Merging the detector workers**: planar-groups and thickness were built in
+parallel worktrees. Both independently found and fixed the absorbSmallRegions
+swap bug; the directional-vote fix above was kept and thickness's "hosts"
+variant dropped, since its tests pass on the kept fix. The allow-mask hash
+(`maskKey`) lives in features.ts so every detector shares one copy. The
+thickness resolution cap dropped 320 → 256: 320³ is ~33M voxels (~270 MB of
+EDT), too much for a browser Worker. segmentation.md documents both detectors
+honestly, including what they can't do (similar-thickness parts touching;
+planar-groups on organic shapes).

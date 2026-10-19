@@ -295,7 +295,7 @@ export const thicknessDetector: PartDetector = {
   seeds: 'optional',
   params: [
     {
-      key: 'resolution', label: 'Resolution', type: 'integer', default: 160, min: 48, max: 320, step: 8,
+      key: 'resolution', label: 'Resolution', type: 'integer', default: 160, min: 48, max: 256, step: 8,
       hint: 'Voxels along the longest side used to measure thickness. Higher resolves thinner features (fingers, ears) but is slower and uses much more memory on the first run; the other sliders then re-run instantly.',
     },
     {
