@@ -405,6 +405,14 @@ export const manifoldJsEngine: Engine = {
       const keys = Object.keys(rest);
       if (keys.length > 0) throw new Error(`${where}: unknown key(s) ${keys.map(k => `"${k}"`).join(', ')}.`);
     };
+    // `withinPart: 'name'` on box / slab / cylinder clips the paint to one
+    // part (an api.label region, or a detected part of an import) — so a band
+    // or blob can't bleed across the part's edge.
+    const paintWithin = (v: unknown, where: string): { withinPart?: string } => {
+      if (v === undefined) return {};
+      if (typeof v !== 'string' || v.length === 0) throw new Error(`${where} withinPart: expected a part (label) name.`);
+      return { withinPart: v };
+    };
     const AXIS_NORMAL: Record<string, [number, number, number]> = {
       x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
     };
@@ -412,21 +420,21 @@ export const manifoldJsEngine: Engine = {
     const paint = {
       /** Paint every triangle inside an axis-aligned box. `min`/`max` are world-space corners. */
       box(opts: unknown): void {
-        const o = paintObj(opts, 'api.paint.box({ min, max, color })');
-        const { min, max, color, ...rest } = o;
+        const o = paintObj(opts, 'api.paint.box({ min, max, color, withinPart? })');
+        const { min, max, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.box', rest);
         const lo = paintVec3(min, 'api.paint.box min');
         const hi = paintVec3(max, 'api.paint.box max');
         const rgb = paintColor(color, 'api.paint.box');
         const center: [number, number, number] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
         const size: [number, number, number] = [Math.abs(hi[0] - lo[0]), Math.abs(hi[1] - lo[1]), Math.abs(hi[2] - lo[2])];
-        paintOps.push({ name: `paint·box ${++paintSeq}`, color: rgb, descriptor: { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box' } });
+        paintOps.push({ name: `paint·box ${++paintSeq}`, color: rgb, descriptor: { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box', ...paintWithin(withinPart, 'api.paint.box') } });
       },
       /** Paint a flat band (slab). Give `axis: 'x'|'y'|'z'` or an explicit `normal`,
        *  plus `offset` (signed distance along the normal to the band centre) and `thickness`. */
       slab(opts: unknown): void {
-        const o = paintObj(opts, "api.paint.slab({ axis, offset, thickness, color })");
-        const { axis, normal, offset, thickness, color, ...rest } = o;
+        const o = paintObj(opts, "api.paint.slab({ axis, offset, thickness, color, withinPart? })");
+        const { axis, normal, offset, thickness, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.slab', rest);
         let nrm: [number, number, number];
         if (axis !== undefined) {
@@ -441,13 +449,13 @@ export const manifoldJsEngine: Engine = {
         const thk = paintNum(thickness, 'api.paint.slab thickness');
         if (thk <= 0) throw new Error('api.paint.slab thickness: must be > 0.');
         const rgb = paintColor(color, 'api.paint.slab');
-        paintOps.push({ name: `paint·slab ${++paintSeq}`, color: rgb, descriptor: { kind: 'slab', normal: nrm, offset: off, thickness: thk } });
+        paintOps.push({ name: `paint·slab ${++paintSeq}`, color: rgb, descriptor: { kind: 'slab', normal: nrm, offset: off, thickness: thk, ...paintWithin(withinPart, 'api.paint.slab') } });
       },
       /** Paint a (possibly annular) vertical cylinder shell. `center` is [x, y];
        *  `rMin` (default 0) / `rMax` are radii; `zMin` / `zMax` bound the height. */
       cylinder(opts: unknown): void {
-        const o = paintObj(opts, 'api.paint.cylinder({ center, rMin, rMax, zMin, zMax, color })');
-        const { center, rMin, rMax, zMin, zMax, color, ...rest } = o;
+        const o = paintObj(opts, 'api.paint.cylinder({ center, rMin, rMax, zMin, zMax, color, withinPart? })');
+        const { center, rMin, rMax, zMin, zMax, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.cylinder', rest);
         if (!Array.isArray(center) || center.length !== 2 || center.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
           throw new Error('api.paint.cylinder center: expected [x, y] (two finite numbers).');
@@ -460,7 +468,7 @@ export const manifoldJsEngine: Engine = {
         if (r0 < 0 || r1 <= r0) throw new Error('api.paint.cylinder: require 0 <= rMin < rMax.');
         if (z1 <= z0) throw new Error('api.paint.cylinder: require zMin < zMax.');
         const rgb = paintColor(color, 'api.paint.cylinder');
-        paintOps.push({ name: `paint·cyl ${++paintSeq}`, color: rgb, descriptor: { kind: 'cylinder', center: c, rMin: r0, rMax: r1, zMin: z0, zMax: z1 } });
+        paintOps.push({ name: `paint·cyl ${++paintSeq}`, color: rgb, descriptor: { kind: 'cylinder', center: c, rMin: r0, rMax: r1, zMin: z0, zMax: z1, ...paintWithin(withinPart, 'api.paint.cylinder') } });
       },
       /** Recolour triangles belonging to an existing `api.label(shape, name)` region.
        *  Call as `api.paint.label('name', color)` or `api.paint.label({ label, color })`. */

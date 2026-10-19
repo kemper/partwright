@@ -211,6 +211,7 @@ api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });     
 api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] });   // axis-aligned box
 api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) vertical shell
 api.paint.label('body', '#888');   // recolor an existing api.label(...) region by name
+api.paint.slab({ axis: 'z', offset: 0, thickness: 4, color: '#fff', withinPart: 'body' }); // clipped to one part
 return part;
 ```
 
@@ -506,6 +507,16 @@ partwright.paintAirbrush({
 ```
 
 **Imported meshes (STL figurines, scans): detect parts first.** A fused import has no labels, so every selector above is guessing at boundaries. Run part detection (`detectParts` → `renderParts` → `editParts` → `acceptParts`, see **[/ai/segmentation.md](/ai/segmentation.md)**): it places each boundary on the sculpted groove between named seeds — including surfaces no camera sees, like an inner arm behind a held ball — and turns every part into a real label, so `paintByLabel` / part colours paint exactly one region with clean edges.
+
+**Paint details *inside* a part with `withinPart`.** Some details have no groove to detect: the sock's stripe, the ball's panels, a logo on the shirt. Paint them with a normal selector and add `withinPart: '<part>'`. The paint is clipped to that part, so a generous radius, slab or box can't bleed onto the neighbouring part:
+
+```js
+partwright.paintSlab({ axis: 'z', offset: 14, thickness: 2, color: [0.1, 0.3, 0.8], withinPart: 'sock' });   // stripe only on the socks
+partwright.paintNear({ point: [150, 128, 44], radius: 3, color: [0, 0, 0], withinPart: 'ball' });         // panel on the ball, never the hands
+partwright.paintStroke({ points, radius: 1.5, color: [1, 1, 1], withinPart: 'shirt' });
+```
+
+Supported on `paintNear`, `paintInBox`, `paintInOrientedBox`, `paintSlab`, `paintInCylinder`, `paintConnected`, `paintRegion`, `paintNearestRegion`, `paintStroke` and `paintAirbrush`, and in code on `api.paint.box` / `slab` / `cylinder`. `withinPart` takes any label of the current run (`listLabels()`), so it works on `api.label` regions too. An unknown part name is an error that lists the known parts. A selection with nothing inside the part is an error, not an empty region. The clip is stored on the region, so it survives reloads and re-runs. If the part later disappears (it's renamed or re-detected), the region paints nothing, as `byLabel` does. In the Paint panel, the same scope is the **Paint within** picker in the Labels section: it applies to every brush, bucket, slab, box and image-stamp tool until it is set back to *Whole model*. Accept parts with smooth edges (the default) so the part edge itself is smooth.
 
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 

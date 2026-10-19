@@ -23,3 +23,26 @@ quality by hand, so all three detectors land together.
 **CLI fix first**: `partwright segment` crashed whenever --views was omitted
 (resolveViews returns null, and a null argument skips composePng's default
 parameter). Pass `views ?? undefined`.
+
+**Scoped paint (`withinPart`)**: every RegionDescriptor may carry
+`withinPart: '<label>'`. The region store clips the region to that part
+wherever its triangles are set (addRegion and setRegionTriangles), so live
+paint, worker re-resolves and reloads all agree. The clip is centralized in
+regions.ts behind a resolver that main.ts registers, rather than repeated in
+every tool.
+- *Refined meshes*: label ids index the run mesh, but smooth strokes and
+  stamps re-tessellate the working mesh one step at a time. Each refine path
+  now records `mesh → {from, parentToChildren}`, and a part's set is carried
+  down that lineage exactly. Meshes with no lineage (texture/simplify bakes)
+  fall back to the nearest-centroid map the bake paths already use.
+- *UI vs API*: the Paint panel's "Paint within" picker stamps the scope on
+  descriptors the UI tools commit (`withPaintScope`). The console API never
+  reads that UI state; agents pass `withinPart` per call. That way a scope
+  the user left selected can't silently clip an agent's paint.
+- *Errors, not silent no-ops*: an unknown part lists the known parts. A
+  selection with nothing inside the part removes the empty region and errors.
+- *Smooth clip*: not a separate field clip. Re-mesh-on-accept (#1033) already
+  cuts smooth part edges into the import, so a triangle-level clip follows
+  that smooth edge.
+- api.paint.box/slab/cylinder accept `withinPart` too, resolved headlessly by
+  paintOpsResolve.

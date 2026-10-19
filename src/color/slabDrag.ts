@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
+import { withPaintScope } from './paintScope';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
 import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 
@@ -314,7 +315,7 @@ function commitSlab(offset: number, thickness: number): void {
     name,
     [...getColor()] as [number, number, number],
     'slab',
-    { kind: 'slab', normal: [...normal] as [number, number, number], offset, thickness, smooth, maxEdge },
+    withPaintScope({ kind: 'slab', normal: [...normal] as [number, number, number], offset, thickness, smooth, maxEdge }),
     triangles,
     true,
     getSlotId() ?? undefined,

@@ -34,6 +34,7 @@ import {
 // rather than importing paintMode directly — same one-way dependency the drag
 // tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
 import { getCurrentMesh as getPaintMesh } from './paintAccessors';
+import { withPaintScope } from './paintScope';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -424,7 +425,7 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
     name,
     result.avgColor,
     'imagePaint',
-    {
+    withPaintScope({
       kind: 'imagePaint',
       entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
@@ -436,7 +437,7 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
         ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
-    },
+    }),
     triangles,
     true,
     undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot

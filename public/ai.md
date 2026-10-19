@@ -448,6 +448,7 @@ partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?,
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
+// Every selector above except paintFaces/paintByLabel/paintComponent takes withinPart: '<label>' to clip the paint to one part (e.g. a detected part of an import) — see colors.md.
 partwright.paintPreview({...selector, withImage?, view?})                 // dry-run
 partwright.paintExplain({region, withImage?, view?})                      // diagnose committed region
 partwright.assertPaint({region, expectedTriangleCount?, ...})             // verify

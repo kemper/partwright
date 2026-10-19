@@ -7,7 +7,8 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions, buildTriColors, isPainted } from './regions';
+import { addRegion, getRegions, buildTriColors, isPainted, clipToPart } from './regions';
+import { getPaintScope, withPaintScope } from './paintScope';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -549,7 +550,7 @@ function processMouseMove(event: MouseEvent): void {
         if (added) appendBrushFillStamp(result.point, result.normal);
       } else {
         collectBrushFootprint(event, result, brushSession);
-        showHighlight(brushSession);
+        showHighlight(inPaintScope(brushSession));
       }
       // Ring must come after showHighlight (which calls clearHighlight internally).
       if (brushRadius > 0) showBrushRing(result.point, result.normal);
@@ -603,7 +604,7 @@ function processMouseMove(event: MouseEvent): void {
   }
 
   hoveredTriangles = region;
-  showHighlight(region);
+  showHighlight(inPaintScope(region));
   // Ring must come after showHighlight.
   if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
   else if (currentTool === 'brush') clearBrushRing();
@@ -649,7 +650,7 @@ function onPointerDown(event: PointerEvent): void {
       appendBrushFillStamp(result.point, result.normal);
     } else {
       collectBrushFootprint(event, result, brushSession);
-      showHighlight(brushSession);
+      showHighlight(inPaintScope(brushSession));
     }
     event.preventDefault();
   }
@@ -696,7 +697,7 @@ function commitBrushStroke(): void {
       name,
       color,
       'paintbrush',
-      {
+      withPaintScope({
         kind: 'brushStroke',
         samples: strokeSamples.map(s => [s[0], s[1], s[2]] as [number, number, number]),
         radius: brushRadius,
@@ -706,7 +707,7 @@ function commitBrushStroke(): void {
         depth: brushPaintDepth,
         wrapAngleDeg: brushWrapAngle,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
-      },
+      }),
       new Set<number>(),
       true,
       currentSlotId ?? undefined,
@@ -719,7 +720,7 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
+    addRegion(name, color, 'paintbrush', withPaintScope({ kind: 'triangles', ids }), brushSession, true, currentSlotId ?? undefined);
     if (onRegionPainted) onRegionPainted();
   }
 }
@@ -963,7 +964,7 @@ function onPointerUp(event: PointerEvent): void {
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
-      { kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance },
+      withPaintScope({ kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance }),
       region,
       true,
       currentSlotId ?? undefined,
@@ -985,7 +986,7 @@ function onPointerUp(event: PointerEvent): void {
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
-      { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
+      withPaintScope({ kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance }),
       region,
       true,
       currentSlotId ?? undefined,
@@ -1035,7 +1036,15 @@ export function refreshBucketPreview(): void {
     ? findCoplanarRegion(lastBucketSeed, adjacency, bucketTolerance)
     : findColorRegion(lastBucketSeed, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
   hoveredTriangles = region;
-  showHighlight(region);
+  showHighlight(inPaintScope(region));
+}
+
+/** The part of a hover / live-brush preview the commit will actually keep when
+ *  "Paint within part" is on — the region store clips the committed region the
+ *  same way, so the preview never promises paint outside the part. */
+function inPaintScope(triangles: Set<number>): Set<number> {
+  const scope = getPaintScope();
+  return scope ? clipToPart({ kind: 'triangles', ids: [], withinPart: scope }, triangles).triangles : triangles;
 }
 
 function showHighlight(triangles: Set<number>, colorOverride?: [number, number, number]): void {
