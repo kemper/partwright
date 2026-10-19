@@ -1,6 +1,6 @@
-// Seed markers — the Part Detection panel's seeds drawn in the viewport: a
-// dot on the surface plus a floating name tag per seed, so the user can see
-// where they clicked. The panel owns the interaction (drag, delete, hide);
+// Pin markers — every part's pins drawn in the viewport: a dot on the
+// surface (automatic pins smaller and see-through) plus a floating name tag,
+// so the user can see where each part is anchored. The panel owns the interaction (drag, delete, hide);
 // this module only draws and hit-tests.
 //
 // Dots are depth-tested (a seed behind the model is hidden like the surface
@@ -16,7 +16,10 @@ import type { SegSeed } from './types';
 
 
 export interface SeedMarkers {
-  update(seeds: SegSeed[], colorFor: (label: string) => string, highlight?: number | null): void;
+  /** Draw pins. Parts in `emphasize` (hovered / selected) get bigger pins
+   *  and a name tag; otherwise only parts with a placed (non-auto) pin are
+   *  tagged, so dozens of automatic pins don't bury the model in labels. */
+  update(seeds: SegSeed[], colorFor: (label: string) => string, emphasize?: ReadonlySet<string>): void;
   /** Move one marker without rebuilding (live drag feedback). */
   moveMarker(index: number, point: [number, number, number]): void;
   setVisible(visible: boolean): void;
@@ -76,7 +79,7 @@ export function createSeedMarkers(): SeedMarkers {
   }
 
   const api: SeedMarkers = {
-    update(seeds, colorFor, highlight = null) {
+    update(seeds, colorFor, emphasize = new Set<string>()) {
       clear();
       const diag = diagonal();
       const { seedDotFraction, seedTagScreenFraction } = getConfig().segmentation;
@@ -84,24 +87,30 @@ export function createSeedMarkers(): SeedMarkers {
       // sizeAttenuation:false sprites are sized in view space at distance 1.
       const cam = getCamera();
       const tagH = seedTagScreenFraction * 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      const placed = new Set(seeds.filter((s) => !s.auto).map((s) => s.label));
       const tagged = new Set<string>();
       seeds.forEach((s, i) => {
         const color = colorFor(s.label);
+        const big = emphasize.has(s.label);
+        // Automatic pins: smaller and see-through; placed pins: solid.
+        const radius = r * (s.auto ? 0.7 : 1) * (big ? 1.5 : 1);
         const dot = new THREE.Mesh(
-          new THREE.SphereGeometry(i === highlight ? r * 1.5 : r, 16, 12),
-          new THREE.MeshBasicMaterial({ color }),
+          new THREE.SphereGeometry(radius, 16, 12),
+          new THREE.MeshBasicMaterial({ color, transparent: !!s.auto, opacity: s.auto ? 0.6 : 1 }),
         );
         dot.position.set(s.point[0], s.point[1], s.point[2]);
         dot.userData.seedIndex = i;
         // A white rim so a dot on a same-coloured part still reads.
         const rim = new THREE.Mesh(
-          new THREE.SphereGeometry((i === highlight ? r * 1.5 : r) * 1.25, 16, 12),
-          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide }),
+          new THREE.SphereGeometry(radius * 1.25, 16, 12),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide, transparent: !!s.auto, opacity: s.auto ? 0.6 : 1 }),
         );
         dot.add(rim);
         dots.push(dot);
         group.add(dot);
-        if (tagged.has(s.label) && i !== highlight) { tags.push(null); return; }
+        const wantsTag = big || placed.has(s.label);
+        // One tag per part, on a placed pin when it has one.
+        if (!wantsTag || tagged.has(s.label) || (s.auto && placed.has(s.label))) { tags.push(null); return; }
         tagged.add(s.label);
         const { tex, aspect } = tagTexture(s.label, color);
         const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, sizeAttenuation: false }));

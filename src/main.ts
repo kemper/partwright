@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick, recolorMesh } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -4474,7 +4474,7 @@ async function main() {
     if (!r.proposed) { openConvert(true); return; }
     const count = (r.parts?.length ?? 0) + (r.partsTruncated ?? 0);
     openPartDetectionPanel(ctl, {
-      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or switch Method to Auto patches or Crease watershed for finer parts.`,
+      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
       secondaryAction: {
         label: 'Convert to code instead',
         run: () => { void ctl.discardParts(); openConvert(false); },
@@ -9792,6 +9792,7 @@ async function main() {
     getImports: () => getActiveImports(),
     getDisplayedMesh: () => currentMeshData,
     showOverlay: (mesh, triColors) => updateMesh({ ...mesh, triColors }, { skipAutoFrame: true }),
+    recolorOverlay: (triColors) => recolorMesh(triColors),
     clearOverlay: () => paintedColorRefresh(),
     modelHasPaint: () => modelHasColor(),
     getCode: () => getValue(),
@@ -12280,6 +12281,11 @@ async function main() {
     getPartSeeds() { return partDetection.getSeeds(); },
     setPartSeeds(seeds: unknown) { return partDetection.setSeeds(seeds); },
     openPartsPanel() { return partDetection.openPartsPanel(); },
+    getPartSelection() { return partDetection.getPartSelection(); },
+    setPartSelection(parts: unknown, options?: unknown) { return partDetection.setPartSelection(parts, options); },
+    setPartsView(options: unknown) { return partDetection.setPartsView(options); },
+    getPartsView() { return partDetection.getPartsView(); },
+    partAt(point: unknown) { return partDetection.partAt(point); },
 
     /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
      *  `BREP.label`), tracked through every boolean so they survive fusing into
@@ -16096,7 +16102,7 @@ async function main() {
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
-        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
         'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
         'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
         'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
@@ -16106,9 +16112,14 @@ async function main() {
         'previewPartPresets': { signature: 'await previewPartPresets({algorithm?, seeds?, view?, importIndex?, image?}) -- Run every preset of a detector without touching the draft, ranked best-first -> {presets:[{index,name,params,partCount,score}], image}', docs: '/ai/segmentation.md' },
         'showPartPresetPreview': { signature: 'showPartPresetPreview(index | null) -- Show one preset result in the viewport (null = back to the draft)', docs: '/ai/segmentation.md' },
         'applyPartPreset':   { signature: 'await applyPartPreset(index) -- Make a previewPartPresets result the draft -> draft summary', docs: '/ai/segmentation.md' },
-        'getPartSeeds':      { signature: 'getPartSeeds() -- Working seeds (the panel markers; the next detection uses them) -> [{label, point}]', docs: '/ai/segmentation.md' },
+        'getPartSeeds':      { signature: 'getPartSeeds() -- The parts\' pins (the panel markers; auto = placed by the draft) -> [{label, point, auto?}]', docs: '/ai/segmentation.md' },
         'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z]}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
         'openPartsPanel':    { signature: 'openPartsPanel() -- Open the Part Detection panel', docs: '/ai/segmentation.md' },
+        'getPartSelection':  { signature: 'getPartSelection() -- Selected draft parts (shared with the panel and the model) -> {parts:[{id,name}]}', docs: '/ai/segmentation.md' },
+        'setPartSelection':  { signature: 'setPartSelection([id|name, ...] | null, {mode?:"replace"|"add"|"toggle"|"remove"}) -- Select draft parts (highlighted in the viewport)', docs: '/ai/segmentation.md' },
+        'setPartsView':      { signature: 'setPartsView({mode:"all"|"solo", parts?}) -- Solo view: only these parts (default: the selection) in colour, the rest grey', docs: '/ai/segmentation.md' },
+        'getPartsView':      { signature: 'getPartsView() -- Current overlay view -> {mode, parts}', docs: '/ai/segmentation.md' },
+        'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")

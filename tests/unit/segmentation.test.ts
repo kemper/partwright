@@ -177,12 +177,13 @@ describe('part draft edits', () => {
     expect(s.parts.map((p) => p.name)).toEqual(['hair', 'right']);
   });
 
-  it('keeps part names unique (they become labels)', () => {
+  it('keeps part names unique (they become labels): renaming to a taken name merges', () => {
     const r = fresh();
-    expect(() => r.edit([{ op: 'rename', id: 1, name: 'right' }])).toThrow(/already named "right".*merge/);
-    // merge may reuse a merged part's own name
-    const s = r.edit([{ op: 'merge', ids: ['left', 'right'], name: 'right' }]);
+    const s = r.edit([{ op: 'rename', id: 1, name: 'right' }]);
     expect(s.parts.map((p) => p.name)).toEqual(['right']);
+    // the merged part owns both parts' pins
+    expect(s.seeds.every((sd) => sd.label === 'right')).toBe(true);
+    expect(s.parts[0].pins).toBeGreaterThanOrEqual(2);
   });
 
   it('suffixes duplicate detector names with a free number', () => {
@@ -553,5 +554,152 @@ describe('smooth edges keep crease boundaries', () => {
     expect(s.quality.boundaryCreaseMean).toBeGreaterThan(20);
     expect(r.cut(3, 15)!.splitTris.length).toBe(0);
     expect(r.cut(3, 0)!.splitTris.length).toBeGreaterThan(0); // pinning off
+  });
+});
+
+describe('parts own pins', () => {
+  const seedsLR = [
+    { label: 'left', point: [0.1, 0.5, 0.12] as [number, number, number] },
+    { label: 'right', point: [0.9, 0.5, 0.12] as [number, number, number] },
+  ];
+
+  it('every part gets an automatic pin, and renaming carries pins along', () => {
+    const r = new SegmentationRunner(groove(21));
+    const s = r.detect({ algorithm: 'auto-merge', params: { mergeBelowDeg: 30 } });
+    expect(s.parts.every((p) => p.pins >= 1)).toBe(true);
+    expect(s.seeds.every((sd) => sd.auto)).toBe(true);
+    const renamed = r.edit([{ op: 'rename', id: 1, name: 'body' }]);
+    expect(renamed.seeds.some((sd) => sd.label === 'body')).toBe(true);
+    expect(renamed.seeds.some((sd) => sd.label === s.parts[0].name)).toBe(false);
+  });
+
+  it('a new pin grows a new part locally; moving a pin re-grows only nearby', () => {
+    // Three columns of parts: a, b, c (grooves at x = 1/3 and 2/3).
+    const m = heightfield(31, (x) => 0.2 * Math.min(Math.abs(x - 1 / 3), Math.abs(x - 2 / 3)));
+    const r = new SegmentationRunner(m);
+    r.detect({ algorithm: 'crease-watershed', seeds: [
+      { label: 'a', point: [0.1, 0.5, 0.05] }, { label: 'b', point: [0.5, 0.5, 0.03] }, { label: 'c', point: [0.9, 0.5, 0.05] },
+    ] });
+    const before = r.draft!.triPart.slice();
+    // Split part c with a new pin near its top edge.
+    const s = r.edit([{ op: 'addSeed', seed: { label: 'cap', point: [0.9, 0.95, 0.05] } }]);
+    expect(s.parts.map((p) => p.name)).toContain('cap');
+    const aIdx = s.parts.findIndex((p) => p.name === 'a');
+    // Part a is not a neighbour of c: untouched.
+    for (let t = 0; t < before.length; t++) if (before[t] === 0) expect(r.draft!.triPart[t]).toBe(aIdx);
+    // Removing the pin dissolves the new part back into its neighbour.
+    const pinIdx = s.seeds.findIndex((sd) => sd.label === 'cap');
+    const back = r.edit([{ op: 'removeSeed', index: pinIdx }]);
+    expect(back.parts.map((p) => p.name)).not.toContain('cap');
+  });
+
+  it('hand fixes are fixed regions a re-grow keeps', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    // Paint a blob of the left side into "right", then move the right pin.
+    r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'right', radius: 0.08 }]);
+    const fixed = [...r.draft!.triPart].filter((L) => L === 1).length;
+    const pin = r.draft!.seeds.findIndex((sd) => sd.label === 'right');
+    const s = r.edit([{ op: 'moveSeed', index: pin, point: [0.85, 0.4, 0.105] }]);
+    expect(s.parts.find((p) => p.name === 'right')!.triCount).toBe(fixed);
+  });
+
+  it('reorder moves a part and keeps every triangle with its part', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    const leftTris = r.draft!.summary().parts[0].triCount;
+    const s = r.edit([{ op: 'reorder', id: 'left', position: 2 }]);
+    expect(s.parts.map((p) => p.name)).toEqual(['right', 'left']);
+    expect(s.parts[1].triCount).toBe(leftTris);
+  });
+
+  it('clear empties the draft (undoable)', () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    const s = r.edit([{ op: 'clear' }]);
+    expect(s.parts).toEqual([]);
+    expect(s.seeds).toEqual([]);
+    expect(r.edit([{ op: 'undo' }]).parts.length).toBe(2);
+  });
+
+  it('neighbouring parts never get clashing colours', () => {
+    // 36 parts from a 6×6 grid of seeds on a flat sheet.
+    const r = new SegmentationRunner(heightfield(49, () => 0));
+    const seeds = [];
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) seeds.push({ label: `p${i}-${j}`, point: [(i + 0.5) / 6, (j + 0.5) / 6, 0] as [number, number, number] });
+    const s = r.detect({ algorithm: 'crease-watershed', seeds });
+    expect(s.parts.length).toBe(36);
+    for (const p of s.parts) for (const n of p.neighbors) {
+      expect(p.displayColor).not.toBe(s.parts[n - 1].displayColor);
+    }
+    // Colours are stable across an unrelated edit.
+    const again = r.edit([{ op: 'setColor', id: 1, color: '#123456' }]);
+    expect(again.parts.slice(1).map((p) => p.displayColor)).toEqual(s.parts.slice(1).map((p) => p.displayColor));
+  });
+});
+
+describe('pin edge cases (review round)', () => {
+  const seedsLR = [
+    { label: 'left', point: [0.1, 0.5, 0.12] as [number, number, number] },
+    { label: 'right', point: [0.9, 0.5, 0.12] as [number, number, number] },
+  ];
+  const fresh = () => {
+    const r = new SegmentationRunner(groove(21));
+    r.detect({ algorithm: 'crease-watershed', seeds: seedsLR });
+    return r;
+  };
+
+  it('re-detecting under a lock does not duplicate pins', () => {
+    const r = fresh();
+    r.edit([{ op: 'lock', id: 'left' }]);
+    const a = r.edit([{ op: 'rerun' }]);
+    expect(a.seeds.length).toBe(2);
+    // The panel passes the full pin list back in.
+    const b = r.detect({ algorithm: 'crease-watershed', seeds: a.seeds });
+    expect(b.seeds.length).toBe(2);
+  });
+
+  it('a part whose pin sits in its own fixed region keeps its unfixed rest', () => {
+    const r = fresh();
+    const before = r.draft!.summary().parts.find((p) => p.name === 'right')!.triCount;
+    // Hand-fix a blob around the right pin (a fix of right into right).
+    r.edit([{ op: 'reassign', point: [0.9, 0.5, 0.12], to: 'right', radius: 0.12 }]);
+    const left = r.draft!.seeds.findIndex((sd) => sd.label === 'left');
+    const s = r.edit([{ op: 'moveSeed', index: left, point: [0.15, 0.45, 0.105] }]);
+    expect(s.parts.find((p) => p.name === 'right')!.triCount).toBeGreaterThan(before * 0.9);
+  });
+
+  it('a pin on unassigned triangles grows a real part (after clear / delete)', () => {
+    const r = fresh();
+    r.edit([{ op: 'clear' }]);
+    const s = r.edit([{ op: 'addSeed', seed: { label: 'all', point: [0.5, 0.5, 0] } }]);
+    expect(s.parts.map((p) => [p.name, p.triCount > 0])).toEqual([['all', true]]);
+    const r2 = fresh();
+    r2.edit([{ op: 'delete', id: 'right' }]);
+    const s2 = r2.edit([{ op: 'addSeed', seed: { label: 'again', point: [0.9, 0.5, 0.12] } }]);
+    expect(s2.parts.find((p) => p.name === 'again')!.triCount).toBeGreaterThan(0);
+  });
+
+  it('a pin on a locked part is refused with a clear error', () => {
+    const r = fresh();
+    r.edit([{ op: 'lock', id: 'right' }]);
+    expect(() => r.edit([{ op: 'addSeed', seed: { label: 'new', point: [0.9, 0.5, 0.12] } }])).toThrow(/locked part "right"/);
+  });
+
+  it('addSeed with rerun:false keeps the pin (and its new part) for a later re-grow', () => {
+    const r = fresh();
+    const s = r.edit([{ op: 'addSeed', seed: { label: 'later', point: [0.9, 0.9, 0.12] }, rerun: false }]);
+    expect(s.seeds.some((sd) => sd.label === 'later')).toBe(true);
+    const after = r.edit([{ op: 'rerun' }]);
+    expect(after.parts.find((p) => p.name === 'later')!.triCount).toBeGreaterThan(0);
+  });
+
+  it('edits sharing a stroke id are one undo step', () => {
+    const r = fresh();
+    const base = r.draft!.triPart.slice();
+    r.edit([{ op: 'reassign', point: [0.2, 0.3, 0.09], to: 'right', radius: 0.05 }], 'stroke-1');
+    r.edit([{ op: 'reassign', point: [0.2, 0.7, 0.09], to: 'right', radius: 0.05 }], 'stroke-1');
+    r.edit([{ op: 'undo' }]);
+    expect([...r.draft!.triPart]).toEqual([...base]);
   });
 });

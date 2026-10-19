@@ -13,10 +13,10 @@ import type { SavedPartsPayload, SegMesh } from './types';
 
 
 export type SegWorkerRequest =
-  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number; defaultEdgeSmoothing: number }
+  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number; defaultEdgeSmoothing: number; anchorMinRegionFrac: number }
   | { type: 'detect'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'preview'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
-  | { type: 'edit'; callId: number; ops: PartEditOp[] }
+  | { type: 'edit'; callId: number; ops: PartEditOp[]; stroke?: string }
   | { type: 'adopt'; callId: number; saved: SavedPartsPayload }
   | { type: 'cut'; callId: number; iterations?: number; pinCreaseDeg: number }
   | { type: 'discard'; callId: number };
@@ -43,7 +43,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'load':
-        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth, defaultEdgeSmoothing: msg.defaultEdgeSmoothing });
+        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth, defaultEdgeSmoothing: msg.defaultEdgeSmoothing, anchorMinRegionFrac: msg.anchorMinRegionFrac });
         reply({ type: 'result', callId: msg.callId, summary: null, triPart: null });
         return;
       case 'detect': {
@@ -66,7 +66,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
       }
       case 'edit': {
         if (!runner) throw new Error('No mesh loaded');
-        result(msg.callId, runner.edit(msg.ops));
+        result(msg.callId, runner.edit(msg.ops, msg.stroke));
         return;
       }
       case 'adopt': {

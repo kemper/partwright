@@ -82,3 +82,16 @@ upstream's `syncControls` already covers the method-follows-draft fix.
 Deliberately did NOT opt the new `auto-merge` detector into `autoPropose`:
 that would turn every single-solid import (CAD parts included) into a
 parts proposal — a UX call for the owner.
+
+## Human (follow-up 3)
+
+"I merged again you may need to fix"
+
+## Assistant
+
+**Merged main's part-pins PR (#1035).** Union of the PARTS_GATED sets
+(`autoDetectParts` + the new selection/view tools); in the panel kept the new
+tool/pins/fit-to-window code and re-applied the import banner after it, the
+draft-detector capture, and a `syncBusy` helper wrapped around the new
+subscribe handler (it still runs on open). The banner now points at the
+renamed "Start" section. Doc sections from both sides kept.

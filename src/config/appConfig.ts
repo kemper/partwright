@@ -409,6 +409,8 @@ export interface AppConfig {
     seedDotFraction: number;
     /** Seed-marker name-tag height as a fraction of the viewport height. */
     seedTagScreenFraction: number;
+    /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
+    fixBrushRadiusFrac: number;
   };
 }
 
@@ -545,6 +547,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     seedsFromPartsMinRegionFrac: 0.01,
     seedDotFraction: 0.008,
     seedTagScreenFraction: 0.026,
+    fixBrushRadiusFrac: 0.012,
   },
 };
 

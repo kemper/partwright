@@ -46,7 +46,8 @@ export interface ImportedMeshParts {
     detectorId: string;
     params: Record<string, unknown>;
     featureOptions?: Record<string, unknown>;
-    seeds?: { label: string; point: [number, number, number] }[];
+    /** The parts' pins (`auto` = placed by the draft, not the user). */
+    seeds?: { label: string; point: [number, number, number]; auto?: boolean }[];
     /** Edge-smoothing passes the accept cut the mesh along (the stored
      *  mesh is then the refined one); absent/0 = not re-meshed. */
     edgeSmoothing?: number;

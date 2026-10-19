@@ -91,6 +91,12 @@ function normalizePartOps(ops: unknown): unknown {
   });
 }
 
+/** A part-ref list from an AI tool call (strings; all-digit = 1-based id). */
+function partRefs(v: unknown): unknown[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? Number(x.trim()) : x));
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
@@ -1022,6 +1028,34 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: { index: { type: 'integer', minimum: 0 } }, required: ['index'] },
   },
   {
+    name: 'setPartSelection',
+    description: 'Select draft parts so the user sees which ones you mean: they are highlighted on the model and ticked in the Part Detection panel (where the user can merge/solo/lock them from the action bar). parts: ids ("4") or names; omit or [] to clear. mode: replace (default) / add / toggle / remove.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: ['replace', 'add', 'toggle', 'remove'] },
+      },
+    },
+  },
+  {
+    name: 'setPartsView',
+    description: 'Solo view: mode "solo" shows only the given parts (default: the selection) in colour and greys out the rest — use it to show the user exactly what one part covers; mode "all" restores every colour.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['all', 'solo'] },
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part ids ("4") or names.' },
+      },
+      required: ['mode'],
+    },
+  },
+  {
+    name: 'partAt',
+    description: 'Which draft part is at a world point (e.g. from probePixel) -> {id, name}.',
+    input_schema: { type: 'object', properties: { point: { type: 'array', items: { type: 'number' }, description: '[x, y, z]' } }, required: ['point'] },
+  },
+  {
     name: 'openPartsPanel',
     description: 'Open the Part Detection panel for the user (detectParts and reopenParts already open it). Use when handing a draft over for manual refinement.',
     input_schema: { type: 'object', properties: {} },
@@ -1033,7 +1067,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'editParts',
-    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Ops: {op:"merge", ids:[...], name?} · {op:"rename", id, name} · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (re-runs the detector) · {op:"removeSeed", index} · {op:"moveSeed", index, point} · {op:"seedsFromParts"} (one seed per part, named after it; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"rerun"} · {op:"undo"}.',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Parts own PINS (shown on the model): every part has at least one (automatic pins sit in each region; seeds you add are placed pins). Ops: {op:"merge", ids:[...], name?} (the merged part keeps all their pins) · {op:"rename", id, name} (renaming to another part\'s name merges them) · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point; reassigned triangles become FIXED — pin moves never undo them) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (adds a pin for that part — a NEW name makes a new part — and re-grows only the parts around it) · {op:"removeSeed", index} · {op:"moveSeed", index, point} (indexes into the summary\'s seeds) · {op:"seedsFromParts"} (reset every part to automatic pins; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"reorder", id, position} (1-based; order = label order on accept) · {op:"clear"} (remove every part and pin; undoable) · {op:"rerun"} (re-detect the whole model) · {op:"undo"}.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1042,7 +1076,7 @@ const ALL_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'rerun', 'undo'] },
+              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo'] },
               id: { type: 'string', description: 'Part id ("4") or name.' },
               ids: { type: 'array', items: { type: 'string' }, description: 'merge: part ids or names.' },
               name: { type: 'string' },
@@ -1057,6 +1091,7 @@ const ALL_TOOLS: ToolDefinition[] = [
               iterations: { type: 'integer' },
               locked: { type: 'boolean', description: 'lock: false unlocks.' },
               minRegionFrac: { type: 'number', description: 'seedsFromParts: regions smaller than this fraction of their part get no seed (default 0.01).' },
+              position: { type: 'integer', description: 'reorder: new 1-based position.' },
             },
             required: ['op'],
           },
@@ -1731,7 +1766,7 @@ const PLAN_MODE_TOOLS = new Set([
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -1755,7 +1790,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // A visual-only tint; re-applying it is idempotent.
   'highlightObjectPart',
   // Idempotent renders (produce a snapshot; no persistent mutation)
@@ -1770,7 +1805,7 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySu
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
  *  image-returning ones additionally need the Views vision toggle. */
-const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel']);
+const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
@@ -2437,6 +2472,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'applyPartPreset':
       return api.applyPartPreset(input.index);
+    case 'setPartSelection': {
+      const refs = partRefs(input.parts) ?? [];
+      return api.setPartSelection(refs.length ? refs : null, input.mode === undefined ? undefined : { mode: input.mode });
+    }
+    case 'setPartsView': {
+      const refs = partRefs(input.parts);
+      return api.setPartsView(refs ? { mode: input.mode, parts: refs } : { mode: input.mode });
+    }
+    case 'partAt':
+      return api.partAt(input.point);
     case 'openPartsPanel':
       return api.openPartsPanel();
     case 'autoDetectParts': {
