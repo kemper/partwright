@@ -375,6 +375,20 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('replace', '\u{1F504} Replace', 'Replace one color with another across all matching regions (click mesh to pick source, then Replace all)'));
   content.appendChild(toolRow);
 
+  // "Paint within: [part]" — right under the tools it constrains. Only shown
+  // when the run has labels (e.g. accepted parts of an import).
+  const scopeHost = document.createElement('div');
+  scopeHost.id = 'paint-scope-row';
+  content.appendChild(scopeHost);
+  const renderScope = () => {
+    scopeHost.replaceChildren();
+    const labels = getPaintLabels();
+    if (labels.length > 0) scopeHost.appendChild(createScopeRow(labels));
+  };
+  renderScope();
+  onPaintLabelsChange(renderScope);
+  onPaintScopeChange(renderScope);
+
   // === Palette (filament slots) ===
   // The swatch grid is driven by the shared colour palette, so each swatch maps
   // to a filament/AMS slot. Painting with a swatch attributes the region to that
@@ -417,7 +431,6 @@ function createPickerPanel(): HTMLElement {
   updateLabelList(labelList);
   onPaintLabelsChange(() => updateLabelList(labelList));
   onRegionsChange(() => updateLabelList(labelList));
-  onPaintScopeChange(() => updateLabelList(labelList));
 
   // === Region list ===
   // Flows inside the single scroll area; the sticky footer keeps the actions
@@ -1635,8 +1648,6 @@ function updateLabelList(container: HTMLElement): void {
     return;
   }
 
-  container.appendChild(createScopeRow(labels));
-
   // Which labels are already painted, so the row can show a "painted" hint
   // instead of pretending nothing's there. A label may be painted multiple
   // times (e.g. a different color over the same area); we only need to know
@@ -1662,7 +1673,7 @@ function createScopeRow(labels: LabelInfo[]): HTMLElement {
   if (scope && !labels.some((l) => l.name === scope)) setPaintScope(null);
 
   const row = document.createElement('label');
-  row.className = 'flex items-center gap-2 mb-1.5 text-[11px] text-zinc-400';
+  row.className = 'flex items-center gap-2 mb-2.5 text-[11px] text-zinc-400';
   row.title = 'Keep brush, bucket, slab, box and image-stamp paint inside one part, so colour never bleeds across its edge';
   row.append('Paint within');
   const select = document.createElement('select');
