@@ -36,10 +36,14 @@ export class SegmentationRunner {
    *  in because the runner lives in a Worker). */
   private defaultEdgeSmoothing: number;
 
-  constructor(mesh: SegMesh, opts: { undoDepth?: number; defaultEdgeSmoothing?: number } = {}) {
+  /** Automatic pins skip regions under this fraction of their part. */
+  private anchorMinRegionFrac: number;
+
+  constructor(mesh: SegMesh, opts: { undoDepth?: number; defaultEdgeSmoothing?: number; anchorMinRegionFrac?: number } = {}) {
     this.mesh = mesh;
     this.undoDepth = opts.undoDepth ?? 20;
     this.defaultEdgeSmoothing = opts.defaultEdgeSmoothing ?? DEFAULT_EDGE_SMOOTHING;
+    this.anchorMinRegionFrac = opts.anchorMinRegionFrac ?? 0.01;
   }
 
   features(opts: FeatureOptions = {}): MeshFeatures {
@@ -101,6 +105,7 @@ export class SegmentationRunner {
     });
     model.cache = this.detectorCache;
     model.undoDepth = this.undoDepth;
+    model.anchorMinRegionFrac = this.anchorMinRegionFrac;
     model.edgeSmoothing = this.defaultEdgeSmoothing;
     if (typeof saved.edgeSmoothing === 'number') model.edgeSmoothing = Math.max(0, Math.min(MAX_EDGE_SMOOTHING, Math.round(saved.edgeSmoothing)));
     this.revision++;
@@ -129,8 +134,10 @@ export class SegmentationRunner {
       params, seeds, signal: req.signal, cache: this.detectorCache,
       progress: (frac, msg) => req.progress?.(0.15 + 0.85 * frac, msg),
     });
-    const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds }, result);
+    // A seedless detector's parts get automatic pins, not the caller's seeds.
+    const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds: d.seeds === 'none' ? [] : seeds }, result);
     model.undoDepth = this.undoDepth;
+    model.anchorMinRegionFrac = this.anchorMinRegionFrac;
     model.edgeSmoothing = this.defaultEdgeSmoothing;
     model.cache = this.detectorCache;
     return model;
@@ -151,10 +158,10 @@ export class SegmentationRunner {
     return this.cutCache.cut;
   }
 
-  edit(ops: PartEditOp[]): DraftSummary {
+  edit(ops: PartEditOp[], stroke?: string): DraftSummary {
     if (!this.draft) throw new Error('No part draft — call detectParts first.');
     this.revision++;
-    this.draft.edit(ops);
+    this.draft.edit(ops, stroke);
     return this.draft.summary();
   }
 }

@@ -1057,6 +1057,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0.01} max={0.08} step={0.002}
           onChange={v => set('segmentation', 'seedTagScreenFraction', v)}
         />
+        <Field
+          label="Fix brush size"
+          unit="of model"
+          hint="Radius of the part panel's Fix brush."
+          tooltip="The Fix tool paints triangles into a chosen part with a round brush this big (a fraction of the model's bounding-box diagonal). Fixed triangles stay put when pins move. 0.012 = 1.2%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.fixBrushRadiusFrac}
+          value={c.segmentation.fixBrushRadiusFrac}
+          min={0.002} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'fixBrushRadiusFrac', v)}
+        />
       </Section>
 
       <Section title="UI">

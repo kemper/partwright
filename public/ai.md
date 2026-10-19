@@ -417,11 +417,12 @@ await partwright.deleteObject(name|id|index)   // Delete an object + its version
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
 await partwright.detectParts({algorithm:'auto-merge'|'crease-watershed'|'pieces', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
 partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
-await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'rerun'|'undo', ...}]}) // atomic batch edit
+await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts
 await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched
 await partwright.previewPartPresets({algorithm?, seeds?, view?}) // every preset, ranked, draft untouched -> {presets:[{index,name,partCount,score}], image}; then applyPartPreset(index) / showPartPresetPreview(index|null)
 partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.discardParts()
-partwright.getPartSeeds() / partwright.setPartSeeds([{label, point}]) / partwright.openPartsPanel()  // working seeds (panel markers) + open the panel
+partwright.getPartSeeds() / partwright.setPartSeeds([{label, point}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel
+partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
 await partwright.acceptParts({label?, smoothEdges?})   // commit: parts become labels via api.importWithParts(i); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
