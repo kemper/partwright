@@ -69,3 +69,8 @@ under the tool buttons, since it changes what every tool does.
 "found 2 separate parts" after a seeded re-detection and an accept. The
 banner now drops once the draft it described is replaced, accepted or
 discarded.
+
+**AI schema for shared param keys**: paramsJsonSchema merged params by key
+and kept the first detector's hint, so a key shared by two detectors (e.g.
+minPartPct) would show the AI only one meaning. It now lists every detector's
+meaning and widens the bounds; per-detector validation is unchanged.
