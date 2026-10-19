@@ -116,9 +116,10 @@ function computeThickness(
   t0 = performance.now();
   // Distance (voxels) from each inside voxel centre to the nearest outside
   // centre; the true surface is half a voxel closer, hence the −0.5 below.
-  const dIn = edt3dSquared((i) => occ[i] === 0, nx, ny, nz);
-  const radius = new Float32Array(total);
-  for (let i = 0; i < total; i++) radius[i] = occ[i] ? Math.sqrt(dIn[i]) * voxel : 0;
+  // Converted to the radius field in place: a second full-size array would
+  // add ~4 bytes per voxel to the peak (≈70 MB at resolution 256).
+  const radius = edt3dSquared((i) => occ[i] === 0, nx, ny, nz);
+  for (let i = 0; i < total; i++) radius[i] = occ[i] ? Math.sqrt(radius[i]) * voxel : 0;
   const msDistance = performance.now() - t0;
   checkAbort(signal);
 
@@ -171,11 +172,11 @@ function computeThickness(
 
   const reportEvery = 8192;
   for (let t = 0; t < n; t++) {
-    if (allow && !allow[t]) continue;
     if (t % reportEvery === 0) {
       checkAbort(signal);
       progress?.(0.35 + 0.6 * (t / n), 'Measuring thickness…');
     }
+    if (allow && !allow[t]) continue;
     let nx_ = nrm[t * 3], ny_ = nrm[t * 3 + 1], nz_ = nrm[t * 3 + 2];
     if (!(Math.hypot(nx_, ny_, nz_) > 0.5)) { nx_ = f.triNormal[t * 3]; ny_ = f.triNormal[t * 3 + 1]; nz_ = f.triNormal[t * 3 + 2]; }
     const dx = -nx_, dy = -ny_, dz = -nz_;
@@ -246,6 +247,7 @@ function kmeans1d(s: Float32Array, area: Float32Array, allow: Uint8Array | undef
   const idx: number[] = [];
   for (let t = 0; t < n; t++) if (!allow || allow[t]) idx.push(t);
   idx.sort((a, b) => s[a] - s[b]);
+  if (idx.length === 0) return { centers: new Float64Array(k), cls: new Int32Array(n).fill(-1) };
   let totalArea = 0;
   for (const t of idx) totalArea += area[t];
   const centers = new Float64Array(k);
@@ -284,6 +286,8 @@ function kmeans1d(s: Float32Array, area: Float32Array, allow: Uint8Array | undef
 function levelName(rank: number, levels: number): string {
   if (levels === 2) return rank === 0 ? 'thin' : 'thick';
   if (levels === 3) return ['thin', 'medium', 'thick'][rank];
+  if (levels === 4) return ['thinnest', 'thin', 'thick', 'thickest'][rank];
+  if (levels === 5) return ['thinnest', 'thin', 'medium', 'thick', 'thickest'][rank];
   return `level ${rank + 1}`;
 }
 
@@ -348,13 +352,18 @@ export const thicknessDetector: PartDetector = {
     const diag = {
       voxel: field.voxel,
       grid: field.grid,
-      thicknessRange: [Math.exp(lo), Math.exp(hi)] as [number, number],
+      thicknessRange: lo <= hi ? [Math.exp(lo), Math.exp(hi)] as [number, number] : null,
       msVoxelize: Math.round(field.msVoxelize),
       msDistance: Math.round(field.msDistance),
       msMarch: Math.round(field.msMarch),
     };
 
-    const { names, seedTris, seedLabels } = resolveSeeds(f, ctx.seeds, ctx.allow, 'drop');
+    // Only pins a person (or the AI) placed switch to seeded mode. The draft
+    // gives every part an automatic pin, and re-runs / presets pass those back.
+    // Honouring them would freeze an unseeded result: changing `levels` would
+    // just regrow the same parts.
+    const userSeeds = (ctx.seeds ?? []).filter((sd) => !sd.auto);
+    const { names, seedTris, seedLabels } = resolveSeeds(f, userSeeds, ctx.allow, 'drop');
     if (names.length > 0) {
       // --- Seeded: thickness jumps join the crease cost -----------------------
       const cw = Number(ctx.params.creaseWeight), jw = Number(ctx.params.jumpWeight);

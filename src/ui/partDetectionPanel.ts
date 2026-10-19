@@ -1103,8 +1103,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   }
   const unsubscribe = ctl.subscribe((ev) => {
     if (ev === 'draft') {
-      // The import banner describes the proposal it opened with; once that
-      // draft is replaced, accepted or discarded it no longer applies.
+      // The import banner describes the proposal it opened with; once another
+      // detector's draft replaces it, or it is accepted or discarded, the
+      // banner no longer applies.
       const d = ctl.getPartDraft();
       if (contextBanner && (!isDraft(d) || d.detector !== proposedBy)) { contextBanner.remove(); contextBanner = null; }
       cachedDiag = 0;

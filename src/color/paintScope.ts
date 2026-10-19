@@ -11,7 +11,8 @@
 // `withinPart` explicitly per call, so a scope the user left selected in the
 // panel never silently clips an agent's paint.
 
-import type { RegionDescriptor } from './regions';
+import { removeRegion, type ColorRegion, type RegionDescriptor } from './regions';
+import { showToast } from '../ui/toast';
 
 let activeScope: string | null = null;
 const listeners: (() => void)[] = [];
@@ -36,4 +37,15 @@ export function onPaintScopeChange(fn: () => void): void {
 export function withPaintScope<D extends RegionDescriptor>(descriptor: D): D {
   if (!activeScope || descriptor.withinPart) return descriptor;
   return { ...descriptor, withinPart: activeScope };
+}
+
+/** A UI paint the part scope clipped to nothing (the click landed outside the
+ *  chosen part): drop the empty region and say why, instead of leaving a
+ *  silent no-op row in the region list. Returns true when it was dropped. */
+export function dropIfClippedEmpty(region: ColorRegion): boolean {
+  const part = region.descriptor.withinPart;
+  if (!part || region.triangles.size > 0) return false;
+  removeRegion(region.id);
+  showToast(`Nothing inside "${part}" there. Paint on that part, or set Paint within back to Whole model.`, { variant: 'neutral', source: 'parts' });
+  return true;
 }

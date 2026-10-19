@@ -151,8 +151,15 @@ class MinHeap {
  *  until all are ≥ minArea and at most maxParts remain. Groups with no
  *  neighbour (separate pieces) are left alone. Returns the final group per
  *  triangle (root group ids, −1 where unallowed). */
-function mergeSmallest(f: MeshFeatures, raw: RawGroups, minArea: number, maxParts: number, ctx: DetectorContext): Int32Array {
+function mergeSmallest(f: MeshFeatures, raw: RawGroups, minArea: number, maxParts: number, ctx: DetectorContext): { triPart: Int32Array; capReachable: boolean } {
   const G = raw.groupCount;
+  // Faces never merge across separate pieces, so a file with more pieces than
+  // maxParts can't meet the cap. Chasing it would fold every body down to one
+  // face, so the cap is dropped (minArea still applies) and reported instead.
+  const pieces = new Set<number>();
+  for (let t = 0; t < f.triCount; t++) if (raw.group[t] >= 0) pieces.add(f.pieceOfTri[t]);
+  const capReachable = pieces.size <= maxParts;
+  const cap = capReachable ? maxParts : Infinity;
   const area = new Float64Array(G);
   for (let t = 0; t < f.triCount; t++) if (raw.group[t] >= 0) area[raw.group[t]] += f.triArea[t];
   // Region adjacency: neighbour → shared boundary length.
@@ -170,7 +177,7 @@ function mergeSmallest(f: MeshFeatures, raw: RawGroups, minArea: number, maxPart
   while (heap.size > 0) {
     const { key, id: r } = heap.pop();
     if (parent[r] !== r || key !== area[r]) continue; // merged away, or a stale entry (area grew since)
-    if (key >= minArea && alive <= maxParts) break; // smallest remaining face is big enough and the count fits
+    if (key >= minArea && alive <= cap) break; // smallest remaining face is big enough and the count fits
     if ((++steps & 0x3fff) === 0 && ctx.signal?.aborted) throw new AbortedError();
     let best = -1, bestLen = -1;
     for (const [k, len] of nbr[r]) if (len > bestLen || (len === bestLen && k < best)) { best = k; bestLen = len; }
@@ -192,7 +199,7 @@ function mergeSmallest(f: MeshFeatures, raw: RawGroups, minArea: number, maxPart
   const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   const out = new Int32Array(f.triCount);
   for (let t = 0; t < f.triCount; t++) out[t] = raw.group[t] < 0 ? -1 : find(raw.group[t]);
-  return out;
+  return { triPart: out, capReachable };
 }
 
 export const planarGroupsDetector: PartDetector = {
@@ -240,7 +247,7 @@ export const planarGroupsDetector: PartDetector = {
     if (ctx.signal?.aborted) throw new AbortedError();
     ctx.progress?.(0.8, 'Merging small faces…');
     const minArea = (Number(ctx.params.minPartPct) / 100) * f.totalArea;
-    const triPart = mergeSmallest(f, raw, minArea, Number(ctx.params.maxParts), ctx);
+    const { triPart, capReachable } = mergeSmallest(f, raw, minArea, Number(ctx.params.maxParts), ctx);
     // Number faces by area (largest first).
     const area = new Float64Array(raw.groupCount);
     for (let t = 0; t < f.triCount; t++) if (triPart[t] >= 0) area[triPart[t]] += f.triArea[t];
@@ -256,7 +263,7 @@ export const planarGroupsDetector: PartDetector = {
       triPart,
       partNames: order.map((_, i) => `face ${i + 1}`),
       genericNames: true,
-      diagnostics: { rawGroups: raw.groupCount, parts: order.length },
+      diagnostics: { rawGroups: raw.groupCount, parts: order.length, ...(capReachable ? {} : { maxPartsIgnored: 'more separate pieces than maxParts' }) },
     };
   },
 };

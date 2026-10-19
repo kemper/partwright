@@ -381,8 +381,13 @@ function createPickerPanel(): HTMLElement {
   scopeHost.id = 'paint-scope-row';
   content.appendChild(scopeHost);
   const renderScope = () => {
-    scopeHost.replaceChildren();
     const labels = getPaintLabels();
+    // A scope whose part vanished (re-run, parts re-detected, a model with no
+    // labels) would clip every new stroke to nothing behind a hidden picker —
+    // drop it. setPaintScope re-enters this function to render.
+    const scope = getPaintScope();
+    if (scope && !labels.some((l) => l.name === scope)) { setPaintScope(null); return; }
+    scopeHost.replaceChildren();
     if (labels.length > 0) scopeHost.appendChild(createScopeRow(labels));
   };
   renderScope();
@@ -1667,11 +1672,6 @@ function updateLabelList(container: HTMLElement): void {
  *  committed region records the part as `withinPart`, so the clip survives
  *  reloads and re-runs. Hidden when the run has no labels. */
 function createScopeRow(labels: LabelInfo[]): HTMLElement {
-  // A scope whose part vanished (re-run, parts re-detected) would clip every
-  // new stroke to nothing — drop it.
-  const scope = getPaintScope();
-  if (scope && !labels.some((l) => l.name === scope)) setPaintScope(null);
-
   const row = document.createElement('label');
   row.className = 'flex items-center gap-2 mb-2.5 text-[11px] text-zinc-400';
   row.title = 'Keep brush, bucket, slab, box and image-stamp paint inside one part, so colour never bleeds across its edge';

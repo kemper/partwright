@@ -89,5 +89,15 @@ test.describe('paint within part', () => {
     await picker.selectOption('');
     const unscoped = await page.evaluate(async () => (await import('/src/color/paintScope.ts')).getPaintScope());
     expect(unscoped).toBeNull();
+
+    // A scope whose part disappears (code re-run with no labels) is dropped,
+    // not left hidden and clipping every stroke to nothing.
+    await picker.selectOption('right');
+    const after = await page.evaluate(async () => {
+      await (window as unknown as { partwright: PW }).partwright.run('return api.Manifold.cube([10, 10, 10]);');
+      return (await import('/src/color/paintScope.ts')).getPaintScope();
+    });
+    expect(after).toBeNull();
+    await expect(picker).toBeHidden();
   });
 });

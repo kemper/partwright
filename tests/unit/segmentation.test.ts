@@ -348,6 +348,18 @@ describe('planar-groups', () => {
     expect(planarGroupsDetector.presets!.length).toBeGreaterThanOrEqual(4);
   });
 
+  it('more separate pieces than maxParts: faces are kept, the cap is reported as ignored', () => {
+    // Three cubes side by side, not touching.
+    const one = cube(), positions: number[] = [], tris: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      for (let v = 0; v < 8; v++) positions.push(one.positions[v * 3] + 3 * k, one.positions[v * 3 + 1], one.positions[v * 3 + 2]);
+      for (const i of one.triVerts) tris.push(i + 8 * k);
+    }
+    const r = run({ positions: Float32Array.from(positions), triVerts: Uint32Array.from(tris) }, { maxParts: 2, minPartPct: 0 });
+    expect(partCount(r.triPart)).toBe(18);
+    expect(r.diagnostics?.maxPartsIgnored).toBeTruthy();
+  });
+
   it('smooth mode finds the six faces of a cube', () => {
     const r = run(cube(), {});
     expect(partCount(r.triPart)).toBe(6);
@@ -906,6 +918,21 @@ describe('thickness', () => {
     expect(body.frac).toBeGreaterThan(0.85);
     expect(out.partNames![arm.part]).toMatch(/^thin /);
     expect(out.partNames![body.part]).toMatch(/^thick /);
+  });
+
+  it('automatic pins from a previous unseeded run do not switch to seeded mode', () => {
+    const m = dumbbell();
+    // The draft pins every part (auto: true); re-runs pass those pins back.
+    const autoPins = [
+      { label: 'thick 1', point: [BALL, BALL, 0] as [number, number, number], auto: true },
+      { label: 'thin 1', point: [ARM_END - 2, 2.5, 0] as [number, number, number], auto: true },
+    ];
+    const f = computeMeshFeatures(m);
+    const go = (levels: number) => detector.run(m, f, { params: resolveParams(detector, { resolution: 120, minPartPct: 0, levels }), seeds: autoPins, cache: new Map() });
+    const two = go(2), three = go(3);
+    // Unseeded names (not the pin labels), and `levels` still changes the result.
+    expect(two.partNames!.every((n) => /^(thin|thick|medium) /.test(n!))).toBe(true);
+    expect(three.partNames).not.toEqual(two.partNames);
   });
 
   it('seeded: the boundary lands near the junction', () => {

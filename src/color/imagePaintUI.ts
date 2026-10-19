@@ -34,7 +34,7 @@ import {
 // rather than importing paintMode directly — same one-way dependency the drag
 // tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
 import { getCurrentMesh as getPaintMesh } from './paintAccessors';
-import { withPaintScope } from './paintScope';
+import { dropIfClippedEmpty, getPaintScope } from './paintScope';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -356,7 +356,8 @@ function updatePreviewLines(
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
   const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
-  runStamp({
+  const scope = getPaintScope();
+  const stamped = runStamp({
     imageData: pickedImageData,
     hitPoint,
     hitNormal,
@@ -367,7 +368,13 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     removeBackground: opts.removeBackground,
     manualBgColor: opts.manualBgColor,
     preprocess: opts.preprocess,
+    withinPart: scope ?? undefined,
   });
+  // Stamped outside the chosen part: drop the empty region and say why.
+  if (scope && stamped && stamped.triangles === 0) {
+    const all = getRegions();
+    if (all.length > 0) dropIfClippedEmpty(all[all.length - 1]);
+  }
 }
 
 interface StampRun {
@@ -384,6 +391,10 @@ interface StampRun {
   manualBgColor?: [number, number, number];
   preprocess: PreprocessOptions;
   name?: string;
+  /** Clip the stamp to one part (label). The click-driven tool passes the
+   *  panel's "Paint within" scope; the programmatic API passes its own option
+   *  and never inherits the panel's. */
+  withinPart?: string;
 }
 
 /** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
@@ -421,11 +432,12 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
   stampCounter++;
   const name = r.name ?? `Stamp ${stampCounter}`;
   const triangles = new Set(result.perTriColors.keys());
-  const commit = () => addRegion(
+  let committed = triangles.size;
+  const commit = () => { committed = addRegion(
     name,
     result.avgColor,
     'imagePaint',
-    withPaintScope({
+    {
       kind: 'imagePaint',
       entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
@@ -437,17 +449,19 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
         ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
-    }),
+      ...(r.withinPart ? { withinPart: r.withinPart } : {}),
+    },
     triangles,
     true,
     undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
     result.perTriColors,
-  );
+  ).triangles.size; };
   // Commit through the reconcile-suspending hook when wired (see setStampCommitHook),
   // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
   if (stampCommitHook) stampCommitHook(commit);
   else commit();
-  return { name, triangles: triangles.size, avgColor: result.avgColor };
+  // `committed` is the size after any withinPart clip.
+  return { name, triangles: committed, avgColor: result.avgColor };
 }
 
 export interface ProgrammaticStampParams {
@@ -466,6 +480,8 @@ export interface ProgrammaticStampParams {
   preprocess?: PreprocessOptions;
   /** Region label; defaults to "Stamp N". */
   name?: string;
+  /** Clip the stamp to one part (label). */
+  withinPart?: string;
 }
 
 /** Stamp `imageData` onto the current mesh programmatically — the engine behind
@@ -491,6 +507,7 @@ export function stampImageProgrammatic(
     manualBgColor: params.manualBgColor,
     preprocess: params.preprocess ?? defaultPreprocess(),
     name: params.name,
+    withinPart: params.withinPart,
   });
 }
 

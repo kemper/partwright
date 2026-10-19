@@ -439,6 +439,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         radius: { type: 'number' },
         normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: preview the selection clipped to that part, as a withinPart paint will be.' },
         withImage: { type: 'boolean', description: 'Default false (stats-only, free). Pass true to also return the highlighted thumbnail when the count is surprising or you want a visual sanity check.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'How a triangle is tested for containment. Default "centroid" (cheap, historical). "fully_inside" excludes long radial fan triangles whose centroid is in the selection but whose vertices extend outside — the right choice for painting on cylinder/revolve geometry.' },
         maxTriangleArea: { type: 'number', description: 'Backstop against fan-topology bleed: skip any triangle whose world area exceeds this. Set it ~3-5× the typical triangle area of the feature you intend to paint.' },
@@ -591,6 +592,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         detail: { type: 'number', description: 'Triangle rows across the stamp; higher = crisper (default 96). 0 = flat stamp on the existing tessellation.' },
         removeBackground: { type: 'boolean', description: 'Drop the image background so only the subject paints. Default true.' },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the stamp to that part so it cannot spill onto neighbouring parts.' },
       },
       required: [],
     },
@@ -2333,6 +2335,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         detail: input.detail,
         removeBackground: input.removeBackground,
         name: input.name,
+        withinPart: input.withinPart,
       });
     }
     case 'paintInBox':

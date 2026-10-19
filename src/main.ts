@@ -1244,15 +1244,27 @@ interface ResolveResult {
 // triangles. Labels index the run's mesh (`currentLabelMesh`), but paint works
 // on a working mesh that smooth strokes / stamps keep re-tessellating, and the
 // refine paths only hand out parent→children maps one step at a time. So each
-// refined mesh records the mesh it was refined from; a label's set is carried
-// down that lineage exactly (children inherit their parent's part) and cached
-// per mesh. A mesh with no lineage back to the run mesh (a texture/simplify
+// refined mesh records a flat child→root-triangle map (composed through its
+// parent's map); a label's set is carried down exactly (children inherit their
+// parent's part) and cached per mesh. A mesh with no lineage back to the run mesh (a texture/simplify
 // bake) falls back to the nearest-centroid map the bake paths already use.
-const meshLineage = new WeakMap<MeshData, { from: MeshData; parentToChildren: Map<number, number[]> }>();
+const meshLineage = new WeakMap<MeshData, { root: MeshData; toRoot: Int32Array }>();
 const partScopeCache = new WeakMap<MeshData, { labels: Map<string, Set<number>>; sets: Map<string, Set<number>> }>();
 
+/** Record that `mesh` was refined from `from`, flattened to a direct map onto
+ *  the chain's root (4 bytes per triangle). Holding the root mesh rather than
+ *  `from` lets each intermediate refinement be garbage-collected. A smooth
+ *  stroke on a 460k scan would otherwise pin every previous working mesh and
+ *  its parent→children map. */
 function recordMeshLineage(mesh: MeshData, from: MeshData, parentToChildren: Map<number, number[]> | null): void {
-  if (mesh !== from && parentToChildren) meshLineage.set(mesh, { from, parentToChildren });
+  if (mesh === from || !parentToChildren) return;
+  const up = meshLineage.get(from);
+  const toRoot = new Int32Array(mesh.numTri).fill(-1);
+  for (const [parent, children] of parentToChildren) {
+    const r = up ? up.toRoot[parent] : parent;
+    for (const c of children) toRoot[c] = r;
+  }
+  meshLineage.set(mesh, { root: up ? up.root : from, toRoot });
 }
 
 /** The triangles of label `label` on `mesh`, or null when the current run has
@@ -1272,7 +1284,9 @@ function partTrianglesOnMesh(label: string, mesh: MeshData): Set<number> | null 
   const lineage = meshLineage.get(mesh);
   let out: Set<number>;
   if (lineage) {
-    out = remapTriangleIds(partTrianglesOnMesh(label, lineage.from) ?? [], lineage.parentToChildren);
+    const onRoot = partTrianglesOnMesh(label, lineage.root) ?? new Set<number>();
+    out = new Set<number>();
+    for (let t = 0; t < lineage.toRoot.length; t++) if (onRoot.has(lineage.toRoot[t])) out.add(t);
   } else {
     out = remapTriangleSets(new Map([[label, ids]]), currentLabelMesh, mesh).get(label) ?? new Set<number>();
   }
@@ -1579,8 +1593,10 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
         const refined = smoothReplayCb(imageData, stampOpts, d.maxEdge);
         if (refined && refined.result.entries.length > 0) {
           const triangles = new Set(refined.result.perTriColors.keys());
-          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
-          report.carried.push(region.name);
+          const added = addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
+          // A withinPart stamp whose part is gone clips to nothing: dropped, not carried.
+          if (added.triangles.size > 0) report.carried.push(region.name);
+          else { removeRegion(added.id); report.dropped.push(region.name); }
         } else {
           report.dropped.push(region.name);
         }
@@ -14453,9 +14469,13 @@ async function main() {
       coverageMode?: CoverageMode;
       /** See paintInBox.maxTriangleArea. */
       maxTriangleArea?: number;
+      /** Preview the paint clipped to one part, as the scoped commit will be. */
+      withinPart?: string;
     } = {}) {
       const mesh = currentMeshData;
       if (!mesh) return { error: 'No geometry loaded' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintPreview');
+      if (scopeErr) return { error: scopeErr };
 
       const coverageErr = validateCoverageMode(opts.coverageMode);
       if (coverageErr) return { error: coverageErr };
@@ -14519,6 +14539,7 @@ async function main() {
       } else {
         return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, { box }, { cylinder }, or { slab }' };
       }
+      if (opts.withinPart) triangles = intersectWithScope(partTrianglesOnMesh(opts.withinPart, mesh) ?? new Set<number>(), triangles).triangles;
 
       const stats = regionTriangleStats(triangles, mesh);
       const areas = summarizeTriangleAreas(triangles, mesh);
@@ -14719,7 +14740,7 @@ async function main() {
      *  forward-facing triangles inside the footprint are painted; a depth slab
      *  stops it bleeding through thin walls. Returns `{ ok, name, triangles,
      *  avgColor }` or `{ error }`. Call saveVersion() afterwards to persist. */
-    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string; withinPart?: string }) {
       const check = guard(() => {
         assertObject(opts, 'paintImage(opts)');
         assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
@@ -14743,6 +14764,8 @@ async function main() {
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintImage');
+      if (scopeErr) return { error: scopeErr };
 
       // Resolve a label name to its triangle set (used to centre/auto-size the
       // projection). An unknown label is a clear user error, not a silent miss.
@@ -14778,7 +14801,14 @@ async function main() {
         detail: opts.detail,
         removeBackground: opts.removeBackground,
         name: opts.name,
+        withinPart: opts.withinPart,
       });
+      if (region && opts.withinPart && region.triangles === 0) {
+        const all = getRegions();
+        const last = all[all.length - 1];
+        if (last) withSyncReconcile(() => removeRegion(last.id));
+        return { error: `paintImage: nothing inside part "${opts.withinPart}" was stamped — place the stamp on that part, or drop withinPart.` };
+      }
       if (!region) {
         return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
       }
@@ -16381,7 +16411,7 @@ async function main() {
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?, withinPart?}) -- Paint planar slab range', docs: '/ai/colors.md' },
         'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?, withinPart?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
-        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
+        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withinPart?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
         'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai/colors.md' },
@@ -16390,7 +16420,9 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
+        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
@@ -17742,6 +17774,11 @@ async function main() {
           const d = op.descriptor as RegionDescriptor;
           if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             paintAdjacency = buildAdjacency(mesh);
+          }
+          // A withinPart that names no label paints nothing — say so (a typo
+          // otherwise just silently drops the op).
+          if (d.withinPart && !currentLabelMap?.has(d.withinPart)) {
+            errorLog.capture({ level: 'warn', source: 'parts', message: `${op.name}: withinPart "${d.withinPart}" is not a label of this run, so it paints nothing. Labels: ${currentLabelMap ? [...currentLabelMap.keys()].join(', ') || '(none)' : '(none)'}.` });
           }
           const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
           if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d, perTriColors });

@@ -84,3 +84,28 @@ thickness resolution cap dropped 320 → 256: 320³ is ~33M voxels (~270 MB of
 EDT), too much for a browser Worker. segmentation.md documents both detectors
 honestly, including what they can't do (similar-thickness parts touching;
 planar-groups on organic shapes).
+
+**Review round (work-reviewer) — fixes:**
+- *Memory*: the lineage map held each refined mesh's parent strongly, so
+  smooth strokes pinned every previous working mesh and its children map
+  (~1 GB after 20 strokes on a 460k scan). Lineage is now a flat child→root
+  Int32Array holding only the root, so intermediate meshes are collectable
+  and lookups don't recurse.
+- *Stale hidden scope*: a picked part that disappeared (re-run without
+  labels) stayed active behind a hidden picker and clipped all UI paint to
+  nothing. The reset now lives in the picker's render (it also fixed a
+  re-entrant duplicate row).
+- *paintImage inherited the panel scope* through the shared stamp core. The
+  scope is now an explicit StampRun field: the click tool passes the
+  picker's, and paintImage gains its own validated `withinPart` (tool schema
+  too).
+- *thickness re-runs went seeded*: the draft's automatic per-part pins were
+  passed back on re-runs and presets, freezing levels. Only user pins (not
+  `auto`) switch to seeded mode; regression test.
+- Empty UI clips drop the region with a toast. `paintPreview` takes
+  `withinPart`. A model-code `withinPart` naming no label logs a warning. A
+  stamp clipped to nothing on reload is reported as dropped. planar-groups
+  ignores an unreachable maxParts (more pieces than the cap) instead of
+  folding every body to one face. thickness converts the EDT to radii in
+  place (−4 B/voxel peak), checks abort before the allow skip, and handles
+  an empty allowed set. 4- and 5-level classes get names.

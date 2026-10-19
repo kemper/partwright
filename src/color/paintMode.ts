@@ -7,8 +7,8 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions, buildTriColors, isPainted, clipToPart } from './regions';
-import { getPaintScope, withPaintScope } from './paintScope';
+import { addRegion, getRegions, buildTriColors, isPainted, clipToPart, type ColorRegion } from './regions';
+import { dropIfClippedEmpty, getPaintScope, withPaintScope } from './paintScope';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -720,7 +720,7 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    addRegion(name, color, 'paintbrush', withPaintScope({ kind: 'triangles', ids }), brushSession, true, currentSlotId ?? undefined);
+    dropIfClippedEmpty(addRegion(name, color, 'paintbrush', withPaintScope({ kind: 'triangles', ids }), brushSession, true, currentSlotId ?? undefined));
     if (onRegionPainted) onRegionPainted();
   }
 }
@@ -956,11 +956,12 @@ function onPointerUp(event: PointerEvent): void {
 
   // Bucket: paint on click release
   let region: Set<number>;
+  let scopedRegion: ColorRegion | null = null;
   if (bucketMode === 'geometry') {
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
     const normal = getTriangleNormal(result.triangleIndex, adjacency);
     const existingCount = getRegions().length;
-    addRegion(
+    scopedRegion = addRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
@@ -982,7 +983,7 @@ function onPointerUp(event: PointerEvent): void {
       ? [triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255]
       : [0, 0, 0];
     const existingCount = getRegions().length;
-    addRegion(
+    scopedRegion = addRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
@@ -992,6 +993,7 @@ function onPointerUp(event: PointerEvent): void {
       currentSlotId ?? undefined,
     );
   }
+  if (scopedRegion) dropIfClippedEmpty(scopedRegion);
 
   clearHighlight();
   if (onRegionPainted) onRegionPainted();
