@@ -69,4 +69,26 @@ test.describe('typed-entry sliders', () => {
     const code = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
     expect(code).toMatch(/api\.surface\.smooth\(\{[^}]*iterations: 30/);
   });
+
+  test('Voxel Studio: a typed brush radius goes past the slider, clamped to the engine cap', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { setActiveLanguage: (l: string) => Promise<unknown>; activateVoxelPaint: () => unknown } }).partwright;
+      await pw.createSession('typed-voxel-brush');
+      await pw.setActiveLanguage('voxel');
+      await pw.run('const v = api.voxels();\nv.fillBox([0, 0, 0], [8, 8, 8], 0x44aa66);\nreturn v;');
+      pw.activateVoxelPaint();
+    });
+    await page.locator('button[title^="Brush —"]').click();
+    const panel = page.locator('#voxel-paint-panel');
+    const box = panel.locator('input[type="number"][title^="Brush radius"]');
+    await box.fill('12');
+    await box.press('Enter');
+    await expect(panel.getByText('Size: 25 wide')).toBeVisible();   // 12 > the slider's 8
+    await box.fill('99');
+    await box.press('Enter');
+    await expect(box).toHaveValue('16');                             // MAX_BRUSH_RADIUS
+    await expect(panel.getByText('Size: 33 wide')).toBeVisible();
+  });
 });

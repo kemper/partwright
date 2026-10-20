@@ -415,11 +415,9 @@ function buildBrushSection(): HTMLElement {
   sizeSlider.max = '8';
   sizeSlider.step = '1';
   sizeSlider.value = '0';
-  sizeSlider.className = 'w-full accent-blue-500';
+  sizeSlider.className = 'flex-1 min-w-0 accent-blue-500';
   sizeSlider.title = 'Brush radius in voxels (0 = a single voxel)';
   sizeSlider.addEventListener('input', () => { voxelPaint.setBrushRadius(Number(sizeSlider!.value)); refreshControls(); });
-  sizeSlider.classList.replace('w-full', 'flex-1');
-  sizeSlider.classList.add('min-w-0');
   // Typed radius: the slider covers 0–8, the box accepts up to the engine cap.
   sizeInput = numberEntry(0, voxelPaint.MAX_BRUSH_RADIUS, voxelPaint.getBrushRadius(),
     `Brush radius in voxels. Type up to ${voxelPaint.MAX_BRUSH_RADIUS} to go past the slider.`,

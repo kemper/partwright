@@ -123,12 +123,17 @@ interface SliderOpts {
   hardMin?: number;
   /** Unit shown after the number box (e.g. '°', '%'). */
   unit?: string;
+  /** Keep fractional values even when `step` happens to be a whole number —
+   *  for model-size-scaled steps (`span * 0.005` is exactly 1 at span 200). */
+  fractional?: boolean;
 }
 
-/** Decimal places that resolve `step` (0 for whole-number steps). */
-function stepDecimals(step: number): number {
-  if (Number.isInteger(step)) return 0;
-  return Math.min(6, Math.max(1, Math.ceil(-Math.log10(step) - 1e-9)));
+/** Decimal places to display: 0 for whole-number controls, else enough for
+ *  every digit of `step` and never fewer than 3 (the old readout precision). */
+function displayDecimals(step: number, integer: boolean): number {
+  if (integer) return 0;
+  const frac = String(Number(step.toPrecision(6))).split('.')[1]?.length ?? 0;
+  return Math.min(6, Math.max(3, frac));
 }
 
 /** A range slider paired with an editable number box. Dragging the slider
@@ -136,18 +141,20 @@ function stepDecimals(step: number): number {
  *  ends) and may go past the slider's range up to `opts.hardMax` — so the
  *  slider covers the common range while power users can type an exact or
  *  out-of-range value. `get()` returns the box value clamped to
- *  [hardMin, hardMax]; whole-number steps round to integers. */
+ *  [hardMin, hardMax]; whole-number steps round to integers unless
+ *  `opts.fractional`. */
 function slider(
   label: string, min: number, sliderMax: number, value: number, step: number,
   onChange: () => void, opts: SliderOpts = {},
 ) {
   const hardMin = opts.hardMin ?? min;
   const hardMax = opts.hardMax ?? sliderMax;
-  const decimals = stepDecimals(step);
+  const integer = Number.isInteger(step) && !opts.fractional;
+  const decimals = displayDecimals(step, integer);
   const show = (n: number) => String(Number(n.toFixed(decimals)));
   const clamp = (n: number) => {
     const v = Math.max(hardMin, Math.min(hardMax, n));
-    return decimals === 0 ? Math.round(v) : v;
+    return integer ? Math.round(v) : v;
   };
   let last = clamp(value);
   const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
@@ -180,7 +187,7 @@ function slider(
     onChange();
   });
   // On commit (blur / Enter) normalize the box to the clamped value.
-  num.addEventListener('change', () => { num.value = String(last); onChange(); });
+  num.addEventListener('change', () => { num.value = String(Number(last.toPrecision(12))); onChange(); });
   wrap.append(head, range);
   return { wrap, get: () => last };
 }
@@ -814,17 +821,17 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     setScopeMode('none');
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
-      const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
-      const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
+      const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const oct = slider('Detail (octaves)', 1, 4, 2, 1, schedulePreview, { hardMax: 5 });
       const seed = slider('Seed', 1, 99, 1, 1, schedulePreview, { hardMax: NO_LIMIT });
       body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
       currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: activeSelection() });
     } else if (active === 'knit') {
-      const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.09, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const amp = slider('Amplitude (depth)', 0, span * 0.15, span * 0.07, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.09, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const amp = slider('Amplitude (depth)', 0, span * 0.15, span * 0.07, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const round = slider('Roundness', 0, 1, 0.5, 0.05, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       const variation = slider('Variation', 0, 0.5, 0.1, 0.01, schedulePreview, { hardMax: 1 });
@@ -849,10 +856,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'cable') {
-      const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const cp = slider('Cable pitch', span * 0.05, span * 0.6, span * 0.2, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const pw = slider('Ply width', span * 0.005, span * 0.1, span * 0.024, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
-      const amp = slider('Amplitude (depth)', 0, span * 0.08, span * 0.055, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const cp = slider('Cable pitch', span * 0.05, span * 0.6, span * 0.2, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const pw = slider('Ply width', span * 0.005, span * 0.1, span * 0.024, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const amp = slider('Amplitude (depth)', 0, span * 0.08, span * 0.055, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       const variation = slider('Variation', 0, 0.4, 0.08, 0.01, schedulePreview, { hardMax: 1 });
       const seed = slider('Seed', 1, 99, 1, 1, schedulePreview, { hardMax: NO_LIMIT });
@@ -870,9 +877,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'waffle') {
-      const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const ch = slider('Cell height', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const amp = slider('Amplitude (border height)', 0, span * 0.08, span * 0.05, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const ch = slider('Cell height', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const amp = slider('Amplitude (border height)', 0, span * 0.08, span * 0.05, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const sharp = slider('Sharpness', 1, 10, 3, 0.5, schedulePreview, { hardMax: NO_LIMIT });
       const rowOff = slider('Row offset (0=grid, 0.5=honeycomb)', 0, 1, 0, 0.05, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
@@ -889,9 +896,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'fur') {
-      const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
-      const fl = slider('Fiber length', span * 0.01, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const amp = slider('Amplitude (pile height)', 0, span * 0.08, span * 0.025, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const fl = slider('Fiber length', span * 0.01, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const amp = slider('Amplitude (pile height)', 0, span * 0.08, span * 0.025, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const oct = slider('Detail (octaves)', 1, 4, 2, 1, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, schedulePreview, { hardMax: NO_LIMIT });
@@ -908,9 +915,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'woven') {
-      const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, schedulePreview, { hardMax: NO_LIMIT });
+      const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const tw = slider('Thread width (fraction)', 0.1, 0.9, 0.4, 0.05, schedulePreview);
-      const amp = slider('Amplitude (thread height)', 0, span * 0.06, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const amp = slider('Amplitude (thread height)', 0, span * 0.06, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const ud = slider('Under-thread depth', 0, 1, 0.5, 0.05, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       body.append(ts.wrap, tw.wrap, amp.wrap, ud.wrap, grain.wrap, detail.wrap);
@@ -934,9 +941,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         ['round', 'Round (soft bumps)'],
         ['pyramid', 'Pyramid (straight-sided)'],
       ], 'round', schedulePreview);
-      const cw = slider('Cell width (ridge spacing)', span * 0.008, span * 0.25, span * 0.05, span * 0.004, schedulePreview, { hardMax: NO_LIMIT });
-      const ch = slider('Cell height', span * 0.008, span * 0.25, span * 0.05, span * 0.004, schedulePreview, { hardMax: NO_LIMIT });
-      const amp = slider('Amplitude (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const cw = slider('Cell width (ridge spacing)', span * 0.008, span * 0.25, span * 0.05, span * 0.004, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const ch = slider('Cell height', span * 0.008, span * 0.25, span * 0.05, span * 0.004, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const amp = slider('Amplitude (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const sharp = slider('Sharpness', 1, 8, 2, 0.5, schedulePreview, { hardMax: NO_LIMIT });
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       body.append(style.wrap, profile.wrap, cw.wrap, ch.wrap, amp.wrap, sharp.wrap, grain.wrap, detail.wrap);
@@ -953,9 +960,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'voronoi') {
-      const cs = slider('Cell size', span * 0.03, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
+      const cs = slider('Cell size', span * 0.03, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const ww = slider('Wall width (fraction)', 0.05, 0.6, 0.25, 0.01, schedulePreview, { hardMin: 0.02, hardMax: 0.95 });
-      const amp = slider('Amplitude (wall height)', 0, span * 0.08, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT });
+      const amp = slider('Amplitude (wall height)', 0, span * 0.08, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, schedulePreview, { hardMax: NO_LIMIT });
@@ -974,8 +981,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'voronoiLamp') {
-      const cs = slider('Cell size', span * 0.05, span * 0.5, span * 0.16, span * 0.005, schedulePreview, { hardMax: NO_LIMIT });
-      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.05, span * 0.002, schedulePreview, { hardMax: NO_LIMIT });
+      const cs = slider('Cell size', span * 0.05, span * 0.5, span * 0.16, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.05, span * 0.002, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const sw = slider('Strut width (fraction)', 0.1, 0.6, 0.32, 0.01, schedulePreview, { hardMin: 0.05 });
       const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, schedulePreview);
@@ -1088,9 +1095,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         ['through', 'Cut clean through (stencil)'],
       ], 'engrave', () => { syncEngraveModeUI(); schedulePreview(); });
       const sizeS = slider('Text size (width)', span * 0.1, span * 1.5, span * 0.7, span * 0.01,
-        () => { refreshEngraveOutline(); schedulePreview(); }, { hardMax: span * 8 });
+        () => { refreshEngraveOutline(); schedulePreview(); }, { hardMax: span * 8, fractional: true });
       const depth = slider('Depth / raised height', span * 0.005, span * 0.3, span * 0.06, span * 0.005,
-        schedulePreview, { hardMax: span * 4 });
+        schedulePreview, { hardMax: span * 4, fractional: true });
       const depthWrap = depth.wrap;
       // Optional letter color — colors the raised relief (emboss) or the
       // channel walls (engrave/through) for multicolor prints. The picker is the

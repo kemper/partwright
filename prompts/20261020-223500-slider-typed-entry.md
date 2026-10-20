@@ -53,3 +53,17 @@ the UI like it that we can fix or improve.
 - Typed boxes commit on Enter/blur where each commit triggers a heavy rebuild
   (Character Creator SDF, image-voxel import) so half-typed values aren't
   clamped mid-keystroke.
+
+## Assistant (review follow-up)
+
+- The review subagent caught that `slider()` decided "round to integer" from
+  `Number.isInteger(step)`, but most Surface steps scale with the model
+  (`span * 0.005` is exactly 1 at span 200), so typed values were silently
+  rounded on some models. Added an explicit `fractional` option, set on every
+  span-scaled control, instead of guessing from the step.
+- Display precision now covers every digit of the step with a floor of 3
+  decimals (the old readout's precision), so the box never shows a coarser
+  number than the one Preview/Apply use. The value written back on commit is
+  precision-safe (`toPrecision(12)`), so a clamp doesn't print float noise.
+- Added a Voxel Studio case to the e2e spec (typed brush radius past the
+  slider, clamped to the engine's 16).
