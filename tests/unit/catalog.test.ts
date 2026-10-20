@@ -161,28 +161,28 @@ describe('turnCostUsd', () => {
 
   test('respects catalog pricing for a known model', () => {
     // Pick the cheapest current Anthropic model for a stable shape check.
-    // Whatever Haiku tier ships, $X for 1M input + $Y for 1M output yields X+Y total.
+    // Use 1 token each to stay below any tier thresholds; at $X/1M and $Y/1M,
+    // 1 input + 1 output token costs (X + Y) / 1_000_000 dollars.
     const opts = getModelOptions('anthropic');
     const haiku = opts.find((o) => /haiku/i.test(o.label)) ?? opts[opts.length - 1];
     const price = getPricing('anthropic', haiku.id)!;
     const cost = turnCostUsd('anthropic', haiku.id, {
-      inputTokens: 1_000_000,
-      outputTokens: 1_000_000,
+      inputTokens: 1,
+      outputTokens: 1,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
     });
-    expect(cost).toBeCloseTo(price.input + price.output, 6);
+    expect(cost).toBeCloseTo((price.input + price.output) / 1_000_000, 15);
   });
 
-  test('falls back to median pricing for an unknown hosted id', () => {
-    // FALLBACK_PRICING is { input: 3, output: 15 } — see cost.ts.
+  test('an unknown hosted id has no price (never a guessed fallback)', () => {
     const cost = turnCostUsd('openai', 'totally-made-up-id', {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
     });
-    expect(cost).toBeCloseTo(3, 6);
+    expect(cost).toBeNull();
   });
 
   test('uses the catalog cache_read rate when present', () => {
