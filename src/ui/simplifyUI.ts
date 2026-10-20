@@ -427,8 +427,11 @@ function lengthLabelText(): string {
 
 /** The length/threshold value typed into the length knob (mesh units). */
 function lengthVal(): number {
+  // A typed 0 can't be a length — fall back to the slider, as before.
   const n = lengthEntry?.get() ?? 0;
-  return n > 0 ? n : 0;
+  if (n > 0) return n;
+  const r = Number(lengthEntry?.range.value);
+  return Number.isFinite(r) && r > 0 ? r : 0;
 }
 
 /** The integer "amount" (strength / detail levels) for the size knob. */

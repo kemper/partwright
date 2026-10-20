@@ -201,7 +201,7 @@ function refreshControls(): void {
   for (const s of BRUSH_SHAPES) setActive(shapeBtns[s.shape], s.shape === voxelPaint.getBrushShape());
   for (const a of AXES) setActive(axisBtns[a.axis], a.axis === voxelPaint.getLevelAxis());
 
-  sizeEntry?.set(voxelPaint.getBrushRadius());
+  syncEntry(sizeEntry, voxelPaint.getBrushRadius());
   if (sizeLabel) {
     const r = voxelPaint.getBrushRadius();
     sizeLabel.textContent = r === 0 ? 'Size: 1 voxel' : `Size: ${r * 2 + 1} wide`;
@@ -216,10 +216,10 @@ function refreshControls(): void {
   // Add-block controls.
   const size = voxelPaint.getBlockSize();
   for (const axis of [0, 1, 2] as const) {
-    blockEntries[axis]?.set(size[axis]);
+    syncEntry(blockEntries[axis], size[axis]);
   }
   if (blockSizeLabel) blockSizeLabel.textContent = `${size[0]}×${size[1]}×${size[2]}`;
-  depthEntry?.set(voxelPaint.getAddDepth());
+  syncEntry(depthEntry, voxelPaint.getAddDepth());
   if (depthLabel) {
     const d = voxelPaint.getAddDepth();
     if (d === 0) depthLabel.textContent = isBox ? 'flat' : 'on surface';
@@ -494,6 +494,13 @@ function buildBlockSection(): HTMLElement {
   }
 
   return sec;
+}
+
+/** Re-sync a control from paint state. refreshControls also runs on background
+ *  state changes (remesh, undo, API calls), so a box the user is typing in is
+ *  left alone until they commit. */
+function syncEntry(entry: SliderEntry | null | undefined, v: number): void {
+  if (entry && document.activeElement !== entry.input) entry.set(v);
 }
 
 /** Whole-number slider + typed box for a voxel count: the slider covers

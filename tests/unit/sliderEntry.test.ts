@@ -25,6 +25,8 @@ describe('sliderEntry pure helpers', () => {
     expect(stepDecimals(0.185)).toBe(3);   // span-scaled step (span 37 × 0.005)
     expect(stepDecimals(37 * 0.005)).toBe(3); // float noise in the product is ignored
     expect(stepDecimals(0.0005)).toBe(4);
+    expect(stepDecimals(1e-7)).toBe(7);      // exponent notation
+    expect(stepDecimals(2.5e-7)).toBe(8);
   });
 
   it('formatEntry fixes to decimals without trailing zeros, or stays precision-safe', () => {

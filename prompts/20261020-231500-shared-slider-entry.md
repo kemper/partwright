@@ -56,3 +56,17 @@ a PR.
   while the box still has focus. A programmatic `set()` / `setBounds()` is
   authoritative, so they now always rewrite the box; nothing calls `set()`
   from a per-keystroke path, so typing isn't clobbered.
+
+## Assistant (review follow-up)
+
+- Review found Simplify's length box showing 3 significant figures while Apply
+  used the raw slider value. Fixed generically: a slider-driven or
+  programmatic value is snapped to what the box shows (`snap`), so the applied
+  value never carries invisible digits. Typed values are kept exactly, and the
+  box shows the caller's format when it represents them exactly.
+- Voxel Studio's refreshControls also runs on background state changes, so it
+  now skips a focused box (`syncEntry`); `set()` itself stays authoritative for
+  explicit resets like Simplify's.
+- Smaller: grow-mode sliders shrink back after an in-range drag, `set(NaN)` is
+  ignored, `stepDecimals` handles exponent-notation steps, an ast-grep-ignore
+  on the clip slider (bound in main.ts), and a redundant format dropped.

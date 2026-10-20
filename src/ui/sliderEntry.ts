@@ -37,8 +37,11 @@ export function clampEntry(raw: number, b: EntryBounds): number {
 
 /** Decimal places needed to show every digit of `step` (0 for whole steps). */
 export function stepDecimals(step: number): number {
-  if (!Number.isFinite(step) || Number.isInteger(step)) return 0;
-  return String(Number(step.toPrecision(6))).split('.')[1]?.length ?? 0;
+  if (!Number.isFinite(step) || step <= 0 || Number.isInteger(step)) return 0;
+  const text = String(Number(step.toPrecision(6)));
+  const exp = /e-(\d+)$/.exec(text);          // tiny steps print as "1e-7"
+  if (exp) return Number(exp[1]) + (text.split('e')[0].split('.')[1]?.length ?? 0);
+  return text.split('.')[1]?.length ?? 0;
 }
 
 /** Format a value for the number box: fixed to `decimals` places with
@@ -89,7 +92,8 @@ export interface SliderEntry {
   get(): number;
   /** Push a value in without firing `onChange` (e.g. reflecting state or a
    *  Reset). It always rewrites the box — a programmatic value is authoritative,
-   *  even if the box still has focus. */
+   *  even if the box still has focus; a caller re-syncing from background state
+   *  should skip a focused box itself. A non-finite value is ignored. */
   set(v: number): void;
   /** Change the slider and/or hard bounds (e.g. a model-derived range). */
   setBounds(b: Partial<Pick<SliderEntryOptions, 'min' | 'max' | 'step' | 'hardMin' | 'hardMax'>>): void;
@@ -103,7 +107,14 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
   const integer = opts.integer ?? false;
   const format = opts.format ?? ((v: number) => formatEntry(v, integer ? 0 : stepDecimals(step)));
   const clamp = (n: number) => clampEntry(n, { hardMin, hardMax, integer });
-  let value = clamp(opts.value);
+  // A slider-driven or programmatic value is snapped to what the box shows,
+  // so the value a caller applies never carries digits the user can't see.
+  const snap = (n: number) => {
+    const v = clamp(n);
+    const shown = Number(format(v));
+    return Number.isFinite(shown) ? clamp(shown) : v;
+  };
+  let value = snap(Number.isFinite(opts.value) ? opts.value : min);
 
   const applyAttrs = () => {
     range.step = String(step);
@@ -127,14 +138,16 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
   placeThumb(value);
   input.value = format(value);
 
-  const fromRange = () => { value = clamp(range.valueAsNumber); input.value = format(value); };
+  const fromRange = () => { value = snap(range.valueAsNumber); input.value = format(value); };
   range.addEventListener('input', () => {
     fromRange();
     if (opts.dragCommit !== 'change') opts.onChange(value);
   });
-  if (opts.dragCommit === 'change') {
-    range.addEventListener('change', () => { fromRange(); opts.onChange(value); });
-  }
+  range.addEventListener('change', () => {
+    if (opts.dragCommit === 'change') { fromRange(); opts.onChange(value); }
+    // A grown range shrinks back once a drag lands inside the declared one.
+    if (opts.overflow === 'grow') placeThumb(value);
+  });
   if (opts.liveTyping) {
     input.addEventListener('input', () => {
       const raw = input.valueAsNumber;
@@ -148,7 +161,10 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
     const raw = input.valueAsNumber;
     if (Number.isNaN(raw)) { input.value = format(value); return; }
     value = clamp(raw);
-    input.value = formatEntry(value);
+    // Show the caller's format when it represents the typed value exactly;
+    // otherwise the precision-safe form, so typed digits are never truncated.
+    const f = format(value);
+    input.value = Number(f) === value ? f : formatEntry(value);
     placeThumb(value);
     opts.onChange(value);
   });
@@ -160,7 +176,8 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
     input,
     get: () => value,
     set: (v: number) => {
-      value = clamp(v);
+      if (!Number.isFinite(v)) return;
+      value = snap(v);
       placeThumb(value);
       input.value = format(value);
     },
@@ -171,7 +188,7 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
       if (b.hardMin !== undefined) hardMin = b.hardMin;
       if (b.hardMax !== undefined) hardMax = b.hardMax;
       applyAttrs();
-      value = clamp(value);
+      value = snap(value);
       placeThumb(value);
       input.value = format(value);
     },

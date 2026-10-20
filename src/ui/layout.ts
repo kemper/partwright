@@ -1078,6 +1078,8 @@ function createClipSlider(): HTMLElement {
   sliderGroup.className = 'hidden flex flex-col items-center gap-2 px-2 py-2 rounded bg-zinc-800/80 backdrop-blur border border-zinc-600/50 pointer-events-auto';
 
   const slider = document.createElement('input');
+  // Paired with #clip-z-input via bindSliderEntry in main.ts.
+  // ast-grep-ignore: prefer-slider-entry
   slider.type = 'range';
   slider.id = 'clip-z-slider';
   // Vertical orientation: writing-mode flips the range to grow top-to-bottom;

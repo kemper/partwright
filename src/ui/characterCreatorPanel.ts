@@ -15,7 +15,7 @@ import { BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
 import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
-import { createSliderEntry, formatEntry, stepDecimals } from './sliderEntry';
+import { createSliderEntry } from './sliderEntry';
 import {
   type CharacterSpec,
   DEFAULT_SPEC,
@@ -95,7 +95,6 @@ function sliderRow(
   const entry = createSliderEntry({
     label, min, max, step, value,
     hardMin: hard.min, hardMax: hard.max,
-    format: v => formatEntry(v, stepDecimals(step)),
     dragCommit: 'change',
     onChange,
     inputClass: 'w-12 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-[11px] text-right tabular-nums text-zinc-200',
