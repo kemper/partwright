@@ -41,3 +41,7 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## OpenAI-compatible endpoints may be strict-Anthropic backends
+
+The `openai` and `custom` providers can point at a gateway that proxies to Claude. Such a backend enforces Anthropic's rule that every `tool_use` id has its `tool_result` **immediately** after, so the OpenAI-format builders must satisfy that adjacency, not just OpenAI's laxer one. Image-carrying tool results are the usual trap: OpenAI's `tool` role can't hold an image, so it rides on a following `user` message, which must not split a multi-tool result run. All builders run `repairToolHistory` before payload construction; a "Repair history" button that reports nothing to repair while sends still 400 means the bug is in a builder, not the persisted history. A 400 labelled "OpenAI" with `toolu_` ids is this topology.
