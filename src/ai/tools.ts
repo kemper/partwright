@@ -14,6 +14,7 @@
 // Argument validation lives on the API side (src/validation/apiValidation.ts)
 // so the same checks apply to console/MCP callers, not just the model.
 
+import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
@@ -61,11 +62,40 @@ export const SUBDOC_NAMES_LIST = [
   'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
-  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform',
+  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
 ] as const;
+
+/** Part-detection schema pieces, derived from the detector registry so a new
+ *  detector or param reaches the AI tools without editing this file. */
+const PART_DETECTOR_IDS = detectorIds();
+const PART_PARAMS_SCHEMA = paramsJsonSchema();
+
+/** AI tools pass part refs as strings (one JSON type keeps the schema inside
+ *  Gemini's subset); turn numeric strings back into the 1-based ids the API
+ *  takes, leaving names alone. */
+function normalizePartOps(ops: unknown): unknown {
+  if (!Array.isArray(ops)) return ops;
+  const ref = (v: unknown) => (typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : v);
+  return ops.map((op) => {
+    if (!op || typeof op !== 'object') return op;
+    const o = { ...(op as Record<string, unknown>) };
+    if ('id' in o) o.id = ref(o.id);
+    if ('to' in o) o.to = ref(o.to);
+    if (Array.isArray(o.ids)) o.ids = o.ids.map(ref);
+    // focus with no id (or "none") clears the focus.
+    if (o.op === 'focus' && (o.id === undefined || o.id === '' || o.id === 'none')) o.id = null;
+    return o;
+  });
+}
+
+/** A part-ref list from an AI tool call (strings; all-digit = 1-based id). */
+function partRefs(v: unknown): unknown[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? Number(x.trim()) : x));
+}
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -927,6 +957,196 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'listPartDetectors',
+    description: 'List the part-detection algorithms (see detectParts) with their params, defaults, whether they need seeds, and bestFor guidance, plus the editParts op list. Read before detecting parts on an imported mesh.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'detectParts',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'Detector id from listPartDetectors.' },
+        seeds: {
+          type: 'array',
+          description: 'Named seed points (required by seeded detectors).',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'Part name this seed belongs to.' },
+              point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
+            },
+            required: ['label', 'point'],
+          },
+        },
+        params: PART_PARAMS_SCHEMA,
+        featureOptions: {
+          type: 'object',
+          description: 'Shared surface analysis. Usually omit.',
+          properties: {
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+          },
+        },
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+      required: ['algorithm'],
+    },
+  },
+  {
+    name: 'autoDetectParts',
+    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+    },
+  },
+  {
+    name: 'reopenParts',
+    description: 'Re-open the parts saved on an import (by acceptParts) as the draft, with the seeds that produced them, so they can be refined (editParts / detectParts) and accepted again.',
+    input_schema: { type: 'object', properties: { importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' } } },
+  },
+  {
+    name: 'previewPartPresets',
+    description: 'Run every preset of a detector (listPartDetectors shows them) WITHOUT changing the draft — locked parts and a focus are honoured — and return them ranked best-first by a groove/island score, with a contact-sheet image. Pick one with applyPartPreset. Also fills the panel\'s preset strip for the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'Detector (default: the draft\'s, else auto-merge).' },
+        seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } }, description: 'Seeds for a seeded detector (default: the current seeds).' },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] },
+        importIndex: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+  {
+    name: 'applyPartPreset',
+    description: 'Make one of the previewPartPresets results the draft (by its index in that ranked list).',
+    input_schema: { type: 'object', properties: { index: { type: 'integer', minimum: 0 } }, required: ['index'] },
+  },
+  {
+    name: 'setPartSelection',
+    description: 'Select draft parts so the user sees which ones you mean: they are highlighted on the model and ticked in the Part Detection panel (where the user can merge/solo/lock them from the action bar). parts: ids ("4") or names; omit or [] to clear. mode: replace (default) / add / toggle / remove.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: ['replace', 'add', 'toggle', 'remove'] },
+      },
+    },
+  },
+  {
+    name: 'setPartsView',
+    description: 'Solo view: mode "solo" shows only the given parts (default: the selection) in colour and greys out the rest — use it to show the user exactly what one part covers; mode "all" restores every colour.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['all', 'solo'] },
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part ids ("4") or names.' },
+      },
+      required: ['mode'],
+    },
+  },
+  {
+    name: 'partAt',
+    description: 'Which draft part is at a world point (e.g. from probePixel) -> {id, name}.',
+    input_schema: { type: 'object', properties: { point: { type: 'array', items: { type: 'number' }, description: '[x, y, z]' } }, required: ['point'] },
+  },
+  {
+    name: 'openPartsPanel',
+    description: 'Open the Part Detection panel for the user (detectParts and reopenParts already open it). Use when handing a draft over for manual refinement.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getPartDraft',
+    description: 'Summary of the current part-detection draft (parts, quality, seeds), or {draft:null}.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'editParts',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Parts own PINS (shown on the model): every part has at least one (automatic pins sit in each region; seeds you add are placed pins). Ops: {op:"merge", ids:[...], name?} (the merged part keeps all their pins) · {op:"rename", id, name} (renaming to another part\'s name merges them) · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point; reassigned triangles become FIXED — pin moves never undo them) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (adds a pin for that part — a NEW name makes a new part — and re-grows only the parts around it) · {op:"removeSeed", index} · {op:"moveSeed", index, point} (indexes into the summary\'s seeds) · {op:"seedsFromParts"} (reset every part to automatic pins; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"reorder", id, position} (1-based; order = label order on accept) · {op:"clear"} (remove every part and pin; undoable) · {op:"rerun"} (re-detect the whole model) · {op:"undo"}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ops: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo'] },
+              id: { type: 'string', description: 'Part id ("4") or name.' },
+              ids: { type: 'array', items: { type: 'string' }, description: 'merge: part ids or names.' },
+              name: { type: 'string' },
+              color: { type: 'string', description: '#rrggbb' },
+              point: { type: 'array', items: { type: 'number' }, description: '[x,y,z]' },
+              to: { type: 'string', description: 'reassign target: part id or a new part name.' },
+              radius: { type: 'number' },
+              seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } } },
+              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } },
+              index: { type: 'integer' },
+              minAreaFrac: { type: 'number' },
+              iterations: { type: 'integer' },
+              locked: { type: 'boolean', description: 'lock: false unlocks.' },
+              minRegionFrac: { type: 'number', description: 'seedsFromParts: regions smaller than this fraction of their part get no seed (default 0.01).' },
+              position: { type: 'integer', description: 'reorder: new 1-based position.' },
+            },
+            required: ['op'],
+          },
+        },
+      },
+      required: ['ops'],
+    },
+  },
+  {
+    name: 'renderParts',
+    description: 'Render the part draft in colour with each part\'s id number drawn on a visible spot in every view (plus a legend) and return the image. Use after detectParts/editParts to check every part landed right — compare against the reference image; parts hidden from all views are listed in hiddenParts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        views: { type: 'array', items: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] }, description: 'Default ["front","right","back","iso"].' },
+        size: { type: 'integer', minimum: 128, maximum: 1600, description: 'Tile px (default 480).' },
+        numbered: { type: 'boolean', description: 'Draw part numbers (default true).' },
+      },
+    },
+  },
+  {
+    name: 'comparePartDetectors',
+    description: 'Run 1–6 detector configurations side by side WITHOUT replacing the draft; returns a quality table and a contact-sheet image (one numbered view per config). Use to choose a detector/params before committing to one.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        configs: { type: 'array', items: { type: 'object', properties: { algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS] }, seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } } }, params: PART_PARAMS_SCHEMA }, required: ['algorithm'] } },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] },
+        size: { type: 'integer', minimum: 128, maximum: 800 },
+      },
+      required: ['configs'],
+    },
+  },
+  {
+    name: 'setPartsOverlay',
+    description: 'Show or hide the part-draft overlay in the viewport.',
+    input_schema: { type: 'object', properties: { visible: { type: 'boolean' } }, required: ['visible'] },
+  },
+  {
+    name: 'acceptParts',
+    description: 'Commit the part draft: the parts are stored on the import and the code switches to api.importWithParts(i), so every part becomes a real label (paintByLabel, listObjectParts, the object rail) and any part colours set with editParts setColor become the model colours. Saves a version. Show the user renderParts and get their OK first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Version label (default "Detected parts").' },
+        smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
+      },
+    },
+  },
+  {
+    name: 'discardParts',
+    description: 'Drop the part draft and its overlay.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'listObjectParts',
     description: "List the current object's PARTS and PIECES, exactly as the object list in the left rail shows them. Parts are the api.label(shape, name) regions (SCAD label(), BREP.label) — tracked through every union/cut, so they survive several shapes fusing into one solid; each has {name, triangleCount, color?}. lostParts are labels that ended with no triangles. unlabeledTriangleCount is geometry no part covers. Pieces are the physically separate solids (connected components), each named by the part covering most of it — use them to check a print-in-place mechanism really splits into N moving pieces. When the user says \"the handle\" or \"the lid part\", this is where those names live.",
     input_schema: { type: 'object', properties: {} },
@@ -1459,6 +1679,8 @@ for (const tool of ALL_TOOLS) {
 }
 
 const ALWAYS_AVAILABLE = new Set([
+  'listPartDetectors',
+  'getPartDraft',
   'getActiveLanguage',
   'setActiveLanguage',
   'getCode',
@@ -1544,7 +1766,7 @@ const PLAN_MODE_TOOLS = new Set([
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -1568,17 +1790,23 @@ export const RETRY_SAFE_TOOLS = new Set([
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // A visual-only tint; re-applying it is idempotent.
   'highlightObjectPart',
   // Idempotent renders (produce a snapshot; no persistent mutation)
-  'renderView', 'renderViews', 'runIsolated',
+  'renderView', 'renderViews', 'runIsolated', 'renderParts',
   // Run-without-commit (re-running the same code reproduces the same state)
   'runCode', 'runAndAssert', 'runAndExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts']);
+/** Part-detection draft tools (#1025): they prepare paint, so they ride the
+ *  paint scope, but a draft never touches the session (only acceptParts,
+ *  above, commits) — so they are NOT model-changing for auto-review. The
+ *  image-returning ones additionally need the Views vision toggle. */
+const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
+const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
@@ -1628,6 +1856,8 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (PARTS_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (PARTS_VIEW_GATED.has(t.name)) return toggles.scope.paintFaces && toggles.vision.views;
     if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
@@ -2227,6 +2457,71 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'deleteObject':
     case 'deletePart':
       return api.deleteObject((input.object ?? input.part ?? input.id) as string | number);
+    case 'listPartDetectors':
+      return api.listPartDetectors();
+    case 'detectParts': {
+      const result = await api.detectParts(input);
+      // Hand the draft to the user: the panel opens so they can refine it.
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'reopenParts': {
+      const result = await api.reopenParts(input);
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'applyPartPreset':
+      return api.applyPartPreset(input.index);
+    case 'setPartSelection': {
+      const refs = partRefs(input.parts) ?? [];
+      return api.setPartSelection(refs.length ? refs : null, input.mode === undefined ? undefined : { mode: input.mode });
+    }
+    case 'setPartsView': {
+      const refs = partRefs(input.parts);
+      return api.setPartsView(refs ? { mode: input.mode, parts: refs } : { mode: input.mode });
+    }
+    case 'partAt':
+      return api.partAt(input.point);
+    case 'openPartsPanel':
+      return api.openPartsPanel();
+    case 'autoDetectParts': {
+      const result = await api.autoDetectParts(input) as Record<string, unknown>;
+      // A proposal is a draft too: hand it to the user like detectParts does.
+      if (result && typeof result === 'object' && result.proposed === true) api.openPartsPanel();
+      return result;
+    }
+    case 'getPartDraft':
+      return api.getPartDraft();
+    case 'editParts':
+      return api.editParts({ ops: normalizePartOps(input.ops) });
+    case 'renderParts':
+    case 'comparePartDetectors':
+    case 'previewPartPresets': {
+      const result = (name === 'renderParts'
+        ? await api.renderParts(input)
+        : name === 'previewPartPresets'
+          ? await api.previewPartPresets(input)
+          : await api.comparePartDetectors(input.configs, {
+            ...(input.view !== undefined ? { view: input.view } : {}),
+            ...(input.size !== undefined ? { size: input.size } : {}),
+          })) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return {
+        content: `${name}: ${JSON.stringify(result)}`,
+        isError: false,
+        image: { ...img, label: name },
+      } satisfies ToolExecResult;
+    }
+    case 'setPartsOverlay':
+      return api.setPartsOverlay(input.visible);
+    case 'acceptParts':
+      return api.acceptParts(input);
+    case 'discardParts':
+      return api.discardParts();
     case 'listObjectParts':
       return api.listObjectParts();
     case 'highlightObjectPart': {

@@ -328,6 +328,9 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Width (px) of the code pane in its compact "mini" mode — the
+     *  syntax-colored code map shown by default instead of the full editor. */
+    codeMinimapWidthPx: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -351,6 +354,63 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+  };
+  segmentation: {
+    /** Part detection: after an interactive STL import, try the automatic
+     *  detectors (`autoDetectParts`). When they split the mesh (e.g. a
+     *  multi-body figure, one body per colour) the Part Detection panel opens
+     *  on the proposal; otherwise the usual convert-to-code ask appears, with
+     *  a "Detect parts…" button. Off = always the convert ask. */
+    autoDetectOnImport: boolean;
+    /** Part detection: imports above this many triangles skip the automatic
+     *  import-time pass (it would delay the next-step prompt on huge scans);
+     *  the convert ask's "Detect parts…" button still works. */
+    autoDetectMaxTriangles: number;
+    /** Part detection: an automatic proposal with more parts than this is
+     *  dropped (an assembly or a scan with loose debris, not colour bodies).
+     *  Explicit `detectParts` calls are not limited. */
+    autoDetectMaxParts: number;
+    /** Part detection: islands below this fraction of the total surface area
+     *  are folded into their neighbours by the panel's "Absorb specks" action
+     *  (the absorbSmall edit op default). */
+    absorbMinAreaFrac: number;
+    /** Part detection: majority-filter passes the panel's "Smooth edges"
+     *  action runs over part boundaries (smoothBoundaries default). */
+    smoothBoundaryIterations: number;
+    /** Part detection: parts listed in console/AI summaries before the list
+     *  is truncated (keeps tool results small on over-segmented meshes). */
+    maxListedParts: number;
+    /** Part detection: edit batches kept for Undo in a draft. */
+    undoDepth: number;
+    /** Part detection: cells per side of the coarse depth buffer that decides
+     *  where renderParts draws each part's number (higher = finds smaller
+     *  visible slivers, slightly slower). */
+    labelGridResolution: number;
+    /** Live mode: wait this long (ms) after the last seed/setting change
+     *  before re-running detection. */
+    liveDebounceMs: number;
+    /** Wait this long (ms) after the last Edge-smoothness change before
+     *  recomputing the smooth part edges. */
+    edgeSmoothingDebounceMs: number;
+    /** Preset filmstrip tile size (px). */
+    presetThumbSize: number;
+    /** Edge-smoothing passes a new part draft starts with (0 = triangle
+     *  edges; acceptParts then keeps the original mesh). */
+    defaultEdgeSmoothing: number;
+    /** Smooth edges leave a part boundary alone where it runs along a fold
+     *  at least this sharp (°, groove or ridge) — a hard edge such as a CAD
+     *  box edge already IS the seam. Sculpted grooves (often 30–60° per edge
+     *  on scans) still smooth at the default. */
+    edgePinCreaseDeg: number;
+    /** "Convert to seeds": regions smaller than this fraction of their part
+     *  get no seed of their own. */
+    seedsFromPartsMinRegionFrac: number;
+    /** Seed-marker dot radius as a fraction of the model's diagonal. */
+    seedDotFraction: number;
+    /** Seed-marker name-tag height as a fraction of the viewport height. */
+    seedTagScreenFraction: number;
+    /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
+    fixBrushRadiusFrac: number;
   };
 }
 
@@ -460,6 +520,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,
@@ -468,6 +529,25 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+  },
+  segmentation: {
+    autoDetectOnImport: true,
+    autoDetectMaxTriangles: 2_000_000,
+    autoDetectMaxParts: 40,
+    absorbMinAreaFrac: 0.002,
+    smoothBoundaryIterations: 2,
+    maxListedParts: 80,
+    undoDepth: 20,
+    labelGridResolution: 160,
+    liveDebounceMs: 450,
+    edgeSmoothingDebounceMs: 250,
+    presetThumbSize: 112,
+    defaultEdgeSmoothing: 3,
+    edgePinCreaseDeg: 60,
+    seedsFromPartsMinRegionFrac: 0.01,
+    seedDotFraction: 0.008,
+    seedTagScreenFraction: 0.026,
+    fixBrushRadiusFrac: 0.012,
   },
 };
 

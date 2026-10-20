@@ -35,7 +35,7 @@ test.describe('Legal page (static)', () => {
     await page.goto('/legal');
     await page.getByRole('link', { name: /Open editor/i }).click();
     await expect(page).toHaveURL(/\/editor(\?.*)?$/, { timeout: 30000 });
-    await expect(page.locator('.cm-content')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('#code-pane')).toBeVisible({ timeout: 30000 });
   });
 
   test('an unknown path still 404s (legal allowlist is exact)', async ({ page }) => {

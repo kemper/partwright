@@ -296,7 +296,7 @@ test.describe('extended paint controls', () => {
     const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
     await tolInput.fill('5');
     await tolInput.press('Enter');
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('no canvas');
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height * 0.35;
@@ -345,7 +345,7 @@ test.describe('extended paint controls', () => {
       const pm = await import('/src/color/paintMode.ts');
       pm.setColor([1, 0.15, 0.15]);
     });
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('no canvas');
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;

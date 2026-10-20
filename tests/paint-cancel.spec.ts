@@ -57,7 +57,7 @@ test.describe('paint cancellation + waitForPaint', () => {
 
     // Drive a stroke through the canvas; mouseup commits → async worker job.
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -111,7 +111,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -169,7 +169,7 @@ test.describe('paint cancellation + waitForPaint', () => {
 
     // Drive a stroke; the worker starts subdividing immediately on mouseup.
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -239,7 +239,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
 
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -306,7 +306,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
 
     const stroke = (x0: number) => page.evaluate((x0v) => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2 + x0v, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
