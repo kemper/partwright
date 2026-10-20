@@ -27,6 +27,30 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'October 20, 2026',
+    headline: 'Partwright 1.8.1 — refreshed AI model list',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8.1',
+            body: 'A backward-compatible fix release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Updated model catalog',
+            body: 'The list of available Anthropic, OpenAI and Google models and their pricing has been refreshed, including newer model versions and corrected tiered pricing.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 20, 2026',
     headline: 'Partwright 1.8 — part detection for imported meshes',
     groups: [
       {
