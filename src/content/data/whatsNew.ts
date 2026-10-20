@@ -26,6 +26,48 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 20, 2026',
+    headline: 'Partwright 1.8 — part detection for imported meshes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Import',
+        items: [
+          {
+            title: 'Part detection for imported meshes',
+            body: 'Imported STL meshes can now be split into named parts automatically. Pick a detector and preset, refine with pins (select, merge, solo and hover to find a part), lock or focus regions, and accept to turn the parts into labels you can color and edit. Detection is offered right after an STL import and from the Paint panel, and it runs without blocking the editor.',
+          },
+        ],
+      },
+      {
+        label: 'Editor',
+        items: [
+          {
+            title: 'Compact code map by default',
+            body: 'The code pane now shows a compact code map (minimap) by default, making it easier to navigate long models.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'AI chat image drops',
+            body: 'Dropping an image into the AI chat no longer also opens the import chooser.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 13, 2026',
     headline: 'Partwright 1.7.1 — clearer custom-endpoint errors',
     groups: [
