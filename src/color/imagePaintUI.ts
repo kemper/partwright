@@ -833,7 +833,7 @@ function buildStampSettingsSection(): HTMLElement {
   addSlider(grid, 'Size (units)', 1, 200, 1, 20,
     () => stampSize,
     v => { stampSize = v; updatePreviewSize(); },
-    true);
+    true, true /* uncappedInput */);
 
   addSlider(grid, 'Rotation (°)', 0, 359, 1, 0,
     () => stampRotation,

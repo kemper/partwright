@@ -72,9 +72,11 @@ let depthSection: HTMLElement | null = null;
 let levelSection: HTMLElement | null = null;
 let sizeSlider: HTMLInputElement | null = null;
 let sizeLabel: HTMLElement | null = null;
+let sizeInput: HTMLInputElement | null = null;
 let sprayBtn: HTMLButtonElement | null = null;
 let sprayRow: HTMLElement | null = null;
 const blockSliders: Partial<Record<0 | 1 | 2, HTMLInputElement>> = {};
+const blockInputs: Partial<Record<0 | 1 | 2, HTMLInputElement>> = {};
 let blockSizeLabel: HTMLElement | null = null;
 let depthSlider: HTMLInputElement | null = null;
 let depthInput: HTMLInputElement | null = null;
@@ -201,7 +203,8 @@ function refreshControls(): void {
   for (const s of BRUSH_SHAPES) setActive(shapeBtns[s.shape], s.shape === voxelPaint.getBrushShape());
   for (const a of AXES) setActive(axisBtns[a.axis], a.axis === voxelPaint.getLevelAxis());
 
-  if (sizeSlider) sizeSlider.value = String(voxelPaint.getBrushRadius());
+  if (sizeSlider) sizeSlider.value = String(Math.min(Number(sizeSlider.max), voxelPaint.getBrushRadius()));
+  if (sizeInput && document.activeElement !== sizeInput) sizeInput.value = String(voxelPaint.getBrushRadius());
   if (sizeLabel) {
     const r = voxelPaint.getBrushRadius();
     sizeLabel.textContent = r === 0 ? 'Size: 1 voxel' : `Size: ${r * 2 + 1} wide`;
@@ -217,7 +220,9 @@ function refreshControls(): void {
   const size = voxelPaint.getBlockSize();
   for (const axis of [0, 1, 2] as const) {
     const s = blockSliders[axis];
-    if (s) s.value = String(size[axis]);
+    if (s) s.value = String(Math.min(Number(s.max), size[axis]));
+    const n = blockInputs[axis];
+    if (n && document.activeElement !== n) n.value = String(size[axis]);
   }
   if (blockSizeLabel) blockSizeLabel.textContent = `${size[0]}×${size[1]}×${size[2]}`;
   if (depthSlider) depthSlider.value = String(Math.min(16, voxelPaint.getAddDepth()));
@@ -413,7 +418,16 @@ function buildBrushSection(): HTMLElement {
   sizeSlider.className = 'w-full accent-blue-500';
   sizeSlider.title = 'Brush radius in voxels (0 = a single voxel)';
   sizeSlider.addEventListener('input', () => { voxelPaint.setBrushRadius(Number(sizeSlider!.value)); refreshControls(); });
-  sec.appendChild(sizeSlider);
+  sizeSlider.classList.replace('w-full', 'flex-1');
+  sizeSlider.classList.add('min-w-0');
+  // Typed radius: the slider covers 0–8, the box accepts up to the engine cap.
+  sizeInput = numberEntry(0, voxelPaint.MAX_BRUSH_RADIUS, voxelPaint.getBrushRadius(),
+    `Brush radius in voxels. Type up to ${voxelPaint.MAX_BRUSH_RADIUS} to go past the slider.`,
+    v => voxelPaint.setBrushRadius(v));
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'flex items-center gap-2';
+  sizeRow.append(sizeSlider, sizeInput);
+  sec.appendChild(sizeRow);
 
   // Shape buttons.
   shapeBtns = {};
@@ -497,10 +511,37 @@ function buildBlockSection(): HTMLElement {
     slider.addEventListener('input', () => { voxelPaint.setBlockSize(axis, Number(slider.value)); refreshControls(); });
     row.appendChild(slider);
     blockSliders[axis] = slider;
+    // Typed size: the slider covers 1–16, the box accepts up to the engine cap.
+    const input = numberEntry(1, voxelPaint.MAX_BLOCK_SIZE, voxelPaint.getBlockSize()[axis],
+      `Block ${label} size in voxels. Type up to ${voxelPaint.MAX_BLOCK_SIZE} to go past the slider.`,
+      v => voxelPaint.setBlockSize(axis, v));
+    row.appendChild(input);
+    blockInputs[axis] = input;
     sec.appendChild(row);
   }
 
   return sec;
+}
+
+/** Whole-number box paired with a slider: commits on Enter / blur, clamps to
+ *  [min, max], and lets typed values go past the slider's shorter range. A
+ *  non-number restores the current value on the next refresh. */
+function numberEntry(min: number, max: number, value: number, title: string, set: (v: number) => void): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = '1';
+  input.value = String(value);
+  input.className = 'w-12 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = title;
+  input.addEventListener('change', () => {
+    const raw = parseInt(input.value, 10);
+    if (Number.isFinite(raw)) set(Math.max(min, Math.min(max, raw)));
+    input.blur();
+    refreshControls();
+  });
+  return input;
 }
 
 // Depth control, shared by the add tool (how far the block sinks into the
