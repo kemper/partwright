@@ -5,14 +5,7 @@
 // resolves into the model-color underlay. One golden-path spec per group.
 
 import { test, expect, type Page } from 'playwright/test';
-
-async function waitForEngine(page: Page) {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
+import { openSharedEditor } from './helpers/sharedPage';
 
 // The API surface the spec drives — typed once, used by every evaluate call.
 interface PW {
@@ -22,15 +15,19 @@ interface PW {
 }
 const pw = () => (window as unknown as { partwright: PW }).partwright;
 
+// Each test creates its own fresh session via createSession() before running
+// its code, so the tests are order-independent — the file shares one booted
+// editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
 test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-  });
-
-  test('scatter + round + smoothWeld + sculpt build valid manifolds in the browser', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('scatter + round + smoothWeld + sculpt build valid manifolds in the browser', async () => {
     const out = await page.evaluate(async () => {
       const api = pwHandle();
       await api.createSession('deform-ops');
@@ -64,10 +61,7 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     expect(out.geo?.componentCount).toBe(2);
   });
 
-  test('wrapAround wraps text-sized geometry and api.material reaches the viewport', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('wrapAround wraps text-sized geometry and api.material reaches the viewport', async () => {
     const out = await page.evaluate(async () => {
       const api = (window as unknown as { partwright: {
         createSession: (n?: string) => Promise<unknown>;
@@ -103,10 +97,7 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     expect(out.material?.metalness).toBe(1);
   });
 
-  test("the 'checker' paint pattern resolves into the model underlay", async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test("the 'checker' paint pattern resolves into the model underlay", async () => {
     const out = await page.evaluate(async () => {
       const api = (window as unknown as { partwright: {
         createSession: (n?: string) => Promise<unknown>;

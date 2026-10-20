@@ -1,7 +1,7 @@
 import { test, expect, type Page } from 'playwright/test';
 
 // Importing a figure into a session that already has an (unsaved starter)
-// "Part 1" must: add it as a uniquely-named NEW part (not a second "Part 1"),
+// "Object 1" must: add it as a uniquely-named NEW part (not a second "Object 1"),
 // SELECT that part, and show its code in the editor — with a single progressive
 // render, not the old double render that left the host part selected.
 
@@ -28,7 +28,7 @@ type PW = {
 test('merge import adds a uniquely-named part, selects it, and shows its code', async ({ page }) => {
   await openEditor(page);
 
-  // Build an exported single-part figure (default part name "Part 1"), coloured
+  // Build an exported single-part figure (default part name "Object 1"), coloured
   // via api.label so the backfilled thumbnail exercises the colouring path.
   const json = await page.evaluate(async () => {
     const pw = (window as unknown as { partwright: PW }).partwright;
@@ -41,14 +41,14 @@ return body.add(head); // FIGURE-MARKER`, 'v1');
     return JSON.stringify(data);
   });
 
-  // Fresh target session: a DEFAULT, UNSAVED starter "Part 1" (don't save it).
+  // Fresh target session: a DEFAULT, UNSAVED starter "Object 1" (don't save it).
   await page.evaluate(async () => {
     const pw = (window as unknown as { partwright: PW }).partwright;
     await pw.createSession('my-project');
   });
   expect(await page.evaluate(() =>
     (window as unknown as { partwright: PW }).partwright.listParts().map(p => p.name),
-  )).toEqual(['Part 1']);
+  )).toEqual(['Object 1']);
 
   // Import the figure via the toolbar file input → default "Add parts" (merge).
   await page.locator('#import-wrapper input[type="file"]').setInputFiles({
@@ -58,16 +58,16 @@ return body.add(head); // FIGURE-MARKER`, 'v1');
   });
   const dialog = page.locator('[role="dialog"]');
   await expect(dialog).toBeVisible({ timeout: 6000 });
-  await dialog.getByRole('button', { name: 'Add parts' }).click();
+  await dialog.getByRole('button', { name: 'Add objects' }).click();
   await expect(dialog).toBeHidden({ timeout: 10_000 });
 
-  // The new part is named "Part 2" (NOT a colliding second "Part 1")…
+  // The new part is named "Object 2" (NOT a colliding second "Object 1")…
   await expect.poll(async () =>
     page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listParts().map(p => p.name)),
-  ).toEqual(['Part 1', 'Part 2']);
+  ).toEqual(['Object 1', 'Object 2']);
 
   // …it is SELECTED, so the editor shows the imported figure code, not the
-  // starter code (the core regression: the old path left "Part 1" selected).
+  // starter code (the core regression: the old path left "Object 1" selected).
   await expect(page.locator('.cm-content')).toContainText('FIGURE-MARKER', { timeout: 15_000 });
 
   // The selected part's id is the second part (it's the active one).
@@ -75,7 +75,7 @@ return body.add(head); // FIGURE-MARKER`, 'v1');
     const parts = (window as unknown as { partwright: PW }).partwright.listParts();
     const activePart = new URLSearchParams(window.location.search).get('part');
     // When only one part exists the URL omits `part`; with two it carries the
-    // active id. The active part should be the newly-added "Part 2".
+    // active id. The active part should be the newly-added "Object 2".
     return activePart === null || activePart === parts[1].id;
   });
   expect(selectedIsPart2).toBe(true);

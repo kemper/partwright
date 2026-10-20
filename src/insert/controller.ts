@@ -16,6 +16,53 @@ function isBareIdent(expr: string): boolean {
   return /^[A-Za-z_$][\w$]*$/.test(expr.trim());
 }
 
+/** A managed part folded into the visible union under its own label —
+ *  `api.label(box1, 'box1')` (manifold-js) / `BREP.label(box1, 'box1')`
+ *  (replicad) — optionally parenthesized. Group 1 is the part's identifier. */
+const LABELLED_PART_RE = /^\(?\s*(?:api\.label|BREP\.label)\(\s*([A-Za-z_$][\w$]*)\s*,\s*(['"])[^'"]*\2\s*\)\s*\)?$/;
+
+/** The part identifier a union element refers to: `box1` for both a bare
+ *  `box1` and a labelled `api.label(box1, 'box1')`; any other expression is
+ *  returned trimmed (it only ever matches itself). */
+function elementName(el: string): string {
+  const m = LABELLED_PART_RE.exec(el.trim());
+  return m ? m[1] : el.trim();
+}
+
+const LABEL_CALL_RE = /\b(?:label|labeledUnion)\s*\(/;
+
+/** Whether the shape bound to `name` already carries labels anywhere in its
+ *  construction — its own declaration, or (transitively) any const it is built
+ *  from. An operation result built from such a shape must NOT be wrapped in
+ *  `api.label`: labelling re-IDs every triangle (`asOriginal`), which would
+ *  erase the user's inner labels and silently drop their label colours, paint
+ *  and textures. A hand-written operand expression (`(… )`, no declaration) is
+ *  checked directly. */
+export function partCarriesLabels(code: string, nameOrExpr: string): boolean {
+  if (!isBareIdent(nameOrExpr)) return LABEL_CALL_RE.test(nameOrExpr);
+  const decls = new Map<string, string>();
+  for (const p of scanPartsJs(code)) {
+    if (p.statement) decls.set(p.name, p.statement.slice(p.statement.indexOf('=') + 1));
+  }
+  const seen = new Set<string>();
+  const stack = [nameOrExpr.trim()];
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    const rhs = decls.get(n);
+    if (rhs === undefined) continue;
+    if (LABEL_CALL_RE.test(rhs)) return true;
+    for (const id of rhs.match(/[A-Za-z_$][\w$]*/g) ?? []) if (decls.has(id)) stack.push(id);
+  }
+  return false;
+}
+
+/** A return expression that is exactly one managed part (bare or labelled). */
+function isSinglePart(expr: string): boolean {
+  return isBareIdent(expr) || LABELLED_PART_RE.test(expr.trim());
+}
+
 /** Split a comma-separated expression list at top level, respecting nested
  *  brackets/parens/braces (so `Manifold.union([a, b.translate([1,2,3])])`
  *  splits into `a` and `b.translate([1,2,3])`, not at the inner commas). */
@@ -112,16 +159,21 @@ const MANAGED: Record<ManagedLang, {
   wrap: (parts: string[]) => string;
   match: RegExp;
   ensure: (code: string) => string;
+  /** Wrap a part identifier in the engine's label call, so it shows up as a
+   *  named part of the object (labels survive the union/cuts that follow). */
+  labelPart: (name: string) => string;
 }> = {
   'manifold-js': {
     wrap: (p) => `Manifold.union([${p.join(', ')}])`,
     match: /^(?:api\.)?Manifold\.union\(\s*\[([\s\S]*)\]\s*\)$/,
     ensure: ensureManifoldDestructure,
+    labelPart: (n) => `api.label(${n}, '${n}')`,
   },
   'replicad': {
     wrap: (p) => `BREP.fuseAll([${p.join(', ')}])`,
     match: /^(?:api\.)?BREP\.fuseAll\(\s*\[([\s\S]*)\]\s*\)$/,
     ensure: ensureBrepDestructure,
+    labelPart: (n) => `BREP.label(${n}, '${n}')`,
   },
 };
 
@@ -137,6 +189,11 @@ export interface ManagedDeclOptions {
   /** Names to drop from the visible union as they're folded in. Operations
    *  pass their operands so the result replaces them rather than piling up. */
   replaceNames?: string[];
+  /** Fold each added part in under its own label (`api.label(box1, 'box1')`)
+   *  so it appears in the object list as a named part. Only the parts being
+   *  ADDED are wrapped — existing elements are left exactly as written, since
+   *  re-labelling a hand-built shape would erase the labels inside it. */
+  label?: boolean;
 }
 
 /** Insert a `const …;` declaration and fold its part(s) into the engine's
@@ -163,6 +220,7 @@ export function addManagedDeclaration(
 
   const toReturnExpr = (list: string[]): string =>
     list.length === 1 ? list[0] : cfg.wrap(list);
+  const added = (n: string): string => (opts.label ? cfg.labelPart(n) : n);
 
   if (!ret) {
     // No return yet — declare and return the part(s). (Auto-combine off is
@@ -170,7 +228,7 @@ export function addManagedDeclaration(
     // one so the program is valid.)
     const sep = withPre.length === 0 || withPre.endsWith('\n') ? '' : '\n';
     return {
-      code: `${withPre}${sep}${declLine}\nreturn ${toReturnExpr(opts.addNames)};\n`,
+      code: `${withPre}${sep}${declLine}\nreturn ${toReturnExpr(opts.addNames.map(added))};\n`,
       returnSet: true,
     };
   }
@@ -190,7 +248,7 @@ export function addManagedDeclaration(
   const managed = cfg.match.exec(expr);
   if (managed) {
     list = splitTopLevelCommas(managed[1]).map(s => s.trim()).filter(Boolean);
-  } else if (isBareIdent(expr)) {
+  } else if (isSinglePart(expr)) {
     list = [expr];
   } else if (isStarterCode(code)) {
     // Throwaway placeholder — an untouched starter a fresh session seeds. Drop
@@ -206,8 +264,8 @@ export function addManagedDeclaration(
   }
 
   const drop = new Set(opts.replaceNames ?? []);
-  list = list.filter(e => !drop.has(e));
-  for (const n of opts.addNames) if (!list.includes(n)) list.push(n);
+  list = list.filter(e => !drop.has(elementName(e)));
+  for (const n of opts.addNames) if (!list.some(e => elementName(e) === n)) list.push(added(n));
 
   const newAfter = after.replace(/return\s+[^;]+;/, `return ${toReturnExpr(list)};`);
   return { code: `${before}${declLine}\n${newAfter}`, returnSet: true };
@@ -687,10 +745,14 @@ export function removeManagedPart(code: string, name: string, lang: ManagedLang)
   const cfg = MANAGED[lang];
   const ret = findLastReturn(out);
   if (!ret) return out;
-  const m = cfg.match.exec(ret.expr.trim());
-  if (!m) return out;
+  const expr = ret.expr.trim();
+  const m = cfg.match.exec(expr);
+  // A lone labelled part (`return api.label(name, 'name');`) is a one-element
+  // union; a bare `return name;` was already repointed by removeJsDeclaration.
+  if (!m && !(LABELLED_PART_RE.test(expr) && elementName(expr) === name)) return out;
 
-  const list = splitTopLevelCommas(m[1]).map(s => s.trim()).filter(Boolean).filter(e => e !== name);
+  const elements = m ? splitTopLevelCommas(m[1]).map(s => s.trim()).filter(Boolean) : [expr];
+  const list = elements.filter(e => elementName(e) !== name);
   const lineStart = out.lastIndexOf('\n', ret.index - 1) + 1;
   const before = out.slice(0, lineStart);
   const after = out.slice(lineStart);

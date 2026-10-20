@@ -14,6 +14,7 @@ import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
 import { repairToolHistory } from './historyRepair';
 import { getConfig } from '../config/appConfig';
+import { geminiThinkingConfig } from './thinkingLevels';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -93,6 +94,15 @@ export async function listModels(apiKey: string): Promise<{ id: string; label: s
   return out;
 }
 
+/** Billable output tokens for a Gemini response. `candidatesTokenCount`
+ *  excludes the model's thinking, which Google reports separately as
+ *  `thoughtsTokenCount` and bills at the output rate — so a thinking model's
+ *  real output bill is the sum. Omitting it under-reported every thinking
+ *  turn. */
+function geminiOutputTokens(meta: { candidatesTokenCount?: number; thoughtsTokenCount?: number } | undefined): number {
+  return (meta?.candidatesTokenCount ?? 0) + (meta?.thoughtsTokenCount ?? 0);
+}
+
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
   /** Thought-summary deltas (Gemini 3 thinking models). Routed to the
@@ -137,22 +147,24 @@ export interface GeminiRequestSpec {
   thinking?: ChatToggles['thinking'];
 }
 
-/** Build the Gemini `thinkingConfig` for a thinking level.
+/** Build the Gemini `thinkingConfig` for a thinking level (mapping in
+ *  thinkingLevels.ts; budgets from the user's app config).
  *
  *  'off' only flips `includeThoughts` to false — it deliberately does NOT
  *  force `thinkingBudget: 0`. Some models (Gemini 3 / 2.5 Pro) reject a zero
  *  budget, and since 'off' is the global default, a hard 400 there would look
  *  like Gemini itself is broken. So 'off' means "don't surface reasoning";
- *  the model still uses its own default budget. Low/Med/High surface thoughts
- *  and request an increasing budget (best-effort: a model that doesn't honor
+ *  the model still uses its own default budget. 'default' surfaces thoughts
+ *  without a budget; Low/Med/High (XHigh/Max = High) surface thoughts and
+ *  request an increasing budget (best-effort: a model that doesn't honor
  *  `thinkingBudget` will clamp it, and the user sees any hard error). */
-function geminiThinkingConfig(level: ChatToggles['thinking']): Record<string, unknown> {
-  if (level === 'off') return { includeThoughts: false };
+function thinkingConfigFor(level: ChatToggles['thinking']): Record<string, unknown> {
   const cfg = getConfig().ai;
-  const budget = level === 'low' ? cfg.thinkingBudgetGeminiLow
-    : level === 'medium' ? cfg.thinkingBudgetGeminiMedium
-    : cfg.thinkingBudgetGeminiHigh;
-  return { includeThoughts: true, thinkingBudget: budget };
+  return geminiThinkingConfig(level, {
+    low: cfg.thinkingBudgetGeminiLow,
+    medium: cfg.thinkingBudgetGeminiMedium,
+    high: cfg.thinkingBudgetGeminiHigh,
+  });
 }
 
 interface GeminiToolDef {
@@ -215,7 +227,7 @@ export async function streamTurn(
       // to request. When surfaced, thought parts arrive tagged `thought:true`
       // and we split them into the thinking channel (the box) rather than the
       // answer bubble. 'off' (the default) keeps reasoning internal/hidden.
-      thinkingConfig: geminiThinkingConfig(spec.thinking ?? 'off'),
+      thinkingConfig: thinkingConfigFor(spec.thinking ?? 'off'),
     },
     // systemInstruction takes `parts` only — adding `role` makes some
     // server-side validators silently drop the instruction.
@@ -297,7 +309,7 @@ async function consumeGeminiStream(
         const cached = payload.usageMetadata.cachedContentTokenCount ?? 0;
         usage = {
           inputTokens: Math.max(0, totalIn - cached),
-          outputTokens: payload.usageMetadata.candidatesTokenCount ?? 0,
+          outputTokens: geminiOutputTokens(payload.usageMetadata),
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: cached,
         };
@@ -417,12 +429,11 @@ function mapStopReason(reason: string): string {
 }
 
 function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
-  // Pair any orphaned tool calls with synthetic error results first. Unlike
-  // anthropic.ts (sanitizeToolUse) and openai.ts (sanitizeChatToolMessages),
-  // Gemini had no repair pass, so an assistant turn whose functionCall lacked a
-  // following functionResponse (an interrupted/timed-out tool round) produced a
-  // malformed history. repairToolHistory injects the missing results so the
-  // synthetic functionResponse parts are emitted below.
+  // Canonicalize the tool_use/tool_result invariant first — the shared
+  // repairToolHistory every provider builder runs (see #914). It pairs an
+  // orphaned functionCall (interrupted/timed-out tool round) with a synthetic
+  // error result, emitted as a functionResponse below, and strips a
+  // functionResponse whose call was dropped by compaction.
   const history = repairToolHistory(rawHistory).messages;
   const out: GeminiContent[] = [];
   for (const msg of history) {
@@ -601,7 +612,7 @@ export async function summarize(
   const cached = data.usageMetadata?.cachedContentTokenCount ?? 0;
   const usage: TurnUsage = {
     inputTokens: Math.max(0, totalIn - cached),
-    outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    outputTokens: geminiOutputTokens(data.usageMetadata),
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: cached,
   };

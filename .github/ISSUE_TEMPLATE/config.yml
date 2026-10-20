@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/kemper/partwright/discussions/categories/q-a
+    about: How do I…? Questions about modeling, printing, or the AI assistant.
+  - name: Share something you made
+    url: https://github.com/kemper/partwright/discussions/categories/show-and-tell
+    about: Show off a model, a print, or a workflow.
+  - name: Report a security issue
+    url: https://github.com/kemper/partwright/security/advisories/new
+    about: Please report vulnerabilities privately rather than in a public issue.

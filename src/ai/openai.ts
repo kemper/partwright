@@ -39,8 +39,10 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
+import { openaiReasoningEffort } from './thinkingLevels';
 import { getCapabilities } from './catalog';
 import { getConfig } from '../config/appConfig';
+import { repairToolHistory } from './historyRepair';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const CHAT_URL = `${OPENAI_BASE}/chat/completions`;
@@ -71,16 +73,17 @@ function isReasoningModel(model: string): boolean {
   return /^(gpt-5|o1|o3|o4)/i.test(model);
 }
 
-/** Map the shared thinking level to OpenAI's reasoning `effort`. 'off'
- *  returns null so the `reasoning` field is omitted entirely — leaving the
- *  provider default in place. 'low'/'medium'/'high' map straight through
- *  (all three are valid effort values on every reasoning model).
+/** Map the shared thinking level to OpenAI's reasoning `effort` (see
+ *  openaiReasoningEffort in thinkingLevels.ts: Off → the lowest universal
+ *  effort, Default → omitted, XHigh/Max clamp to what the model supports).
  *  Non-reasoning models always return null. Note: OpenAI hides
  *  reasoning-model chain-of-thought, so this controls cost/quality but
  *  never surfaces a thinking box. */
 function reasoningEffort(model: string, level: ChatToggles['thinking']): string | null {
-  if (level === 'off' || !isReasoningModel(model)) return null;
-  return level;
+  if (!isReasoningModel(model)) return null;
+  // The catalog's per-model effort list (when present) is authoritative:
+  // it's what makes Off → 'none' and gpt-5-pro → 'high' safe.
+  return openaiReasoningEffort(model, level, getCapabilities('openai', model)?.effortLevels ?? null);
 }
 
 /** When `apiKey` is empty/whitespace we omit the Authorization header
@@ -152,6 +155,10 @@ export async function listModels(apiKey: string): Promise<{ id: string; label: s
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;
+  /** Reasoning deltas from an OpenAI-compatible server that streams them as
+   *  `delta.reasoning_content` / `delta.reasoning` (CLIProxyAPI, vLLM,
+   *  llama.cpp, DeepSeek, OpenRouter). OpenAI proper never sends these. */
+  onThinking?: (delta: string) => void;
 }
 
 export interface StreamResult {
@@ -159,9 +166,9 @@ export interface StreamResult {
   toolCalls: PersistedToolCall[];
   stopReason: string;
   usage: TurnUsage;
-  /** Reasoning text if surfaced. Unused for OpenAI (reasoning models hide
-   *  their chain of thought); present so chatLoop reads `result.thinking`
-   *  uniformly across providers. */
+  /** Reasoning text if surfaced. OpenAI proper hides reasoning-model chain
+   *  of thought, so this is only populated by OpenAI-compatible servers that
+   *  stream `reasoning_content` (the Custom provider's audience). */
   thinking?: string;
   /** Anthropic-only thinking-block replay payload — always undefined here.
    *  Declared so chatLoop can read `result.thinkingBlocks` across the
@@ -178,8 +185,9 @@ export interface OpenaiRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
-  /** Extended-thinking level → reasoning `effort` (reasoning models only).
-   *  'off' (default) omits the reasoning request. */
+  /** Thinking level → reasoning `effort` (reasoning models only; mapping in
+   *  thinkingLevels.ts). Omitted = no reasoning request at all — the custom
+   *  provider relies on this so arbitrary servers never get the field. */
   thinking?: ChatToggles['thinking'];
   /** Override the OpenAI base URL. Set by the custom provider to target a
    *  self-hosted OpenAI-compatible server. Omitted (undefined) for OpenAI. */
@@ -190,6 +198,11 @@ export interface OpenaiRequestSpec {
    *  so a model id that happens to match the reasoning sniff (e.g. a model
    *  the user named "o3-local") must NOT be routed to Responses. */
   forceChatCompletions?: boolean;
+  /** Chat Completions only: extra top-level body fields. The custom provider
+   *  uses it for `include_reasoning` (so an OpenAI-compatible server streams
+   *  the model's reasoning as `reasoning_content` deltas instead of thinking
+   *  silently) and the opt-in `reasoning_effort` — see custom.ts. */
+  extraChatFields?: Record<string, unknown>;
 }
 
 /** Route per model: reasoning models go to the Responses API (gpt-5.5+
@@ -265,7 +278,7 @@ async function streamTurnResponses(
   if (tools.length > 0) body.tools = tools;
   // `reasoning.effort` only for non-'off' levels (every model routed here is
   // a reasoning model).
-  const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
+  const effort = (spec.thinking ? reasoningEffort(spec.model, spec.thinking) : null);
   if (effort) body.reasoning = { effort };
 
   let res: Response;
@@ -411,8 +424,16 @@ async function consumeResponsesStream(
  *  text + images), `function_call` items (the model's tool calls), and
  *  `function_call_output` items (tool results), all linked by `call_id`. */
 function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) —
+  // so what the button detects and what the send repairs can't diverge. This
+  // is the ONLY repair on the send path: every toolCall becomes a
+  // function_call and every toolResult a function_call_output, emitted in
+  // order, so the conversion can't reintroduce a dangling or orphaned item.
+  const repaired = repairToolHistory(history).messages;
   const out: ResponsesInputItem[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'assistant') {
       const text = collectAssistantText(msg.blocks);
       if (text.length > 0) {
@@ -428,13 +449,18 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
       }
     } else {
       // Tool results come BEFORE any new user text, mirroring the order the
-      // model emitted the calls.
+      // model emitted the calls. Emit EVERY function_call_output contiguously
+      // first, THEN the image side-messages: function_call_output takes a
+      // string `output`, so a rendered result's image rides on a following
+      // user message — but interleaving that message between the outputs
+      // breaks tool_use/tool_result adjacency for a strict backend (an
+      // OpenAI-compatible gateway proxying to a provider that enforces it),
+      // which then 400s. Keeping the outputs contiguous avoids that.
+      const imageItems: ResponsesInputItem[] = [];
       for (const r of msg.toolResults ?? []) {
         out.push({ type: 'function_call_output', call_id: r.toolUseId, output: r.content });
         if (r.image) {
-          // function_call_output takes a string `output`, so surface the
-          // image on a following user message.
-          out.push({
+          imageItems.push({
             type: 'message',
             role: 'user',
             content: [
@@ -444,50 +470,12 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
           });
         }
       }
+      out.push(...imageItems);
       const content = buildResponsesUserContent(msg.blocks);
       if (content) out.push({ type: 'message', role: 'user', content });
     }
   }
-  return sanitizeResponsesToolCalls(out);
-}
-
-/** The Responses API 400s if a `function_call` item has no matching
- *  `function_call_output` ("No tool output found for function call …"). A
- *  turn that ends right after the model emits tool calls — user Stop, stall
- *  watchdog, or the spend cap tripping before results post — leaves a
- *  dangling call in history, so the next send fails. Mirror the Chat
- *  Completions / Anthropic repair: inject a synthetic error output for any
- *  unanswered call_id. Keyed off the GLOBAL set of answered ids so an image
- *  tool-result — surfaced on a `user` message wedged between items — doesn't
- *  read as a gap. */
-function sanitizeResponsesToolCalls(items: ResponsesInputItem[]): ResponsesInputItem[] {
-  // Mirror the tool_use repair the other way: drop any function_call_output
-  // whose call_id has no function_call (e.g. compaction dropped the call). The
-  // Responses API 400s on an output for a call it can't see.
-  const calls = new Set<string>();
-  for (const it of items) if (it.type === 'function_call') calls.add(it.call_id);
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.type === 'function_call_output' && !calls.has(it.call_id)) items.splice(i, 1);
-  }
-
-  const answered = new Set<string>();
-  for (const it of items) {
-    if (it.type === 'function_call_output') answered.add(it.call_id);
-  }
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (it.type !== 'function_call' || answered.has(it.call_id)) continue;
-    const synthetic: ResponsesInputItem = {
-      type: 'function_call_output',
-      call_id: it.call_id,
-      output: 'Tool call was interrupted and did not complete.',
-    };
-    items.splice(i + 1, 0, synthetic);
-    answered.add(it.call_id);
-    i += 1;
-  }
-  return items;
+  return out;
 }
 
 function buildResponsesUserContent(blocks: ChatBlock[]): ResponsesContentPart[] | null {
@@ -568,8 +556,9 @@ async function streamTurnChat(
   // Non-reasoning models route here, so reasoningEffort() returns null and no
   // reasoning_effort is sent — exactly the pre-feature request shape. (A
   // reasoning model would have been dispatched to the Responses path.)
-  const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
+  const effort = (spec.thinking ? reasoningEffort(spec.model, spec.thinking) : null);
   if (effort) body.reasoning_effort = effort;
+  if (spec.extraChatFields) Object.assign(body, spec.extraChatFields);
 
   let res: Response;
   try {
@@ -608,6 +597,7 @@ async function consumeChatStream(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   let collectedText = '';
+  let collectedThinking = '';
   // Keyed by a stable string per tool call, in emission order (`toolOrder`).
   // OpenAI proper always sends a numeric `index` that disambiguates parallel
   // calls and threads streamed argument fragments to the right call. Some
@@ -648,6 +638,17 @@ async function consumeChatStream(
       const choice = payload.choices?.[0];
       if (!choice) continue;
       const delta = choice.delta ?? {};
+      // Reasoning deltas (non-standard but widespread: `reasoning_content`
+      // from CLIProxyAPI/vLLM/llama.cpp/DeepSeek, `reasoning` from
+      // OpenRouter/Ollama). Forwarding them is what keeps the stall watchdog
+      // fed while a thinking model reasons before its first answer token —
+      // dropping them made every long thinking phase look like a dead stream.
+      const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+        : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      if (reasoning.length > 0) {
+        collectedThinking += reasoning;
+        callbacks.onThinking?.(reasoning);
+      }
       if (typeof delta.content === 'string' && delta.content.length > 0) {
         collectedText += delta.content;
         callbacks.onText?.(delta.content);
@@ -677,7 +678,7 @@ async function consumeChatStream(
       if (choice.finish_reason) stopReason = mapChatStopReason(choice.finish_reason);
     }
   } catch (err) {
-    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage };
+    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage, thinking: collectedThinking || undefined };
     throw err;
   }
 
@@ -701,7 +702,7 @@ async function consumeChatStream(
   // the Responses ('end_turn' default) and Gemini ('unknown'→'end_turn') paths.
   if (stopReason === 'unknown' && collectedText.length > 0) stopReason = 'end_turn';
 
-  return { text: collectedText, toolCalls, stopReason, usage };
+  return { text: collectedText, toolCalls, stopReason, usage, thinking: collectedThinking || undefined };
 }
 
 function mapChatStopReason(reason: string): string {
@@ -713,8 +714,16 @@ function mapChatStopReason(reason: string): string {
 }
 
 function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
+  // Canonicalize the tool_use/tool_result invariant on the ChatMessage
+  // history first — the shared, single-source-of-truth repair the UI's
+  // "Repair history" button and every other provider also use (see #914) —
+  // so what the button detects and what the send repairs can't diverge. This
+  // is the ONLY repair on the send path: every toolCall becomes a tool_calls
+  // entry and every toolResult a `tool` message (kept contiguous below), so
+  // the conversion can't reintroduce a dangling or orphaned tool message.
+  const repaired = repairToolHistory(history).messages;
   const out: OpenAIMessage[] = [];
-  for (const msg of history) {
+  for (const msg of repaired) {
     if (msg.role === 'assistant') {
       const text = collectAssistantText(msg.blocks);
       const calls = msg.toolCalls ?? [];
@@ -729,13 +738,21 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
       }
       if (am.content || am.tool_calls) out.push(am);
     } else {
-      // Tool results come BEFORE any new user text per OpenAI's rules.
+      // Tool results come BEFORE any new user text per OpenAI's rules. Emit
+      // EVERY `tool` message contiguously first, THEN the image side-messages:
+      // OpenAI's `tool` role can't carry an image block, so a rendered result
+      // (renderView) surfaces its image on a following `user` message — but
+      // interleaving that message between the `tool` messages breaks
+      // tool_use/tool_result adjacency for a strict backend (an OpenAI-
+      // compatible gateway proxying to a provider that enforces it, e.g.
+      // Claude — the `toolu_`-prefixed-id case in #913/#914), which then 400s
+      // with "tool_use ids were found without tool_result blocks immediately
+      // after". Keeping the `tool` block contiguous avoids that.
+      const imageMsgs: OpenAIMessage[] = [];
       for (const r of msg.toolResults ?? []) {
         out.push({ role: 'tool', tool_call_id: r.toolUseId, content: r.content });
         if (r.image) {
-          // OpenAI's tool role doesn't accept image blocks directly, so we
-          // surface the image on a user message right after.
-          out.push({
+          imageMsgs.push({
             role: 'user',
             content: [
               { type: 'text', text: `(tool result image for ${r.toolUseId})` },
@@ -744,56 +761,12 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
           });
         }
       }
+      out.push(...imageMsgs);
       const content = buildChatUserContent(msg.blocks);
       if (content !== null) out.push({ role: 'user', content });
     }
   }
-  return sanitizeChatToolMessages(out);
-}
-
-/** OpenAI 400s if an assistant message carrying `tool_calls` isn't followed
- *  by a `tool` message for every tool_call_id before the next turn ("The
- *  following tool_call_ids did not have response messages"). A turn that
- *  ends right after the model emits tool calls — user Stop, stall watchdog,
- *  or the spend cap tripping before results are posted — leaves a dangling
- *  assistant message in history, so the next send fails.
- *
- *  Mirror anthropic.ts's `sanitizeToolUse`: inject a synthetic error result
- *  for any unanswered id. Keyed off the GLOBAL set of answered ids (not a
- *  positional scan) so an image tool-result — which surfaces the image on a
- *  `user` message wedged between `tool` messages — doesn't read as a gap. */
-function sanitizeChatToolMessages(messages: OpenAIMessage[]): OpenAIMessage[] {
-  // Mirror the tool_calls repair the other way: drop any `tool` message whose
-  // tool_call_id has no assistant tool_calls entry (e.g. compaction dropped the
-  // call). OpenAI 400s on a tool message that responds to a call it can't see.
-  const calls = new Set<string>();
-  for (const m of messages) {
-    if (m.role === 'assistant' && m.tool_calls) for (const tc of m.tool_calls) calls.add(tc.id);
-  }
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'tool' && m.tool_call_id && !calls.has(m.tool_call_id)) messages.splice(i, 1);
-  }
-
-  const answered = new Set<string>();
-  for (const m of messages) {
-    if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id);
-  }
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (m.role !== 'assistant' || !m.tool_calls || m.tool_calls.length === 0) continue;
-    const missing = m.tool_calls.filter(tc => !answered.has(tc.id));
-    if (missing.length === 0) continue;
-    const synthetic: OpenAIMessage[] = missing.map(tc => ({
-      role: 'tool',
-      tool_call_id: tc.id,
-      content: 'Tool call was interrupted and did not complete.',
-    }));
-    messages.splice(i + 1, 0, ...synthetic);
-    for (const s of synthetic) if (s.tool_call_id) answered.add(s.tool_call_id);
-    i += synthetic.length;
-  }
-  return messages;
+  return out;
 }
 
 function buildChatUserContent(blocks: ChatBlock[]): OpenAIMessage['content'] | null {

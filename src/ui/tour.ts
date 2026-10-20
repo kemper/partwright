@@ -16,10 +16,10 @@ interface TourStep {
 
 const STEPS: TourStep[] = [
   {
-    target: '#editor-container',
-    title: 'Code Editor',
+    target: '#code-pane',
+    title: 'Model Code',
     description:
-      'Write code to create 3D geometry using primitives, booleans, and transforms. Partwright speaks four modeling languages, plus signed-distance fields (api.sdf) and customizer parameters (api.params) you can tune from a panel. When an AI agent is driving, it writes and updates code here automatically.',
+      'Every model is code — primitives, booleans, and transforms in one of four modeling languages, plus signed-distance fields (api.sdf) and customizer parameters (api.params). It starts as a compact code map: hover to peek at the code, click to open the full editor at that line (or press ⤢). When an AI agent is driving, it writes the code for you and the map highlights what changed.',
     placement: 'right',
   },
   {
@@ -76,9 +76,9 @@ const STEPS: TourStep[] = [
   },
   {
     target: '#parts-rail',
-    title: 'Multi-Part Sessions',
+    title: 'Multi-Object Sessions',
     description:
-      'Hold several objects in one session — each part keeps its own code, versions, and preview. Select multiple parts to merge them into one or bulk-delete, and import external meshes as separate parts.',
+      'Hold several objects in one session — each object keeps its own code, versions, and preview. Expand the open object to see its labelled parts and separate pieces. Select multiple objects to merge them into one or bulk-delete, and import external meshes as separate objects.',
     placement: 'right',
   },
   {

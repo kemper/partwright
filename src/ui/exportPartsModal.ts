@@ -205,7 +205,7 @@ export function showExportPartsModal(
       const gcb = document.createElement('input');
       gcb.type = 'checkbox';
       gcb.className = 'w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
-      gcb.setAttribute('aria-label', `Select all parts in ${node.name}`);
+      gcb.setAttribute('aria-label', `Select all objects in ${node.name}`);
 
       const folder = document.createElement('span');
       folder.className = 'text-xs leading-none';
@@ -318,11 +318,11 @@ export function showExportPartsModal(
       // The "group per plate" option only appears when the session actually has
       // groups (else it's a no-op that behaves like "separate").
       const layoutOpts: { value: BambuPlateLayout; label: string; hint: string }[] = [
-        { value: 'separate', label: 'Separate plates', hint: 'One part per build plate.' },
-        { value: 'grid', label: 'Packed together', hint: 'All parts packed to fit the plate, spilling onto more plates as needed.' },
+        { value: 'separate', label: 'Separate plates', hint: 'One object per build plate.' },
+        { value: 'grid', label: 'Packed together', hint: 'All objects packed to fit the plate, spilling onto more plates as needed.' },
       ];
       if (hasGroups) {
-        layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group packed onto its own plate(s); ungrouped parts print separately.' });
+        layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group packed onto its own plate(s); ungrouped objects print separately.' });
       }
       mkRadioGroup('bambu-plate-layout', 'Plate layout', plateLayout, layoutOpts, v => { plateLayout = v; }, true);
     }
@@ -354,8 +354,8 @@ export function showExportPartsModal(
 
     function sync() {
       const n = selectedIds().length;
-      heading.textContent = `Parts (${n} of ${parts.length} selected)`;
-      exportBtn.textContent = n > 1 ? `Export ${n} parts` : 'Export';
+      heading.textContent = `Objects (${n} of ${parts.length} selected)`;
+      exportBtn.textContent = n > 1 ? `Export ${n} objects` : 'Export';
       exportBtn.disabled = n === 0;
       exportBtn.classList.toggle('opacity-40', n === 0);
       exportBtn.classList.toggle('cursor-default', n === 0);

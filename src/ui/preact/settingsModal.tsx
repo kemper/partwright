@@ -25,15 +25,21 @@ import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from '../ai
 import { renderLocalPicker } from '../aiLocalModal';
 import { confirmDialog } from '../dialogs';
 import { showSystemPromptModal } from '../aiSystemPromptModal';
+import { showReviewPromptModal } from '../aiReviewPromptModal';
 import {
   loadSettings,
   setAutoCompactMode,
+  setAutoReview,
+  setToggles,
+  AUTO_REVIEW_MAX_FIX_ROUNDS,
+  type AutoReviewSettings,
   setLocalContext,
   setProvider,
   setAnthropicModel,
   setOpenaiModel,
   setGeminiModel,
   setCustomModel,
+  setCustomReasoningEffort,
   setCustomModels,
   setCustomBaseUrl,
   DEFAULT_CUSTOM_BASE_URL,
@@ -49,7 +55,7 @@ import type { AnthropicModelId, Provider } from '../../ai/types';
 
 import { settingsSignal, setSettings, resyncSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton, TabBar, type TabSpec } from './primitives';
-import { CliBridgeSetup, generateApiKey } from './cliBridgeSetup';
+import { CliBridgeSetup, generateApiKey, isGeneratedApiKey } from './cliBridgeSetup';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -112,6 +118,8 @@ export function SettingsModalBody(props: {
       <ApiTimeoutSection cb={cb} />
       <Divider />
       <AutoCompactSection cb={cb} />
+      <Divider />
+      <AutoReviewSection cb={cb} close={close} />
     </>
   );
 }
@@ -583,11 +591,15 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   const url = useSignal(settings.toggles.customBaseUrl || DEFAULT_CUSTOM_BASE_URL);
   const model = useSignal(settings.toggles.customModel);
   const keyVal = useSignal('');
-  // One example key per modal open — shown in the bridge setup's "set an API
-  // key" command and reusable via the "Use this key" button below, so the value
-  // the proxy is configured with matches the one Partwright sends.
+  // The key the bridge setup's "set an API key" command writes — reusable via
+  // the "Use the bridge key" button below, so the value the proxy is configured
+  // with matches the one Partwright sends. A fresh one per modal open until a
+  // generated key is saved; from then on it's the saved key, so re-running the
+  // command re-syncs a bridge whose config drifted instead of minting another.
   const genKey = useSignal(generateApiKey());
   const hasKey = useSignal<boolean | null>(null);
+  const storedKey = useSignal('');
+  const showStoredKey = useSignal(false);
   // Seed from the last fetched list (persisted) so reopening the modal shows
   // the endpoint's models without a re-fetch — and so the AI panel dropdown
   // and these pills stay in sync.
@@ -600,7 +612,14 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
-    void getKey('custom').then(k => { if (!cancelled) hasKey.value = !!k; });
+    void getKey('custom').then(k => {
+      if (cancelled) return;
+      hasKey.value = !!k;
+      storedKey.value = k?.apiKey ?? '';
+      // Only our own generated keys: they're safe to drop into the shell
+      // one-liner and match its KEY_PATTERN. A pasted key stays out of step 2.
+      if (k?.apiKey && isGeneratedApiKey(k.apiKey)) genKey.value = k.apiKey;
+    });
     return () => { cancelled = true; };
   }, [keyVersion.value]);
 
@@ -681,6 +700,9 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   }
 
   async function removeKey(): Promise<void> {
+    // genKey keeps the removed key on purpose: the bridge config still holds
+    // it, so "Use the bridge key" can restore it.
+    showStoredKey.value = false;
     await deleteKey('custom');
     bumpKeyVersion();
     cb.onChange();
@@ -747,11 +769,35 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
         <span class="text-[10px] text-zinc-500">Use <strong>Fetch models</strong> above to list what the endpoint serves, or type the id directly.</span>
       </Section>
       <Divider />
+      <Section label="Reasoning">
+        <label class="flex items-start gap-2 text-xs text-zinc-300">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            data-testid="custom-reasoning-effort"
+            checked={settings.toggles.customReasoningEffort}
+            onChange={e => {
+              setSettings(setCustomReasoningEffort(loadSettings(), (e.currentTarget as HTMLInputElement).checked));
+              cb.onChange();
+            }}
+          />
+          <span dangerouslySetInnerHTML={{ __html: '<strong class="text-zinc-200">Send the Thinking level as <code>reasoning_effort</code>.</strong> <span class="text-zinc-400">Lets the 🧠 pill set reasoning depth through the endpoint — Low → Max are sent as-is (Off and Default send nothing). Made for CLIProxyAPI, which maps each level to the model it routes to. Servers that only accept low / medium / high may reject XHigh or Max, and Ollama rejects the field on models that don’t think. Either way, any level above Off asks the endpoint to stream the model’s reasoning.</span>' }} />
+        </label>
+      </Section>
+      <Divider />
       <Section label="API key (optional)">
         {hasKey.value === true ? (
           <div class="flex items-center justify-between gap-2">
-            <span class="text-[11px] text-emerald-300">A key is stored for this endpoint.</span>
-            <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
+            <span class="text-[11px] text-emerald-300 min-w-0">
+              A key is stored for this endpoint
+              {showStoredKey.value
+                ? <>: <code class="font-mono text-zinc-200 break-all">{storedKey.value}</code></>
+                : '.'}
+            </span>
+            <div class="flex items-center gap-3 shrink-0">
+              <button type="button" class="text-[11px] text-zinc-300 hover:text-zinc-100 underline" onClick={() => { showStoredKey.value = !showStoredKey.value; }}>{showStoredKey.value ? 'Hide' : 'Show'}</button>
+              <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
+            </div>
           </div>
         ) : (
           <div class="flex flex-col gap-1.5">
@@ -963,6 +1009,104 @@ function AutoCompactSection(props: { cb: AiSettingsCallbacks }) {
         ))}
       </div>
       <div class="text-[11px] text-zinc-500 leading-snug">{activeHint}</div>
+    </Section>
+  );
+}
+
+// === Automatic review ===
+
+const REVIEWER_PROVIDERS: AutoReviewSettings['provider'][] = ['same', 'anthropic', 'openai', 'gemini', 'custom'];
+
+function reviewerModelOptions(p: AutoReviewSettings['provider']): { id: string; label: string }[] {
+  if (p === 'anthropic') return ANTHROPIC_MODEL_OPTIONS;
+  if (p === 'openai') return OPENAI_MODEL_OPTIONS;
+  if (p === 'gemini') return GEMINI_MODEL_OPTIONS;
+  if (p === 'custom') {
+    const t = loadSettings().toggles;
+    const ids = t.customModels.length > 0 ? t.customModels : (t.customModel ? [t.customModel] : []);
+    return ids.map(id => ({ id, label: id }));
+  }
+  return [];
+}
+
+function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }) {
+  const { cb, close } = props;
+  const review = settingsSignal.value.autoReview;
+  // On/off is per window (a toggle, like the panel's 🔍 pill); the reviewer
+  // and fix rounds below are shared preferences.
+  const enabled = settingsSignal.value.toggles.autoReview;
+  const setEnabled = (on: boolean) => { setSettings(setToggles(loadSettings(), { autoReview: on })); cb.onChange(); };
+  const update = (partial: Partial<AutoReviewSettings>) => { setSettings(setAutoReview(loadSettings(), partial)); cb.onChange(); };
+  const options = reviewerModelOptions(review.provider);
+  const roundLabels = ['Post only', '1 fix round', '2 fix rounds', '3 fix rounds'].slice(0, AUTO_REVIEW_MAX_FIX_ROUNDS + 1);
+
+  return (
+    <Section label="Automatic review">
+      <div
+        class="text-[11px] text-zinc-400 leading-snug"
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
+      />
+      <div class="flex flex-wrap gap-1">
+        <Pill active={!enabled} label="Off" onClick={() => setEnabled(false)} />
+        <Pill active={enabled} label="On" onClick={() => setEnabled(true)} />
+      </div>
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">Reviewer</span>
+        <div class="flex items-center gap-2">
+          <select
+            class="px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100 focus:outline-none focus:border-blue-500"
+            data-testid="auto-review-provider"
+            value={review.provider}
+            onChange={e => {
+              const next = (e.currentTarget as HTMLSelectElement).value as AutoReviewSettings['provider'];
+              update({ provider: next, model: next === 'same' ? '' : (reviewerModelOptions(next)[0]?.id ?? '') });
+            }}
+          >
+            {REVIEWER_PROVIDERS.map(p => (
+              <option key={p} value={p}>{p === 'same' ? 'Same model as the chat' : providerLabel(p)}</option>
+            ))}
+          </select>
+          {review.provider !== 'same' && (
+            <select
+              class="flex-1 px-2 py-1 rounded text-xs bg-zinc-900 border border-zinc-600 text-zinc-100 focus:outline-none focus:border-blue-500"
+              data-testid="auto-review-model"
+              value={review.model}
+              onChange={e => update({ model: (e.currentTarget as HTMLSelectElement).value })}
+            >
+              {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              {review.model && !options.some(o => o.id === review.model) && (
+                <option value={review.model}>{review.model} (custom)</option>
+              )}
+            </select>
+          )}
+        </div>
+        <span class="text-[10px] text-zinc-500">A different model gives a genuine second opinion; the same model still helps, because it reviews without its own reasoning in view.</span>
+      </label>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">When the review finds problems</span>
+        <div class="flex flex-wrap gap-1">
+          {roundLabels.map((label, n) => (
+            <Pill key={n} active={review.fixRounds === n} label={label} onClick={() => update({ fixRounds: n })} />
+          ))}
+        </div>
+        <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The $ cap stops further rounds; the iteration cap applies to each round.</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">Review prompt</span>
+        <span class="text-[11px] text-zinc-400 leading-snug">
+          {settingsSignal.value.reviewPromptOverride !== null
+            ? <><strong>Custom prompt active</strong> — your instructions are sent to the reviewer instead of the built-in rubric (also used by the 👁 Review button).</>
+            : <><strong>Built-in</strong> — checks requested features, dimensions, structure and printability, and reports only objective defects with evidence and a concrete fix; style ideas are optional notes, so work that meets the request passes. Also used by the 👁 Review button.</>}
+        </span>
+        <SecondaryButton
+          label={settingsSignal.value.reviewPromptOverride !== null ? 'Edit / reset review prompt' : 'View / edit review prompt'}
+          selfStart={true}
+          onClick={() => {
+            close();
+            showReviewPromptModal({ onChange: cb.onChange });
+          }}
+        />
+      </div>
     </Section>
   );
 }

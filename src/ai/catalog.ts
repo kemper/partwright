@@ -49,6 +49,15 @@ interface RawModalities {
   output: string[];
 }
 
+/** One way a model accepts a reasoning control, as models.dev records it —
+ *  e.g. `{ type: 'effort', values: ['low', …] }` or `{ type: 'budget_tokens',
+ *  min: 1024 }`. Unknown `type`s are carried through and ignored. */
+interface RawReasoningOption {
+  type: string;
+  values?: string[];
+  min?: number;
+}
+
 interface RawModel {
   id?: string;
   name: string;
@@ -58,6 +67,7 @@ interface RawModel {
   knowledge?: string;
   attachment: boolean;
   reasoning: boolean;
+  reasoning_options?: RawReasoningOption[];
   tool_call: boolean;
   structured_output?: boolean;
   temperature?: boolean;
@@ -126,6 +136,13 @@ export interface CatalogCapabilities {
   structuredOutput: boolean;
   /** Input modalities the model accepts ('text' | 'image' | 'audio' | 'video' | 'pdf'). */
   modalitiesIn: string[];
+  /** Effort levels the model accepts (e.g. ['low','medium','high','max']),
+   *  or null when the snapshot records no effort control. */
+  effortLevels: string[] | null;
+  /** True when the model accepts a fixed thinking token budget
+   *  (Anthropic `thinking: {type:'enabled', budget_tokens}`). Newer Claude
+   *  models drop this and 400 on it — see anthropicThinking.ts. */
+  budgetTokens: boolean;
 }
 
 export interface CatalogLimits {
@@ -187,12 +204,16 @@ function toPricing(cost: RawCost | undefined): CatalogPricing | undefined {
 }
 
 function toCapabilities(m: RawModel): CatalogCapabilities {
+  const opts = Array.isArray(m.reasoning_options) ? m.reasoning_options : [];
+  const effort = opts.find((o) => o.type === 'effort');
   return {
     reasoning: m.reasoning,
     toolCall: m.tool_call,
     attachment: m.attachment,
     structuredOutput: m.structured_output === true,
     modalitiesIn: m.modalities.input,
+    effortLevels: effort && Array.isArray(effort.values) ? effort.values : null,
+    budgetTokens: opts.some((o) => o.type === 'budget_tokens'),
   };
 }
 

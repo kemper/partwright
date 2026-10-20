@@ -15,6 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
+npm run pr:screenshots -- a.png b.png  # push screenshots to the pr-assets branch + print PR-body links (cloud sessions) — see Visual proof in the PR
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -35,7 +36,7 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 
 1. Feature PRs merge into **`main`** (the integration branch). Cloudflare deploys the main preview immediately on push — that preview is intentionally *pre-test*, so it can be broken.
 2. On every push to main, the **`Gate main → staging`** GitHub Action (`.github/workflows/staging-gate.yml`) runs `npm run build`, `npm run test:unit`, and `npm run test:e2e`. **Only if all pass** does it fast-forward `staging` to that commit, which Cloudflare then deploys to the staging preview. A red gate leaves `staging` parked on the last known-good commit.
-3. **Release is manual:** once you've validated the staging preview, open a PR from **`staging` → `production`** and merge it. Cloudflare deploys `production` to `www.partwrightstudio.com`. The release PR must be a **pure promotion** — it carries only commits already on `main` (see the superset rule below); any changelog/release-note edits go through `main` *first*, never onto the release branch.
+3. **Release: run `/release`** (`.claude/skills/release/SKILL.md`). It bumps `package.json` and adds the What's New entry through a PR into `main`, waits for the gate to advance `staging`, opens and merges the `staging` → `production` promotion PR, and verifies the live deploy and the `vX.Y.Z` tag. Cloudflare deploys `production` to `www.partwrightstudio.com`. The promotion PR is a **pure promotion**: it carries only commits already on `main` (see the superset rule below). The skill also covers the pipeline's agent traps: the bot-held promotion guard, the known CodeQL sandbox alerts, bypass-merge authorization, and rollback.
 
 > **Feature work now targets `main`, not `staging`.** `staging` is written only by the gate Action — never push to it or open a PR into it directly. `production` is written only by the manual release PR.
 
@@ -52,9 +53,9 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. **Any visual change must also carry that screenshot in the PR body** — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change). (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
 3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
-4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 3 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
+4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 8 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
 
@@ -132,11 +133,20 @@ npx playwright test --headed   # watch the browser run (local only)
 node environment). This tier is **only for dependency-free, pure-logic
 modules** — e.g. `src/ai/patch.ts`. It never boots a browser, dev server, or
 WASM, so it's the right home for any helper that can be imported and called in
-isolation. If a module needs browser APIs (`fetch` stubbing, IndexedDB, the
-real DOM), it does **not** belong here — keep it in the e2e tier as a
-`page.evaluate(() => import('/src/...'))` test (see `tests/ai-providers.spec.ts`,
-which exercises the provider request builders, SSE reader, and system-prompt
-assembly in a real browser).
+isolation. Node 22 ships native `fetch`/`Response`/`Blob`/`ReadableStream`/
+`TextEncoder`/`navigator`, so **`fetch`-stubbing tests belong here too** — see
+`tests/unit/aiGemini.test.ts`, `aiOpenai.test.ts`, `aiAnthropic.test.ts`,
+`aiCustom.test.ts`, and `aiToolHistoryParity.test.ts`, which drive the AI
+provider request builders and SSE parsing with `vi.stubGlobal('fetch', ...)`
+(`localStorage`-backed singletons like `src/ai/settings.ts` also work here —
+they wrap `localStorage` access in try/catch and fall back to defaults when
+it's absent). If a module needs **IndexedDB** or the real DOM, it does
+**not** belong here — keep it in the e2e tier as a
+`page.evaluate(() => import('/src/...'))` test. `tests/ai-autoresume.spec.ts`
+and `tests/ai-transient-retry.spec.ts` are the canonical example: they drive
+`chatLoop.runTurn`, which persists messages via IndexedDB (unavailable in
+plain Node), so they stay in Playwright even though the request-building logic
+they exercise is otherwise pure.
 
 ### E2E tier (Playwright)
 
@@ -154,10 +164,17 @@ suite runs **serially on any single machine** (`playwright.config.ts` pins
 produces 30s timeout flakes — verified empirically, so don't raise `workers`
 without re-checking flake rates. Parallelism comes from **sharding across CI
 jobs** instead: both `pr-checks.yml` (pre-merge) and `staging-gate.yml`
-(post-merge) run `npx playwright test --shard=i/3` in a 3-way matrix, so
-every shard is itself serial and contention-free while wall-clock time
-drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
-tier's `.test.ts` files stay out of the Playwright run.
+(post-merge) run an 8-way matrix with `E2E_SHARD=i/8`, so every shard is
+itself serial and contention-free. Shards are **time-balanced, not
+count-balanced**: `playwright.config.ts` narrows `testMatch` to the spec files
+`scripts/lib/e2eShard.mjs` assigns to shard *i* (greedy LPT over the per-file
+seconds in `tests/e2e-timings.json`; unknown/new files get the median weight).
+Playwright's own `--shard` splits by test *count*, which left one shard twice
+as slow as another. Reproduce one CI shard locally with
+`E2E_SHARD=3/8 npx playwright test`. Stale timings only cost balance, never
+coverage — refresh them occasionally from a green staging-gate run's
+`e2e-report-*` artifacts: `node scripts/e2e-timings.mjs <reports…>`. Unsharded, `testMatch` is pinned to
+`**/*.spec.ts` so the unit tier's `.test.ts` files stay out of the Playwright run.
 
 See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection and Playwright agent gotchas.
 
@@ -186,8 +203,37 @@ The pattern:
 
 4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
 5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+6. **Attach the same proof to the PR** when the change is visual — chat is ephemeral and the reviewer may never see it. See the next section.
 
 This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
+
+### Visual proof in the PR — required for any visual change
+
+**Every PR that changes what a user sees must embed screenshots in its PR body, in addition to posting them in the chat.** "Visual" means anything that alters rendered pixels or visible UI: layout, styling, new/changed panels, modals, buttons, labels or copy, viewport/renderer output, catalog thumbnails or models, theme changes. The PR is the durable record a reviewer (or a later agent) reads; a screenshot that only lived in the chat is lost when the session ends. Pure-logic, test-only, and docs-only changes are exempt.
+
+What to capture:
+
+- **New feature** → the feature in its key state(s) (e.g. opened panel, result rendered).
+- **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
+- **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
+
+How to attach — pick the first that works:
+
+- **`gh --attach` (preferred; gh ≥ 2.99).** `gh pr comment <n> --attach 'shot.png#alt text'` (also on `gh pr create` / `gh pr edit` for the body) uploads the image to GitHub and inlines it. Put the shots in a `## Visual proof` comment or the body. **This does not work in cloud Claude Code sessions** — gh resolves the PR over GraphQL, which the session proxy blocks (HTTP 403) — so there use:
+- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Pushes the images to the shared, never-merged **`pr-assets`** branch (one folder per PR branch) using git plumbing — your checkout, index and branch are untouched, so `main`'s history never gets screenshot commits, squash or not — and prints Markdown links pinned to that commit's SHA. Paste them into the PR body's `## Visual proof` section (`update_pull_request`). Never merge, rebase or delete `pr-assets`; old PR links depend on its commits.
+
+Lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
+
+```md
+## Visual proof
+| Before (main) | After (this PR) |
+|---|---|
+| ![before](…) | ![after](…) |
+```
+
+Re-shoot when a later push changes the visuals — the proof must match the current head. "Visual proof is in the PR" is part of the mark-ready gate.
+
+(kemper/partwright#1021 used an earlier variant that committed screenshots onto the PR branch itself; prefer the helper.)
 
 **Scope by change type:**
 
@@ -361,6 +407,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
+- `src/segmentation/` — **part detection** on imported meshes (#1025): a detector registry (`registry.ts`; `pieces`, seeded `crease-watershed` in `detectors.ts` + `growth.ts`, seedless `auto-merge` "Auto patches" in `autoPatches.ts`; each detector may list `presets` for the panel's ranked filmstrip / `previewPartPresets`) over a shared per-mesh feature cache (`features.ts`: edge-pair adjacency, concave-crease strength, optional normal smoothing), an editable/scored draft (`draft.ts` — parts own their pins (auto pins per region; rename/merge carry them; pin edits re-grow only nearby parts; `reassign` triangles are fixed), quality metrics, neighbour-aware overlay colours, edit ops incl. lock/focus/reorder/clear, undo; re-detection merges into it under an allow-mask), smooth sub-triangle part edges (`smoothEdges.ts` — membership diffusion + watertight edge cut, drawn on the overlay and cut into the import on accept), a stateful Worker (`segmentationWorker.ts` + `segmentationClient.ts`), and the main-thread controller (`partDetection.ts`) that BOTH the Part Detection panel (`src/ui/partDetectionPanel.ts` — Start/Refine/Accept, Select/Pin/Fix tools, shared selection + solo view, hover-to-find; pin markers in `seedMarkers.ts`) and the `detectParts`/`editParts`/`renderParts`/`acceptParts` API + AI tools call. Accepted parts persist on `ImportedMesh.parts` (schema 1.20) and become real labels via the sandbox's `api.importWithParts(i)` (reserved `runOriginalID` runs — `src/import/importParts.ts`). Region clean-up ops shared with paint live in `src/geometry/triSetOps.ts`. Add a detector = one registry entry; its ParamSpecs drive the panel, API validation, AI schema and CLI. Score it with `npm run segment:bench` (labelled examples as ground truth, clean + jittered). Headless: `partwright segment`. Docs: `public/ai/segmentation.md`. Tests: `tests/unit/segmentation.test.ts`, `triSetOps.test.ts`, `importParts.test.ts`; e2e `tests/part-detection.spec.ts`.
 - `src/reconstruct/` — mesh→code reconstruction: pure kernel ported from `scripts/inverse-cad/` (`slice2d.ts` Z-slicing + Douglas-Peucker, `sampleMesh.ts` sampling + k-d tree, `meshDistance.ts` chamfer/hausdorff, `meshComponents.ts` weld/split, `sectionCode.ts` section→levelSet codegen) running in `reconstructWorker.ts`. Powers `partwright.convertToCode()` / `evalAgainstImport()`, the "Convert model to code" palette command + Tools-popover panel (`src/ui/convertToCodeModal.ts` — quality presets + step/edge/dpTol threshold controls; also offered automatically after an interactive STL import), the AI tools of the same names, and the `/reconstruct` chat command (`src/ai/reconstructPrompt.ts`, subdoc `public/ai/reconstruction.md`). Unit tests: `tests/unit/reconstruct.test.ts`; e2e: `tests/reconstruct.spec.ts`.
 - `src/surface/modifiers.ts` — Surface modifier pipeline (`SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize'`): `applyFuzzy` (noise-displaced skin), the fabric-texture family `applyKnit` / `applyCable` / `applyWaffle` / `applyFur` / `applyWoven` (stockinette knit, cable knit, waffle stitch, fur/velvet, woven fabric — displaced along normals over a UV unwrap, with WebGPU compute where available), `applyVoronoi` (Voronoi cell relief), `applyVoronoiLamp` (perforated SDF lamp shell), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize — `scaleModel` also has a parametric `mode` that wraps the source in `.scale(...)` via the `placement.ts` transform chain, like place/rotate). Knurl takes a `profile` knob (`'round'` cosine bumps vs `'pyramid'` straight-sided machinist diamonds). Most modifiers also have an `apply*Patch` variant that textures only a selected triangle set. **The engrave/emboss SDF carve runs off the main thread** in `engraveWorker.ts` (via `engraveWorkerClient.ts` → `engraveInWorker`); `applyEngrave`'s assembly half is split into `buildEngraveResult` so the heavy `engraveMesh` sweep can run in the Worker while the cheap paint-transfer/version-code stays main-side (terminate-on-cancel, progress messages drive the inline "Rendering… Xs"). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `knitTexture.ts`, `knitTextureGPU.ts`, `cableKnit.ts`, `waffleStitch.ts`, `furVelvet.ts`, `wovenFabric.ts`, `knurlTexture.ts`, `voronoiShell.ts`, `voronoiLattice.ts`, `voronoiLampSdf.ts` (over the `sdfModifier.ts` scaffolding), `engraveSdf.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`, plus the UV layers `uvParameterize.ts`, `uvUnwrap.ts`, and `placement.ts` (region placement). Unit tests: `tests/unit/surface.test.ts`.
 - `src/surface/surfaceOps.ts` + `surfaceOpSpec.ts` — the **in-code** (non-baking) surface-texture path: manifold-js model code declares textures via `api.surface.*` (`fuzzy`/`knit`/`cable`/`waffle`/`fur`/`woven`/`knurl`/`voronoi`/`smooth` — the mesh-producing subset; `voxelize`/`voronoiLamp` change engines so they stay bake-only). The Worker records the validated op chain (`surfaceOpSpec.ts` is the dependency-free shared spec — its option allow-lists are effectively **append-only** once user code persists them, since unknown keys throw), `surfaceOps.ts` applies it in the dedicated **surface Worker** (`surfaceWorker.ts` + the pure kernel `applyChain.ts` — the modifier math is Worker-clean, WebGPU included), memoized per chain prefix on the **base mesh content** (`meshContentKey`), so whitespace/comment/refactor edits that don't change geometry hit the cache instantly and never drop the textures. **Every run applies the chain** — explicit and live-typing alike — behind an inline "Applying texture… Xs" status + the shared Cancel button (the "Rendering… Xs" pattern); Cancel (terminate+respawn, the only true interrupt for synchronous math) parks the chain behind the sticky "⟳ Re-apply" pill, and `ensureSurfaceTexturesApplied()` (which the Surface panel awaits before previews) recovers it. Computed textures **persist on saved versions** (`Version.surfaceTexture` = full-chain memo key + textured mesh, export schema 1.14): a version load seeds the memo cache so a reopened session renders textured instantly with no recompute, pinning the texture's appearance at save time — a stale key just recomputes (never renders the wrong texture). The **Surface panel writes this path too**: in a manifold-js session with whole-model mode, Apply becomes "Apply as code" and upserts the `api.surface.<id>({…})` call via `src/surface/surfaceCodegen.ts` + `partwright.applySurfaceTextureAsCode` (region/patch flood-fill applies, voxelize/voronoiLamp, and SCAD/BREP sessions keep the bake path). **Ops can be scoped** to part of the model with a `label` (an `api.label` region) or `region: {point, radius}` key — `parseSurfaceOpts` (in `surfaceOpSpec.ts`) is the single validator shared by the Worker recorder and the console twin; the main thread resolves the scope to seed points + a catch radius (`resolveSurfaceScopes` in `main.ts`), and the surface Worker selects triangles near the seeds (`selectTrianglesNearSeeds` in `colorTransfer.ts`) then runs the existing `apply*Patch` path. The panel's whole-model **Scope** picker (label dropdown / "Near point" click) writes these. `api.label`/`byLabel` colors carry through any texture via `remapTriangleSets` (the nearest-centroid map the bake path also uses). The sibling `api.paint.*` (recorded in `engines/manifoldJs.ts`, resolved into the model-color underlay in `src/color/regions.ts`) declares paint in code the same way. Unit tests: `tests/unit/surfaceOps.test.ts`, `tests/unit/surfaceCodegen.test.ts`; e2e: `tests/surface-in-code.spec.ts`, `tests/surface-panel-as-code.spec.ts`, `tests/paint-in-code.spec.ts`.
@@ -399,6 +446,12 @@ Each loader is idempotent and caches the resolved module. Vite splits each one i
 - **Right-handed, Z-up.** The XY plane is the ground, Z points up.
 - Units are arbitrary (no physical unit assumed). Use consistent scale.
 
+## Vocabulary — objects, parts, pieces
+
+- **Object** — a row in the left-rail **Objects** list: its own code + version history (one 3MF object on export). The UI/API call it an object (`listObjects`, `createObject`, …); the **storage layer still calls it `Part`** (`parts` IndexedDB store, `Version.partId`, the exported `parts` array, `?part=` URL param, `src/ui/partList.ts`, `#btn-add-part`). Those persisted names are deliberately unchanged — don't rename them without a schema migration. The pre-rename `*Part*` console methods / AI tool names survive as deprecated aliases.
+- **Part** — a named region *inside* one object, declared with `api.label(shape, name)` (SCAD `label()`, `BREP.label`). Tracked by manifold-3d provenance, so it survives unions/cuts. Listed under the open object in the rail (`listObjectParts()`); arrange-mode inserts are auto-labelled. Arrange mode's `listArrangeParts`/`selectParts` and `labeledUnion(parts)` already use "part" in this sense — keep them.
+- **Piece** — a connected component (a physically separate solid; `componentCount`). `src/geometry/meshPieces.ts`.
+
 ## Development Guidelines
 
 ### Planning Files
@@ -422,6 +475,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `?notes` — Notes tab
 - `?session=<id>` — Active session
 - `?session=<id>&v=3` — Specific version
+- `?part=<id>` — Active object (storage name; see [Vocabulary](#vocabulary--objects-parts-pieces))
 
 Any `/editor` URL bypasses the landing page entirely. Tab switching is handled in `src/ui/layout.ts` (`switchTab`). Session/version state is handled in `src/storage/sessionManager.ts` (`updateURL`). Page-level routing is in `src/main.ts`.
 
@@ -548,12 +602,12 @@ This is boundary hygiene, not bureaucracy: the test is "could the next session p
 
 This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
 
-- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
-- **`/retro-review`** (`.claude/skills/retro-review.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro/SKILL.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
+- **`/retro-review`** (`.claude/skills/retro-review/SKILL.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
 
 ### Prompt Logs
 
-Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
+Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog/SKILL.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
 
 > **Stage the prompt log in its own step, before a compound commit command.** The guard has tripped multiple sessions by appearing to fire "too early": a chained `git add -A && git commit -m ...` gets denied before the `add` half ever stages the log, which reads as the guard being wrong about sequencing rather than about missing content. Run `git add <files> prompts/<log>.md` as its own call, then commit separately.
 
@@ -639,13 +693,13 @@ Guardrails for automated work, learned the hard way:
 
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
-1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
-2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
+1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 8 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works. For a visual change, also confirm the PR body carries the same screenshots — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change).
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
 5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
 6. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
-7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green and the review pass is clean: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
+7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green, the review pass is clean, and (for a visual change) the PR body's `## Visual proof` matches the current head: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
 
 ## Common Errors
 

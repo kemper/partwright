@@ -2,7 +2,9 @@ import { getMobilePane, onMobilePaneChange, setMobilePane, type MobilePane } fro
 import { appPath } from '../deployment';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
-import { loadSettings, saveSettings } from '../ai/settings';
+import { loadSettings, saveSettings, type CodeViewMode } from '../ai/settings';
+import { createCodeMinimap } from '../editor/codeMinimap';
+import { revealEditorLine } from '../editor/codeEditor';
 import { createPopoverGroup, createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
 import { getConfig } from '../config/appConfig';
@@ -40,8 +42,15 @@ export interface LayoutElements {
   togglePartsRail: () => void;
   /** Collapse the code editor pane (used by focus modes like Relief Studio). */
   collapseEditor: () => void;
-  /** Restore the code editor pane after a collapse. */
+  /** Restore the code pane to the mode it had before `collapseEditor()`. */
   expandEditor: () => void;
+  /** Switch the desktop code pane between the compact code map (`'mini'`),
+   *  the full editor (`'full'`) and hidden. `persist` remembers the choice
+   *  across reloads (user-initiated switches); `line` (1-based) reveals that
+   *  line when opening the full editor. */
+  setCodeView: (mode: CodeViewMode, opts?: { persist?: boolean; line?: number }) => void;
+  /** The current desktop code-pane mode. */
+  getCodeView: () => CodeViewMode;
 }
 
 export interface SwitchTabOptions {
@@ -72,6 +81,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // as one block. Width is only applied via inline style at md+; on mobile the
   // group uses flex sizing so it shares the vertical space with the viewport.
   const editorGroup = document.createElement('div');
+  editorGroup.id = 'code-pane';
   editorGroup.className = 'relative flex flex-row flex-1 md:flex-none min-h-0 border-b md:border-b-0 md:border-r border-zinc-700';
 
   // Parts rail — IDE-style list of the session's parts (create / select /
@@ -248,8 +258,19 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   statusRow.appendChild(statusBar);
   statusRow.appendChild(cancelInlineBtn);
 
+  const EDITOR_HEADER_BTN = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  // Shrink back to the compact code map — the default code-pane mode.
+  const minimizeEditorBtn = document.createElement('button');
+  minimizeEditorBtn.id = 'btn-code-minimize';
+  // Desktop-only: mobile's stacked Code pane always shows the full editor.
+  minimizeEditorBtn.className = `${EDITOR_HEADER_BTN} hidden md:block`;
+  minimizeEditorBtn.textContent = 'Minimize';
+  minimizeEditorBtn.title = 'Shrink the code pane to the compact code map';
+  editorHeader.appendChild(minimizeEditorBtn);
+
   const collapseEditorBtn = document.createElement('button');
-  collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  collapseEditorBtn.id = 'btn-code-hide';
+  collapseEditorBtn.className = `${EDITOR_HEADER_BTN} hidden md:block`;
   collapseEditorBtn.textContent = 'Hide code';
   collapseEditorBtn.title = 'Hide the code editor pane';
   editorHeader.appendChild(collapseEditorBtn);
@@ -294,7 +315,18 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const splitterStripe = document.createElement('div');
   splitterStripe.className = 'absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   splitter.appendChild(splitterStripe);
-  initSplitter(splitter, editorGroup);
+  initSplitter(splitter, editorGroup, {
+    // A drag supersedes any in-flight mini→full width animation, and the
+    // dragged width is what full mode returns to.
+    onDragStart: () => { cancelEditorSlide(); editorGroup.style.overflow = ''; },
+    onDragEnd: () => { if (editorGroup.style.width) lastFullWidth = editorGroup.style.width; },
+  });
+  // `md:flex` outranks `hidden` at desktop widths, so toggle both — toggling
+  // `hidden` alone left a live (draggable) strip beside a collapsed pane.
+  const setSplitterVisible = (visible: boolean): void => {
+    splitter.classList.toggle('hidden', !visible);
+    splitter.classList.toggle('md:flex', visible);
+  };
 
   // === Activity rail: labeled navigation spine ===
   // Replaces the old cryptic top tab strip. Vertical on desktop (a left rail),
@@ -514,8 +546,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Parts pane — gives the parts list its own full-width mobile view so it's
   // reachable from anywhere (the rail isn't a usable left column on a phone).
   const mobilePartsBtn = document.createElement('button');
-  mobilePartsBtn.textContent = 'Parts';
-  mobilePartsBtn.title = 'Show the parts list';
+  mobilePartsBtn.textContent = 'Objects';
+  mobilePartsBtn.title = 'Show the objects list';
   const mobileViewportBtn = document.createElement('button');
   mobileViewportBtn.textContent = 'Viewport';
   mobileViewportBtn.title = 'Show 3D viewport';
@@ -539,26 +571,36 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Tracks the most recently activated tab so breakpoint or mobile-pane
   // changes can recompose visibility without re-running tab DOM toggling.
   let _currentTab: TabName = 'interactive';
-  // Default the code pane closed when the AI drawer is opening too — two big
-  // surfaces fighting for the same screen on a first visit pushes the viewport
-  // into a sliver. The user's explicit Hide/Show choice (persisted below)
-  // takes precedence on every subsequent load.
+  // Desktop code-pane mode. Most model work is AI- or tool-driven, so the pane
+  // defaults to the compact code map ('mini') — the file's shape at a glance,
+  // with the full editor one click away. A legacy `editorCollapsed: true` (the
+  // old two-state Hide code) carries over as 'hidden'. Mobile ignores the mode:
+  // its Code pane always shows the full editor.
   const aiSettings = loadSettings();
-  let editorCollapsed = aiSettings.editorCollapsed ?? aiSettings.drawerOpen;
+  let codeView: CodeViewMode = aiSettings.codeView ?? (aiSettings.editorCollapsed === true ? 'hidden' : 'mini');
+  // The last visible mode — what the hidden pane's content stays on while it
+  // slides away, and what "Show code" brings back.
+  let lastShownView: Exclude<CodeViewMode, 'hidden'> = codeView === 'full' ? 'full' : 'mini';
+  // Full-editor width, kept across mode switches so a dragged splitter width
+  // survives a trip through the mini/hidden modes.
+  let lastFullWidth = '40%';
+  // Mode to restore after a programmatic collapseEditor() (Relief Studio).
+  let viewBeforeCollapse: CodeViewMode | null = null;
   const mqDesktop = window.matchMedia('(min-width: 768px)');
 
-  // Composes desktop/mobile pane visibility from the active tab and (on mobile)
-  // the persisted mobile pane choice. Also keeps the editor pane's inline
-  // width in sync with the breakpoint: only set at md+, cleared on mobile so
-  // flex sizing drives height.
-  // Expand button — floats at the left edge of rightPane when editor is collapsed.
+  // Expand button — floats at the left edge of rightPane when the code pane is hidden.
   const expandEditorBtn = document.createElement('button');
   // No md:flex here — visibility is controlled entirely via classList.add/remove('hidden')
   // so the toggle logic works correctly on all screen sizes.
   expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-2 py-1.5 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none whitespace-nowrap hidden';
   expandEditorBtn.textContent = '▶ Show code';
-  expandEditorBtn.title = 'Show the code editor pane';
+  expandEditorBtn.title = 'Show the code pane';
   rightPane.appendChild(expandEditorBtn);
+
+  const minimap = createCodeMinimap({
+    onOpenFull: (line) => setCodeView('full', { persist: true, line }),
+    onHide: () => setCodeView('hidden', { persist: true }),
+  });
 
   // Slide duration (ms) for the code pane, honoring reduced-motion (0 = instant).
   // Shares the same knob as the AI panel so both side panes feel consistent.
@@ -566,85 +608,113 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
     return getConfig().ui.paneSlideMs;
   }
-  // Pending "settle to the final width once the slide finishes" timer.
+  // Pending "settle to the final state once the slide finishes" timer.
   let editorSlideTimer: number | null = null;
+  function cancelEditorSlide(): void {
+    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
+    editorGroup.style.transition = '';
+    editorGroup.style.marginLeft = '';
+  }
+
+  function groupWidthFor(view: CodeViewMode): string {
+    if (view === 'hidden') return '0';
+    if (view === 'mini') return `${getConfig().ui.codeMinimapWidthPx}px`;
+    return lastFullWidth;
+  }
+
+  /** Snap the group to the current mode's resting width (no animation). */
+  function applyRestingWidth(): void {
+    editorGroup.style.width = groupWidthFor(codeView);
+    editorGroup.style.overflow = codeView === 'hidden' ? 'hidden' : '';
+  }
+
+  function setCodeView(next: CodeViewMode, opts: { persist?: boolean; line?: number } = {}): void {
+    if (opts.persist) {
+      saveSettings({ ...loadSettings(), codeView: next });
+      // An explicit user choice supersedes a pending programmatic restore.
+      viewBeforeCollapse = null;
+    }
+    const prev = codeView;
+    if (next !== prev) {
+      // Remember a dragged full-editor width before leaving full mode.
+      if (prev === 'full' && editorGroup.style.width && editorGroup.style.width !== '0') {
+        lastFullWidth = editorGroup.style.width;
+      }
+      codeView = next;
+      if (next !== 'hidden') lastShownView = next;
+      if (next !== 'mini') minimap.dismissPeek();
+      cancelEditorSlide();
+      const ms = paneSlideMs();
+      const animate = ms > 0 && mqDesktop.matches && !editorGroup.classList.contains('hidden');
+      if (!mqDesktop.matches) {
+        // Mobile stacks the panes; width is flex-driven. The resting width is
+        // applied when the breakpoint flips back (syncPaneVisibility).
+      } else if (!animate) {
+        applyRestingWidth();
+      } else if (next === 'hidden') {
+        // Slide the pane off the left edge: collapse its layout footprint via a
+        // negative margin (so the viewport grows into the gap) while it keeps its
+        // width, so the content doesn't reflow. `body` is overflow-hidden, so the
+        // off-screen pane is clipped. Settle to the canonical width:0 state after.
+        const w = editorGroup.getBoundingClientRect().width;
+        editorGroup.style.overflow = 'hidden';
+        editorGroup.style.transition = `margin-left ${ms}ms ease`;
+        editorGroup.style.marginLeft = `-${w}px`;
+        editorSlideTimer = window.setTimeout(() => {
+          cancelEditorSlide();
+          applyRestingWidth();
+        }, ms);
+      } else if (prev === 'hidden') {
+        // Start from the off-screen-left position without animating, then slide in.
+        applyRestingWidth();
+        syncPaneVisibility();
+        const w = editorGroup.getBoundingClientRect().width;
+        editorGroup.style.marginLeft = `-${w}px`;
+        void editorGroup.offsetWidth; // force reflow so the next change transitions
+        editorGroup.style.transition = `margin-left ${ms}ms ease`;
+        requestAnimationFrame(() => { editorGroup.style.marginLeft = ''; });
+        editorSlideTimer = window.setTimeout(cancelEditorSlide, ms);
+      } else {
+        // mini ↔ full: grow/shrink the width in place. Clip while it animates so
+        // the incoming content can't spill over the viewport mid-transition.
+        editorGroup.style.overflow = 'hidden';
+        editorGroup.style.transition = `width ${ms}ms ease`;
+        editorGroup.style.width = groupWidthFor(next);
+        editorSlideTimer = window.setTimeout(() => {
+          cancelEditorSlide();
+          applyRestingWidth();
+        }, ms);
+      }
+      syncPaneVisibility();
+      if (next === 'mini') minimap.refresh();
+      window.dispatchEvent(new Event('resize'));
+    }
+    if (next === 'full' && opts.line !== undefined) {
+      const line = opts.line;
+      // Wait a frame so CodeMirror has re-measured its newly visible box.
+      requestAnimationFrame(() => revealEditorLine(line));
+    }
+  }
 
   function collapseEditor(): void {
-    editorCollapsed = true;
-    expandEditorBtn.classList.remove('hidden');
-    splitter.classList.add('hidden');
-    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
-    const ms = paneSlideMs();
-    if (ms > 0 && mqDesktop.matches) {
-      // Slide the pane off the left edge: collapse its layout footprint via a
-      // negative margin (so the viewport grows into the gap) while it keeps its
-      // width, so the code doesn't reflow. `body` is overflow-hidden, so the
-      // off-screen pane is clipped. Settle to the canonical width:0 state after.
-      const w = editorGroup.getBoundingClientRect().width;
-      editorGroup.style.overflow = 'hidden';
-      editorGroup.style.transition = `margin-left ${ms}ms ease`;
-      editorGroup.style.marginLeft = `-${w}px`;
-      editorSlideTimer = window.setTimeout(() => {
-        editorGroup.style.transition = '';
-        editorGroup.style.marginLeft = '';
-        editorGroup.style.width = '0';
-        editorSlideTimer = null;
-      }, ms);
-    } else {
-      editorGroup.style.width = '0';
-      editorGroup.style.overflow = 'hidden';
-    }
-    window.dispatchEvent(new Event('resize'));
+    if (codeView === 'hidden') return;
+    viewBeforeCollapse = codeView;
+    setCodeView('hidden');
   }
 
   function expandEditor(): void {
-    editorCollapsed = false;
-    expandEditorBtn.classList.add('hidden');
-    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
-    editorGroup.style.overflow = '';
-    editorGroup.style.width = '40%';
-    const ms = paneSlideMs();
-    if (ms > 0 && mqDesktop.matches) {
-      // Start from the off-screen-left position without animating, then slide in.
-      const w = editorGroup.getBoundingClientRect().width;
-      editorGroup.style.transition = '';
-      editorGroup.style.marginLeft = `-${w}px`;
-      void editorGroup.offsetWidth; // force reflow so the next change transitions
-      editorGroup.style.transition = `margin-left ${ms}ms ease`;
-      requestAnimationFrame(() => { editorGroup.style.marginLeft = ''; });
-      editorSlideTimer = window.setTimeout(() => {
-        editorGroup.style.transition = '';
-        editorGroup.style.marginLeft = '';
-        editorSlideTimer = null;
-      }, ms);
-    }
-    syncPaneVisibility();
-    window.dispatchEvent(new Event('resize'));
+    if (viewBeforeCollapse === null) return;
+    const restore = viewBeforeCollapse;
+    viewBeforeCollapse = null;
+    setCodeView(restore);
   }
 
-  function rememberEditorCollapsed(collapsed: boolean): void {
-    saveSettings({ ...loadSettings(), editorCollapsed: collapsed });
-  }
+  minimizeEditorBtn.addEventListener('click', () => setCodeView('mini', { persist: true }));
+  collapseEditorBtn.addEventListener('click', () => setCodeView('hidden', { persist: true }));
+  expandEditorBtn.addEventListener('click', () => setCodeView(lastShownView, { persist: true }));
 
-  collapseEditorBtn.addEventListener('click', () => {
-    if (editorCollapsed) expandEditor(); else collapseEditor();
-    rememberEditorCollapsed(editorCollapsed);
-  });
-  expandEditorBtn.addEventListener('click', () => {
-    expandEditor();
-    rememberEditorCollapsed(false);
-  });
-
-  // Apply the resolved initial collapsed state to the DOM before the first
-  // syncPaneVisibility() runs below — otherwise the "if (!editorCollapsed)…
-  // width = 40%" branch would expand it on the first paint and clobber the
-  // resolved default.
-  if (editorCollapsed) {
-    editorGroup.style.width = '0';
-    editorGroup.style.overflow = 'hidden';
-    expandEditorBtn.classList.remove('hidden');
-    splitter.classList.add('hidden');
-  }
+  // Apply the resolved initial mode before the first syncPaneVisibility() runs.
+  applyRestingWidth();
 
   // === Parts rail collapse ===
   // Mirrors the editor collapse: hide the rail to reclaim width, leaving a small
@@ -653,8 +723,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const railExpandBtn = document.createElement('button');
   railExpandBtn.className = 'absolute left-0 top-0 z-20 px-1.5 py-1 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-br border-r border-b border-zinc-700 text-xs leading-none hidden';
   railExpandBtn.textContent = '»'; // »
-  railExpandBtn.title = 'Show parts';
-  railExpandBtn.setAttribute('aria-label', 'Show parts');
+  railExpandBtn.title = 'Show objects';
+  railExpandBtn.setAttribute('aria-label', 'Show objects');
   editorGroup.appendChild(railExpandBtn);
 
   function togglePartsRail(): void {
@@ -668,6 +738,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     // collapsed (but the editor open) pad the header so it doesn't overlap the
     // title. Cleared when the rail returns.
     editorHeader.style.paddingLeft = railCollapsed ? '1.75rem' : '';
+    minimap.setHeaderInset(railCollapsed ? '1.75rem' : '');
     window.dispatchEvent(new Event('resize'));
   }
   railExpandBtn.addEventListener('click', togglePartsRail);
@@ -678,27 +749,35 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     const isDesktop = mqDesktop.matches;
 
     if (isDesktop) {
-      // Restore inline width if it was cleared on mobile, but not if collapsed.
-      if (!editorCollapsed && !editorGroup.style.width) editorGroup.style.width = '40%';
+      // Restore the resting width if it was cleared on mobile.
+      if (!editorGroup.style.width) applyRestingWidth();
       editorGroup.classList.toggle('hidden', tabHidesEditor);
       // The parts rail + code pane are siblings only on mobile; on desktop the
-      // rail lives in the activity rail, so make sure neither was left hidden by
-      // a mobile pane choice when crossing the breakpoint.
-      editorPane.classList.remove('hidden');
-      splitter.classList.toggle('hidden', tabHidesEditor || editorCollapsed);
-      expandEditorBtn.classList.toggle('hidden', tabHidesEditor || !editorCollapsed);
+      // rail lives in the activity rail. Show exactly one code surface: the
+      // compact map or the full editor (a hidden pane keeps the last one so it
+      // doesn't swap content while sliding away).
+      const contentView = codeView === 'hidden' ? lastShownView : codeView;
+      editorPane.classList.toggle('hidden', contentView === 'mini');
+      minimap.el.classList.toggle('hidden', contentView !== 'mini');
+      setSplitterVisible(!tabHidesEditor && codeView === 'full');
+      expandEditorBtn.classList.toggle('hidden', tabHidesEditor || codeView !== 'hidden');
       rightPane.classList.remove('hidden');
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
-      // Also drop any in-flight desktop slide offset so a breakpoint flip mid-
-      // animation can't leave the stacked pane shifted off-screen.
+      // Also drop any in-flight desktop slide (offset + its settle timer) so a
+      // breakpoint flip mid-animation can't leave the stacked pane shifted
+      // off-screen or have the timer stamp a desktop width onto it.
+      cancelEditorSlide();
       editorGroup.style.width = '';
       editorGroup.style.overflow = '';
       editorGroup.style.marginLeft = '';
       editorGroup.style.transition = '';
-      splitter.classList.add('hidden');
+      setSplitterVisible(false);
       expandEditorBtn.classList.add('hidden');
+      // Mobile's Code pane is always the full editor — the compact map is a
+      // desktop side-strip affordance.
+      minimap.el.classList.add('hidden');
       // The desktop "collapse the rail" chip never applies on mobile — the pane
       // toggle owns parts visibility here.
       railExpandBtn.classList.add('hidden');
@@ -809,6 +888,18 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rightPane.appendChild(dataContainer);
 
   editorGroup.appendChild(editorPane);
+  editorGroup.appendChild(minimap.el);
+
+  // Mirror the editor's error panel into the compact map's footer badge — the
+  // panel itself lives in the (hidden) full editor while the map is showing.
+  const syncMinimapError = (): void => {
+    const visible = !editorErrorPanel.classList.contains('hidden');
+    const text = Array.from(editorErrorPanel.children, (c) => c.textContent?.trim() ?? '').filter(Boolean).join('\n');
+    minimap.setError(visible && text ? text : null);
+  };
+  new MutationObserver(syncMinimapError).observe(editorErrorPanel, {
+    attributes: true, attributeFilter: ['class'], childList: true, subtree: true, characterData: true,
+  });
 
   // Parts panel placement is breakpoint-dependent. On desktop it stacks INSIDE
   // the activity rail as a flex-1 section between the workspace nav and the
@@ -870,7 +961,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, togglePartsRail, collapseEditor, expandEditor, setCodeView, getCodeView: () => codeView };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
@@ -1007,7 +1098,11 @@ function createClipSlider(): HTMLElement {
   return anchor;
 }
 
-function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
+function initSplitter(
+  splitter: HTMLElement,
+  editorPane: HTMLElement,
+  hooks: { onDragStart?: () => void; onDragEnd?: () => void } = {},
+) {
   let startX = 0;
   let startWidth = 0;
   let activePointerId: number | null = null;
@@ -1025,6 +1120,7 @@ function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
     if (e.pointerId !== activePointerId) return;
     activePointerId = null;
     splitter.classList.remove('is-dragging');
+    hooks.onDragEnd?.();
     try { splitter.releasePointerCapture(e.pointerId); } catch { /* no capture */ }
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
@@ -1035,6 +1131,7 @@ function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.preventDefault();
     activePointerId = e.pointerId;
+    hooks.onDragStart?.();
     startX = e.clientX;
     startWidth = editorPane.getBoundingClientRect().width;
     splitter.setPointerCapture(e.pointerId);

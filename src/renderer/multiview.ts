@@ -175,6 +175,15 @@ function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode
   }
 }
 
+/** Near/far clip planes for an offscreen camera framing a model of `maxDim`.
+ *  The cameras sit 1.4–2× maxDim from the centre, so a fixed far plane clips
+ *  any model larger than a few hundred units out of the render entirely (a
+ *  blank thumbnail). Mirrors the interactive viewport's fit (viewport.ts);
+ *  the floors keep renders of models up to 100 units unchanged. */
+function clipPlanes(maxDim: number): { near: number; far: number } {
+  return { near: Math.max(0.1, maxDim * 0.001), far: Math.max(1000, maxDim * 10) };
+}
+
 export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   const geometry = meshDataToGeometry(meshData);
   const viewSize = 500;
@@ -201,7 +210,8 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
   const d = maxDim * 1.4;
 
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+  const { near, far } = clipPlanes(maxDim);
+  const camera = new THREE.PerspectiveCamera(40, 1, near, far);
   const renderer = getOffscreenRenderer(viewSize);
 
   const annotations = buildOffscreenOverlay(viewSize);
@@ -371,18 +381,19 @@ export function buildViewCamera(meshData: MeshData, options: {
   // matching the standard slicer/CAD build-plate orientation.
   const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
   const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
+  const { near, far } = clipPlanes(maxDim);
 
   let camera: THREE.Camera;
   if (options.ortho) {
     const halfExtent = maxDim * 0.7;
-    const orthoCamera = new THREE.OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, 0.1, 1000);
+    const orthoCamera = new THREE.OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, near, far);
     orthoCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
     orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
     camera = orthoCamera;
   } else {
-    const perspCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+    const perspCamera = new THREE.PerspectiveCamera(40, 1, near, far);
     perspCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
     perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);

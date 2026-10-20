@@ -505,6 +505,8 @@ partwright.paintAirbrush({
 // -> { id, name, triangles, strength, softness, seed, meshTriangleCount } or { error }
 ```
 
+**Imported meshes (STL figurines, scans): detect parts first.** A fused import has no labels, so every selector above is guessing at boundaries. Run part detection (`detectParts` → `renderParts` → `editParts` → `acceptParts`, see **[/ai/segmentation.md](/ai/segmentation.md)**): it places each boundary on the sculpted groove between named seeds — including surfaces no camera sees, like an inner arm behind a held ball — and turns every part into a real label, so `paintByLabel` / part colours paint exactly one region with clean edges.
+
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 
 ```js

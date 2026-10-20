@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a new capability or an improvement to an existing one.
+labels: ["enhancement", "user-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! For open-ended questions or to show off something you made, the **Discussions** tab is a better fit.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The goal or problem behind the request, e.g. "I want to print a hinge in one piece but…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: How you imagine it working. Sketches, screenshots, or links to other tools are welcome.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+    validations:
+      required: false

@@ -63,7 +63,7 @@ export function createAssemblyParamsPanel(opts: AssemblyParamsPanelOptions): Ass
   saveBtn.className = SAVE_BTN;
   saveBtn.textContent = 'Save';
   saveBtn.disabled = true;
-  saveBtn.title = 'Save these values to every affected part';
+  saveBtn.title = 'Save these values to every affected object';
   saveBtn.addEventListener('click', () => { void opts.onSave(); });
   footer.appendChild(hint);
   footer.appendChild(saveBtn);
@@ -86,11 +86,11 @@ export function createAssemblyParamsPanel(opts: AssemblyParamsPanelOptions): Ass
       valueSetters.set(p.spec.key, setValue);
       wrap.appendChild(row);
 
-      // "affects N parts" indicator; hover reveals the affected part names.
+      // "affects N objects" indicator; hover reveals the affected object names.
       const badge = document.createElement('div');
       badge.className = 'text-[10px] text-zinc-500 cursor-help';
       const n = p.partIds.length;
-      badge.textContent = `affects ${n} part${n === 1 ? '' : 's'}${p.mixed ? ' · mixed values' : ''}`;
+      badge.textContent = `affects ${n} object${n === 1 ? '' : 's'}${p.mixed ? ' · mixed values' : ''}`;
       badge.title = p.partNames.join(', ');
       wrap.appendChild(badge);
 

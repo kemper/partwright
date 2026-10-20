@@ -12,9 +12,22 @@
 //      openai.ts's authHeaders).
 //   2. We never touch the Responses API (`/v1/responses`) — it's OpenAI-
 //      proprietary and self-hosted servers don't implement it. `streamTurn`
-//      passes `forceChatCompletions: true`, and we send `thinking: 'off'` so
-//      no `reasoning_effort` field is ever attached (arbitrary servers reject
-//      unknown fields).
+//      passes `forceChatCompletions: true` and omits `thinking`, so the
+//      OpenAI transport never attaches its own `reasoning_effort`.
+//
+// Reasoning visibility: when the user's Thinking toggle isn't Off we send
+// `include_reasoning: true`. `reasoning_effort` is only sent when the user
+// opts in on the Custom tab (`customReasoningEffort`) — see
+// customReasoningFields in thinkingLevels.ts. Modern thinking models
+// reached through a bridge like CLIProxyAPI (Claude Opus/Sonnet 5 think
+// adaptively by default; Codex models always reason) otherwise think with
+// their reasoning hidden, so the stream is completely silent until the first
+// answer token — often longer than the stall watchdog's window, which then
+// aborts and retries every turn. Asking for the reasoning makes the server
+// stream it as `reasoning_content` deltas, which openai.ts forwards to the
+// thinking box and the watchdog. `include_reasoning` is a visibility flag,
+// not a depth knob: servers that don't know it ignore it (llama.cpp, Ollama,
+// LM Studio) or already default it on (vLLM), so it's safe to send.
 //
 // Mirrors the exported shape of the other providers (streamTurn / summarize /
 // validateKey / listModels / resetClient) so chatLoop.ts, compaction.ts, and
@@ -26,7 +39,8 @@ import {
   type StreamCallbacks,
   type StreamResult,
 } from './openai';
-import type { ChatMessage, TurnUsage } from './types';
+import type { ChatMessage, ChatToggles, TurnUsage } from './types';
+import { customReasoningFields } from './thinkingLevels';
 import type { ToolDefinition } from './tools';
 
 export type { StreamCallbacks, StreamResult } from './openai';
@@ -42,11 +56,43 @@ export interface CustomRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
+  /** The Thinking toggle. Anything but 'off' asks the server to stream the
+   *  model's reasoning (see module header). Omitted = 'off'. */
+  thinking?: ChatToggles['thinking'];
+  /** Also send the level as `reasoning_effort` (user opt-in). */
+  sendReasoningEffort?: boolean;
 }
 
 /** Build the `/models` URL for the configured base. Trailing slash tolerated. */
 function modelsUrl(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, '')}/models`;
+}
+
+/** Explain a 401/403 from `/models`. The two causes need different fixes, so
+ *  say which one it is: no key was sent (none saved in this browser — e.g.
+ *  site data was cleared, or this is a different origin), or the key that was
+ *  sent doesn't match the server's list (CLIProxyAPI's `access.api-keys`, or
+ *  root `api-keys` in pre-v8 configs). The server's own reason is appended
+ *  when it gives one (CLIProxyAPI says "Missing API key" / "Invalid API key"). */
+async function authErrorMessage(res: Response, apiKey: string): Promise<string> {
+  const body = await res.text().catch(() => '');
+  let reason = '';
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown; detail?: unknown } | null;
+    const err = parsed?.error;
+    const msg = typeof err === 'string' ? err
+      : typeof (err as { message?: unknown } | null)?.message === 'string' ? (err as { message: string }).message
+      : typeof parsed?.message === 'string' ? parsed.message
+      : typeof parsed?.detail === 'string' ? parsed.detail
+      : '';
+    reason = msg;
+  } catch { /* not JSON — fall back to the raw body below */ }
+  if (!reason) reason = body;
+  reason = reason.replace(/\s+/g, ' ').trim().slice(0, 120);
+  const said = reason ? ` (server: "${reason}")` : '';
+  return apiKey.trim().length === 0
+    ? `${res.status}: the endpoint requires an API key, and none is saved here${said}. Paste the key the endpoint expects into the API key field.`
+    : `${res.status}: the endpoint rejected the API key${said}. It doesn't match the key the endpoint expects — paste the right one here, or for a CLIProxyAPI bridge re-run setup step 2 to write this key into its config.`;
 }
 
 function authHeaders(apiKey: string): HeadersInit {
@@ -70,10 +116,12 @@ export async function streamTurn(
       tools: spec.tools,
       maxTokens: spec.maxTokens,
       // Self-hosted servers implement Chat Completions, not the Responses
-      // API; never send a reasoning request (see module header).
-      thinking: 'off',
+      // API. `thinking` is deliberately omitted so the OpenAI transport never
+      // attaches its own reasoning_effort; the opt-in one rides in
+      // extraChatFields below (see module header).
       baseUrl: spec.baseUrl,
       forceChatCompletions: true,
+      extraChatFields: customReasoningFields(spec.thinking ?? 'off', spec.sendReasoningEffort === true),
     },
     callbacks,
     signal,
@@ -106,9 +154,7 @@ export async function validateConnection(baseUrl: string, apiKey: string): Promi
   try {
     const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
     if (res.ok) return null;
-    if (res.status === 401 || res.status === 403) {
-      return `${res.status}: endpoint requires an API key (or the key is wrong).`;
-    }
+    if (res.status === 401 || res.status === 403) return await authErrorMessage(res, apiKey);
     const body = await res.text().catch(() => '');
     return `${res.status}: ${body.slice(0, 200) || res.statusText || 'request failed'}`;
   } catch (err) {
@@ -127,7 +173,7 @@ export async function listModels(baseUrl: string, apiKey: string): Promise<{ id:
   if (base.length === 0) throw new Error('Enter an endpoint URL first.');
   const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) throw new Error('Endpoint requires an API key (or the key is wrong).');
+    if (res.status === 401 || res.status === 403) throw new Error(await authErrorMessage(res, apiKey));
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status}: ${body.slice(0, 200) || res.statusText}`);
   }

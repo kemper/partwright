@@ -802,7 +802,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     e.preventDefault();
     shell.body.classList.remove('ring-2', 'ring-blue-500/60');
     const file = e.dataTransfer?.files?.[0];
-    if (file) void loadFile(file);
+    if (!file) return;
+    // Keep the drop from also reaching main.ts's document-level import.
+    e.stopPropagation();
+    void loadFile(file);
   });
 
   // Click-to-pick background colour for silhouette mode. The user clicks the

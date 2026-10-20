@@ -41,8 +41,11 @@ plate_d = 2 * max(r_tip_small, r_tip_large) + 2 * plate_pad;
 // Place the small gear at the origin, the large gear `center_dist` along +X.
 x_small = 0;
 x_large = center_dist;
-// Plate is centered on the midpoint of the two axes so it's symmetric.
-plate_cx = (x_small + x_large) / 2;
+// Plate spans from the small gear's left tip (x_small - r_tip_small) to the
+// large gear's right tip (x_large + r_tip_large), so centre it on the midpoint
+// of those two extremes (NOT the midpoint of the axes — the gears differ in
+// size). That leaves `plate_pad` of margin on both ends.
+plate_cx = (x_large + r_tip_large - r_tip_small) / 2;
 
 // Tooth phasing: rotate the small gear by half a tooth-pitch so a tooth on
 // one gear lands in the gap between two teeth on the other at the contact

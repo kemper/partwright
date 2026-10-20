@@ -638,9 +638,12 @@ function buildImageSection(): HTMLElement {
   // Allow drag-drop onto the preview
   previewWrap.addEventListener('dragover', (e) => { e.preventDefault(); });
   previewWrap.addEventListener('drop', async (e) => {
-    e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
+    // Claim image drops only, and keep them from also reaching main.ts's
+    // document-level import (which would pop the relief/voxel chooser).
+    e.preventDefault();
+    e.stopPropagation();
     await applyImageFile(file);
   });
 

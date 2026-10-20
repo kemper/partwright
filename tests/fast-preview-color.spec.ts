@@ -81,10 +81,15 @@ test.describe('fast preview colour estimate', () => {
     const shot = await page.locator('#viewport').screenshot();
 
     // Sample the centre region (where the figure is), ignoring the toolbar UI.
+    // Centred on the viewport rather than at fixed pixels, so the crop tracks
+    // the figure whatever width the code pane leaves the viewport.
     // A coloured figure has substantial chroma; a grey/unpainted one has almost
     // none (skin/cloth all collapse to r≈g≈b).
+    const meta = await sharp(shot).metadata();
+    const left = Math.max(0, Math.round((meta.width ?? 560) / 2 - 160));
+    const top = Math.max(0, Math.min((meta.height ?? 620) - 320, Math.round((meta.height ?? 620) / 2 - 120)));
     const { data, info } = await sharp(shot)
-      .extract({ left: 120, top: 150, width: 320, height: 320 })
+      .extract({ left, top, width: 320, height: 320 })
       .raw().toBuffer({ resolveWithObject: true });
     const ch = info.channels;
     let chroma = 0;

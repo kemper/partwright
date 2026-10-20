@@ -22,6 +22,14 @@ async function openEditor(page: import('playwright/test').Page) {
   });
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
+  // "Ready" can paint before window.partwright is installed — wait for the API
+  // itself, or the evaluate below races it ("reading 'run' of undefined").
+  await page.waitForFunction(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => !!(window as any).partwright?.run,
+    null,
+    { timeout: 15000 },
+  );
   // Run a tiny model so paint operations have a real mesh to operate on.
   await page.evaluate(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -288,7 +296,7 @@ test.describe('extended paint controls', () => {
     const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
     await tolInput.fill('5');
     await tolInput.press('Enter');
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('no canvas');
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height * 0.35;
@@ -337,7 +345,7 @@ test.describe('extended paint controls', () => {
       const pm = await import('/src/color/paintMode.ts');
       pm.setColor([1, 0.15, 0.15]);
     });
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('no canvas');
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;

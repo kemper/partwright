@@ -1,8 +1,11 @@
 name: PR checks
 
 # Pre-merge feedback on PRs into main: type-check, production build, unit
-# tests, and the full e2e suite. Build + unit gates the e2e matrix so we
-# don't burn shard minutes on a broken build.
+# tests, and the full e2e suite. Build + unit and the e2e shards run IN
+# PARALLEL (no `needs:` gate) — gating e2e on build-unit added ~2 min of
+# serial latency to every run, and shard minutes are free on this public repo.
+# A broken build still fails the build-unit job, and the e2e shards run against
+# the Vite dev server, so they don't depend on the production build.
 #
 # Every PR push runs the full suite — build + unit, then the e2e shards —
 # regardless of draft state, so draft PRs get the same signal as ready ones.
@@ -12,8 +15,11 @@ name: PR checks
 #
 # The e2e suite is CPU-bound (each test boots WASM in its own browser page),
 # so it runs SERIALLY within a runner (playwright.config.ts pins workers: 1)
-# and is parallelized across runners by sharding — contention-free, and
-# wall-clock cost drops ~3x.
+# and is parallelized across 8 runners by TIME-BALANCED sharding: E2E_SHARD=i/N
+# makes playwright.config.ts run only the spec files scripts/lib/e2eShard.mjs
+# assigns to shard i, weighted by tests/e2e-timings.json. (Playwright's own
+# --shard balances by test count, which left shards at 8.5 / 11.3 / 17.1 min.)
+# Keep the matrix below and staging-gate.yml's in sync.
 #
 # Doc-only changes (markdown, release config, license) skip CI entirely via
 # paths-ignore — they can't affect build/test/runtime behavior.
@@ -61,12 +67,12 @@ jobs:
         run: npm run test:unit
 
   e2e:
-    needs: build-unit
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -88,5 +94,7 @@ jobs:
         run: npx playwright install chromium
       - name: Install Playwright system deps
         run: npx playwright install-deps chromium
-      - name: E2E tests (shard ${{ matrix.shard }}/3)
-        run: npx playwright test --shard=${{ matrix.shard }}/3
+      - name: E2E tests (shard ${{ matrix.shard }}/8)
+        env:
+          E2E_SHARD: ${{ matrix.shard }}/8
+        run: npx playwright test --pass-with-no-tests

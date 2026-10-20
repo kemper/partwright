@@ -11,7 +11,7 @@ async function openEditor(page: import('playwright/test').Page) {
     // Force the code pane visible: the app now defaults it collapsed when the
     // AI drawer auto-opens, which would hide .cm-content and break these tests.
     try {
-      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
     } catch { /* ignore */ }
   });
   await page.goto('/editor');

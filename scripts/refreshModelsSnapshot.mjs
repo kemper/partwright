@@ -7,7 +7,7 @@
 // restrictive corporate proxy) so the bootstrap and refresh still works.
 //
 // Run weekly by the `refresh-models-catalog` scheduled Claude trigger
-// (.claude/skills/refresh-models-catalog.md), which regenerates the snapshot,
+// (.claude/skills/refresh-models-catalog/SKILL.md), which regenerates the snapshot,
 // validates it, and opens a PR into main with any changes — main is protected,
 // so the snapshot reaches it through a PR, never a direct bot push. (The PR is
 // opened via the GitHub integration rather than a GitHub Action because the

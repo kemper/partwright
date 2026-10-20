@@ -253,8 +253,8 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
         ? `<span class="font-mono">${names.slice(0, 6).map(escapeHtml).join(', ')}${names.length > 6 ? ', …' : ''}</span>`
         : '';
       block.innerHTML =
-        `<strong>${count} part${count === 1 ? '' : 's'} ${count === 1 ? 'isn’t' : 'aren’t'} saved.</strong> ${list ? list + '. ' : ''}` +
-        'A multi-part export bakes each non-current part from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out and parts that were <strong>never saved are skipped entirely</strong>. ' +
+        `<strong>${count} object${count === 1 ? '' : 's'} ${count === 1 ? 'isn’t' : 'aren’t'} saved.</strong> ${list ? list + '. ' : ''}` +
+        'A multi-object export bakes each non-current object from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out and objects that were <strong>never saved are skipped entirely</strong>. ' +
         'Click <strong>Save…</strong> to save them first, or export anyway.';
       shell.body.appendChild(block);
     }
@@ -272,7 +272,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
       const saveBtn = document.createElement('button');
       saveBtn.className = BUTTON_CANCEL;
       saveBtn.textContent = 'Save…';
-      saveBtn.title = 'Save unsaved parts before exporting';
+      saveBtn.title = 'Save unsaved objects before exporting';
       saveBtn.addEventListener('click', () => { result = 'save'; shell.close(); });
       shell.footer.appendChild(saveBtn);
     }

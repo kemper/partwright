@@ -112,8 +112,8 @@ them before writing BREP code or you'll burn iterations on silent failures.
       neighbour's primitive — don't leave it floating.
 
     A truly separate assembly (e.g. a lid you intend to print apart) is the
-    rare exception; if that's the goal, model each piece as its own **part**
-    (`createPart`) rather than as floaters in one mesh.
+    rare exception; if that's the goal, model each piece as its own **object**
+    (`createObject`) rather than as floaters in one mesh.
 
 ## The two ways to reach BREP
 

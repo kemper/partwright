@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { waitForEditorReady } from './helpers/aiPanel';
 
 // Multi-part 3MF export: validates the generic + Bambu "project" 3MF builder
 // (multiple objects, one plate per part, m:colorgroup + paint_color colour) and
@@ -12,7 +13,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('build3MFProject emits multiple objects, plates and colour bindings', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000); // let the module graph + engine settle
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const report = await page.evaluate(async () => {
       const { build3MFProject } = await import('/src/export/threemfProject.ts');
@@ -146,7 +148,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('part picker lets you choose parts and export a multi-plate 3MF', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build a 2-part session through the console API. Set units to mm so the
     // export-confirm (unitless) modal doesn't precede the part picker.
@@ -160,7 +163,6 @@ test.describe('multi-part 3MF export', () => {
       return pw.listParts ? pw.listParts().length : 2;
     });
     expect(partCount).toBeGreaterThan(1);
-    await page.waitForTimeout(1500);
 
     // Trigger the Bambu/Orca multi-plate export (distinct from the generic 3MF).
     await page.locator('#btn-export').click();
@@ -168,7 +170,7 @@ test.describe('multi-part 3MF export', () => {
 
     // The part picker should appear for a multi-part session.
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to 3MF/i)).toBeVisible({ timeout: 10000 });
     await page.screenshot({ path: 'test-results/multipart-3mf-modal.png' });
 
     // The Bambu export shows the printer/nozzle/filament dropdowns (not the generic).
@@ -179,7 +181,7 @@ test.describe('multi-part 3MF export', () => {
     // beside the part list, not stacked below it. Assert the "Bambu Studio
     // settings" heading is horizontally to the right of the part-list header
     // (its left edge starts past the list header's right edge) at desktop width.
-    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const listBox = await modal.getByText(/Objects \(\d+ of \d+ selected\)/).boundingBox();
     const optsBox = await modal.getByText(/Bambu Studio settings/i).boundingBox();
     expect(listBox).not.toBeNull();
     expect(optsBox).not.toBeNull();
@@ -199,7 +201,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('export3MFPartsData bundles real parts through the full bake pipeline', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build 3 real coloured parts, then read the Bambu 3MF back via the
     // bytes-returning API (no browser download) and inspect the actual output —
@@ -247,7 +250,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('Bambu plates use BambuStudio\'s ⌈√N⌉-column grid with per-axis stride', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // 6 parts → ⌈√6⌉ = 3 columns × 2 rows, matching BambuStudio's PartPlateList.
     // Each part centres on its plate cell at (col·396 + 165, −row·384 + 160) for the
@@ -285,7 +289,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('plateLayout controls how parts distribute across Bambu plates', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // 4 parts, two of them sharing a group ("A"), the other two ungrouped. The
     // three layout modes should produce distinct plate counts + placements.
@@ -333,7 +338,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('packed layout keeps a big-part+small-parts mix within the plate footprint', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // The reported bug: one large part + several small ones in a packed layout
     // ballooned the whole grid off the plate (old uniform-max-pitch grid). With
@@ -373,7 +379,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('packStrategy shapes how parts sharing a plate are arranged', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Four equal 40×40 parts packed onto ONE plate (plateLayout 'grid'). The three
     // packing strategies must produce distinct arrangements: 'grid' a compact 2×2
@@ -416,7 +423,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('generic 3MF part picker shows the packing pane on the right', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(4000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     // Build a 2-part session so the generic "3MF" export opens the part picker.
     await page.evaluate(async () => {
@@ -426,21 +434,20 @@ test.describe('multi-part 3MF export', () => {
       await pw.createPart('Pyramid');
       await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'pyramid');
     });
-    await page.waitForTimeout(1500);
 
     // Trigger the GENERIC 3MF export (not the Bambu one).
     await page.locator('#btn-export').click();
     await page.locator('#export-dropdown').getByText('3MF', { exact: true }).click();
 
     const modal = page.getByRole('dialog');
-    await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
+    await expect(modal.getByText(/Export objects to 3MF/i)).toBeVisible({ timeout: 10000 });
     // Packing radios present; NO Bambu Studio settings (that's the Bambu export).
     await expect(modal.getByText('Packing', { exact: true })).toBeVisible();
     await expect(modal.getByText('Centered grid')).toBeVisible();
     await expect(modal.getByText(/Bambu Studio settings/i)).toHaveCount(0);
 
     // Two-pane layout: the Packing heading sits to the RIGHT of the part-list header.
-    const listBox = await modal.getByText(/Parts \(\d+ of \d+ selected\)/).boundingBox();
+    const listBox = await modal.getByText(/Objects \(\d+ of \d+ selected\)/).boundingBox();
     const packBox = await modal.getByText('Packing', { exact: true }).boundingBox();
     expect(listBox).not.toBeNull();
     expect(packBox).not.toBeNull();
@@ -458,7 +465,8 @@ test.describe('multi-part 3MF export', () => {
 
   test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForTimeout(3000);
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run, { timeout: 20_000 });
 
     const out = await page.evaluate(async () => {
       const { build3MFProject } = await import('/src/export/threemfProject.ts');

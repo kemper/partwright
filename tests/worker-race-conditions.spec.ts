@@ -20,7 +20,8 @@
 //    partwright.run() must win, not be discarded as stale. The result
 //    returned by partwright.run() must reflect the code it was called with.
 
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 type GeometryData = {
   status?: string;
@@ -65,26 +66,22 @@ type PartwrightApi = {
   sliceAtZ: (z: number) => unknown;
 };
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/** Wait for the WASM engine and partwright API to be available. */
-async function waitForEngine(page: import('playwright/test').Page) {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
-
-// ── tests ─────────────────────────────────────────────────────────────────────
+// Every test either starts its own fresh session (createSession) or just
+// checks the outcome of its own pw.run() calls — nothing depends on state a
+// sibling left behind — so the file shares one booted editor instead of
+// paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('Worker race conditions', () => {
   // ── 1. Rapid version switching ────────────────────────────────────────────
 
-  test('rapid loadVersion: last-called version wins, not first-to-finish', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('rapid loadVersion: last-called version wins, not first-to-finish', async () => {
     // Create a session with two distinctly different versions — a small cube
     // (few triangles) and a high-res sphere (many triangles). Loading them in
     // rapid succession should always end up showing the second one.
@@ -133,10 +130,7 @@ test.describe('Worker race conditions', () => {
     expect(finalGeo.triangleCount).toBeGreaterThanOrEqual(setup.v2Tris! - 100);
   });
 
-  test('rapid loadVersion: color regions from the winning version are applied, not the loser\'s', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('rapid loadVersion: color regions from the winning version are applied, not the loser\'s', async () => {
     // Create two versions with different sizes so we can tell them apart.
     const setup = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
@@ -180,10 +174,7 @@ test.describe('Worker race conditions', () => {
 
   // ── 2. Manifold reconstruction after Worker round-trip ────────────────────
 
-  test('getBoundingBox works after Worker-path execution (ofMesh reconstruction)', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('getBoundingBox works after Worker-path execution (ofMesh reconstruction)', async () => {
     const bbox = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       // Run via the normal path — goes through the Worker, returns manifold=null,
@@ -202,10 +193,7 @@ test.describe('Worker race conditions', () => {
     expect(bbox!.max[2]).toBeCloseTo(15, 0);
   });
 
-  test('sliceAtZ works after Worker-path execution (ofMesh reconstruction)', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('sliceAtZ works after Worker-path execution (ofMesh reconstruction)', async () => {
     const slice = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartwrightApi }).partwright;
       // A cube from z=0..10; slicing at z=5 should yield a square cross-section.
@@ -225,10 +213,7 @@ test.describe('Worker race conditions', () => {
 
   // ── 3. partwright.run() explicit call wins over the RAF auto-run ─────────
 
-  test('partwright.run(code) result reflects the code passed, not an auto-run', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('partwright.run(code) result reflects the code passed, not an auto-run', async () => {
     // partwright.run(code) calls setValue() — which may trigger an auto-run
     // RAF — then immediately starts its own runCodeSync(). The _running guard
     // in main.ts skips the RAF auto-run when an explicit run is in flight.
@@ -250,10 +235,7 @@ test.describe('Worker race conditions', () => {
     expect(result.triangleCount).toBeGreaterThan(1500);
   });
 
-  test('partwright.run(code) with sequential calls does not mix up results', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
+  test('partwright.run(code) with sequential calls does not mix up results', async () => {
     // Two sequential awaited run() calls — each must return the geometry for
     // the code it was called with, not a stale result from the previous call.
     const results = await page.evaluate(async () => {

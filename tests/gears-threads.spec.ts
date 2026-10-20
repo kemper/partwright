@@ -5,14 +5,7 @@
 // component count — catching degenerate booleans the pure-logic tests can't see.
 
 import { test, expect, type Page } from 'playwright/test';
-
-async function waitForEngine(page: Page): Promise<void> {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-    { timeout: 20_000 },
-  );
-}
+import { openSharedEditor } from './helpers/sharedPage';
 
 interface RunResult {
   status: string;
@@ -46,15 +39,20 @@ const cases: Array<{ name: string; code: string; components?: number }> = [
   { name: 'threads.nut (M8)', code: `return api.threads.nut({ size: 'M8' });` },
 ];
 
-test.describe('gears & threads builders produce valid manifolds', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor');
-    await waitForEngine(page);
-  });
+// Every case just runs a builder snippet through window.partwright.run and
+// checks the result — nothing persists between them — so the file shares one
+// booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
+test.describe('gears & threads builders produce valid manifolds', () => {
   for (const c of cases) {
-    test(`${c.name} is a valid manifold`, async ({ page }) => {
+    test(`${c.name} is a valid manifold`, async () => {
       const r = await run(page, c.code);
       if (r.status === 'error') throw new Error(`${c.name} failed:\n${r.error}`);
       expect(r.isManifold, `${c.name} should be watertight`).toBe(true);
@@ -63,7 +61,7 @@ test.describe('gears & threads builders produce valid manifolds', () => {
     });
   }
 
-  test('gears.pair meshes as two separate components', async ({ page }) => {
+  test('gears.pair meshes as two separate components', async () => {
     const r = await run(page, `
       const p = api.gears.pair({ module: 2, teeth1: 12, teeth2: 24, thickness: 6, bore1: 5, bore2: 8 });
       return api.labeledUnion([
@@ -79,7 +77,7 @@ test.describe('gears & threads builders produce valid manifolds', () => {
     expect(r.boundingBox!.x[1]).toBeGreaterThan(50);
   });
 
-  test('bad thread size throws a clear, self-correcting error', async ({ page }) => {
+  test('bad thread size throws a clear, self-correcting error', async () => {
     const r = await run(page, `return api.threads.rod({ size: 'M7', length: 5 });`);
     expect(r.status).toBe('error');
     expect(r.error).toMatch(/unknown size/i);

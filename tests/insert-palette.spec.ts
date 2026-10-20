@@ -93,7 +93,9 @@ test.describe('Insert palette', () => {
 
     const finalCode = await getCode(page);
     expect(finalCode).toContain('.subtract(');
-    expect(finalCode).toMatch(/return\s+cut\s*;/);
+    // Arrange-mode results fold in under their own label so they show up as
+    // named parts of the object.
+    expect(finalCode).toMatch(/return\s+api\.label\(cut, 'cut'\)\s*;/);
 
     // Result still renders without error.
     await expect
@@ -109,7 +111,7 @@ test.describe('Insert palette', () => {
     // `.cm-content`. This test specifically needs to select text in the
     // editor, so pin it open ahead of the page load.
     await page.addInitScript(() => {
-      try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
+      try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' })); } catch { /* ignore */ }
     });
     await gotoEditor(page);
     await page.locator('#btn-insert').dispatchEvent('click');
@@ -152,7 +154,7 @@ test.describe('Insert palette', () => {
     await expect(page.getByText(/Click shapes for intersect/i)).toBeVisible();
 
     // Clicking the canvas must not throw; then Done returns to the dialog.
-    await page.locator('canvas').first().click({ position: { x: 200, y: 200 } });
+    await page.locator('#viewport-container canvas').first().click({ position: { x: 200, y: 200 } });
     await page.getByRole('button', { name: 'Done', exact: true }).click();
     await expect(page.getByText('Intersect shapes')).toBeVisible();
   });
@@ -192,21 +194,22 @@ test.describe('Insert palette', () => {
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // First insert: the default constructor-call return gets *replaced* by
-    // the new part, so the placeholder cube doesn't double up.
+    // the new part, so the placeholder cube doesn't double up. Each inserted
+    // shape is wrapped in api.label so it lists as a named part of the object.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+box\s*;/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+api\.label\(box, 'box'\)\s*;/);
 
     // Second insert: the bare-identifier return folds into a readable
-    // `Manifold.union([box, ball])` so both shapes stay visible.
+    // `Manifold.union([…box, …ball])` so both shapes stay visible.
     await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball\]\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[api\.label\(box, 'box'\), api\.label\(ball, 'ball'\)\]\);/);
 
     // Third insert: the union array grows.
     await page.locator(palette).getByRole('button', { name: 'Cylinder' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball, cyl\]\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[api\.label\(box, 'box'\), api\.label\(ball, 'ball'\), api\.label\(cyl, 'cyl'\)\]\);/);
 
     // The geometry still renders cleanly (the engine accepted the union).
     const geo = await getGeo(page);
@@ -264,7 +267,7 @@ test.describe('Insert palette', () => {
     // Drag from canvas center sideways. The pointer-down hits the real cube,
     // pointer-move past the 4px threshold begins the ghost preview, pointer-up
     // commits the delta through writePartTranslateDelta → engine re-runs.
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('canvas missing');
     const startX = box.x + box.width / 2;
     const startY = box.y + box.height / 2;
@@ -303,7 +306,7 @@ test.describe('Insert palette', () => {
     // Enter Select mode. The instruction bar appears and a chip strip is empty.
     await page.locator(palette).getByRole('button', { name: 'Select' }).click();
     await expect(page.getByText(/Click shapes to toggle selection/i)).toBeVisible();
-    await page.locator('canvas').first().click();
+    await page.locator('#viewport-container canvas').first().click();
     await page.getByRole('button', { name: 'Done', exact: true }).click();
 
     // After a successful pick the chip strip should hold "box" and Delete is
@@ -374,7 +377,7 @@ test.describe('Insert palette', () => {
     // Shift + drag a marquee that covers most of the viewport — the cube/sphere
     // bbox centres at origin project to the canvas centre, so a generous diagonal
     // drag captures both parts.
-    const box = await page.locator('canvas').first().boundingBox();
+    const box = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!box) throw new Error('canvas missing');
     const startX = box.x + box.width * 0.85;
     const startY = box.y + box.height * 0.15;
@@ -418,12 +421,12 @@ test.describe('Insert palette', () => {
     // to the `box` part via the spatial registry. Dispatch directly on the
     // canvas so the always-open palette panel doesn't shadow the hit-test in
     // headless layout.
-    const cBox = await page.locator('canvas').first().boundingBox();
+    const cBox = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!cBox) throw new Error('canvas missing');
     const cx = cBox.x + cBox.width / 2;
     const cy = cBox.y + cBox.height / 2;
-    await page.locator('canvas').first().dispatchEvent('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
-    await page.locator('canvas').first().dispatchEvent('pointerup', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
+    await page.locator('#viewport-container canvas').first().dispatchEvent('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
+    await page.locator('#viewport-container canvas').first().dispatchEvent('pointerup', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
 
     // The Size section shows once 1+ parts are selected. The chip strip carries `box`.
     await expect(page.locator('#insert-selection-strip').getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
@@ -563,7 +566,7 @@ test.describe('Insert palette', () => {
     // Drag the cube right by a sensible amount in screen px so the translate
     // commit visibly shifts +X (the world delta depends on camera, but the
     // direction is right).
-    const cBox = await page.locator('canvas').first().boundingBox();
+    const cBox = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!cBox) throw new Error('canvas missing');
     const cx = cBox.x + cBox.width / 2;
     const cy = cBox.y + cBox.height / 2;
@@ -715,7 +718,7 @@ test.describe('Insert palette', () => {
     });
     await page.locator('#insert-arrange-toggle').click();
 
-    const cBox = await page.locator('canvas').first().boundingBox();
+    const cBox = await page.locator('#viewport-container canvas').first().boundingBox();
     if (!cBox) throw new Error('canvas missing');
     const cx = cBox.x + cBox.width / 2;
     const cy = cBox.y + cBox.height / 2;

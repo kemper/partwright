@@ -62,7 +62,8 @@ import {
   loadFromSerialized as loadAnnotations,
   type SerializedAnnotation,
 } from '../annotations/annotations';
-import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
+import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
@@ -196,8 +197,15 @@ import { appPath } from '../deployment';
  *           sharing a group are threaded together under a collapsible header in
  *           the part list. Additive; older readers ignore it (parts import
  *           ungrouped).
+ *  - `1.20` — imported meshes gain optional detected **parts**
+ *           (`versions[].importedMeshes[].parts`): `{ names, colors,
+ *           triPart (base64 Int32Array, one part index per source triangle,
+ *           −1 unassigned), source? }`, committed by part detection's
+ *           `acceptParts` and turned into real labels by
+ *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
+ *           still imports). Additive; older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.19';
+export const SCHEMA_VERSION = '1.20';
 
 const CURRENT_MAJOR = 1;
 
@@ -207,15 +215,23 @@ const APP_VERSION = buildInfo.version;
 const stampedAppVersion: string | undefined =
   APP_VERSION && APP_VERSION !== 'unknown' ? APP_VERSION : undefined;
 
-/** Name given to the implicit first part of every session. */
-const DEFAULT_PART_NAME = 'Part 1';
+/** Name given to the implicit first object of every session. (The storage
+ *  layer still calls these records `Part` — `parts` store, `Version.partId`,
+ *  the exported `parts` array — but the UI and API call them **objects**; a
+ *  "part" is now a labelled piece *within* an object. Sessions saved before the
+ *  rename keep their "Part N" names.) */
+const DEFAULT_PART_NAME = 'Object 1';
 
-/** Suggest a unique "Part N" name for a new part, given the existing parts. */
+/** Matches an auto-assigned default name — the current "Object N" or the
+ *  pre-rename "Part N" — so imports can renumber it instead of colliding. */
+const DEFAULT_NAME_RE = /^(?:Object|Part) \d+$/;
+
+/** Suggest a unique "Object N" name for a new object, given the existing ones. */
 function suggestPartName(existing: Part[]): string {
   let n = existing.length + 1;
   const names = new Set(existing.map(p => p.name));
-  while (names.has(`Part ${n}`)) n++;
-  return `Part ${n}`;
+  while (names.has(`Object ${n}`)) n++;
+  return `Object ${n}`;
 }
 
 export interface ExportedSession {
@@ -362,6 +378,17 @@ export interface ExportedImportedMesh {
   vertProperties: string;
   /** base64 of the Uint32Array triangle-index buffer. */
   triVerts: string;
+  /** Detected parts committed on this mesh. @since 1.20 */
+  parts?: ExportedImportedMeshParts;
+}
+
+/** {@link ImportedMeshParts} with `triPart` base64-encoded. @since 1.20 */
+export interface ExportedImportedMeshParts {
+  names: string[];
+  colors: (string | null)[];
+  /** base64 of the Int32Array part-index-per-triangle buffer. */
+  triPart: string;
+  source?: ImportedMeshParts['source'];
 }
 
 /** A {@link PersistedSurfaceTexture} with its typed-array buffers
@@ -382,7 +409,7 @@ export interface ExportedSurfaceTexture {
 }
 
 /** Encode a typed array's bytes as base64. */
-function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array): string {
+function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array | Int32Array): string {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   let bin = '';
   const CHUNK = 0x8000; // avoid call-stack limits on String.fromCharCode.apply
@@ -411,7 +438,32 @@ function serializeImportedMeshes(meshes: ImportedMesh[] | undefined): ExportedIm
     numProp: m.numProp,
     vertProperties: typedArrayToBase64(m.vertProperties),
     triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.parts ? {
+      parts: {
+        names: [...m.parts.names],
+        colors: [...m.parts.colors],
+        triPart: typedArrayToBase64(m.parts.triPart),
+        ...(m.parts.source ? { source: m.parts.source } : {}),
+      },
+    } : {}),
   }));
+}
+
+/** Validating decode of exported parts; undefined (parts dropped, mesh kept)
+ *  when malformed or mismatched with the mesh. */
+function deserializeImportParts(raw: ExportedImportedMeshParts | undefined, numTri: number): ImportedMeshParts | undefined {
+  if (!raw || typeof raw !== 'object' || typeof raw.triPart !== 'string') return undefined;
+  try {
+    const parts = normalizeImportParts({
+      names: raw.names,
+      colors: raw.colors,
+      triPart: new Int32Array(base64ToArrayBuffer(raw.triPart)),
+      source: raw.source,
+    }, numTri);
+    return parts ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function serializeSurfaceTexture(tex: PersistedSurfaceTexture | undefined): ExportedSurfaceTexture | undefined {
@@ -468,6 +520,8 @@ function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): 
         vertProperties: new Float32Array(base64ToArrayBuffer(m.vertProperties)),
         triVerts: new Uint32Array(base64ToArrayBuffer(m.triVerts)),
       });
+      const parts = deserializeImportParts(m.parts, out[out.length - 1].triVerts.length / 3);
+      if (parts) out[out.length - 1].parts = parts;
     } catch {
       // Skip a mesh we can't decode rather than failing the whole import.
     }
@@ -2097,7 +2151,7 @@ export async function importSession(
   let firstPartId = '';
   for (let i = 0; i < partDefs.length; i++) {
     const def = partDefs[i];
-    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Part ${i + 1}`, i, def.group);
+    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Object ${i + 1}`, i, def.group);
     orderToPartId.set(def.order, part.id);
     if (i === 0) firstPartId = part.id;
   }
@@ -2265,17 +2319,17 @@ export interface MergePartsResult {
  * with no `parts[]` collapse into one part; the same color-region and
  * top-level-annotation back-compat fallbacks apply) but writes into the
  * existing session instead of a fresh one. Returns null if no session is open.
- *//** Pick a part name that doesn't collide with names already in the session.
- *  A meaningful imported name (anything that isn't the generic `Part N`) is kept
- *  when it's free; otherwise we assign the next free sequential `Part N`. This
- *  stops a merged default-named figure from importing as a second "Part 1"
- *  alongside the host's "Part 1". */
+ *//** Pick an object name that doesn't collide with names already in the session.
+ *  A meaningful imported name (anything that isn't a generic `Object N` / legacy
+ *  `Part N`) is kept when it's free; otherwise we assign the next free sequential
+ *  `Object N`. This stops a merged default-named figure from importing as a
+ *  second "Object 1" alongside the host's "Object 1". */
 function uniquePartName(desired: string, taken: Set<string>, order: number): string {
   const trimmed = desired.trim();
-  if (trimmed && !/^Part \d+$/.test(trimmed) && !taken.has(trimmed)) return trimmed;
+  if (trimmed && !DEFAULT_NAME_RE.test(trimmed) && !taken.has(trimmed)) return trimmed;
   let n = order + 1;
-  while (taken.has(`Part ${n}`)) n++;
-  return `Part ${n}`;
+  while (taken.has(`Object ${n}`)) n++;
+  return `Object ${n}`;
 }
 
 export async function importSessionPartsIntoActive(

@@ -139,8 +139,8 @@ export function showImportPreview(
       // the recommended choice.
       makeChoice(
         'merge',
-        'Add as new part(s) to current project',
-        `Adds the imported parts to "${opts.mergeTargetName}" — nothing is replaced.`,
+        'Add as new object(s) to current project',
+        `Adds the imported objects to "${opts.mergeTargetName}" — nothing is replaced.`,
       );
       makeChoice(
         'new-session',
@@ -152,11 +152,11 @@ export function showImportPreview(
 
     function updateNote(): void {
       if (canMerge && destination === 'merge') {
-        note.textContent = `Adds the imported parts to "${opts.mergeTargetName}" as new part(s). Existing parts are untouched.`;
+        note.textContent = `Adds the imported objects to "${opts.mergeTargetName}" as new object(s). Existing objects are untouched.`;
       } else {
         note.textContent = 'Imports as a new session — your current session is kept.';
       }
-      importBtn.textContent = canMerge && destination === 'merge' ? 'Add parts' : 'Import';
+      importBtn.textContent = canMerge && destination === 'merge' ? 'Add objects' : 'Import';
     }
 
     // Code-execution warning. Importing a session runs each version's code in

@@ -26,6 +26,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     import: { ...c.import },
     ui: { ...c.ui },
     geometry: { ...c.geometry },
+    segmentation: { ...c.segmentation },
   };
 }
 
@@ -269,12 +270,77 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Recent render images kept in context"
           unit="images"
-          hint="How many of the latest render snapshots stay in the request sent to the AI."
-          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          hint="For providers without history caching (Custom, Local, or Anthropic with caching off): how many of the latest render snapshots stay in the request."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming. Providers that cache the history use the two stepped limits below instead."
           defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
           value={c.ai.keepRecentToolImages}
           min={0} max={50} integer
           onChange={v => set('ai', 'keepRecentToolImages', v)}
+        />
+        <ToggleField
+          label="Cache the conversation history (Anthropic)"
+          hint="Every agent step re-sends the whole conversation. With this on, the repeated part is billed at Anthropic's cache-read rate (~10% of normal input) instead of full price. OpenAI and Gemini do this automatically."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cacheConversationHistory}
+          value={c.ai.cacheConversationHistory}
+          onChange={v => set('ai', 'cacheConversationHistory', v)}
+        />
+        <Field
+          label="Render images before a trim (cached providers)"
+          unit="images"
+          hint="Anthropic (with caching on), OpenAI and Gemini: render images pile up to this many before older ones are trimmed."
+          tooltip="Cached images are cheap to re-send, but trimming one edits an earlier message and makes the provider re-bill everything after it. So instead of dropping one image per render, images accumulate to this limit and are then cut back to the 'trim down to' count in one step, keeping the cached history valid in between."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageLimit}
+          value={c.ai.cachedImageLimit}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'cachedImageLimit', v)}
+        />
+        <Field
+          label="…then trim down to"
+          unit="images"
+          hint="How many recent render images remain after a trim on cached providers."
+          tooltip="When the image limit above is exceeded, older render images are dropped until this many remain. A bigger gap between the two numbers means fewer cache-breaking trims; a smaller one keeps the request leaner. Set it equal to the limit for a one-in-one-out sliding window."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.cachedImageTrimTo}
+          value={c.ai.cachedImageTrimTo}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'cachedImageTrimTo', v)}
+        />
+        <Field
+          label="Auto-compact token ceiling"
+          unit="tokens"
+          hint="In the Auto compaction mode, compact once the conversation passes this size, even if that's under 70% of the model's context window."
+          tooltip="On 1M-token models, 70% of the window is ~700k tokens. Long before that, each cache miss (for example after a pause of more than ~5 minutes) re-bills the whole conversation at full price, so a smaller ceiling keeps those moments cheap. Compaction summarizes older turns and keeps recent ones verbatim."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.autoCompactMaxTokens}
+          value={c.ai.autoCompactMaxTokens}
+          min={10_000} max={1_000_000} integer
+          onChange={v => set('ai', 'autoCompactMaxTokens', v)}
+        />
+        <Field
+          label="Attached images kept through compaction"
+          unit="images"
+          hint="Reference images you attached are carried forward when older turns are compacted, instead of being dropped."
+          tooltip="Compaction replaces older turns with a text summary. Without this, a photo you attached early on (a 'make it look like this' reference) would disappear from what the model sees. The newest N of your attached images are re-attached just before the summary. The agent's own render screenshots aren't kept — it can re-render. Set 0 to drop attachments like before."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.compactionKeepImages}
+          value={c.ai.compactionKeepImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'compactionKeepImages', v)}
+        />
+        <Field
+          label="Reference images sent to the automatic review"
+          hint="How many of your attached images the automatic end-of-task review sees next to the renders."
+          tooltip="The automatic review grades the finished model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewReferenceImages}
+          value={c.ai.reviewReferenceImages}
+          min={0} max={12} integer
+          onChange={v => set('ai', 'reviewReferenceImages', v)}
+        />
+        <Field
+          label="Review note length (chars)"
+          hint="How much of a 👁 review is copied into the session note the agent reads on its next turn."
+          tooltip="A manual 👁 review is posted to the chat in full and also saved as a [REVIEW from …] session note, which the agent reads via getSessionContext. Longer notes keep every finding; shorter ones save context."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewNoteMaxChars}
+          value={c.ai.reviewNoteMaxChars}
+          min={200} max={8000} integer
+          onChange={v => set('ai', 'reviewNoteMaxChars', v)}
         />
       </Section>
 
@@ -359,7 +425,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — thinking budgets">
-        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens).</div>
+        <div class="text-[10px] text-zinc-500 leading-snug">Anthropic extended-thinking token budgets (tokens). Only models that take a fixed budget use these (Haiku 4.5, Sonnet/Opus 4.5 and earlier) — newer models (4.6+, Sonnet 5, Opus 5.x, Fable) use adaptive thinking with an effort level, sized by the thinking output ceilings below. Which shape a model takes comes from the model catalog, or is learned from the API. XHigh and Max use the High budget.</div>
         <Field
           label="Anthropic — Low"
           unit="tokens"
@@ -431,11 +497,29 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Anthropic max output tokens"
           unit="tokens"
-          tooltip="The max_tokens value sent to Anthropic's API on every turn. This is the total output ceiling including any thinking tokens. If you've set a High thinking budget above this value, the API will error — raise both together."
+          tooltip="The max_tokens value sent to Anthropic on turns without adaptive thinking — the ceiling on one response, including any budgeted thinking tokens. Output is billed by what the model actually generates, not by this cap, so it guards against runaway responses rather than setting a budget. It's raised automatically above a thinking budget, and every Anthropic ceiling is capped at the model's own output limit."
           defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropic}
           value={c.ai.maxOutputTokensAnthropic}
           min={1024} max={200_000} integer
           onChange={v => set('ai', 'maxOutputTokensAnthropic', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value sent to Anthropic when a Claude 4.6+ model runs adaptive thinking (any Thinking level above Off, or a model that always thinks). Thinking tokens count against this ceiling and adaptive thinking has no separate budget, so it must be large — too low and high-effort turns stop mid-thought. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinking}
+          value={c.ai.maxOutputTokensAnthropicThinking}
+          min={4096} max={64_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinking', v)}
+        />
+        <Field
+          label="Anthropic max output tokens (XHigh / Max thinking)"
+          unit="tokens"
+          tooltip="The max_tokens value for adaptive-thinking turns at the XHigh or Max Thinking level, which think the longest — too low and a deep turn stops mid-thought with max_tokens. Every Claude 4.6+ model accepts at least 64k (Sonnet 4.6's cap), so higher values can error on some models. Output is billed by what the model actually generates, not by this cap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxOutputTokensAnthropicThinkingDeep}
+          value={c.ai.maxOutputTokensAnthropicThinkingDeep}
+          min={4096} max={128_000} integer
+          onChange={v => set('ai', 'maxOutputTokensAnthropicThinkingDeep', v)}
         />
         <Field
           label="OpenAI max output tokens"
@@ -525,8 +609,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
         <Field
           label="Assembly build workers"
-          hint="Parts the Assembly (all-parts) view builds in parallel. Clamped to CPU cores − 1."
-          tooltip="The Assembly view meshes every part of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
+          hint="Objects the Assembly (all-objects) view builds in parallel. Clamped to CPU cores − 1."
+          tooltip="The Assembly view meshes every object of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyPoolSize}
           value={c.renderer.assemblyPoolSize}
           min={1} max={16} integer
@@ -534,8 +618,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
         <Field
           label="Export build workers"
-          hint="Parts a multi-part export bakes in parallel. Clamped to CPU cores − 1 and the part count."
-          tooltip="A multi-part export (3MF / OBJ / STL / GLB) re-runs each part's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes parts one at a time. Clamped at runtime to your CPU core count minus one and to the number of parts you're exporting."
+          hint="Objects a multi-object export bakes in parallel. Clamped to CPU cores − 1 and the object count."
+          tooltip="A multi-object export (3MF / OBJ / STL / GLB) re-runs each object's code to bake its mesh. Baking them in parallel across several geometry workers cuts the wall-clock time for large assemblies. Each worker boots its own manifold-3d WASM instance, so this trades memory for speed. 1 bakes objects one at a time. Clamped at runtime to your CPU core count minus one and to the number of objects you're exporting."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.exportPoolSize}
           value={c.renderer.exportPoolSize}
           min={1} max={16} integer
@@ -544,8 +628,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Assembly grid gutter"
           unit="× cell"
-          hint="Spacing between parts in the Assembly grid, as a fraction of the largest part."
-          tooltip="How much empty space sits between cells in the all-parts grid, as a fraction of the largest part's footprint. 0.25 leaves a quarter-cell gap; 0 packs parts edge to edge."
+          hint="Spacing between objects in the Assembly grid, as a fraction of the largest object."
+          tooltip="How much empty space sits between cells in the all-objects grid, as a fraction of the largest object's footprint. 0.25 leaves a quarter-cell gap; 0 packs objects edge to edge."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyGridGutter}
           value={c.renderer.assemblyGridGutter}
           min={0} max={2} step={0.05}
@@ -842,6 +926,176 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
       </Section>
 
+      <Section title="Part detection">
+        <ToggleField
+          label="Detect parts on STL import"
+          hint="After importing an STL, look for separate parts automatically. When it finds some (e.g. one body per colour), the Detect parts panel opens on them; otherwise the convert-to-code prompt offers a Detect parts button."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectOnImport}
+          value={c.segmentation.autoDetectOnImport}
+          onChange={v => set('segmentation', 'autoDetectOnImport', v)}
+        />
+        <Field
+          label="Auto-detect triangle limit"
+          unit="triangles"
+          hint="Larger imports skip the automatic pass."
+          tooltip="The automatic import-time pass analyses the whole surface before the next-step prompt appears, which takes a few seconds on very large scans (about 1 s for 460k triangles). Imports above this size skip it; the Detect parts button still works."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxTriangles}
+          value={c.segmentation.autoDetectMaxTriangles}
+          min={10_000} max={20_000_000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxTriangles', v)}
+        />
+        <Field
+          label="Auto-detect part limit"
+          unit="parts"
+          hint="Proposals with more parts are dropped."
+          tooltip="An automatic proposal with more parts than this (an assembly, or a scan with loose debris) is not shown; the convert-to-code prompt appears instead. Running Separate pieces yourself is not limited."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxParts}
+          value={c.segmentation.autoDetectMaxParts}
+          min={2} max={1000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxParts', v)}
+        />
+        <Field
+          label="Absorb-specks threshold"
+          unit="of surface"
+          hint="Islands smaller than this fraction are folded into neighbours."
+          tooltip="The Part Detection panel's Absorb specks action reassigns every disconnected fragment of a part whose area is below this fraction of the whole surface to the neighbouring part it touches most. 0.002 = 0.2%. Raise it to clean up larger leaks; lower it to keep small genuine parts such as buttons or pupils."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.absorbMinAreaFrac}
+          value={c.segmentation.absorbMinAreaFrac}
+          min={0} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'absorbMinAreaFrac', v)}
+        />
+        <Field
+          label="Tidy-edges passes"
+          unit="passes"
+          hint="Boundary clean-up passes per Tidy edges click."
+          tooltip="Each pass switches a boundary triangle to the part held by a majority of its neighbours, shaving single-triangle stair-steps and spurs. More passes give smoother but slightly shifted boundaries."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.smoothBoundaryIterations}
+          value={c.segmentation.smoothBoundaryIterations}
+          min={1} max={20} integer
+          onChange={v => set('segmentation', 'smoothBoundaryIterations', v)}
+        />
+        <Field
+          label="Parts listed in summaries"
+          unit="parts"
+          hint="Console/AI part lists truncate beyond this."
+          tooltip="detectParts / editParts / getPartDraft list at most this many parts (the rest are counted in partsTruncated) so an over-segmented mesh doesn't flood the AI's context."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.maxListedParts}
+          value={c.segmentation.maxListedParts}
+          min={10} max={1000} integer
+          onChange={v => set('segmentation', 'maxListedParts', v)}
+        />
+        <Field
+          label="Undo depth"
+          unit="edits"
+          hint="Edit batches the part draft can undo."
+          tooltip="How many editParts batches (merge, rename, reassign, re-run…) a part-detection draft keeps for Undo. Each step holds a copy of the per-triangle part map, so very high values use more memory on large meshes."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.undoDepth}
+          value={c.segmentation.undoDepth}
+          min={1} max={200} integer
+          onChange={v => set('segmentation', 'undoDepth', v)}
+        />
+        <Field
+          label="Part-number placement grid"
+          unit="cells"
+          hint="Resolution used to find where each part is visible."
+          tooltip="renderParts draws each part's number on a spot where that part is visible. Visibility is decided on a coarse depth grid this many cells across; raise it to label smaller visible slivers, lower it for speed."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.labelGridResolution}
+          value={c.segmentation.labelGridResolution}
+          min={40} max={600} integer
+          onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
+        <Field
+          label="Live re-detect delay"
+          unit="ms"
+          hint="Live mode waits this long after your last change."
+          tooltip="With Live on in the Part Detection panel, detection re-runs automatically once you stop moving seeds or changing settings for this long. Raise it on very large meshes so a re-run doesn't start mid-adjustment."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.liveDebounceMs}
+          value={c.segmentation.liveDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'liveDebounceMs', v)}
+        />
+        <Field
+          label="Edge-smoothness delay"
+          unit="ms"
+          hint="Wait after the Edge smoothness slider before recomputing."
+          tooltip="Smooth part edges are recomputed (in the background) once the Edge smoothness slider has been still for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgeSmoothingDebounceMs}
+          value={c.segmentation.edgeSmoothingDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'edgeSmoothingDebounceMs', v)}
+        />
+        <Field
+          label="Preset thumbnail size"
+          unit="px"
+          hint="Size of the preset filmstrip tiles."
+          tooltip="The Presets strip renders each preset's result as a small thumbnail of this size. Larger tiles show more detail but take longer to draw."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.presetThumbSize}
+          value={c.segmentation.presetThumbSize}
+          min={64} max={320} integer
+          onChange={v => set('segmentation', 'presetThumbSize', v)}
+        />
+        <Field
+          label="Default edge smoothness"
+          unit="passes"
+          hint="Edge-smoothing passes a new part draft starts with."
+          tooltip="Smooth part edges draw boundaries through triangles so stair-stepped boundaries curve, and Accept cuts the mesh along them. This is the starting value of the panel's Edge smoothness slider (and of drafts the AI creates). 0 = keep boundaries on triangle edges and never re-mesh on accept."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.defaultEdgeSmoothing}
+          value={c.segmentation.defaultEdgeSmoothing}
+          min={0} max={20} integer
+          onChange={v => set('segmentation', 'defaultEdgeSmoothing', v)}
+        />
+        <Field
+          label="Keep boundaries on sharp folds"
+          unit="°"
+          hint="Smoothing leaves boundaries on folds this sharp alone."
+          tooltip="Where a part boundary runs along an edge whose faces meet at least this many degrees apart (a hard edge such as a box corner), it already sits on the seam, so smooth edges leave it there. Sculpted grooves on scans usually fold 30–60° per edge, so they still smooth at the default 60°. Lower it to keep more boundaries in place; 0 smooths every boundary."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgePinCreaseDeg}
+          value={c.segmentation.edgePinCreaseDeg}
+          min={0} max={90} step={1}
+          onChange={v => set('segmentation', 'edgePinCreaseDeg', v)}
+        />
+        <Field
+          label="Convert-to-seeds speck size"
+          unit="of part"
+          hint="Smaller regions of a part get no seed of their own."
+          tooltip="Convert to seeds drops one seed in each separate region of every part. Regions smaller than this fraction of their part are skipped, so stray specks follow the part's main seed. 0.01 = 1%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedsFromPartsMinRegionFrac}
+          value={c.segmentation.seedsFromPartsMinRegionFrac}
+          min={0} max={0.5} step={0.005}
+          onChange={v => set('segmentation', 'seedsFromPartsMinRegionFrac', v)}
+        />
+        <Field
+          label="Seed dot size"
+          unit="of model"
+          hint="Seed-marker dot radius, as a fraction of the model's size."
+          tooltip="Seed dots are sized from the model's bounding-box diagonal so they read the same on a small figurine and a large scan. 0.008 = 0.8% of the diagonal."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedDotFraction}
+          value={c.segmentation.seedDotFraction}
+          min={0.001} max={0.05} step={0.001}
+          onChange={v => set('segmentation', 'seedDotFraction', v)}
+        />
+        <Field
+          label="Seed label size"
+          unit="of view"
+          hint="Seed name-tag height, as a fraction of the viewport height."
+          tooltip="Seed name tags stay the same size on screen however far you zoom. 0.026 ≈ 2.6% of the viewport height."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedTagScreenFraction}
+          value={c.segmentation.seedTagScreenFraction}
+          min={0.01} max={0.08} step={0.002}
+          onChange={v => set('segmentation', 'seedTagScreenFraction', v)}
+        />
+        <Field
+          label="Fix brush size"
+          unit="of model"
+          hint="Radius of the part panel's Fix brush."
+          tooltip="The Fix tool paints triangles into a chosen part with a round brush this big (a fraction of the model's bounding-box diagonal). Fixed triangles stay put when pins move. 0.012 = 1.2%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.fixBrushRadiusFrac}
+          value={c.segmentation.fixBrushRadiusFrac}
+          min={0.002} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'fixBrushRadiusFrac', v)}
+        />
+      </Section>
+
       <Section title="UI">
         <ToggleField
           label="Show editor hints"
@@ -879,6 +1133,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paneSlideMs}
           min={0} max={600} integer
           onChange={v => set('ui', 'paneSlideMs', v)}
+        />
+        <Field
+          label="Mini code map width"
+          unit="px"
+          hint="Width of the compact code map the code pane shows by default."
+          tooltip="The code pane starts as a narrow, syntax-colored map of the file — hover it to peek at the code, click to open the full editor there. This sets how wide that strip is. Wider shows more of each line; narrower leaves more room for the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeMinimapWidthPx}
+          value={c.ui.codeMinimapWidthPx}
+          min={80} max={320} integer
+          onChange={v => set('ui', 'codeMinimapWidthPx', v)}
         />
         <Field
           label="Default palette capacity"

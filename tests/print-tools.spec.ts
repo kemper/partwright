@@ -7,6 +7,7 @@
 // tests.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 type Geo = { volume?: number; triangleCount?: number; isManifold?: boolean; boundingBox?: { dimensions?: [number, number, number] } };
 type PW = {
@@ -15,22 +16,20 @@ type PW = {
   checkPrintability: (opts?: unknown) => { ok?: boolean; bedFit?: { fits: boolean }; checks?: { id: string; level: string }[]; error?: string };
 };
 
-async function waitForEngine(page: Page) {
-  await page.waitForSelector('text=Ready', { timeout: 20_000 });
-  await page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { checkPrintability?: unknown } }).partwright?.checkPrintability,
-    { timeout: 20_000 },
-  );
-}
-
-async function openEditor(page: Page) {
-  await page.goto('/editor');
-  await waitForEngine(page);
-}
+// All three tests just drive checkPrintability / the Print panel and assert on
+// the result — the panel-opening tests explicitly close the panel again at the
+// end so the next test starts from a closed baseline — so the file shares one
+// booted editor instead of paying a fresh page + WASM boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
 
 test.describe('Print tools', () => {
-  test('checkPrintability reports bed fit for small vs oversized models', async ({ page }) => {
-    await openEditor(page);
+  test('checkPrintability reports bed fit for small vs oversized models', async () => {
     const result = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       await pw.run('const { Manifold } = api; return Manifold.cube([20,20,20], true).translate([0,0,10]);');
@@ -45,8 +44,7 @@ test.describe('Print tools', () => {
     expect(result.big.checks?.find(c => c.id === 'bed')?.level).toBe('fail');
   });
 
-  test('the Print panel opens (mounted in Inspect) and renders a printability report', async ({ page }) => {
-    await openEditor(page);
+  test('the Print panel opens (mounted in Inspect) and renders a printability report', async () => {
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       await pw.run('const { Manifold } = api; return Manifold.cube([20,20,20], true).translate([0,0,10]);');
@@ -63,10 +61,14 @@ test.describe('Print tools', () => {
     await page.locator('#print-check-btn').dispatchEvent('click');
     // The report lists individual checks — the watertight one always renders.
     await expect(page.locator('#print-report')).toContainText(/Watertight|print-ready|Printable|blocker/i, { timeout: 10_000 });
+
+    // Close it again so the next test starts from a closed baseline (this
+    // spec shares one page across tests — see the file-level comment).
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#print-tools-panel')).toHaveClass(/hidden/);
   });
 
-  test('the Print panel follows the shared chrome — × close button and Escape close', async ({ page }) => {
-    await openEditor(page);
+  test('the Print panel follows the shared chrome — × close button and Escape close', async () => {
     await page.locator('#print-tools-toggle').dispatchEvent('click');
     await page.waitForSelector('#print-tools-panel:not(.hidden)');
 

@@ -888,6 +888,29 @@ function removeClipPlaneVisual() {
   }
 }
 
+/**
+ * Repaint the displayed mesh's per-triangle colours in place — no geometry
+ * rebuild, so it is cheap enough for hover/selection highlights on large
+ * meshes. Returns false (caller should fall back to updateMesh) when the
+ * shown mesh has no colour attribute or a different triangle count.
+ */
+export function recolorMesh(triColors: Uint8Array): boolean {
+  const solid = meshGroup.children[0];
+  if (!(solid instanceof THREE.Mesh)) return false;
+  const attr = solid.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!attr || attr.count !== triColors.length) return false; // 3 vertices per triangle, 3 channels
+  const arr = attr.array as Float32Array;
+  for (let t = 0, n = triColors.length / 3; t < n; t++) {
+    let r = triColors[t * 3] / 255, g = triColors[t * 3 + 1] / 255, b = triColors[t * 3 + 2] / 255;
+    // Same rule as meshGLToBufferGeometry: black means "unpainted" (default blue).
+    if (r === 0 && g === 0 && b === 0) { r = 0x4a / 255; g = 0x9e / 255; b = 0xff / 255; }
+    for (let v = 0; v < 3; v++) { arr[t * 9 + v * 3] = r; arr[t * 9 + v * 3 + 1] = g; arr[t * 9 + v * 3 + 2] = b; }
+  }
+  attr.needsUpdate = true;
+  requestRender();
+  return true;
+}
+
 /** Convert a MeshData to a THREE.BufferGeometry. With per-triangle `triColors`
  *  the geometry is unindexed (each triangle's 3 verts carry that triangle's
  *  colour, unpainted → default blue) and gets a `color` attribute; without

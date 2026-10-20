@@ -8,28 +8,11 @@ import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
 // stubbed Gemini transport.
 
 test.describe('Auto-continue (finish-tool resume)', () => {
-  test('finish tool + prompt instruction appear only when auto-continue is ON', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEditorReady(page);
-    const out = await page.evaluate(async () => {
-      const tools = await import('/src/ai/tools.ts');
-      const settings = await import('/src/ai/settings.ts');
-      const sys = await import('/src/ai/systemPrompt.ts');
-      const onToggles = settings.setToggles(settings.loadSettings(), { autoResume: true }).toggles;
-      const offToggles = settings.setToggles(settings.loadSettings(), { autoResume: false }).toggles;
-      return {
-        onHasFinish: tools.buildToolList(onToggles).some(t => t.name === 'finish'),
-        offHasFinish: tools.buildToolList(offToggles).some(t => t.name === 'finish'),
-        onSuffix: sys.toggleSuffix(onToggles),
-        offSuffix: sys.toggleSuffix(offToggles),
-      };
-    });
-    expect(out.onHasFinish).toBe(true);
-    expect(out.offHasFinish).toBe(false);
-    expect(out.onSuffix).toMatch(/auto-continue is on/i);
-    expect(out.onSuffix).toMatch(/finish/);
-    expect(out.offSuffix).not.toMatch(/auto-continue is on/i);
-  });
+  // The pure tool-gating/suffix assertion ("finish tool + prompt instruction
+  // appear only when auto-continue is ON") moved to
+  // tests/unit/aiAutoResumeToolGating.test.ts — no browser needed there. The
+  // tests below drive the real chatLoop, which persists to IndexedDB
+  // (unavailable in plain Node), so they stay here.
 
   test('a plain end_turn auto-resumes, then a finish call stops the loop cleanly', async ({ page }) => {
     await page.goto('/editor');

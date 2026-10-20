@@ -32,76 +32,78 @@ const src = await partwright.exportCodeData()
 
 Each call also adds the export to the Recent Exports inbox so the user can re-download it from the toolbar's Export → Recent Exports list.
 
-## Multi-part 3MF — bundle several parts into one file
+## Multi-object 3MF — bundle several objects into one file
 
-`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy? })` bundles several Session Parts into **one** 3MF. Two modes:
+> The session's left-rail entries are **objects** (each with its own code + versions). They were called "parts" before; the old names — `export3MFParts`, `exportOBJParts`, … and their `*PartsData` twins — still work as deprecated aliases, and results also carry the old `parts` count.
 
-- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: parts distributed across build plates (see `plateLayout`), painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
-- **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
+`export3MFObjects(objectIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy? })` bundles several objects into **one** 3MF. Two modes:
+
+- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: objects distributed across build plates (see `plateLayout`), painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
+- **`{ bambu: false }`** — a **generic** multi-object 3MF: objects grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-object session.
 
 In Bambu mode you can pick the target machine (these match the export modal's dropdowns):
 - **`printer`** — dual-nozzle: `"h2c"` (default), `"h2d"`, `"h2dpro"`, `"x2d"`; single-nozzle: `"h2s"`, `"a2l"`, `"x1c"`, `"x1e"`, `"x1"`, `"p1s"`, `"p1p"`, `"p2s"`, `"a1"`, `"a1mini"`. Sets the printer profile + bed + process so Bambu opens it natively without converting.
 - **`nozzle`** — `"0.2"` | `"0.4"` (default) | `"0.6"` | `"0.8"`.
 - **`filament`** — `"pla"` (default) | `"petg"` | `"abs"` | `"asa"` | `"tpu"` | `"pc"`. One material for all colours; sets the filament type + temps.
-- **`plateLayout`** — how selected parts spread across build plates. `"grid"` / `"group"` **shelf-pack** parts by their real footprint into the printer's bed, spilling onto extra plates when they don't all fit (so nothing lands off the plate):
-  - `"separate"` (default) — **one part per plate**. Best for a handful of parts; unwieldy past ~30.
-  - `"grid"` — **all parts packed together**, filling each plate before starting the next. Best for many small parts you want to print in as few jobs as possible.
-  - `"group"` — **each part group packed onto its own plate(s)** (parts sharing a `group`; ungrouped parts print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
+- **`plateLayout`** — how selected objects spread across build plates. `"grid"` / `"group"` **shelf-pack** objects by their real footprint into the printer's bed, spilling onto extra plates when they don't all fit (so nothing lands off the plate):
+  - `"separate"` (default) — **one object per plate**. Best for a handful of objects; unwieldy past ~30.
+  - `"grid"` — **all objects packed together**, filling each plate before starting the next. Best for many small objects you want to print in as few jobs as possible.
+  - `"group"` — **each object group packed onto its own plate(s)** (objects sharing a `group`; ungrouped objects print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
 
-**`packStrategy`** — how parts that *share* a plate (or the whole generic model) are spatially arranged. Works in **both** modes (Bambu and generic); orthogonal to `plateLayout`:
-- `"grid"` (default) — a compact, roughly-square cluster **centred** on the plate. Keeps parts toward the middle of the bed, away from the far left/right edges that aren't always printable on wide beds like the H2C.
+**`packStrategy`** — how objects that *share* a plate (or the whole generic model) are spatially arranged. Works in **both** modes (Bambu and generic); orthogonal to `plateLayout`:
+- `"grid"` (default) — a compact, roughly-square cluster **centred** on the plate. Keeps objects toward the middle of the bed, away from the far left/right edges that aren't always printable on wide beds like the H2C.
 - `"horizontal"` — fill left→right across the full bed width, wrapping to new rows.
 - `"vertical"` — fill front→back down the full bed depth, wrapping to new columns.
 
 ```js
-// Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
-await partwright.export3MFParts()
-// -> { ok: true, filename: "...3mf", parts: 3 }
+// Every object in the session, one per Bambu plate (default H2C / 0.4 / PLA):
+await partwright.export3MFObjects()
+// -> { ok: true, filename: "...3mf", objects: 3 }
 
 // Target a P1S with a 0.6 nozzle in PETG:
-await partwright.export3MFParts(undefined, "tree", { printer: "p1s", nozzle: "0.6", filament: "petg" })
+await partwright.export3MFObjects(undefined, "tree", { printer: "p1s", nozzle: "0.6", filament: "petg" })
 
-// All parts packed onto ONE plate (grid) — good for many small parts:
-await partwright.export3MFParts(undefined, "tray", { plateLayout: "grid" })
+// All objects packed onto ONE plate (grid) — good for many small objects:
+await partwright.export3MFObjects(undefined, "tray", { plateLayout: "grid" })
 
-// One plate per group (30-part collection organised into groups):
-await partwright.export3MFParts(undefined, "collection", { plateLayout: "group" })
+// One plate per group (30-object collection organised into groups):
+await partwright.export3MFObjects(undefined, "collection", { plateLayout: "group" })
 
-// All parts on one plate, arranged left→right in horizontal rows:
-await partwright.export3MFParts(undefined, "row", { plateLayout: "grid", packStrategy: "horizontal" })
+// All objects on one plate, arranged left→right in horizontal rows:
+await partwright.export3MFObjects(undefined, "row", { plateLayout: "grid", packStrategy: "horizontal" })
 
-// Specific parts as a generic multi-object 3MF (ids from listParts()):
-await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
+// Specific objects as a generic multi-object 3MF (ids from listObjects()):
+await partwright.export3MFObjects(["obj_abc", "obj_def"], "assembly", { bambu: false })
 ```
 
-Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places parts on plates using your configured **bed size** (printer settings) for the plate stride, and arranges multiple parts sharing a plate (`"grid"` / `"group"`) in a sub-grid within the bed. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
+Each object's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places objects on plates using your configured **bed size** (printer settings) for the plate stride, and arranges multiple objects sharing a plate (`"grid"` / `"group"`) in a sub-grid within the bed. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
 
-`export3MFParts` triggers a browser download; **`export3MFPartsData(partIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, parts }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
+`export3MFObjects` triggers a browser download; **`export3MFObjectsData(objectIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, objects }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
 
 ```js
-const r = await partwright.export3MFPartsData(undefined, 'assembly', { bambu: true })
-// -> { filename, mimeType, base64: "...", sizeBytes, parts: 3 }
+const r = await partwright.export3MFObjectsData(undefined, 'assembly', { bambu: true })
+// -> { filename, mimeType, base64: "...", sizeBytes, objects: 3 }
 ```
 
-## Multi-part OBJ / STL / GLB
+## Multi-object OBJ / STL / GLB
 
-The same part-bake pipeline backs OBJ, STL, and GLB. Each takes `(partIds?, filename?)` (default: every part) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, parts }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-part session (the single button auto-routes to the part picker when the session has more than one part). Each format bundles parts the way its file format does best:
+The same object-bake pipeline backs OBJ, STL, and GLB. Each takes `(objectIds?, filename?)` (default: every object) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, objects }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-object session (the single button auto-routes to the object picker when the session has more than one object). Each format bundles objects the way its file format does best:
 
-- **`exportOBJParts` / `exportOBJPartsData`** — one `.obj` with a named `o <part>` object per part, **grid-arranged** so they don't overlap. Painted parts add a shared `.mtl` (OBJ + MTL bundled in a `.zip`); with no paint anywhere it's a plain `.obj`.
-- **`exportSTLParts` / `exportSTLPartsData`** — a `.zip` with **one `.stl` per part**. STL is a flat triangle soup with no object names or colour, so separate files are the only faithful way to keep parts distinct.
-- **`exportGLBParts` / `exportGLBPartsData`** — one `.glb` scene with a named node per part, **grid-arranged**. Painted parts export as vertex colours. glTF is a scene graph, so distinct named meshes is its natural multi-part form.
+- **`exportOBJObjects` / `exportOBJObjectsData`** — one `.obj` with a named `o <name>` group per object, **grid-arranged** so they don't overlap. Painted objects add a shared `.mtl` (OBJ + MTL bundled in a `.zip`); with no paint anywhere it's a plain `.obj`.
+- **`exportSTLObjects` / `exportSTLObjectsData`** — a `.zip` with **one `.stl` per object**. STL is a flat triangle soup with no object names or colour, so separate files are the only faithful way to keep objects distinct.
+- **`exportGLBObjects` / `exportGLBObjectsData`** — one `.glb` scene with a named node per object, **grid-arranged**. Painted objects export as vertex colours. glTF is a scene graph, so distinct named meshes is its natural multi-object form.
 
 ```js
-// Every part as named objects in one OBJ:
-await partwright.exportOBJParts()
-// -> { ok: true, filename: "...zip", parts: 3 }
+// Every object as named objects in one OBJ:
+await partwright.exportOBJObjects()
+// -> { ok: true, filename: "...zip", objects: 3 }
 
-// Specific parts, bytes returned (no download):
-const r = await partwright.exportGLBPartsData(["part_abc", "part_def"], "assembly")
-// -> { filename, mimeType, base64: "...", sizeBytes, parts: 2 }
+// Specific objects, bytes returned (no download):
+const r = await partwright.exportGLBObjectsData(["obj_abc", "obj_def"], "assembly")
+// -> { filename, mimeType, base64: "...", sizeBytes, objects: 2 }
 ```
 
-Like 3MF, each part's **latest version** is re-baked with its colours (code-declared `api.label`/`api.paint.*` and saved manual paint) before bundling.
+Like 3MF, each object's **latest version** is re-baked with its colours (code-declared `api.label`/`api.paint.*` and saved manual paint) before bundling.
 
 ## Import — supply the payload directly
 ```js

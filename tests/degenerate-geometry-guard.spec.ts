@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
+import { openSharedEditor } from './helpers/sharedPage';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -12,15 +13,26 @@ import { test, expect } from 'playwright/test';
 
 const VALID_SPHERE = 'const { Manifold } = api; return Manifold.sphere(15);';
 
+// Every test just calls pw.run() with its own code and checks the returned
+// result / camera state — nothing depends on state a sibling left behind —
+// so the file shares one booted editor instead of paying a fresh page + WASM
+// boot per test.
+let page: Page;
+test.beforeAll(async ({ browser }, testInfo) => {
+  page = await openSharedEditor(browser, testInfo);
+});
+test.afterAll(async () => {
+  await page?.context().close();
+});
+
 test.describe('degenerate-geometry guards', () => {
-  test.beforeEach(async ({ page }) => {
+  // One case (the scale(0) degenerate-frame round trip) runs several full
+  // model builds + camera reframes and can run past the default 30s budget.
+  test.beforeEach(() => {
     test.setTimeout(120000);
-    await page.goto('/editor');
-    await page.waitForFunction(() => !!(window as any).partwright?.run, null, { timeout: 30000 });
-    await page.waitForTimeout(3000); // WASM + viewport settle
   });
 
-  test('primitive constructors reject a missing required dimension', async ({ page }) => {
+  test('primitive constructors reject a missing required dimension', async () => {
     // sphere(): radius is required and has no default.
     const sphere = await page.evaluate((c) => (window as any).partwright.run(c), 'const { Manifold } = api; return Manifold.sphere();');
     expect(String(sphere.error ?? '')).toContain('Manifold.sphere(radius)');
@@ -37,14 +49,14 @@ test.describe('degenerate-geometry guards', () => {
     expect(await page.evaluate(() => 2 + 2)).toBe(4);
   });
 
-  test('cube() / square() with no args still build their default unit shape', async ({ page }) => {
+  test('cube() / square() with no args still build their default unit shape', async () => {
     // These have a documented default, so omitting the size must remain valid.
     const cube = await page.evaluate((c) => (window as any).partwright.run(c), 'const { Manifold } = api; return Manifold.cube();');
     expect(cube.isManifold).toBe(true);
     expect(cube.error ?? null).toBeNull();
   });
 
-  test('a valid-but-degenerate zero-size mesh does not push the camera to NaN', async ({ page }) => {
+  test('a valid-but-degenerate zero-size mesh does not push the camera to NaN', async () => {
     // Baseline frame.
     await page.evaluate((c) => (window as any).partwright.run(c), VALID_SPHERE);
     const before = await page.evaluate(() => (window as any).partwright.getViewState().camera);

@@ -3,6 +3,9 @@
 // in-app renderer (src/ui/legal.ts) and the build-time static pre-renderer
 // (src/content/build/*), which runs in Node. Body strings are trusted HTML.
 
+import { buildInfo } from '../../buildInfo';
+import { discussionsUrl, issueChooserUrl, securityReportUrl } from '../../feedbackLinks';
+
 export interface ContentSection {
   id: string;
   heading: string;
@@ -38,5 +41,12 @@ export const LEGAL_SECTIONS: ContentSection[] = [
       'Partwright runs JavaScript and OpenSCAD <strong class="text-zinc-300">in your browser</strong> to build geometry. That code — whether you typed it, an AI agent wrote it, or it came in with an imported session — is evaluated with <code class="text-emerald-400 bg-zinc-800 px-1 rounded">new Function</code> in the page, <strong class="text-zinc-300">not inside a hardened security sandbox</strong>. It runs with the same capabilities as the rest of the page.<br><br>' +
       '<strong class="text-zinc-300">Importing a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code> session executes the code it contains</strong> (each version\'s code is run to regenerate its thumbnail). Treat an imported session like any other code you would run on your machine.<br><br>' +
       '<strong class="text-zinc-300">Only run or import code from sources you trust.</strong> Partwright enforces a strict Content Security Policy and — apart from the anonymous, aggregate usage analytics described above — makes no outbound network requests of its own, which limits the blast radius, but it is not a substitute for caution with untrusted code.',
+  },
+  {
+    id: 'contact',
+    heading: 'Contact',
+    body:
+      `Questions about these terms or your privacy, bug reports, and feature ideas all go through GitHub: <a href="${issueChooserUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">open an issue</a> or start a thread in <a href="${discussionsUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discussions</a>. ` +
+      `Please report security vulnerabilities <a href="${securityReportUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">privately</a> rather than in a public issue.`,
   },
 ];

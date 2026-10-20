@@ -50,6 +50,7 @@ import {
   duplicatePartScad,
   removeJsDeclaration,
   removeManagedPart,
+  partCarriesLabels,
   removeScadStatement,
 } from '../src/insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
@@ -402,6 +403,78 @@ test.describe('controller — removeManagedPart', () => {
     const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nconst c = Manifold.cube([2,2,2]);\nreturn Manifold.union([a, b, c]);';
     const out = removeManagedPart(code, 'b', 'manifold-js');
     expect(out).toContain('return Manifold.union([a, c]);');
+  });
+});
+
+test.describe('controller — labelled inserts (arrange-mode shapes become object parts)', () => {
+  test('label:true wraps a lone first insert in api.label', () => {
+    const code = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    const out = addManagedDeclaration(code, 'const ball1 = Manifold.sphere(6);', {
+      lang: 'manifold-js', addNames: ['ball1'], combine: true, label: true,
+    });
+    expect(out.code).toBe("const { Manifold } = api;\nconst ball1 = Manifold.sphere(6);\nreturn api.label(ball1, 'ball1');");
+  });
+
+  test('label:true folds a second insert in labelled, keeping the first', () => {
+    const code = "const { Manifold } = api;\nconst ball1 = Manifold.sphere(6);\nreturn api.label(ball1, 'ball1');";
+    const out = addManagedDeclaration(code, 'const box2 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box2'], combine: true, label: true,
+    });
+    expect(out.code).toContain("return Manifold.union([api.label(ball1, 'ball1'), api.label(box2, 'box2')]);");
+  });
+
+  test('never re-labels existing hand-written elements (would erase their inner labels)', () => {
+    const code = 'const { Manifold } = api;\nconst figure = api.labeledUnion([{ name: "head", shape: h }]);\nreturn figure;';
+    const out = addManagedDeclaration(code, 'const box1 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box1'], combine: true, label: true,
+    });
+    expect(out.code).toContain("return Manifold.union([figure, api.label(box1, 'box1')]);");
+  });
+
+  test('an operation replaces its labelled operands with the labelled result', () => {
+    const code = "const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nreturn Manifold.union([api.label(a, 'a'), api.label(b, 'b')]);";
+    const out = addManagedDeclaration(code, 'const union1 = a.add(b);', {
+      lang: 'manifold-js', addNames: ['union1'], replaceNames: ['a', 'b'], combine: true, label: true,
+    });
+    expect(out.code).toContain("return api.label(union1, 'union1');");
+  });
+
+  test('replicad inserts label with BREP.label', () => {
+    const code = "const { BREP } = api;\nconst a = BREP.box([1,1,1]);\nreturn BREP.label(a, 'a');";
+    const out = addManagedDeclaration(code, 'const b = BREP.sphere(2);', {
+      lang: 'replicad', addNames: ['b'], combine: true, label: true,
+    });
+    expect(out.code).toContain("return BREP.fuseAll([BREP.label(a, 'a'), BREP.label(b, 'b')]);");
+  });
+
+  test('partCarriesLabels finds labels in a declaration and transitively through its operands', () => {
+    const code = [
+      'const { Manifold } = api;',
+      "const head = api.label(Manifold.sphere(5), 'head');",
+      'const figure = head.add(Manifold.cube([1, 1, 1]));',
+      'const box1 = Manifold.cube([4, 4, 4], true);',
+      'const plain = box1.translate([1, 0, 0]);',
+      'return Manifold.union([figure, plain]);',
+    ].join('\n');
+    expect(partCarriesLabels(code, 'head')).toBe(true);
+    expect(partCarriesLabels(code, 'figure')).toBe(true);   // via head
+    expect(partCarriesLabels(code, 'box1')).toBe(false);
+    expect(partCarriesLabels(code, 'plain')).toBe(false);
+    expect(partCarriesLabels(code, "(api.labeledUnion([{ name: 'a', shape: x }]))")).toBe(true);
+  });
+
+  test('removeManagedPart understands labelled elements', () => {
+    const code = "const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nreturn Manifold.union([api.label(a, 'a'), api.label(b, 'b')]);";
+    const out = removeManagedPart(code, 'b', 'manifold-js');
+    expect(out).not.toContain('const b =');
+    expect(out).toContain("return api.label(a, 'a');");
+  });
+
+  test('removeManagedPart repoints a lone labelled return to the last surviving const', () => {
+    const code = "const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nreturn api.label(b, 'b');";
+    const out = removeManagedPart(code, 'b', 'manifold-js');
+    expect(out).not.toContain('const b =');
+    expect(out).toContain('return a;');
   });
 });
 

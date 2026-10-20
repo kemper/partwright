@@ -1,4 +1,5 @@
 import { test, expect, type Page } from 'playwright/test';
+import { waitFor } from './helpers/waitFor';
 
 // Session attachments: the generalization of "reference images" into typed
 // project files (image | model | document | text | other). They persist with
@@ -28,7 +29,6 @@ test.describe('session attachments', () => {
       const pw = (window as any).partwright;
       await pw.createSession('attachments');
     });
-    await page.waitForTimeout(1000);
 
     const kinds = await page.evaluate(async ({ png }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,7 +69,6 @@ test.describe('session attachments', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (window as any).partwright.createSession('attachments-tool');
     });
-    await page.waitForTimeout(1000);
 
     const result = await page.evaluate(async ({ png }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -98,7 +97,6 @@ test.describe('session attachments', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (window as any).partwright.createSession('attachments-ui');
     });
-    await page.waitForTimeout(1000);
     await page.evaluate(async ({ png }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -126,7 +124,18 @@ test.describe('session attachments', () => {
       pw.addAttachment({ src: png, label: 'Front', description: 'why it matters' });
       return s.id as string;
     }, { png: PNG });
-    await page.waitForTimeout(1200);
+    // addAttachment's persistence is fire-and-forget (`void persistAttachments`
+    // in main.ts's commitAttachments) — poll the actual IndexedDB session row
+    // via db.ts (a direct read, bypassing the in-memory mirror) until the
+    // write has actually landed, instead of sleeping a guess before reloading.
+    await waitFor(
+      () => page.evaluate(async (id) => {
+        const db = await import('/src/storage/db.ts');
+        const session = await db.getSession(id);
+        return (session?.attachments?.length ?? 0) > 0;
+      }, sid),
+      { timeout: 10_000, message: 'the attachment write to persist to IndexedDB' },
+    );
 
     await page.goto('/editor?session=' + sid);
     await page.waitForFunction(
@@ -134,12 +143,16 @@ test.describe('session attachments', () => {
       undefined,
       { timeout: 30_000 },
     );
-    await page.waitForTimeout(2500);
-
-    const after = await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).partwright.getAttachments();
-    });
+    // Wait for the restored in-memory attachment mirror rather than sleeping a
+    // guess for "WASM + first render + restore" to finish.
+    const after = await waitFor(
+      () => page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const list = (window as any).partwright.getAttachments();
+        return list.length > 0 ? list : null;
+      }),
+      { timeout: 10_000, message: 'attachments to be restored after reload' },
+    );
     expect(after.length).toBe(1);
     expect(after[0].label).toBe('Front');
     expect(after[0].description).toBe('why it matters');
@@ -151,7 +164,6 @@ test.describe('session attachments', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (window as any).partwright.createSession('desc');
     });
-    await page.waitForTimeout(1000);
     const result = await page.evaluate(async ({ png }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;

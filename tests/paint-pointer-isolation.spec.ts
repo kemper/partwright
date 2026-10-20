@@ -26,7 +26,7 @@ test.describe('paint pointer-target isolation', () => {
     const regions = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const container = canvas.parentElement!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2; // over the sphere
@@ -59,7 +59,7 @@ test.describe('paint pointer-target isolation', () => {
     const regions = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (type: string, x: number, y: number, buttons: number) =>

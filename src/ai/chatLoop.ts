@@ -10,7 +10,7 @@
 // otherwise agnostic to which one is in play.
 
 import { generateId } from '../storage/db';
-import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
+import { streamTurn, buildApiMessages, anthropicThinkingActive, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
 import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
@@ -24,7 +24,7 @@ import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError } from './transientError';
-import { elideStaleToolImages } from './historyElision';
+import { elideStaleToolImages, providerCachesHistory } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -330,16 +330,22 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Trim stale render images out of the request (the persisted/displayed
     // history keeps them) so a long modeling session's image tokens don't
     // compound on every turn. Recomputed each iteration as tool results grow.
-    const sentHistory = elideStaleToolImages(workingHistory, getConfig().ai.keepRecentToolImages);
+    // Providers that cache the history trim in steps (see imagesToElide) so
+    // the cached prefix survives between trims; the rest keep a tight window.
+    const aiCfg = getConfig().ai;
+    const sentHistory = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
+      ? elideStaleToolImages(workingHistory, aiCfg.cachedImageLimit, aiCfg.cachedImageTrimTo)
+      : elideStaleToolImages(workingHistory, aiCfg.keepRecentToolImages);
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
       if (toggles.provider === 'anthropic') {
         if (!apiKey) throw new Error('Anthropic API key is required.');
-        // Replay captured thinking blocks only when thinking is on for this
-        // turn — required so the tool-use loop doesn't 400 on a tool_use that
-        // isn't preceded by its signed thinking block.
-        const apiMessages = buildApiMessages(sentHistory, { replayThinking: toggles.thinking !== 'off' });
+        // Replay captured thinking blocks whenever the model will think on
+        // this turn (which, on always-thinking models, includes Off) —
+        // required so the tool-use loop doesn't 400 on a tool_use that isn't
+        // preceded by its signed thinking block.
+        const apiMessages = buildApiMessages(sentHistory, { replayThinking: anthropicThinkingActive(toggles.anthropicModel, toggles.thinking) });
         result = await streamTurn({
           apiKey,
           model: toggles.anthropicModel,
@@ -348,6 +354,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiMessages,
           tools,
           thinking: toggles.thinking,
+          cacheHistory: aiCfg.cacheConversationHistory,
         }, streamCallbacks, signal);
       } else if (toggles.provider === 'openai') {
         // sendMessage passes the active provider's key as `apiKey`; fall
@@ -391,6 +398,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           systemSuffix: toggleSuffix(toggles),
           history: sentHistory,
           tools,
+          thinking: toggles.thinking,
+          sendReasoningEffort: toggles.customReasoningEffort,
         }, streamCallbacks, signal);
       } else {
         if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');
@@ -462,7 +471,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       requestSummary,
     });
 
-    const turnCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    // null = the model has no known pricing (the user authorized it anyway
+    // in the panel's preflight) — recorded as "cost unknown", never $0.
+    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    const turnCost = pricedCost ?? 0;
     totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
@@ -493,7 +505,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // undefined for every other provider.
       thinkingBlocks: result.thinkingBlocks && result.thinkingBlocks.length > 0 ? result.thinkingBlocks : undefined,
       usage: result.usage,
-      costUsd: turnCost,
+      ...(pricedCost === null ? { costUnknown: true } : { costUsd: pricedCost }),
       createdAt: Date.now(),
       seq: seqStart + 1 + iter * 2,
       durationMs,

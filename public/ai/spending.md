@@ -35,8 +35,10 @@ panel's toggle strip.
 
 ## Advisory — adjust your own behavior to match
 
-- **`thinking`** (`off`/`low`/`medium`/`high`) — when `off`, keep reasoning
-  minimal and act directly.
+- **`thinking`** (`off`/`default`/`low`/`medium`/`high`/`xhigh`/`max`) — the
+  reasoning level the user picked. When `off`, keep reasoning minimal and act
+  directly; at `xhigh`/`max` the user is paying for depth, so check spatial
+  details (overlaps, clearances, orientation) carefully before acting.
 - **`verifyWithImages`** — when `false`, reason from stats/code alone; render
   images sparingly only when the user explicitly needs a visual check.
 - **`verificationAngles`** (`auto`/`tri`/`all`) — the default angle set for

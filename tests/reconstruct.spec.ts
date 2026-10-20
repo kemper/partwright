@@ -112,7 +112,7 @@ test.describe('convert to code (reconstruction)', () => {
     // Real work exists in the session → the import-target modal appears first.
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible({ timeout: 10_000 });
-    await dialog.getByRole('button', { name: /new part/i }).click();
+    await dialog.getByRole('button', { name: /new object/i }).click();
 
     // The post-import ask is the same settings panel the Tools pill opens:
     // context line, quality presets, derived threshold placeholders.
