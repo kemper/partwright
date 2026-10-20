@@ -8,6 +8,7 @@ import { revealEditorLine } from '../editor/codeEditor';
 import { createPopoverGroup, createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
 import { getConfig } from '../config/appConfig';
+import { SLIDER_ENTRY_INPUT } from './sliderEntry';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -1088,11 +1089,19 @@ function createClipSlider(): HTMLElement {
   slider.value = '5';
   sliderGroup.appendChild(slider);
 
-  const zLabel = document.createElement('span');
-  zLabel.id = 'clip-z-label';
-  zLabel.className = 'text-xs text-zinc-300 font-mono text-center';
-  zLabel.textContent = 'Z: 5.00';
-  sliderGroup.appendChild(zLabel);
+  // Typed exact clip height (the slider steps in 1/200 of the model height).
+  const zRow = document.createElement('label');
+  zRow.id = 'clip-z-label';
+  zRow.className = 'flex items-center gap-1 text-xs text-zinc-300 font-mono';
+  zRow.append('Z');
+  const zInput = document.createElement('input');
+  zInput.type = 'number';
+  zInput.id = 'clip-z-input';
+  zInput.setAttribute('aria-label', 'Clip height (Z)');
+  zInput.title = 'Type an exact clip height';
+  zInput.className = SLIDER_ENTRY_INPUT;
+  zRow.appendChild(zInput);
+  sliderGroup.appendChild(zRow);
 
   anchor.appendChild(sliderGroup);
   return anchor;

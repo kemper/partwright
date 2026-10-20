@@ -47,6 +47,7 @@ import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMod
 import { pickFace } from './facePicker';
 import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import type { PreprocessOptions } from '../relief/types';
+import { createSliderEntry } from '../ui/sliderEntry';
 
 // Max resolution for stamping — higher = crisper stamp detail.
 const STAMP_MAX = 1024;
@@ -1098,51 +1099,24 @@ function addSlider(
   lbl.className = 'text-[10px] text-zinc-500 w-[72px] shrink-0';
   lbl.textContent = label;
 
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = String(min);
-  slider.max = String(max);
-  slider.step = String(step);
-  slider.value = String(get());
-  slider.className = 'flex-1 accent-blue-500 min-w-0';
-
-  const numInput = document.createElement('input');
-  numInput.type = 'number';
-  numInput.min = String(min);
-  if (!uncappedInput) numInput.max = String(max);
-  numInput.step = String(step);
-  numInput.value = integer ? String(Math.round(get())) : get().toFixed(2);
-  numInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-
-  slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    set(v);
-    numInput.value = integer ? String(Math.round(v)) : v.toFixed(2);
+  const entry = createSliderEntry({
+    label, min, max, step, value: get(), integer,
+    hardMax: uncappedInput ? Infinity : max,
+    format: v => (integer ? String(Math.round(v)) : v.toFixed(2)),
+    onChange: set,
+    rangeClass: 'flex-1 accent-blue-500 min-w-0',
+    inputClass: 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums',
   });
-
-  const applyNum = (): void => {
-    const raw = parseFloat(numInput.value);
-    if (!Number.isFinite(raw)) { numInput.value = integer ? String(Math.round(get())) : get().toFixed(2); return; }
-    const v = uncappedInput ? Math.max(min, raw) : Math.max(min, Math.min(max, raw));
-    set(v);
-    slider.value = String(Math.min(v, max)); // slider stays within its own range
-    numInput.value = integer ? String(Math.round(v)) : v.toFixed(2);
-  };
-  numInput.addEventListener('change', applyNum);
-  numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyNum(); numInput.blur(); } });
 
   // Reset on double-click
   wrap.addEventListener('dblclick', (e) => {
     if (e.target === lbl || e.target === wrap) {
       set(defaultVal);
-      slider.value = String(defaultVal);
-      numInput.value = integer ? String(Math.round(defaultVal)) : defaultVal.toFixed(2);
+      entry.set(defaultVal);
     }
   });
 
-  wrap.appendChild(lbl);
-  wrap.appendChild(slider);
-  wrap.appendChild(numInput);
+  wrap.append(lbl, entry.range, entry.input);
   parent.appendChild(wrap);
 }
 

@@ -36,6 +36,7 @@ import { registerCommands } from './commandPalette';
 import { BUTTON_CANCEL, BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
 import { createToolPanelShell } from './toolPanel';
+import { createSliderEntry, formatEntry } from './sliderEntry';
 
 let closeOpen: (() => void) | null = null;
 
@@ -259,31 +260,35 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
         paramInputs.set(p.key, { get: () => c.checked, set: (v) => { c.checked = Boolean(v); } });
         paramBox.appendChild(paramRow(p.label, p.hint, c));
       } else {
-        const n = el('input', `${INPUT} w-16`);
-        n.type = 'number';
-        n.value = String(init);
-        n.step = p.step !== undefined ? String(p.step) : p.type === 'integer' ? '1' : 'any';
-        if (p.min !== undefined) n.min = String(p.min);
-        if (p.max !== undefined) n.max = String(p.max);
-        n.setAttribute('aria-label', p.label);
-        const controls: HTMLElement[] = [n];
-        let range: HTMLInputElement | null = null;
+        const integer = p.type === 'integer';
+        const step = p.step ?? (integer ? 1 : undefined);
         if (p.min !== undefined && p.max !== undefined) {
-          // Bounded numbers get a slider too (Live updates as it moves).
-          range = el('input', 'w-24 accent-blue-500');
-          range.type = 'range';
-          range.min = String(p.min); range.max = String(p.max); range.step = n.step === 'any' ? String((p.max - p.min) / 100) : n.step;
-          range.value = String(init);
-          range.setAttribute('aria-label', `${p.label} slider`);
-          range.addEventListener('input', () => { n.value = range!.value; scheduleLive(); });
-          controls.unshift(range);
+          // Bounded numbers get a slider too (Live updates as it moves); the
+          // box takes an exact value within the same bounds.
+          const entry = createSliderEntry({
+            label: p.label, min: p.min, max: p.max, step: step ?? (p.max - p.min) / 100,
+            value: Number(init), integer,
+            format: v => formatEntry(v),
+            onChange: () => scheduleLive(),
+            title: '',
+            rangeClass: 'w-24 accent-blue-500',
+            inputClass: `${INPUT} w-16`,
+          });
+          entry.range.setAttribute('aria-label', `${p.label} slider`);
+          paramInputs.set(p.key, { get: entry.get, set: (v) => entry.set(Number(v)) });
+          paramBox.appendChild(paramRow(p.label, p.hint, entry.range, entry.input));
+        } else {
+          const n = el('input', `${INPUT} w-16`);
+          n.type = 'number';
+          n.value = String(init);
+          n.step = step !== undefined ? String(step) : 'any';
+          if (p.min !== undefined) n.min = String(p.min);
+          if (p.max !== undefined) n.max = String(p.max);
+          n.setAttribute('aria-label', p.label);
+          n.addEventListener('change', () => scheduleLive());
+          paramInputs.set(p.key, { get: () => Number(n.value), set: (v) => { n.value = String(v); } });
+          paramBox.appendChild(paramRow(p.label, p.hint, n));
         }
-        n.addEventListener('change', () => { if (range) range.value = n.value; scheduleLive(); });
-        paramInputs.set(p.key, {
-          get: () => Number(n.value),
-          set: (v) => { n.value = String(v); if (range) range.value = String(v); },
-        });
-        paramBox.appendChild(paramRow(p.label, p.hint, ...controls));
       }
     });
     paramBox.appendChild(paramRow('Surface smoothing', 'World-unit radius used to denoise normals before measuring grooves. Blank = none (default); try ~3× the edge length on very noisy scans.', smoothInput));

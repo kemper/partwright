@@ -11,6 +11,7 @@ import { getBuildVolume } from '../geometry/printerSettings';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
+import { createSliderEntry } from './sliderEntry';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
@@ -299,63 +300,49 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     const readout = el('span', 'text-zinc-400 tabular-nums', '');
     labelRow.append(label, readout);
 
-    const controlRow = el('div', 'flex items-center gap-2');
-    const slider = el('input', 'flex-1 accent-blue-500');
-    slider.type = 'range';
-    const numInput = el('input', 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs');
-    numInput.type = 'number';
-    controlRow.append(slider, numInput);
-    wrap.append(labelRow, controlRow);
-
     function getValue() {
       if (mode === 'percent') return axis === 'X' ? pctX : axis === 'Y' ? pctY : pctZ;
       return axis === 'X' ? rawX : axis === 'Y' ? rawY : rawZ;
     }
     function getMax() { return mode === 'percent' ? maxPct : maxRaw; }
-    function getMin() { return mode === 'percent' ? 1 : 0.001; }
-    function getStep() { return mode === 'percent' ? 0.1 : 0.001; }
+    const fmt = (v: number) => (mode === 'percent' ? v.toFixed(1) : v.toFixed(3));
+    const showReadout = (v: number) => { readout.textContent = mode === 'percent' ? `${fmt(v)}%` : fmt(v); };
 
-    function updateDisplay() {
-      const v = getValue();
-      readout.textContent = mode === 'percent' ? `${v.toFixed(1)}%` : `${v.toFixed(3)}`;
-      numInput.value = mode === 'percent' ? v.toFixed(1) : v.toFixed(3);
-      slider.min = String(getMin());
-      slider.max = String(getMax());
-      slider.step = String(getStep());
-      slider.value = String(v);
-    }
-
-    function applyValue(v: number) {
-      const clamped = Math.max(getMin(), Math.min(getMax(), v));
-      if (mode === 'percent') {
-        if (axis === 'X' || uniform) pctX = clamped;
-        if (axis === 'Y' || uniform) pctY = clamped;
-        if (axis === 'Z' || uniform) pctZ = clamped;
-      } else {
-        if (axis === 'X' || uniform) rawX = clamped;
-        if (axis === 'Y' || uniform) rawY = clamped;
-        if (axis === 'Z' || uniform) rawZ = clamped;
-      }
-      if (uniform) renderControls();
-      else updateDisplay();
-      schedulePreview();
-    }
-
-    slider.addEventListener('input', () => applyValue(slider.valueAsNumber));
-    numInput.addEventListener('change', () => {
-      const v = parseFloat(numInput.value);
-      if (!Number.isFinite(v)) { updateDisplay(); return; }
-      // A typed value past the slider's range grows the range to fit (and the
-      // "Slider max" box with it) instead of silently clamping it.
-      const grow = v > getMax();
-      if (grow) { if (mode === 'percent') maxPct = v; else maxRaw = v; }
-      applyValue(v);
-      // Uniform mode already re-rendered; otherwise the other axes' sliders and
-      // the max box need the new range too.
-      if (grow && !uniform) renderControls();
+    // The slider spans [min, "Slider max"]; the box takes any larger value and
+    // grows the range to fit it (and the "Slider max" box with it) instead of
+    // silently clamping it.
+    const entry = createSliderEntry({
+      label: `${axis} scale`,
+      min: mode === 'percent' ? 1 : 0.001,
+      max: getMax(),
+      step: mode === 'percent' ? 0.1 : 0.001,
+      value: getValue(),
+      hardMax: Infinity,
+      format: fmt,
+      onChange: (v) => {
+        const grow = v > getMax();
+        if (grow) { if (mode === 'percent') maxPct = v; else maxRaw = v; }
+        if (mode === 'percent') {
+          if (axis === 'X' || uniform) pctX = v;
+          if (axis === 'Y' || uniform) pctY = v;
+          if (axis === 'Z' || uniform) pctZ = v;
+        } else {
+          if (axis === 'X' || uniform) rawX = v;
+          if (axis === 'Y' || uniform) rawY = v;
+          if (axis === 'Z' || uniform) rawZ = v;
+        }
+        // A grown range applies to every axis' slider and the max box.
+        if (grow) renderControls();
+        else showReadout(v);
+        schedulePreview();
+      },
+      rangeClass: 'flex-1 accent-blue-500',
+      inputClass: 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs',
     });
-
-    updateDisplay();
+    const controlRow = el('div', 'flex items-center gap-2');
+    controlRow.append(entry.range, entry.input);
+    wrap.append(labelRow, controlRow);
+    showReadout(getValue());
     return wrap;
   }
 

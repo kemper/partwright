@@ -25,6 +25,7 @@ import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
 import { listFilaments } from '../color/palette';
 import { createColorSwatch } from './colorPickerModal';
+import { createSliderEntry, formatEntry, stepDecimals } from './sliderEntry';
 import { MAX_FIELD_RESOLUTION } from '../surface/sdfModifier';
 import { SMOOTH_MAX_ITERATIONS } from '../surface/smoothSurface';
 import { MAX_RESOLUTION as VOXELIZE_MAX_RESOLUTION } from '../surface/voxelizeMesh';
@@ -128,68 +129,37 @@ interface SliderOpts {
   fractional?: boolean;
 }
 
-/** Decimal places to display: 0 for whole-number controls, else enough for
- *  every digit of `step` and never fewer than 3 (the old readout precision). */
-function displayDecimals(step: number, integer: boolean): number {
-  if (integer) return 0;
-  const frac = String(Number(step.toPrecision(6))).split('.')[1]?.length ?? 0;
-  return Math.min(6, Math.max(3, frac));
-}
-
-/** A range slider paired with an editable number box. Dragging the slider
- *  writes the box; typing in the box moves the thumb (pinned at the slider's
- *  ends) and may go past the slider's range up to `opts.hardMax` — so the
- *  slider covers the common range while power users can type an exact or
- *  out-of-range value. `get()` returns the box value clamped to
- *  [hardMin, hardMax]; whole-number steps round to integers unless
- *  `opts.fractional`. */
+/** A labeled range slider paired with an editable number box (the shared
+ *  {@link createSliderEntry}). The slider covers the common range; the box
+ *  accepts an exact value up to `opts.hardMax` — past the slider, whose thumb
+ *  then pins at its end. Whole-number steps round to integers unless
+ *  `opts.fractional`. `get()` returns the clamped value. */
 function slider(
   label: string, min: number, sliderMax: number, value: number, step: number,
   onChange: () => void, opts: SliderOpts = {},
 ) {
-  const hardMin = opts.hardMin ?? min;
-  const hardMax = opts.hardMax ?? sliderMax;
   const integer = Number.isInteger(step) && !opts.fractional;
-  const decimals = displayDecimals(step, integer);
-  const show = (n: number) => String(Number(n.toFixed(decimals)));
-  const clamp = (n: number) => {
-    const v = Math.max(hardMin, Math.min(hardMax, n));
-    return integer ? Math.round(v) : v;
-  };
-  let last = clamp(value);
+  // Never fewer than 3 decimals for fractional controls (the old readout's
+  // precision), so the box never shows a coarser number than Preview uses.
+  const decimals = integer ? 0 : Math.min(6, Math.max(3, stepDecimals(step)));
+  const entry = createSliderEntry({
+    label, min, max: sliderMax, step, value,
+    hardMin: opts.hardMin, hardMax: opts.hardMax, integer,
+    format: n => formatEntry(n, decimals),
+    liveTyping: true,
+    onChange: () => onChange(),
+    rangeClass: 'w-full accent-blue-500',
+    inputClass: 'w-20 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200',
+  });
   const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
   const head = el('div', 'flex justify-between mb-1 items-center gap-2');
   head.append(el('span', '', label));
-  const entry = el('span', 'flex items-center gap-1');
-  const num = el('input', 'w-20 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200');
-  num.type = 'number';
-  num.min = String(hardMin); num.step = 'any';
-  if (Number.isFinite(hardMax)) num.max = String(hardMax);
-  num.value = show(last);
-  num.title = hardMax > sliderMax
-    ? (Number.isFinite(hardMax) ? `Type a value up to ${show(hardMax)} to go past the slider` : 'Type any value to go past the slider')
-    : 'Type an exact value';
-  num.setAttribute('aria-label', label);
-  entry.append(num);
-  if (opts.unit) entry.append(el('span', 'text-zinc-400', opts.unit));
-  head.append(entry);
-  const range = el('input', 'w-full accent-blue-500');
-  range.type = 'range';
-  range.min = String(min); range.max = String(sliderMax); range.step = String(step);
-  range.value = String(Math.max(min, Math.min(sliderMax, last)));
-  range.setAttribute('aria-label', label);
-  range.addEventListener('input', () => { last = clamp(range.valueAsNumber); num.value = show(last); onChange(); });
-  num.addEventListener('input', () => {
-    const raw = num.valueAsNumber;
-    if (Number.isNaN(raw)) return;            // mid-edit empty box — don't snap yet
-    last = clamp(raw);
-    range.value = String(Math.max(min, Math.min(sliderMax, last)));
-    onChange();
-  });
-  // On commit (blur / Enter) normalize the box to the clamped value.
-  num.addEventListener('change', () => { num.value = String(Number(last.toPrecision(12))); onChange(); });
-  wrap.append(head, range);
-  return { wrap, get: () => last };
+  const box = el('span', 'flex items-center gap-1');
+  box.append(entry.input);
+  if (opts.unit) box.append(el('span', 'text-zinc-400', opts.unit));
+  head.append(box);
+  wrap.append(head, entry.range);
+  return { wrap, get: entry.get };
 }
 
 /** A 0–100% position slider with quick-snap buttons at 0/25/50/75/100% — the
