@@ -48,3 +48,11 @@ a PR.
   transform in the helper — filed as a follow-up rather than widening this.
 - Added an advisory ast-grep hint (`prefer-slider-entry`) and a work-reviewer
   bullet so new hand-built sliders get flagged.
+
+## Assistant (CI follow-up)
+
+- CI caught Simplify's Reset leaving the typed target in the box: `set()`
+  skipped rewriting a focused box (to avoid clobbering typing), but Reset runs
+  while the box still has focus. A programmatic `set()` / `setBounds()` is
+  authoritative, so they now always rewrite the box; nothing calls `set()`
+  from a per-keystroke path, so typing isn't clobbered.

@@ -87,8 +87,9 @@ export interface SliderEntry {
   input: HTMLInputElement;
   /** Current value (clamped to the hard bounds). */
   get(): number;
-  /** Push a value in without firing `onChange` (e.g. reflecting state). The
-   *  box is left alone while the user is typing in it. */
+  /** Push a value in without firing `onChange` (e.g. reflecting state or a
+   *  Reset). It always rewrites the box — a programmatic value is authoritative,
+   *  even if the box still has focus. */
   set(v: number): void;
   /** Change the slider and/or hard bounds (e.g. a model-derived range). */
   setBounds(b: Partial<Pick<SliderEntryOptions, 'min' | 'max' | 'step' | 'hardMin' | 'hardMax'>>): void;
@@ -161,7 +162,7 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
     set: (v: number) => {
       value = clamp(v);
       placeThumb(value);
-      if (document.activeElement !== input) input.value = format(value);
+      input.value = format(value);
     },
     setBounds: (b) => {
       if (b.min !== undefined) min = b.min;
@@ -172,7 +173,7 @@ export function bindSliderEntry(range: HTMLInputElement, input: HTMLInputElement
       applyAttrs();
       value = clamp(value);
       placeThumb(value);
-      if (document.activeElement !== input) input.value = format(value);
+      input.value = format(value);
     },
   };
 }
