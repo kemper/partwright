@@ -134,7 +134,7 @@ export function setTool(t: VoxelTool): void {
 }
 
 // ── Brush / level settings ───────────────────────────────────────────────
-const MAX_BRUSH_RADIUS = 16;
+export const MAX_BRUSH_RADIUS = 16;
 export function getBrushRadius(): number { return brushRadius; }
 export function setBrushRadius(r: number): void {
   brushRadius = Math.max(0, Math.min(MAX_BRUSH_RADIUS, Math.round(r) || 0));
@@ -146,7 +146,7 @@ export function setBrushShape(s: BrushShape): void { brushShape = s; refreshPrev
 
 // Add-block dimensions (X/Y/Z, in voxels) and how deep the block sinks into the
 // clicked surface. Used only by the `add` tool; the preview reflects them live.
-const MAX_BLOCK_SIZE = 32;
+export const MAX_BLOCK_SIZE = 32;
 export function getBlockSize(): [number, number, number] { return [...blockSize]; }
 export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
   blockSize[axis] = Math.max(1, Math.min(MAX_BLOCK_SIZE, Math.round(n) || 1));

@@ -107,11 +107,11 @@ const DEFAULTS = {
   removeBackground: false,
 };
 // Cap so a pathological maxSize can't exceed the grid's coordinate range.
-const HARD_MAX = Math.min(256, COORD_MAX - COORD_MIN);
+export const HARD_MAX = Math.min(256, COORD_MAX - COORD_MIN);
 // Cap each Y component (depth, maxHeight, baseThickness) well below the grid's
 // coordinate range so even `baseThickness + maxHeight` keeps the tallest voxel
 // (y index = height − 1) comfortably within [COORD_MIN, COORD_MAX].
-const HARD_MAX_Y = 256;
+export const HARD_MAX_Y = 256;
 
 /** Rec. 601 luma — the perceptual brightness used for the heightmap mapping
  *  and the `grayscale` color mode. Returns 0–255. */

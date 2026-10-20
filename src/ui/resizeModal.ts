@@ -344,7 +344,15 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     slider.addEventListener('input', () => applyValue(slider.valueAsNumber));
     numInput.addEventListener('change', () => {
       const v = parseFloat(numInput.value);
-      if (Number.isFinite(v)) applyValue(v);
+      if (!Number.isFinite(v)) { updateDisplay(); return; }
+      // A typed value past the slider's range grows the range to fit (and the
+      // "Slider max" box with it) instead of silently clamping it.
+      const grow = v > getMax();
+      if (grow) { if (mode === 'percent') maxPct = v; else maxRaw = v; }
+      applyValue(v);
+      // Uniform mode already re-rendered; otherwise the other axes' sliders and
+      // the max box need the new range too.
+      if (grow && !uniform) renderControls();
     });
 
     updateDisplay();

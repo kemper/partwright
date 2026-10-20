@@ -84,20 +84,42 @@ function sliderRow(
   max: number,
   step: number,
   onChange: (v: number) => void,
+  /** Typed-value bounds when they differ from the slider's range — e.g. a
+   *  height the slider caps for convenience but the figure builder accepts
+   *  past it. Defaults to [min, max]. */
+  hard: { min?: number; max?: number } = {},
 ): HTMLElement {
+  const hardMin = hard.min ?? min;
+  const hardMax = hard.max ?? max;
   const wrap = el('div', 'flex items-center gap-2 min-w-[8.5rem]');
-  const range = el('input', 'flex-1 accent-blue-500');
+  const range = el('input', 'flex-1 min-w-0 accent-blue-500');
   range.type = 'range';
   range.min = String(min); range.max = String(max); range.step = String(step);
   range.value = String(value);
-  const out = el('span', 'text-[11px] text-zinc-400 w-9 text-right tabular-nums');
-  out.textContent = String(value);
+  range.setAttribute('aria-label', label);
+  // Editable box: shows the live value while dragging and accepts a typed
+  // exact (or past-the-slider) value. Typed values commit on Enter / blur.
+  const num = el('input', 'w-12 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-[11px] text-right tabular-nums text-zinc-200');
+  num.type = 'number';
+  num.min = String(hardMin); num.step = 'any';
+  if (Number.isFinite(hardMax)) num.max = String(hardMax);
+  num.value = String(value);
+  num.title = hardMax > max ? 'Type any value to go past the slider' : 'Type an exact value';
+  num.setAttribute('aria-label', label);
   // Fire on release ('change') not every tick ('input') — an SDF rebuild per
-  // pixel of drag would starve the renderer; the number readout still tracks
+  // pixel of drag would starve the renderer; the number box still tracks
   // live on 'input'.
-  range.addEventListener('input', () => { out.textContent = range.value; });
+  range.addEventListener('input', () => { num.value = range.value; });
   range.addEventListener('change', () => onChange(Number(range.value)));
-  wrap.append(range, out);
+  num.addEventListener('change', () => {
+    const raw = num.valueAsNumber;
+    if (Number.isNaN(raw)) { num.value = range.value; return; }
+    const v = Math.max(hardMin, Math.min(hardMax, raw));
+    num.value = String(v);
+    range.value = String(v);   // the thumb pins at the slider's ends
+    onChange(v);
+  });
+  wrap.append(range, num);
   return labelledRow(label, wrap);
 }
 
@@ -210,8 +232,8 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
 
     // --- BODY ---
     controls.append(sectionTitle('Body'));
-    controls.append(sliderRow('Height', spec.body.height, 24, 90, 1, v => onEdit(s => { s.body.height = v; })));
-    controls.append(sliderRow('Heads tall', spec.body.headsTall, 2.5, 9, 0.5, v => onEdit(s => { s.body.headsTall = v; })));
+    controls.append(sliderRow('Height', spec.body.height, 24, 90, 1, v => onEdit(s => { s.body.height = v; }), { min: 1, max: Infinity }));
+    controls.append(sliderRow('Heads tall', spec.body.headsTall, 2.5, 9, 0.5, v => onEdit(s => { s.body.headsTall = v; }), { min: 2, max: 12 }));
     controls.append(selectRow('Build', spec.body.build, ['slim', 'average', 'stocky'], v => onEdit(s => { s.body.build = v as CharacterSpec['body']['build']; })));
     controls.append(selectRow('Sex', spec.body.sex, ['neutral', 'male', 'female'], v => onEdit(s => { s.body.sex = v as CharacterSpec['body']['sex']; })));
     controls.append(sliderRow('Age', spec.body.age, 1, 90, 1, v => onEdit(s => { s.body.age = v; })));
