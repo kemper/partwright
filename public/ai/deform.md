@@ -77,6 +77,17 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset` against the instance's own half-thickness, not the base's
+scale.** `offset` is a world-unit shift along the surface normal, so it has to
+be sized relative to how thick *the instance itself* is through its base —
+not the target surface's size. A worked example: a spot/sprinkle/stone
+instance whose base sits at Z=0 and whose bulk extends ~1.5 units up needs
+`offset` around `-0.75` (roughly *half* that thickness, negative to sink it
+in) to fuse without either floating disconnected (`offset` too small in
+magnitude) or burying the instance entirely (`offset` too large). Get the
+instance's own extent first — `api.bbox(instance)` — then pick `offset` as a
+fraction of its through-axis span, not a fraction of the base model's size.
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -97,6 +108,22 @@ is a remeshed surface (labels/paint regions on the input do NOT carry through �
 round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
+
+**Rule of thumb for a machined look:** start `radius` at **~4–6% of the
+part's characteristic edge length** (the length of the edge being rounded,
+not the whole model's bbox diagonal) and adjust from there — small enough to
+read as a fillet, comfortably clear of the thin-feature limit above.
+
+**`round`/`smoothWeld` lattice over the whole input bbox — clip-weld-stitch
+for a thin feature on a large body.** Both ops build their signed-distance
+lattice over the full combined bounding box, so welding a thin fin/tab onto
+a large body forces a fine lattice over the *entire* body just to resolve
+the thin part — slow, and the large flat faces pick up the voxel waviness
+noted above for no reason. Recipe: clip both parts down to a tight box
+around just the seam (`m.intersect(seamBox)` or trim with a boolean),
+`smoothWeld`/`round` only that local piece, then re-union the welded seam
+piece with the untouched remainders of both parts (their geometry outside
+the seam box needs no lattice pass at all).
 
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces

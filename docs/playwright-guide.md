@@ -16,7 +16,7 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:e2e
 ## AI agent gotchas
 
 1. **Don't reinstall browsers blindly.** Check `/opt/pw-browsers/` first; the sandbox image already has Chromium. `playwright.config.ts` handles the wiring.
-2. **Viewport size.** The default Desktop Chrome viewport (1280×720) clips the AI panel's toggle strip. The config sets 1280×900 — keep it that way for anything that interacts with elements in the bottom half of the panel.
+2. **Viewport size.** The default Desktop Chrome viewport (1280×720) clips the AI panel's toggle strip. The config sets 1280×900 — keep it that way for anything that interacts with elements in the bottom half of the panel. The same trap hits any short scroll box: at the default height the parts-list rail shows only ~55px (a couple of rows), so drag-and-drop or click targeting on rows below the fold silently misses. Set a taller viewport (e.g. 1400px) for tests that drag within a rail/list.
 3. **Viewport hit-test.** Tiny flex children of recently-transformed parents sometimes fail Playwright's viewport hit-test (`Element is outside of the viewport`). When the bounding box is verifiably inside, prefer `locator.dispatchEvent('click')` over `locator.click({ force: true })` — the latter still enforces the viewport bound.
 4. **Fresh contexts.** Each Playwright test gets a fresh `BrowserContext`, so localStorage and IndexedDB are isolated by default. Don't add `localStorage.clear()` in `beforeEach` unless you mean it — it fires on `page.reload()` inside a test too, breaking any "state persists across reload" assertion.
 5. **No external network.** The `validateKey` flow hits `api.anthropic.com`; assert on the surfaced error message, not on whether the request succeeded.
