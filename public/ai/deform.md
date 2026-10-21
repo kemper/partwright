@@ -77,6 +77,25 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset` against the instance's own half-thickness, not the base's.**
+`offset` is measured from the anchor point along the normal — it has nothing to
+do with the base surface's thickness. For an instance that's `t` units thick
+along its own "up" axis (a `t=1` spot, sprinkle, or stud), `offset: -t/2` sinks
+it exactly to its equator (flush with the surface); `offset: 0` sits it fully
+proud (tangent at its base); a value between the two leaves it partially
+buried. Two first-pass attempts fully buried their instances by guessing an
+offset sized off the *base* shape instead of the instance — measure the
+instance's own bbox (`api.bbox(instance)`) and derive `offset` from that.
+
+**Local, region-scoped fillets** (avoiding a lattice over an entire large
+assembly for one small seam) aren't a built-in option yet — `round`/`smoothWeld`
+always operate on the whole input bbox. The workaround: clip both parts to a
+tight box around just the seam (`CrossSection`/boolean intersect with a
+bounding cuboid), weld only that clipped pair, then stitch the welded chunk
+back to the untouched remainders with a thin overlap shell so the boolean
+union fuses cleanly. This keeps the lattice — and its triangle/time cost —
+scoped to the seam instead of the whole model.
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -92,7 +111,10 @@ opening+closing of a signed-distance lattice, remeshed via `levelSet`. Facts to
 respect: features thinner than `2·radius` are smoothed **away** — and in
 practice a flat face starts visibly bulging into a pill well before that limit,
 so on a shape with one thin dimension keep the radius under ~1/4 of the
-thinnest extent (a 5-unit-thick shell wants radius ≲ 1.2, not 1.8); the output
+thinnest extent (a 5-unit-thick shell wants radius ≲ 1.2, not 1.8); for a
+"machined" look on ordinary edges (not thin features) a good starting radius
+is **~4-6% of the edge's own length** — much smaller than intuition suggests,
+since `round` reads as a visible fillet long before it looks proportional; the output
 is a remeshed surface (labels/paint regions on the input do NOT carry through —
 round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
