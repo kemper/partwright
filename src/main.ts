@@ -218,7 +218,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
 import { setPaintLabels } from './color/labels';
@@ -1200,7 +1200,9 @@ function refineMeshForRegions(
   const regions = collectRefineRegions(descriptors);
   if (regions.length === 0) return { mesh: base, parentToChildren: null };
   const { mesh, childToParent } = buildRefinedMesh(base, regions);
-  return { mesh, parentToChildren: childrenByParent(childToParent) };
+  const parentToChildren = childrenByParent(childToParent);
+  recordMeshLineage(mesh, base, parentToChildren);
+  return { mesh, parentToChildren };
 }
 
 /** Above this triangle count we warn (once) that the model is getting heavy.
@@ -1241,11 +1243,81 @@ interface ResolveResult {
   perTriColors?: Map<number, [number, number, number]>;
 }
 
+// --- Part scope ("paint within part", #1025) --------------------------------
+// A scoped region (`descriptor.withinPart`) is clipped to one label's
+// triangles. Labels index the run's mesh (`currentLabelMesh`), but paint works
+// on a working mesh that smooth strokes / stamps keep re-tessellating, and the
+// refine paths only hand out parent→children maps one step at a time. So each
+// refined mesh records a flat child→root-triangle map (composed through its
+// parent's map); a label's set is carried down exactly (children inherit their
+// parent's part) and cached per mesh. A mesh with no lineage back to the run mesh (a texture/simplify
+// bake) falls back to the nearest-centroid map the bake paths already use.
+const meshLineage = new WeakMap<MeshData, { root: MeshData; toRoot: Int32Array }>();
+const partScopeCache = new WeakMap<MeshData, { labels: Map<string, Set<number>>; sets: Map<string, Set<number>> }>();
+
+/** Record that `mesh` was refined from `from`, flattened to a direct map onto
+ *  the chain's root (4 bytes per triangle). Holding the root mesh rather than
+ *  `from` lets each intermediate refinement be garbage-collected. A smooth
+ *  stroke on a 460k scan would otherwise pin every previous working mesh and
+ *  its parent→children map. */
+function recordMeshLineage(mesh: MeshData, from: MeshData, parentToChildren: Map<number, number[]> | null): void {
+  if (mesh === from || !parentToChildren) return;
+  const up = meshLineage.get(from);
+  const toRoot = new Int32Array(mesh.numTri).fill(-1);
+  for (const [parent, children] of parentToChildren) {
+    const r = up ? up.toRoot[parent] : parent;
+    for (const c of children) toRoot[c] = r;
+  }
+  meshLineage.set(mesh, { root: up ? up.root : from, toRoot });
+}
+
+/** The triangles of label `label` on `mesh`, or null when the current run has
+ *  no such label. */
+function partTrianglesOnMesh(label: string, mesh: MeshData): Set<number> | null {
+  const labels = currentLabelMap;
+  const ids = labels?.get(label);
+  if (!labels || !ids || !currentLabelMesh) return null;
+  if (mesh === currentLabelMesh) return ids;
+  let cache = partScopeCache.get(mesh);
+  if (!cache || cache.labels !== labels) {
+    cache = { labels, sets: new Map() };
+    partScopeCache.set(mesh, cache);
+  }
+  const hit = cache.sets.get(label);
+  if (hit) return hit;
+  const lineage = meshLineage.get(mesh);
+  let out: Set<number>;
+  if (lineage) {
+    const onRoot = partTrianglesOnMesh(label, lineage.root) ?? new Set<number>();
+    out = new Set<number>();
+    for (let t = 0; t < lineage.toRoot.length; t++) if (onRoot.has(lineage.toRoot[t])) out.add(t);
+  } else {
+    out = remapTriangleSets(new Map([[label, ids]]), currentLabelMesh, mesh).get(label) ?? new Set<number>();
+  }
+  cache.sets.set(label, out);
+  return out;
+}
+
+setPartScopeResolver((label) => (currentMeshData ? partTrianglesOnMesh(label, currentMeshData) : null));
+
+/** Resolve a descriptor and clip it to its `withinPart` scope, if any. */
+function resolveDescriptorTriangles(
+  descriptor: RegionDescriptor,
+  mesh: MeshData,
+  adjacency: AdjacencyGraph | null,
+  parentToChildren: Map<number, number[]> | null,
+  selfRegionId?: number,
+): ResolveResult {
+  const r = resolveDescriptorTrianglesUnscoped(descriptor, mesh, adjacency, parentToChildren, selfRegionId);
+  if (!descriptor.withinPart) return r;
+  return intersectWithScope(partTrianglesOnMesh(descriptor.withinPart, mesh) ?? new Set<number>(), r.triangles, r.perTriColors);
+}
+
 /** Resolve a single region descriptor to a triangle set on `mesh`. Shared by
  *  rehydration (loading a saved version) and the live rebuild after a smooth
  *  brush stroke changes the working mesh. Returns perTriColors for imagePaint
  *  descriptors (per-triangle color map rebuilt from stored entries). */
-function resolveDescriptorTriangles(
+function resolveDescriptorTrianglesUnscoped(
   descriptor: RegionDescriptor,
   mesh: MeshData,
   adjacency: AdjacencyGraph | null,
@@ -1525,8 +1597,10 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
         const refined = smoothReplayCb(imageData, stampOpts, d.maxEdge);
         if (refined && refined.result.entries.length > 0) {
           const triangles = new Set(refined.result.perTriColors.keys());
-          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
-          report.carried.push(region.name);
+          const added = addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
+          // A withinPart stamp whose part is gone clips to nothing: dropped, not carried.
+          if (added.triangles.size > 0) report.carried.push(region.name);
+          else { removeRegion(added.id); report.dropped.push(region.name); }
         } else {
           report.dropped.push(region.name);
         }
@@ -1677,6 +1751,7 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   if (!currentMeshData) return;
   const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [descriptorToStroke(descriptor)]);
   const parentToChildren = childrenByParent(childToParent);
+  recordMeshLineage(mesh, currentMeshData, parentToChildren);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
   // Triangles of the prior mesh that this stroke actually split (>1 child).
@@ -2031,9 +2106,10 @@ async function appendStrokeRefineAsync(
     // Drop the result silently — the sync path already produced the right
     // state, and our `finally` still cleans up the progress badge.
     if (myGen !== paintGeneration) return;
+    const parentToChildren = childrenByParent(childToParent);
+    recordMeshLineage(mesh, inputMesh, parentToChildren);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
-    const parentToChildren = childrenByParent(childToParent);
 
     // Re-resolve regions exactly like the sync path: forward-carry triangles
     // for regions untouched by the split, re-resolve those overlapping the
@@ -2107,9 +2183,10 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     });
     // See appendStrokeRefineAsync: drop stale results when a sync action ran.
     if (myGen !== paintGeneration) return;
+    const parentToChildren = childrenByParent(childToParent);
+    recordMeshLineage(mesh, base, parentToChildren);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
-    const parentToChildren = childrenByParent(childToParent);
     const adjacency = buildAdjacency(mesh);
 
     const regions = getRegions();
@@ -8422,6 +8499,7 @@ async function main() {
     // Step 3: Subdivide the footprint to maxEdge, confined by overlapsStamp.
     const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, footprintTris, maxEdge, overlapsStamp);
     const parentToChildren = childrenByParent(childToParent);
+    recordMeshLineage(mesh, currentMeshData, parentToChildren);
     currentMeshData = mesh;
     // Advance paintBaseMesh to the subdivided mesh so the paint reconciler
     // (triggered by addRegion after we return) sees currentMeshData ===
@@ -13507,8 +13585,13 @@ async function main() {
        *  withinBox for tighter constraints (AND'd together). */
       zMin?: number;
       zMax?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintConnected');
+      if (scopeErr) return { error: scopeErr };
       if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
       if (!Array.isArray(opts.seed.point) || opts.seed.point.length !== 3) return { error: 'paintConnected.seed.point must be [x,y,z]' };
       for (const c of opts.seed.point) {
@@ -13579,7 +13662,7 @@ async function main() {
         // Persist the clamp on the descriptor so a re-resolve (e.g. after a
         // code edit that re-tessellates) walks the same way. Old descriptors
         // without clamp fields keep working — they decode as undefined.
-        {
+        scopedDescriptor({
           kind: 'connectedFromSeed',
           seedPoint,
           seedNormal,
@@ -13588,14 +13671,16 @@ async function main() {
             clampMin: boxMin,
             clampMax: boxMax,
           } : {}),
-        },
+        }, opts.withinPart),
         triangles,
       );
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintConnected');
+      if (emptyErr) return emptyErr;
       const colored = applyTriColorsIfVisible(mesh);
       updateMesh(colored, { skipAutoFrame: true });
       syncLockState();
-      const stats = regionTriangleStats(triangles, mesh);
-      return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
+      const stats = regionTriangleStats(region.triangles, mesh);
+      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
     },
 
     /** Check if any component is fully contained inside another (invisible geometry) */
@@ -13738,9 +13823,11 @@ async function main() {
      *  includes a diagnostic — the nearest hit point, its normal, the angle
      *  off the requested normal, and a suggested tolerance value that would
      *  include it. Pair with `probeRay` to get a known-on-surface seed. */
-    paintRegion(opts: { point: [number, number, number]; normal: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number }) {
+    paintRegion(opts: { point: [number, number, number]; normal: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number; withinPart?: string }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintRegion requires {point, normal, color}' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintRegion');
+      if (scopeErr) return { error: scopeErr };
       const { point, normal, color, name, tolerance } = opts;
       if (!Array.isArray(point) || point.length !== 3) return { error: 'point must be [x,y,z]' };
       if (!Array.isArray(normal) || normal.length !== 3) return { error: 'normal must be [nx,ny,nz]' };
@@ -13759,7 +13846,7 @@ async function main() {
         regionName,
         color as [number, number, number],
         'face-pick',
-        { kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance },
+        scopedDescriptor({ kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance }, opts.withinPart),
         triangles,
       );
 
@@ -13768,7 +13855,9 @@ async function main() {
       updateMesh(colored, { skipAutoFrame: true });
       syncLockState();
 
-      return { id: region.id, name: region.name, triangles: triangles.size };
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintRegion');
+      if (emptyErr) return emptyErr;
+      return { id: region.id, name: region.name, triangles: region.triangles.size };
     },
 
     /** Paint a coplanar region by snapping the seed point to the nearest face on
@@ -13783,11 +13872,16 @@ async function main() {
       searchRadius?: number;
       name?: string;
       tolerance?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') {
         return { error: 'paintNearestRegion requires {point, color, searchRadius?, tolerance?}' };
       }
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintNearestRegion');
+      if (scopeErr) return { error: scopeErr };
       const { point, color, searchRadius, name, tolerance } = opts;
       if (!Array.isArray(point) || point.length !== 3) return { error: 'point must be [x,y,z]' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
@@ -13813,7 +13907,7 @@ async function main() {
         regionName,
         color as [number, number, number],
         'face-pick',
-        { kind: 'coplanar', seedPoint: nearest.closest, seedNormal: nearest.normal, normalTolerance },
+        scopedDescriptor({ kind: 'coplanar', seedPoint: nearest.closest, seedNormal: nearest.normal, normalTolerance }, opts.withinPart),
         triangles,
       );
 
@@ -13821,10 +13915,12 @@ async function main() {
       updateMesh(colored, { skipAutoFrame: true });
       syncLockState();
 
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintNearestRegion');
+      if (emptyErr) return emptyErr;
       return {
         id: region.id,
         name: region.name,
-        triangles: triangles.size,
+        triangles: region.triangles.size,
         snappedTo: {
           point: nearest.closest,
           normal: nearest.normal,
@@ -13871,9 +13967,11 @@ async function main() {
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
      *  `axis` is shorthand for axis-aligned slabs ('x'/'y'/'z'). For oblique
      *  slabs, pass `normal` directly (does not need to be normalized). */
-    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number }) {
+    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number; withinPart?: string }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintSlab requires {axis|normal, offset, thickness, color}' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintSlab');
+      if (scopeErr) return { error: scopeErr };
       const { axis, normal: rawNormal, offset, thickness, color, name, coverageMode, maxTriangleArea } = opts;
 
       let normal: [number, number, number];
@@ -13914,9 +14012,11 @@ async function main() {
         regionName,
         color as [number, number, number],
         'slab',
-        { kind: 'slab', normal, offset, thickness, smooth, maxEdge },
+        scopedDescriptor({ kind: 'slab', normal, offset, thickness, smooth, maxEdge }, opts.withinPart),
         triangles,
       ));
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintSlab');
+      if (emptyErr) return emptyErr;
       scheduleColorRefresh();
       syncLockState();
 
@@ -14056,9 +14156,14 @@ async function main() {
        *  isn't enough. Inspect `largestTriangleArea` from `paintPreview`
        *  to pick a sensible value. */
       maxTriangleArea?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInBox requires { box, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintInBox');
+      if (scopeErr) return { error: scopeErr };
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const filterErr = validateBoxAndCone(opts.box, cone);
       if (filterErr) return { error: filterErr };
@@ -14071,7 +14176,7 @@ async function main() {
       const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
       if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside — try widening the box or dropping the mode)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea} — try raising it)` : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
 
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush', opts.withinPart, 'paintInBox');
     },
 
     /** Paint every triangle whose centroid lies inside an *oriented* bounding
@@ -14111,9 +14216,14 @@ async function main() {
       resolution?: number;
       /** Absolute target boundary edge length (mesh units); overrides `resolution`. */
       maxEdge?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintInOrientedBox');
+      if (scopeErr) return { error: scopeErr };
       if (!opts.box || typeof opts.box !== 'object') return { error: 'paintInOrientedBox.box must be { center, size, quaternion? }' };
       const { center, size, quaternion } = opts.box;
       if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.center must be [x, y, z] of finite numbers' };
@@ -14142,9 +14252,11 @@ async function main() {
         regionName,
         opts.color as [number, number, number],
         'slab',
-        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, smooth, maxEdge },
+        scopedDescriptor({ kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, smooth, maxEdge }, opts.withinPart),
         triangles,
       ));
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintInOrientedBox');
+      if (emptyErr) return emptyErr;
       scheduleColorRefresh();
       syncLockState();
       const stats = regionTriangleStats(region.triangles, currentMeshData);
@@ -14176,9 +14288,14 @@ async function main() {
       coverageMode?: CoverageMode;
       /** See paintInBox.maxTriangleArea. */
       maxTriangleArea?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintNear requires { point, radius, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintNear');
+      if (scopeErr) return { error: scopeErr };
       if (!Array.isArray(opts.point) || opts.point.length !== 3) return { error: 'point must be [x,y,z]' };
       for (let i = 0; i < 3; i++) {
         if (typeof opts.point[i] !== 'number' || !Number.isFinite(opts.point[i])) return { error: 'point components must be finite numbers' };
@@ -14196,7 +14313,7 @@ async function main() {
       const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone, opts.coverageMode, opts.maxTriangleArea);
       if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea})` : ''}. Try a larger radius — call findFaces() with a bigger box first to see what's around.` };
 
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush', opts.withinPart, 'paintNear');
     },
 
     /** Paint triangles whose centroids fall inside a cylindrical shell:
@@ -14234,9 +14351,14 @@ async function main() {
        *  subdivide. Mirrors the `paintSlab` knobs. */
       resolution?: number;
       maxEdge?: number;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInCylinder requires { rMin, rMax, zMin, zMax, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintInCylinder');
+      if (scopeErr) return { error: scopeErr };
       if (typeof opts.rMin !== 'number' || typeof opts.rMax !== 'number') return { error: 'rMin and rMax must be numbers' };
       if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
       if (opts.rMin < 0 || opts.rMax <= opts.rMin) return { error: 'paintInCylinder requires rMin >= 0 and rMax > rMin' };
@@ -14283,7 +14405,7 @@ async function main() {
         regionName,
         opts.color as [number, number, number],
         'paintbrush',
-        {
+        scopedDescriptor({
           kind: 'cylinder',
           center,
           rMin: opts.rMin,
@@ -14296,9 +14418,11 @@ async function main() {
           ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
           smooth,
           maxEdge,
-        },
+        }, opts.withinPart),
         triangles,
       ));
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintInCylinder');
+      if (emptyErr) return emptyErr;
       scheduleColorRefresh();
       syncLockState();
       return { id: region.id, name: region.name, triangles: region.triangles.size, axis, smooth, maxEdge };
@@ -14349,9 +14473,13 @@ async function main() {
       coverageMode?: CoverageMode;
       /** See paintInBox.maxTriangleArea. */
       maxTriangleArea?: number;
+      /** Preview the paint clipped to one part, as the scoped commit will be. */
+      withinPart?: string;
     } = {}) {
       const mesh = currentMeshData;
       if (!mesh) return { error: 'No geometry loaded' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintPreview');
+      if (scopeErr) return { error: scopeErr };
 
       const coverageErr = validateCoverageMode(opts.coverageMode);
       if (coverageErr) return { error: coverageErr };
@@ -14415,6 +14543,7 @@ async function main() {
       } else {
         return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, { box }, { cylinder }, or { slab }' };
       }
+      if (opts.withinPart) triangles = intersectWithScope(partTrianglesOnMesh(opts.withinPart, mesh) ?? new Set<number>(), triangles).triangles;
 
       const stats = regionTriangleStats(triangles, mesh);
       const areas = summarizeTriangleAreas(triangles, mesh);
@@ -14615,7 +14744,7 @@ async function main() {
      *  forward-facing triangles inside the footprint are painted; a depth slab
      *  stops it bleeding through thin walls. Returns `{ ok, name, triangles,
      *  avgColor }` or `{ error }`. Call saveVersion() afterwards to persist. */
-    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string; withinPart?: string }) {
       const check = guard(() => {
         assertObject(opts, 'paintImage(opts)');
         assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
@@ -14639,6 +14768,8 @@ async function main() {
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintImage');
+      if (scopeErr) return { error: scopeErr };
 
       // Resolve a label name to its triangle set (used to centre/auto-size the
       // projection). An unknown label is a clear user error, not a silent miss.
@@ -14674,7 +14805,14 @@ async function main() {
         detail: opts.detail,
         removeBackground: opts.removeBackground,
         name: opts.name,
+        withinPart: opts.withinPart,
       });
+      if (region && opts.withinPart && region.triangles === 0) {
+        const all = getRegions();
+        const last = all[all.length - 1];
+        if (last) withSyncReconcile(() => removeRegion(last.id));
+        return { error: `paintImage: nothing inside part "${opts.withinPart}" was stamped — place the stamp on that part, or drop withinPart.` };
+      }
       if (!region) {
         return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
       }
@@ -14969,9 +15107,14 @@ async function main() {
       depth?: number;
       wrapAngleDeg?: number;
       name?: string;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintStroke');
+      if (scopeErr) return { error: scopeErr };
       const { points, radius, color, shape, resolution, maxEdge, surface, depth, wrapAngleDeg, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
@@ -15023,14 +15166,14 @@ async function main() {
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
-        descriptor,
+        scopedDescriptor(descriptor, opts.withinPart),
       );
       if (region.triangles.size === 0) {
         // Drop the empty region through the same sync path so the async
         // reconcile listener doesn't kick a wasted worker rebuild against a
         // stale lastStrokeList.
         withSyncReconcile(() => removeRegion(region.id));
-        return { error: 'paintStroke: no surface fell within the stroke footprint — check the points are on the model and the radius is large enough.' };
+        return { error: opts.withinPart ? `paintStroke: nothing inside part "${opts.withinPart}" was painted — move the stroke onto that part, or drop withinPart.` : 'paintStroke: no surface fell within the stroke footprint — check the points are on the model and the radius is large enough.' };
       }
       return {
         id: region.id,
@@ -15062,9 +15205,14 @@ async function main() {
       surface?: string;
       depth?: number;
       name?: string;
+      /** Clip the paint to one part (an api.label region, or a detected part
+       *  of an import) so it cannot bleed across the part's edge. */
+      withinPart?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintAirbrush');
+      if (scopeErr) return { error: scopeErr };
       const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, surface, depth, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
@@ -15117,14 +15265,14 @@ async function main() {
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
-        descriptor,
+        scopedDescriptor(descriptor, opts.withinPart),
       );
       if (region.triangles.size === 0) {
         // Drop the empty region through the same sync path so the async
         // reconcile listener doesn't kick a wasted worker rebuild against a
         // stale lastStrokeList.
         withSyncReconcile(() => removeRegion(region.id));
-        return { error: 'paintAirbrush: no surface was sprayed — check the points are on the model, the radius is large enough, and strength > 0.' };
+        return { error: opts.withinPart ? `paintAirbrush: nothing inside part "${opts.withinPart}" was painted — move the stroke onto that part, or drop withinPart.` : 'paintAirbrush: no surface was sprayed — check the points are on the model, the radius is large enough, and strength > 0.' };
       }
       return {
         id: region.id,
@@ -16259,15 +16407,15 @@ async function main() {
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Color regions
-        'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
-        'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
-        'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
-        'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
-        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
+        'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, withinPart?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
+        'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, withinPart?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
+        'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
+        'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
+        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?, withinPart?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
-        'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai/colors.md' },
-        'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
-        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
+        'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?, withinPart?}) -- Paint planar slab range', docs: '/ai/colors.md' },
+        'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?, withinPart?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
+        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withinPart?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
         'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai/colors.md' },
@@ -16276,7 +16424,9 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
+        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
@@ -16292,7 +16442,7 @@ async function main() {
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
-        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinPart?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
         'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai/colors.md' },
@@ -17045,6 +17195,8 @@ async function main() {
     color: [number, number, number],
     name: string | undefined,
     source: 'face-pick' | 'paintbrush',
+    withinPart?: string,
+    method = 'paint',
   ) {
     if (!currentMeshData) return { error: 'No geometry loaded' };
     const regionName = name ?? `Region ${getRegions().length + 1}`;
@@ -17052,13 +17204,37 @@ async function main() {
       regionName,
       color,
       source,
-      { kind: 'triangles', ids: [...triangles] },
+      scopedDescriptor({ kind: 'triangles', ids: [...triangles] }, withinPart),
       triangles,
     );
+    const emptyErr = emptyScopeError(region, withinPart, method);
+    if (emptyErr) return emptyErr;
     scheduleColorRefresh();
     syncLockState();
-    const stats = regionTriangleStats(triangles, currentMeshData);
-    return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+    const stats = regionTriangleStats(region.triangles, currentMeshData);
+    return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** Validate a paint method's `withinPart` option: the name of a part (label)
+   *  in the current run. Returns an error message, or null when valid/absent. */
+  function validateWithinPart(withinPart: unknown, method: string): string | null {
+    if (withinPart === undefined) return null;
+    if (typeof withinPart !== 'string' || withinPart.length === 0) return `${method}: withinPart must be a part (label) name — see listLabels()`;
+    if (currentLabelMap?.has(withinPart)) return null;
+    const known = currentLabelMap && currentLabelMap.size > 0 ? [...currentLabelMap.keys()].map((k) => `"${k}"`).join(', ') : '(none)';
+    return `${method}: no part "${withinPart}" in the current run. Known parts: ${known}. An imported mesh gets parts from detectParts → acceptParts.`;
+  }
+
+  function scopedDescriptor<D extends RegionDescriptor>(descriptor: D, withinPart: string | undefined): D {
+    return withinPart ? { ...descriptor, withinPart } : descriptor;
+  }
+
+  /** A scoped paint that clipped to nothing is an error, not a silent empty
+   *  region: drop it and tell the caller why. */
+  function emptyScopeError(region: ColorRegion, withinPart: string | undefined, method: string): { error: string } | null {
+    if (!withinPart || region.triangles.size > 0) return null;
+    withSyncReconcile(() => removeRegion(region.id));
+    return { error: `${method}: nothing inside part "${withinPart}" was selected — move the selection onto that part, or drop withinPart.` };
   }
 
   /** Coalesce viewport + multi-view + elevations-strip refreshes triggered
@@ -17602,6 +17778,11 @@ async function main() {
           const d = op.descriptor as RegionDescriptor;
           if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             paintAdjacency = buildAdjacency(mesh);
+          }
+          // A withinPart that names no label paints nothing — say so (a typo
+          // otherwise just silently drops the op).
+          if (d.withinPart && !currentLabelMap?.has(d.withinPart)) {
+            errorLog.capture({ level: 'warn', source: 'parts', message: `${op.name}: withinPart "${d.withinPart}" is not a label of this run, so it paints nothing. Labels: ${currentLabelMap ? [...currentLabelMap.keys()].join(', ') || '(none)' : '(none)'}.` });
           }
           const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
           if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d, perTriColors });

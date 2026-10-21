@@ -76,6 +76,18 @@ test.describe('Part detection on import', () => {
 
   });
 
+  test('the import banner goes away once its proposal is replaced', async ({ page }) => {
+    test.setTimeout(90_000);
+    await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel.getByText('found 2 separate parts')).toBeVisible({ timeout: 30_000 });
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed', seeds: [{ label: 'a', point: [5, 5, 10] }, { label: 'b', point: [25, 5, 10] }],
+    }));
+    await expect(panel.getByText('found 2 separate parts')).toBeHidden();
+    await expect(panel).toBeVisible();
+  });
+
   test('a single solid gets the convert ask with a Detect parts button', async ({ page }) => {
     test.setTimeout(90_000);
     await importStl(page, 'one-block.stl', boxesStl([[[0, 0, 0], [10, 10, 10]]]));

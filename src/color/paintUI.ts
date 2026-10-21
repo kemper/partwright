@@ -87,6 +87,7 @@ import {
   getDistinctRegionColors,
 } from './regions';
 import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
+import { getPaintScope, onPaintScopeChange, setPaintScope } from './paintScope';
 import { getActiveImports } from '../import/importedMesh';
 import { BUTTON_SMALL_SECONDARY } from '../ui/styleConstants';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
@@ -373,6 +374,25 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
   toolRow.appendChild(createToolButton('replace', '\u{1F504} Replace', 'Replace one color with another across all matching regions (click mesh to pick source, then Replace all)'));
   content.appendChild(toolRow);
+
+  // "Paint within: [part]" — right under the tools it constrains. Only shown
+  // when the run has labels (e.g. accepted parts of an import).
+  const scopeHost = document.createElement('div');
+  scopeHost.id = 'paint-scope-row';
+  content.appendChild(scopeHost);
+  const renderScope = () => {
+    const labels = getPaintLabels();
+    // A scope whose part vanished (re-run, parts re-detected, a model with no
+    // labels) would clip every new stroke to nothing behind a hidden picker —
+    // drop it. setPaintScope re-enters this function to render.
+    const scope = getPaintScope();
+    if (scope && !labels.some((l) => l.name === scope)) { setPaintScope(null); return; }
+    scopeHost.replaceChildren();
+    if (labels.length > 0) scopeHost.appendChild(createScopeRow(labels));
+  };
+  renderScope();
+  onPaintLabelsChange(renderScope);
+  onPaintScopeChange(renderScope);
 
   // === Palette (filament slots) ===
   // The swatch grid is driven by the shared colour palette, so each swatch maps
@@ -1645,6 +1665,36 @@ function updateLabelList(container: HTMLElement): void {
   for (const label of labels) {
     container.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
   }
+}
+
+/** "Paint within: [part]" — scopes every paint tool (brush, bucket, slab, box,
+ *  image stamp) to one part so colour can't bleed across its edge. Each
+ *  committed region records the part as `withinPart`, so the clip survives
+ *  reloads and re-runs. Hidden when the run has no labels. */
+function createScopeRow(labels: LabelInfo[]): HTMLElement {
+  const row = document.createElement('label');
+  row.className = 'flex items-center gap-2 mb-2.5 text-[11px] text-zinc-400';
+  row.title = 'Keep brush, bucket, slab, box and image-stamp paint inside one part, so colour never bleeds across its edge';
+  row.append('Paint within');
+  const select = document.createElement('select');
+  select.id = 'paint-within-part';
+  select.setAttribute('aria-label', 'Paint within part');
+  select.className = 'flex-1 min-w-0 min-h-11 md:min-h-0 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200';
+  const whole = document.createElement('option');
+  whole.value = '';
+  whole.textContent = 'Whole model';
+  select.appendChild(whole);
+  for (const l of labels) {
+    const opt = document.createElement('option');
+    opt.value = l.name;
+    opt.textContent = l.name;
+    select.appendChild(opt);
+  }
+  select.value = getPaintScope() ?? '';
+  select.classList.toggle('border-sky-500', select.value !== '');
+  select.addEventListener('change', () => setPaintScope(select.value || null));
+  row.appendChild(select);
+  return row;
 }
 
 // Triangle count of the *base* mesh the current label snapshot was built

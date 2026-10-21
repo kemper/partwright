@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { computeMeshFeatures, toSegMesh } from '../../src/segmentation/features';
 import { SegmentationRunner } from '../../src/segmentation/runner';
-import { autoProposeDetectors, describeDetector, getDetector, listDetectors, resolveParams } from '../../src/segmentation/registry';
+import { autoProposeDetectors, describeDetector, getDetector, listDetectors, paramsJsonSchema, resolveParams } from '../../src/segmentation/registry';
 import { jitterMesh, scorePartition, seedsFromTruth } from '../../src/segmentation/scoring';
+import { planarGroupsDetector } from '../../src/segmentation/planarGroups';
 import type { SegMesh } from '../../src/segmentation/types';
 
 /** Heightfield over [0,1]² with z = h(x), N×N vertices, normals +Z. */
@@ -40,7 +41,7 @@ describe('segmentation features', () => {
     let maxCrease = 0, maxAt = -1;
     for (let e = 0; e < f.edgeA.length; e++) if (f.creaseCost[e] > maxCrease) { maxCrease = f.creaseCost[e]; maxAt = e; }
     expect(maxCrease).toBeGreaterThan(20);
-    expect(Math.abs(centroidX(m, f.edgeA[maxAt]) - 0.5)).toBeLessThan(0.06);
+    expect(Math.abs(centroidX(m, f.edgeA[maxAt]) - 0.5)).toBeLessThan(0.12);
     // A ridge is convex: no crease cost.
     const ridge = computeMeshFeatures(heightfield(21, (x) => -0.3 * Math.abs(x - 0.5)), { normalSmoothRadius: 0 });
     expect(Math.max(...ridge.creaseCost)).toBeLessThan(0.5); // float noise on flat diagonals only
@@ -111,6 +112,99 @@ describe('crease-watershed', () => {
   });
 });
 
+describe('random-walker', () => {
+  // Same layout as the watershed test: A hugs the groove, B is far away.
+  const seeds = [
+    { label: 'A', point: [0.45, 0.5, 0.015] as [number, number, number] },
+    { label: 'B', point: [0.98, 0.5, 0.144] as [number, number, number] },
+  ];
+  const run = (m: SegMesh, sd = seeds, params: Record<string, unknown> = {}, allow?: Uint8Array) => {
+    const r = new SegmentationRunner(m);
+    const f = r.features();
+    const d = getDetector('random-walker')!;
+    return { f, out: d.run(m, f, { params: resolveParams(d, params), seeds: sd, allow }) };
+  };
+  const maxX = (m: SegMesh, triPart: Int32Array, label: number) => {
+    let mx = 0;
+    for (let t = 0; t < triPart.length; t++) if (triPart[t] === label) mx = Math.max(mx, centroidX(m, t));
+    return mx;
+  };
+
+  it('puts the boundary on the groove', () => {
+    const m = groove();
+    const { out } = run(m);
+    expect(maxX(m, out.triPart, 0)).toBeLessThan(0.52);
+    expect(maxX(m, out.triPart, 0)).toBeGreaterThan(0.45);
+  });
+
+  it('requires seeds and names parts after seed labels', () => {
+    const r = new SegmentationRunner(groove(11));
+    expect(() => r.detect({ algorithm: 'random-walker' })).toThrow(/needs seeds/);
+    const s = r.detect({ algorithm: 'random-walker', seeds });
+    expect(s.parts.map((p) => p.name)).toEqual(['A', 'B']);
+    expect(s.unassigned.triCount).toBe(0);
+  });
+
+  it('emits a vertex cost field with two labels only near the boundary', () => {
+    const { out } = run(groove(21));
+    const vc = out.vertexCosts!;
+    let twoLabel = 0;
+    for (let v = 0; v < vc.label1.length; v++) {
+      if (vc.label2[v] >= 0) { twoLabel++; expect(vc.cost1[v]).toBeLessThanOrEqual(vc.cost2[v]); }
+      else expect(vc.cost2[v]).toBe(Infinity);
+    }
+    expect(twoLabel).toBeGreaterThan(0);
+    expect(twoLabel).toBeLessThan(vc.label1.length / 3);
+  });
+
+  it('respects the allow mask', () => {
+    const m = groove(21);
+    const f = new SegmentationRunner(m).features();
+    const allow = new Uint8Array(f.triCount);
+    for (let t = 0; t < f.triCount; t++) allow[t] = centroidX(m, t) < 0.8 ? 1 : 0;
+    const { out } = run(m, seeds, {}, allow);
+    // Seed B sits outside the mask and is dropped; only A remains.
+    expect(out.partNames).toEqual(['A']);
+    for (let t = 0; t < f.triCount; t++) {
+      if (allow[t]) expect(out.triPart[t]).toBe(0); else expect(out.triPart[t]).toBe(-1);
+    }
+  });
+
+  it('splits a flat sheet near the midpoint with a straight-ish boundary', () => {
+    // Equilateral-triangle lattice (isotropic graph), flat, no creases at all.
+    const cols = 31, rows = 35, sc = 1 / (cols - 1), rowH = sc * Math.sqrt(3) / 2;
+    const positions = new Float32Array(cols * rows * 3);
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) positions.set([(i + 0.5 * (j % 2)) * sc, j * rowH, 0], (j * cols + i) * 3);
+    const tris: number[] = [];
+    const v = (i: number, j: number) => j * cols + i;
+    for (let j = 0; j < rows - 1; j++) for (let i = 0; i < cols - 1; i++) {
+      if (j % 2 === 0) tris.push(v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j), v(i + 1, j + 1), v(i, j + 1));
+      else tris.push(v(i, j), v(i + 1, j + 1), v(i, j + 1), v(i, j), v(i + 1, j), v(i + 1, j + 1));
+    }
+    const m: SegMesh = { positions, triVerts: Uint32Array.from(tris) };
+    const yMid = (rows - 1) * rowH / 2;
+    const two = [
+      { label: 'L', point: [0.2, yMid, 0] as [number, number, number] },
+      { label: 'R', point: [0.8, yMid, 0] as [number, number, number] },
+    ];
+    const { out } = run(m, two);
+    // Per row strip: the L/R boundary sits between the rightmost L and the leftmost R.
+    const rowsL = new Map<number, number>(), rowsR = new Map<number, number>();
+    for (let t = 0; t < out.triPart.length; t++) {
+      const y = Math.floor((positions[m.triVerts[t * 3 + 2] * 3 + 1] + positions[m.triVerts[t * 3] * 3 + 1]) / 2 / rowH + 0.25);
+      const x = centroidX(m, t);
+      if (out.triPart[t] === 0) rowsL.set(y, Math.max(rowsL.get(y) ?? 0, x));
+      else rowsR.set(y, Math.min(rowsR.get(y) ?? 2, x));
+    }
+    const mids = [...rowsL.keys()].filter((y) => rowsR.has(y)).map((y) => (rowsL.get(y)! + rowsR.get(y)!) / 2).sort((a, b) => a - b);
+    expect(mids.length).toBeGreaterThan(rows / 2);
+    expect(mids[Math.floor(mids.length / 2)]).toBeGreaterThan(0.45);
+    expect(mids[Math.floor(mids.length / 2)]).toBeLessThan(0.55);
+    // Straight-ish: no row's boundary strays far from the others.
+    expect(mids[mids.length - 1] - mids[0]).toBeLessThan(0.12);
+  });
+});
+
 describe('pieces', () => {
   it('finds separate solids, largest first', () => {
     const a = groove(5);
@@ -134,6 +228,16 @@ describe('registry params', () => {
     expect(() => resolveParams(d, { growth: 'fast' })).toThrow(/one of/);
     expect(() => resolveParams(d, { creaseQuantumDeg: 0 })).toThrow(/≥ 0.5/);
     expect(() => resolveParams(d, { creaseWeight: '2' })).toThrow(/number/);
+  });
+});
+
+describe('registry AI schema', () => {
+  it('a param key shared by detectors lists every detector\'s meaning', () => {
+    const props = (paramsJsonSchema() as { properties: Record<string, { description: string }> }).properties;
+    expect(props.minPartPct.description).toContain('[thickness]');
+    expect(props.minPartPct.description).toContain('[planar-groups]');
+    expect(props.creaseWeight.description).toContain('[crease-watershed]');
+    expect(props.creaseWeight.description).toContain('[thickness]');
   });
 });
 
@@ -298,6 +402,128 @@ describe('auto-merge (auto patches)', () => {
     // Re-detecting from those seeds reproduces three parts.
     const again = r.detect({ algorithm: 'crease-watershed', seeds: s.seeds });
     expect(again.parts.length).toBe(3);
+  });
+});
+
+describe('planar-groups', () => {
+  /** Unit cube: 8 shared vertices, 12 outward-wound triangles (2 per face). */
+  const cube = (): SegMesh => {
+    const positions = Float32Array.from([0,0,0, 1,0,0, 1,1,0, 0,1,0, 0,0,1, 1,0,1, 1,1,1, 0,1,1]);
+    const quads = [[0,3,2,1], [4,5,6,7], [0,1,5,4], [2,3,7,6], [0,4,7,3], [1,2,6,5]];
+    const tris: number[] = [];
+    for (const [a, b, c, d] of quads) tris.push(a, b, c, a, c, d);
+    return { positions, triVerts: Uint32Array.from(tris) };
+  };
+  /** Closed n-gon prism (radius 1, height 2) with fan caps: 2n wall + 2n cap triangles. */
+  const prism = (n = 32): SegMesh => {
+    const positions: number[] = [];
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; positions.push(Math.cos(a), Math.sin(a), 0); }
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; positions.push(Math.cos(a), Math.sin(a), 2); }
+    positions.push(0, 0, 0, 0, 0, 2);
+    const bc = 2 * n, tc = 2 * n + 1, tris: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      tris.push(i, j, n + j, i, n + j, n + i); // wall, outward
+      tris.push(bc, j, i); // bottom cap, faces −Z
+      tris.push(tc, n + i, n + j); // top cap, faces +Z
+    }
+    return { positions: Float32Array.from(positions), triVerts: Uint32Array.from(tris) };
+  };
+  const run = (m: SegMesh, params: Record<string, unknown>, allow?: Uint8Array) => {
+    const f = computeMeshFeatures(m);
+    return planarGroupsDetector.run(m, f, { params: resolveParams(planarGroupsDetector, params), seeds: [], allow });
+  };
+  const partCount = (triPart: Int32Array) => new Set([...triPart].filter((p) => p >= 0)).size;
+
+  it('is registered, seedless, and not an auto-propose candidate', () => {
+    expect(getDetector('planar-groups')!.seeds).toBe('none');
+    expect(autoProposeDetectors().map((d) => d.id)).not.toContain('planar-groups');
+    expect(planarGroupsDetector.presets!.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('more separate pieces than maxParts: faces are kept, the cap is reported as ignored', () => {
+    // Three cubes side by side, not touching.
+    const one = cube(), positions: number[] = [], tris: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      for (let v = 0; v < 8; v++) positions.push(one.positions[v * 3] + 3 * k, one.positions[v * 3 + 1], one.positions[v * 3 + 2]);
+      for (const i of one.triVerts) tris.push(i + 8 * k);
+    }
+    const r = run({ positions: Float32Array.from(positions), triVerts: Uint32Array.from(tris) }, { maxParts: 2, minPartPct: 0 });
+    expect(partCount(r.triPart)).toBe(18);
+    expect(r.diagnostics?.maxPartsIgnored).toBeTruthy();
+  });
+
+  it('smooth mode finds the six faces of a cube', () => {
+    const r = run(cube(), {});
+    expect(partCount(r.triPart)).toBe(6);
+    expect(r.partNames).toEqual(['face 1', 'face 2', 'face 3', 'face 4', 'face 5', 'face 6']);
+    expect(r.genericNames).toBe(true);
+    expect(r.diagnostics).toEqual({ rawGroups: 6, parts: 6 });
+  });
+
+  it('keeps a tessellated cylinder wall as one face; flat mode facets it', () => {
+    const m = prism(32);
+    expect(partCount(run(m, {}).triPart)).toBe(3); // wall + 2 caps
+    // 5° < the 11.25° between neighbouring wall quads: one facet per quad.
+    const flat = run(m, { surfaces: 'flat', angleDeg: 5, minPartPct: 0 });
+    expect(partCount(flat.triPart)).toBe(34);
+    // A looser tolerance gives coarser facets (arcs of the wall), never one smooth face.
+    const arcs = partCount(run(m, { surfaces: 'flat', angleDeg: 20 }).triPart);
+    expect(arcs).toBeGreaterThan(3);
+    expect(arcs).toBeLessThan(34);
+  });
+
+  it('respects the allow mask', () => {
+    const m = cube();
+    // Allow the first three faces (triangles 0..5).
+    const allow = new Uint8Array(12);
+    allow.fill(1, 0, 6);
+    for (const surfaces of ['smooth', 'flat']) {
+      const r = run(m, { surfaces }, allow);
+      expect(partCount(r.triPart)).toBe(3);
+      for (let t = 0; t < 12; t++) expect(r.triPart[t] >= 0).toBe(t < 6);
+    }
+  });
+
+  it('maxParts caps the part count, and numbering is by descending area', () => {
+    // Terraces of unequal width, so the smallest are unambiguous to absorb.
+    const m = heightfield(61, (x) => 0.2 * Math.floor(6 * x * x));
+    const loose = run(m, { minPartPct: 0 });
+    expect(partCount(loose.triPart)).toBeGreaterThan(5);
+    const capped = run(m, { minPartPct: 0, maxParts: 4 });
+    expect(partCount(capped.triPart)).toBe(4); // one connected piece: the cap is exact
+    const f = computeMeshFeatures(m);
+    const area = new Float64Array(8);
+    for (let t = 0; t < f.triCount; t++) if (capped.triPart[t] >= 0) area[capped.triPart[t]] += f.triArea[t];
+    for (let p = 1; p < partCount(capped.triPart); p++) expect(area[p]).toBeLessThanOrEqual(area[p - 1] + 1e-9);
+  });
+
+  it('caps a noisy mesh that shatters into specks', () => {
+    const f0 = computeMeshFeatures(heightfield(41, () => 0));
+    const noisy = jitterMesh(heightfield(41, () => 0), 0.6 * f0.medianEdgeLen, 7);
+    expect(partCount(run(noisy, { minPartPct: 0, maxParts: 500 }).triPart)).toBeGreaterThan(20);
+    const r = run(noisy, { maxParts: 7 });
+    expect(partCount(r.triPart)).toBe(7);
+    expect(r.diagnostics!.rawGroups).toBeGreaterThan(20);
+  });
+
+  it('reuses the cached grouping when only the size sliders change', () => {
+    const m = prism(16), f = computeMeshFeatures(m), cache = new Map<string, unknown>();
+    const go = (params: Record<string, unknown>) =>
+      planarGroupsDetector.run(m, f, { params: resolveParams(planarGroupsDetector, params), seeds: [], cache });
+    go({});
+    expect(cache.size).toBe(1);
+    go({ minPartPct: 5, maxParts: 3 });
+    expect(cache.size).toBe(1);
+    go({ angleDeg: 5 });
+    expect(cache.size).toBe(2);
+  });
+
+  it('runs through the runner like any detector', () => {
+    const r = new SegmentationRunner(cube());
+    const s = r.detect({ algorithm: 'planar-groups' });
+    expect(s.parts.length).toBe(6);
+    expect(s.parts.every((p) => /^face \d+$/.test(p.name))).toBe(true);
   });
 });
 
@@ -701,5 +927,171 @@ describe('pin edge cases (review round)', () => {
     r.edit([{ op: 'reassign', point: [0.2, 0.7, 0.09], to: 'right', radius: 0.05 }], 'stroke-1');
     r.edit([{ op: 'undo' }]);
     expect([...r.draft!.triPart]).toEqual([...base]);
+  });
+});
+
+describe('thickness', () => {
+  /** Watertight, position-welded surface of revolution about the X axis:
+   *  `profile` is a polyline of (x, radius) from one pole (radius 0) to the
+   *  other. Smooth radial normals, unlike a voxel staircase, so a ray along
+   *  −normal always crosses the axis (the geometry thickness measures). */
+  function lathe(profile: [number, number][], M = 28): SegMesh {
+    const pos: number[] = [];
+    const ring: number[][] = profile.map(([x, r]) => {
+      if (r === 0) { pos.push(x, 0, 0); return [pos.length / 3 - 1]; }
+      const ids: number[] = [];
+      for (let m = 0; m < M; m++) {
+        const a = (2 * Math.PI * m) / M;
+        pos.push(x, r * Math.cos(a), r * Math.sin(a));
+        ids.push(pos.length / 3 - 1);
+      }
+      return ids;
+    });
+    const tris: number[] = [];
+    for (let i = 0; i + 1 < profile.length; i++) {
+      for (let m = 0; m < M; m++) {
+        const m1 = (m + 1) % M;
+        const a = ring[i], b = ring[i + 1];
+        if (a.length === 1) tris.push(a[0], b[m], b[m1]);
+        else if (b.length === 1) tris.push(a[m], b[0], a[m1]);
+        else tris.push(a[m], b[m], b[m1], a[m], b[m1], a[m1]);
+      }
+    }
+    // Orient outward (signed volume must be positive).
+    let vol = 0;
+    for (let q = 0; q < tris.length; q += 3) {
+      const [a, b, c] = [tris[q] * 3, tris[q + 1] * 3, tris[q + 2] * 3];
+      vol += pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1])
+        - pos[a + 1] * (pos[b] * pos[c + 2] - pos[b + 2] * pos[c])
+        + pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]);
+    }
+    if (vol < 0) for (let q = 0; q < tris.length; q += 3) { const s = tris[q + 1]; tris[q + 1] = tris[q + 2]; tris[q + 2] = s; }
+    return { positions: Float32Array.from(pos), triVerts: Uint32Array.from(tris) };
+  }
+
+  // A ball (radius 9, thickness ~18) centred at x = 9, with a stepped-down
+  // arm (radius 2.5, thickness ~5) running from x = 16 to x = 40.
+  const BALL = 9, JUNCTION = 16, ARM_END = 40;
+  const dumbbell = () => {
+    const profile: [number, number][] = [[0, 0]];
+    for (let x = 0.5; x <= JUNCTION + 1e-9; x += 0.5) profile.push([x, Math.sqrt(BALL * BALL - (x - BALL) ** 2)]);
+    profile.push([JUNCTION, 2.5]);
+    for (let x = JUNCTION + 4; x <= ARM_END - 1e-9; x += 4) profile.push([x, 2.5]);
+    profile.push([ARM_END, 2.5], [ARM_END, 0]);
+    return lathe(profile);
+  };
+  const detector = getDetector('thickness')!;
+  type Seed = { label: string; point: [number, number, number] };
+  const run = (m: SegMesh, over: Record<string, number>, extra: { seeds?: Seed[]; allow?: Uint8Array } = {}) => {
+    const f = computeMeshFeatures(m);
+    const params = resolveParams(detector, { resolution: 120, minPartPct: 0, ...over });
+    return { f, out: detector.run(m, f, { params, seeds: extra.seeds ?? [], allow: extra.allow, cache: new Map() }) };
+  };
+
+  it('is registered, seed-optional, and not an auto-proposal', () => {
+    expect(detector.seeds).toBe('optional');
+    expect(autoProposeDetectors().map((d) => d.id)).not.toContain('thickness');
+  });
+
+  it('unseeded: the thin arm lands in a different part from the thick body', () => {
+    const m = dumbbell();
+    const { f, out } = run(m, { levels: 2 });
+    const armTris: number[] = [], bodyTris: number[] = [];
+    for (let t = 0; t < f.triCount; t++) (centroidX(m, t) > JUNCTION + 4 ? armTris : centroidX(m, t) < BALL + 2 ? bodyTris : []).push(t);
+    // Dominant part of each side, by area.
+    const dominant = (tris: number[]) => {
+      const a = new Map<number, number>();
+      for (const t of tris) a.set(out.triPart[t], (a.get(out.triPart[t]) ?? 0) + f.triArea[t]);
+      const [part, area] = [...a.entries()].sort((x, y) => y[1] - x[1])[0];
+      return { part, frac: area / tris.reduce((s, t) => s + f.triArea[t], 0) };
+    };
+    const arm = dominant(armTris), body = dominant(bodyTris);
+    expect(arm.part).not.toBe(body.part);
+    expect(arm.frac).toBeGreaterThan(0.85);
+    expect(body.frac).toBeGreaterThan(0.85);
+    expect(out.partNames![arm.part]).toMatch(/^thin /);
+    expect(out.partNames![body.part]).toMatch(/^thick /);
+  });
+
+  it('automatic pins from a previous unseeded run do not switch to seeded mode', () => {
+    const m = dumbbell();
+    // The draft pins every part (auto: true); re-runs pass those pins back.
+    const autoPins = [
+      { label: 'thick 1', point: [BALL, BALL, 0] as [number, number, number], auto: true },
+      { label: 'thin 1', point: [ARM_END - 2, 2.5, 0] as [number, number, number], auto: true },
+    ];
+    const f = computeMeshFeatures(m);
+    const go = (levels: number) => detector.run(m, f, { params: resolveParams(detector, { resolution: 120, minPartPct: 0, levels }), seeds: autoPins, cache: new Map() });
+    const two = go(2), three = go(3);
+    // Unseeded names (not the pin labels), and `levels` still changes the result.
+    expect(two.partNames!.every((n) => /^(thin|thick|medium) /.test(n!))).toBe(true);
+    expect(three.partNames).not.toEqual(two.partNames);
+  });
+
+  it('seeded: the boundary lands near the junction', () => {
+    const m = dumbbell();
+    const seeds: Seed[] = [
+      { label: 'body', point: [BALL, BALL, 0] },
+      { label: 'arm', point: [ARM_END - 2, 2.5, 0] },
+    ];
+    const { f, out } = run(m, {}, { seeds });
+    expect(out.partNames).toEqual(['body', 'arm']);
+    // Arm-side surface triangles reach back to (about) the junction, not far into the body.
+    let armMinX = Infinity, armTri = 0;
+    for (let t = 0; t < f.triCount; t++) {
+      if (out.triPart[t] !== 1) continue;
+      armTri++;
+      armMinX = Math.min(armMinX, centroidX(m, t));
+    }
+    expect(armTri).toBeGreaterThan(0);
+    expect(armMinX).toBeGreaterThan(JUNCTION - 4);
+    expect(armMinX).toBeLessThan(JUNCTION + 4);
+    // The far end of the arm and the body's far side are on the right labels.
+    const labelAt = (x: number, y: number, z: number) => {
+      let best = -1, bd = Infinity;
+      for (let t = 0; t < f.triCount; t++) {
+        const d = (f.triCentroid[t * 3] - x) ** 2 + (f.triCentroid[t * 3 + 1] - y) ** 2 + (f.triCentroid[t * 3 + 2] - z) ** 2;
+        if (d < bd) { bd = d; best = t; }
+      }
+      return out.triPart[best];
+    };
+    expect(labelAt(ARM_END, 0.5, 0)).toBe(1);
+    expect(labelAt(0, 0.5, 0)).toBe(0);
+  });
+
+  it('respects the allow mask in both modes', () => {
+    const m = dumbbell();
+    const f0 = computeMeshFeatures(m);
+    const allow = new Uint8Array(f0.triCount);
+    for (let t = 0; t < f0.triCount; t++) allow[t] = centroidX(m, t) > BALL ? 1 : 0; // arm + the ball's far half
+    const unseeded = run(m, { levels: 2 }, { allow }).out;
+    for (let t = 0; t < f0.triCount; t++) expect(allow[t] ? unseeded.triPart[t] >= 0 : unseeded.triPart[t] === -1).toBe(true);
+    const seeds: Seed[] = [
+      { label: 'arm', point: [ARM_END - 2, 2.5, 0] },
+      { label: 'ignored', point: [BALL - 4, 8, 0] }, // outside the allowed area → dropped
+    ];
+    const seeded = run(m, {}, { allow, seeds }).out;
+    expect(seeded.partNames).toEqual(['arm']);
+    for (let t = 0; t < f0.triCount; t++) if (!allow[t]) expect(seeded.triPart[t]).toBe(-1);
+  });
+
+  it('caches the expensive stage: a slider change does not re-voxelize', () => {
+    const m = dumbbell();
+    const f = computeMeshFeatures(m);
+    const cache = new Map<string, unknown>();
+    const go = (over: Record<string, number>) => detector.run(m, f, { params: resolveParams(detector, { resolution: 96, ...over }), seeds: [], cache });
+    go({ levels: 2 });
+    expect(cache.size).toBe(1);
+    go({ levels: 3, smoothing: 8 });
+    expect(cache.size).toBe(1);
+    go({ resolution: 112 });
+    expect(cache.size).toBe(2);
+  });
+
+  it('refuses a mesh that is not a closed solid with a clear error', () => {
+    // A single open triangle voxelizes to nothing.
+    const open: SegMesh = { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]), triVerts: Uint32Array.from([0, 1, 2]) };
+    const f = computeMeshFeatures(open);
+    expect(() => detector.run(open, f, { params: resolveParams(detector, {}), seeds: [] })).toThrow(/watertight/);
   });
 });

@@ -4,9 +4,12 @@
 
 import { autoMergeDetector } from './autoPatches';
 import { creaseWatershedDetector, piecesDetector } from './detectors';
+import { planarGroupsDetector } from './planarGroups';
+import { randomWalkerDetector } from './randomWalker';
+import { thicknessDetector } from './thickness';
 import type { DetectorPreset, ParamSpec, ParamValues, PartDetector } from './types';
 
-const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, autoMergeDetector];
+const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, randomWalkerDetector, autoMergeDetector, thicknessDetector, planarGroupsDetector];
 
 export function listDetectors(): readonly PartDetector[] {
   return DETECTORS;
@@ -92,8 +95,20 @@ export function paramsJsonSchema(): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const d of DETECTORS) {
     for (const p of d.params) {
-      if (props[p.key]) continue;
-      const base: Record<string, unknown> = { description: `[${d.id}] ${p.label}: ${p.hint} Default ${String(p.default)}.` };
+      const text = `[${d.id}] ${p.label}: ${p.hint} Default ${String(p.default)}.`;
+      const seen = props[p.key] as Record<string, unknown> | undefined;
+      // A key several detectors share keeps the first one's type, and lists
+      // every detector's meaning, so the model never reads one detector's
+      // hint as another's.
+      if (seen) {
+        seen.description = `${String(seen.description)} ${text}`;
+        if (seen.minimum !== undefined && (p.min === undefined || p.min < (seen.minimum as number))) seen.minimum = p.min;
+        if (seen.maximum !== undefined && (p.max === undefined || p.max > (seen.maximum as number))) seen.maximum = p.max;
+        if (seen.minimum === undefined) delete seen.minimum;
+        if (seen.maximum === undefined) delete seen.maximum;
+        continue;
+      }
+      const base: Record<string, unknown> = { description: text };
       if (p.type === 'enum') { base.type = 'string'; base.enum = p.options; }
       else if (p.type === 'boolean') base.type = 'boolean';
       else { base.type = p.type === 'integer' ? 'integer' : 'number'; if (p.min !== undefined) base.minimum = p.min; if (p.max !== undefined) base.maximum = p.max; }
