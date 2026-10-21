@@ -28,6 +28,15 @@ When adding a new top-level page or cross-page navigation, walk through:
 2. What does `window.location` look like after each async step (especially DB or session ops)?
 3. Does back take the user to the prior page, not two pages back?
 
+## New Worker clients — the init/ready/error handshake
+
+Every Worker that mirrors `engineWorker.ts`'s protocol requires an explicit `{ type: 'init' }` message and replies `{ type: 'ready' }` before it will accept any work (`execute`, etc.). A pool worker that skips the handshake and gets sent work early doesn't reject — it silently drops the message, so a caller `await`ing `Promise.all(...)` on its results just **hangs forever** with no error and no stack trace. If the Worker instead rejects bad input, it does so via a `{ type: 'error', message }` message, not a rejected promise on the call itself.
+
+When wiring a new Worker client (a pool, a second consumer of an existing Worker type, etc.):
+1. Send `init` and await `ready` before dispatching any other message type.
+2. Have the message handler branch on `type === 'error'` explicitly and reject the pending call — don't assume every response is the success shape.
+3. If a call seems to hang with no error, suspect a skipped or race-y handshake before debugging the call itself.
+
 ## Cross-tab isolation — implementation patterns
 
 The rule: state must not bleed between tabs. The explicit exceptions are opening a session in a tab and taking control of a session in another tab.
