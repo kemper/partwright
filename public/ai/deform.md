@@ -116,6 +116,24 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
 caveats as `round` (remeshed output, labels don't carry through).
 
+## Region-scoped round / smoothWeld (the "local weld" recipe)
+
+Both ops lattice the **whole input's bounding box** — there's no built-in
+`region`/bbox option yet. Welding a thin fin onto a large body forces the
+lattice over the entire model, which is slow and wastes resolution where
+nothing needs smoothing. Workaround, proven across several catalog fixes:
+
+1. Clip both parts to a tight box around just the seam (`api.intersect` with
+   a box a little larger than the joint).
+2. `smoothWeld`/`round` the two clipped fragments.
+3. Union the welded seam fragment back with the untouched remainders of each
+   part — keep a small overlap between the fragment and each remainder so the
+   result stays watertight.
+
+This keeps the lattice resolution concentrated on the seam instead of
+spanning the whole model. (A first-class `region`/bbox option on `round`/
+`smoothWeld` would remove this dance — tracked as a backlog item.)
+
 ## Sculpt — declarative brush nudges
 
 One-line, code-serializable versions of Blender's grab / inflate / flatten
