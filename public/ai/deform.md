@@ -73,6 +73,25 @@ const spikes = api.scatter(base, spike, {
 return api.expectUnion([base, spikes], { expectComponents: 1 });
 ```
 
+**Sizing `offset` against the instance's own thickness (worked example).** `offset`
+moves the instance's *local origin* along the normal — it is not a fraction of
+the instance's size, so guessing it against the instance's bounding box is how
+a first pass buries the whole instance (this has bitten flush spots, sprinkles,
+and embedded stones alike). Compute the instance's own half-thickness along its
+placement axis first, then offset from that:
+
+```js
+const spike = api.cube([2, 2, 3]).translate([-1, -1, 0]); // base sits at spike-local z=0
+const halfThickness = api.bbox(spike).size[2] / 2;          // 1.5 here
+// offset: -halfThickness*0.3 leaves ~30% embedded (flush-ish), 0 sits exactly
+// on the surface (proud, may look glued-on), -halfThickness*0.8+ buries most of it.
+api.scatter(base, spike, { count: 40, offset: -halfThickness * 0.3 });
+```
+
+Render one instance in isolation with `model:preview` at a tight `--view` before
+scattering 100 of them — verifying burial/proud-ness on a single copy is far
+cheaper than debugging it across a whole scatter.
+
 Returns the **union of the instances only** (like `circularPattern`) — add it to
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
@@ -106,6 +125,23 @@ perfectly flat, edge fillets are perfectly cylindrical — and far fewer
 triangles). Reserve `api.round` for shapes with no exact construction:
 boolean results, imports, organic/non-convex forms.
 
+**`mode: 'concave'` is the retrofit tool for CSG assemblies.** It fills seams
+and creases while leaving the convex silhouette untouched, and is far more
+robust than `mode: 'both'`/`smoothWeld` on shapes with acute swept corners —
+those erode catastrophically at *any* radius under `'both'`. Reach for
+`'concave'` first when you're smoothing a boolean-assembled model's seams
+rather than reshaping its outer form.
+
+**Both `round` and `smoothWeld` lattice over the whole input bbox** — welding
+a thin fin onto a large body forces a lattice over the entire body just to
+smooth one small seam, which is slow and can erode unrelated thin features.
+**Local-weld recipe:** clip both parts to a tight box around the seam only
+(`api.intersect` with a box slightly larger than the seam region), weld/round
+that clipped pair, then union the welded seam back with the untouched
+remainders of each part (which still overlap the welded piece, so the union
+is clean). This keeps the lattice — and its cost and thin-feature risk —
+scoped to the seam instead of the whole assembly.
+
 ## smoothWeld — smoothUnion for plain meshes
 
 ```js
@@ -114,7 +150,8 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
-caveats as `round` (remeshed output, labels don't carry through).
+caveats as `round` (remeshed output, labels don't carry through, whole-bbox
+lattice cost — see the local-weld recipe above).
 
 ## Sculpt — declarative brush nudges
 
