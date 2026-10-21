@@ -15,6 +15,10 @@ Each loader is idempotent and caches the resolved module. Vite splits each into 
 
 When adding a new lazy-loaded module, follow `brepRuntime.ts`'s pattern: one `ensureXLoaded()` promise, cached after success and cleared on failure so the next call retries.
 
+## Worker client protocol — init/ready/error handshake
+
+`engineWorker.ts` (and any other dedicated Worker) requires an explicit `{type:'init'}` message and replies `{type:'ready'}` before it will accept `execute`/other work messages. A worker sent `execute` before `init` returns `{type:'error', message:'Geometry engine not initialised'}` — a **message**, not a rejected promise — so a client that only listens for a resolved/rejected `execute` result will hang forever with no error surfaced. Any new worker client (e.g. a Worker pool) must: (1) do the `init`→`ready` handshake before dispatching work, and (2) handle the `error` message type explicitly, not just the success reply. See the pool client in the Multi-part Assembly view for the pattern.
+
 ## Browser history — back button preservation
 
 `updateURL()` in `sessionManager.ts` uses `history.replaceState`, not push — intentional for in-editor updates (version switching, rename) that shouldn't pollute the back stack. But it's a trap for cross-page navigation:
