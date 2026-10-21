@@ -15,7 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
-npm run pr:screenshots -- a.png b.png  # push screenshots to the pr-assets branch + print PR-body links (cloud sessions) — see Visual proof in the PR
+npm run pr:screenshots -- 'a.png#caption' b.png  # push screenshots + a gallery page to pr-assets, print the PR-body link (cloud sessions) — see Visual proof in the PR
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -220,9 +220,12 @@ What to capture:
 How to attach — pick the first that works:
 
 - **`gh --attach` (preferred; gh ≥ 2.99).** `gh pr comment <n> --attach 'shot.png#alt text'` (also on `gh pr create` / `gh pr edit` for the body) uploads the image to GitHub and inlines it. Put the shots in a `## Visual proof` comment or the body. **This does not work in cloud Claude Code sessions** — gh resolves the PR over GraphQL, which the session proxy blocks (HTTP 403) — so there use:
-- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Pushes the images to the shared, never-merged **`pr-assets`** branch (one folder per PR branch) using git plumbing — your checkout, index and branch are untouched, so `main`'s history never gets screenshot commits, squash or not — and prints Markdown links pinned to that commit's SHA. Paste them into the PR body's `## Visual proof` section (`update_pull_request`). Never merge, rebase or delete `pr-assets`; old PR links depend on its commits.
+- **`npm run pr:screenshots -- 'shot.png#caption'…` (cloud fallback).** Pushes the images to the shared, never-merged **`pr-assets`** branch (one folder per PR branch) using git plumbing. Your checkout, index and branch are untouched, so `main`'s history never gets screenshot commits, squash or not. It also writes a **gallery page** (`<stamp>-proof.md`) there that shows every image inline under its caption. It prints a root-relative `[View screenshots (N)](/owner/repo/blob/<sha>/…-proof.md)` link pinned to that commit; put that link in the PR body's `## Visual proof` section (`update_pull_request`), with one bullet per shot saying what it shows. Never merge, rebase or delete `pr-assets`; old PR links depend on its commits.
+  - **Why a link, not inline images:** the GitHub MCP tool used in cloud sessions **strips image embeds** (`![a](b)` arrives as the plain link `[a](b)`) and **code-wraps absolute URLs** (`` (``https://…``) ``), so pasted `![…](https://…)` never renders (kemper/partwright#1043 and #1046 both shipped with broken proof this way; see #1047). Root-relative links survive it. Don't try to smuggle images past that filter (raw `<img>` HTML and the like): it is deliberate.
+  - **Before/after:** caption the shots in order, e.g. `'before.png#Before (main): …' 'after.png#After: …'`; the gallery keeps that order.
+  - **Verify it rendered; a successful API call isn't proof.** Read the rendered body back and confirm the gallery link is a real anchor: `gh api -H "Accept: application/vnd.github.full+json" repos/<owner>/<repo>/issues/<n> --jq .body_html | grep -o '<a href="[^"]*proof.md"'` (unauthenticated reads work for this public repo).
 
-Lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
+When you post through a channel that *does* render images (`gh --attach`, the web UI), lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
 
 ```md
 ## Visual proof
