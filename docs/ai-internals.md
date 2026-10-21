@@ -37,6 +37,8 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 
 `streamTurn` routes per model (gated by `isReasoningModel`):
 
+> **An OpenAI-compatible endpoint may be a strict-Anthropic backend** (Claude behind a gateway, via the Custom or OpenAI provider — tell-tale: `toolu_…` ids in an error labelled "OpenAI 400"). Request builders must therefore satisfy Anthropic's adjacency rule (every `tool_result` immediately after its `tool_use`), not just OpenAI's laxer one. OpenAI's `tool` role can't carry images, so image results ride on a following `user` message and can split a multi-tool run — builders route through `repairToolHistory` first for this reason.
+
 - **Reasoning models** (`gpt-5*`, `o1/o3/o4`) → Responses API (`/v1/responses`). These reject `reasoning_effort` alongside function tools on Chat Completions. History converts to `input` shape: `message`/`function_call`/`function_call_output` items linked by `call_id`.
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
