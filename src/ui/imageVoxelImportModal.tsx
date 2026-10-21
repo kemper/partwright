@@ -24,6 +24,7 @@ import {
   type ImageVoxelColorMode,
 } from '../import/imageToVoxel';
 import { listSlotRgb255 } from '../color/palette';
+import { clampEntry, entryTitle, formatEntry, stepDecimals } from './sliderEntry';
 import { openColorPicker } from './colorPickerModal';
 
 export interface ImageVoxelModalOptions {
@@ -180,9 +181,8 @@ function Slider(props: {
   onChange: (v: number) => void;
 }) {
   const step = props.step ?? 1;
-  const hardMin = props.hardMin ?? props.min;
-  const hardMax = props.hardMax ?? props.max;
-  const shown = step < 1 ? Number(props.value.toFixed(2)) : props.value;
+  const bounds = { hardMin: props.hardMin ?? props.min, hardMax: props.hardMax ?? props.max, integer: step >= 1 };
+  const shown = formatEntry(props.value, stepDecimals(step));
   return (
     <label class="block">
       <div class="flex items-center justify-between gap-2 text-[11px] text-zinc-400 mb-0.5">
@@ -192,19 +192,19 @@ function Slider(props: {
             type="number"
             class="w-16 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200"
             aria-label={props.label}
-            title={hardMax > props.max ? `Type a value up to ${hardMax} to go past the slider` : 'Type an exact value'}
-            min={hardMin}
-            max={Number.isFinite(hardMax) ? hardMax : undefined}
-            step="any"
+            title={entryTitle(props.max, bounds.hardMax)}
+            min={bounds.hardMin}
+            max={Number.isFinite(bounds.hardMax) ? bounds.hardMax : undefined}
+            step={step}
             value={shown}
             // Commit on Enter / blur ('change'), not per keystroke, so a
             // half-typed value isn't clamped while the user is still typing.
             onChange={e => {
               const el = e.target as HTMLInputElement;
               const raw = el.valueAsNumber;
-              if (Number.isNaN(raw)) { el.value = String(shown); return; }
-              const v = Math.max(hardMin, Math.min(hardMax, step >= 1 ? Math.round(raw) : raw));
-              el.value = String(v);
+              if (Number.isNaN(raw)) { el.value = shown; return; }
+              const v = clampEntry(raw, bounds);
+              el.value = formatEntry(v);
               props.onChange(v);
             }}
           />

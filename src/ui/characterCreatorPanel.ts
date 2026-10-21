@@ -15,6 +15,7 @@ import { BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
 import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
+import { createSliderEntry } from './sliderEntry';
 import {
   type CharacterSpec,
   DEFAULT_SPEC,
@@ -89,37 +90,17 @@ function sliderRow(
    *  past it. Defaults to [min, max]. */
   hard: { min?: number; max?: number } = {},
 ): HTMLElement {
-  const hardMin = hard.min ?? min;
-  const hardMax = hard.max ?? max;
-  const wrap = el('div', 'flex items-center gap-2 min-w-[8.5rem]');
-  const range = el('input', 'flex-1 min-w-0 accent-blue-500');
-  range.type = 'range';
-  range.min = String(min); range.max = String(max); range.step = String(step);
-  range.value = String(value);
-  range.setAttribute('aria-label', label);
-  // Editable box: shows the live value while dragging and accepts a typed
-  // exact (or past-the-slider) value. Typed values commit on Enter / blur.
-  const num = el('input', 'w-12 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-[11px] text-right tabular-nums text-zinc-200');
-  num.type = 'number';
-  num.min = String(hardMin); num.step = 'any';
-  if (Number.isFinite(hardMax)) num.max = String(hardMax);
-  num.value = String(value);
-  num.title = hardMax > max ? 'Type any value to go past the slider' : 'Type an exact value';
-  num.setAttribute('aria-label', label);
-  // Fire on release ('change') not every tick ('input') — an SDF rebuild per
-  // pixel of drag would starve the renderer; the number box still tracks
-  // live on 'input'.
-  range.addEventListener('input', () => { num.value = range.value; });
-  range.addEventListener('change', () => onChange(Number(range.value)));
-  num.addEventListener('change', () => {
-    const raw = num.valueAsNumber;
-    if (Number.isNaN(raw)) { num.value = range.value; return; }
-    const v = Math.max(hardMin, Math.min(hardMax, raw));
-    num.value = String(v);
-    range.value = String(v);   // the thumb pins at the slider's ends
-    onChange(v);
+  // Fire on release / Enter ('change') not every tick — an SDF rebuild per
+  // pixel of drag would starve the renderer; the box still tracks live.
+  const entry = createSliderEntry({
+    label, min, max, step, value,
+    hardMin: hard.min, hardMax: hard.max,
+    dragCommit: 'change',
+    onChange,
+    inputClass: 'w-12 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-[11px] text-right tabular-nums text-zinc-200',
   });
-  wrap.append(range, num);
+  const wrap = el('div', 'flex items-center gap-2 min-w-[8.5rem]');
+  wrap.append(entry.range, entry.input);
   return labelledRow(label, wrap);
 }
 

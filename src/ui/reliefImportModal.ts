@@ -14,6 +14,7 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import * as THREE from 'three';
 import { getConfig } from '../config/appConfig';
+import { createSliderEntry } from './sliderEntry';
 
 export interface ReliefImportModalOptions {
   aiAvailable: boolean;
@@ -1240,57 +1241,24 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     set: (v: number) => void,
     range: { min: number; max: number; step: number; int?: boolean },
   ): HTMLElement {
-    // Slider for dragged exploration, plus a typeable number input for exact
-    // entry. Two-way bound and clamped to the slider's range.
+    // Slider for dragged exploration, plus a typeable number box for exact
+    // entry. The box floors at range.min (typed negatives would break
+    // downstream consumers) but has no max — main.ts's clampReliefCommon
+    // enforces the hard upper bound at create time — so a value past the
+    // slider just pins its thumb while the setting carries the typed value.
     const { wrap, labelRow, valueEl } = fieldWrap(label, unit);
     valueEl.remove();
-    const fmt = (v: number) => (range.int ? String(Math.round(v)) : v.toFixed(2));
-    const numEl = document.createElement('input');
-    numEl.type = 'number';
-    // Number input deliberately omits `max` so the user can type a value
-    // larger than the slider visually allows (matching the freehand pattern
-    // used elsewhere in the app — main.ts's clampReliefCommon enforces a
-    // hard upper bound at create time).
-    numEl.min = String(range.min);
-    numEl.step = String(range.step);
-    numEl.value = fmt(get());
-    numEl.className = 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500';
-    labelRow.appendChild(numEl);
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(range.min);
-    input.max = String(range.max);
-    input.step = String(range.step);
-    input.value = String(get());
-    input.className = 'w-full accent-blue-500 cursor-pointer';
-    const onSlider = (): void => {
-      const v = range.int ? Math.round(Number(input.value)) : Number(input.value);
-      set(v);
-      numEl.value = fmt(v);
-      schedulePreview();
-    };
-    const onNumber = (): void => {
-      let v = Number(numEl.value);
-      if (!Number.isFinite(v)) { numEl.value = fmt(get()); return; }
-      if (range.int) v = Math.round(v);
-      // Floor at range.min (typed negatives would break downstream consumers),
-      // but accept values larger than range.max — the slider just pins at its
-      // visual max while the underlying value carries the user's input.
-      if (v < range.min) v = range.min;
-      set(v);
-      input.value = String(Math.min(v, range.max));
-      numEl.value = fmt(v);
-      schedulePreview();
-    };
-    input.addEventListener('input', onSlider);
-    numEl.addEventListener('change', onNumber);
-    numEl.addEventListener('blur', onNumber);
-    numEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { onNumber(); numEl.blur(); } });
-    controlRefreshers.push(() => {
-      input.value = String(get());
-      numEl.value = fmt(get());
+    const entry = createSliderEntry({
+      label, min: range.min, max: range.max, step: range.step, value: get(),
+      hardMax: Infinity, integer: range.int,
+      format: v => (range.int ? String(Math.round(v)) : v.toFixed(2)),
+      onChange: v => { set(v); schedulePreview(); },
+      rangeClass: 'w-full accent-blue-500 cursor-pointer',
+      inputClass: 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500',
     });
-    wrap.appendChild(input);
+    labelRow.appendChild(entry.input);
+    controlRefreshers.push(() => entry.set(get()));
+    wrap.appendChild(entry.range);
     parent.appendChild(wrap);
     return wrap;
   }

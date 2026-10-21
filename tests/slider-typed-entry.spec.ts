@@ -91,4 +91,50 @@ test.describe('typed-entry sliders', () => {
     await expect(box).toHaveValue('16');                             // MAX_BRUSH_RADIUS
     await expect(panel.getByText('Size: 33 wide')).toBeVisible();
   });
+
+  test('Resize: a typed scale past the slider max grows the slider range', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('typed-resize');
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube([20, 20, 20], true);');
+    });
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Resize model');
+    await page.keyboard.press('Enter');
+
+    const box = page.locator('input[type="number"][aria-label="X scale"]');
+    const range = page.locator('input[type="range"][aria-label="X scale"]');
+    await expect(range).toHaveAttribute('max', '500');
+    await box.fill('800');
+    await box.press('Enter');
+    // Not clamped to 500: the range (re-rendered) grows to include the value.
+    await expect(page.locator('input[type="range"][aria-label="X scale"]')).toHaveAttribute('max', '800');
+    await expect(page.locator('input[type="number"][aria-label="X scale"]')).toHaveValue('800.0');
+  });
+
+  test('Cross-section: the clip height takes a typed Z, clamped to the model', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('typed-clip');
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube([20, 20, 20], true);');
+    });
+    await page.evaluate(() => (document.getElementById('clip-toggle') as HTMLButtonElement).click());
+    const box = page.locator('#clip-z-input');
+    const range = page.locator('#clip-z-slider');
+    await expect(box).toBeVisible();
+    await box.fill('3.25');
+    await box.press('Enter');
+    await expect(range).toHaveValue(/^3\.[23]$/);   // the thumb snaps to its 0.1 step; the box keeps the exact value
+    await expect(box).toHaveValue('3.25');
+    await box.fill('999');
+    await box.press('Enter');
+    const max = await range.getAttribute('max');
+    expect(Number(await box.inputValue())).toBeCloseTo(Number(max), 5);
+    await page.screenshot({ path: 'test-results/slider-typed-entry-clip.png' });
+  });
 });

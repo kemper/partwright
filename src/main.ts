@@ -42,6 +42,7 @@ import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './ren
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
+import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
@@ -355,6 +356,9 @@ import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
+
+/** The viewport clip-plane Z slider + typed box (bound in initClipControls). */
+let clipZEntry: SliderEntry | null = null;
 
 // === Attachment helpers (shared by the setImages/addImage + setAttachments/
 // addAttachment API methods) ===
@@ -17682,7 +17686,7 @@ async function main() {
     const toggleBtn = container.querySelector('#clip-toggle') as HTMLButtonElement;
     // Slider + label live in their own anchor under the gizmo, not in the toolbar.
     const slider = document.getElementById('clip-z-slider') as HTMLInputElement;
-    const zLabel = document.getElementById('clip-z-label') as HTMLElement;
+    const zInput = document.getElementById('clip-z-input') as HTMLInputElement;
 
     toggleBtn.addEventListener('click', () => {
       const state = getClipState();
@@ -17690,10 +17694,12 @@ async function main() {
       syncClipUI();
     });
 
-    slider.addEventListener('input', () => {
-      const z = parseFloat(slider.value);
-      setClipZ(z);
-      zLabel.textContent = `Z: ${z.toFixed(2)}`;
+    // Bounds track the model (syncClipSliderBounds); a typed Z is clamped to
+    // them since clipping outside the model shows nothing new.
+    clipZEntry = bindSliderEntry(slider, zInput, {
+      min: 0, max: 10, step: 0.01, value: 5,
+      format: z => z.toFixed(2),
+      onChange: z => setClipZ(z),
     });
   }
 
@@ -17701,9 +17707,6 @@ async function main() {
     const state = getClipState();
     const toggleBtn = document.getElementById('clip-toggle');
     const sliderGroup = document.getElementById('clip-slider-group');
-    const slider = document.getElementById('clip-z-slider') as HTMLInputElement;
-    const zLabel = document.getElementById('clip-z-label');
-
     if (toggleBtn) {
       toggleBtn.className = state.enabled
         ? 'px-2 py-1 rounded text-xs bg-red-500/20 backdrop-blur text-red-300 hover:bg-red-500/30 transition-colors border border-red-500/50'
@@ -17714,23 +17717,16 @@ async function main() {
       sliderGroup.classList.toggle('hidden', !state.enabled);
     }
 
-    if (slider && state.enabled) {
-      slider.value = String(state.z);
-    }
-
-    if (zLabel && state.enabled) {
-      zLabel.textContent = `Z: ${state.z.toFixed(2)}`;
-    }
+    if (state.enabled) clipZEntry?.set(state.z);
   }
 
   function syncClipSliderBounds() {
     const state = getClipState();
-    const slider = document.getElementById('clip-z-slider') as HTMLInputElement;
-    if (!slider) return;
-
-    slider.min = String(state.min);
-    slider.max = String(state.max);
-    slider.step = String((state.max - state.min) / 200);
+    if (!clipZEntry) return;
+    clipZEntry.setBounds({
+      min: state.min, max: state.max, step: (state.max - state.min) / 200,
+      hardMin: state.min, hardMax: state.max,
+    });
 
     if (state.enabled) {
       // Keep current Z if within bounds, else reset to 75%

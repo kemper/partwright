@@ -97,6 +97,12 @@ against these references:
 - **Transient feedback**: `showToast()` (`src/ui/toast.ts`) only — never
   `alert`/`confirm`/`prompt`, never a hand-rolled `position:fixed` message
   node. Every toast is mirrored to the Diagnostic Log automatically.
+- **Numeric sliders**: `createSliderEntry()` / `bindSliderEntry()`
+  (`src/ui/sliderEntry.ts`) — the slider covers the common range and a typed
+  number box accepts an exact value up to the setting's real limit. Flag a new
+  hand-built `type = 'range'` + number-input pair, and a slider with no typed
+  box whose max is a UI convenience rather than a hard limit (ast-grep hint
+  `prefer-slider-entry`).
 - **Menus / dropdowns / palettes**: keyboard model must match
   `src/ui/commandPalette.ts` — ArrowUp/ArrowDown to move, Enter to choose,
   Escape to close — and carry the same `role` / `aria-*` attributes.
