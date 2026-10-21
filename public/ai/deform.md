@@ -77,6 +77,20 @@ Returns the **union of the instances only** (like `circularPattern`) — add it 
 the base yourself. Author the instance with its base at the origin, "up" = +Z.
 A total-triangle budget (~2M) throws before building a runaway union.
 
+**Sizing `offset` against the instance's own thickness — a worked example.**
+`offset` is a raw world-unit shift along the normal, not a fraction of the
+instance, so it has to be sized relative to *that instance's* half-thickness or
+it either floats (positive, too large) or gets fully buried and disappears from
+the union (negative, too large in magnitude). For a spot/stud/rivet built as a
+sphere or short cylinder of radius `r` centered at its own origin: `offset:
+-r * 0.3` to `-r * 0.5` sinks it enough to fuse cleanly at the boolean seam
+without swallowing the visible cap. For a thin decal-like instance (height `h`
+along Z, base at Z=0), use `offset: -h * 0.5` to `-h * 0.8` — deeper than half
+buries it entirely (the failure mode that hit two first passes: an `offset`
+sized against the *base* model's scale instead of the instance's own
+thickness). Render one instance in isolation first if the thickness is
+unfamiliar, rather than guessing from the base model's overall size.
+
 ## Round — fillet every edge of any solid
 
 ```js
@@ -98,6 +112,19 @@ round first, label/paint after); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
 
+As a starting default (independent of the thin-feature ceiling above): radius
+≈ 4–6% of the edge length reads as a clean machined chamfer on a typical
+mechanical part. Below the thin-feature limit for the shape at hand, rounding
+may not be viable at any radius — a 1.2-unit-thick heart slab, for instance,
+ruled it out entirely; reach for `CrossSection` corner smoothing on the 2D
+profile before extrusion instead.
+
+`mode: 'concave'` is the retrofit tool for a CSG assembly that already reads
+correctly but has visible seams/creases where parts meet: it fills those
+concave creases while leaving the convex silhouette untouched, and is far more
+robust than `mode: 'both'`/`smoothWeld` on shapes with acute swept corners,
+which erode catastrophically at any radius under `'both'`.
+
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces
 (a die body showed it clearly). For a convex rounded box/prism, build the
@@ -115,6 +142,17 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
 caveats as `round` (remeshed output, labels don't carry through).
+
+**Both ops lattice over the whole input bbox** — there's no `region`/bbox
+scoping option yet, so welding a thin fin onto a large body forces a fine
+lattice over the entire assembly, not just the seam. Until that lands, the
+manual **local weld** recipe: clip both parts down to a tight box around just
+the seam (`intersect` each with a box a few `radius` wider than the contact
+area), `smoothWeld` that small pair, then union the welded seam piece back
+onto the untouched remainders of both parts (a thin overlap shell where the
+clip boundary meets the original geometry keeps the boolean watertight). This
+keeps the lattice — and its runtime — proportional to the seam, not the whole
+model.
 
 ## Sculpt — declarative brush nudges
 
