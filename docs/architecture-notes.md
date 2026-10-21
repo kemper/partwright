@@ -15,6 +15,22 @@ Each loader is idempotent and caches the resolved module. Vite splits each into 
 
 When adding a new lazy-loaded module, follow `brepRuntime.ts`'s pattern: one `ensureXLoaded()` promise, cached after success and cleared on failure so the next call retries.
 
+## New Worker-client checklist — the init/ready/error handshake
+
+Every message-passing Worker client in this repo (the geometry `engineWorker.ts`, `surfaceWorker.ts`, `engraveWorker.ts`, a new per-part pool worker, …) follows the same handshake: the client posts `{type:'init'}` first and the Worker replies `{type:'ready'}` before it will accept any real work message (`execute`, `apply`, …). Skipping this on either side doesn't throw — it silently hangs. Concretely, when adding a new Worker client:
+
+1. **Post `init` and await `ready` before the first work message.** A worker that receives `execute` before `init` replies `{type:'error', message:'... not initialised'}` — it does *not* reject the pending promise on its own; the client must be listening for the `error` message type and treat it as a rejection.
+2. **Every request needs a matching response handler for both the success type and the `error` type.** A client that only wires up the success case (e.g. `Promise.all` awaiting per-worker `execute` results) will hang forever, not throw, when a worker never reaches `ready` or emits `error` instead of the expected type — there is no built-in timeout.
+3. **Pool workers replicate the handshake per-worker.** A worker pool doesn't get to skip `init`/`ready` for the sake of the pool abstraction — each pooled worker instance still needs its own handshake before it's handed work.
+
+If a `Promise.all`/`Promise.race` awaiting Worker results hangs with no error surfaced, the missing handshake (or a missing `error`-message handler) is the first thing to check — add a temporary `console.warn` in the message handler rather than guessing.
+
+## `src/main.ts` scope model — module scope vs. `main()` setup scope
+
+`src/main.ts` mixes two scopes. A long run of module-level functions near the top of the file (e.g. `openAssembly`, `syncAssemblyToggle`) are reachable from anywhere in the module, including `window.partwright` wiring. But most per-tool UI wiring — `selectPart`, part-selection helpers, every tool-close callback — is declared *inside* the large `async function main()` (the app's setup function), not at module scope, because it closes over local DOM/state built during setup.
+
+Before adding a helper that needs to call into per-tool wiring (e.g. something that calls `selectPart`), check which scope its neighbors actually live in — don't assume module scope just because a sibling like `openAssembly` is there. If the helper also needs to be reachable from module-scope code (a `window.partwright` method, another module-level function), the working pattern is: declare a `let` at module scope, assign the real closure to it from inside `main()`, and have module-scope callers invoke the variable (see `applyAssemblyChrome`, assigned inside `main()`, called from `openAssembly`/`closeAssembly` at module scope via `applyAssemblyChrome?.(...)`).
+
 ## Browser history — back button preservation
 
 `updateURL()` in `sessionManager.ts` uses `history.replaceState`, not push — intentional for in-editor updates (version switching, rename) that shouldn't pollute the back stack. But it's a trap for cross-page navigation:
