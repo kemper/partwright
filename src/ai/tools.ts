@@ -957,7 +957,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObject',
-    description: "Delete an object and all its versions. Refuses to delete a session's last remaining object. If the active object is deleted, an adjacent object becomes active. Address it by name, id (from listObjects), or 0-based index.",
+    description: "Delete an object and all its versions. If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {

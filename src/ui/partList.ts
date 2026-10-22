@@ -357,8 +357,8 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     row.appendChild(spacer);
   }
 
-  // Selection checkbox (multi-select bulk delete). Only offered when more than
-  // one part exists — a session must always keep at least one. Subtle until
+  // Selection checkbox (multi-select bulk delete/merge). Only offered when more
+  // than one part exists — a lone object has nothing to multi-select. Subtle until
   // hover on pointer devices, but always shown on touch and whenever a
   // selection is already in progress (so it can't silently hide checked rows).
   if (partCount > 1) {
@@ -418,20 +418,23 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     beginRename(name, part);
   });
 
-  // Delete (only when more than one part remains).
-  if (partCount > 1) {
-    const del = iconBtn('✕', 'Delete this object'); // ✕
-    // Visible by default so it's reachable on touch (no hover); only fade-until-
-    // hover on hover-capable devices.
-    del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
-    del.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (await confirmDialog(`Delete object "${part.name}" and all of its versions? This cannot be undone.`, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
-        void cb.onDeletePart(part.id);
-      }
-    });
-    row.appendChild(del);
-  }
+  // Delete. On the session's only object this resets it to a fresh, empty
+  // object instead (a session always keeps one), so say so in the confirm.
+  const isLast = partCount <= 1;
+  const del = iconBtn('✕', isLast ? 'Delete this object (resets to a blank object)' : 'Delete this object'); // ✕
+  // Visible by default so it's reachable on touch (no hover); only fade-until-
+  // hover on hover-capable devices.
+  del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const msg = isLast
+      ? `Delete object "${part.name}" and all of its versions? It will be replaced with a blank "Object 1". This cannot be undone.`
+      : `Delete object "${part.name}" and all of its versions? This cannot be undone.`;
+    if (await confirmDialog(msg, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
+      void cb.onDeletePart(part.id);
+    }
+  });
+  row.appendChild(del);
 
   return row;
 }
@@ -718,27 +721,25 @@ function buildActionBar(state: SessionState): HTMLElement {
     bar.appendChild(mergeBtn);
   }
 
-  // A session must always keep at least one part, so a select-all delete is
-  // refused (mirrors the single-row delete, which hides when only one remains).
+  // Deleting every object resets the session to one blank object (a session
+  // always keeps one), so the confirm spells that out.
   const wouldEmptySession = selected.size >= state.parts.length;
   const delBtn = document.createElement('button');
   delBtn.id = 'btn-delete-parts';
-  delBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white transition-colors '
-    + (wouldEmptySession ? 'bg-red-600/40 opacity-60 cursor-default' : 'bg-red-600/80 hover:bg-red-600');
+  delBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white transition-colors bg-red-600/80 hover:bg-red-600';
   delBtn.textContent = `Delete ${selected.size}`;
-  if (wouldEmptySession) {
-    delBtn.disabled = true;
-    delBtn.title = 'At least one object must remain — deselect one to delete.';
-  } else {
-    delBtn.title = 'Delete the selected objects and all their versions';
-  }
+  delBtn.title = wouldEmptySession
+    ? 'Delete every object and all their versions, leaving one blank object'
+    : 'Delete the selected objects and all their versions';
   delBtn.addEventListener('click', async () => {
-    if (delBtn.disabled) return;
     const ids = [...selected];
     if (ids.length === 0) return;
-    const msg = ids.length === 1
-      ? 'Delete this object and all of its versions? This cannot be undone.'
-      : `Delete ${ids.length} objects and all of their versions? This cannot be undone.`;
+    const base = ids.length === 1
+      ? 'Delete this object and all of its versions?'
+      : `Delete ${ids.length} objects and all of their versions?`;
+    const msg = wouldEmptySession
+      ? `${base} They will be replaced with a blank "Object 1". This cannot be undone.`
+      : `${base} This cannot be undone.`;
     if (!(await confirmDialog(msg, { title: 'Delete objects', confirmLabel: 'Delete', danger: true }))) return;
     clearSelection();
     render(getState()); // hide the bar immediately; the delete re-renders on commit

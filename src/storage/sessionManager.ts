@@ -958,12 +958,20 @@ export async function createPart(name?: string): Promise<Part | null> {
   const order = currentState.parts.reduce((m, p) => Math.max(m, p.order), -1) + 1;
   const partName = (name && name.trim()) || suggestPartName(currentState.parts);
   const part = await dbCreatePart(currentState.session.id, partName, order);
-  await dbUpdateSession(currentState.session.id, { currentPartId: part.id });
+  await activateFreshPart(part, [...currentState.parts, part]);
+  return part;
+}
 
+/** Make a just-created, version-less `part` the active one, with `parts` as the
+ *  session's new part list. Clears the per-version mirrors (annotations,
+ *  imports, companion files) so nothing from the previous part carries over. */
+async function activateFreshPart(part: Part, parts: Part[]): Promise<void> {
+  if (!currentState.session) return;
+  await dbUpdateSession(currentState.session.id, { currentPartId: part.id });
   currentState = {
     ...currentState,
     session: { ...currentState.session, currentPartId: part.id },
-    parts: [...currentState.parts, part],
+    parts,
     currentPart: part,
     currentVersion: null,
     versionCount: 0,
@@ -974,7 +982,23 @@ export async function createPart(name?: string): Promise<Part | null> {
   broadcastPartChange();
   updateURL();
   notify();
-  return part;
+}
+
+/**
+ * Delete every part in `targets` (which must cover the whole session) and
+ * replace them with one fresh, empty part carrying the default name — the
+ * "delete the last object" path, which resets the session to a blank object
+ * instead of refusing. The fresh part is created before the old ones are
+ * removed so an interruption can never leave the session with zero parts.
+ */
+async function replaceAllPartsWithFresh(targets: Part[]): Promise<Part | null> {
+  if (!currentState.session) return null;
+  const sid = currentState.session.id;
+  const fresh = await dbCreatePart(sid, DEFAULT_PART_NAME, 0);
+  await dbDeleteParts(targets.map(p => p.id));
+  for (const p of targets) void dbDeletePartDrafts(sid, p.id).catch(() => {});
+  await activateFreshPart(fresh, [fresh]);
+  return fresh;
 }
 
 /**
@@ -1081,17 +1105,21 @@ export interface DeletePartResult {
 }
 
 /**
- * Delete a part and all its versions. Refuses to remove the last remaining part
- * (a session always keeps at least one). When the active part is deleted, the
+ * Delete a part and all its versions. When the active part is deleted, the
  * adjacent part — preferring the previous one in display order — becomes active.
- * Returns null if the delete was refused or the part wasn't found.
+ * Deleting the session's last part resets it instead: the part is replaced by a
+ * fresh, empty one with the default name (reported as `newCurrent`), since a
+ * session always keeps at least one. Returns null if the part wasn't found.
  */
 export async function deletePart(partId: string): Promise<DeletePartResult | null> {
   if (!currentState.session) return null;
   const parts = currentState.parts;
   const target = parts.find(p => p.id === partId);
   if (!target) return null;
-  if (parts.length <= 1) return null; // keep at least one part
+  if (parts.length <= 1) {
+    const fresh = await replaceAllPartsWithFresh([target]);
+    return fresh ? { deleted: target, newCurrent: fresh } : null;
+  }
 
   await dbDeletePart(partId);
   void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
@@ -1123,12 +1151,11 @@ export interface DeletePartsResult {
 }
 
 /**
- * Delete several parts and all their versions in one atomic transaction. Mirrors
- * the single-part rule: a session must keep at least one part, so the call is
- * refused (returns null) if the selection covers every remaining part. When the
- * active part is among those deleted, the nearest survivor above it in display
- * order — else the first remaining — becomes active. Returns null if nothing
- * matched or the delete was refused.
+ * Delete several parts and all their versions in one atomic transaction. When
+ * the active part is among those deleted, the nearest survivor above it in
+ * display order — else the first remaining — becomes active. Mirrors the
+ * single-part rule: a selection covering every part resets the session to one
+ * fresh, empty part (reported as `newCurrent`). Returns null if nothing matched.
  */
 export async function deleteParts(partIds: string[]): Promise<DeletePartsResult | null> {
   if (!currentState.session) return null;
@@ -1136,7 +1163,10 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   const idSet = new Set(partIds);
   const targets = parts.filter(p => idSet.has(p.id));
   if (targets.length === 0) return null;
-  if (targets.length >= parts.length) return null; // keep at least one part
+  if (targets.length >= parts.length) {
+    const fresh = await replaceAllPartsWithFresh(targets);
+    return fresh ? { deletedIds: targets.map(p => p.id), newCurrent: fresh } : null;
+  }
 
   const deletedSet = new Set(targets.map(p => p.id));
   await dbDeleteParts(targets.map(p => p.id));

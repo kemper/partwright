@@ -412,7 +412,7 @@ await partwright.createObject(name?)     // New empty object + switch to it -> {
 await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
-await partwright.deleteObject(name|id|index)   // Delete an object + its versions (refuses the last one)
+await partwright.deleteObject(name|id|index)   // Delete an object + its versions (the last one resets to a blank "Object 1")
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
 await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}

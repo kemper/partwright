@@ -12290,21 +12290,24 @@ async function main() {
       return { grouped: ids.length, group: clean };
     },
 
-    /** Delete a part and its versions. Refuses to delete a session's last part.
-     *  Deleting the active part activates and loads an adjacent one. Pass a part
-     *  name, id string, 0-based index, or { id } / { name }. */
+    /** Delete a part and its versions. Deleting the active part activates and
+     *  loads an adjacent one; deleting a session's last part resets it to a
+     *  fresh, empty "Object 1" (`reset: true`). Pass a part name, id string,
+     *  0-based index, or { id } / { name }. */
     async deleteObject(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'deleteObject');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
+      const wasLast = getState().parts.length <= 1;
       const result = await deletePart(part.id);
-      if (!result) return { error: 'Cannot delete the last object of a session.' };
+      if (!result) return { error: `Could not delete object "${part.name}".` };
       if (wasCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
       return {
         deleted: { id: result.deleted.id, name: result.deleted.name },
         newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
+        ...(wasLast ? { reset: true } : {}),
       };
     },
 

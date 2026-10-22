@@ -278,13 +278,13 @@ test.describe('Multi-part sessions', () => {
     await expect(page.locator('#editor-title')).toHaveText('Object 1');
   });
 
-  test('bulk delete refuses to remove every part', async ({ page }) => {
+  test('bulk-deleting every object resets the session to one blank object', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
     await page.evaluate(async ({ code }) => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
-      await pw.createSession('guard');
+      await pw.createSession('reset-all');
       await pw.runAndSave(code, 'a1');
       await pw.createPart('Beta');
     }, { code: cube(10, 'A1') });
@@ -292,13 +292,67 @@ test.describe('Multi-part sessions', () => {
     const list = page.locator('#parts-list');
     await expect(list.locator('[data-part-id]')).toHaveCount(2);
 
-    // Selecting every part disables delete — a session must keep one.
     for (const row of await list.locator('[data-part-id]').all()) {
       await row.locator('input[type="checkbox"]').click();
     }
     const delBtn = page.locator('#btn-delete-parts');
     await expect(delBtn).toHaveText('Delete 2');
-    await expect(delBtn).toBeDisabled();
+    await expect(delBtn).toBeEnabled();
+    await delBtn.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('blank "Object 1"');
+    await dialog.getByRole('button', { name: 'Delete' }).click();
+
+    // One fresh, version-less object replaces both; the old code is gone.
+    await expect(list.locator('[data-part-id]')).toHaveCount(1);
+    await expect(page.locator('#editor-title')).toHaveText('Object 1');
+    const after = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      return { parts: pw.listParts().map(p => p.name), versions: await pw.listVersions(), code: pw.getCode() };
+    });
+    expect(after.parts).toEqual(['Object 1']);
+    expect(after.versions).toEqual([]);
+    expect(after.code).not.toContain('A1');
+  });
+
+  test('deleting the only object resets it to a blank Object 1', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const originalId = await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('reset-one');
+      await pw.runAndSave(code, 'a1');
+      await pw.runAndSave(code.replace('A1', 'A2'), 'a2');
+      return pw.getSessionState().currentPart!.id;
+    }, { code: cube(10, 'A1') });
+
+    // Give the lone object a custom name so the reset is observable.
+    await page.evaluate(async () => {
+      const pw = window as unknown as { partwright: { renameObject: (t: number, n: string) => Promise<unknown> } };
+      await pw.partwright.renameObject(0, 'Bracket');
+    });
+
+    const list = page.locator('#parts-list');
+    const row = list.locator('[data-part-id]');
+    await expect(row).toHaveCount(1);
+    await row.hover();
+    await row.getByTitle(/Delete this object/).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('blank "Object 1"');
+    await dialog.getByRole('button', { name: 'Delete' }).click();
+
+    await expect(page.locator('#editor-title')).toHaveText('Object 1');
+    await expect.poll(() => page.evaluate(() =>
+      (window as unknown as { partwright: PartsAPI }).partwright.getSessionState().currentPart?.id))
+      .not.toBe(originalId);
+    const after = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      return { parts: pw.listParts().map(p => p.name), versions: await pw.listVersions(), code: pw.getCode() };
+    });
+    expect(after.parts).toEqual(['Object 1']);
+    expect(after.versions).toEqual([]);
+    expect(after.code).not.toContain('A2');
   });
 
   // The Merge button lives in the same multi-select action bar as bulk delete.
