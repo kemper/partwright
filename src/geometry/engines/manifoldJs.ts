@@ -496,11 +496,18 @@ export const manifoldJsEngine: Engine = {
        *   - pattern: 'stripes' (tabby/tiger/zebra/brindle) | 'spots' (leopard/dalmatian)
        *              | 'patches' (calico/cow/tortie) | 'gradient' (siamese points)
        *              | 'checker' (3D checkerboard by cell parity)
+       *              | 'soccer' (truncated-icosahedron ball: 12 pentagons, fit to the scope)
        *   - colors:  [base, mark, third?] — hex or [r,g,b]; ≥2 required
-       *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model */
+       *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model
+       *   - withinPart: clip to one part (label), like the other api.paint ops
+       *  In-code paint is whole-triangle: `smooth` (sub-triangle seams) is only
+       *  available on the user paint layer via `partwright.paintPattern`. */
       pattern(opts: unknown): void {
-        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors? })");
-        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, ...rest } = o;
+        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, withinPart? })");
+        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, withinPart, ...rest } = o;
+        if ('smooth' in rest || 'maxEdge' in rest) {
+          throw new Error('api.paint.pattern: smooth / maxEdge are not supported in model code — in-code paint colours whole triangles (the model underlay never subdivides). For crisp sub-triangle seams use the console/AI method partwright.paintPattern({ pattern, colors, withinPart, smooth: true }), which saves the pattern as user paint.');
+        }
         paintRejectUnknown('api.paint.pattern', rest);
         if (typeof pattern !== 'string' || !COLOR_PATTERN_KINDS.includes(pattern as ColorPatternKind)) {
           throw new Error(`api.paint.pattern pattern: expected one of ${COLOR_PATTERN_KINDS.map(k => `'${k}'`).join(', ')}.`);
@@ -569,6 +576,7 @@ export const manifoldJsEngine: Engine = {
           ...(coverage !== undefined ? { coverage: paintNum(coverage, 'api.paint.pattern coverage') } : {}),
           ...(seed !== undefined ? { seed: paintNum(seed, 'api.paint.pattern seed') } : {}),
           ...(anchorPts ? { anchors: anchorPts } : {}),
+          ...paintWithin(withinPart, 'api.paint.pattern'),
         };
         paintOps.push({ name: `paint·pattern ${pattern} ${++paintSeq}`, color: rgbColors[0], descriptor });
       },

@@ -90,6 +90,7 @@ import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
 import { getPaintScope, onPaintScopeChange, setPaintScope } from './paintScope';
 import { getActiveImports } from '../import/importedMesh';
 import { BUTTON_SMALL_SECONDARY } from '../ui/styleConstants';
+import { showToast } from '../ui/toast';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
@@ -389,6 +390,7 @@ function createPickerPanel(): HTMLElement {
     if (scope && !labels.some((l) => l.name === scope)) { setPaintScope(null); return; }
     scopeHost.replaceChildren();
     if (labels.length > 0) scopeHost.appendChild(createScopeRow(labels));
+    scopeHost.appendChild(createPatternRow(labels.length > 0));
   };
   renderScope();
   onPaintLabelsChange(renderScope);
@@ -1665,6 +1667,55 @@ function updateLabelList(container: HTMLElement): void {
   for (const label of labels) {
     container.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
   }
+}
+
+// The "Pattern" row's apply hook — registered by main.ts (it routes to the
+// `partwright.paintPattern` console method, so UI and API share one path).
+type PatternPaintEntry = (pattern: 'soccer', part: string) => { error?: string; triangles?: number };
+let patternPaintEntry: PatternPaintEntry | null = null;
+
+export function setPatternPaintEntry(fn: PatternPaintEntry | null): void {
+  patternPaintEntry = fn;
+}
+
+/** "Pattern: ⚽ Soccer ball" — paint a whole algorithmic pattern onto the part
+ *  chosen in "Paint within" in one click (smooth seams, fit to that part).
+ *  Disabled with a hint until a part is picked. */
+function createPatternRow(hasLabels: boolean): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mb-2.5';
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2 text-[11px] text-zinc-400';
+  row.append('Pattern');
+  const part = getPaintScope();
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'paint-pattern-soccer';
+  btn.className = `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0 disabled:opacity-40 disabled:cursor-not-allowed`;
+  btn.textContent = '\u26BD Soccer ball';
+  btn.disabled = !part;
+  btn.title = part
+    ? `Paint soccer-ball panels (12 black pentagons, crisp edges) on "${part}" — the ball is fitted to that part`
+    : 'Pick a part in "Paint within" first — the soccer pattern is fitted to that part';
+  btn.addEventListener('click', () => {
+    const scope = getPaintScope();
+    if (!scope || !patternPaintEntry) return;
+    const r = patternPaintEntry('soccer', scope);
+    if (r.error) showToast(r.error, { variant: 'warn', source: 'parts' });
+    else showToast(`Soccer ball painted on "${scope}"`, { variant: 'success', source: 'parts' });
+  });
+  row.appendChild(btn);
+  wrap.appendChild(row);
+  if (!part) {
+    const hint = document.createElement('div');
+    hint.id = 'paint-pattern-hint';
+    hint.className = 'text-[10px] text-zinc-500 leading-snug mt-1';
+    hint.textContent = hasLabels
+      ? 'Pick a part in "Paint within" to paint a pattern on it.'
+      : 'Patterns paint one part: detect parts (or label the model) first, then pick it in "Paint within".';
+    wrap.appendChild(hint);
+  }
+  return wrap;
 }
 
 /** "Paint within: [part]" — scopes every paint tool (brush, bucket, slab, box,

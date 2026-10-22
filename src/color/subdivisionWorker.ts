@@ -14,6 +14,7 @@
 import { refineMeshPipeline } from './refinePipeline';
 import type { MeshData } from '../geometry/types';
 import type { RegionDescriptor } from './regions';
+import type { PatternContext } from './colorPattern';
 
 export interface RefineRequest {
   type: 'refine';
@@ -26,6 +27,11 @@ export interface RefineRequest {
    *  the base mesh on a full rebuild. */
   input: MeshData;
   descriptors: RegionDescriptor[];
+  /** Pre-resolved contexts (fitted sphere + scope mask over `base`'s triangle
+   *  ids) for smooth `pattern` descriptors, keyed by descriptor index. The
+   *  Worker can't resolve labels / detected parts itself, so the main thread
+   *  ships what the refine needs. */
+  patternContexts?: Array<{ index: number; ctx: PatternContext }>;
 }
 
 export interface RefineDone {
@@ -61,10 +67,11 @@ const workerPost = (self as unknown as WorkerPost).postMessage.bind(self) as Wor
 self.onmessage = (event: MessageEvent<RefineRequest>): void => {
   const msg = event.data;
   if (!msg || msg.type !== 'refine') return;
-  const { id, base, input, descriptors } = msg;
+  const { id, base, input, descriptors, patternContexts } = msg;
   const started = performance.now();
   try {
-    const { mesh, childToParent, brushStrokeTriangles } = refineMeshPipeline(base, input, descriptors);
+    const ctxByIndex = new Map((patternContexts ?? []).map((e) => [e.index, e.ctx]));
+    const { mesh, childToParent, brushStrokeTriangles } = refineMeshPipeline(base, input, descriptors, (_d, i) => ctxByIndex.get(i) ?? null);
 
     const brushList: RefineDone['brushStrokeTriangles'] = [];
     for (const [index, tris] of brushStrokeTriangles) {

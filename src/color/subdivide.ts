@@ -97,6 +97,11 @@ export interface RefineRegion {
   maxEdge: number;
   classify: TriClassifier;
   field?: (px: number, py: number, pz: number) => number;
+  /** Optional scope mask (1 = may refine/clip) indexed by the triangle ids of
+   *  the mesh handed to `buildRefinedMesh` (each refined child inherits its
+   *  root triangle's bit). Confines a region to part of the model — e.g. a
+   *  soccer pattern scoped to the ball never splits the hand touching it. */
+  allow?: Uint8Array;
 }
 
 /** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
@@ -1002,8 +1007,9 @@ export function airbrushDither(px: number, py: number, pz: number, seed: number)
  *  fully-inside triangles already paint solid, fully-outside ones never paint,
  *  and boundary triangles already finer than the target are left alone (that's
  *  the stopping condition). */
-function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
+function selectByClassify(mesh: MeshData, region: RefineRegion, toRoot?: Int32Array): Set<number> {
   const { triVerts, numTri } = mesh;
+  const allow = region.allow && toRoot ? region.allow : null;
   const selected = new Set<number>();
   const maxEdge2 = region.maxEdge * region.maxEdge;
   const box = region.aabb;
@@ -1016,6 +1022,8 @@ function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
   const straightTol = region.maxEdge * 1e-3;
 
   for (let t = 0; t < numTri; t++) {
+    // Scope mask: triangles outside the region's scope are never refined.
+    if (allow && !allow[toRoot![t]]) continue;
     const a = triVertex(mesh, triVerts[t * 3]);
     const b = triVertex(mesh, triVerts[t * 3 + 1]);
     const c = triVertex(mesh, triVerts[t * 3 + 2]);
@@ -1082,8 +1090,10 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
 function clipByField(
   mesh: MeshData,
   region: RefineRegion,
+  toRoot?: Int32Array,
 ): { mesh: MeshData; childToParent: Int32Array } {
   const field = region.field!;
+  const allow = region.allow && toRoot ? region.allow : null;
   const box = region.aabb;
   const { vertProperties, triVerts, numVert, numTri, numProp } = mesh;
   const P = numProp;
@@ -1160,6 +1170,7 @@ function clipByField(
 
   for (let t = 0; t < numTri; t++) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    if (allow && !allow[toRoot![t]]) { emit(v0, v1, v2, t); continue; }
     if (box) {
       const a = triVertex(mesh, v0), b = triVertex(mesh, v1), c = triVertex(mesh, v2);
       if (triOutsideAabb(a, b, c, box)) { emit(v0, v1, v2, t); continue; }
@@ -1344,7 +1355,7 @@ export function buildRefinedMesh(
 
   for (const region of regions) {
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const selected = selectByClassify(mesh, region);
+      const selected = selectByClassify(mesh, region, comp);
       if (selected.size === 0) break;
       // Each selected triangle becomes 4 (+3 net). Stop before crossing the
       // safety ceiling so a tiny maxEdge can't OOM the tab.
@@ -1356,7 +1367,7 @@ export function buildRefinedMesh(
     // Boundary-conforming clip: cut the now-fine rim exactly along the region
     // outline so the painted edge is the analytic curve, not a staircase.
     if (region.field && mesh.numTri < MAX_REFINED_TRIANGLES) {
-      const { mesh: nm, childToParent } = clipByField(mesh, region);
+      const { mesh: nm, childToParent } = clipByField(mesh, region, comp);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
     }
