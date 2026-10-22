@@ -2,7 +2,7 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { densifyStrokePath, strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
+import { brushRefineRegion, buildRefinedMesh, densifyStrokePath, strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
 import { closestPointOnTriangle } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -575,5 +575,23 @@ describe('densifyStrokePath', () => {
 
   test('leaves a single point alone', () => {
     expect(densifyStrokePath([[1, 2, 3]], 0.1)).toEqual([[1, 2, 3]]);
+  });
+});
+
+describe('long strokes on coarse faces', () => {
+  // Regression: a stroke with enough samples to use the sample grid clamps far
+  // field values to the grid bound, so a big triangle's six field samples all
+  // read the same value. That looked like a straight boundary to the refiner,
+  // which skipped the triangle and the stroke painted nothing.
+  test('a 49-sample stroke inside one big triangle still refines and paints', () => {
+    const mesh = meshFromTris([
+      [[0, 0, 0], [100, 0, 0], [0, 100, 0]],
+    ]);
+    const samples = densifyStrokePath([[11, 4, 0], [17, 4, 0]], 0.125);
+    expect(samples.length).toBeGreaterThanOrEqual(24);
+    const stroke: BrushStroke = { samples, radius: 0.5, shape: 'circle', maxEdge: 0.1 };
+    const { mesh: refined } = buildRefinedMesh(mesh, [brushRefineRegion(stroke)]);
+    expect(refined.numTri).toBeGreaterThan(100);
+    expect(strokeFootprintTriangles(refined, stroke).size).toBeGreaterThan(50);
   });
 });

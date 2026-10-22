@@ -64,18 +64,18 @@ function meshDataToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
 }
 
 // Probes come in bursts against the same mesh (an agent picking 60 seeds from
-// a render), so the BufferGeometry + its BVH are built once per mesh and kept
-// for the most recent mesh only. Rebuilding both per call cost ~1.5 s each on
-// a 460k-triangle import; with the cached BVH a probe is a few ms. Raycast hit
-// normals come from the face, so no vertex normals are needed.
-let cached: { mesh: MeshData; numTri: number; geometry: THREE.BufferGeometry } | null = null;
+// a render), so the BufferGeometry + its BVH are built once per mesh. Rebuilding
+// both per call cost ~1.5 s each on a 460k-triangle import; with the cached BVH
+// a probe is a few ms. Keyed weakly on the mesh, so the cache goes when the mesh
+// does. Raycast hit normals come from the face, so no vertex normals are needed.
+const raycastCache = new WeakMap<MeshData, { numTri: number; geometry: THREE.BufferGeometry }>();
 
 function raycastGeometry(mesh: MeshData): THREE.BufferGeometry {
-  if (cached && cached.mesh === mesh && cached.numTri === mesh.numTri) return cached.geometry;
-  cached?.geometry.dispose();
+  const hit = raycastCache.get(mesh);
+  if (hit && hit.numTri === mesh.numTri) return hit.geometry;
   const geometry = meshDataToBufferGeometry(mesh);
   ensureBoundsTree(geometry);
-  cached = { mesh, numTri: mesh.numTri, geometry };
+  raycastCache.set(mesh, { numTri: mesh.numTri, geometry });
   return geometry;
 }
 

@@ -1545,16 +1545,30 @@ async function refineForRehydrate(
   gen: number,
 ): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]> | null; strokeTris: Map<number, Uint32Array> | null } | null> {
   if (!descriptors.some(descriptorRefines)) return { mesh: base, parentToChildren: null, strokeTris: null };
+  // Anything else that touches paint state while we wait (a code run, a paint
+  // call, another version switch) resets the paint worker and bumps this.
+  const paintGen = paintGeneration;
+  const superseded = (): boolean => gen !== rehydrateGeneration || paintGen !== paintGeneration;
   const abort = new AbortController();
-  const progressId = startProgress({ title: 'Restoring paint', message: 'Rebuilding smooth paint edges…', indeterminate: true });
+  const progressId = startProgress({
+    title: 'Restoring paint',
+    message: 'Rebuilding smooth paint edges…',
+    indeterminate: true,
+    onCancel: () => abort.abort(),
+  });
   try {
     const r = await refineInWorker({ base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal });
-    if (gen !== rehydrateGeneration) return null;
+    if (superseded()) return null;
     const parentToChildren = childrenByParent(r.childToParent);
     recordMeshLineage(r.mesh, base, parentToChildren);
     return { mesh: r.mesh, parentToChildren, strokeTris: r.brushStrokeTriangles };
   } catch (err) {
-    if (gen !== rehydrateGeneration) return null;
+    // An abort is a cancel or a takeover by newer paint state, never a reason
+    // to rebuild the old version here on the main thread.
+    if (isAbortError(err) || superseded()) {
+      if (abort.signal.aborted) showToast('Paint restore cancelled. The saved paint is kept and comes back on the next run.', { variant: 'neutral' });
+      return null;
+    }
     // eslint-disable-next-line no-console
     console.warn('[paint] worker restore failed, refining on the main thread', err);
     const { mesh, parentToChildren } = refineMeshForRegions(base, descriptors);
@@ -1604,8 +1618,19 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // resolving. Without refine regions this is a no-op and currentMeshData is
   // left untouched (identical to the pre-subdivision behavior).
   const base = paintBaseMesh ?? currentMeshData;
-  const refined = await refineForRehydrate(base, standardRegions.map(r => r.descriptor), gen);
+  const standardDescriptors = standardRegions.map(r => r.descriptor);
+  // The refine below can take a while. Keep the version's descriptors in the
+  // store meanwhile (unresolved), so a save in that window still writes them
+  // and a takeover leaves them for the next run to resolve.
+  const waits = standardDescriptors.some(descriptorRefines);
+  if (waits) stageUnresolvedColorRegions(geometryData);
+  const refined = await refineForRehydrate(base, standardDescriptors, gen);
   if (!refined) return report;
+  if (waits) {
+    suspendReconcile = true;
+    clearRegions();
+    suspendReconcile = false;
+  }
   const { mesh, parentToChildren, strokeTris } = refined;
   if (parentToChildren) {
     currentMeshData = mesh;
@@ -6581,12 +6606,14 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  /** True while loadVersionIntoEditor's run is in flight. The version's saved
-   *  regions are staged before that run (for the fast-preview colours), and
-   *  rehydrateColorRegions refines + resolves them all again right after it, so
-   *  the run must not do its own full stroke rebuild: on a session with many
-   *  smooth strokes that rebuild ran twice per open (~40 s each on a 460k scan). */
-  let deferPaintRefineToRehydrate = false;
+  /** The run generation of loadVersionIntoEditor's in-flight run, or -1. The
+   *  version's saved regions are staged before that run (for the fast-preview
+   *  colours), and rehydrateColorRegions refines + resolves them all again right
+   *  after it, so that one run must not do its own full stroke rebuild: on a
+   *  session with many smooth strokes that rebuild ran twice per open (~40 s
+   *  each on a 460k scan). Tied to the generation, not a flag, so a different
+   *  run that starts meanwhile still resolves its regions itself. */
+  let deferRefineRunGen = -1;
 
   async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
@@ -6723,12 +6750,13 @@ async function main() {
       // (smooth-stroke replay etc.) — it clears + rebuilds, so this is a strict
       // head-start, not a competing source of truth.
       stageUnresolvedColorRegions(version.geometryData);
-      deferPaintRefineToRehydrate = true;
+      const deferGen = _runGeneration + 1;
+      deferRefineRunGen = deferGen;
       let applied: boolean;
       try {
         applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       } finally {
-        deferPaintRefineToRehydrate = false;
+        if (deferRefineRunGen === deferGen) deferRefineRunGen = -1;
       }
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
@@ -15380,11 +15408,12 @@ async function main() {
         return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
       }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
-      // maxEdge (absolute) overrides; otherwise radius / resolution, default 16.
+      // maxEdge (absolute) overrides; otherwise radius / resolution, default 16
+      // (ui.paintStrokeResolution).
       // The exact-outline clip keeps edges crisp, so curves need few segments:
       // r/16 already traces a circle with ~100 sides. The old default of 64
       // grew a 474k scan to 2M triangles over a dozen strokes.
-      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 16));
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? getConfig().ui.paintStrokeResolution));
       // Floor an explicit maxEdge at the same finest edge the resolution path
       // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
       // runaway subdivision for no visible benefit (the safety ceiling in
@@ -15393,7 +15422,7 @@ async function main() {
       // Points are a path, not stamp positions: fill the gaps so the band is
       // continuous however sparsely the caller sampled it.
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples: densifyStrokePath(samples, radius / 4), radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
         // Default to no gate (180°) for the console API so a paintStroke without
         // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
@@ -15495,7 +15524,7 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples: densifyStrokePath(samples, radius / 4), radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
@@ -18054,7 +18083,8 @@ async function main() {
       // preservedCameraPose was snapshotted at the top of runCodeSync (before
       // the engine ran), so the auto-framing updateMesh calls below — and the
       // SCAD progressive preview — don't poison the pose we restore at the end.
-      if (hasColorRegions() && hasRefineDescriptors() && !deferPaintRefineToRehydrate) {
+      const deferRefine = myGen === deferRefineRunGen;
+      if (hasColorRegions() && hasRefineDescriptors() && !deferRefine) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
       } else if (hasColorRegions() || hasModelColorRegions()) {
@@ -18074,8 +18104,8 @@ async function main() {
             adjacency = buildAdjacency(mesh);
           }
           // A version load resolves refining regions itself right after this
-          // run (see deferPaintRefineToRehydrate); leave them empty meanwhile.
-          if (deferPaintRefineToRehydrate && descriptorRefines(d)) {
+          // run (see deferRefineRunGen); leave them empty meanwhile.
+          if (deferRefine && descriptorRefines(d)) {
             setRegionTriangles(region.id, new Set());
             continue;
           }

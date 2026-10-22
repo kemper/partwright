@@ -102,6 +102,11 @@ export interface RefineRegion {
    *  root triangle's bit). Confines a region to part of the model — e.g. a
    *  soccer pattern scoped to the ball never splits the hand touching it. */
   allow?: Uint8Array;
+  /** When set, `field` is only exact below this value and clamps to it beyond
+   *  (a stroke's sample grid, see SampleGrid). A clamped field is flat, which
+   *  would pass for a straight boundary, so the straight-edge skip is disabled
+   *  wherever a sample reaches the bound. */
+  fieldBound?: number;
 }
 
 /** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
@@ -973,6 +978,7 @@ export function brushRefineRegion(stroke: BrushStroke): RefineRegion {
     // exactly along this field so the painted edge is the analytic outline.
     // A spray has no hard edge (it dithers), so it skips the clip.
     field: stroke.spray ? undefined : (px, py, pz) => strokeSignedDist(px, py, pz, stroke),
+    fieldBound: sampleGridFor(stroke)?.bound,
   };
 }
 
@@ -1038,13 +1044,16 @@ function selectByClassify(mesh: MeshData, region: RefineRegion, toRoot?: Int32Ar
 
     if (field) {
       const fa = field(a[0], a[1], a[2]), fb = field(b[0], b[1], b[2]), fc = field(c[0], c[1], c[2]);
-      const dab = Math.abs(field((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2) - (fa + fb) / 2);
-      const dbc = Math.abs(field((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2) - (fb + fc) / 2);
-      const dca = Math.abs(field((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2) - (fc + fa) / 2);
-      const dev = Math.max(dab, dbc, dca);
+      const mab = field((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+      const mbc = field((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2);
+      const mca = field((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2);
+      const dev = Math.max(Math.abs(mab - (fa + fb) / 2), Math.abs(mbc - (fb + fc) / 2), Math.abs(mca - (fc + fa) / 2));
       // Skip only when the boundary is provably straight here (finite & flat);
-      // a +∞ region edge or any curvature falls through to refine.
-      if (Number.isFinite(dev) && dev <= straightTol) continue;
+      // a +∞ region edge or any curvature falls through to refine. A field
+      // clamped at its bound reads as flat without being straight.
+      const clamped = region.fieldBound !== undefined
+        && Math.max(fa, fb, fc, mab, mbc, mca) >= region.fieldBound;
+      if (!clamped && Number.isFinite(dev) && dev <= straightTol) continue;
     }
 
     selected.add(t);
