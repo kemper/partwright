@@ -472,12 +472,12 @@ partwright.paintInBox({
 const a = await partwright.probePixel({ pixel: [120, 90],  view: { elevation: 30, azimuth: 45 } });
 const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30, azimuth: 45 } });
 partwright.paintStroke({
-  points: [a.point, b.point],   // ordered surface points; a single point stamps a rounded dot
+  points: [a.point, b.point],   // ordered surface points along a PATH (gaps are filled in, so a few corner points make a continuous band); a single point stamps a rounded dot
   radius: 3,                     // mesh units, > 0
-  resolution: 64,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 64, range 2–1024
+  resolution: 16,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 16, range 2–1024
   // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
   shape: 'circle',               // circle | square | diamond
-  // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
+  // surface: 'geodesic',        // 'slab' (default) | 'geodesic' — see below
   // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
   // wrapAngleDeg: 90,           // wrap tolerance 0–180: max edge bend paint flows across (90 stops at right-angle corners; API default 180 = wrap freely) — see below
   color: [0.9, 0.2, 0.2],
@@ -485,9 +485,9 @@ partwright.paintStroke({
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
 ```
 
-The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **64** (plenty smooth with the clip); raise it for very large curves, or use the absolute `maxEdge` override for explicit sizing.
+The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **16** (plenty smooth with the clip, and light: every stroke adds triangles that a saved session must rebuild on open); raise it only for very large curves, or use the absolute `maxEdge` override for explicit sizing. Prefer one stroke with many points over many short strokes.
 
-**The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
+**The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` (the `paintStroke` default) instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
 
 **Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
 

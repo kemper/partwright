@@ -1,6 +1,7 @@
 // Ray-cast and point-probe queries using THREE.Raycaster on mesh data
 import * as THREE from 'three';
 import type { MeshData } from './types';
+import { ensureBoundsTree } from '../renderer/bvh';
 
 export interface RayHit {
   z: number;
@@ -59,12 +60,27 @@ function meshDataToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setIndex(new THREE.BufferAttribute(mesh.triVerts, 1));
-  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// Probes come in bursts against the same mesh (an agent picking 60 seeds from
+// a render), so the BufferGeometry + its BVH are built once per mesh and kept
+// for the most recent mesh only. Rebuilding both per call cost ~1.5 s each on
+// a 460k-triangle import; with the cached BVH a probe is a few ms. Raycast hit
+// normals come from the face, so no vertex normals are needed.
+let cached: { mesh: MeshData; numTri: number; geometry: THREE.BufferGeometry } | null = null;
+
+function raycastGeometry(mesh: MeshData): THREE.BufferGeometry {
+  if (cached && cached.mesh === mesh && cached.numTri === mesh.numTri) return cached.geometry;
+  cached?.geometry.dispose();
+  const geometry = meshDataToBufferGeometry(mesh);
+  ensureBoundsTree(geometry);
+  cached = { mesh, numTri: mesh.numTri, geometry };
   return geometry;
 }
 
 export function probeAtXY(meshData: MeshData, x: number, y: number): ProbeResult {
-  const geometry = meshDataToBufferGeometry(meshData);
+  const geometry = raycastGeometry(meshData);
   const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
   const tempMesh = new THREE.Mesh(geometry, material);
 
@@ -115,7 +131,6 @@ export function probeAtXY(meshData: MeshData, x: number, y: number): ProbeResult
   }
 
   // Cleanup
-  geometry.dispose();
   material.dispose();
 
   return { hits, zValues, thickness, topZ, bottomZ };
@@ -127,7 +142,7 @@ export function probeRay(
   direction: [number, number, number],
   opts?: { allHits?: boolean },
 ): GeneralRayResult {
-  const geometry = meshDataToBufferGeometry(meshData);
+  const geometry = raycastGeometry(meshData);
   // FrontSide by default — for a closed manifold solid (which is what
   // every engine produces), this gives the outer-surface hit unambiguously.
   // DoubleSide would let the raycaster register every face the ray crosses
@@ -166,7 +181,6 @@ export function probeRay(
     if (!existing) hits.push(h);
   }
 
-  geometry.dispose();
   material.dispose();
 
   return { hits };
@@ -238,7 +252,7 @@ export function probePixel(
   pixel: [number, number],
   size: number,
 ): PixelHit | PixelMiss {
-  const geometry = meshDataToBufferGeometry(meshData);
+  const geometry = raycastGeometry(meshData);
   const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
   const tempMesh = new THREE.Mesh(geometry, material);
 
@@ -247,13 +261,16 @@ export function probePixel(
   // upward.
   const ndcX = (pixel[0] / size) * 2 - 1;
   const ndcY = -((pixel[1] / size) * 2 - 1);
+  // buildViewCamera aims the camera with lookAt but doesn't refresh its
+  // world matrix; without this the ray kept the default orientation and every
+  // non-polar view missed.
+  camera.updateMatrixWorld();
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
   const intersections = raycaster.intersectObject(tempMesh);
 
   if (intersections.length === 0) {
     const modelPixelBounds = projectBoundsToPixels(geometry, camera, size);
-    geometry.dispose();
     material.dispose();
     return { hit: false, modelPixelBounds };
   }
@@ -271,7 +288,6 @@ export function probePixel(
     distance: Math.round(hit.distance * 1000) / 1000,
     triangleId: hit.faceIndex ?? -1,
   };
-  geometry.dispose();
   material.dispose();
   return result;
 }

@@ -92,7 +92,7 @@ export function collectRefineRegions(
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
     }
   }
   return regions;

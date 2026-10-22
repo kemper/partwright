@@ -681,6 +681,90 @@ export function createPartDetection(host: PartDetectionHost) {
 
   // -------------------------------------------------------------------- API
 
+  /** acceptParts with a retry count: the smooth-edge cut is async, and a draft
+   *  change landing meanwhile re-indexes the parts it was cut for. */
+  async function acceptPartsAttempt(opts: unknown, attempt: number): Promise<Record<string, unknown>> {
+    try {
+      const o = opts === undefined ? {} : assertObject(opts, 'acceptParts(options)')!;
+      assertNoUnknownKeys(o, ['label', 'smoothEdges'], 'acceptParts(options)');
+      const label = assertString(o.label, 'acceptParts(options).label', { optional: true }) ?? 'Detected parts';
+      const d = currentDraft();
+      const smooth = (assertBoolean(o.smoothEdges, 'acceptParts(options).smoothEdges', { optional: true }) ?? true) && d.summary.edgeSmoothing > 0;
+      if (host.getLanguage() !== 'manifold-js') {
+        throw new ValidationError('acceptParts needs a JavaScript (manifold-js) session — imports load through api.importWithParts there.');
+      }
+      const code = host.getCode();
+      if (/api\.renderMesh\(\s*api\.imports\[/.test(code)) {
+        throw new ValidationError('This import is render-only (not manifold), so it cannot carry labels yet. Repair it to a manifold first.');
+      }
+      const s = d.summary;
+      const imports = host.getImports();
+      const m = imports[d.importIndex];
+      const source: NonNullable<ImportedMeshParts['source']> = {
+        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
+      };
+      let parts: ImportedMeshParts = {
+        names: s.parts.map((p) => p.name),
+        colors: s.parts.map((p) => p.color),
+        triPart: d.triPart.slice(),
+        source,
+      };
+      let nextImport: ImportedMesh = { ...m, parts };
+      let remeshed: { fromTris: number; toTris: number } | null = null;
+      if (smooth) {
+        // Smooth edges: re-mesh the import along the cut, so the part
+        // boundaries the overlay showed are real triangle edges.
+        const genAtStart = gen;
+        const cut = await withBusy('Cutting smooth edges…', false, () => edgeCutAsync(d.meshKey));
+        // The names/colours above index the draft as it was; an edit that
+        // landed meanwhile (the AI and the user both active) re-indexes it.
+        if (gen !== genAtStart) {
+          // Background draft work (a detection or preset run finishing)
+          // landed during the cut. Start over on the new draft rather than
+          // handing the caller a retry; give up only if it keeps moving.
+          if (attempt < 2) return acceptPartsAttempt(opts, attempt + 1);
+          throw new ValidationError('The parts kept changing while accepting — wait for detection to finish, then accept again.');
+        }
+        if (cut) {
+          const built = buildCutMesh({ vertProperties: m.vertProperties, triVerts: m.triVerts, numProp: m.numProp }, cut, parts.names, parts.colors);
+          if (cut.splitTris.length > 0) {
+            parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
+            nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
+            remeshed = { fromTris: m.numTri, toTris: built.numTri };
+          } else {
+            // Nothing split, but smoothing can still relabel whole sliver
+            // triangles — save what the overlay showed, on the same mesh.
+            parts = { names: built.names, colors: built.colors, triPart: built.triPart, source };
+            nextImport = { ...m, parts };
+          }
+        }
+      }
+      if (!normalizeImportParts(parts, nextImport.triVerts.length / 3)) {
+        throw new ValidationError('The draft parts are inconsistent (duplicate or empty names?) — fix them with editParts before accepting.');
+      }
+      const nextImports = imports.map((x, i) => (i === d.importIndex ? nextImport : x));
+      const hadPaint = remeshed !== null && (host.modelHasPaint?.() ?? false);
+      const rewrite = rewriteImportsWithParts(code, d.importIndex);
+      const usesHelper = rewrite.changed || new RegExp(`api\\.importWithParts\\(\\s*${d.importIndex}\\s*\\)`).test(code);
+      const result = await host.commit(rewrite.code, nextImports, label);
+      if ('error' in result) return result;
+      await discardPartsDraft();
+      clearDraftState();
+      const notes: string[] = [];
+      if (!usesHelper) notes.push(`The code does not load import ${d.importIndex} via Manifold.ofMesh(api.imports[${d.importIndex}]), so it was left unchanged. Call api.importWithParts(${d.importIndex}) in your code to get the parts as labels.`);
+      if (hadPaint) notes.push('The import was re-meshed along the smooth part edges — check any brush paint on it; painted edges can shift slightly.');
+      return {
+        ok: true,
+        parts: parts.names.map((name, i) => ({ name, color: parts.colors[i] ?? null, triCount: countPart(parts.triPart, i) })),
+        ...(remeshed ? { smoothEdges: remeshed } : {}),
+        ...result,
+        ...(notes.length ? { note: notes.join(' ') } : {}),
+      };
+    } catch (e) {
+      return err(e);
+    }
+  }
+
   const api = {
     subscribe(fn: (ev: PartDetectionEvent) => void): () => void {
       listeners.add(fn);
@@ -1068,79 +1152,7 @@ export function createPartDetection(host: PartDetectionHost) {
     refreshOverlay,
 
     async acceptParts(opts?: unknown) {
-      try {
-        const o = opts === undefined ? {} : assertObject(opts, 'acceptParts(options)')!;
-        assertNoUnknownKeys(o, ['label', 'smoothEdges'], 'acceptParts(options)');
-        const label = assertString(o.label, 'acceptParts(options).label', { optional: true }) ?? 'Detected parts';
-        const d = currentDraft();
-        const smooth = (assertBoolean(o.smoothEdges, 'acceptParts(options).smoothEdges', { optional: true }) ?? true) && d.summary.edgeSmoothing > 0;
-        if (host.getLanguage() !== 'manifold-js') {
-          throw new ValidationError('acceptParts needs a JavaScript (manifold-js) session — imports load through api.importWithParts there.');
-        }
-        const code = host.getCode();
-        if (/api\.renderMesh\(\s*api\.imports\[/.test(code)) {
-          throw new ValidationError('This import is render-only (not manifold), so it cannot carry labels yet. Repair it to a manifold first.');
-        }
-        const s = d.summary;
-        const imports = host.getImports();
-        const m = imports[d.importIndex];
-        const source: NonNullable<ImportedMeshParts['source']> = {
-          detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
-        };
-        let parts: ImportedMeshParts = {
-          names: s.parts.map((p) => p.name),
-          colors: s.parts.map((p) => p.color),
-          triPart: d.triPart.slice(),
-          source,
-        };
-        let nextImport: ImportedMesh = { ...m, parts };
-        let remeshed: { fromTris: number; toTris: number } | null = null;
-        if (smooth) {
-          // Smooth edges: re-mesh the import along the cut, so the part
-          // boundaries the overlay showed are real triangle edges.
-          const genAtStart = gen;
-          const cut = await withBusy('Cutting smooth edges…', false, () => edgeCutAsync(d.meshKey));
-          // The names/colours above index the draft as it was; an edit that
-          // landed meanwhile (the AI and the user both active) re-indexes it.
-          if (gen !== genAtStart) throw new ValidationError('The parts changed while accepting — accept again.');
-          if (cut) {
-            const built = buildCutMesh({ vertProperties: m.vertProperties, triVerts: m.triVerts, numProp: m.numProp }, cut, parts.names, parts.colors);
-            if (cut.splitTris.length > 0) {
-              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
-              nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
-              remeshed = { fromTris: m.numTri, toTris: built.numTri };
-            } else {
-              // Nothing split, but smoothing can still relabel whole sliver
-              // triangles — save what the overlay showed, on the same mesh.
-              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source };
-              nextImport = { ...m, parts };
-            }
-          }
-        }
-        if (!normalizeImportParts(parts, nextImport.triVerts.length / 3)) {
-          throw new ValidationError('The draft parts are inconsistent (duplicate or empty names?) — fix them with editParts before accepting.');
-        }
-        const nextImports = imports.map((x, i) => (i === d.importIndex ? nextImport : x));
-        const hadPaint = remeshed !== null && (host.modelHasPaint?.() ?? false);
-        const rewrite = rewriteImportsWithParts(code, d.importIndex);
-        const usesHelper = rewrite.changed || new RegExp(`api\\.importWithParts\\(\\s*${d.importIndex}\\s*\\)`).test(code);
-        const result = await host.commit(rewrite.code, nextImports, label);
-        if ('error' in result) return result;
-        await discardPartsDraft();
-        clearDraftState();
-        const notes: string[] = [];
-        if (!usesHelper) notes.push(`The code does not load import ${d.importIndex} via Manifold.ofMesh(api.imports[${d.importIndex}]), so it was left unchanged. Call api.importWithParts(${d.importIndex}) in your code to get the parts as labels.`);
-        if (hadPaint) notes.push('The import was re-meshed along the smooth part edges — check any brush paint on it; painted edges can shift slightly.');
-        return {
-          ok: true,
-          parts: parts.names.map((name, i) => ({ name, color: parts.colors[i] ?? null, triCount: countPart(parts.triPart, i) })),
-          ...(remeshed ? { smoothEdges: remeshed } : {}),
-          ...result,
-          ...(notes.length ? { note: notes.join(' ') } : {}),
-        };
-      } catch (e) {
-        return err(e);
-      }
+      return acceptPartsAttempt(opts, 0);
     },
 
     async discardParts() {

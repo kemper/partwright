@@ -223,7 +223,7 @@ import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -1511,7 +1511,43 @@ function resetPaintWorkerState(): void {
  *  stamps are replayed asynchronously (they need to decode a stored image data
  *  URL and re-run the subdivision + stamp algorithm), so this function is async.
  *  All call sites are already in async functions and should `await` the result. */
+/** Bumped by every rehydrateColorRegions call, so a restore still waiting on
+ *  its worker refine knows a newer one replaced it. */
+let rehydrateGeneration = 0;
+
+/** Refine `base` under a restored version's descriptors. Smooth strokes run in
+ *  the subdivision worker behind a progress modal: a session with many strokes
+ *  takes tens of seconds to rebuild, and on the main thread that froze the tab
+ *  long enough for the render watchdog to give up. Returns null when a newer
+ *  restore superseded this one. Falls back to the main thread if the worker
+ *  fails for another reason. */
+async function refineForRehydrate(
+  base: MeshData,
+  descriptors: RegionDescriptor[],
+  gen: number,
+): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]> | null; strokeTris: Map<number, Uint32Array> | null } | null> {
+  if (!descriptors.some(descriptorRefines)) return { mesh: base, parentToChildren: null, strokeTris: null };
+  const abort = new AbortController();
+  const progressId = startProgress({ title: 'Restoring paint', message: 'Rebuilding smooth paint edges…', indeterminate: true });
+  try {
+    const r = await refineInWorker({ base, input: base, descriptors, signal: abort.signal });
+    if (gen !== rehydrateGeneration) return null;
+    const parentToChildren = childrenByParent(r.childToParent);
+    recordMeshLineage(r.mesh, base, parentToChildren);
+    return { mesh: r.mesh, parentToChildren, strokeTris: r.brushStrokeTriangles };
+  } catch (err) {
+    if (gen !== rehydrateGeneration) return null;
+    // eslint-disable-next-line no-console
+    console.warn('[paint] worker restore failed, refining on the main thread', err);
+    const { mesh, parentToChildren } = refineMeshForRegions(base, descriptors);
+    return { mesh, parentToChildren, strokeTris: null };
+  } finally {
+    endProgress(progressId);
+  }
+}
+
 async function rehydrateColorRegions(geometryData: Record<string, unknown> | null): Promise<{ carried: string[]; dropped: string[] }> {
+  const gen = ++rehydrateGeneration;
   // Drop any in-flight worker job before we wipe + replace the region store;
   // otherwise its continuation could overwrite the freshly-rehydrated mesh
   // and stamp triangles onto regions that no longer exist.
@@ -1550,18 +1586,27 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // resolving. Without refine regions this is a no-op and currentMeshData is
   // left untouched (identical to the pre-subdivision behavior).
   const base = paintBaseMesh ?? currentMeshData;
-  const { mesh, parentToChildren } = refineMeshForRegions(base, standardRegions.map(r => r.descriptor));
+  const refined = await refineForRehydrate(base, standardRegions.map(r => r.descriptor), gen);
+  if (!refined) return report;
+  const { mesh, parentToChildren, strokeTris } = refined;
   if (parentToChildren) {
     currentMeshData = mesh;
     updatePaintMesh(mesh);
   }
-  const adjacency = buildAdjacency(mesh);
+  // Adjacency over the whole (possibly 700k-triangle) mesh is only needed by
+  // the flood-fill descriptor kinds, so build it on first use.
+  let adjacency: AdjacencyGraph | null = null;
 
   // Bulk-add the resolved standard regions without letting each addRegion
   // trigger a reconcile (we've already built the mesh here).
   suspendReconcile = true;
-  for (const region of standardRegions) {
-    const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
+  for (const [idx, region] of standardRegions.entries()) {
+    const d = region.descriptor;
+    if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+    const workerTris = strokeTris?.get(idx);
+    const { triangles, perTriColors } = workerTris
+      ? { triangles: new Set<number>(workerTris), perTriColors: undefined }
+      : resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId, perTriColors);
       report.carried.push(region.name);
@@ -1703,7 +1748,7 @@ function rebuildPaintedGeometry(): void {
   const { mesh, parentToChildren } = refineMeshForRegions(base, getRegions().map(r => r.descriptor));
   currentMeshData = mesh;
   updatePaintMesh(mesh);
-  const adjacency = buildAdjacency(mesh);
+  const adjacency = adjacencyIfNeeded(mesh);
   for (const region of getRegions()) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
@@ -1720,6 +1765,14 @@ function rebuildPaintedGeometry(): void {
  *  the underlay's triangle indices unless we re-resolve them here from their
  *  descriptors — geometric selectors against `mesh` directly, byLabel through
  *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
+/** Adjacency for re-resolving every region on `mesh`, or null when no user or
+ *  model region is a flood-fill kind (the only ones that read it). Building it
+ *  costs seconds on a heavily refined mesh. */
+function adjacencyIfNeeded(mesh: MeshData): AdjacencyGraph | null {
+  const floods = (d: RegionDescriptor): boolean => d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood';
+  return getRegions().some(r => floods(r.descriptor)) || getModelRegions().some(r => floods(r.descriptor)) ? buildAdjacency(mesh) : null;
+}
+
 function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
   for (const region of getModelRegions()) {
     const d = region.descriptor;
@@ -2187,7 +2240,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     recordMeshLineage(mesh, base, parentToChildren);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
-    const adjacency = buildAdjacency(mesh);
+    const adjacency = adjacencyIfNeeded(mesh);
 
     const regions = getRegions();
     for (const region of regions) {
@@ -6509,6 +6562,13 @@ async function main() {
     void ensureEngineStarted();
   }
 
+  /** True while loadVersionIntoEditor's run is in flight. The version's saved
+   *  regions are staged before that run (for the fast-preview colours), and
+   *  rehydrateColorRegions refines + resolves them all again right after it, so
+   *  the run must not do its own full stroke rebuild: on a session with many
+   *  smooth strokes that rebuild ran twice per open (~40 s each on a 460k scan). */
+  let deferPaintRefineToRehydrate = false;
+
   async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
@@ -6644,7 +6704,13 @@ async function main() {
       // (smooth-stroke replay etc.) — it clears + rebuilds, so this is a strict
       // head-start, not a competing source of truth.
       stageUnresolvedColorRegions(version.geometryData);
-      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
+      deferPaintRefineToRehydrate = true;
+      let applied: boolean;
+      try {
+        applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
+      } finally {
+        deferPaintRefineToRehydrate = false;
+      }
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) {
@@ -15148,16 +15214,20 @@ async function main() {
         return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
       }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
-      // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
-      // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
-      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 64));
+      // maxEdge (absolute) overrides; otherwise radius / resolution, default 16.
+      // The exact-outline clip keeps edges crisp, so curves need few segments:
+      // r/16 already traces a circle with ~100 sides. The old default of 64
+      // grew a 474k scan to 2M triangles over a dozen strokes.
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 16));
       // Floor an explicit maxEdge at the same finest edge the resolution path
       // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
       // runaway subdivision for no visible benefit (the safety ceiling in
       // buildRefinedMesh would cut it off anyway).
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
+      // Points are a path, not stamp positions: fill the gaps so the band is
+      // continuous however sparsely the caller sampled it.
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius / 4), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
         // Default to no gate (180°) for the console API so a paintStroke without
         // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
@@ -15259,7 +15329,7 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius / 4), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
@@ -17809,7 +17879,7 @@ async function main() {
       // preservedCameraPose was snapshotted at the top of runCodeSync (before
       // the engine ran), so the auto-framing updateMesh calls below — and the
       // SCAD progressive preview — don't poison the pose we restore at the end.
-      if (hasColorRegions() && hasRefineDescriptors()) {
+      if (hasColorRegions() && hasRefineDescriptors() && !deferPaintRefineToRehydrate) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
       } else if (hasColorRegions() || hasModelColorRegions()) {
@@ -17827,6 +17897,12 @@ async function main() {
           const d = region.descriptor;
           if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             adjacency = buildAdjacency(mesh);
+          }
+          // A version load resolves refining regions itself right after this
+          // run (see deferPaintRefineToRehydrate); leave them empty meanwhile.
+          if (deferPaintRefineToRehydrate && descriptorRefines(d)) {
+            setRegionTriangles(region.id, new Set());
+            continue;
           }
           const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, region.id);
           setRegionTriangles(region.id, triangles, perTriColors);
