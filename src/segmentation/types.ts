@@ -81,6 +81,12 @@ export interface SegSeed {
    *  one) rather than one the user or AI placed. Auto pins are dropped when
    *  their part no longer covers them; user pins always stay. */
   auto?: boolean;
+  /** Colour (`#rrggbb`) for the seed's part: applied as the part's colour
+   *  when the seed enters a draft (detection, `addSeed`, `split`) — how the
+   *  panel's label chips and agents set colours at detection time. Not kept
+   *  on the draft's pins, so a later `setColor` is never overridden by a
+   *  re-run. */
+  color?: string;
 }
 
 /** One declared detector parameter. The panel controls, the

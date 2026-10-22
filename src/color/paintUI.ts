@@ -2005,3 +2005,11 @@ registerExclusiveMode('paint', forceDeactivate);
 export function isPaintOpen(): boolean {
   return isActive();
 }
+
+/** Open the Paint panel scoped to one part ("Paint within: <part>"), e.g.
+ *  the Part Detection panel's next step after accepting parts. null opens it
+ *  on the whole model. */
+export function openPaintWithin(part: string | null): void {
+  if (!isActive()) togglePaintMode();
+  setPaintScope(part);
+}

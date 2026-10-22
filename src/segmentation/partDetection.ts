@@ -24,8 +24,9 @@ import {
   ValidationError, assertArray, assertBoolean, assertEnum, assertNumber, assertNumberTuple,
   assertObject, assertNoUnknownKeys, assertString,
 } from '../validation/apiValidation';
-import { MAX_EDGE_SMOOTHING, hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
+import { MAX_EDGE_SMOOTHING, acceptColors, hexToRgb, isHexColor, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
 import { medianEdgeLength, toSegMesh } from './features';
+import { LABEL_PRESETS } from './labelPresets';
 import { AbortedError } from './growth';
 import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts, renderPartsThumbnail } from './partsRender';
 import { autoProposeDetectors, describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
@@ -217,13 +218,16 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function sameSeeds(a: SegSeed[], b: SegSeed[]): boolean {
-    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.point.every((v, k) => v === b[i].point[k]));
+    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.color === b[i].color && x.point.every((v, k) => v === b[i].point[k]));
   }
 
+  /** Copy a seed. A working (pre-detection) pin keeps its colour so the
+   *  first detection can apply it; the draft's own pins never carry one. */
   function copySeed(x: SegSeed): SegSeed {
     const out: SegSeed = { label: x.label, point: [x.point[0], x.point[1], x.point[2]] };
     if (typeof x.triangle === 'number') out.triangle = x.triangle;
     if (x.auto) out.auto = true;
+    if (x.color) out.color = x.color;
     return out;
   }
 
@@ -535,13 +539,16 @@ export function createPartDetection(host: PartDetectionHost) {
     if (raw === undefined) return undefined;
     return assertArray(raw, where).map((s, i) => {
       const o = assertObject(s, `${where}[${i}]`)!;
-      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto'], `${where}[${i}]`);
+      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto', 'color'], `${where}[${i}]`);
       const label = assertString(o.label, `${where}[${i}].label`)!;
       const point = assertNumberTuple(o.point, 3, `${where}[${i}].point`) as [number, number, number];
       const triangle = assertNumber(o.triangle, `${where}[${i}].triangle`, { optional: true, integer: true, min: 0 });
       const auto = assertBoolean(o.auto, `${where}[${i}].auto`, { optional: true });
+      const color = assertString(o.color, `${where}[${i}].color`, { optional: true });
+      if (color !== undefined && !isHexColor(color)) throw new ValidationError(`${where}[${i}].color must be "#rrggbb", got ${JSON.stringify(color)}`);
       const out: SegSeed = triangle === undefined ? { label, point } : { label, point, triangle };
       if (auto) out.auto = true;
+      if (color !== undefined) out.color = color.toLowerCase();
       return out;
     });
   }
@@ -648,9 +655,11 @@ export function createPartDetection(host: PartDetectionHost) {
       case 'reorder':
         keys('id', 'position');
         return { op, id: parseRef(x.id, `${where}.id`), position: assertNumber(x.position, `${where}.position`, { integer: true, min: 1 })! };
-      case 'clear':
-        keys();
-        return { op };
+      case 'clear': {
+        keys('algorithm');
+        if (x.algorithm === undefined) return { op };
+        return { op, algorithm: assertEnum(x.algorithm, detectorIds(), `${where}.algorithm`) };
+      }
       case 'seedsFromParts': {
         keys('minRegionFrac');
         const minRegionFrac = assertNumber(x.minRegionFrac, `${where}.minRegionFrac`, { optional: true, min: 0, max: 1 })
@@ -686,8 +695,9 @@ export function createPartDetection(host: PartDetectionHost) {
   async function acceptPartsAttempt(opts: unknown, attempt: number): Promise<Record<string, unknown>> {
     try {
       const o = opts === undefined ? {} : assertObject(opts, 'acceptParts(options)')!;
-      assertNoUnknownKeys(o, ['label', 'smoothEdges'], 'acceptParts(options)');
+      assertNoUnknownKeys(o, ['label', 'smoothEdges', 'applyColors'], 'acceptParts(options)');
       const label = assertString(o.label, 'acceptParts(options).label', { optional: true }) ?? 'Detected parts';
+      const applyColors = assertBoolean(o.applyColors, 'acceptParts(options).applyColors', { optional: true }) ?? true;
       const d = currentDraft();
       const smooth = (assertBoolean(o.smoothEdges, 'acceptParts(options).smoothEdges', { optional: true }) ?? true) && d.summary.edgeSmoothing > 0;
       if (host.getLanguage() !== 'manifold-js') {
@@ -705,7 +715,8 @@ export function createPartDetection(host: PartDetectionHost) {
       };
       let parts: ImportedMeshParts = {
         names: s.parts.map((p) => p.name),
-        colors: s.parts.map((p) => p.color),
+        // Each part keeps the colour it shows (explicit, else overlay).
+        colors: acceptColors(s.parts, applyColors),
         triPart: d.triPart.slice(),
         source,
       };
@@ -830,6 +841,9 @@ export function createPartDetection(host: PartDetectionHost) {
           normalSmoothEdgeLengths: 'The same denoise radius as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.',
         },
         editOps: [...EDIT_OPS],
+        /** The panel's label chips: part names with default colours, for
+         *  seeds like {label, point, color}. */
+        labelPresets: LABEL_PRESETS.map((p) => ({ id: p.id, title: p.title, labels: p.chips.map((c) => ({ ...c })) })),
       };
     },
 

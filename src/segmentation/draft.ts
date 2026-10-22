@@ -64,6 +64,20 @@ export function overlayColor(index: number, explicit: string | null | undefined)
   return explicit ?? PALETTE[index % PALETTE.length];
 }
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+/** Whether `c` is a `#rrggbb` colour. */
+export function isHexColor(c: unknown): c is string {
+  return typeof c === 'string' && HEX_COLOR.test(c);
+}
+
+/** The colours acceptParts saves on the import, one per part: what the
+ *  user sees — the explicit colour, else the overlay colour — so accepting
+ *  never turns uncoloured parts plain. `applyColors: false` saves none
+ *  (labels only). */
+export function acceptColors(parts: readonly { color: string | null; displayColor: string }[], applyColors = true): (string | null)[] {
+  return parts.map((p) => (applyColors ? (p.color ?? p.displayColor).toLowerCase() : null));
+}
+
 export interface PartSummary {
   /** 1-based id shown on the overlay legend. */
   id: number;
@@ -149,7 +163,7 @@ export type PartEditOp =
   | { op: 'focus'; id: PartRef | null }
   | { op: 'setEdgeSmoothing'; iterations: number }
   | { op: 'reorder'; id: PartRef; position: number }
-  | { op: 'clear' }
+  | { op: 'clear'; algorithm?: string }
   | { op: 'rerun' }
   | { op: 'undo' };
 
@@ -235,6 +249,7 @@ export class PartDraftModel {
     this.names = [];
     this.colors = [];
     this.adoptResult(result);
+    this.applySeedColors(run.seeds);
     this.syncAnchors();
   }
 
@@ -552,6 +567,7 @@ export class PartDraftModel {
         const splitNames = new Set(names);
         this.seeds = this.seeds.filter((sd) => !(sd.auto && splitNames.has(sd.label)));
         for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] });
+        this.applySeedColors(op.seeds);
         return;
       }
       case 'absorbSmall': {
@@ -571,6 +587,7 @@ export class PartDraftModel {
         if (!op.seed || typeof op.seed.label !== 'string' || !Array.isArray(op.seed.point) || op.seed.point.length !== 3) {
           throw new Error('addSeed.seed must be { label, point: [x,y,z] }');
         }
+        if (op.seed.color !== undefined && !isHexColor(op.seed.color)) throw new Error('addSeed.seed.color must be "#rrggbb"');
         const sd = cloneSeed(op.seed);
         sd.label = cleanName(sd.label);
         delete sd.auto;
@@ -580,6 +597,7 @@ export class PartDraftModel {
         // part. Either way only the parts around the pin re-grow (with
         // rerun:false the new part waits, empty, for a later re-grow).
         this.createPart(sd.label);
+        this.applySeedColors([op.seed]);
         if (op.rerun !== false) this.regrowAround([sd.label, this.partNameAt(sd.point)]);
         return;
       }
@@ -640,7 +658,15 @@ export class PartDraftModel {
         this.permute(order);
         return;
       }
-      case 'clear':
+      case 'clear': {
+        // With an algorithm the draft also switches method (the panel starts
+        // a seeded method fresh instead of mixing pins into auto patches).
+        if (op.algorithm !== undefined) {
+          const d = getDetector(op.algorithm);
+          if (!d) throw new Error(`Unknown detector "${op.algorithm}"`);
+          this.detectorId = d.id;
+          this.params = resolveParams(d, {});
+        }
         this.triPart.fill(-1);
         this.names = [];
         this.colors = [];
@@ -649,6 +675,7 @@ export class PartDraftModel {
         this.lockedNames.clear();
         this.focusMask = null;
         return;
+      }
       case 'rerun':
         this.rerun();
         return;
@@ -739,6 +766,7 @@ export class PartDraftModel {
       this.compact();
     }
     this.colors = this.names.map((nm, i) => keepColors.get(nm) ?? this.colors[i] ?? null);
+    this.applySeedColors(seeds);
     this.detectorId = d.id;
     this.params = { ...params };
     this.featureOptions = { ...featureOptions };
@@ -1043,6 +1071,17 @@ export class PartDraftModel {
   private resolveOrCreate(ref: PartRef): number {
     if (typeof ref === 'string' && !this.names.includes(ref)) return this.createPart(ref);
     return this.resolvePart(ref);
+  }
+
+  /** Seeds that carry a colour colour their part (by name; a part the
+   *  seeds did not produce is left alone). The colour is not kept on the
+   *  stored pin — see SegSeed.color. */
+  private applySeedColors(seeds: readonly SegSeed[]): void {
+    for (const sd of seeds) {
+      if (!isHexColor(sd.color) || typeof sd.label !== 'string' || !sd.label.trim()) continue;
+      const i = this.names.indexOf(cleanName(sd.label));
+      if (i >= 0) this.colors[i] = sd.color.toLowerCase();
+    }
   }
 
   private createPart(name: string): number {

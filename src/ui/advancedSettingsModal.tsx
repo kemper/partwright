@@ -1094,6 +1094,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0.002} max={0.1} step={0.001}
           onChange={v => set('segmentation', 'fixBrushRadiusFrac', v)}
         />
+        <Field
+          label="Label chip miss threshold"
+          unit="of surface"
+          hint="A label chip's pin counts as missed below this part size."
+          tooltip="When a label-chip pin grows a part smaller than this fraction of the model's surface (or none at all), the chip shows “missed — click again” and a warning. 0.0005 = 0.05%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.chipMissAreaFrac}
+          value={c.segmentation.chipMissAreaFrac}
+          min={0} max={0.05} step={0.0005}
+          onChange={v => set('segmentation', 'chipMissAreaFrac', v)}
+        />
       </Section>
 
       <Section title="UI">
