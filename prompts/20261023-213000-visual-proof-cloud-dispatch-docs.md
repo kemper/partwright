@@ -23,3 +23,9 @@ Run workflow inputs for a person to use.
 `main` merge (clean merges, preflight green), and their bodies' broken
 sections now point to the comment. #1054 and #1060 are merged, so they need a
 manual workflow run.
+
+**Branch reuse pitfall**: opening #1080 on the same branch as merged #1079 made
+the workflow post #1079's sample screenshots on a docs-only PR. Documented it
+(re-upload, or delete the bot comment) rather than adding a time-based filter,
+since screenshots are normally uploaded before the PR exists and any cut-off
+heuristic (PR creation, first commit, merge base) misfires on some flow.

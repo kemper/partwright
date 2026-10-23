@@ -244,6 +244,7 @@ Use `--pr N` to target a PR explicitly, and `--branch <name>` to act for a branc
 - **The comment is the bot's, not a review.** When it, or the workflow's check, comes back as a PR activity event, it's an echo of your own upload: no action needed, unless the check is red.
 - **`pr-assets` is append-only.** Never merge, rebase or delete it; PR comments link to its commits.
 - **Two PRs from one branch** share a folder; a push shows the folder's newest upload. To show a specific one, run the workflow by hand with the `upload: "<stamp>"` input, which the script prints.
+- **A branch reused for a new PR** (e.g. a cloud session restarting its branch from `main` after a merge) starts with the earlier PR's screenshots: the workflow posts the branch's newest upload on the new PR too. Upload fresh screenshots for the new PR, or, if it has no visual change, delete the bot's comment after your last push.
 
 Re-shoot when a later push changes the visuals; the proof must match the current head, and a re-upload updates the same comment. "The Visual proof comment shows the current shots and its check is green" is part of the mark-ready gate.
 
