@@ -129,7 +129,7 @@ export function trimForShare(exported: ExportedSession): ExportedSession {
     ...exported,
     session: trimAttachmentsForShare(exported.session),
     versions: versions.map(v => {
-      const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, geometryData, ...rest } = v;
+      const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, paintRefine: _dropRefine, geometryData, ...rest } = v;
       return { ...rest, geometryData: trimGeometryData(geometryData) };
     }),
   };

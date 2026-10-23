@@ -363,7 +363,7 @@ export const thicknessDetector: PartDetector = {
     // Honouring them would freeze an unseeded result: changing `levels` would
     // just regrow the same parts.
     const userSeeds = (ctx.seeds ?? []).filter((sd) => !sd.auto);
-    const { names, seedTris, seedLabels } = resolveSeeds(f, userSeeds, ctx.allow, 'drop');
+    const { names, seedTris, seedLabels, seedMaxRadius } = resolveSeeds(f, userSeeds, ctx.allow, 'drop');
     if (names.length > 0) {
       // --- Seeded: thickness jumps join the crease cost -----------------------
       const cw = Number(ctx.params.creaseWeight), jw = Number(ctx.params.jumpWeight);
@@ -373,7 +373,7 @@ export const thicknessDetector: PartDetector = {
       }
       const g = growFromSeeds({ ...f, creaseCost: combined }, seedTris, seedLabels, {
         growth: 'hybrid', creaseQuantumDeg: 5, creaseWeight: 1,
-        allow: ctx.allow, signal: ctx.signal, progress: ctx.progress,
+        allow: ctx.allow, signal: ctx.signal, progress: ctx.progress, seedMaxRadius,
       });
       let unreached = 0;
       for (let t = 0; t < f.triCount; t++) if (g.triLabel[t] < 0 && (!ctx.allow || ctx.allow[t])) unreached++;

@@ -556,9 +556,9 @@ export class PartDraftModel {
         if (!Array.isArray(op.seeds) || op.seeds.length < 2) throw new Error('split needs at least two seeds ({ label, point })');
         const allow = new Uint8Array(this.triPart.length);
         for (let t = 0; t < allow.length; t++) if (this.triPart[t] === i) allow[t] = 1;
-        const { names, seedTris, seedLabels } = resolveSeeds(this.features, op.seeds, allow);
+        const { names, seedTris, seedLabels, seedMaxRadius } = resolveSeeds(this.features, op.seeds, allow);
         if (names.length < 2) throw new Error('split needs seeds with at least two distinct labels');
-        const g = growFromSeeds(this.features, seedTris, seedLabels, this.growthOptions(allow));
+        const g = growFromSeeds(this.features, seedTris, seedLabels, { ...this.growthOptions(allow), seedMaxRadius });
         const map = names.map((nm, k) => (k === 0 ? i : this.createPart(nm)));
         if (names[0] !== this.names[i]) this.names[i] = names[0];
         for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = map[g.triLabel[t]];
@@ -566,7 +566,12 @@ export class PartDraftModel {
         // The split's seeds become the new parts' pins.
         const splitNames = new Set(names);
         this.seeds = this.seeds.filter((sd) => !(sd.auto && splitNames.has(sd.label)));
-        for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] });
+        for (const sd of op.seeds) {
+          if (!sd.label.trim()) continue;
+          const pin: SegSeed = { label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] };
+          if (validRadius(sd.maxRadius)) pin.maxRadius = sd.maxRadius;
+          this.seeds.push(pin);
+        }
         this.applySeedColors(op.seeds);
         return;
       }
@@ -613,7 +618,7 @@ export class PartDraftModel {
         const was = this.seeds[op.index];
         this.assertPinPlaceable(was.label, op.point);
         // A moved pin is the user's now, even if the draft placed it.
-        this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]] };
+        this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]], ...(validRadius(was.maxRadius) ? { maxRadius: was.maxRadius } : {}) };
         if (op.rerun !== false) this.regrowAround([was.label, this.partNameAt(was.point), this.partNameAt(op.point)]);
         return;
       }
@@ -926,16 +931,16 @@ export class PartDraftModel {
     }
     // A focus confines every edit, pin edits included.
     if (this.focusMask) for (let t = 0; t < allow.length; t++) if (!this.focusMask[t]) allow[t] = 0;
-    const seedTris: number[] = [], seedLabels: number[] = [];
+    const seedTris: number[] = [], seedLabels: number[] = [], seedRadii: number[] = [];
     const taken = new Set<number>();
     const seeded = new Set<number>();
     // Placed pins first: where a placed pin and an automatic pin land on the
     // same triangle, the placed one wins (an auto pin is only a stand-in).
     pinsHere.sort((x, y) => Number(!!x.sd.auto) - Number(!!y.sd.auto));
-    for (const { L, t } of pinsHere) {
+    for (const { sd, L, t } of pinsHere) {
       if (!allow[t] || taken.has(t)) continue;
       taken.add(t);
-      seedTris.push(t); seedLabels.push(L);
+      seedTris.push(t); seedLabels.push(L); seedRadii.push(validRadius(sd.maxRadius) ? sd.maxRadius : Infinity);
       seeded.add(L);
     }
     // A part whose pins all sit on its own fixed triangles grows from those
@@ -947,12 +952,12 @@ export class PartDraftModel {
           if (fixed[t] !== L || taken.has(t)) continue;
           allow[t] = 1;
           taken.add(t);
-          seedTris.push(t); seedLabels.push(L);
+          seedTris.push(t); seedLabels.push(L); seedRadii.push(Infinity);
         }
       }
     }
     if (seedTris.length === 0) { this.compact(); return; }
-    const g = growFromSeeds(f, seedTris, seedLabels, this.growthOptions(allow));
+    const g = growFromSeeds(f, seedTris, seedLabels, { ...this.growthOptions(allow), seedMaxRadius: seedRadii });
     for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = g.triLabel[t];
     this.compact();
   }
@@ -1152,7 +1157,12 @@ function cloneSeed(s: SegSeed): SegSeed {
   const out: SegSeed = { label: s.label, point: [s.point[0], s.point[1], s.point[2]] };
   if (typeof s.triangle === 'number') out.triangle = s.triangle;
   if (s.auto) out.auto = true;
+  if (validRadius(s.maxRadius)) out.maxRadius = s.maxRadius;
   return out;
+}
+
+function validRadius(r: unknown): r is number {
+  return typeof r === 'number' && Number.isFinite(r) && r > 0;
 }
 
 function cleanName(name: unknown): string {

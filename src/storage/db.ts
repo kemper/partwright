@@ -148,6 +148,12 @@ export interface Version {
    *  field existed or without in-code textures — loaders must treat absence as
    *  "recompute on demand". */
   surfaceTexture?: unknown;
+  /** Smooth-paint refined mesh (key + mesh + per-triangle source map)
+   *  persisted at save time so reopening skips rebuilding every smooth paint
+   *  edge. Shape is `PersistedPaintRefine` (`src/color/paintRefinePersist.ts`);
+   *  `unknown` here for db-layer isolation. Self-validating by key; absent on
+   *  older versions and versions without smooth paint ⇒ rebuild on load. */
+  paintRefine?: unknown;
   /** The version this was derived from. Set when a mesh-capture operation
    *  (simplify, enhance, paint-bake, import) creates a child version from an
    *  existing parametric version. Absent for versions created from scratch.
@@ -858,6 +864,8 @@ export interface SaveVersionOptions {
   operation?: VersionOperation | null;
   /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
   surfaceTexture?: unknown;
+  /** Smooth-paint refined mesh — see {@link Version.paintRefine}. */
+  paintRefine?: unknown;
   /** App semver that authored this version — see {@link Version.appVersion}.
    *  Caller passes `buildInfo.version` (omit/undefined in dev where it's
    *  'unknown'); the db layer just stores it opaquely. */
@@ -884,6 +892,7 @@ export async function saveVersion(
     parentVersionId,
     operation,
     surfaceTexture,
+    paintRefine,
     appVersion,
   } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
@@ -926,6 +935,7 @@ export async function saveVersion(
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
         ...(surfaceTexture ? { surfaceTexture } : {}),
+        ...(paintRefine ? { paintRefine } : {}),
         ...(appVersion ? { appVersion } : {}),
       };
       const putReq = store.put(v);

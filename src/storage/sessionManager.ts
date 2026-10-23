@@ -65,6 +65,7 @@ import {
 import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
 import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
+import type { PersistedPaintRefine } from '../color/paintRefinePersist';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { isStarterCode } from '../editor/starters';
@@ -204,8 +205,16 @@ import { appPath } from '../deployment';
  *           `acceptParts` and turned into real labels by
  *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
  *           still imports). Additive; older readers ignore the field.
+ *  - `1.21` — per-version persisted smooth-paint refinement
+ *           (`versions[].paintRefine`): the mesh smooth paint subdivided
+ *           (brush strokes, smooth slab/box/cylinder/pattern regions) plus
+ *           `toRoot` (base64 Int32Array, each refined triangle's source
+ *           triangle on the run's mesh), under a content key of the base mesh
+ *           + refine descriptors. Reopening restores it instead of rebuilding
+ *           every smooth edge; a stale key or malformed field just rebuilds.
+ *           Stripped from share links. Additive; older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.20';
+export const SCHEMA_VERSION = '1.21';
 
 const CURRENT_MAJOR = 1;
 
@@ -332,6 +341,13 @@ export interface ExportedSession {
      */
     surfaceTexture?: ExportedSurfaceTexture;
     /**
+     * Persisted smooth-paint refinement (key + refined mesh + `toRoot` map,
+     * buffers base64-encoded). Restored into the version's `paintRefine` on
+     * import so reopening skips the smooth-edge rebuild. Absent ⇒ rebuild.
+     * @since 1.21
+     */
+    paintRefine?: ExportedPaintRefine;
+    /**
      * App semver (package.json `version`) of the build that saved this version —
      * its "last known good" app version. Absent on versions saved before this
      * field existed and on dev/test builds. Preserved verbatim on import (the
@@ -406,6 +422,59 @@ export interface ExportedSurfaceTexture {
   triVerts: string;
   /** base64 of the optional Uint8Array per-triangle RGB buffer. */
   triColors?: string;
+}
+
+/** A {@link PersistedPaintRefine} with its buffers base64-encoded.
+ *  @since 1.21 */
+export interface ExportedPaintRefine {
+  key: string;
+  numVert: number;
+  numTri: number;
+  numProp: number;
+  vertProperties: string;
+  triVerts: string;
+  /** base64 of the Int32Array refined-triangle → base-triangle map. */
+  toRoot: string;
+}
+
+function serializePaintRefine(r: PersistedPaintRefine | undefined): ExportedPaintRefine | undefined {
+  if (!r || typeof r.key !== 'string' || !r.mesh || !(r.toRoot instanceof Int32Array)) return undefined;
+  const m = r.mesh;
+  return {
+    key: r.key,
+    numVert: m.numVert,
+    numTri: m.numTri,
+    numProp: m.numProp,
+    vertProperties: typedArrayToBase64(m.vertProperties),
+    triVerts: typedArrayToBase64(m.triVerts),
+    toRoot: typedArrayToBase64(r.toRoot),
+  };
+}
+
+/** Validating decode; undefined (the version rebuilds its paint on load)
+ *  when malformed, never a failed import. Full validation against the base
+ *  mesh happens at load time (validPaintRefine). */
+function deserializePaintRefine(r: ExportedPaintRefine | undefined): PersistedPaintRefine | undefined {
+  if (!r || typeof r !== 'object' || typeof r.key !== 'string') return undefined;
+  if (typeof r.vertProperties !== 'string' || typeof r.triVerts !== 'string' || typeof r.toRoot !== 'string') return undefined;
+  try {
+    const out: PersistedPaintRefine = {
+      key: r.key,
+      mesh: {
+        numVert: r.numVert,
+        numTri: r.numTri,
+        numProp: r.numProp,
+        vertProperties: new Float32Array(base64ToArrayBuffer(r.vertProperties)),
+        triVerts: new Uint32Array(base64ToArrayBuffer(r.triVerts)),
+      },
+      toRoot: new Int32Array(base64ToArrayBuffer(r.toRoot)),
+    };
+    const m = out.mesh;
+    if (m.vertProperties.length !== m.numVert * m.numProp || m.triVerts.length !== m.numTri * 3 || out.toRoot.length !== m.numTri) return undefined;
+    return out;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Encode a typed array's bytes as base64. */
@@ -1394,6 +1463,8 @@ export async function saveVersion(
      *  the exact base identity it was computed under, so callers pass the
      *  current one or nothing. */
     surfaceTexture?: PersistedSurfaceTexture;
+    /** Smooth-paint refined mesh for THIS save (never carried forward). */
+    paintRefine?: PersistedPaintRefine;
   },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
@@ -1445,6 +1516,7 @@ export async function saveVersion(
       parentVersionId: options?.parentVersionId ?? null,
       operation: options?.operation ?? null,
       surfaceTexture: options?.surfaceTexture,
+      paintRefine: options?.paintRefine,
       // Stamp the app version that authored this snapshot — its "last known
       // good" version (undefined in dev where it's 'unknown').
       appVersion: stampedAppVersion,
@@ -2086,6 +2158,7 @@ export async function exportSession(
       const thumbDataUrl = thumbnailDataUrls[i];
       const importedMeshes = serializeImportedMeshes(v.importedMeshes as ImportedMesh[] | undefined);
       const surfaceTexture = serializeSurfaceTexture(v.surfaceTexture as PersistedSurfaceTexture | undefined);
+      const paintRefine = serializePaintRefine(v.paintRefine as PersistedPaintRefine | undefined);
       return {
         index: v.index,
         code: v.code,
@@ -2100,6 +2173,7 @@ export async function exportSession(
         ...(thumbDataUrl ? { thumbnail: thumbDataUrl } : {}),
         ...(importedMeshes ? { importedMeshes } : {}),
         ...(surfaceTexture ? { surfaceTexture } : {}),
+        ...(paintRefine ? { paintRefine } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
         ...(v.appVersion ? { appVersion: v.appVersion } : {}),
@@ -2275,6 +2349,9 @@ export async function importSession(
           // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
           // the texture chain then recomputes on the version's first load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // Persisted smooth-paint refinement (schema 1.21+). Pre-1.21 files
+          // omit it; the version rebuilds its smooth paint on first load.
+          paintRefine: deserializePaintRefine(v.paintRefine),
           // App-version provenance (schema 1.15+). Preserved verbatim — the
           // "last known good" version follows the geometry, so it is NOT
           // re-stamped to the importing build.
@@ -2485,6 +2562,8 @@ export async function importSessionPartsIntoActive(
           operation: null,
           // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // Persisted smooth-paint refinement (schema 1.21+); absent ⇒ rebuild.
+          paintRefine: deserializePaintRefine(v.paintRefine),
           // App-version provenance (schema 1.15+) — preserved, not re-stamped.
           appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
         }
