@@ -353,6 +353,11 @@ test.describe('Multi-part sessions', () => {
     expect(after.parts).toEqual(['Object 1']);
     expect(after.versions).toEqual([]);
     expect(after.code).not.toContain('A2');
+    // The blank object is truly empty: nothing in the viewport.
+    expect(after.code).toContain('Manifold.union([])');
+    const tris = await page.evaluate(() =>
+      (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().triangleCount);
+    expect(tris).toBe(0);
   });
 
   // The Merge button lives in the same multi-select action bar as bulk delete.

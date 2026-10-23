@@ -1175,6 +1175,17 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'deleteObjectPart',
+    description: "Delete one part (by api.label name) or one piece (0-based index) of the current JS (manifold-js) object, as listed by listObjectParts — the same as its ✕ in the object list. Inserts api.removePart('name') or api.removePiece([x,y,z]) at the top of the code, re-runs, and saves a version (earlier versions keep the part). Refuses on other engines, on a single-piece object, and when the part isn't created by an api.label call in the code (e.g. detected on an import) — then the code is left unchanged. Pass exactly one of part / piece.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+      },
+    },
+  },
+  {
     name: 'assertPaint',
     description: 'Verify a painted region matches expected geometry. Returns {passed, failures?}. Use after painting to catch regressions when the mesh changes. `region` is the region id (integer) or name (string) from listRegions().',
     input_schema: {
@@ -1674,7 +1685,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
-  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
+  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -1811,7 +1822,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2542,6 +2553,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (typeof input.piece === 'number') return api.highlightObjectPart({ piece: input.piece });
       if (input.unlabeled === true) return api.highlightObjectPart({ unlabeled: true });
       return { error: 'highlightObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
+    }
+    case 'deleteObjectPart': {
+      if (typeof input.part === 'string') return api.deleteObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.deleteObjectPart({ piece: input.piece });
+      return { error: 'deleteObjectPart: pass one of part (name) or piece (index).' };
     }
     case 'assertPaint':
       return api.assertPaint(input);

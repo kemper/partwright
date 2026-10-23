@@ -38,6 +38,10 @@ export interface PartListCallbacks {
   getHighlightKey: () => string | null;
   /** Tint `part:<name>` / `piece:<n>` / `unlabeled` in the viewport; null clears. */
   onHighlight: (key: string | null) => void;
+  /** Delete the open object's `part:<name>` or `piece:<n>` (writes it into the code). */
+  onDeleteObjectPart: (key: string) => void | Promise<void>;
+  /** Whether the open object's parts/pieces can be deleted (JS objects only). */
+  canDeleteObjectParts: () => boolean;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
@@ -483,14 +487,19 @@ function buildObjectPartsSection(): HTMLElement {
     n.textContent = text;
     section.appendChild(n);
   };
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string }) => {
+  const deletable = cb.canDeleteObjectParts();
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; deleteLabel?: string; deleteConfirm?: string }) => {
+    // The row wraps the select button and its delete ✕ — a button can't nest
+    // inside another button.
+    const row = document.createElement('div');
+    row.className = 'group/op flex items-center';
     const b = document.createElement('button');
     const on = active === key;
     b.dataset.objectPart = key;
     b.setAttribute('aria-pressed', String(on));
     b.title = opts.title;
     // ≥44px tall on mobile (the rail is a full-width touch pane there).
-    b.className = 'w-full flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
+    b.className = 'flex-1 min-w-0 flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
       + (on ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 [@media(hover:hover)]:hover:text-zinc-200');
     const sw = document.createElement('span');
     sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-zinc-600';
@@ -508,7 +517,22 @@ function buildObjectPartsSection(): HTMLElement {
       e.stopPropagation();
       cb.onHighlight(on ? null : key);
     });
-    section.appendChild(b);
+    row.appendChild(b);
+    if (deletable && opts.deleteLabel && opts.deleteConfirm) {
+      const { deleteLabel, deleteConfirm } = opts;
+      const del = iconBtn('✕', deleteLabel); // ✕
+      del.dataset.deleteObjectPart = key;
+      // Visible on touch; fades in on hover/focus on pointer devices.
+      del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (await confirmDialog(deleteConfirm, { title: deleteLabel, confirmLabel: 'Delete', danger: true })) {
+          void cb.onDeleteObjectPart(key);
+        }
+      });
+      row.appendChild(del);
+    }
+    section.appendChild(row);
   };
 
   heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid.');
@@ -520,7 +544,12 @@ function buildObjectPartsSection(): HTMLElement {
     note('No labelled parts — wrap shapes in api.label(shape, "name") to name them.');
   }
   for (const p of view.parts) {
-    item(`part:${p.name}`, p.name, p.triangleCount, { color: p.color, title: `Highlight part "${p.name}" (${p.triangleCount} triangles)` });
+    item(`part:${p.name}`, p.name, p.triangleCount, {
+      color: p.color,
+      title: `Highlight part "${p.name}" (${p.triangleCount} triangles)`,
+      deleteLabel: 'Delete part',
+      deleteConfirm: `Delete part "${p.name}"? This adds api.removePart(${JSON.stringify(p.name)}) to the top of the code and saves a new version — earlier versions keep the part.`,
+    });
   }
   if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
     item('unlabeled', 'Unlabeled', view.unlabeledTriangleCount, { italic: true, title: 'Highlight the geometry no part covers' });
@@ -547,7 +576,11 @@ function buildObjectPartsSection(): HTMLElement {
     heading(`Pieces · ${view.pieces.length}`, 'Physically separate solids — what comes off the print bed as its own lump (e.g. the moving parts of a print-in-place mechanism).');
     for (const piece of view.pieces) {
       const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
-      item(`piece:${piece.index}`, name, piece.triangleCount, { title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}` });
+      item(`piece:${piece.index}`, name, piece.triangleCount, {
+        title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
+        deleteLabel: 'Delete piece',
+        deleteConfirm: `Delete piece ${piece.index + 1}${piece.part ? ` ("${piece.part}")` : ''}? This adds an api.removePiece([x, y, z]) line to the top of the code and saves a new version — earlier versions keep the piece.`,
+      });
     }
   }
   return section;

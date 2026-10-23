@@ -611,6 +611,7 @@ export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
 }
 
 export function clearMesh(): void {
+  updateDimensionLines(new THREE.Box3());
   while (meshGroup.children.length > 0) {
     const child = meshGroup.children[0];
     meshGroup.remove(child);
@@ -718,7 +719,9 @@ function frameModelShadow(): void {
  *  mesh group is empty. */
 function frameModel(): void {
   const box = new THREE.Box3().setFromObject(meshGroup);
-  if (box.isEmpty()) return;
+  // An empty model (e.g. a blank object returning Manifold.union([])) leaves
+  // the camera alone, but must drop the previous model's dimension lines.
+  if (box.isEmpty()) { updateDimensionLines(box); return; }
 
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());

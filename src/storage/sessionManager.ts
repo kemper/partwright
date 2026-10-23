@@ -1102,6 +1102,9 @@ export interface DeletePartResult {
   /** The part that became active after deletion (only set when the deleted part
    *  was the current one). */
   newCurrent: Part | null;
+  /** True when the deleted part was the session's last one and `newCurrent` is
+   *  the fresh, empty part that replaced it. */
+  reset?: boolean;
 }
 
 /**
@@ -1118,7 +1121,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   if (!target) return null;
   if (parts.length <= 1) {
     const fresh = await replaceAllPartsWithFresh([target]);
-    return fresh ? { deleted: target, newCurrent: fresh } : null;
+    return fresh ? { deleted: target, newCurrent: fresh, reset: true } : null;
   }
 
   await dbDeletePart(partId);
@@ -1148,6 +1151,9 @@ export interface DeletePartsResult {
   /** The part that became active after deletion (only set when the active part
    *  was among those deleted). */
   newCurrent: Part | null;
+  /** True when every part was deleted and `newCurrent` is the fresh, empty
+   *  part that replaced them. */
+  reset?: boolean;
 }
 
 /**
@@ -1165,7 +1171,7 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   if (targets.length === 0) return null;
   if (targets.length >= parts.length) {
     const fresh = await replaceAllPartsWithFresh(targets);
-    return fresh ? { deletedIds: targets.map(p => p.id), newCurrent: fresh } : null;
+    return fresh ? { deletedIds: targets.map(p => p.id), newCurrent: fresh, reset: true } : null;
   }
 
   const deletedSet = new Set(targets.map(p => p.id));
