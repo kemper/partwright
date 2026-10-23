@@ -416,18 +416,18 @@ await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
 await partwright.deleteObject(name|id|index)   // Delete an object + its versions (the last one resets to a blank "Object 1")
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
-partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
-await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
+partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops + labelPresets (the panel's label chips: names + default colours)
+await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z], color?:'#rrggbb'}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
 await partwright.autoDetectParts({importIndex?}) // seedless first pass (what an STL import runs): first automatic detector that splits it into 2+ parts REPLACES the draft {proposed:true, proposedBy, parts…} | {proposed:false, reason} (draft untouched; one solid: seed it)
 partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
-await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts
+await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts; a seed's color sets its part's colour; clear {algorithm?} also switches method
 await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched
 await partwright.previewPartPresets({algorithm?, seeds?, view?}) // every preset, ranked, draft untouched -> {presets:[{index,name,partCount,score}], image}; then applyPartPreset(index) / showPartPresetPreview(index|null)
 partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.discardParts()
-partwright.getPartSeeds() / partwright.setPartSeeds([{label, point}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel
+partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
-await partwright.acceptParts({label?, smoothEdges?})   // commit: parts become labels via api.importWithParts(i); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
+await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
 partwright.setObjectPartHidden(name | {piece}, hidden = true)  // Hide/show a part/piece in the viewport only (code, versions, exports keep it) -> {ok, hidden}

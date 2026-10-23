@@ -446,6 +446,9 @@ export interface AppConfig {
     seedTagScreenFraction: number;
     /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
     fixBrushRadiusFrac: number;
+    /** Part panel label chips: a chip's pin counts as "missed" (its part
+     *  came out empty or a speck) below this fraction of the surface area. */
+    chipMissAreaFrac: number;
   };
 }
 
@@ -593,6 +596,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     seedDotFraction: 0.008,
     seedTagScreenFraction: 0.026,
     fixBrushRadiusFrac: 0.012,
+    chipMissAreaFrac: 0.0005,
   },
 };
 

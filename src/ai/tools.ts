@@ -1053,6 +1053,7 @@ const ALL_TOOLS: ToolDefinition[] = [
             properties: {
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
+              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
             },
             required: ['label', 'point'],
           },
@@ -1144,7 +1145,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'editParts',
-    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Parts own PINS (shown on the model): every part has at least one (automatic pins sit in each region; seeds you add are placed pins). Ops: {op:"merge", ids:[...], name?} (the merged part keeps all their pins) · {op:"rename", id, name} (renaming to another part\'s name merges them) · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point; reassigned triangles become FIXED — pin moves never undo them) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point}} (adds a pin for that part — a NEW name makes a new part — and re-grows only the parts around it) · {op:"removeSeed", index} · {op:"moveSeed", index, point} (indexes into the summary\'s seeds) · {op:"seedsFromParts"} (reset every part to automatic pins; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"reorder", id, position} (1-based; order = label order on accept) · {op:"clear"} (remove every part and pin; undoable) · {op:"rerun"} (re-detect the whole model) · {op:"undo"}.',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Parts own PINS (shown on the model): every part has at least one (automatic pins sit in each region; seeds you add are placed pins). Ops: {op:"merge", ids:[...], name?} (the merged part keeps all their pins) · {op:"rename", id, name} (renaming to another part\'s name merges them) · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point; reassigned triangles become FIXED — pin moves never undo them) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point,color?}} (adds a pin for that part — a NEW name makes a new part — and re-grows only the parts around it; color sets the part\'s colour) · {op:"removeSeed", index} · {op:"moveSeed", index, point} (indexes into the summary\'s seeds) · {op:"seedsFromParts"} (reset every part to automatic pins; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"reorder", id, position} (1-based; order = label order on accept) · {op:"clear", algorithm?} (remove every part and pin; with algorithm also switch the draft\'s method; undoable) · {op:"rerun"} (re-detect the whole model) · {op:"undo"}.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1162,7 +1163,8 @@ const ALL_TOOLS: ToolDefinition[] = [
               to: { type: 'string', description: 'reassign target: part id or a new part name.' },
               radius: { type: 'number' },
               seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } } },
-              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } },
+              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, color: { type: 'string', description: 'Optional "#rrggbb" for the pin\'s part.' } } },
+              algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'clear: also switch the draft to this method (start a seeded method fresh).' },
               index: { type: 'integer' },
               minAreaFrac: { type: 'number' },
               iterations: { type: 'integer' },
@@ -1209,12 +1211,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'acceptParts',
-    description: 'Commit the part draft: the parts are stored on the import and the code switches to api.importWithParts(i), so every part becomes a real label (paintByLabel, listObjectParts, the object rail) and any part colours set with editParts setColor become the model colours. Saves a version. Show the user renderParts and get their OK first.',
+    description: 'Commit the part draft: the parts are stored on the import and the code switches to api.importWithParts(i), so every part becomes a real label (paintByLabel, listObjectParts, the object rail) and each part keeps the colour it shows as its model colour (its setColor / seed colour, else its overlay colour). Saves a version. Show the user renderParts and get their OK first.',
     input_schema: {
       type: 'object',
       properties: {
         label: { type: 'string', description: 'Version label (default "Detected parts").' },
         smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
+        applyColors: { type: 'boolean', description: 'Default true: every part\'s visible colour becomes its model colour. false saves labels only (no colours).' },
       },
     },
   },
