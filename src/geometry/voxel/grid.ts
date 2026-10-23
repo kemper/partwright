@@ -642,6 +642,43 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Delete the face-connected piece that `point` lies on — the voxel half of
+   *  `api.removePiece([x, y, z])`. `point` is in mesh coordinates (voxel
+   *  (x, y, z) spans [x, x+1]³), typically a point on the piece's surface; the
+   *  occupied voxel nearest it within one cell starts the flood. Returns the
+   *  number of voxels removed (0 when no voxel is that close). */
+  removePieceAt(point: Vec3): number {
+    const [px, py, pz] = point;
+    let seed: number | null = null;
+    let best = Infinity;
+    const bx = Math.floor(px), by = Math.floor(py), bz = Math.floor(pz);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const x = bx + dx, y = by + dy, z = bz + dz;
+      if (!inRange(x, y, z)) continue;
+      const key = packKey(x, y, z);
+      if (!this.cells.has(key)) continue;
+      const d = (x + 0.5 - px) ** 2 + (y + 0.5 - py) ** 2 + (z + 0.5 - pz) ** 2;
+      if (d < best) { best = d; seed = key; }
+    }
+    if (seed === null) return 0;
+    const piece = new Set<number>([seed]);
+    const stack = [seed];
+    while (stack.length) {
+      const key = stack.pop()!;
+      const z = (key % DIM) - HALF;
+      const y = (Math.floor(key / DIM) % DIM) - HALF;
+      const x = Math.floor(key / (DIM * DIM)) - HALF;
+      for (const [dx, dy, dz] of FACE_NEIGHBORS) {
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (!inRange(nx, ny, nz)) continue;
+        const nk = packKey(nx, ny, nz);
+        if (this.cells.has(nk) && !piece.has(nk)) { piece.add(nk); stack.push(nk); }
+      }
+    }
+    for (const key of piece) this.cells.delete(key);
+    return piece.size;
+  }
+
   /** Merge all voxels from `other` into this grid. Existing voxels in `this`
    *  keep their color; only empty positions are filled from `other`. Chainable. */
   weld(other: VoxelGrid): this {

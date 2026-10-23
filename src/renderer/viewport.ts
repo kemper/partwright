@@ -606,11 +606,21 @@ export function initViewport(container: HTMLElement): {
 /** Fired after every mesh update with the displayed mesh, so the host can keep
  *  a live readout (e.g. triangle count) in sync without hooking every call site. */
 let onMeshUpdate: ((mesh: MeshData) => void) | null = null;
+// The MeshData the live solid geometry was built from (null when cleared) —
+// read by layers that edit that geometry in place (hiddenTriangles.ts).
+let displayedMesh: MeshData | null = null;
+
+/** The mesh currently drawn in the viewport, or null when it's empty. */
+export function getDisplayedMesh(): MeshData | null {
+  return displayedMesh;
+}
 export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
   onMeshUpdate = fn;
 }
 
 export function clearMesh(): void {
+  displayedMesh = null;
+  updateDimensionLines(new THREE.Box3());
   while (meshGroup.children.length > 0) {
     const child = meshGroup.children[0];
     meshGroup.remove(child);
@@ -637,6 +647,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   }
 
   const geometry = meshGLToBufferGeometry(meshData);
+  displayedMesh = meshData;
   const hasColors = geometry.hasAttribute('color');
 
   const solidMat = buildSolidMaterial(hasColors);
@@ -718,7 +729,9 @@ function frameModelShadow(): void {
  *  mesh group is empty. */
 function frameModel(): void {
   const box = new THREE.Box3().setFromObject(meshGroup);
-  if (box.isEmpty()) return;
+  // An empty model (e.g. a blank object returning Manifold.union([])) leaves
+  // the camera alone, but must drop the previous model's dimension lines.
+  if (box.isEmpty()) { updateDimensionLines(box); return; }
 
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());

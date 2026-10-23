@@ -15,14 +15,15 @@ import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
-import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
+import { getBrepNamespace, setBrepRemovedParts, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
-import { normalizeImportParts, orderTrianglesByPart } from '../../import/importParts';
+import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../import/importParts';
 import type { RegionDescriptor } from '../../color/regions';
 import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
+import { withoutPiecesAt } from '../removePieces';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -312,6 +313,37 @@ export const manifoldJsEngine: Engine = {
     // on every run. See `src/surface/surfaceOps.ts`.
     const surfaceOps: SurfaceOp[] = [];
 
+    // Parts deleted in code via `api.removePart(name)` — what the object list's
+    // part ✕ writes. A later `api.label(shape, name)` for a removed name returns
+    // an empty Manifold, so the part drops out of every union it feeds (and is
+    // never registered, so it doesn't list as a lost part). Order matters: the
+    // removal must run before the label, hence the guard in removePart.
+    const removedParts = new Set<string>();
+    const removePart = (name: unknown): void => {
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error("api.removePart(name): name must be a non-empty string naming an api.label(...) part, e.g. api.removePart('wheel')");
+      }
+      for (const declared of labelRegistry.values()) {
+        if (declared === name) {
+          throw new Error(`api.removePart('${name}') must come before api.label(…, '${name}') — move it to the top of the code.`);
+        }
+      }
+      removedParts.add(name);
+    };
+
+    // Pieces (separate solids) deleted in code via `api.removePiece([x, y, z])`
+    // — what the object list's piece ✕ writes. Applied to the returned model
+    // after the code runs: every separate piece touching one of these points is
+    // dropped. A point (not an index) so the right piece stays removed when
+    // edits elsewhere reorder the pieces.
+    const removedPieces: [number, number, number][] = [];
+    const removePiece = (point: unknown): void => {
+      if (!Array.isArray(point) || point.length !== 3 || point.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error('api.removePiece(point): point must be [x, y, z] — a point on or inside the separate piece to remove.');
+      }
+      removedPieces.push(point as [number, number, number]);
+    };
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const label = (shape: any, name: unknown, options?: unknown): any => {
       if (!shape || typeof shape.asOriginal !== 'function' || typeof shape.add !== 'function') {
@@ -320,6 +352,7 @@ export const manifoldJsEngine: Engine = {
       if (typeof name !== 'string' || name.length === 0) {
         throw new Error('api.label(shape, name): name must be a non-empty string');
       }
+      if (removedParts.has(name)) return Manifold.union([]);
       // Optional { color } — a hex string ('#rrggbb' / '#rgb', same form as a
       // `color` param so `{ color: p.accent }` works) or an [r,g,b] array 0..1.
       if (options !== undefined && options !== null) {
@@ -697,7 +730,20 @@ export const manifoldJsEngine: Engine = {
       if (!parts || parts.names.length === 0) {
         return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts: src.triVerts });
       }
-      const { triVerts, runs } = orderTrianglesByPart(src.triVerts, parts.triPart, parts.names.length);
+      // Parts deleted via api.removePart: drop their triangles and cap the
+      // openings they leave, so the import stays a closed solid.
+      let vertProperties = src.vertProperties;
+      let srcTriVerts = src.triVerts;
+      let triPart = parts.triPart;
+      const removed = new Set<number>();
+      parts.names.forEach((name, i) => { if (removedParts.has(name)) removed.add(i); });
+      if (removed.size > 0) {
+        const cut = removeImportPartTriangles({ numProp: src.numProp, vertProperties, triVerts: srcTriVerts }, triPart, removed);
+        vertProperties = cut.vertProperties;
+        srcTriVerts = cut.triVerts;
+        triPart = cut.triPart;
+      }
+      const { triVerts, runs } = orderTrianglesByPart(srcTriVerts, triPart, parts.names.length);
       const base = Manifold.reserveIDs(runs.length);
       const runIndex = new Uint32Array(runs.length + 1);
       const runOriginalID = new Uint32Array(runs.length);
@@ -712,7 +758,7 @@ export const manifoldJsEngine: Engine = {
         const rgb = color ? parseLabelColor(color) : null;
         if (rgb) labelColors.set(name, rgb);
       });
-      return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts, runIndex, runOriginalID });
+      return Manifold.ofMesh({ numProp: src.numProp, vertProperties, triVerts, runIndex, runOriginalID });
     };
 
     // SDF namespace is constructed per-run because it needs to close over
@@ -803,6 +849,8 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
       label,
       labeledUnion,
+      removePart,
+      removePiece,
       paint,
       surface,
       material,
@@ -872,6 +920,8 @@ export const manifoldJsEngine: Engine = {
 
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
+      // BREP.label honours api.removePart too (Phase C: BREP inside a JS run).
+      setBrepRemovedParts(removedParts);
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
@@ -896,6 +946,14 @@ export const manifoldJsEngine: Engine = {
         };
       }
 
+      // Labels present before api.removePiece drops pieces — a label that lived
+      // only on removed pieces is gone, not "lost", so its colour is dropped too.
+      let labelsBeforePieceRemoval: Map<string, Set<number>> | undefined;
+      if (removedPieces.length > 0) {
+        labelsBeforePieceRemoval = resolveLabelMap(result.getMesh(), labelRegistry);
+        result = withoutPiecesAt(Manifold, result, removedPieces);
+      }
+
       const mesh = result.getMesh();
       // Merge any BREP-side labels that flowed through `BREP.toManifold(...)`
       // calls during this run. Each call queued a `Map<label, Set<triangleId>>`
@@ -906,6 +964,14 @@ export const manifoldJsEngine: Engine = {
       // same label name comes from both BREP and an `api.label` call, the
       // triangle sets union — friendliest answer.
       const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
+      if (labelsBeforePieceRemoval) {
+        for (const [name, before] of labelsBeforePieceRemoval) {
+          if (before.size > 0 && !labelMap?.get(name)?.size) {
+            labelMap?.delete(name);
+            labelColors.delete(name);
+          }
+        }
+      }
       // Fold in any colors declared via `BREP.label(s, name, { color })` in this
       // run (Phase C). An `api.label` color for the same name wins (it's the
       // more direct manifold-side declaration), so only set names not already
@@ -971,6 +1037,7 @@ export const manifoldJsEngine: Engine = {
         paramsSchema: paramCapture.collectSchema(),
       };
     } finally {
+      setBrepRemovedParts(null);
       // Stop tracking, then free every intermediate the run created. The value
       // the user returned (`result`) is spared — its lifecycle belongs to the
       // caller (the worker frees it after extracting the mesh; the sync path in
@@ -1066,3 +1133,4 @@ function resolveLabelMap(
   }
   return out;
 }
+

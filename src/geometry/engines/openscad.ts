@@ -2,6 +2,7 @@ import type { Engine, MeshData, MeshResult, SourceDiagnostic, ValidateResult } f
 import { parseBinarySTLToMeshGL } from './scadToManifold';
 import { parseAmfObjects } from './amfParser';
 import { scanScadLabels } from './scadLabels';
+import { withoutPiecesAt } from '../removePieces';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
@@ -9,11 +10,15 @@ import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoad
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { parseScadParams, buildScadDefines } from '../scadParams';
 
-/** Tiny passthrough module pre-injected into every SCAD compile so user code
- *  can write `label("name") <expr>;` without breaking. Duplicate declarations
+/** Tiny passthrough modules pre-injected into every SCAD compile so user code
+ *  can write `label("name") <expr>;` — and the object list's ✕ can write
+ *  `remove_part("name");` / `remove_piece([x, y, z]);` — without breaking.
+ *  The removal modules emit nothing; the engine reads those statements from
+ *  the source scan and applies them after compiling. Duplicate declarations
  *  are silent in OpenSCAD, so this is safe even if the user includes their
- *  own copy (e.g. when sharing the file across editors). */
-const LABEL_MODULE_PREFIX = 'module label(name) { children(); }\n';
+ *  own copy (e.g. when sharing the file across editors). Kept on ONE line —
+ *  see LABEL_PREFIX_LINES. */
+const LABEL_MODULE_PREFIX = 'module label(name) { children(); } module remove_part(name) {} module remove_piece(point) {}\n';
 
 /** Line count of {@link LABEL_MODULE_PREFIX}. OpenSCAD's stderr reports line
  *  numbers against the file it actually compiled, so we subtract this from
@@ -263,7 +268,9 @@ async function runScadInner(
   // Phase 1: fast preview pass — run at reduced $fn so the user sees geometry
   // quickly while the full-quality pass builds in the background. Only runs
   // when the active quality setting meaningfully exceeds the preview threshold.
-  if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN) {
+  // Skipped when the source removes parts: the flat preview can't drop them, so
+  // a deleted part would flash back in before the full render.
+  if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN && labelScan.removedParts.length === 0) {
     try {
       // Cap explicit $fn=N assignments so sources that hard-code a high value
       // (e.g. $fn=90) compile at preview resolution. Only ever *lower* the
@@ -275,7 +282,7 @@ async function runScadInner(
         if (sourceUsesBosl2(source)) await ensureBosl2InMemfs(pi);
         writeCompanionFilesToMemfs(pi, companionFiles);
         pi.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + previewSrc);
-        const pr = await runFlatStlAsync(pi, previewSrc, ps, defines, SCAD_PREVIEW_FN);
+        const pr = await runFlatStlAsync(pi, previewSrc, ps, defines, labelScan.removedPieces, SCAD_PREVIEW_FN);
         if (pr.mesh) onPreview(pr);
       } catch { /* preview failure is non-fatal; full render continues */ }
     } catch { /* instance creation failure is non-fatal for preview */ }
@@ -326,7 +333,7 @@ async function runScadInner(
 
     // Fast path: no labels in source → single STL compile, single Manifold.
     // Functionally identical to the pre-label-support pipeline.
-    return runFlatStlAsync(instance, source, stderr, defines);
+    return runFlatStlAsync(instance, source, stderr, defines, labelScan.removedPieces);
   } catch (e: unknown) {
     let msg: string;
     if (typeof e === 'number' && instance?.formatException) {
@@ -353,6 +360,7 @@ async function runFlatStlAsync(
   source: string,
   stderr: string[],
   defines: string[],
+  removedPieces: [number, number, number][],
   fnOverride?: number,
 ): Promise<MeshResult> {
   // Seed $fn from the user's quality preset (or the explicit override for the
@@ -399,6 +407,7 @@ async function runFlatStlAsync(
     // Non-manifold SCAD output — still render raw mesh.
     return { mesh, manifold: null, error: null };
   }
+  if (removedPieces.length > 0) manifold = withoutPiecesAt(module.Manifold, manifold, removedPieces);
 
   return { mesh: canonicalMeshOf(manifold), manifold, error: null };
 }
@@ -471,7 +480,10 @@ async function runLabelAwareAsync(
   // array — the same provenance channel manifold-js labels ride on.
   const labelRegistry = new Map<number, string>();
   const originals: any[] = [];
+  const removedParts = new Set(labelScan.removedParts);
   for (let i = 0; i < objects.length; i++) {
+    // A `remove_part("name")` statement drops that labelled object entirely.
+    if (names[i] && removedParts.has(names[i] as string)) continue;
     let m: any;
     try {
       m = module.Manifold.ofMesh(objects[i]);
@@ -496,22 +508,39 @@ async function runLabelAwareAsync(
   }
 
   if (originals.length === 0) {
+    // Every object was a removed part — an empty model, not an error.
+    if (removedParts.size > 0) {
+      const empty = module.Manifold.union([]);
+      return { mesh: canonicalMeshOf(empty), manifold: empty, error: null };
+    }
     const error = `OpenSCAD output contained no manifold components.\n${shiftErrorLines(formatStderr(stderr))}`;
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
   }
 
   // Manifold.compose([single]) is a no-op identity, so guard the common case.
-  const composed = originals.length === 1
+  let composed = originals.length === 1
     ? originals[0]
     : module.Manifold.compose(originals);
+  // `remove_piece([x, y, z])` drops the separate pieces touching those points;
+  // a label that lived only on them goes with them (not reported as lost).
+  const piecesRemovedFrom = new Set<string>();
+  if (labelScan.removedPieces.length > 0) {
+    const before = resolveLabelMap(canonicalMeshOf(composed), labelRegistry);
+    composed = withoutPiecesAt(module.Manifold, composed, labelScan.removedPieces);
+    if (before) for (const k of before.keys()) piecesRemovedFrom.add(k);
+  }
 
   const canonical = canonicalMeshOf(composed);
   const labelMap = resolveLabelMap(canonical, labelRegistry);
+  for (const k of piecesRemovedFrom) if (!labelMap?.get(k)?.size) labelMap?.delete(k);
   // Diff what the scanner SAW in source against what made it into labelMap.
   // De-dupe and drop names the labelMap delivered so paintByLabel actually
   // works on them. The leftovers are "the user wrote it but can't paint it."
+  // Parts the user removed (by part or by piece) aren't "lost" either.
   const seen = new Set(labelScan.allLiteralLabelNames);
   if (labelMap) for (const k of labelMap.keys()) seen.delete(k);
+  for (const k of removedParts) seen.delete(k);
+  for (const k of piecesRemovedFrom) seen.delete(k);
   const lostLabels = seen.size > 0 ? [...seen] : undefined;
   // Surface a parse-time WARNING as a diagnostic when label() appeared
   // inside a `{ ... }` block. The compile likely succeeded — those

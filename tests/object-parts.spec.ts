@@ -90,6 +90,146 @@ test.describe('Objects rail — parts and pieces', () => {
     await expect(rail.locator('[data-object-part="piece:1"]')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('deletes a part and a piece from the list by writing them into the code', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.goto('/editor');
+    await waitForEngine(page);
+    type PW = {
+      createSession(n: string): Promise<unknown>;
+      runAndSave(c: string, l: string): Promise<unknown>;
+      getCode(): string;
+      listVersions(): Promise<{ label: string }[]>;
+      listObjectParts(): { parts: { name: string }[]; pieces: unknown[]; lostParts: string[] };
+      deleteObjectPart(t: unknown): Promise<{ ok?: boolean; error?: string }>;
+    };
+    await page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('Mug delete');
+      await pw.runAndSave(code, 'mug');
+    }, MUG);
+
+    const section = page.locator('#parts-rail #object-parts');
+    const dialog = page.getByRole('dialog');
+
+    // Part ✕ → confirm → the handle is gone, the rest stays, and the code says why.
+    const handleRow = section.locator('[data-object-part="part:handle"]');
+    await handleRow.hover();
+    await section.locator('[data-delete-object-part="part:handle"]').click();
+    await expect(dialog).toContainText('api.removePart("handle")');
+    await dialog.getByRole('button', { name: 'Delete' }).click();
+    await expect(section.locator('[data-object-part="part:handle"]')).toHaveCount(0);
+    await expect(section.locator('[data-object-part="part:body"]')).toBeVisible();
+    const labels = () => page.evaluate(async () =>
+      (await (window as unknown as { partwright: PW }).partwright.listVersions()).map(v => v.label));
+    await expect.poll(labels).toContain('delete part "handle"');
+
+    let state = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      return { code: pw.getCode(), versions: (await pw.listVersions()).map(v => v.label), listed: pw.listObjectParts() };
+    });
+    expect(state.code.split('\n')[0]).toBe('api.removePart("handle");');
+    expect(state.versions).toContain('delete part "handle"');
+    expect(state.listed.parts.map(p => p.name)).toEqual(['body', 'rim', 'inside', 'coaster']);
+    expect(state.listed.lostParts).toEqual([]);
+
+    // Piece ✕ → the separate coaster goes, and its label goes with it (not "lost").
+    await section.locator('[data-object-part="piece:1"]').hover();
+    await section.locator('[data-delete-object-part="piece:1"]').click();
+    await dialog.getByRole('button', { name: 'Delete' }).click();
+    await expect(section).not.toContainText('Pieces');
+    await expect.poll(labels).toContain('delete piece 2');
+    state = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      return { code: pw.getCode(), versions: (await pw.listVersions()).map(v => v.label), listed: pw.listObjectParts() };
+    });
+    expect(state.code).toMatch(/^api\.removePiece\(\[-?[\d.]+, -?[\d.]+, -?[\d.]+\]\);$/m);
+    expect(state.listed.pieces).toHaveLength(1);
+    expect(state.listed.parts.map(p => p.name)).toEqual(['body', 'rim', 'inside']);
+    expect(state.listed.lostParts).toEqual([]);
+    await page.mouse.move(1100, 900);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: 'test-results/object-parts-deleted.png' });
+
+    // The console twin: unknown names and single-piece objects are refused.
+    const bad = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      return [await pw.deleteObjectPart('nope'), await pw.deleteObjectPart({ piece: 0 }), await pw.deleteObjectPart('rim')];
+    });
+    expect(bad[0].error).toContain('No part named "nope"');
+    expect(bad[1].error).toContain('single piece');
+    expect(bad[2].ok).toBe(true);
+  });
+
+  test('hides a part and a piece in the viewport without touching the code', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.goto('/editor');
+    await waitForEngine(page);
+    type PW = {
+      createSession(n: string): Promise<unknown>;
+      runAndSave(c: string, l: string): Promise<unknown>;
+      run(): Promise<unknown>;
+      getCode(): string;
+      listObjectParts(): { parts: { name: string; hidden?: boolean }[]; pieces: { hidden?: boolean }[] };
+      setObjectPartHidden(t: unknown, h?: boolean): { ok?: boolean; hidden?: string[]; error?: string };
+    };
+    await page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('Mug hide');
+      await pw.runAndSave(code, 'mug');
+    }, MUG);
+
+    const section = page.locator('#parts-rail #object-parts');
+    const codeBefore = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
+    // Triangles the live viewport geometry actually draws (non-degenerate).
+    const drawn = () => page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      const solid = vp.getMeshGroup().children[0] as unknown as { geometry: { index: { array: ArrayLike<number> } | null; attributes: { position: { array: ArrayLike<number>; count: number } } } };
+      const g = solid.geometry;
+      const p = g.attributes.position.array;
+      const n = g.index ? g.index.array.length / 3 : g.attributes.position.count / 3;
+      let c = 0;
+      for (let t = 0; t < n; t++) {
+        const i = g.index ? [g.index.array[t * 3], g.index.array[t * 3 + 1], g.index.array[t * 3 + 2]] : [t * 3, t * 3 + 1, t * 3 + 2];
+        const same = (a: number, b: number) => p[a * 3] === p[b * 3] && p[a * 3 + 1] === p[b * 3 + 1] && p[a * 3 + 2] === p[b * 3 + 2];
+        if (!(same(i[0], i[1]) && same(i[1], i[2]))) c++;
+      }
+      return c;
+    });
+    const all = await drawn();
+
+    // Eye on the handle row → hidden: fewer triangles drawn, row marked, code unchanged.
+    await section.locator('[data-object-part="part:handle"]').hover();
+    await section.locator('[data-hide-object-part="part:handle"]').click();
+    await expect(section.locator('[data-hide-object-part="part:handle"]')).toHaveAttribute('aria-pressed', 'true');
+    const handleHidden = await drawn();
+    expect(handleHidden).toBeLessThan(all);
+    let state = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    expect(state.parts.find(p => p.name === 'handle')?.hidden).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode())).toBe(codeBefore);
+    await page.mouse.move(1100, 900);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: 'test-results/object-parts-hidden.png' });
+
+    // It stays hidden across a re-run.
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.run());
+    await expect.poll(drawn).toBe(handleHidden);
+
+    // The console twin hides a piece too, and shows things again.
+    const r = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setObjectPartHidden({ piece: 1 }));
+    expect(r.hidden).toEqual(['part:handle', 'piece:1']);
+    expect(await drawn()).toBeLessThan(handleHidden);
+    await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      pw.setObjectPartHidden('handle', false);
+      pw.setObjectPartHidden({ piece: 1 }, false);
+    });
+    expect(await drawn()).toBe(all);
+    state = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    expect(state.parts.some(p => p.hidden)).toBe(false);
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setObjectPartHidden('nope'));
+    expect(bad.error).toContain('Unknown part');
+  });
+
   test('collapses, flags lost labels, and lists a second object', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1200 });
     await page.goto('/editor');
