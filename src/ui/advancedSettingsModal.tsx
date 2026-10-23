@@ -971,6 +971,56 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={128} max={2048} integer
           onChange={v => set('import', 'photoMatchRenderSize', v)}
         />
+        <Field
+          label="Photo match: minimum subject height"
+          unit="px"
+          hint="Warn when the photo's subject is shorter than this."
+          tooltip="A reference whose subject is only a couple of hundred pixels tall can't resolve fine outline detail — a one-pixel edge error becomes several percent of the height. Below this size the score adds a warning so agents don't chase noise."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchMinSubjectPx}
+          value={c.import.photoMatchMinSubjectPx}
+          min={0} max={4000} integer
+          onChange={v => set('import', 'photoMatchMinSubjectPx', v)}
+        />
+        <Field
+          label="Photo match: ambiguous-colour threshold"
+          unit="ΔE"
+          hint="Regions whose photo colours are closer than this are low-confidence."
+          tooltip="When two parts look the same colour in the photo (white jersey vs white ball on a dim photo), the photo can't say where one ends and the other begins, so their size/position findings are unreliable. Such regions — and same-coloured parts that touch — are flagged low-confidence and their shape findings suppressed. 0 turns the detection off."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchAmbiguousDeltaE}
+          value={c.import.photoMatchAmbiguousDeltaE}
+          min={0} max={60} step={0.5}
+          onChange={v => set('import', 'photoMatchAmbiguousDeltaE', v)}
+        />
+        <Field
+          label="Photo match: outline threshold"
+          unit="% height"
+          hint="Smallest edge offset the outline diff reports."
+          tooltip="The outline diff lists where the photo's outline sticks out past the model's (photo-only) or the model's past the photo's (model-only), per band and side. Offsets smaller than this percentage of the figure height are ignored."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchOutlineMinPct}
+          value={c.import.photoMatchOutlineMinPct}
+          min={0.1} max={20} step={0.1}
+          onChange={v => set('import', 'photoMatchOutlineMinPct', v)}
+        />
+        <Field
+          label="Photo match: outline lines"
+          unit="lines"
+          hint="Maximum number of outline-diff lines."
+          tooltip="Caps the textual outline diff so the output stays compact; the most severe offsets are kept."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchOutlineMaxLines}
+          value={c.import.photoMatchOutlineMaxLines}
+          min={1} max={40} integer
+          onChange={v => set('import', 'photoMatchOutlineMaxLines', v)}
+        />
+        <Field
+          label="Photo match: busy-background threshold"
+          unit="RGB"
+          hint="Border noise above which the background is treated as busy."
+          tooltip="The photo's backdrop is normally estimated from a ring inside its border. When that ring is so varied (halftone, scenery) that its estimated tolerance reaches this value, the automatic mode switches to a colour-model segmentation (GrabCut-lite) that learns subject vs backdrop colours instead."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBusyBorderTolerance}
+          value={c.import.photoMatchBusyBorderTolerance}
+          min={10} max={255} integer
+          onChange={v => set('import', 'photoMatchBusyBorderTolerance', v)}
+        />
       </Section>
 
       <Section title="Geometry warnings">

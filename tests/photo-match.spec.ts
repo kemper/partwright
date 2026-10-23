@@ -10,9 +10,13 @@ type Match = {
   error?: string;
   silhouetteIoU: number;
   aspect: { ratio: number };
-  bands: { band: number; widthDiffPct: number }[];
-  regions: { name: string; iou: number }[];
+  bands: { band: number; widthDiffPct: number; left: number; right: number }[];
+  regions: { name: string; iou: number; lowConfidence?: string }[];
   worst: string[];
+  outline: string[];
+  minIoU?: number;
+  views?: Match[];
+  label?: string;
   regionNames: string[];
   overlay?: string;
 };
@@ -65,13 +69,43 @@ test.describe('Photo match', () => {
     expect(r.worst.join('\n')).toMatch(/head/);
   });
 
+  test('scores several views in one call, with a finer band profile and merged parts', async () => {
+    const r = await page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.run(code);
+      const front = pw.renderView({ azimuth: 0, elevation: 0, ortho: true, size: 600, edges: 'none' })!;
+      const back = pw.renderView({ azimuth: 180, elevation: 0, ortho: true, size: 600, edges: 'none' })!;
+      return pw.photoMatch({
+        views: [{ image: front, azimuth: 0, elevation: 0, label: 'front' }, { image: back, azimuth: 180, elevation: 0, label: 'back' }],
+        bands: 20, merge: [['body', 'head']],
+      });
+    }, FIGURE(12));
+    expect(r.error).toBeUndefined();
+    expect(r.silhouetteIoU).toBeGreaterThan(0.95);
+    expect(r.minIoU).toBeGreaterThan(0.93);
+    expect(r.views!.map((v) => v.label)).toEqual(['front', 'back']);
+    for (const v of r.views!) {
+      expect(v.bands).toHaveLength(20);
+      for (const b of v.bands) expect(Math.abs(b.left) + Math.abs(b.right)).toBeLessThan(6);
+      expect(Array.isArray(v.outline)).toBe(true);
+      expect(v.regions.map((x) => x.name)).toEqual(['body+head']);
+    }
+  });
+
   test('validates its arguments', async () => {
     const r = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
+      const img = 'data:image/png;base64,AAAA';
       return [
         await pw.photoMatch({ bogus: 1 }),
         await pw.photoMatch({ image: 'not-an-attachment' }),
-        await pw.photoMatch({ image: 'data:image/png;base64,AAAA', fit: 'wide' }),
+        await pw.photoMatch({ image: img, fit: 'wide' }),
+        await pw.photoMatch({ image: img, bands: 1 }),
+        await pw.photoMatch({ image: img, bgMode: 'magic' }),
+        await pw.photoMatch({ image: img, merge: ['a'] }),
+        await pw.photoMatch({ image: img, views: [{ image: img }] }),
+        await pw.photoMatch({ views: [] }),
+        await pw.photoMatch({ views: [{ image: img, bogus: 1 }] }),
       ];
     });
     for (const x of r) expect(typeof x.error).toBe('string');

@@ -286,6 +286,22 @@ export interface AppConfig {
     /** Photo match: size (px) of the flat model render compared against the
      *  photo. */
     photoMatchRenderSize: number;
+    /** Photo match: warn when the photo's subject is shorter than this
+     *  (original photo pixels) — too small to judge fine outline detail. */
+    photoMatchMinSubjectPx: number;
+    /** Photo match: regions whose photo colours converge closer than this ΔE
+     *  (or that share a model colour and touch) are flagged low-confidence and
+     *  their shape findings suppressed. 0 disables the auto-detection. */
+    photoMatchAmbiguousDeltaE: number;
+    /** Photo match: outline-diff offsets below this (% of figure height) are
+     *  not reported. */
+    photoMatchOutlineMinPct: number;
+    /** Photo match: maximum number of outline-diff lines. */
+    photoMatchOutlineMaxLines: number;
+    /** Photo match: in auto background mode, a border whose estimated
+     *  tolerance reaches this RGB distance counts as busy and switches to the
+     *  colour-model (GrabCut-lite) segmentation. */
+    photoMatchBusyBorderTolerance: number;
   };
   ui: {
     /** How long toast notifications stay on screen (ms). */
@@ -542,6 +558,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     photoMatchColorShiftWarn: 30,
     photoMatchMaxRegionDistance: 0.12,
     photoMatchRenderSize: 512,
+    photoMatchMinSubjectPx: 300,
+    photoMatchAmbiguousDeltaE: 12,
+    photoMatchOutlineMinPct: 1.5,
+    photoMatchOutlineMaxLines: 8,
+    photoMatchBusyBorderTolerance: 75,
   },
   ui: {
     toastDurationMs: 2200,

@@ -15,10 +15,18 @@
 // `public/catalog/palettes/<base-without-figure_>.json`. `--no-palette` disables.
 //
 // PHOTO MATCH: `--match-photo ref.png [--match-crop x,y,w,h] [--match-bg #hex]
-// [--match-bg-tol N] [--match-exclude base] [--match-fit box] [--match-pixel-aspect R]
-// [--match-overlay o.png]` renders the model flat from the first --view angle
-// (default: front) and adds a text-only likeness score under
-// `stats.photoMatch` (silhouette IoU, per-band widths, per-region fit, worst[]).
+// [--match-bg-tol N] [--match-bg-mode auto|border|grabcut] [--match-mask m.png]
+// [--match-exclude base] [--match-merge a+b+c] [--match-ignore x,y] [--match-bands N]
+// [--match-fit box] [--match-pixel-aspect R] [--match-overlay o.png]` renders the
+// model flat from the first --view angle (default: front) and adds a text-only
+// likeness score under `stats.photoMatch` (silhouette IoU, per-band widths and
+// edge offsets, outline[] diff, per-region fit, worst[]).
+// MULTI-VIEW: repeat --match-photo with a camera suffix —
+// `--match-photo front.png@0,0 --match-photo back.png@180,0` (or `@back`) — to
+// score every view from ONE model build: `stats.photoMatches[]` holds each
+// view, `stats.photoMatch` the combined summary (mean silhouetteIoU, minIoU,
+// interleaved worst[]). --match-crop/--match-bg/--match-mask may be given once
+// (all photos; mask: single photo only) or once per photo, in order.
 // Same scorer as the browser's partwright.photoMatch (src/tools/photoMatch.ts).
 //
 // This is a thin back-compat wrapper: the implementation now lives in
@@ -28,7 +36,7 @@ import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runPreview, createPreviewSession, composePng, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
-import { runPhotoMatch, parseCrop } from './cli/photoMatch.mjs';
+import { runPhotoMatch, parseCrop, parsePhotoSpec, parseMergeGroups, pairPerView, indexedPath } from './cli/photoMatch.mjs';
 import { NAMED_VIEWS } from './cli/views.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,7 +64,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: null, matchCrop: null, matchBg: null, matchBgTol: null, matchExclude: null, matchFit: null, matchOverlay: null, matchPixelAspect: null };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: [], matchCrop: [], matchBg: [], matchMask: [], matchBgTol: null, matchBgMode: null, matchExclude: null, matchMerge: [], matchIgnore: null, matchBands: null, matchFit: null, matchOverlay: null, matchPixelAspect: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -70,11 +78,16 @@ function parseArgs(argv) {
     else if (t === '--require-labels') a.requireLabels = argv[++i];
     else if (t === '--palette-file') a.paletteFile = argv[++i];
     else if (t === '--no-palette') a.noPalette = true;
-    else if (t === '--match-photo') a.matchPhoto = argv[++i];
-    else if (t === '--match-crop') a.matchCrop = argv[++i];
-    else if (t === '--match-bg') a.matchBg = argv[++i];
+    else if (t === '--match-photo') a.matchPhoto.push(argv[++i]);
+    else if (t === '--match-crop') a.matchCrop.push(argv[++i]);
+    else if (t === '--match-bg') a.matchBg.push(argv[++i]);
+    else if (t === '--match-mask') a.matchMask.push(argv[++i]);
     else if (t === '--match-bg-tol') a.matchBgTol = Number(argv[++i]);
+    else if (t === '--match-bg-mode') a.matchBgMode = argv[++i];
     else if (t === '--match-exclude') a.matchExclude = argv[++i];
+    else if (t === '--match-merge') a.matchMerge.push(argv[++i]);
+    else if (t === '--match-ignore') a.matchIgnore = argv[++i];
+    else if (t === '--match-bands') a.matchBands = Number(argv[++i]);
     else if (t === '--match-fit') a.matchFit = argv[++i];
     else if (t === '--match-overlay') a.matchOverlay = argv[++i];
     else if (t === '--match-pixel-aspect') a.matchPixelAspect = Number(argv[++i]);
@@ -87,31 +100,55 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v] [--match-photo ref.png [--match-crop x,y,w,h] [--match-bg #rrggbb] [--match-bg-tol N] [--match-exclude base,…] [--match-fit height|box] [--match-pixel-aspect R] [--match-overlay out.png]]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v] [--match-photo ref.png[@az,el|@view] (repeatable) [--match-crop x,y,w,h] [--match-bg #rrggbb] [--match-bg-tol N] [--match-bg-mode auto|border|grabcut] [--match-mask mask.png] [--match-exclude base,…] [--match-merge a+b+c] [--match-ignore x,…] [--match-bands N] [--match-fit height|box] [--match-pixel-aspect R] [--match-overlay out.png]]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
   const palette = resolvePalette(file, a.paletteFile, a.noPalette);
-  const { crop: matchCrop, error: cropErr } = parseCrop(a.matchCrop);
-  if (cropErr) { console.error(cropErr); process.exit(2); }
+  const fail = (msg) => { console.error(msg); process.exit(2); };
+  // Photo-match views: each --match-photo (optionally path@az,el / path@view)
+  // paired with its crop / bg / mask; the camera defaults to the i-th --view
+  // angle, else the first, else front.
+  const matchViews = [];
+  if (a.matchPhoto.length) {
+    const n = a.matchPhoto.length;
+    const crops = pairPerView(a.matchCrop, n, '--match-crop'); if (crops.error) fail(crops.error);
+    const bgs = pairPerView(a.matchBg, n, '--match-bg'); if (bgs.error) fail(bgs.error);
+    const masks = pairPerView(a.matchMask, n, '--match-mask', false); if (masks.error) fail(masks.error);
+    for (let i = 0; i < n; i++) {
+      const spec = parsePhotoSpec(a.matchPhoto[i]); if (spec.error) fail(spec.error);
+      const { crop, error: cropErr } = parseCrop(crops.values[i]); if (cropErr) fail(cropErr);
+      const view = spec.view ?? (views ? views[Math.min(i, views.length - 1)] : { name: 'front', ...NAMED_VIEWS.front });
+      matchViews.push({
+        photo: resolve(spec.path), view, crop, bg: bgs.values[i],
+        mask: masks.values[i] ? resolve(masks.values[i]) : null,
+        debugPng: a.matchOverlay ? indexedPath(resolve(a.matchOverlay), i) : null,
+      });
+    }
+  }
   if (a.matchBgTol !== null && !Number.isFinite(a.matchBgTol)) { console.error('--match-bg-tol expects a number.'); process.exit(2); }
+  if (a.matchBgMode !== null && !['auto', 'border', 'grabcut'].includes(a.matchBgMode)) fail('--match-bg-mode expects "auto", "border" or "grabcut".');
+  if (a.matchBands !== null && !(Number.isInteger(a.matchBands) && a.matchBands >= 2 && a.matchBands <= 60)) fail('--match-bands expects an integer 2–60.');
   if (a.matchPixelAspect !== null && !(a.matchPixelAspect > 0)) { console.error('--match-pixel-aspect expects a positive number.'); process.exit(2); }
   if (a.matchFit !== null && a.matchFit !== 'height' && a.matchFit !== 'box') { console.error('--match-fit expects "height" or "box".'); process.exit(2); }
   let result;
-  if (a.matchPhoto) {
+  if (matchViews.length) {
     // Keep the SSR session open past the preview so the photo-match scorer can
-    // load through it (one server boot for both).
+    // load through it (one server boot, one model build, every view).
     const session = await createPreviewSession();
     try {
       result = await session.preview(readFileSync(file, 'utf8'), { params: a.params, lang: a.lang, palette });
       if (result.ok && result.render) {
-        // Camera: the first --view/--views angle, else the named front view.
-        const view = views ? views[0] : { name: 'front', ...NAMED_VIEWS.front };
-        result.stats.photoMatch = await runPhotoMatch(session, result.render, {
-          photo: resolve(a.matchPhoto), crop: matchCrop, bg: a.matchBg, bgTolerance: a.matchBgTol,
-          exclude: a.matchExclude ? a.matchExclude.split(',').map((s) => s.trim()).filter(Boolean) : [],
-          view, fit: a.matchFit, pixelAspect: a.matchPixelAspect, debugPng: a.matchOverlay ? resolve(a.matchOverlay) : null,
+        const list = (s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []);
+        const { results, combined } = await runPhotoMatch(session, result.render, {
+          views: matchViews, bgTolerance: a.matchBgTol, bgMode: a.matchBgMode ?? 'auto',
+          exclude: list(a.matchExclude), merge: parseMergeGroups(a.matchMerge), ignore: list(a.matchIgnore),
+          bands: a.matchBands, fit: a.matchFit, pixelAspect: a.matchPixelAspect,
         });
+        // One photo: the per-view result (unchanged shape). Several: the
+        // combined summary here + every view under photoMatches[].
+        if (combined) { result.stats.photoMatch = combined; result.stats.photoMatches = results; }
+        else result.stats.photoMatch = results[0];
       }
     } finally {
       await session.close();
