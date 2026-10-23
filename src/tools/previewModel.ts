@@ -79,6 +79,11 @@ export interface PreviewRender {
   triVerts: Uint32Array;   // length numTri*3
   triColors: Uint8Array | null; // rgb per triangle, length numTri*3
   bbox: { min: number[]; max: number[] } | null;
+  /** Per-triangle index into `labelNames` (-1 = no label), or null when the
+   *  model declares no labels. Used by the photo-match render to know which
+   *  region each pixel belongs to, even when labels share a colour. */
+  triLabel?: Int32Array | null;
+  labelNames?: string[];
 }
 
 export interface PreviewResult {
@@ -353,8 +358,19 @@ export async function previewModel(
     ok: true,
     error: null,
     stats,
-    render: { positions, triVerts: mesh.triVerts, triColors, bbox: stats.bbox ? { min: stats.bbox.min, max: stats.bbox.max } : null },
+    render: { positions, triVerts: mesh.triVerts, triColors, bbox: stats.bbox ? { min: stats.bbox.min, max: stats.bbox.max } : null, ...triLabels(r.labelMap, numTri) },
   };
+}
+
+/** Flatten a label → triangle-id map into a per-triangle label index. */
+function triLabels(labelMap: Map<string, Set<number>> | undefined, numTri: number): { triLabel: Int32Array | null; labelNames: string[] } {
+  if (!labelMap || labelMap.size === 0) return { triLabel: null, labelNames: [] };
+  const labelNames = [...labelMap.keys()];
+  const triLabel = new Int32Array(numTri).fill(-1);
+  labelNames.forEach((name, i) => {
+    for (const id of labelMap.get(name)!) if (id >= 0 && id < numTri) triLabel[id] = i;
+  });
+  return { triLabel, labelNames };
 }
 
 function safeNum(fn: () => number): number {

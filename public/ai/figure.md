@@ -21,20 +21,83 @@ It is not a photoreal-human generator — lean into the clean, simplified look.
 
 ## Shortcut: `buildCharacter(spec)` / the 🧍 Character panel
 
-For a **standard humanoid** (body proportions, pose, face, hair, clothing,
-colours) you don't have to hand-write the recipe below — there's a no-code
-**Character Creator** panel (Tools ▸ 🧍 Character, or the command palette) whose
-console twin is `partwright.buildCharacter(spec, { save })`. It generates exactly
-the kind of code shown below from a plain spec object and (with `save: true`)
-commits a version. The spec mirrors this API: `{ body:{height, headsTall, build,
-sex, age, weight, muscle, bust, belly}, pose:{preset, armL/armR/legL/legR:{raiseSide,
-raiseFwd, bend, twist}, spine, head}, face:{shape, lids, gaze, nose, expression,
-lipShape, ears, brows}, hair:{style, length, volume}, clothing:{top, pants, feet},
-colors:{…}, base }` — every field falls back to a sensible default, so a partial
-patch works (`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
-The generated code embeds the spec as a `// @character` header so the panel can
-re-open it. Reach for the **hand-written recipe below** when you need anything
-the spec doesn't cover (props, accessories, custom geometry, multi-figure scenes).
+For a **standard humanoid or vinyl/chibi toy** (body proportions, pose, face,
+hair, clothing, colours, a held ball) you don't have to hand-write the recipe
+below — there's a no-code **Character Creator** panel (Tools ▸ 🧍 Character, or
+the command palette) whose console twin is `partwright.buildCharacter(spec, { save })`
+(in-app AI tool: `buildCharacter`). It generates exactly the kind of code shown
+below from a plain spec object and (with `save: true`) commits a version. Every
+field is validated — a bad one comes back in `{ error }` with its path — and
+every field falls back to a sensible default, so a partial patch works
+(`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
+
+The spec (v2) mirrors this API:
+
+```js
+{
+  body: { height, headsTall, build, sex, age, weight, muscle, bust, belly,
+          proportions: 'realistic' | 'chibi' | 'funko',   // rig({ proportions }); realistic = none
+          headScale: null | number | { x, y, z } },        // null = the style's default
+  pose: { preset, armL, armR, legL, legR: { raiseSide, raiseFwd, bend, twist }, spine, head,
+          hold: { kind: 'none' | 'ball', radius, cup: 'sides' | 'under', color } }, // color = ball panels
+  face: { shape, lids, gaze, nose, expression, lipShape, ears, brows,
+          layout: { eyeSpread: null | 0.5–2, eyeHeight: null | −0.6–0.6 },
+          eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */ },
+  hair: { style /* … | 'mop' | 'anime' | 'shag' */, length, volume,
+          lockShape, swoop /* anime only */, chunk, spike /* anime + shag */,
+          crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare /* shag only */,
+          fringe, seed /* mop + anime + shag */ },
+  clothing: { top: { on, sleeve, length }, pants: { on, leg, rise, length }, feet: { on, kind } },
+  colors: { skin, eyes, iris, pupil, lips, brows, hair, top, pants, feet, base, ball },
+  base: true,
+  place: true,   // finish with F.place(model, rig, { face: '+X' }) — bottom at z = 0, facing +X
+}
+```
+
+`body.proportions` switches the body plan (in the panel, **Style** also applies
+fitting defaults: `funko` = `headsTall 3`, `build 'slim'`, bead-black eyes at
+`eyeSize 1.8`, no mouth, no lids, arched brows). `pose.hold.kind: 'ball'`
+solves both arms onto the ball (`armL`/`armR` are ignored), opens the hands, adds
+`F.heldSphere(rig)` labelled `ball`, and paints it with
+`api.paint.pattern({ pattern: 'soccer', withinPart: 'ball', colors: [colors.ball, hold.color] })`.
+The generated code embeds the spec as a `// @character v2 {json}` header so the
+panel can re-open it; `partwright.getCharacterSpec()` (AI tool
+`getCharacterSpec`) reads it back as `{ spec }` so you can tweak a field and
+rebuild. A `@character v1` header (or a spec object with `version: 1`) migrates
+with defaults that regenerate its original code — including `place: false`
+(the legacy builder frame: −Y front, soles at z = 0).
+
+Reach for the **hand-written recipe below** when you need anything the spec
+doesn't cover (props other than a ball, accessories, printed numbers/logos,
+trims and two-tone garments, custom shoes, multi-figure scenes).
+
+### Figure from a photo — fill a spec, don't write code
+
+Picking ~30 parameters costs far fewer tokens than writing, running and
+debugging 100+ lines of figure code — and every spec build is valid,
+manifold and painted by construction, so no turn is lost to a syntax error,
+a buried eye or a missing label. A Funko soccer player that took ≈5.7 k
+characters of hand-written code is a ≈0.9 k-character spec that scores within
+a few points of it on `photoMatch`. The loop:
+
+1. **View the photo once.** Note style (realistic / chibi / Funko), hair,
+   clothing, colours and anything held.
+2. **Fill in a CharacterSpec** — `proportions`, `headScale`, hair `style`
+   (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`
+   for a shaggy layered jet-black mop), sleeves / shorts (`pants.length:
+   'briefs'`) / footwear, `colors` sampled from the photo, `pose.hold` for a ball.
+3. **Call `buildCharacter(spec)`** (it saves a version; the code is not echoed).
+4. **Score with `photoMatch`** — text only (`exclude: ['base']`, the photo's
+   camera; a placed figure faces +X, so azimuth 0 is the front, 180 the back).
+5. **Adjust spec fields from `worst[]`** — "hair 29% shorter" → `hair.length`,
+   "feet region smaller" → `feet.kind: 'boots'` / legs apart, "ball region
+   larger" → `hold.radius`, a colour mismatch → that `colors` entry.
+   `getCharacterSpec()` returns the current spec to edit.
+6. **Repeat**, looking at an image (`renderView`) only at checkpoints — every
+   3–5 builds, and before finishing.
+7. **Drop to hand-written code only for what the spec can't express** (numbers,
+   logos, collar/cuff trims, custom shoes): `getCode()` gives the generated
+   figure code to extend — it stays ordinary, editable `api.sdf.figure` code.
 
 ## The one pattern
 
@@ -121,7 +184,11 @@ F.rig({
   muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   bust,        // 0..2 chest mound (default 0; sex:'female' pre-fills ~0.35). Independent of sex.
   belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
+  headScale,   // number or {x,y,z} (0.3..4, default 1) — enlarge the HEAD only (toys, chibis). See below.
+  proportions, // 'funko' | 'chibi' — toy body-plan presets (defaults for headsTall/build/headScale/faceLayout). See below.
+  faceLayout,  // { eyeSpread (default 1), eyeHeight (default 0, × head half-height) } — slide the eyes.
   pose: {      // all optional; neutral standing defaults
+    hold,       // { sphere: { radius, center? }, cup: 'sides'|'under', height? } — both hands on a ball (solves the arms)
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist, palm | thumb }   degrees — override per side
     legL, legR, // { raiseSide, raiseFwd, bend, twist }   degrees
@@ -307,6 +374,55 @@ The rig exposes (read-only, for custom parts):
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
 so a `stocky` figure's `rig.r.upperArm` is 1.22× the average; size custom
 accessories off `rig.r.*` and they track the build automatically.
+
+> **Toy heads — `headScale`, `proportions`, `faceLayout`.**
+> - **`headScale`** (a number, or `{x, y, z}` = width / depth / height in the head
+>   frame) grows the head **up from the chin**: crown, `r.head/headX/headZ` and
+>   every `rig.face` anchor scale with it, so `F.head`, `F.face.*`, `F.faceDetail`,
+>   `F.hair`, the neck blend and `F.placeOnHead` all follow — never mutate
+>   `rig.r` / `rig.face` by hand. **`height` stays the TOTAL crown height**: the
+>   body below the chin shrinks to make room (`{height:100, headScale:1.7}` is still
+>   100 tall). The body's girth does *not* grow with the head.
+> - **`proportions: 'funko'`** = `headsTall: 3`, `build: 'slim'`,
+>   `headScale: {x: 2.5, y: 1.8, z: 1.7}` (head ≈ 45% of the height, ~1.3× wider
+>   than tall), `faceLayout: {eyeSpread: 1.25, eyeHeight: -0.35}`, plus limb radii
+>   ×0.82–0.9 (chest ×0.95) and feet ×1.15. **`'chibi'`** = `headsTall: 3`,
+>   `build: 'average'`, `headScale: {x: 1.4, y: 1.25, z: 1.25}` (head ≈ 38%),
+>   `faceLayout: {eyeSpread: 1.1, eyeHeight: -0.12}`, feet ×1.1. Any explicit
+>   `headsTall` / `build` / `headScale` / `faceLayout` on the same call wins.
+> - **`faceLayout`** — `eyeSpread` multiplies the eyes' (and brows') lateral
+>   offset; `eyeHeight` moves the eyes along head-up (× head half-height; negative
+>   = lower). Brows, nose and mouth follow at 60% of `eyeHeight`, so the eye→nose
+>   gap stays readable and the mouth never lands on the chin.
+>
+> **Two-hand ball hold — `pose.hold`.** `pose: { hold: { sphere: { radius: 12 },
+> cup: 'sides' } }` solves BOTH arms (shoulder, elbow, twist + wrist roll — a
+> deterministic IK over the rig's own FK) so each palm rests on the ball:
+> `'sides'` (default) = hands on its lower sides, fingers wrapping forward;
+> `'under'` = cradled from below. `center` defaults to just in front of the torso
+> at belly/chest height (`height` overrides the z). Don't also pass
+> `arms`/`armL`/`armR` (rejected). The result lands on **`rig.hold`**
+> `{ center, radius, cup, contactL, contactR, residual }` (`residual` = worst
+> palm-to-contact gap; ≲10% of `r.hand` is a clean cup) and **`F.heldSphere(rig)`**
+> returns the ball as an SDF sphere to label. Build `F.hands(rig, { grip: 'open' })`
+> (the solve assumes the default hand size).
+>
+> **Floor + facing — `rig.floorZ` / `F.place`.** `rig.floorZ` is the sole bottom
+> (lowest `sole.*.groundZ`; `F.ground` keeps it current). Finish a figure with
+> `return F.place(model, rig, { floor: 0, face: '+X' })` on the **built** mesh
+> (after `.build({ detail })`, so the face-detail regions still line up): it drops
+> the model's true bottom (base or soles; `drop: 'sole'` forces `rig.floorZ`) to
+> `floor` and turns the builder's −Y front to `face` ('-Y' | '+X' | '+Y' | '-X').
+> `height: 113` additionally rescales to that total height — measured to the
+> top of the bounds, so tall crown spikes shrink everything else; pass
+> `heightOf: 'body'` to measure floor → `rig.joints.crown` (the skull top as
+> rigged) instead, so the hair/hat doesn't change the figure's size.
+>
+> **`F.surfacePoint(surface, point, dir, { reach })`** returns the first
+> inside→outside crossing of any SDF node along the line through `point` — seat a
+> custom feature on the REAL built face instead of an `evaluate` loop:
+> `F.surfacePoint(face, rig.face.eyeL, rig.dir.headForward)` is the cheek-bulged
+> face front at the eye (or `null`).
 
 ## Parts — every builder takes `rig` first
 
@@ -1163,6 +1279,16 @@ curvature guess, and the `'brows'` label paints cleanly. (Omit `on` and it falls
 back to a sunk capsule strip positioned by an analytic skull approximation —
 fine for default heads, less robust on unusual proportions.)
 
+The `on` brow **seats on the real surface**: if the welded forehead isn't where
+the rig anchors expect (a `cheek` ≳ 1.2 weld or a `headScale`'d Funko head pushes
+it forward), each brow arc is projected onto the actual surface along
+`headForward`; and a face **translated after building** carries its brows along —
+pass the moved node itself, `on: face.translate(0, 0, dz)` (a translate buried
+inside a weld can't be seen — pass the face, not the weld). If the brow still
+can't reach the `on` surface (wrong node), `F.face.brows` **throws** ("…would
+paint 0 triangles") instead of silently returning a buried, invisible brow. The
+same guard covers `F.nipples(rig, { on })`.
+
 Pick a **`shape`** preset (individual knobs override it):
 
 | `shape` | Look |
@@ -1215,10 +1341,81 @@ Pass `chest: false` to drop the areola spheres on a figure with no bare chest, o
 
 ```js
 F.hair(rig, { style, hairline, length, volume, part, texture, ears })
-//   ears: 'cover' (default, hair over the ears) | 'behind' (tucked behind them,
+//   ears: 'cover' (default, hair over the ears; 'over' is an alias) | 'behind' (tucked behind them,
 //         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
-//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop' | 'anime' | 'shag'
+//   'mop' — shaggy anime / vinyl-toy hair: a cap hugging the real head (pass
+//     `on: head`, your F.head node, for a non-default faceShape) + N irregular
+//     tapered locks: a zig-zag fringe ending just above the brows, sideburns and
+//     outward side flicks, a shaggy mid layer, layered nape locks and crown
+//     tufts — no bald temple strip. Extra keys (mop only):
+//     { locks: 8..64 (28), spread: 0..3 (1, how far tips lift/lean), seed (1 —
+//       same seed ⇒ identical hair), flick: 0..3 (1, side flicks outward),
+//       fringe: 0..1.5 (1 = to the brows; lower = shorter), on: headNode }
+//     `length` drops the nape locks; `volume` thickens cap + locks.
+//   'anime' — the classic anime / vinyl-toy mop (Funko hair): a THIN cap
+//     hugging the real (headScale'd) skull, trimmed by a tilted hairline plane
+//     (high at the face, low at the nape) with an arched face window, plus a
+//     FEW big, flat RIBBON locks that lie on the skull and come to sharp
+//     points: 4–6 broad fringe locks sweeping sideways over the forehead and
+//     overlapping like shingles, per side a sideburn curving forward to a point
+//     at cheek level + an over-the-ear lock + a temple flare kicking out, 3–5
+//     crown locks running back over the top and flicking up, and layered back
+//     locks pointing down to the nape. Pass `on: head`.
+//     Extra keys: { locks: 8..40 (14 ≈ 16 visible locks), seed (1), on: headNode,
+//       fringe: 0..1.5 (1 = tips just above the brows; lower = shorter),
+//       spike: 0..3 (1, how far crown locks flick up), swoop: −1..3 (1, how
+//       far the fringe sweeps sideways; 0 = straight down),
+//       lockShape: 'ribbon' (default — flat lens-section locks ~3:1 wide:thick,
+//         wide axis tangent to the skull) | 'tube' (round tapered tubes, same layout),
+//       chunk: 0.4..2.5 (1, lock width multiplier) }
+//     `length` drops sideburns/nape; `volume` widens the crown + thickens locks.
+//     Locks are hard-unioned and welded into the cap once (small smooth blend,
+//     no root seams).
+//   'shag' — a shaggy LAYERED vinyl-toy mop (the jet-black spiky-mop look): the
+//     anime cap + many MEDIUM ribbon locks — an uneven, messy fringe (seeded
+//     length / lean / width per lock, added last with a tight blend so its points stay crisp),
+//     up to 3 overlapping layers over the sides + back each hanging lower than
+//     the last to a jittered ragged hem, a temple "flare" mop mass above the
+//     ears, and a crown. Side/back tails keep a chunky tip (no stringy points).
+//     Pass `on: head`. Extra keys:
+//     { crown: 'spiky' (default — 5 sharp spikes fanning back + 2 flicking up
+//         at the sides) | 'tousled' (7 small random crown locks),
+//       spike: 0..3 (1, crown-spike lift), layers: 1..3 (3, integer — 1 = the
+//         high side layer only, 2 + the ear-level layer, 3 + the nape layer),
+//       locks: 0.5..2 (1, lock DENSITY multiplier — not a count here),
+//       fringe: 0..1.5 (1 = tips just above the brows; lower = shorter),
+//       raggedness: 0..2 (1, jitter of lock length / lean / hem; 0 = tidy),
+//       flare: 0..3 (1, mop mass above the ears — widens the head at temple
+//         height; 0 = skull-hugging), tipWidth: 0..0.8 (0.4, side/back tail
+//         tip half-width × root width), chunk: 0.4..2.5 (1, lock width),
+//       seed (1 — same seed ⇒ identical hair), on: headNode }
+//     `length` drops the hem; `volume` thickens the cap + locks.
+//     F.hair(rig, { style: 'shag', crown: 'spiky', on: head, seed: 11 })
+//   Helpers for hand-built hairdos (same pieces 'anime' uses):
+//     F.hair.cap(rig, { on, thickness, crown, hairlinePlane: { front, back },
+//       window: { width, top, tilt, notches, depth, span } | false })   // heights in head-Z radii above the head centre
+//       // notches: 0..24 (0) — a JAGGED hairline: that many pointed teeth of cap
+//       // hanging into the window's top edge (crisp hard points, unlike a
+//       // smooth-blended fringe); depth: tooth length × headZ (0.15);
+//       // span: ±degrees of azimuth they spread over (≈52).
+//     F.hair.tuft(rig, { base, dir, length, width, thickness, curve, shape, twist, tipWidth })
+//     F.hair.tuft(rig, { from: { az, el }, to: { az, el, out }, via?, on: head, width, … })
+//       // surface endpoints — no hand-written ray-march helpers: each point is
+//       // { az: deg (0 = face, +90 = figure's left, 180 = back), el: deg
+//       // elevation (radial march) OR h: height above the head centre × headZ
+//       // (horizontal march — use on the face side), out: units outside the
+//       // skin (from defaults slightly buried, to 0) }. via = an optional
+//       // surface mid point the lock passes through (else `curve` bends it).
+//       // tipWidth (ribbon only) = tip half-width floor, so tails stay chunky.
+//       // one lock tapering to a point. shape: 'ribbon' (default) — a flat lock
+//       // whose wide axis lies tangent to the head (⊥ the ray from the head
+//       // centre); width = root HALF-width (default 0.28 head radii), thickness =
+//       // root half-thickness (default width/3.6), twist = degrees the section
+//       // turns root→tip. shape: 'tube' — round; width = root radius (no
+//       // thickness/twist). curve: number = flick toward head-up (× length), or
+//       // a Vec3 mid offset. Bury the base a little inside the cap so it welds.
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
 //   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
@@ -1349,6 +1546,43 @@ builders, so raising `weld.k` won't change a knee that looks kinked. **Label the
 body is one paint region — labelling individual parts would degrade the welds to
 hard seams (see `/ai/sdf.md` paint-by-label).
 
+## Funko / chibi figure — the recipe
+
+All four toy primitives together (a vinyl-pop soccer player holding a ball):
+
+```js
+const { sdf } = api, F = sdf.figure;
+const rig = F.rig({ height: 100, proportions: 'funko', sex: 'male',
+  pose: { hold: { sphere: { radius: 12 }, cup: 'sides' }, legs: { raiseSide: 5 } } });
+const fwd = rig.dir.headForward;
+const head = F.head(rig, { faceShape: 'round', cheek: 1.1 });
+const face = F.face.assemble(head, rig, { eyes: false, mouth: false, brows: false, ears: false,
+  nose: { type: 'straight', tipRadius: 2.1, projection: 1.7 } });
+const skin = F.weld(rig, [F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig, { grip: 'open' }),
+  F.legs(rig), F.feet(rig), face]).label('skin');
+// Glossy bead eyes seated on the REAL face front (cheeks bulge past the anchor).
+const eyes = sdf.union(...[rig.face.eyeL, rig.face.eyeR].map((a) => sdf.ellipsoid(5.3, 3.8, 5.6)
+  .translate(F.surfacePoint(face, a, fwd).map((v, i) => v - fwd[i] * 1.6)))).label('eyes');
+// Brows seat on the real face (cheek bulge / a moved face included) — pass the node you union.
+const brows = F.face.brows(rig, { shape: 'arched', thickness: 3, width: 1.5, on: face });
+// Anime spiky-bob: thin cap + fringe/sideburn/crown/nape locks ('shag' for a layered
+// spiky mop: F.hair(rig, { style: 'shag', crown: 'spiky', on: head }); 'mop' for curls).
+const hair = F.hair(rig, { style: 'anime', on: head, seed: 7, fringe: 0.7 }).label('hair');
+const shirt = F.clothing.top(rig, { sleeve: 'short' }).label('shirt');
+const ball = F.heldSphere(rig).label('ball');
+const base = F.base(rig, { radius: 36 }).label('base');
+const model = sdf.union(skin, eyes, brows, hair, shirt, ball, base)
+  .build({ edgeLength: 0.78, detail: F.faceDetail(rig) });
+return F.place(model, rig, { face: '+X' });   // floor at z = 0, facing +X
+```
+
+> **Previewing a `+X`-facing figure headlessly.** `model:preview --view az,el`
+> puts the camera at azimuth `az` measured from **+X** (toward +Y): for a figure
+> placed with `face: '+X'`, **az 0 = front, 180 = back, 270 (or −90) = profile**,
+> e.g. `--view "0,8;180,8;270,8;-35,20"`. The *named* views are fixed to the
+> builder's −Y front (`--views front` = az −90), so on a `+X` figure the named
+> `front` is a profile and `right` is the face.
+
 ## Workflow that lands a likeness
 
 1. **Block with the rig first.** Pick `height`, `headsTall`, `build`, and the
@@ -1364,7 +1598,12 @@ hard seams (see `/ai/sdf.md` paint-by-label).
    detail region is for.
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
    success criterion; `componentCount === 1` + manifold is necessary, not
-   sufficient.
+   sufficient. With a reference photo attached, run **`photoMatch`** each pass
+   (text only — silhouette IoU, per-band widths, per-part size/offset/colour,
+   and a `worst[]` list such as "hair: model 27% narrower across bands 0–1") and
+   fix what it names; look at rendered images only at checkpoints. Exclude the
+   display base (`exclude: ['base']`) when the photo shows none. See
+   `/ai/reference-images.md#photo-match`.
 
 ## Diversity — vary the whole figure
 

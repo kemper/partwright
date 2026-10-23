@@ -14,13 +14,22 @@
 // `--palette-file <json>`, else a sibling `<base>.palette.json`, else
 // `public/catalog/palettes/<base-without-figure_>.json`. `--no-palette` disables.
 //
+// PHOTO MATCH: `--match-photo ref.png [--match-crop x,y,w,h] [--match-bg #hex]
+// [--match-bg-tol N] [--match-exclude base] [--match-fit box] [--match-pixel-aspect R]
+// [--match-overlay o.png]` renders the model flat from the first --view angle
+// (default: front) and adds a text-only likeness score under
+// `stats.photoMatch` (silhouette IoU, per-band widths, per-region fit, worst[]).
+// Same scorer as the browser's partwright.photoMatch (src/tools/photoMatch.ts).
+//
 // This is a thin back-compat wrapper: the implementation now lives in
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { runPreview, composePng, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
+import { runPreview, createPreviewSession, composePng, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
+import { runPhotoMatch, parseCrop } from './cli/photoMatch.mjs';
+import { NAMED_VIEWS } from './cli/views.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,7 +56,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: null, matchCrop: null, matchBg: null, matchBgTol: null, matchExclude: null, matchFit: null, matchOverlay: null, matchPixelAspect: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -61,6 +70,14 @@ function parseArgs(argv) {
     else if (t === '--require-labels') a.requireLabels = argv[++i];
     else if (t === '--palette-file') a.paletteFile = argv[++i];
     else if (t === '--no-palette') a.noPalette = true;
+    else if (t === '--match-photo') a.matchPhoto = argv[++i];
+    else if (t === '--match-crop') a.matchCrop = argv[++i];
+    else if (t === '--match-bg') a.matchBg = argv[++i];
+    else if (t === '--match-bg-tol') a.matchBgTol = Number(argv[++i]);
+    else if (t === '--match-exclude') a.matchExclude = argv[++i];
+    else if (t === '--match-fit') a.matchFit = argv[++i];
+    else if (t === '--match-overlay') a.matchOverlay = argv[++i];
+    else if (t === '--match-pixel-aspect') a.matchPixelAspect = Number(argv[++i]);
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -70,12 +87,38 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v] [--match-photo ref.png [--match-crop x,y,w,h] [--match-bg #rrggbb] [--match-bg-tol N] [--match-exclude base,…] [--match-fit height|box] [--match-pixel-aspect R] [--match-overlay out.png]]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
   const palette = resolvePalette(file, a.paletteFile, a.noPalette);
-  const result = await runPreview(file, { params: a.params, lang: a.lang, palette });
+  const { crop: matchCrop, error: cropErr } = parseCrop(a.matchCrop);
+  if (cropErr) { console.error(cropErr); process.exit(2); }
+  if (a.matchBgTol !== null && !Number.isFinite(a.matchBgTol)) { console.error('--match-bg-tol expects a number.'); process.exit(2); }
+  if (a.matchPixelAspect !== null && !(a.matchPixelAspect > 0)) { console.error('--match-pixel-aspect expects a positive number.'); process.exit(2); }
+  if (a.matchFit !== null && a.matchFit !== 'height' && a.matchFit !== 'box') { console.error('--match-fit expects "height" or "box".'); process.exit(2); }
+  let result;
+  if (a.matchPhoto) {
+    // Keep the SSR session open past the preview so the photo-match scorer can
+    // load through it (one server boot for both).
+    const session = await createPreviewSession();
+    try {
+      result = await session.preview(readFileSync(file, 'utf8'), { params: a.params, lang: a.lang, palette });
+      if (result.ok && result.render) {
+        // Camera: the first --view/--views angle, else the named front view.
+        const view = views ? views[0] : { name: 'front', ...NAMED_VIEWS.front };
+        result.stats.photoMatch = await runPhotoMatch(session, result.render, {
+          photo: resolve(a.matchPhoto), crop: matchCrop, bg: a.matchBg, bgTolerance: a.matchBgTol,
+          exclude: a.matchExclude ? a.matchExclude.split(',').map((s) => s.trim()).filter(Boolean) : [],
+          view, fit: a.matchFit, pixelAspect: a.matchPixelAspect, debugPng: a.matchOverlay ? resolve(a.matchOverlay) : null,
+        });
+      }
+    } finally {
+      await session.close();
+    }
+  } else {
+    result = await runPreview(file, { params: a.params, lang: a.lang, palette });
+  }
 
   if (!result.ok) {
     console.log(JSON.stringify({ ok: false, error: result.error, diagnostics: result.diagnostics }, null, 2));

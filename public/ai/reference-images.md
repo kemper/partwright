@@ -68,7 +68,7 @@ partwright.clearAttachments()                                          // remove
 
 ## Photo-to-model workflow
 
-> **Pick the method for the subject first.** The mass-decomposition loop below is for **rigid, faceted subjects** — buildings, vehicles, hard products. For an **organic / figural subject** (a person, child, animal, creature, figurine, or bust), the medium is SDF smooth blends, not a union of primitives: build the body from capsule limbs + ellipsoid masses welded with `smoothUnion` (`readDoc("sdf")` → "Organic figures & creature bodies"), and the success criterion is **resemblance to the photo**, not just `isManifold`. The `/portrait` slash command prefills this workflow for busts. Either way, compare your render against the reference at each stage.
+> **Pick the method for the subject first.** The mass-decomposition loop below is for **rigid, faceted subjects** — buildings, vehicles, hard products. For an **organic / figural subject** (a person, child, animal, creature, figurine, or bust), the medium is SDF smooth blends, not a union of primitives: build the body from capsule limbs + ellipsoid masses welded with `smoothUnion` (`readDoc("sdf")` → "Organic figures & creature bodies"), and the success criterion is **resemblance to the photo**, not just `isManifold`. The `/portrait` slash command prefills this workflow for busts. **For a whole person or a Funko / chibi toy, start from a CharacterSpec instead of code** — `buildCharacter(spec)` → `photoMatch` → tweak spec fields from `worst[]` (see `/ai/figure.md#figure-from-a-photo--fill-a-spec-dont-write-code`); hand-write only what the spec can't express. Either way, compare your render against the reference at each stage.
 
 > **Optional tooling.** This workflow uses `scripts/generate-views.js` and Gemini, which may not be installed in every environment. If unavailable, skip the analysis step and supply images manually via `setImages()`.
 
@@ -117,11 +117,41 @@ const r = await partwright.runAndAssert(code, {
 
 ### 4. Compare elevations after each structural change
 
-Call `renderViews({ views: "box" })` (or `renderView` at matching angles) and compare the model silhouette against the attached image at each angle. Focus on:
+For routine passes call **`photoMatch`** (below) — a text-only score that says how close the model is and where it's off. At checkpoints, call `renderViews({ views: "box" })` (or `renderView` at matching angles) and compare the model silhouette against the attached image at each angle. Focus on:
 - Overall proportions and mass placement
 - Roof profile (side view reveals pitch and overhangs)
 - Feature alignment (windows, doors at correct heights)
 - Porch depth and column spacing
+
+### Photo match — a text-only likeness score {#photo-match}
+
+Looking at renders every pass is slow and costs image tokens, and "does it look like the photo?" is a judgement call. **`photoMatch`** answers it with numbers, no image: it renders the current model flat (part colours, no lighting) from the photo's camera, segments the photo, normalises both silhouettes to a common height, and reports how close they are and *where* they differ.
+
+```js
+const m = await partwright.photoMatch({
+  image: 'att-123',                                   // attachment id/label, or a data:image/ URL (omit if only one image is attached)
+  view: { azimuth: 0, elevation: 0, ortho: true },    // match the photo's camera (default: front, ortho)
+  exclude: ['base'],                                  // parts the photo doesn't show
+  // crop: {x, y, w, h}, bg: '#000000', bgTolerance: 20, fit: 'box', pixelAspect: 0.6, overlay: true
+});
+m.silhouetteIoU  // 1.0 = identical outline after normalisation; ~0.8 = recognisably close
+m.worst          // ["hair: model 27% narrower across bands 0–1 (…)", "shoes/socks: model 28% narrower across band 9 (…)", …]
+m.bands          // 10 slices top→bottom: {name (parts that dominate it), refWidth, modelWidth (% of height), widthDiffPct, dx, iou}
+m.regions        // per labelled part: {iou, areaRatio, widthRatio, heightRatio, dx, dy (% of height), photoColor, colorShift}
+m.warnings       // e.g. photo silhouette touches the crop edge, aspect differs wildly
+```
+
+**The loop:** fix the `worst[]` items, re-run `photoMatch`, watch `silhouetteIoU` climb and the findings change. Look at an actual image only at checkpoints (every few edits, and before finishing) — `photoMatch` covers the routine passes. `overlay: true` adds a small 3-panel PNG (photo parts | model parts | silhouette diff: red = photo only, blue = model only) for a cheap checkpoint look.
+
+How it works, so you can read the numbers right:
+
+- **Photo segmentation.** The backdrop colour is estimated from a ring just inside the photo border (the outermost ~1.5% is skipped, so frames and edge lines don't count) with a noise-adaptive tolerance; faint subject pixels (dark hair on a black backdrop) are kept when they connect to clear ones. A busy or multi-colour backdrop that shares the subject's colours (black halftone dots vs black hair) **cannot** be separated by colour — crop to the subject, pass `bg`/`bgTolerance`, or use a cleaner reference. Check `segmentation.photo.fgFraction` and the warnings.
+- **Normalisation.** Both silhouettes are cropped to their bbox and scaled to the same height. `aspect` reports the overall width/height of each; with the default `fit: "height"` the band widths include that aspect error. `fit: "box"` stretches the model to the photo's width too, so bands compare *proportions* only. A photo whose silhouette touches the crop edge is truncated, which skews everything — widen the crop or `exclude` the model part it cuts off.
+- **Stretched references.** Frames grabbed from video are often anamorphic (circles look like wide ellipses). Pass `pixelAspect` (< 1 squeezes the photo horizontally) — e.g. 0.6 for a frame that shows the subject ~1.7× too wide.
+- **Regions.** Photo colours are clustered with k-means *seeded with your part colours*, so each part finds its pixels despite shading; parts sharing a colour (white shirt, socks, shoes) split the photo pixels spatially (nearest model part of that colour). Photo pixels far from any model part of their colour (a ball's black patches are not hair) are left unassigned. `areaRatio` compares each part's share of its silhouette. Tiny parts (< 1.5% of the figure) only get colour findings — their shape stats are a few pixels of noise.
+- **Camera.** The browser API uses the `renderView` convention (azimuth 0 = camera at −Y, 90 = +X); `model:preview --match-photo` uses the CLI's `--view az,el` convention. Orthographic by default; product photos are mildly perspective, so expect a head shot from slightly above to read a little top-heavy.
+
+Tuning knobs (target height, background tolerance floor, k-means iterations, bands, colour threshold, region reach, render size) live in Advanced Settings → Import.
 
 ### 5. Iterate on details
 
