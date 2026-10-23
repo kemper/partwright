@@ -186,7 +186,7 @@ import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour
 import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
-import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
+import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, setPatternPaintEntry } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
@@ -220,10 +220,11 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
-import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
+import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
+import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -263,9 +264,9 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
-import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
-import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
-import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
+import { findSlabTriangles, smoothEdgeForResolution } from './color/slabPaint';
+import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
+import { findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -341,6 +342,7 @@ import {
   assertArray,
   assertNoUnknownKeys,
   validateAssertionsShape,
+  describeValue,
 } from './validation/apiValidation';
 import {
   simpleHash,
@@ -1154,35 +1156,55 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
  *  so callers transferring colors across versions can report what landed. */
-/** True when a descriptor drives mesh subdivision: any brush stroke, or a slab /
- *  oriented shape with smoothing enabled (`smooth` + a positive `maxEdge`).
- *  Descriptors saved before smoothing existed omit those fields and refine
- *  nothing, preserving their original blocky edges. */
-function descriptorRefines(d: RegionDescriptor): boolean {
-  if (d.kind === 'brushStroke') return true;
-  if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
-    return !!d.smooth && (d.maxEdge ?? 0) > 0;
+// `descriptorRefines` / `collectRefineRegions` live in src/color/refinePipeline.ts
+// — ONE implementation shared with the subdivision Worker (this file used to
+// carry its own copy, which drifted: the Worker's lost the cylinder `axis`).
+// Main-thread callers pass the cached `descriptorToStroke` and
+// `patternContextFor` so strokes and pattern scopes resolve from live state.
+
+type PatternDescriptor = Extract<RegionDescriptor, { kind: 'pattern' }>;
+
+/** A pattern's scope on `mesh`: its `scope.label` (or the whole mesh), narrowed
+ *  by the geometric scope predicates and — when `withPart` — its `withinPart`.
+ *  Labels resolve through the refined-mesh lineage (`partTrianglesOnMesh`), so
+ *  this is right on the base mesh and on any refinement of it. */
+function patternScopeOnMesh(d: PatternDescriptor, mesh: MeshData, withPart: boolean): Set<number> {
+  const label = d.scope?.label;
+  let scope: Set<number>;
+  if (label) {
+    scope = partTrianglesOnMesh(label, mesh) ?? new Set<number>();
+  } else {
+    scope = new Set<number>();
+    for (let t = 0; t < mesh.numTri; t++) scope.add(t);
   }
-  return false;
+  if (withPart && d.withinPart) {
+    scope = intersectWithScope(partTrianglesOnMesh(d.withinPart, mesh) ?? new Set<number>(), scope).triangles;
+  }
+  return filterScopeTriangles(mesh, scope, d.scope);
 }
 
-/** Build the ordered refine regions (brush footprints, slab/shape boundaries)
- *  from a descriptor list. Drives the local subdivision so painted edges follow
- *  the analytic boundary rather than the coarse base tessellation. */
-function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
-  const regions: RefineRegion[] = [];
-  for (const d of descriptors) {
-    if (d.kind === 'brushStroke') {
-      regions.push(brushRefineRegion(descriptorToStroke(d)));
-    } else if (d.kind === 'slab' && descriptorRefines(d)) {
-      regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
-    } else if (d.kind === 'box' && descriptorRefines(d)) {
-      regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
-    } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
-    }
-  }
-  return regions;
+// Per-descriptor pattern context (fitted soccer sphere + scope mask), resolved
+// once against the pristine base mesh and reused by the refine (clip) step AND
+// the colour step, so both evaluate the identical field. Keyed by descriptor
+// identity; rebuilt when the base mesh or the run's label map changes.
+const patternCtxCache = new WeakMap<object, { base: MeshData; labels: Map<string, Set<number>> | null; ctx: PatternContext }>();
+
+function patternContextFor(d: PatternDescriptor, base: MeshData): PatternContext {
+  const hit = patternCtxCache.get(d);
+  if (hit && hit.base === base && hit.labels === currentLabelMap) return hit.ctx;
+  const ctx = buildPatternContext(base, patternScopeOnMesh(d, base, true), d, descriptorRefines(d));
+  patternCtxCache.set(d, { base, labels: currentLabelMap, ctx });
+  return ctx;
+}
+
+/** The pattern contexts the subdivision Worker needs (it can't resolve labels /
+ *  parts itself), keyed by descriptor index. */
+function workerPatternContexts(descriptors: RegionDescriptor[], base: MeshData): Array<{ index: number; ctx: PatternContext }> {
+  const out: Array<{ index: number; ctx: PatternContext }> = [];
+  descriptors.forEach((d, index) => {
+    if (d.kind === 'pattern' && descriptorRefines(d)) out.push({ index, ctx: patternContextFor(d, base) });
+  });
+  return out;
 }
 
 /** True when any current region drives subdivision (see `descriptorRefines`). */
@@ -1197,7 +1219,7 @@ function refineMeshForRegions(
   base: MeshData,
   descriptors: RegionDescriptor[],
 ): { mesh: MeshData; parentToChildren: Map<number, number[]> | null } {
-  const regions = collectRefineRegions(descriptors);
+  const regions = collectRefineRegions(descriptors, base, descriptorToStroke, (d) => patternContextFor(d, base));
   if (regions.length === 0) return { mesh: base, parentToChildren: null };
   const { mesh, childToParent } = buildRefinedMesh(base, regions);
   const parentToChildren = childrenByParent(childToParent);
@@ -1415,20 +1437,16 @@ function resolveDescriptorTrianglesUnscoped(
       // map (children inherit their parent's projected color).
       return entriesToPerTriColors(descriptor.entries, parentToChildren);
     case 'pattern': {
-      // Algorithmic colourway: resolve the scope (an api.label region, remapped
-      // through subdivision, or the whole mesh), then assign each triangle one
-      // palette colour from the field (computePatternColors → perTriColors).
-      const label = descriptor.scope?.label;
-      let base: Set<number>;
-      if (label) {
-        const ids = currentLabelMap?.get(label);
-        base = ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
-      } else {
-        base = new Set<number>();
-        for (let t = 0; t < mesh.numTri; t++) base.add(t);
-      }
-      const scope = filterScopeTriangles(mesh, base, descriptor.scope);
-      return { triangles: scope, perTriColors: computePatternColors(mesh, scope, descriptor) };
+      // Algorithmic colourway: resolve the scope (an api.label region carried
+      // through any subdivision via the mesh lineage, or the whole mesh), then
+      // assign each triangle one palette colour from the field. The field's
+      // context (soccer sphere fit, bounds) comes from the pristine base mesh —
+      // the same one the smooth refine clipped against — so a clipped sliver's
+      // centroid always lands on its own side of the seam. `withinPart` is
+      // applied by the resolveDescriptorTriangles wrapper.
+      const scope = patternScopeOnMesh(descriptor, mesh, false);
+      const ctx = patternContextFor(descriptor, paintBaseMesh ?? mesh);
+      return { triangles: scope, perTriColors: computePatternColors(mesh, scope, descriptor, ctx) };
     }
   }
 }
@@ -1511,7 +1529,57 @@ function resetPaintWorkerState(): void {
  *  stamps are replayed asynchronously (they need to decode a stored image data
  *  URL and re-run the subdivision + stamp algorithm), so this function is async.
  *  All call sites are already in async functions and should `await` the result. */
+/** Bumped by every rehydrateColorRegions call, so a restore still waiting on
+ *  its worker refine knows a newer one replaced it. */
+let rehydrateGeneration = 0;
+
+/** Refine `base` under a restored version's descriptors. Smooth strokes run in
+ *  the subdivision worker behind a progress modal: a session with many strokes
+ *  takes tens of seconds to rebuild, and on the main thread that froze the tab
+ *  long enough for the render watchdog to give up. Returns null when a newer
+ *  restore superseded this one. Falls back to the main thread if the worker
+ *  fails for another reason. */
+async function refineForRehydrate(
+  base: MeshData,
+  descriptors: RegionDescriptor[],
+  gen: number,
+): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]> | null; strokeTris: Map<number, Uint32Array> | null } | null> {
+  if (!descriptors.some(descriptorRefines)) return { mesh: base, parentToChildren: null, strokeTris: null };
+  // Anything else that touches paint state while we wait (a code run, a paint
+  // call, another version switch) resets the paint worker and bumps this.
+  const paintGen = paintGeneration;
+  const superseded = (): boolean => gen !== rehydrateGeneration || paintGen !== paintGeneration;
+  const abort = new AbortController();
+  const progressId = startProgress({
+    title: 'Restoring paint',
+    message: 'Rebuilding smooth paint edges…',
+    indeterminate: true,
+    onCancel: () => abort.abort(),
+  });
+  try {
+    const r = await refineInWorker({ base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal });
+    if (superseded()) return null;
+    const parentToChildren = childrenByParent(r.childToParent);
+    recordMeshLineage(r.mesh, base, parentToChildren);
+    return { mesh: r.mesh, parentToChildren, strokeTris: r.brushStrokeTriangles };
+  } catch (err) {
+    // An abort is a cancel or a takeover by newer paint state, never a reason
+    // to rebuild the old version here on the main thread.
+    if (isAbortError(err) || superseded()) {
+      if (abort.signal.aborted) showToast('Paint restore cancelled. The saved paint is kept and comes back on the next run.', { variant: 'neutral' });
+      return null;
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[paint] worker restore failed, refining on the main thread', err);
+    const { mesh, parentToChildren } = refineMeshForRegions(base, descriptors);
+    return { mesh, parentToChildren, strokeTris: null };
+  } finally {
+    endProgress(progressId);
+  }
+}
+
 async function rehydrateColorRegions(geometryData: Record<string, unknown> | null): Promise<{ carried: string[]; dropped: string[] }> {
+  const gen = ++rehydrateGeneration;
   // Drop any in-flight worker job before we wipe + replace the region store;
   // otherwise its continuation could overwrite the freshly-rehydrated mesh
   // and stamp triangles onto regions that no longer exist.
@@ -1550,18 +1618,38 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // resolving. Without refine regions this is a no-op and currentMeshData is
   // left untouched (identical to the pre-subdivision behavior).
   const base = paintBaseMesh ?? currentMeshData;
-  const { mesh, parentToChildren } = refineMeshForRegions(base, standardRegions.map(r => r.descriptor));
+  const standardDescriptors = standardRegions.map(r => r.descriptor);
+  // The refine below can take a while. Keep the version's descriptors in the
+  // store meanwhile (unresolved), so a save in that window still writes them
+  // and a takeover leaves them for the next run to resolve.
+  const waits = standardDescriptors.some(descriptorRefines);
+  if (waits) stageUnresolvedColorRegions(geometryData);
+  const refined = await refineForRehydrate(base, standardDescriptors, gen);
+  if (!refined) return report;
+  if (waits) {
+    suspendReconcile = true;
+    clearRegions();
+    suspendReconcile = false;
+  }
+  const { mesh, parentToChildren, strokeTris } = refined;
   if (parentToChildren) {
     currentMeshData = mesh;
     updatePaintMesh(mesh);
   }
-  const adjacency = buildAdjacency(mesh);
+  // Adjacency over the whole (possibly 700k-triangle) mesh is only needed by
+  // the flood-fill descriptor kinds, so build it on first use.
+  let adjacency: AdjacencyGraph | null = null;
 
   // Bulk-add the resolved standard regions without letting each addRegion
   // trigger a reconcile (we've already built the mesh here).
   suspendReconcile = true;
-  for (const region of standardRegions) {
-    const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
+  for (const [idx, region] of standardRegions.entries()) {
+    const d = region.descriptor;
+    if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+    const workerTris = strokeTris?.get(idx);
+    const { triangles, perTriColors } = workerTris
+      ? { triangles: new Set<number>(workerTris), perTriColors: undefined }
+      : resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId, perTriColors);
       report.carried.push(region.name);
@@ -1703,7 +1791,7 @@ function rebuildPaintedGeometry(): void {
   const { mesh, parentToChildren } = refineMeshForRegions(base, getRegions().map(r => r.descriptor));
   currentMeshData = mesh;
   updatePaintMesh(mesh);
-  const adjacency = buildAdjacency(mesh);
+  const adjacency = adjacencyIfNeeded(mesh);
   for (const region of getRegions()) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
@@ -1720,6 +1808,14 @@ function rebuildPaintedGeometry(): void {
  *  the underlay's triangle indices unless we re-resolve them here from their
  *  descriptors — geometric selectors against `mesh` directly, byLabel through
  *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
+/** Adjacency for re-resolving every region on `mesh`, or null when no user or
+ *  model region is a flood-fill kind (the only ones that read it). Building it
+ *  costs seconds on a heavily refined mesh. */
+function adjacencyIfNeeded(mesh: MeshData): AdjacencyGraph | null {
+  const floods = (d: RegionDescriptor): boolean => d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood';
+  return getRegions().some(r => floods(r.descriptor)) || getModelRegions().some(r => floods(r.descriptor)) ? buildAdjacency(mesh) : null;
+}
+
 function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
   for (const region of getModelRegions()) {
     const d = region.descriptor;
@@ -2179,6 +2275,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
       base,
       input: base,
       descriptors,
+      patternContexts: workerPatternContexts(descriptors, base),
       signal: abort.signal,
     });
     // See appendStrokeRefineAsync: drop stale results when a sync action ran.
@@ -2187,7 +2284,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     recordMeshLineage(mesh, base, parentToChildren);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
-    const adjacency = buildAdjacency(mesh);
+    const adjacency = adjacencyIfNeeded(mesh);
 
     const regions = getRegions();
     for (const region of regions) {
@@ -6509,6 +6606,15 @@ async function main() {
     void ensureEngineStarted();
   }
 
+  /** The run generation of loadVersionIntoEditor's in-flight run, or -1. The
+   *  version's saved regions are staged before that run (for the fast-preview
+   *  colours), and rehydrateColorRegions refines + resolves them all again right
+   *  after it, so that one run must not do its own full stroke rebuild: on a
+   *  session with many smooth strokes that rebuild ran twice per open (~40 s
+   *  each on a 460k scan). Tied to the generation, not a flag, so a different
+   *  run that starts meanwhile still resolves its regions itself. */
+  let deferRefineRunGen = -1;
+
   async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
@@ -6644,7 +6750,14 @@ async function main() {
       // (smooth-stroke replay etc.) — it clears + rebuilds, so this is a strict
       // head-start, not a competing source of truth.
       stageUnresolvedColorRegions(version.geometryData);
-      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
+      const deferGen = _runGeneration + 1;
+      deferRefineRunGen = deferGen;
+      let applied: boolean;
+      try {
+        applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
+      } finally {
+        if (deferRefineRunGen === deferGen) deferRefineRunGen = -1;
+      }
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) {
@@ -14023,6 +14136,153 @@ async function main() {
       return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
     },
 
+    /** Paint an algorithmic colour pattern — the console twin of the in-code
+     *  `api.paint.pattern`: 'soccer' (truncated-icosahedron ball panels) |
+     *  'stripes' | 'spots' | 'patches' | 'gradient' | 'checker'.
+     *  `withinPart` scopes it to one part (an api.label region or a detected
+     *  part of an import); a `soccer` ball is fit (least-squares sphere) to that
+     *  scope. `smooth: true` (soccer / stripes / checker) subdivides + clips the
+     *  colour boundary along the pattern's analytic field, so seams are crisp in
+     *  one call and saved as ONE descriptor (rebuilt on load — no stored mesh).
+     *  Returns `{ id, name, pattern, triangles, markTriangles, meshTriangles,
+     *  smooth, maxEdge, sphere? }` or `{ error }`. */
+    paintPattern(opts: {
+      pattern: ColorPatternKind; colors: (string | [number, number, number])[]; withinPart?: string;
+      scope?: string | PatternScope; scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number;
+      seed?: number; anchors?: [number, number, number][]; smooth?: boolean; resolution?: number; maxEdge?: number; name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      const KEYS = ['pattern', 'colors', 'withinPart', 'scope', 'scale', 'axis', 'warp', 'coverage', 'seed', 'anchors', 'smooth', 'resolution', 'maxEdge', 'name'] as const;
+      const parsed = guard(() => {
+        const o = assertObject(opts, 'paintPattern(opts)')!;
+        assertNoUnknownKeys(o, KEYS, 'paintPattern(opts)');
+        const pattern = assertEnum(o.pattern, COLOR_PATTERN_KINDS, 'paintPattern(opts).pattern');
+        const rawColors = assertArray(o.colors, 'paintPattern(opts).colors');
+        if (rawColors.length < 2) throw new ValidationError('paintPattern(opts).colors must list at least 2 colours: [base, mark, third?] — hex "#rrggbb" or [r,g,b] in 0..1. For soccer: [white, black].');
+        const colors = rawColors.map((c, i) => {
+          const rgb = parseLabelColor(c);
+          if (!rgb) throw new ValidationError(`paintPattern(opts).colors[${i}] must be a hex string like "#111111" or [r,g,b] in 0..1, got ${describeValue(c)}.`);
+          return rgb;
+        });
+        assertString(o.withinPart, 'paintPattern(opts).withinPart', { optional: true });
+        assertString(o.name, 'paintPattern(opts).name', { optional: true });
+        let scope: PatternScope | undefined;
+        if (o.scope !== undefined) {
+          if (typeof o.scope === 'string') {
+            scope = { label: assertString(o.scope, 'paintPattern(opts).scope')! };
+          } else {
+            const so = assertObject(o.scope, 'paintPattern(opts).scope')!;
+            assertNoUnknownKeys(so, ['label', 'above', 'below', 'box', 'sphere'], 'paintPattern(opts).scope');
+            const sc: PatternScope = {};
+            const label = assertString(so.label, 'paintPattern(opts).scope.label', { optional: true });
+            if (label) sc.label = label;
+            for (const side of ['above', 'below'] as const) {
+              if (so[side] === undefined) continue;
+              const pl = assertObject(so[side], `paintPattern(opts).scope.${side}`)!;
+              assertNoUnknownKeys(pl, ['axis', 'at'], `paintPattern(opts).scope.${side}`);
+              sc[side] = { axis: assertEnum(pl.axis, ['x', 'y', 'z'] as const, `paintPattern(opts).scope.${side}.axis`), at: assertNumber(pl.at, `paintPattern(opts).scope.${side}.at`)! };
+            }
+            if (so.box !== undefined) {
+              const bx = assertObject(so.box, 'paintPattern(opts).scope.box')!;
+              assertNoUnknownKeys(bx, ['min', 'max'], 'paintPattern(opts).scope.box');
+              sc.box = { min: assertNumberTuple(bx.min, 3, 'paintPattern(opts).scope.box.min') as [number, number, number], max: assertNumberTuple(bx.max, 3, 'paintPattern(opts).scope.box.max') as [number, number, number] };
+            }
+            if (so.sphere !== undefined) {
+              const sp = assertObject(so.sphere, 'paintPattern(opts).scope.sphere')!;
+              assertNoUnknownKeys(sp, ['center', 'radius'], 'paintPattern(opts).scope.sphere');
+              sc.sphere = { center: assertNumberTuple(sp.center, 3, 'paintPattern(opts).scope.sphere.center') as [number, number, number], radius: assertNumber(sp.radius, 'paintPattern(opts).scope.sphere.radius', { min: 1e-9 })! };
+            }
+            scope = Object.keys(sc).length > 0 ? sc : undefined;
+          }
+        }
+        const scale = assertNumber(o.scale, 'paintPattern(opts).scale', { optional: true, min: 1e-6 });
+        const axis = o.axis === undefined ? undefined : assertEnum(o.axis, ['x', 'y', 'z'] as const, 'paintPattern(opts).axis');
+        const warp = assertNumber(o.warp, 'paintPattern(opts).warp', { optional: true, min: 0, max: 2 });
+        const coverage = assertNumber(o.coverage, 'paintPattern(opts).coverage', { optional: true, min: 0, max: pattern === 'soccer' ? SOCCER_MAX_COVERAGE : 1 });
+        const seed = assertNumber(o.seed, 'paintPattern(opts).seed', { optional: true });
+        let anchors: [number, number, number][] | undefined;
+        if (o.anchors !== undefined) {
+          anchors = assertArray(o.anchors, 'paintPattern(opts).anchors').map((a, i) => assertNumberTuple(a, 3, `paintPattern(opts).anchors[${i}]`) as [number, number, number]);
+        }
+        const smooth = assertBoolean(o.smooth, 'paintPattern(opts).smooth', { optional: true }) ?? false;
+        if (smooth && !patternSupportsSmooth(pattern)) {
+          throw new ValidationError(`paintPattern(opts).smooth: only ${SMOOTH_PATTERN_KINDS.join(' / ')} have an analytic boundary to clip along — "${pattern}" stays whole-triangle. Drop smooth, or use one of those.`);
+        }
+        return { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, smooth };
+      });
+      if ('error' in parsed) return parsed;
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintPattern');
+      if (scopeErr) return { error: scopeErr };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
+      if (parsed.scope?.label && !currentLabelMap?.has(parsed.scope.label)) {
+        return { error: `paintPattern: scope.label "${parsed.scope.label}" is not a label of the current run — see listLabels().` };
+      }
+
+      const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, smooth } = parsed;
+      const draft: PatternDescriptor = scopedDescriptor({
+        kind: 'pattern', pattern, colors,
+        ...(scope ? { scope } : {}),
+        ...(scale !== undefined ? { scale } : {}),
+        ...(axis !== undefined ? { axis } : {}),
+        ...(warp !== undefined ? { warp } : {}),
+        ...(coverage !== undefined ? { coverage } : {}),
+        ...(seed !== undefined ? { seed } : {}),
+        ...(anchors ? { anchors } : {}),
+      }, opts.withinPart);
+      const base = paintBaseMesh ?? currentMeshData;
+      const baseScope = patternScopeOnMesh(draft, base, true);
+      if (baseScope.size === 0) {
+        return { error: opts.withinPart ? `paintPattern: part "${opts.withinPart}" has no triangles${scope ? ' inside the given scope' : ''}.` : 'paintPattern: the scope selects no triangles.' };
+      }
+      const ctx = buildPatternContext(base, baseScope, draft);
+      if (pattern === 'soccer' && !ctx.sphere) return { error: 'paintPattern: could not fit a ball to the scope (degenerate geometry).' };
+
+      let maxEdge = 0;
+      if (smooth) {
+        if (typeof opts.maxEdge === 'number' && opts.maxEdge > 0) maxEdge = opts.maxEdge;
+        else if (typeof opts.resolution === 'number' && opts.resolution > 0) maxEdge = smoothEdgeForResolution(base, opts.resolution);
+        else maxEdge = defaultPatternMaxEdge(draft, ctx, smoothEdgeForResolution(base, 256));
+      }
+      const descriptor: PatternDescriptor = smooth && maxEdge > 0 ? { ...draft, smooth: true, maxEdge } : draft;
+      const regionName = opts.name ?? `${pattern === 'soccer' ? 'Soccer ball' : `Pattern ${pattern}`}${opts.withinPart ? ` (${opts.withinPart})` : ''}`;
+      // Pre-resolve against the current working mesh so a non-refining pattern
+      // lands populated (the reconcile only resolves regions it rebuilds); a
+      // smooth one is re-resolved by the sync rebuild on the refined mesh.
+      const initial = resolveDescriptorTriangles(descriptor, currentMeshData, null, null);
+      const region = withSyncReconcile(() => addRegion(
+        regionName,
+        colors[1] as [number, number, number],
+        'paintbrush',
+        descriptor,
+        initial.triangles,
+        true,
+        undefined,
+        initial.perTriColors,
+      ));
+      const emptyErr = emptyScopeError(region, opts.withinPart, 'paintPattern');
+      if (emptyErr) { withSyncReconcile(() => removeRegion(region.id)); return emptyErr; }
+      scheduleColorRefresh();
+      syncLockState();
+
+      const mark = colors[1];
+      let markTriangles = 0;
+      if (region.perTriColors) {
+        for (const c of region.perTriColors.values()) if (c[0] === mark[0] && c[1] === mark[1] && c[2] === mark[2]) markTriangles++;
+      }
+      return {
+        id: region.id,
+        name: region.name,
+        pattern,
+        triangles: region.triangles.size,
+        markTriangles,
+        meshTriangles: currentMeshData?.numTri ?? 0,
+        smooth: descriptor.smooth === true,
+        maxEdge: descriptor.maxEdge ?? 0,
+        ...(ctx.sphere ? { sphere: { center: ctx.sphere.center.map((v) => +v.toFixed(4)), radius: +ctx.sphere.radius.toFixed(4) } } : {}),
+      };
+    },
+
     /** List all color regions on the current geometry. Each entry includes
      *  `bbox` (axis-aligned bounding box of the painted triangles' vertices)
      *  and `centroid` (mean of those vertex positions) so callers can verify
@@ -15148,16 +15408,21 @@ async function main() {
         return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
       }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
-      // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
-      // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
-      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 64));
+      // maxEdge (absolute) overrides; otherwise radius / resolution, default 16
+      // (ui.paintStrokeResolution).
+      // The exact-outline clip keeps edges crisp, so curves need few segments:
+      // r/16 already traces a circle with ~100 sides. The old default of 64
+      // grew a 474k scan to 2M triangles over a dozen strokes.
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? getConfig().ui.paintStrokeResolution));
       // Floor an explicit maxEdge at the same finest edge the resolution path
       // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
       // runaway subdivision for no visible benefit (the safety ceiling in
       // buildRefinedMesh would cut it off anyway).
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
+      // Points are a path, not stamp positions: fill the gaps so the band is
+      // continuous however sparsely the caller sampled it.
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
         // Default to no gate (180°) for the console API so a paintStroke without
         // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
@@ -15259,7 +15524,7 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
@@ -16414,6 +16679,7 @@ async function main() {
         'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?, withinPart?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?, withinPart?}) -- Paint planar slab range', docs: '/ai/colors.md' },
+        'paintPattern':    { signature: 'paintPattern({pattern:"soccer"|"stripes"|"spots"|"patches"|"gradient"|"checker", colors:[base, mark, third?], withinPart?, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, smooth?, resolution?, maxEdge?, name?}) -- Algorithmic colourway over a part. soccer = ball panels fit to the part; smooth:true (soccer/stripes/checker) clips seams sub-triangle -> {id, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere?}', docs: '/ai/colors.md' },
         'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?, withinPart?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withinPart?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
@@ -16559,6 +16825,14 @@ async function main() {
 
   const apiWindow = window as unknown as Record<string, unknown>;
   apiWindow.partwright = partwrightAPI;
+  // The Paint panel's "Pattern" buttons drive the same console method, so the
+  // UI and the API can't drift (paintUI can't import main.ts).
+  setPatternPaintEntry((pattern, part) => {
+    const r = partwrightAPI.paintPattern(pattern === 'soccer'
+      ? { pattern, withinPart: part, colors: ['#ffffff', '#111111'], smooth: true }
+      : { pattern, withinPart: part, colors: ['#ffffff', '#111111'] });
+    return 'error' in r ? { error: String(r.error) } : { triangles: r.triangles };
+  });
   apiWindow.mainifold = partwrightAPI;
 
   // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
@@ -17809,7 +18083,8 @@ async function main() {
       // preservedCameraPose was snapshotted at the top of runCodeSync (before
       // the engine ran), so the auto-framing updateMesh calls below — and the
       // SCAD progressive preview — don't poison the pose we restore at the end.
-      if (hasColorRegions() && hasRefineDescriptors()) {
+      const deferRefine = myGen === deferRefineRunGen;
+      if (hasColorRegions() && hasRefineDescriptors() && !deferRefine) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
       } else if (hasColorRegions() || hasModelColorRegions()) {
@@ -17827,6 +18102,12 @@ async function main() {
           const d = region.descriptor;
           if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             adjacency = buildAdjacency(mesh);
+          }
+          // A version load resolves refining regions itself right after this
+          // run (see deferRefineRunGen); leave them empty meanwhile.
+          if (deferRefine && descriptorRefines(d)) {
+            setRegionTriangles(region.id, new Set());
+            continue;
           }
           const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, region.id);
           setRegionTriangles(region.id, triangles, perTriColors);

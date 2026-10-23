@@ -97,6 +97,16 @@ export interface RefineRegion {
   maxEdge: number;
   classify: TriClassifier;
   field?: (px: number, py: number, pz: number) => number;
+  /** Optional scope mask (1 = may refine/clip) indexed by the triangle ids of
+   *  the mesh handed to `buildRefinedMesh` (each refined child inherits its
+   *  root triangle's bit). Confines a region to part of the model — e.g. a
+   *  soccer pattern scoped to the ball never splits the hand touching it. */
+  allow?: Uint8Array;
+  /** When set, `field` is only exact below this value and clamps to it beyond
+   *  (a stroke's sample grid, see SampleGrid). A clamped field is flat, which
+   *  would pass for a straight boundary, so the straight-edge skip is disabled
+   *  wherever a sample reaches the bound. */
+  fieldBound?: number;
 }
 
 /** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
@@ -200,27 +210,167 @@ export function strokeSignedDist(
   if (stroke.geoField && !stroke.geoField.reachableAt(px, py, pz)) {
     return Infinity;
   }
+  const grid = sampleGridFor(stroke);
+  if (!grid) return sampleDistMin(px, py, pz, stroke, null);
+  // Only samples in the 3×3×3 cells around p can come within `grid.bound` of
+  // it, so the minimum over them is exact whenever the true distance is below
+  // the bound, and the bound itself is a valid lower bound otherwise (sign and
+  // zero set unchanged; see SampleGrid).
+  const near = grid.near(px, py, pz);
+  return near.length ? Math.min(sampleDistMin(px, py, pz, stroke, near), grid.bound) : grid.bound;
+}
+
+/** Resample a stroke path so consecutive samples are at most `step` apart.
+ *  A stroke's footprint is the union of one shape per sample, so a sparse path
+ *  (an agent passing a handful of corner points) painted a chain of beads
+ *  instead of a band. Inserted points sit on the straight chord between the
+ *  given surface points; at the r/4 spacing callers use, the chord stays within
+ *  a negligible distance of a curved surface. The count is capped by widening
+ *  the step so a very long path can't explode. */
+export function densifyStrokePath(
+  samples: [number, number, number][],
+  step: number,
+  maxSamples = 4096,
+): [number, number, number][] {
+  if (samples.length < 2 || !(step > 0)) return samples;
+  let total = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i];
+    total += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  }
+  const s = Math.max(step, total / maxSamples);
+  const out: [number, number, number][] = [samples[0]];
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i];
+    const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / s);
+    for (let k = 1; k < n; k++) {
+      const t = k / n;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+/** Minimum footprint distance from `p` over `indices` (all samples when null). */
+function sampleDistMin(px: number, py: number, pz: number, stroke: BrushStroke, indices: number[] | null): number {
   const { samples, radius: r, shape } = stroke;
   const slab = slabActive(stroke);
   const depth = stroke.depth ?? Infinity;
   const normals = stroke.sampleNormals;
   const tangents = stroke.sampleTangents;
   let best = Infinity;
-  for (let i = 0; i < samples.length; i++) {
+  const n = indices ? indices.length : samples.length;
+  for (let k = 0; k < n; k++) {
+    const i = indices ? indices[k] : k;
     const dx = px - samples[i][0];
     const dy = py - samples[i][1];
     const dz = pz - samples[i][2];
     let d: number;
     if (slab && normals) {
-      const n = normals[i];
-      const t = tangents ? tangents[i] : tangentBasis(n);
-      d = slabPrismDist(dx, dy, dz, n, t[0], t[1], shape, r, depth);
+      const nrm = normals[i];
+      const t = tangents ? tangents[i] : tangentBasis(nrm);
+      d = slabPrismDist(dx, dy, dz, nrm, t[0], t[1], shape, r, depth);
     } else {
       d = shapeDist3D(dx, dy, dz, shape, r);
     }
     if (d < best) best = d;
   }
   return best;
+}
+
+/** Uniform hash grid over a stroke's samples. A stroke's footprint is the union
+ *  of one shape per sample, so every field evaluation used to test every sample
+ *  — a 190-point agent stroke made each of the millions of refine queries 190
+ *  shape tests. With cells of size `cell`, a sample outside the 3×3×3 cells
+ *  around `p` differs from it by more than `cell` on some axis, which keeps its
+ *  footprint distance at or above `bound`. So min(nearby, bound) is the exact
+ *  field wherever it is below `bound` (the boundary band the classifier and
+ *  clip care about) and a positive lower bound elsewhere. */
+interface SampleGrid {
+  bound: number;
+  near(px: number, py: number, pz: number): number[];
+  /** Samples within `pad` (per axis) of the box [min, max]. */
+  inBox(min: number[], max: number[]): number[];
+}
+
+/** Below this many samples the plain scan is as fast as the grid. */
+const SAMPLE_GRID_MIN = 24;
+const sampleGridCache = new WeakMap<BrushStroke, SampleGrid | null>();
+
+function sampleGridFor(stroke: BrushStroke): SampleGrid | null {
+  const hit = sampleGridCache.get(stroke);
+  if (hit !== undefined) return hit;
+  const grid = stroke.samples.length < SAMPLE_GRID_MIN ? null : buildSampleGrid(stroke);
+  sampleGridCache.set(stroke, grid);
+  return grid;
+}
+
+function buildSampleGrid(stroke: BrushStroke): SampleGrid {
+  const r = stroke.radius;
+  // Lower bound b on the distance of any sample farther than `cell` on an axis.
+  // 3D shapes: Chebyshev distance > cell ⇒ d > cell − r. Slab prisms: d < b
+  // needs lateral < √2·(r+b) and |offset| < depth+b, so euclid < the cell below.
+  const bound = 4 * r;
+  const cell = slabActive(stroke)
+    ? Math.hypot(Math.SQRT2 * (r + bound), (stroke.depth ?? 0) + bound)
+    : r + bound;
+  const bins = new Map<string, number[]>();
+  const key = (ix: number, iy: number, iz: number): string => `${ix},${iy},${iz}`;
+  stroke.samples.forEach((p, i) => {
+    const k = key(Math.floor(p[0] / cell), Math.floor(p[1] / cell), Math.floor(p[2] / cell));
+    const arr = bins.get(k);
+    if (arr) arr.push(i); else bins.set(k, [i]);
+  });
+  const collect = (lo: number[], hi: number[]): number[] => {
+    const out: number[] = [];
+    for (let ix = lo[0]; ix <= hi[0]; ix++) {
+      for (let iy = lo[1]; iy <= hi[1]; iy++) {
+        for (let iz = lo[2]; iz <= hi[2]; iz++) {
+          const arr = bins.get(key(ix, iy, iz));
+          if (arr) for (const i of arr) out.push(i);
+        }
+      }
+    }
+    return out;
+  };
+  // Cache the neighbourhood per cell: refine queries cluster heavily, so most
+  // calls hit the same cell as the previous one and skip the key build.
+  const nearCache = new Map<string, number[]>();
+  let lx = NaN, ly = NaN, lz = NaN;
+  let last: number[] = [];
+  return {
+    bound,
+    near(px, py, pz) {
+      const ix = Math.floor(px / cell), iy = Math.floor(py / cell), iz = Math.floor(pz / cell);
+      if (ix === lx && iy === ly && iz === lz) return last;
+      const k = key(ix, iy, iz);
+      let out = nearCache.get(k);
+      if (!out) {
+        out = collect([ix - 1, iy - 1, iz - 1], [ix + 1, iy + 1, iz + 1]);
+        nearCache.set(k, out);
+      }
+      lx = ix; ly = iy; lz = iz; last = out;
+      return out;
+    },
+    inBox(min, max) {
+      return collect(
+        [Math.floor(min[0] / cell) - 1, Math.floor(min[1] / cell) - 1, Math.floor(min[2] / cell) - 1],
+        [Math.floor(max[0] / cell) + 1, Math.floor(max[1] / cell) + 1, Math.floor(max[2] / cell) + 1],
+      );
+    },
+  };
+}
+
+/** Indices of the samples that could reach triangle (a, b, c) — every sample
+ *  when the stroke is too small for a grid. */
+function samplesNearTriangle(stroke: BrushStroke, a: number[], b: number[], c: number[]): number[] | null {
+  const grid = sampleGridFor(stroke);
+  if (!grid) return null;
+  return grid.inBox(
+    [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2])],
+    [Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])],
+  );
 }
 
 /** True when `p` is within the brush footprint of any of the stroke's samples. */
@@ -290,8 +440,10 @@ function sprayClassifier(stroke: BrushStroke): TriClassifier {
     // All vertices outside the footprint — but a spray smaller than the face may
     // still sit inside this triangle; refine if its closest point to a sample is
     // within the footprint (mirrors the brush's small-footprint fallback).
-    for (let s = 0; s < stroke.samples.length; s++) {
-      const sp = stroke.samples[s];
+    const cand = samplesNearTriangle(stroke, a, b, c);
+    const nc = cand ? cand.length : stroke.samples.length;
+    for (let k = 0; k < nc; k++) {
+      const sp = stroke.samples[cand ? cand[k] : k];
       const cp = closestPointOnTriangle(sp[0], sp[1], sp[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
       if (strokeSignedDist(cp[0], cp[1], cp[2], stroke) < 0) return 'straddle';
     }
@@ -335,7 +487,10 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
       return interiorCovered ? 'inside' : 'straddle';
     }
     if (inside >= 1) return 'straddle';
-    for (let s = 0; s < stroke.samples.length; s++) {
+    const cand = samplesNearTriangle(stroke, a, b, c);
+    const nc = cand ? cand.length : stroke.samples.length;
+    for (let k = 0; k < nc; k++) {
+      const s = cand ? cand[k] : k;
       const sp = stroke.samples[s];
       const cp = closestPointOnTriangle(
         sp[0], sp[1], sp[2],
@@ -788,15 +943,24 @@ export function buildGeodesicField(
     }
   }
 
-  const memo = new Map<string, boolean>();
+  // Refine queries revisit the same vertices many times. Memoize on the point
+  // quantized to 1e-4, keyed numerically (x,y packed into one safe integer, z in
+  // an inner map): building a string key per query cost more than the lookup.
+  const memo = new Map<number, Map<number, boolean>>();
+  const Q = 1e4, SPAN = 2 ** 26;
   return {
     reachableAt(px, py, pz) {
-      const k = `${Math.round(px * 1e4)},${Math.round(py * 1e4)},${Math.round(pz * 1e4)}`;
-      const hit = memo.get(k);
+      const qx = Math.round(px * Q), qy = Math.round(py * Q), qz = Math.round(pz * Q);
+      const packable = Math.abs(qx) < SPAN / 2 && Math.abs(qy) < SPAN / 2;
+      const outer = packable ? (qx + SPAN / 2) * SPAN + (qy + SPAN / 2) : NaN;
+      const inner = packable ? memo.get(outer) : undefined;
+      const hit = inner?.get(qz);
       if (hit !== undefined) return hit;
       const li = nearestActive(px, py, pz);
       const res = li >= 0 && reachable[li] === 1;
-      memo.set(k, res);
+      if (packable) {
+        if (inner) inner.set(qz, res); else memo.set(outer, new Map([[qz, res]]));
+      }
       return res;
     },
   };
@@ -814,6 +978,7 @@ export function brushRefineRegion(stroke: BrushStroke): RefineRegion {
     // exactly along this field so the painted edge is the analytic outline.
     // A spray has no hard edge (it dithers), so it skips the clip.
     field: stroke.spray ? undefined : (px, py, pz) => strokeSignedDist(px, py, pz, stroke),
+    fieldBound: sampleGridFor(stroke)?.bound,
   };
 }
 
@@ -848,8 +1013,9 @@ export function airbrushDither(px: number, py: number, pz: number, seed: number)
  *  fully-inside triangles already paint solid, fully-outside ones never paint,
  *  and boundary triangles already finer than the target are left alone (that's
  *  the stopping condition). */
-function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
+function selectByClassify(mesh: MeshData, region: RefineRegion, toRoot?: Int32Array): Set<number> {
   const { triVerts, numTri } = mesh;
+  const allow = region.allow && toRoot ? region.allow : null;
   const selected = new Set<number>();
   const maxEdge2 = region.maxEdge * region.maxEdge;
   const box = region.aabb;
@@ -862,6 +1028,8 @@ function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
   const straightTol = region.maxEdge * 1e-3;
 
   for (let t = 0; t < numTri; t++) {
+    // Scope mask: triangles outside the region's scope are never refined.
+    if (allow && !allow[toRoot![t]]) continue;
     const a = triVertex(mesh, triVerts[t * 3]);
     const b = triVertex(mesh, triVerts[t * 3 + 1]);
     const c = triVertex(mesh, triVerts[t * 3 + 2]);
@@ -876,13 +1044,16 @@ function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
 
     if (field) {
       const fa = field(a[0], a[1], a[2]), fb = field(b[0], b[1], b[2]), fc = field(c[0], c[1], c[2]);
-      const dab = Math.abs(field((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2) - (fa + fb) / 2);
-      const dbc = Math.abs(field((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2) - (fb + fc) / 2);
-      const dca = Math.abs(field((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2) - (fc + fa) / 2);
-      const dev = Math.max(dab, dbc, dca);
+      const mab = field((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+      const mbc = field((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2);
+      const mca = field((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2);
+      const dev = Math.max(Math.abs(mab - (fa + fb) / 2), Math.abs(mbc - (fb + fc) / 2), Math.abs(mca - (fc + fa) / 2));
       // Skip only when the boundary is provably straight here (finite & flat);
-      // a +∞ region edge or any curvature falls through to refine.
-      if (Number.isFinite(dev) && dev <= straightTol) continue;
+      // a +∞ region edge or any curvature falls through to refine. A field
+      // clamped at its bound reads as flat without being straight.
+      const clamped = region.fieldBound !== undefined
+        && Math.max(fa, fb, fc, mab, mbc, mca) >= region.fieldBound;
+      if (!clamped && Number.isFinite(dev) && dev <= straightTol) continue;
     }
 
     selected.add(t);
@@ -928,8 +1099,10 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
 function clipByField(
   mesh: MeshData,
   region: RefineRegion,
+  toRoot?: Int32Array,
 ): { mesh: MeshData; childToParent: Int32Array } {
   const field = region.field!;
+  const allow = region.allow && toRoot ? region.allow : null;
   const box = region.aabb;
   const { vertProperties, triVerts, numVert, numTri, numProp } = mesh;
   const P = numProp;
@@ -1006,6 +1179,7 @@ function clipByField(
 
   for (let t = 0; t < numTri; t++) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    if (allow && !allow[toRoot![t]]) { emit(v0, v1, v2, t); continue; }
     if (box) {
       const a = triVertex(mesh, v0), b = triVertex(mesh, v1), c = triVertex(mesh, v2);
       if (triOutsideAabb(a, b, c, box)) { emit(v0, v1, v2, t); continue; }
@@ -1190,7 +1364,7 @@ export function buildRefinedMesh(
 
   for (const region of regions) {
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const selected = selectByClassify(mesh, region);
+      const selected = selectByClassify(mesh, region, comp);
       if (selected.size === 0) break;
       // Each selected triangle becomes 4 (+3 net). Stop before crossing the
       // safety ceiling so a tiny maxEdge can't OOM the tab.
@@ -1202,7 +1376,7 @@ export function buildRefinedMesh(
     // Boundary-conforming clip: cut the now-fine rim exactly along the region
     // outline so the painted edge is the analytic curve, not a staircase.
     if (region.field && mesh.numTri < MAX_REFINED_TRIANGLES) {
-      const { mesh: nm, childToParent } = clipByField(mesh, region);
+      const { mesh: nm, childToParent } = clipByField(mesh, region, comp);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
     }

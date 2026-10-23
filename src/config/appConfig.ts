@@ -310,6 +310,15 @@ export interface AppConfig {
     defaultPaletteCapacity: number;
     /** Max colours kept in the palette's recent-colour history ring. */
     paletteHistoryMax: number;
+    /** Default `paintStroke` smoothness: target boundary edge = radius /
+     *  this. The painted edge is clipped exactly, so this only sets how finely
+     *  a curve is approximated; higher values add triangles every saved
+     *  session must rebuild on open. */
+    paintStrokeResolution: number;
+    /** Gap filled between consecutive `paintStroke` / `paintAirbrush` path
+     *  points, as a fraction of the radius. Smaller = smoother band edge,
+     *  more samples. */
+    paintStrokePathSpacing: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -515,6 +524,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     scadDefaultQuality: 32,
     defaultPaletteCapacity: 4,
     paletteHistoryMax: 48,
+    paintStrokeResolution: 16,
+    paintStrokePathSpacing: 0.25,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,

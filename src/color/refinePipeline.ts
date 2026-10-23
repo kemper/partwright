@@ -22,13 +22,28 @@ import {
 import { slabRefineRegion } from './slabPaint';
 import { shapeRefineRegion } from './boxPaint';
 import { cylinderRefineRegion } from './cylinderPaint';
+import { patternRefineRegion, patternSupportsSmooth, type PatternContext } from './colorPattern';
 
-/** True when a descriptor drives mesh subdivision — see the same predicate in
- *  main.ts for the user-facing notion. */
+type PatternDescriptor = Extract<RegionDescriptor, { kind: 'pattern' }>;
+
+/** Supplies a smooth pattern descriptor's context (fitted sphere, scope mask —
+ *  resolved against the base mesh, see `PatternContext`). The main thread
+ *  computes it from labels/parts; the Worker reads the copy the main thread
+ *  sent. Null ⇒ the pattern is skipped (no refinement). */
+export type PatternContextProvider = (d: PatternDescriptor, index: number) => PatternContext | null;
+
+/** True when a descriptor drives mesh subdivision: any brush stroke, or a slab /
+ *  oriented shape / cylinder / smooth-capable pattern with smoothing enabled
+ *  (`smooth` + a positive `maxEdge`). Descriptors saved before smoothing
+ *  existed omit those fields and refine nothing, preserving their blocky edges.
+ *  The single predicate shared by main.ts and the Worker. */
 export function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
   if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
     return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  }
+  if (d.kind === 'pattern') {
+    return !!d.smooth && (d.maxEdge ?? 0) > 0 && patternSupportsSmooth(d.pattern);
   }
   return false;
 }
@@ -74,17 +89,21 @@ export function buildBrushStrokeFromDescriptor(
   return stroke;
 }
 
-/** Build the ordered refine regions (brush footprints, slab / oriented-shape
- *  boundaries) for a descriptor list. Brush strokes go through
- *  `buildBrushStrokeFromDescriptor`; slabs / shapes call their own region
- *  builders. Descriptors that don't drive subdivision are skipped. */
+/** Build the ordered refine regions (brush footprints, slab / oriented-shape /
+ *  cylinder boundaries, smooth pattern boundaries) for a descriptor list. Brush
+ *  strokes go through `brushBuilder` (default `buildBrushStrokeFromDescriptor`);
+ *  patterns need a `patternContext` provider (their scope lives in labels the
+ *  Worker can't see). Descriptors that don't drive subdivision are skipped.
+ *  The ONE implementation: main.ts and the Worker both call this. */
 export function collectRefineRegions(
   descriptors: RegionDescriptor[],
   base: MeshData,
   brushBuilder: (d: Extract<RegionDescriptor, { kind: 'brushStroke' }>) => BrushStroke = (d) => buildBrushStrokeFromDescriptor(d, base),
+  patternContext?: PatternContextProvider,
 ): RefineRegion[] {
   const regions: RefineRegion[] = [];
-  for (const d of descriptors) {
+  for (let i = 0; i < descriptors.length; i++) {
+    const d = descriptors[i];
     if (d.kind === 'brushStroke') {
       regions.push(brushRefineRegion(brushBuilder(d)));
     } else if (d.kind === 'slab' && descriptorRefines(d)) {
@@ -92,7 +111,11 @@ export function collectRefineRegions(
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
+    } else if (d.kind === 'pattern' && descriptorRefines(d) && patternContext) {
+      const ctx = patternContext(d, i);
+      const region = ctx ? patternRefineRegion(d, ctx, d.maxEdge!) : null;
+      if (region) regions.push(region);
     }
   }
   return regions;
@@ -125,6 +148,7 @@ export function refineMeshPipeline(
   base: MeshData,
   input: MeshData,
   descriptors: RegionDescriptor[],
+  patternContext?: PatternContextProvider,
 ): RefinePipelineResult {
   // Build refine regions once, remembering the resolved brush strokes so we
   // can resolve their footprint triangles on the refined mesh below without
@@ -135,7 +159,7 @@ export function refineMeshPipeline(
     const idx = descriptors.indexOf(d);
     brushStrokes.set(idx, stroke);
     return stroke;
-  });
+  }, patternContext);
 
   if (regions.length === 0) {
     return {

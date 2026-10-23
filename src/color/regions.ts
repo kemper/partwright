@@ -115,10 +115,15 @@ type RegionDescriptorKind =
   // colour. Resolved by `computePatternColors` (src/color/colorPattern.ts), which
   // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
   // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
+  // `smooth` + `maxEdge` (soccer / stripes / checker only — SMOOTH_PATTERN_KINDS)
+  // subdivide + clip the scope's boundary triangles along the pattern's analytic
+  // field, exactly like a smooth slab: only the descriptor is saved, and the
+  // refined mesh is rebuilt from it on load. Omitted ⇒ whole-triangle colours.
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
       scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
-      anchors?: [number, number, number][] };
+      anchors?: [number, number, number][];
+      smooth?: boolean; maxEdge?: number };
 
 export interface SerializedColorRegion {
   id: number;

@@ -1163,6 +1163,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'paletteHistoryMax', v)}
         />
         <Field
+          label="Paint stroke detail"
+          hint="Default paintStroke resolution: target edge = radius ÷ this."
+          tooltip="How finely a console/AI paintStroke approximates curves when the call gives no resolution. The painted edge is cut exactly either way, so higher values only smooth curves further, at the cost of more triangles that every saved session must rebuild when it opens."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintStrokeResolution}
+          value={c.ui.paintStrokeResolution}
+          min={2} max={1024} integer
+          onChange={v => set('ui', 'paintStrokeResolution', v)}
+        />
+        <Field
+          label="Paint stroke path spacing"
+          hint="Gap filled between paintStroke path points, as a fraction of the radius."
+          tooltip="paintStroke and paintAirbrush treat their points as a path and fill the gaps so the band is continuous. This sets the largest gap left between samples, relative to the brush radius. Smaller values give a smoother band edge at the cost of more samples."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintStrokePathSpacing}
+          value={c.ui.paintStrokePathSpacing}
+          min={0.05} max={1}
+          onChange={v => set('ui', 'paintStrokePathSpacing', v)}
+        />
+        <Field
           label="Tooltip delay"
           unit="ms"
           hint="Hover delay before a tooltip appears."

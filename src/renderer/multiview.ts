@@ -391,6 +391,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
+    orthoCamera.updateMatrixWorld();
     camera = orthoCamera;
   } else {
     const perspCamera = new THREE.PerspectiveCamera(40, 1, near, far);
@@ -398,6 +399,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
     perspCamera.updateProjectionMatrix();
+    perspCamera.updateMatrixWorld();
     camera = perspCamera;
   }
   return camera;

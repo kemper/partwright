@@ -9,6 +9,7 @@
 
 import type { MeshData } from '../geometry/types';
 import type { RegionDescriptor } from './regions';
+import type { PatternContext } from './colorPattern';
 import type { RefineRequest, RefineResponse, RefineDone } from './subdivisionWorker';
 import { registerWorker, markWorkerStarted, markWorkerRestarted, markWorkerStopped } from '../diagnostics/workerStats';
 
@@ -32,6 +33,9 @@ export interface RefineJobInput {
    *  mesh; for a full rebuild it's the same as `base`. */
   input: MeshData;
   descriptors: RegionDescriptor[];
+  /** Contexts for smooth `pattern` descriptors (by descriptor index) — see
+   *  `RefineRequest.patternContexts`. */
+  patternContexts?: Array<{ index: number; ctx: PatternContext }>;
   /** Aborting terminates the Worker, drops the in-flight job, and rejects this
    *  call's promise with an `AbortError`. The next job creates a fresh Worker. */
   signal?: AbortSignal;
@@ -164,6 +168,7 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
       base: input.base,
       input: input.input,
       descriptors: input.descriptors,
+      ...(input.patternContexts && input.patternContexts.length > 0 ? { patternContexts: input.patternContexts } : {}),
     };
     w.postMessage(req);
   });
