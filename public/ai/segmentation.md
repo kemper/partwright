@@ -44,10 +44,12 @@ await partwright.applyPartPreset(0)
 
 // 2. Fused shell: place named seeds. Get points by clicking in your own
 //    renders: renderViews → probePixel(view, [px, py]) → .point
+//    An optional seed `color` becomes that part's colour (and its model colour on
+//    accept). listPartDetectors().labelPresets has the panel's default colours.
 await partwright.detectParts({
   algorithm: 'crease-watershed',
   seeds: [
-    { label: 'hair',  point: [128, 128, 101] },   // several seeds per part are fine:
+    { label: 'hair',  point: [128, 128, 101], color: '#4a2e1c' },   // several seeds per part are fine:
     { label: 'hair',  point: [100, 128,  90] },   // add one on each side of big or wrapped parts
     { label: 'skin',  point: [151, 127,  66] },
     { label: 'eyes',  point: [150, 110,  75] },   // one seed per eye
@@ -83,7 +85,9 @@ await partwright.editParts({ ops: [{ op: 'focus', id: null }] })  // clear the f
 
 // 5. Show the user, get their OK, then commit
 await partwright.acceptParts({ label: 'Detected parts' })
-// The code becomes `return api.importWithParts(0);`, and each part is now a label.
+// The code becomes `return api.importWithParts(0);`, and each part is now a label
+// in the colour it shows: its setColor / seed colour, else its overlay colour.
+// acceptParts({ applyColors: false }) saves the labels without colours.
 
 // Later: re-open the saved parts (with their seeds) to refine them
 await partwright.reopenParts({ importIndex: 0 })
@@ -111,20 +115,25 @@ automatic ones), and each part reports its `pins` count.
 - **Rename and merge carry pins along.** Renaming a part renames its pins. Renaming a part to another part's name **merges** the two, pins included.
 - **Pin edits re-grow locally.** `addSeed` (a new name makes a new part), `moveSeed` and `removeSeed` re-grow only the parts around the pin. The rest of the model doesn't change. Removing a part's last pin dissolves it into its neighbours.
 - **Hand fixes are fixed.** Triangles changed with `reassign` (or the panel's Fix brush) are **fixed**: a later pin edit never undoes them. A whole-model re-detection (`detectParts`, `rerun`, a preset) starts fresh.
-- **Clear and reorder.** `{op:'clear'}` removes every part and pin (it can be undone). `{op:'reorder', id, position}` moves a part; the order becomes the label order on accept.
+- **Clear and reorder.** `{op:'clear'}` removes every part and pin (it can be undone); `{op:'clear', algorithm}` also switches the draft to that method, so new pins start fresh instead of re-growing inside old auto patches. `{op:'reorder', id, position}` moves a part; the order becomes the label order on accept.
 
 ## The Part Detection panel (handing off to the user)
 
 `detectParts` (from the in-app AI) and `reopenParts` open the **Part Detection panel**,
 so the user can refine the draft by hand. `openPartsPanel()` opens it explicitly. The panel has three steps:
-**Start** (method, presets, Detect), **Refine** (tools and the part list) and **Accept**.
+**Start** (label chips, method, presets, Detect), **Refine** (tools and the part list) and **Accept**.
+
+- **Label chips — the fast path.** A strip of named parts with default colours: *Figure* (hair, face, eyes, shirt, arms, shorts, socks, shoes, ball) or *Generic* (part 1…9), plus **+ custom** (a name and colour). Picking a chip (click, or keys **1–9**) arms the Pin tool with that name and colour; each click on the model places a named pin and re-grows, so no typing is needed. The first chip pin detects right away. A chip shows ✓ once it owns a part, and "missed — click again" (plus a warning) when its pin grew nothing. Chips need a seeded method: picking one while Auto patches or Pieces is selected switches to Crease watershed, and clears a seedless draft so its patches don't mix with the new parts (Undo brings them back). The agent equivalent is `detectParts` / `addSeed` with seed `color`s.
+- **Changing the method.** Switching from a seedless method (Auto patches, Pieces) to a seeded one clears the draft (with Undo), because pins would otherwise only re-grow inside the old patches. Locked parts or a focus keep the draft, since then the next detection merges into it on purpose.
 
 - **Hover to find.** Hovering the model names the part under the cursor and jumps the list to it. Hovering a row highlights that part on the model.
 - **Select tool (V).** Click a part to select it. Shift- or Ctrl-click toggles a part, Alt-click removes one, Shift-drag paints a selection across parts, and Esc clears it. An action bar then offers Merge (with a name), Solo, Lock, Colour, Re-detect inside (a focus) and Delete. `setPartSelection(parts, {mode})` / `getPartSelection()` drive the same selection, so select parts to show the user which ones you mean.
 - **Solo (S).** Only the selected parts stay in colour; everything else turns grey. `setPartsView({mode:'solo', parts?})` does the same, and `{mode:'all'}` restores every colour.
-- **Pin tool (P).** Click to add a pin for the named part, or type a new name to start a new part. Drag a pin to move it, right-click it to delete it, and hold **H** (or use the 👁 toggle) to hide pins.
+- **Pin tool (P).** Click to add a pin for the named part, or type a new name to start a new part. Drag a pin to move it, right-click it to delete it, and hold **H** (or use the 👁 toggle) to hide pins. Automatic pins are hidden unless **Show automatic pins** is on (a selected part still shows its own).
 - **Fix tool (B).** Drag to paint triangles into a part. These are fixed regions (`reassign` with a radius).
 - **Presets.** "Try presets" runs every preset of the method and shows a strip of results, best first. Hover or press ←/→ to preview one; click to apply it. Applying closes the strip and offers Undo. This is `previewPartPresets` + `showPartPresetPreview` + `applyPartPreset`.
+- **After Accept.** The panel shows **Parts saved** with the next steps instead of a live Accept button: **Open Paint** (scoped to the part you pick, so colour can't bleed across its edge) or **Edit parts** (`reopenParts`).
+- **Merging clears the selection**, so the next Shift-drag starts a fresh set.
 - **Part list.** Drag ⋮⋮ (or press Alt+↑/↓ in a name) to reorder. Each row has lock, ◐ solo and remove buttons. "Clear all" empties the list (it can be undone). Discard throws away the parts *and* pins.
 - **Live** (off by default) re-runs detection after each setting change. Pin edits always update right away.
 

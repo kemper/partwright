@@ -35,7 +35,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -153,7 +153,7 @@ import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
-import { normalizeSpec } from './figure/characterSpec';
+import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
 import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -356,6 +356,7 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
+import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, type CropRect } from './tools/photoMatch';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
 import { insertRemovalLine, removePartCall, removePieceCall, pieceAnchorPoint } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
@@ -726,6 +727,37 @@ function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>):
   let bestCount = 0;
   for (const [k, c] of counts) if (c > bestCount) { best = k; bestCount = c; }
   return best < 0 ? null : `#${best.toString(16).padStart(6, '0')}`;
+}
+
+/** Decode an image source (data URL or same-origin URL) to RGBA pixels. */
+async function decodeImageToRgba(src: string): Promise<{ width: number; height: number; data: Uint8ClampedArray }> {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('2D canvas unavailable');
+  ctx.drawImage(img, 0, 0);
+  const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  return { width: id.width, height: id.height, data: id.data };
+}
+
+/** Resolve photoMatch's `image` argument: a data URL, or an attachment by id
+ *  or label. Omitted → the only image attachment (error when 0 or several). */
+function resolvePhotoMatchImage(image: string | undefined): { src: string; source: string } | { error: string } {
+  if (image && image.startsWith('data:image/')) return { src: image, source: 'data URL' };
+  const images = _getAttachments().filter(a => a.kind === 'image');
+  if (image === undefined) {
+    if (images.length === 1) return { src: images[0].src, source: `attachment ${images[0].id}` };
+    if (!images.length) return { error: 'photoMatch: no image given and no image attachments — pass image (a data URL or an attachment id from getAttachments()).' };
+    return { error: `photoMatch: several image attachments — pass image as one of: ${images.map(a => `${a.id}${a.label ? ` (${a.label})` : ''}`).join(', ')}.` };
+  }
+  const hit = images.find(a => a.id === image) ?? images.find(a => (a.label ?? '').toLowerCase() === image.toLowerCase());
+  if (hit) return { src: hit.src, source: `attachment ${hit.id}` };
+  return { error: `photoMatch: "${image.slice(0, 60)}" is neither a data:image/ URL nor an image attachment id/label. Image attachments: ${images.map(a => a.id).join(', ') || '(none)'}.` };
 }
 
 /** The rail/API view of the current object's parts and pieces. */
@@ -11905,6 +11937,121 @@ async function main() {
       return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
     },
 
+    /** Text-only likeness score: how close the CURRENT model is to a reference
+     *  photo, and where it's off — no image tokens needed. Renders the model
+     *  flat (region colours, no lighting) from `view` (default front, ortho),
+     *  segments the photo (backdrop estimated from its border, or `bg`), and
+     *  compares the normalised silhouettes and colour regions.
+     *  -> { silhouetteIoU, aspect, bands[], regions[], worst[], warnings[],
+     *       segmentation, view, image, regionNames, overlay? } or { error }.
+     *  See /ai/reference-images.md#photo-match. */
+    async photoMatch(options?: {
+      image?: string; view?: { azimuth?: number; elevation?: number; ortho?: boolean };
+      crop?: { x: number; y: number; w: number; h: number } | number[];
+      bg?: string | number[]; bgTolerance?: number; size?: number; exclude?: string[];
+      fit?: 'height' | 'box'; pixelAspect?: number; overlay?: boolean;
+    }) {
+      const check = guard(() => {
+        const o = (options === undefined ? {} : assertObject(options, 'photoMatch(options)')!) as Record<string, unknown>;
+        assertNoUnknownKeys(o, ['image', 'view', 'crop', 'bg', 'bgTolerance', 'size', 'exclude', 'fit', 'pixelAspect', 'overlay'], 'photoMatch(options)');
+        const image = assertString(o.image, 'photoMatch(options).image', { optional: true });
+        let view = { azimuth: 0, elevation: 0, ortho: true };
+        if (o.view !== undefined) {
+          const v = assertObject(o.view, 'photoMatch(options).view')!;
+          assertNoUnknownKeys(v, ['azimuth', 'elevation', 'ortho'], 'photoMatch(options).view');
+          view = {
+            azimuth: assertNumber(v.azimuth, 'photoMatch(options).view.azimuth', { optional: true }) ?? 0,
+            elevation: assertNumber(v.elevation, 'photoMatch(options).view.elevation', { optional: true, min: -90, max: 90 }) ?? 0,
+            ortho: assertBoolean(v.ortho, 'photoMatch(options).view.ortho', { optional: true }) ?? true,
+          };
+        }
+        let crop: CropRect | null = null;
+        if (o.crop !== undefined) {
+          if (Array.isArray(o.crop)) {
+            const [x, y, w, h] = assertNumberTuple(o.crop, 4, 'photoMatch(options).crop');
+            crop = { x, y, w, h };
+          } else {
+            const c = assertObject(o.crop, 'photoMatch(options).crop')!;
+            assertNoUnknownKeys(c, ['x', 'y', 'w', 'h'], 'photoMatch(options).crop');
+            crop = {
+              x: assertNumber(c.x, 'photoMatch(options).crop.x', { min: 0 })!,
+              y: assertNumber(c.y, 'photoMatch(options).crop.y', { min: 0 })!,
+              w: assertNumber(c.w, 'photoMatch(options).crop.w', { min: 1 })!,
+              h: assertNumber(c.h, 'photoMatch(options).crop.h', { min: 1 })!,
+            };
+          }
+        }
+        let bg: string | [number, number, number] | null = null;
+        if (o.bg !== undefined) {
+          if (Array.isArray(o.bg)) bg = assertNumberTuple(o.bg, 3, 'photoMatch(options).bg') as [number, number, number];
+          else {
+            bg = assertString(o.bg, 'photoMatch(options).bg')!;
+            if (!/^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(bg)) throw new ValidationError('photoMatch(options).bg must be "#rrggbb" or [r,g,b] (0-255).');
+          }
+        }
+        const bgTolerance = assertNumber(o.bgTolerance, 'photoMatch(options).bgTolerance', { optional: true, min: 0, max: 255 }) ?? null;
+        const size = assertNumber(o.size, 'photoMatch(options).size', { optional: true, min: 64, max: 2048, integer: true }) ?? getConfig().import.photoMatchRenderSize;
+        const exclude = o.exclude === undefined ? [] : assertArray(o.exclude, 'photoMatch(options).exclude').map((s, i) => assertString(s, `photoMatch(options).exclude[${i}]`)!);
+        const fit = o.fit === undefined ? 'height' : assertEnum(o.fit, ['height', 'box'] as const, 'photoMatch(options).fit');
+        const pixelAspect = assertNumber(o.pixelAspect, 'photoMatch(options).pixelAspect', { optional: true, min: 0.05, max: 20 }) ?? null;
+        const overlay = assertBoolean(o.overlay, 'photoMatch(options).overlay', { optional: true }) ?? false;
+        return { image, view, crop, bg, bgTolerance, size, exclude, fit, pixelAspect, overlay };
+      });
+      if ('error' in check) return check;
+      if (!currentMeshData) return { error: 'photoMatch: no geometry loaded — run code first.' };
+      const img = resolvePhotoMatchImage(check.image);
+      if ('error' in img) return img;
+      let reference: { width: number; height: number; data: Uint8ClampedArray };
+      try {
+        reference = await decodeImageToRgba(img.src);
+      } catch (e) {
+        return { error: `photoMatch: could not decode the image (${e instanceof Error ? e.message : String(e)}). Remote images must allow CORS — attach the photo or pass a data URL.` };
+      }
+      const mesh = currentMeshData;
+      // Regions: api.label parts (when the label map indexes this mesh), else
+      // the distinct drawn colours. Colours = what the viewport draws.
+      const summary = objectPartsMesh() === mesh ? currentObjectPartsSummary() : null;
+      const labelNames = summary ? summary.parts.map(p => p.name) : [];
+      let triLabel: Int32Array | null = null;
+      if (summary && summary.parts.length) {
+        triLabel = new Int32Array(mesh.numTri).fill(-1);
+        summary.parts.forEach((p, i) => { for (const tri of p.triangles) if (tri >= 0 && tri < mesh.numTri) triLabel![tri] = i; });
+      }
+      const triColors = mesh.triColors ?? buildTriColors(mesh.numTri);
+      const painted = (triColors as (Uint8Array & { _painted?: Uint8Array }) | null)?._painted ?? null;
+      const { regions, triRegion } = buildTriangleRegions(mesh.numTri, triColors, triLabel, labelNames, check.exclude, painted);
+      const unknownExcl = check.exclude.filter(n => !labelNames.includes(n) && !regions.some(r => r.name === n));
+      const render = renderRegionLabels(mesh, triRegion, { ...check.view, size: check.size });
+      const tuning = photoMatchTuningFromConfig(getConfig().import);
+      const result = scorePhotoMatch({
+        reference, crop: check.crop, bg: check.bg, bgTolerance: check.bgTolerance,
+        model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
+        modelLabels: render.labels, regions, fit: check.fit, pixelAspect: check.pixelAspect,
+        debug: check.overlay, tuning,
+      });
+      let overlay: string | undefined;
+      if (result.debug) {
+        const ov = photoMatchOverlay(result.debug, regions.map(r => r.color || null));
+        const canvas = document.createElement('canvas');
+        canvas.width = ov.width; canvas.height = ov.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(ov.data), ov.width, ov.height), 0, 0);
+          overlay = canvas.toDataURL('image/png');
+        }
+        delete result.debug;
+      }
+      if (unknownExcl.length) result.warnings.push(`exclude: no part named ${unknownExcl.join(', ')} (parts: ${labelNames.join(', ') || 'none'}).`);
+      return {
+        view: check.view,
+        image: { source: img.source, width: reference.width, height: reference.height },
+        ...(check.crop ? { crop: check.crop } : {}),
+        regionNames: regions.map(r => r.name),
+        ...result,
+        ...(overlay ? { overlay } : {}),
+      };
+    },
+
     /** Render multiple angles of the current model laid out in a single
      *  labeled grid, returned as one PNG data URL. The killer use case
      *  is "did this paint operation land where I thought" — a single
@@ -12982,13 +13129,30 @@ async function main() {
      *  otherwise it just updates the editor + viewport for a live preview. The
      *  generated code embeds the spec as a `// @character` header so the panel
      *  (and a re-opened session) can restore every control. `spec` is the plain
-     *  object the panel edits — see src/figure/characterSpec.ts; unknown/missing
-     *  fields fall back to the defaults. */
+     *  object the panel edits — see src/figure/characterSpec.ts; missing fields
+     *  fall back to the defaults (a `version: 1` key migrates a v1 spec). Every
+     *  field is validated (enums, ranges, colours, unknown keys) before any code
+     *  is generated, so a bad spec returns `{ error }` listing each problem. */
     async buildCharacter(spec: unknown, opts?: { save?: boolean; label?: string }) {
-      if (!spec || typeof spec !== 'object') {
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
         return { error: 'buildCharacter(spec): spec must be a Character Creator spec object. See src/figure/characterSpec.ts / public/ai/figure.md.' };
       }
-      const code = specToCode(normalizeSpec(spec));
+      const optCheck = guard(() => {
+        if (opts !== undefined) {
+          assertObject(opts, 'buildCharacter(opts)');
+          assertNoUnknownKeys(opts as Record<string, unknown>, ['save', 'label'], 'buildCharacter(opts)');
+          assertBoolean((opts as Record<string, unknown>).save, 'buildCharacter(opts.save)', { optional: true });
+          assertString((opts as Record<string, unknown>).label, 'buildCharacter(opts.label)', { optional: true });
+        }
+        return true;
+      });
+      if (typeof optCheck === 'object' && optCheck !== null && 'error' in optCheck) return optCheck;
+      const normalized = normalizeSpec(spec);
+      const problems = validateSpec(normalized);
+      if (problems.length > 0) {
+        return { error: `buildCharacter(spec): ${problems.length} invalid field${problems.length === 1 ? '' : 's'} — ${problems.join('; ')}. See /ai/figure.md#shortcut-buildcharacterspec--the--character-panel` };
+      }
+      const code = specToCode(normalized);
       if (opts?.save) {
         const r = await partwrightAPI.runAndSave(code, opts.label ?? 'Character');
         return { code, ...(r as Record<string, unknown>) };
@@ -13003,6 +13167,19 @@ async function main() {
       setValue(code);
       await runCodeSync(code);
       return { code };
+    },
+
+    /** Read the Character Creator spec embedded in the current code's
+     *  `// @character vN {json}` header (migrated to the current spec version),
+     *  so an agent can tweak a field and call buildCharacter(spec) again.
+     *  Returns `{ spec, version }` or `{ error }` when the code has no header. */
+    getCharacterSpec() {
+      const code = getValue();
+      const spec = decodeSpecComment(code);
+      if (!spec) {
+        return { error: 'getCharacterSpec(): the current code has no `// @character` header — it was not generated by buildCharacter / the 🧍 Character panel. Build one with buildCharacter(spec) first.' };
+      }
+      return { spec, version: SPEC_VERSION };
     },
 
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
@@ -16695,7 +16872,8 @@ async function main() {
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
-        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted human figure from a Character Creator spec (body/pose/face/hair/clothing/colors). save:true commits a version. Same engine as the 🧍 Character panel.', docs: '/ai/figure.md' },
+        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale} / pose {hold:{kind:"ball"}} / face {layout} / hair {style:"anime"|"mop"|...} / clothing / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
+        'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -16717,22 +16895,22 @@ async function main() {
         'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
-        'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
-        'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
+        'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps, labelPresets:[{id, title, labels:[{name, color}]}]} (labelPresets = the Part Detection panel label chips: names + default colours for seeds)', docs: '/ai/segmentation.md' },
+        'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z], color?:"#rrggbb"}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). A seed colour becomes its part\'s colour. Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
-        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method', docs: '/ai/segmentation.md' },
         'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
         'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
         'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
-        'acceptParts':       { signature: 'await acceptParts({label?, smoothEdges?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version; with edge smoothing on the import is re-meshed along the smooth boundaries -> {ok, parts, version, labels, smoothEdges?}', docs: '/ai/segmentation.md' },
+        'acceptParts':       { signature: 'await acceptParts({label?, smoothEdges?, applyColors?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version; each part keeps the colour it shows (explicit, else its overlay colour) as its model colour (applyColors:false = labels only); with edge smoothing on the import is re-meshed along the smooth boundaries -> {ok, parts, version, labels, smoothEdges?}', docs: '/ai/segmentation.md' },
         'discardParts':      { signature: 'await discardParts() -- Drop the draft and its overlay', docs: '/ai/segmentation.md' },
         'reopenParts':       { signature: 'await reopenParts({importIndex?}) -- Re-open the parts saved on an import (with their seeds) as the draft -> draft summary', docs: '/ai/segmentation.md' },
         'previewPartPresets': { signature: 'await previewPartPresets({algorithm?, seeds?, view?, importIndex?, image?}) -- Run every preset of a detector without touching the draft, ranked best-first -> {presets:[{index,name,params,partCount,score}], image}', docs: '/ai/segmentation.md' },
         'showPartPresetPreview': { signature: 'showPartPresetPreview(index | null) -- Show one preset result in the viewport (null = back to the draft)', docs: '/ai/segmentation.md' },
         'applyPartPreset':   { signature: 'await applyPartPreset(index) -- Make a previewPartPresets result the draft -> draft summary', docs: '/ai/segmentation.md' },
         'getPartSeeds':      { signature: 'getPartSeeds() -- The parts\' pins (the panel markers; auto = placed by the draft) -> [{label, point, auto?}]', docs: '/ai/segmentation.md' },
-        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z]}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
+        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z], color?}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
         'openPartsPanel':    { signature: 'openPartsPanel() -- Open the Part Detection panel', docs: '/ai/segmentation.md' },
         'getPartSelection':  { signature: 'getPartSelection() -- Selected draft parts (shared with the panel and the model) -> {parts:[{id,name}]}', docs: '/ai/segmentation.md' },
         'setPartSelection':  { signature: 'setPartSelection([id|name, ...] | null, {mode?:"replace"|"add"|"toggle"|"remove"}) -- Select draft parts (highlighted in the viewport)', docs: '/ai/segmentation.md' },
@@ -16777,6 +16955,7 @@ async function main() {
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
+        'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, exclude?: [part], fit?: "height"|"box", pixelAspect?, size?, overlay?}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, 10 band widths, per-part IoU/area/offset/colour, worst[] findings. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         // Spending mode (AI budget)
         'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },

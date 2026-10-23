@@ -6,14 +6,18 @@
 // brows are unioned at the TOP level so each is a separately paintable label;
 // the carved mouth is left off the assemble in favour of a paintable lip ridge.
 //
-// The generated code carries the spec as a `// @character v1 {json}` header so
+// The generated code carries the spec as a `// @character v2 {json}` header so
 // the panel round-trips it exactly, while the body stays ordinary, hand-editable
-// figure code. Pure text generation (no DOM/engine) so it unit-tests in the
-// vitest tier, like surfaceCodegen.ts.
+// figure code. Every v2 option is emitted only when it departs from the value
+// that reproduces v1 output, so a migrated v1 spec generates byte-identical
+// code below the header line (tests/unit/fixtures/characterV1Code.json).
+// Pure text generation (no DOM/engine) so it unit-tests in the vitest tier,
+// like surfaceCodegen.ts.
 
 import {
   type CharacterSpec,
   type Joint,
+  LOCK_HAIR_STYLES,
   encodeSpecComment,
 } from './characterSpec';
 
@@ -61,14 +65,19 @@ function poseFragment(spec: CharacterSpec): string {
   const p = spec.pose;
   const parts: string[] = [];
   const add = (name: string, lit: string | null) => { if (lit) parts.push(`    ${name}: ${lit},`); };
-  add('armL', jointLiteral(p.armL));
-  add('armR', jointLiteral(p.armR));
+  // A two-hand hold solves both arms (the rig rejects armL/armR alongside it).
+  const holding = p.hold.kind === 'ball';
+  if (!holding) {
+    add('armL', jointLiteral(p.armL));
+    add('armR', jointLiteral(p.armR));
+  }
   add('legL', jointLiteral(p.legL));
   add('legR', jointLiteral(p.legR));
   const spine = obj({ lean: p.spine.lean || undefined, turn: p.spine.turn || undefined, side: p.spine.side || undefined });
   if (spine) parts.push(`    spine: ${spine},`);
   const head = obj({ yaw: p.head.yaw || undefined, pitch: p.head.pitch || undefined, roll: p.head.roll || undefined });
   if (head) parts.push(`    head: ${head},`);
+  if (holding) parts.push(`    hold: { sphere: { radius: ${fmt(p.hold.radius)} }, cup: ${fmt(p.hold.cup)} },`);
   if (parts.length === 0) return '';
   return `\n  pose: {\n${parts.join('\n')}\n  },`;
 }
@@ -76,6 +85,10 @@ function poseFragment(spec: CharacterSpec): string {
 /** Generate complete, runnable figure code for a spec. */
 export function specToCode(spec: CharacterSpec): string {
   const { body, face, hair, clothing, colors } = spec;
+  const holding = spec.pose.hold.kind === 'ball';
+  // Stylized (scaled) heads bulge past the canon anchors — seat the brows on
+  // the real built face so they don't bury (`on: face`).
+  const stylized = body.proportions !== 'realistic' || (body.headScale !== null && body.headScale !== undefined);
   const L: string[] = [];
 
   L.push(encodeSpecComment(spec));
@@ -96,6 +109,14 @@ export function specToCode(spec: CharacterSpec): string {
   ];
   if (body.bust) rigOpts.push(`  bust: ${fmt(body.bust)},`);
   if (body.belly) rigOpts.push(`  belly: ${fmt(body.belly)},`);
+  // v2 body plan — each only when set, so a realistic v1 spec is unchanged.
+  if (body.proportions !== 'realistic') rigOpts.push(`  proportions: ${fmt(body.proportions)},`);
+  if (body.headScale !== null && body.headScale !== undefined) {
+    const hs = body.headScale;
+    rigOpts.push(`  headScale: ${typeof hs === 'number' ? fmt(hs) : obj({ x: hs.x, y: hs.y, z: hs.z })},`);
+  }
+  const layout = obj({ eyeSpread: face.layout.eyeSpread ?? undefined, eyeHeight: face.layout.eyeHeight ?? undefined });
+  if (layout) rigOpts.push(`  faceLayout: ${layout},`);
   L.push(`const rig = F.rig({\n${rigOpts.join('\n')}${poseFragment(spec)}\n});`);
   L.push('');
 
@@ -110,7 +131,8 @@ export function specToCode(spec: CharacterSpec): string {
   L.push('  F.torso(rig),');
   L.push('  F.neck(rig),');
   L.push('  F.arms(rig),');
-  L.push("  F.hands(rig, { grip: 'relaxed' }),");
+  // Open palms when holding a ball (the hold solve assumes the open hand).
+  L.push(`  F.hands(rig, { grip: ${fmt(holding ? 'open' : 'relaxed')} }),`);
   L.push('  F.legs(rig),');
   L.push('  F.feet(rig),');
   L.push('  face,');
@@ -119,16 +141,40 @@ export function specToCode(spec: CharacterSpec): string {
 
   // Top-level paintable face features.
   const unionMembers: string[] = ['skin'];
-  L.push(`const eyes = F.face.eyes(rig, { lids: ${fmt(face.lids)}, gaze: ${fmt(face.gaze)} });`);
+  // eyeSize scales the library's default eye radius (r.head · 0.16).
+  const eyeRadius = face.eyeSize !== 1 ? `radius: rig.r.head * ${fmt(0.16 * face.eyeSize)}, ` : '';
+  L.push(`const eyes = F.face.eyes(rig, { ${eyeRadius}lids: ${fmt(face.lids)}, gaze: ${fmt(face.gaze)} });`);
   unionMembers.push('eyes');
-  L.push(`const lips = F.face.mouthAccents(rig, { style: 'lips', lipShape: ${fmt(face.lipShape)}, expression: ${fmt(face.expression)} });`);
-  unionMembers.push('lips');
-  L.push(`const brows = F.face.brows(rig, { shape: ${fmt(face.brows)} }).label('brows');`);
+  if (face.mouth) {
+    L.push(`const lips = F.face.mouthAccents(rig, { style: 'lips', lipShape: ${fmt(face.lipShape)}, expression: ${fmt(face.expression)} });`);
+    unionMembers.push('lips');
+  }
+  L.push(stylized
+    ? `const brows = F.face.brows(rig, { shape: ${fmt(face.brows)}, on: face }).label('brows');`
+    : `const brows = F.face.brows(rig, { shape: ${fmt(face.brows)} }).label('brows');`);
   unionMembers.push('brows');
 
   // Hair (omitted entirely when bald).
   if (hair.style !== 'bald') {
-    const hairOpts = obj({ style: hair.style, length: hair.length, volume: hair.volume !== 1 ? hair.volume : undefined });
+    let hairOpts = obj({ style: hair.style, length: hair.length, volume: hair.volume !== 1 ? hair.volume : undefined });
+    if (LOCK_HAIR_STYLES.includes(hair.style)) {
+      // Lock styles: only the knobs this style reads, only when off-default,
+      // and `on: head` so the locks hug the real (scaled / cheeked) head.
+      const anime = hair.style === 'anime', shag = hair.style === 'shag';
+      const knobs = obj({
+        lockShape: anime && hair.lockShape !== 'ribbon' ? hair.lockShape : undefined,
+        chunk: (anime || shag) && hair.chunk !== 1 ? hair.chunk : undefined,
+        spike: (anime || shag) && hair.spike !== 1 ? hair.spike : undefined,
+        swoop: anime && hair.swoop !== 1 ? hair.swoop : undefined,
+        crown: shag && hair.crown !== 'spiky' ? hair.crown : undefined,
+        layers: shag && Math.round(hair.layers) !== 3 ? Math.round(hair.layers) : undefined,
+        raggedness: shag && hair.raggedness !== 1 ? hair.raggedness : undefined,
+        flare: shag && hair.flare !== 1 ? hair.flare : undefined,
+        fringe: hair.fringe !== 1 ? hair.fringe : undefined,
+        seed: hair.seed !== 1 ? hair.seed : undefined,
+      });
+      hairOpts = `${hairOpts.slice(0, -2)}${knobs ? `, ${knobs.slice(2, -2)}` : ''}, on: head }`;
+    }
     L.push(`const hair = F.hair(rig, ${hairOpts}).label('hair');`);
     unionMembers.push('hair');
   }
@@ -156,6 +202,10 @@ export function specToCode(spec: CharacterSpec): string {
     L.push(`const feet = F.clothing.${fn}(rig, { label: 'feet' });`);
     unionMembers.push('feet');
   }
+  if (holding) {
+    L.push(`const ball = F.heldSphere(rig).label('ball');`);
+    unionMembers.push('ball');
+  }
   if (spec.base) {
     L.push(`const base = F.base(rig).label('base');`);
     unionMembers.push('base');
@@ -172,6 +222,7 @@ export function specToCode(spec: CharacterSpec): string {
     ['lips', colors.lips],
     ['brows', colors.brows],
   ];
+  if (!face.mouth) paint.splice(paint.findIndex(([l]) => l === 'lips'), 1);
   // `F.face.eyes` only emits a skin-coloured eyelid region ('lids') when lids
   // aren't 'none'; paint it skin so it doesn't render as a grey patch.
   if (face.lids !== 'none') paint.splice(1, 0, ['lids', colors.skin]);
@@ -181,11 +232,24 @@ export function specToCode(spec: CharacterSpec): string {
   if (clothing.feet.on) { paint.push(['feet', colors.feet]); paint.push(['sole', colors.feet]); }
   if (spec.base) paint.push(['base', colors.base]);
   for (const [label, color] of paint) L.push(`api.paint.label(${fmt(label)}, ${fmt(color)});`);
+  // The ball: truncated-icosahedron soccer panels fitted to the 'ball' label.
+  if (holding) L.push(`api.paint.pattern({ pattern: 'soccer', withinPart: 'ball', colors: [${fmt(colors.ball)}, ${fmt(spec.pose.hold.color)}] });`);
   L.push('');
 
-  // BUILD — finer face + hand grids via detail regions.
-  L.push(`return sdf.union(${unionMembers.join(', ')})`);
-  L.push('  .build({ edgeLength: 0.55, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });');
+  // BUILD — finer face + hand grids via detail regions. v2 specs finish with
+  // F.place (bottom at z = 0, facing +X); migrated v1 specs keep the builder frame.
+  // A placed (v2) figure scales its mesh edge with height (0.55 at the default
+  // 60) so the triangle count stays in budget at any size; v1 keeps the fixed 0.55.
+  const edge = spec.place ? fmt(0.55 * body.height / 60) : '0.55';
+  const build = `  .build({ edgeLength: ${edge}, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });`;
+  if (spec.place) {
+    L.push(`const model = sdf.union(${unionMembers.join(', ')})`);
+    L.push(build);
+    L.push(`return F.place(model, rig, { face: '+X' });`);
+  } else {
+    L.push(`return sdf.union(${unionMembers.join(', ')})`);
+    L.push(build);
+  }
 
   return L.join('\n') + '\n';
 }

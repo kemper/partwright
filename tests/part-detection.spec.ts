@@ -219,6 +219,85 @@ test.describe('Part detection', () => {
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft())).toEqual({ draft: null });
   });
 
+  test('label chips: pick a chip, click the model, accept keeps the chip colours', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    // Start from an auto-patches draft: picking a chip must switch to a seeded
+    // method and start fresh rather than mix pins into the patches.
+    const auto = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 30 } })) as { error?: string };
+    expect(auto.error).toBeUndefined();
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+
+    await panel.locator('[data-chip="hair"]').click();
+    await expect(panel.getByLabel('Detection method')).toHaveValue('crease-watershed');
+    await expect(panel.getByText(/Started fresh for Crease watershed/)).toBeVisible();
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('aria-pressed', 'true');
+    const cleared = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as { detector: string; parts: unknown[] };
+    expect(cleared.detector).toBe('crease-watershed');
+    expect(cleared.parts).toHaveLength(0);
+
+    /** Click the model where a world point projects (no typing involved). */
+    const clickAt = async (p: [number, number, number]) => {
+      const xy = await page.evaluate(async (pt) => {
+        const vp = await import('/src/renderer/viewport.ts');
+        const cam = vp.getCamera();
+        const v = cam.position.clone().set(pt[0], pt[1], pt[2]).project(cam);
+        const r = vp.getCanvas().getBoundingClientRect();
+        return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+      }, p);
+      await page.mouse.click(xy.x, xy.y);
+    };
+    const partsNow = () => page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.getPartDraft() as { parts?: { name: string; color: string | null }[] }).parts ?? []);
+
+    // Top of the upper block → "hair".
+    await clickAt([10, 10, 20]);
+    await expect.poll(async () => (await partsNow()).map((p) => [p.name, p.color]), { timeout: 30_000 }).toEqual([['hair', '#4a2e1c']]);
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('data-chip-state', 'owned');
+
+    // Key 2 picks the "face" chip; then the lower block's top → "face".
+    await page.keyboard.press('2');
+    await expect(panel.locator('[data-chip="face"]')).toHaveAttribute('aria-pressed', 'true');
+    await clickAt([2, 2, 10]);
+    await expect.poll(async () => (await partsNow()).map((p) => p.name).sort(), { timeout: 30_000 }).toEqual(['face', 'hair']);
+    expect((await partsNow()).find((p) => p.name === 'face')!.color).toBe('#e8b98f');
+
+    // Accept: the next step replaces the Accept button, colours carry through.
+    await panel.getByRole('button', { name: 'Accept parts' }).click();
+    await expect(panel.locator('[data-parts-saved]')).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByRole('button', { name: 'Accept parts' })).toBeHidden();
+    await expect(panel.getByRole('button', { name: 'Edit parts' })).toBeVisible();
+    const saved = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts()) as { parts: { name: string; color?: string }[] };
+    expect(Object.fromEntries(saved.parts.map((p) => [p.name, p.color]))).toMatchObject({ hair: '#4a2e1c', face: '#e8b98f' });
+
+    // Open Paint lands scoped to the chosen part.
+    await panel.getByLabel('Part to paint within').selectOption('face');
+    await panel.getByRole('button', { name: 'Open Paint' }).click();
+    await expect(page.locator('#paint-within-part')).toHaveValue('face');
+  });
+
+  test('acceptParts applyColors:false saves labels only; seed colours validate', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed', seeds: [{ label: 'base', point: [10, 10, 0], color: 'red' }],
+    })) as { error?: string };
+    expect(bad.error).toMatch(/color/);
+    const det = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [10, 10, 0], color: '#123456' }, { label: 'top', point: [10, 10, 20] }],
+    })) as { parts: { name: string; color: string | null }[] };
+    expect(det.parts.find((p) => p.name === 'base')!.color).toBe('#123456');
+    const acc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts({ applyColors: false })) as { parts?: { color: string | null }[]; error?: string };
+    expect(acc.error).toBeUndefined();
+    expect(acc.parts!.every((p) => p.color === null)).toBe(true);
+  });
+
   test('detectParts without an import explains what to do', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 30_000 });

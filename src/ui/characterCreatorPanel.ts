@@ -18,12 +18,19 @@ import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
 import {
   type CharacterSpec,
+  type Proportions,
   DEFAULT_SPEC,
   cloneSpec,
   decodeSpecComment,
+  applyStyle,
+  resolvedHeadScale,
+  STYLE_DEFAULTS,
   CHARACTER_PRESETS,
   POSE_PRESETS,
   POSE_PRESET_LABELS,
+  LOCK_HAIR_STYLES,
+  BUILDS, SEXES, FACE_SHAPES, LID_STYLES, NOSE_TYPES, LIP_SHAPES, BROW_SHAPES,
+  HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES, PANTS_RISES,
 } from '../figure/characterSpec';
 
 /** The slice of the console API the panel drives. */
@@ -116,6 +123,35 @@ function colorRow(label: string, value: string, onChange: (v: string) => void): 
   return labelledRow(label, swatch.el);
 }
 
+/** Active segment of a segmented control (matches the Part Detection tool row). */
+const SEG_ON = 'px-2 py-1 rounded text-[11px] text-blue-200 bg-blue-500/30 border border-blue-500/50';
+
+/** A row of mutually-exclusive buttons (aria-pressed). Segments grow to a 44 px
+ *  touch target on the stacked mobile layout and stay compact on desktop. */
+function segmentedRow(
+  label: string,
+  value: string,
+  options: readonly [string, string][],
+  onPick: (v: string) => void,
+): HTMLElement {
+  const group = el('div', 'flex gap-1 flex-1 justify-end');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', label);
+  for (const [val, text] of options) {
+    const b = el('button', `${val === value ? SEG_ON : BUTTON_SMALL_SECONDARY} flex-1 min-h-[44px] md:min-h-0`);
+    b.type = 'button';
+    b.textContent = text;
+    b.setAttribute('aria-pressed', String(val === value));
+    b.addEventListener('click', () => { if (val !== value) onPick(val); });
+    group.appendChild(b);
+  }
+  const row = el('div', 'flex items-center justify-between gap-2');
+  const name = el('span', 'text-[12px] text-zinc-300 shrink-0');
+  name.textContent = label;
+  row.append(name, group);
+  return row;
+}
+
 function toggleRow(label: string, value: boolean, onChange: (v: boolean) => void): HTMLElement {
   const input = el('input', 'accent-blue-500 w-4 h-4');
   input.type = 'checkbox';
@@ -129,7 +165,10 @@ const HAIR_STYLES: [string, string][] = [
   ['bald', 'Bald'], ['short', 'Short'], ['long', 'Long'], ['bob', 'Bob'], ['bun', 'Bun'],
   ['bangs', 'Bangs'], ['ponytail', 'Ponytail'], ['afro', 'Afro'], ['braids', 'Braids'],
   ['spiked', 'Spiked'], ['locs', 'Locs'], ['cornrows', 'Cornrows'], ['boxBraids', 'Box braids'],
+  ['mop', 'Mop (shaggy locks)'], ['anime', 'Anime (ribbon locks)'], ['shag', 'Shag (layered mop)'],
 ];
+const STYLES: [Proportions, string][] = [['realistic', 'Realistic'], ['chibi', 'Chibi'], ['funko', 'Funko']];
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 const EXPRESSIONS: [string, string][] = [
   ['bigSmile', 'Big smile'], ['smile', 'Smile'], ['slightSmile', 'Slight smile'],
   ['neutral', 'Neutral'], ['slightFrown', 'Slight frown'], ['frown', 'Frown'], ['deepFrown', 'Deep frown'],
@@ -195,6 +234,8 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
 
   // --- Quick presets ---
   const presetWrap = el('div', 'flex flex-wrap gap-1');
+  presetWrap.setAttribute('role', 'group');
+  presetWrap.setAttribute('aria-label', 'Character presets');
   for (const p of CHARACTER_PRESETS) {
     const b = el('button', BUTTON_SMALL_SECONDARY);
     b.textContent = p.label;
@@ -211,12 +252,31 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   function rebuild(): void {
     controls.replaceChildren();
 
+    // --- STYLE --- switching applies the style's head/body/face defaults.
+    controls.append(sectionTitle('Style'));
+    controls.append(segmentedRow('Proportions', spec.body.proportions, STYLES, v => {
+      applyStyle(spec, v as Proportions);
+      rebuild();
+      preview({ immediate: true });
+    }));
+    // Head size: a multiplier on the CURRENT head scale (keeps a custom
+    // width/depth/height ratio); 1× of the style default clears it to null.
+    const styleHs = STYLE_DEFAULTS[spec.body.proportions].headScale;
+    const curHs = resolvedHeadScale(spec);
+    controls.append(sliderRow('Head size', round3(curHs.z / styleHs.z), 0.5, 1.6, 0.05, v => onEdit(s => {
+      const now = resolvedHeadScale(s);
+      const k = (v * styleHs.z) / now.z;
+      const next = { x: round3(now.x * k), y: round3(now.y * k), z: round3(now.z * k) };
+      const isStyleDefault = next.x === styleHs.x && next.y === styleHs.y && next.z === styleHs.z;
+      s.body.headScale = isStyleDefault ? null : next;
+    }), { min: 0.2, max: 4 }));
+
     // --- BODY ---
     controls.append(sectionTitle('Body'));
     controls.append(sliderRow('Height', spec.body.height, 24, 90, 1, v => onEdit(s => { s.body.height = v; }), { min: 1, max: Infinity }));
     controls.append(sliderRow('Heads tall', spec.body.headsTall, 2.5, 9, 0.5, v => onEdit(s => { s.body.headsTall = v; }), { min: 2, max: 12 }));
-    controls.append(selectRow('Build', spec.body.build, ['slim', 'average', 'stocky'], v => onEdit(s => { s.body.build = v as CharacterSpec['body']['build']; })));
-    controls.append(selectRow('Sex', spec.body.sex, ['neutral', 'male', 'female'], v => onEdit(s => { s.body.sex = v as CharacterSpec['body']['sex']; })));
+    controls.append(selectRow('Build', spec.body.build, BUILDS, v => onEdit(s => { s.body.build = v as CharacterSpec['body']['build']; })));
+    controls.append(selectRow('Sex', spec.body.sex, SEXES, v => onEdit(s => { s.body.sex = v as CharacterSpec['body']['sex']; })));
     controls.append(sliderRow('Age', spec.body.age, 1, 90, 1, v => onEdit(s => { s.body.age = v; })));
     controls.append(sliderRow('Weight', spec.body.weight, 0, 1, 0.05, v => onEdit(s => { s.body.weight = v; })));
     controls.append(sliderRow('Muscle', spec.body.muscle, 0, 1, 0.05, v => onEdit(s => { s.body.muscle = v; })));
@@ -233,38 +293,86 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     }));
     const jointSlider = (label: string, get: () => number, set: (n: number) => void, min: number, max: number) =>
       controls.append(sliderRow(label, get(), min, max, 1, v => onEdit(() => set(v))));
-    jointSlider('Arms out', () => spec.pose.armL.raiseSide, n => { spec.pose.armL.raiseSide = n; spec.pose.armR.raiseSide = n; }, -30, 170);
-    jointSlider('Arm bend', () => spec.pose.armL.bend, n => { spec.pose.armL.bend = n; spec.pose.armR.bend = n; }, 0, 150);
+    const holding = spec.pose.hold.kind === 'ball';
+    // A held ball solves both arms, so the arm sliders only show without one.
+    if (!holding) {
+      jointSlider('Arms out', () => spec.pose.armL.raiseSide, n => { spec.pose.armL.raiseSide = n; spec.pose.armR.raiseSide = n; }, -30, 170);
+      jointSlider('Arm bend', () => spec.pose.armL.bend, n => { spec.pose.armL.bend = n; spec.pose.armR.bend = n; }, 0, 150);
+    }
     jointSlider('Legs apart', () => spec.pose.legL.raiseSide, n => { spec.pose.legL.raiseSide = n; spec.pose.legR.raiseSide = n; }, -10, 60);
     jointSlider('Head turn', () => spec.pose.head.yaw, n => { spec.pose.head.yaw = n; }, -60, 60);
     jointSlider('Head tilt', () => spec.pose.head.roll, n => { spec.pose.head.roll = n; }, -30, 30);
     jointSlider('Lean', () => spec.pose.spine.lean, n => { spec.pose.spine.lean = n; }, -25, 25);
+    controls.append(segmentedRow('Holding', spec.pose.hold.kind, [['none', 'Nothing'], ['ball', 'Ball']], v => {
+      spec.pose.hold.kind = v as CharacterSpec['pose']['hold']['kind'];
+      // Size a fresh ball to the figure (≈ a tenth of its height).
+      if (v === 'ball' && spec.pose.hold.radius === DEFAULT_SPEC.pose.hold.radius) {
+        spec.pose.hold.radius = Math.max(1, Math.round(spec.body.height * 0.1 * 2) / 2);
+      }
+      rebuild();
+      preview({ immediate: true });
+    }));
+    if (holding) {
+      controls.append(sliderRow('Ball size', spec.pose.hold.radius, 2, 30, 0.5, v => onEdit(s => { s.pose.hold.radius = v; }), { min: 0.1, max: Infinity }));
+      controls.append(selectRow('Hands', spec.pose.hold.cup, [['sides', 'On the sides'], ['under', 'Cradled under']], v => onEdit(s => { s.pose.hold.cup = v as CharacterSpec['pose']['hold']['cup']; })));
+      controls.append(colorRow('Ball', spec.colors.ball, v => onEdit(s => { s.colors.ball = v; })));
+      controls.append(colorRow('Ball panels', spec.pose.hold.color, v => onEdit(s => { s.pose.hold.color = v; })));
+    }
 
     // --- FACE ---
     controls.append(sectionTitle('Face'));
-    controls.append(selectRow('Shape', spec.face.shape, ['oval', 'round', 'square', 'long', 'heart', 'diamond'], v => onEdit(s => { s.face.shape = v as CharacterSpec['face']['shape']; })));
-    controls.append(selectRow('Eyelids', spec.face.lids, ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'], v => onEdit(s => { s.face.lids = v as CharacterSpec['face']['lids']; })));
+    controls.append(selectRow('Shape', spec.face.shape, FACE_SHAPES, v => onEdit(s => { s.face.shape = v as CharacterSpec['face']['shape']; })));
+    controls.append(selectRow('Eyelids', spec.face.lids, LID_STYLES, v => onEdit(s => { s.face.lids = v as CharacterSpec['face']['lids']; })));
     controls.append(selectRow('Gaze', spec.face.gaze, ['center', 'middle', 'left', 'right', 'up', 'down'], v => onEdit(s => { s.face.gaze = v as CharacterSpec['face']['gaze']; })));
-    controls.append(selectRow('Nose', spec.face.nose, ['straight', 'button', 'snub', 'roman', 'aquiline', 'broad', 'pointed', 'bulbous'], v => onEdit(s => { s.face.nose = v as CharacterSpec['face']['nose']; })));
+    controls.append(selectRow('Nose', spec.face.nose, NOSE_TYPES, v => onEdit(s => { s.face.nose = v as CharacterSpec['face']['nose']; })));
     controls.append(selectRow('Mouth', spec.face.expression, EXPRESSIONS, v => onEdit(s => { s.face.expression = v as CharacterSpec['face']['expression']; })));
-    controls.append(selectRow('Lips', spec.face.lipShape, ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat'], v => onEdit(s => { s.face.lipShape = v as CharacterSpec['face']['lipShape']; })));
-    controls.append(selectRow('Brows', spec.face.brows, ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'], v => onEdit(s => { s.face.brows = v as CharacterSpec['face']['brows']; })));
+    controls.append(selectRow('Lips', spec.face.lipShape, LIP_SHAPES, v => onEdit(s => { s.face.lipShape = v as CharacterSpec['face']['lipShape']; })));
+    controls.append(selectRow('Brows', spec.face.brows, BROW_SHAPES, v => onEdit(s => { s.face.brows = v as CharacterSpec['face']['brows']; })));
     controls.append(selectRow('Ears', spec.face.ears, ['detailed', 'round', 'pointed'], v => onEdit(s => { s.face.ears = v as CharacterSpec['face']['ears']; })));
+    controls.append(sliderRow('Eye size', spec.face.eyeSize, 0.5, 3, 0.05, v => onEdit(s => { s.face.eyeSize = v; })));
+    // Eye layout: a null field shows (and means) the style default.
+    const styleLayout = STYLE_DEFAULTS[spec.body.proportions].faceLayout;
+    controls.append(sliderRow('Eye spacing', spec.face.layout.eyeSpread ?? styleLayout.eyeSpread, 0.5, 2, 0.05, v => onEdit(s => { s.face.layout.eyeSpread = v; })));
+    controls.append(sliderRow('Eye height', spec.face.layout.eyeHeight ?? styleLayout.eyeHeight, -0.6, 0.6, 0.01, v => onEdit(s => { s.face.layout.eyeHeight = v; })));
+    controls.append(toggleRow('Show mouth', spec.face.mouth, v => onEdit(s => { s.face.mouth = v; })));
 
     // --- HAIR ---
     controls.append(sectionTitle('Hair'));
-    controls.append(selectRow('Style', spec.hair.style, HAIR_STYLES, v => onEdit(s => { s.hair.style = v as CharacterSpec['hair']['style']; })));
-    controls.append(selectRow('Length', spec.hair.length, ['short', 'mid', 'long'], v => onEdit(s => { s.hair.length = v as CharacterSpec['hair']['length']; })));
+    controls.append(selectRow('Style', spec.hair.style, HAIR_STYLES, v => {
+      spec.hair.style = v as CharacterSpec['hair']['style'];
+      rebuild();   // show/hide the lock knobs for the new style
+      preview();
+    }));
+    controls.append(selectRow('Length', spec.hair.length, HAIR_LENGTHS, v => onEdit(s => { s.hair.length = v as CharacterSpec['hair']['length']; })));
     controls.append(sliderRow('Volume', spec.hair.volume, 0.3, 4, 0.1, v => onEdit(s => { s.hair.volume = v; })));
+    // Lock knobs — only for the lock styles that read them (mop / anime / shag).
+    if (LOCK_HAIR_STYLES.includes(spec.hair.style)) {
+      if (spec.hair.style === 'anime') {
+        controls.append(selectRow('Lock shape', spec.hair.lockShape, LOCK_SHAPES.map(s => [s, s === 'ribbon' ? 'Flat ribbon' : 'Round tube'] as [string, string]), v => onEdit(s => { s.hair.lockShape = v as CharacterSpec['hair']['lockShape']; })));
+        controls.append(sliderRow('Lock width', spec.hair.chunk, 0.4, 2.5, 0.05, v => onEdit(s => { s.hair.chunk = v; })));
+        controls.append(sliderRow('Spike', spec.hair.spike, 0, 3, 0.05, v => onEdit(s => { s.hair.spike = v; })));
+        controls.append(sliderRow('Swoop', spec.hair.swoop, -1, 3, 0.05, v => onEdit(s => { s.hair.swoop = v; })));
+      }
+      if (spec.hair.style === 'shag') {
+        controls.append(selectRow('Crown', spec.hair.crown, HAIR_CROWNS.map(c => [c, c === 'spiky' ? 'Spiky' : 'Tousled'] as [string, string]), v => onEdit(s => { s.hair.crown = v as CharacterSpec['hair']['crown']; })));
+        controls.append(sliderRow('Spike', spec.hair.spike, 0, 3, 0.05, v => onEdit(s => { s.hair.spike = v; })));
+        controls.append(sliderRow('Layers', spec.hair.layers, 1, 3, 1, v => onEdit(s => { s.hair.layers = v; })));
+        controls.append(sliderRow('Raggedness', spec.hair.raggedness, 0, 2, 0.05, v => onEdit(s => { s.hair.raggedness = v; })));
+        controls.append(sliderRow('Flare', spec.hair.flare, 0, 3, 0.05, v => onEdit(s => { s.hair.flare = v; })));
+        controls.append(sliderRow('Lock width', spec.hair.chunk, 0.4, 2.5, 0.05, v => onEdit(s => { s.hair.chunk = v; })));
+      }
+      controls.append(sliderRow('Fringe', spec.hair.fringe, 0, 1.5, 0.05, v => onEdit(s => { s.hair.fringe = v; })));
+      controls.append(sliderRow('Seed', spec.hair.seed, 1, 50, 1, v => onEdit(s => { s.hair.seed = v; }), { min: -1e6, max: 1e6 }));
+    }
 
     // --- CLOTHING ---
     controls.append(sectionTitle('Clothing'));
     controls.append(toggleRow('Top', spec.clothing.top.on, v => onEdit(s => { s.clothing.top.on = v; })));
-    controls.append(selectRow('Sleeve', spec.clothing.top.sleeve, ['none', 'short', 'long'], v => onEdit(s => { s.clothing.top.sleeve = v as CharacterSpec['clothing']['top']['sleeve']; })));
+    controls.append(selectRow('Sleeve', spec.clothing.top.sleeve, SLEEVES, v => onEdit(s => { s.clothing.top.sleeve = v as CharacterSpec['clothing']['top']['sleeve']; })));
     controls.append(selectRow('Top length', spec.clothing.top.length, [['shirt', 'Shirt'], ['dress', 'Dress']], v => onEdit(s => { s.clothing.top.length = v as CharacterSpec['clothing']['top']['length']; })));
     controls.append(toggleRow('Pants', spec.clothing.pants.on, v => onEdit(s => { s.clothing.pants.on = v; })));
     controls.append(selectRow('Pants length', spec.clothing.pants.length, [['full', 'Full'], ['briefs', 'Briefs']], v => onEdit(s => { s.clothing.pants.length = v as CharacterSpec['clothing']['pants']['length']; })));
-    controls.append(selectRow('Pants rise', spec.clothing.pants.rise, ['low', 'mid', 'high'], v => onEdit(s => { s.clothing.pants.rise = v as CharacterSpec['clothing']['pants']['rise']; })));
+    controls.append(selectRow('Pants rise', spec.clothing.pants.rise, PANTS_RISES, v => onEdit(s => { s.clothing.pants.rise = v as CharacterSpec['clothing']['pants']['rise']; })));
     controls.append(toggleRow('Footwear', spec.clothing.feet.on, v => onEdit(s => { s.clothing.feet.on = v; })));
     controls.append(selectRow('Footwear kind', spec.clothing.feet.kind, [['shoes', 'Shoes'], ['boots', 'Boots']], v => onEdit(s => { s.clothing.feet.kind = v as CharacterSpec['clothing']['feet']['kind']; })));
     controls.append(toggleRow('Stand / base', spec.base, v => onEdit(s => { s.base = v; })));
