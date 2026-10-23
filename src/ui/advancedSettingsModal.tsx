@@ -891,6 +891,86 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={500} max={100_000} integer
           onChange={v => set('import', 'reconstructEvalSamples', v)}
         />
+        <Field
+          label="Photo match: target height"
+          unit="px"
+          hint="Height both silhouettes are resampled to before comparing."
+          tooltip="The photo-match score crops the photo's and the model's silhouettes to their bounding boxes and resamples both to this height before measuring overlap, band widths and regions. Higher catches finer detail but costs more time."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchTargetHeight}
+          value={c.import.photoMatchTargetHeight}
+          min={48} max={1024} integer
+          onChange={v => set('import', 'photoMatchTargetHeight', v)}
+        />
+        <Field
+          label="Photo match: background tolerance floor"
+          unit="RGB"
+          hint="Minimum colour distance from the backdrop that counts as subject."
+          tooltip="The photo's backdrop colour is estimated from a ring inside its border, and the tolerance adapts to the backdrop's noise above this floor. Keep it low so dark hair on a black backdrop still counts as subject; raise it for noisy, compressed photos."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBgToleranceMin}
+          value={c.import.photoMatchBgToleranceMin}
+          min={1} max={120} integer
+          onChange={v => set('import', 'photoMatchBgToleranceMin', v)}
+        />
+        <Field
+          label="Photo match: explicit-bg tolerance"
+          unit="RGB"
+          hint="Tolerance around a bg colour passed without its own bgTolerance."
+          tooltip="When a caller names the photo's background colour but no tolerance, pixels within this RGB distance of it count as background."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBgTolerance}
+          value={c.import.photoMatchBgTolerance}
+          min={1} max={200} integer
+          onChange={v => set('import', 'photoMatchBgTolerance', v)}
+        />
+        <Field
+          label="Photo match: k-means iterations"
+          unit="passes"
+          hint="Refinement passes when matching the model's colours to the photo."
+          tooltip="The photo's subject pixels are clustered with k-means, seeded with the model's region colours, so each region finds its pixels in the photo despite shading. More passes let the clusters adapt further to the photo's lighting."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchKmeansIterations}
+          value={c.import.photoMatchKmeansIterations}
+          min={0} max={50} integer
+          onChange={v => set('import', 'photoMatchKmeansIterations', v)}
+        />
+        <Field
+          label="Photo match: bands"
+          unit="bands"
+          hint="Horizontal bands in the width profile."
+          tooltip="The silhouette is split into this many horizontal bands, top to bottom, and each band's width and centre are compared between photo and model."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBands}
+          value={c.import.photoMatchBands}
+          min={2} max={40} integer
+          onChange={v => set('import', 'photoMatchBands', v)}
+        />
+        <Field
+          label="Photo match: colour mismatch threshold"
+          unit="ΔE"
+          hint="Colour difference above which a region is flagged."
+          tooltip="A model region whose colour differs from the photo's colour in the same place by more than this (CIE ΔE, lightness weighted half to forgive shading) is reported as a colour mismatch."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchColorShiftWarn}
+          value={c.import.photoMatchColorShiftWarn}
+          min={5} max={150} integer
+          onChange={v => set('import', 'photoMatchColorShiftWarn', v)}
+        />
+        <Field
+          label="Photo match: region reach"
+          unit="× height"
+          hint="How far a photo pixel may be from a model region of its colour and still count toward it."
+          tooltip="Photo pixels are credited to the nearest model region of the same colour, but only within this distance (as a fraction of the figure's height). Pixels further away are photo details the model has no counterpart for — e.g. a ball's black patches are not hair — and are left out of the region statistics."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchMaxRegionDistance}
+          value={c.import.photoMatchMaxRegionDistance}
+          min={0.01} max={1} step={0.01}
+          onChange={v => set('import', 'photoMatchMaxRegionDistance', v)}
+        />
+        <Field
+          label="Photo match: render size"
+          unit="px"
+          hint="Size of the flat model render compared against the photo."
+          tooltip="The model is rendered flat (no lighting, region colours only) at this size from the requested camera before the comparison."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchRenderSize}
+          value={c.import.photoMatchRenderSize}
+          min={128} max={2048} integer
+          onChange={v => set('import', 'photoMatchRenderSize', v)}
+        />
       </Section>
 
       <Section title="Geometry warnings">

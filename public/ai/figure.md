@@ -1364,7 +1364,12 @@ hard seams (see `/ai/sdf.md` paint-by-label).
    detail region is for.
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
    success criterion; `componentCount === 1` + manifold is necessary, not
-   sufficient.
+   sufficient. With a reference photo attached, run **`photoMatch`** each pass
+   (text only — silhouette IoU, per-band widths, per-part size/offset/colour,
+   and a `worst[]` list such as "hair: model 27% narrower across bands 0–1") and
+   fix what it names; look at rendered images only at checkpoints. Exclude the
+   display base (`exclude: ['base']`) when the photo shows none. See
+   `/ai/reference-images.md#photo-match`.
 
 ## Diversity — vary the whole figure
 

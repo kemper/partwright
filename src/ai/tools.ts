@@ -302,6 +302,31 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'photoMatch',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Reference photo: an image attachment id or label (from getAttachments / getReferenceImages), or a data:image/ URL. Omit when exactly one image is attached.' },
+        view: {
+          type: 'object',
+          description: 'Camera for the model render, matching the photo. Default {azimuth: 0, elevation: 0, ortho: true} (front).',
+          properties: {
+            azimuth: { type: 'number', description: 'Degrees. 0 = front (camera at -Y), 90 = right (+X), 180 = back, 270 = left.' },
+            elevation: { type: 'number', description: 'Degrees, 0 = horizon, positive = looking down.' },
+            ortho: { type: 'boolean', description: 'Orthographic projection (default true).' },
+          },
+        },
+        crop: { type: 'object', description: 'Optional crop of the photo in its pixels {x, y, w, h} — isolate one view of a multi-view sheet or cut away clutter.', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+        bg: { type: 'string', description: 'Photo background colour "#rrggbb" when auto-estimation fails (busy or vignetted backdrops).' },
+        bgTolerance: { type: 'number', description: 'RGB distance around bg (or the estimated backdrop) that counts as background.' },
+        exclude: { type: 'array', items: { type: 'string' }, description: 'Part (label) names to leave out of the model render, e.g. ["base"] when the photo shows no stand.' },
+        fit: { type: 'string', enum: ['height', 'box'], description: '"height" (default): common height, aspect kept. "box": also stretch the model to the photo width, comparing proportions only.' },
+        pixelAspect: { type: 'number', description: 'Multiply the photo\'s widths by this before comparing (e.g. 0.6 for a horizontally stretched video frame). Default 1.' },
+      },
+    },
+  },
+  {
     name: 'probePixel',
     description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId, nextStep}. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct. A background pixel does NOT fail — it returns {hit:false, modelPixelBounds, hint} reporting where the model projects in this view, so just re-aim inside those bounds and probe again (pixel estimates off a render carry ±10-20px error, so the occasional miss is normal). THIN FEATURES: if the same feature keeps missing (e.g. a rim, a wire, a thin stripe) and the model only occupies a small fraction of the frame on the minor axis, the miss-hint suggests doubling the renderView `size` — each pixel then covers half the real area, so the same ±20px aim error stays on the feature.',
     input_schema: {
@@ -1765,6 +1790,9 @@ const ALWAYS_AVAILABLE = new Set([
   'deleteObject',
   'listObjectParts',
   'highlightObjectPart',
+  // Text-only likeness score: renders offscreen but returns no image, so it is
+  // NOT views-gated — it exists precisely so likeness checks skip images.
+  'photoMatch',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1800,7 +1828,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
@@ -1824,7 +1852,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // A visual-only tint; re-applying it is idempotent.
   'highlightObjectPart',
@@ -2388,6 +2416,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintByLabels(input.items as unknown[]);
     case 'probePixel':
       return api.probePixel(input);
+    case 'photoMatch':
+      return await api.photoMatch(input);
     case 'paintConnected':
       return api.paintConnected(input);
     case 'getFeatureCentroids':

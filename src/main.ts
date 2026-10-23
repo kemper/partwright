@@ -35,7 +35,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -355,6 +355,7 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
+import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, type CropRect } from './tools/photoMatch';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
@@ -720,6 +721,37 @@ function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>):
   let bestCount = 0;
   for (const [k, c] of counts) if (c > bestCount) { best = k; bestCount = c; }
   return best < 0 ? null : `#${best.toString(16).padStart(6, '0')}`;
+}
+
+/** Decode an image source (data URL or same-origin URL) to RGBA pixels. */
+async function decodeImageToRgba(src: string): Promise<{ width: number; height: number; data: Uint8ClampedArray }> {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('2D canvas unavailable');
+  ctx.drawImage(img, 0, 0);
+  const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  return { width: id.width, height: id.height, data: id.data };
+}
+
+/** Resolve photoMatch's `image` argument: a data URL, or an attachment by id
+ *  or label. Omitted → the only image attachment (error when 0 or several). */
+function resolvePhotoMatchImage(image: string | undefined): { src: string; source: string } | { error: string } {
+  if (image && image.startsWith('data:image/')) return { src: image, source: 'data URL' };
+  const images = _getAttachments().filter(a => a.kind === 'image');
+  if (image === undefined) {
+    if (images.length === 1) return { src: images[0].src, source: `attachment ${images[0].id}` };
+    if (!images.length) return { error: 'photoMatch: no image given and no image attachments — pass image (a data URL or an attachment id from getAttachments()).' };
+    return { error: `photoMatch: several image attachments — pass image as one of: ${images.map(a => `${a.id}${a.label ? ` (${a.label})` : ''}`).join(', ')}.` };
+  }
+  const hit = images.find(a => a.id === image) ?? images.find(a => (a.label ?? '').toLowerCase() === image.toLowerCase());
+  if (hit) return { src: hit.src, source: `attachment ${hit.id}` };
+  return { error: `photoMatch: "${image.slice(0, 60)}" is neither a data:image/ URL nor an image attachment id/label. Image attachments: ${images.map(a => a.id).join(', ') || '(none)'}.` };
 }
 
 /** The rail/API view of the current object's parts and pieces. */
@@ -11734,6 +11766,121 @@ async function main() {
       return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
     },
 
+    /** Text-only likeness score: how close the CURRENT model is to a reference
+     *  photo, and where it's off — no image tokens needed. Renders the model
+     *  flat (region colours, no lighting) from `view` (default front, ortho),
+     *  segments the photo (backdrop estimated from its border, or `bg`), and
+     *  compares the normalised silhouettes and colour regions.
+     *  -> { silhouetteIoU, aspect, bands[], regions[], worst[], warnings[],
+     *       segmentation, view, image, regionNames, overlay? } or { error }.
+     *  See /ai/reference-images.md#photo-match. */
+    async photoMatch(options?: {
+      image?: string; view?: { azimuth?: number; elevation?: number; ortho?: boolean };
+      crop?: { x: number; y: number; w: number; h: number } | number[];
+      bg?: string | number[]; bgTolerance?: number; size?: number; exclude?: string[];
+      fit?: 'height' | 'box'; pixelAspect?: number; overlay?: boolean;
+    }) {
+      const check = guard(() => {
+        const o = (options === undefined ? {} : assertObject(options, 'photoMatch(options)')!) as Record<string, unknown>;
+        assertNoUnknownKeys(o, ['image', 'view', 'crop', 'bg', 'bgTolerance', 'size', 'exclude', 'fit', 'pixelAspect', 'overlay'], 'photoMatch(options)');
+        const image = assertString(o.image, 'photoMatch(options).image', { optional: true });
+        let view = { azimuth: 0, elevation: 0, ortho: true };
+        if (o.view !== undefined) {
+          const v = assertObject(o.view, 'photoMatch(options).view')!;
+          assertNoUnknownKeys(v, ['azimuth', 'elevation', 'ortho'], 'photoMatch(options).view');
+          view = {
+            azimuth: assertNumber(v.azimuth, 'photoMatch(options).view.azimuth', { optional: true }) ?? 0,
+            elevation: assertNumber(v.elevation, 'photoMatch(options).view.elevation', { optional: true, min: -90, max: 90 }) ?? 0,
+            ortho: assertBoolean(v.ortho, 'photoMatch(options).view.ortho', { optional: true }) ?? true,
+          };
+        }
+        let crop: CropRect | null = null;
+        if (o.crop !== undefined) {
+          if (Array.isArray(o.crop)) {
+            const [x, y, w, h] = assertNumberTuple(o.crop, 4, 'photoMatch(options).crop');
+            crop = { x, y, w, h };
+          } else {
+            const c = assertObject(o.crop, 'photoMatch(options).crop')!;
+            assertNoUnknownKeys(c, ['x', 'y', 'w', 'h'], 'photoMatch(options).crop');
+            crop = {
+              x: assertNumber(c.x, 'photoMatch(options).crop.x', { min: 0 })!,
+              y: assertNumber(c.y, 'photoMatch(options).crop.y', { min: 0 })!,
+              w: assertNumber(c.w, 'photoMatch(options).crop.w', { min: 1 })!,
+              h: assertNumber(c.h, 'photoMatch(options).crop.h', { min: 1 })!,
+            };
+          }
+        }
+        let bg: string | [number, number, number] | null = null;
+        if (o.bg !== undefined) {
+          if (Array.isArray(o.bg)) bg = assertNumberTuple(o.bg, 3, 'photoMatch(options).bg') as [number, number, number];
+          else {
+            bg = assertString(o.bg, 'photoMatch(options).bg')!;
+            if (!/^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(bg)) throw new ValidationError('photoMatch(options).bg must be "#rrggbb" or [r,g,b] (0-255).');
+          }
+        }
+        const bgTolerance = assertNumber(o.bgTolerance, 'photoMatch(options).bgTolerance', { optional: true, min: 0, max: 255 }) ?? null;
+        const size = assertNumber(o.size, 'photoMatch(options).size', { optional: true, min: 64, max: 2048, integer: true }) ?? getConfig().import.photoMatchRenderSize;
+        const exclude = o.exclude === undefined ? [] : assertArray(o.exclude, 'photoMatch(options).exclude').map((s, i) => assertString(s, `photoMatch(options).exclude[${i}]`)!);
+        const fit = o.fit === undefined ? 'height' : assertEnum(o.fit, ['height', 'box'] as const, 'photoMatch(options).fit');
+        const pixelAspect = assertNumber(o.pixelAspect, 'photoMatch(options).pixelAspect', { optional: true, min: 0.05, max: 20 }) ?? null;
+        const overlay = assertBoolean(o.overlay, 'photoMatch(options).overlay', { optional: true }) ?? false;
+        return { image, view, crop, bg, bgTolerance, size, exclude, fit, pixelAspect, overlay };
+      });
+      if ('error' in check) return check;
+      if (!currentMeshData) return { error: 'photoMatch: no geometry loaded — run code first.' };
+      const img = resolvePhotoMatchImage(check.image);
+      if ('error' in img) return img;
+      let reference: { width: number; height: number; data: Uint8ClampedArray };
+      try {
+        reference = await decodeImageToRgba(img.src);
+      } catch (e) {
+        return { error: `photoMatch: could not decode the image (${e instanceof Error ? e.message : String(e)}). Remote images must allow CORS — attach the photo or pass a data URL.` };
+      }
+      const mesh = currentMeshData;
+      // Regions: api.label parts (when the label map indexes this mesh), else
+      // the distinct drawn colours. Colours = what the viewport draws.
+      const summary = objectPartsMesh() === mesh ? currentObjectPartsSummary() : null;
+      const labelNames = summary ? summary.parts.map(p => p.name) : [];
+      let triLabel: Int32Array | null = null;
+      if (summary && summary.parts.length) {
+        triLabel = new Int32Array(mesh.numTri).fill(-1);
+        summary.parts.forEach((p, i) => { for (const tri of p.triangles) if (tri >= 0 && tri < mesh.numTri) triLabel![tri] = i; });
+      }
+      const triColors = mesh.triColors ?? buildTriColors(mesh.numTri);
+      const painted = (triColors as (Uint8Array & { _painted?: Uint8Array }) | null)?._painted ?? null;
+      const { regions, triRegion } = buildTriangleRegions(mesh.numTri, triColors, triLabel, labelNames, check.exclude, painted);
+      const unknownExcl = check.exclude.filter(n => !labelNames.includes(n) && !regions.some(r => r.name === n));
+      const render = renderRegionLabels(mesh, triRegion, { ...check.view, size: check.size });
+      const tuning = photoMatchTuningFromConfig(getConfig().import);
+      const result = scorePhotoMatch({
+        reference, crop: check.crop, bg: check.bg, bgTolerance: check.bgTolerance,
+        model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
+        modelLabels: render.labels, regions, fit: check.fit, pixelAspect: check.pixelAspect,
+        debug: check.overlay, tuning,
+      });
+      let overlay: string | undefined;
+      if (result.debug) {
+        const ov = photoMatchOverlay(result.debug, regions.map(r => r.color || null));
+        const canvas = document.createElement('canvas');
+        canvas.width = ov.width; canvas.height = ov.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(ov.data), ov.width, ov.height), 0, 0);
+          overlay = canvas.toDataURL('image/png');
+        }
+        delete result.debug;
+      }
+      if (unknownExcl.length) result.warnings.push(`exclude: no part named ${unknownExcl.join(', ')} (parts: ${labelNames.join(', ') || 'none'}).`);
+      return {
+        view: check.view,
+        image: { source: img.source, width: reference.width, height: reference.height },
+        ...(check.crop ? { crop: check.crop } : {}),
+        regionNames: regions.map(r => r.name),
+        ...result,
+        ...(overlay ? { overlay } : {}),
+      };
+    },
+
     /** Render multiple angles of the current model laid out in a single
      *  labeled grid, returned as one PNG data URL. The killer use case
      *  is "did this paint operation land where I thought" — a single
@@ -16573,6 +16720,7 @@ async function main() {
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
+        'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, exclude?: [part], fit?: "height"|"box", pixelAspect?, size?, overlay?}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, 10 band widths, per-part IoU/area/offset/colour, worst[] findings. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         // Spending mode (AI budget)
         'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },
