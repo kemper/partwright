@@ -211,16 +211,111 @@ describe('figure hair — anime', () => {
     // window:false keeps the forehead capped
     const closed = F.hair.cap(r, { on: h, window: false });
     expect(closed.evaluate(e[0], e[1] - 0.4, e[2] + r.r.headZ * 0.35)).toBeLessThan(0);
-    // A tuft runs from base along dir and ends in a point.
+    // A tube tuft runs from base along dir and ends in a point.
     const base: Vec3 = [0, 0, 120];
-    const tuft = F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0 });
+    const tuft = F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0, shape: 'tube' });
     expect(tuft.evaluate(0, 0, 120)).toBeCloseTo(-2, 6);
     expect(tuft.evaluate(10, 0, 120)).toBeLessThan(0.0);
     expect(tuft.evaluate(10, 0, 120)).toBeGreaterThan(-1);
     expect(tuft.evaluate(5, 0, 123)).toBeGreaterThan(0);
+    expect(F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0.3, shape: 'tube' }).evaluate(5, 0, 123)).toBeLessThan(0);
+    // The default ribbon tuft lies flat on the head: wide across (Y, tangent to
+    // the skull above it), thin along the ray from the head centre (≈ Z here).
+    const rib = F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0 });
+    expect(rib.evaluate(3, 1.5, 120)).toBeLessThan(0);
+    expect(rib.evaluate(3, 0, 121.5)).toBeGreaterThan(0);
+    expect(rib.evaluate(5, 0, 123)).toBeGreaterThan(0);
     expect(F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0.3 }).evaluate(5, 0, 123)).toBeLessThan(0);
+    // twist 90° turns the flat section on its edge by the tip half.
+    const tw = F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, thickness: 0.4, curve: 0, twist: 90 });
+    const zExt = (n: { evaluate: (x: number, y: number, z: number) => number }): number => { let z = 120; while (n.evaluate(7, 0, z) < 0) z += 0.01; return z - 120; };
+    expect(zExt(tw)).toBeGreaterThan(zExt(rib) * 1.5);
     expect(() => F.hair.tuft(r, { base, dir: [1, 0, 0], bogus: 1 })).toThrow();
+    expect(() => F.hair.tuft(r, { base, dir: [1, 0, 0], shape: 'tube', twist: 20 })).toThrow(/only apply to shape 'ribbon'/);
+    expect(() => F.hair.tuft(r, { base, dir: [1, 0, 0], shape: 'blob' })).toThrow();
     expect(() => F.hair.cap(r, { window: { size: 2 } })).toThrow();
+  });
+
+  it('lockShape / chunk: ribbons by default, tubes on request, chunk widens', () => {
+    const tube = sample(buildHair(api, rig, { style: 'anime', on: head, seed: 5, lockShape: 'tube' }));
+    expect(tube).not.toEqual(sample(hair));
+    const solid = (n: { evaluate: (x: number, y: number, z: number) => number }): number => sample(n).filter((v) => v < 0).length;
+    expect(solid(buildHair(api, rig, { style: 'anime', on: head, seed: 5, chunk: 1.8 }))).toBeGreaterThan(solid(hair));
+    expect(() => buildHair(api, rig, { style: 'anime', lockShape: 'blob' })).toThrow();
+    expect(() => buildHair(api, rig, { style: 'anime', chunk: 9 })).toThrow();
+    expect(() => buildHair(api, rig, { style: 'mop', chunk: 1 })).toThrow(/only apply to style 'anime'/);
+  });
+});
+
+describe('figure hair — ribbon lock SDF', () => {
+  const { ribbonLock, ribbonWidthAt } = __figureTestables__;
+  type Ev = { evaluate: (x: number, y: number, z: number) => number };
+  /** Half-extent of `n` from `p` along unit `d` (first exit). */
+  const extent = (n: Ev, p: Vec3, d: Vec3): number => {
+    let t = 0;
+    while (n.evaluate(p[0] + d[0] * t, p[1] + d[1] * t, p[2] + d[2] * t) < 0 && t < 50) t += 0.005;
+    return t;
+  };
+  const up = (): Vec3 => [0, 0, 1];
+  // Straight lock along +X lying on a "skull" whose outward normal is +Z: the
+  // wide axis must come out along Y, the thin axis along Z.
+  const W = 2, TH = 0.5;
+  const rib = ribbonLock(api, [0, 0, 0], [5, 0, 0], [10, 0, 0], { width: W, thickness: TH, tipFloor: 0.02, outward: up });
+
+  it('is a flat lens ~3–5× wider than thick at mid-length, wide axis tangent to the skull', () => {
+    const w = extent(rib, [5, 0, 0], [0, 1, 0]);
+    const t = extent(rib, [5, 0, 0], [0, 0, 1]);
+    expect(extent(rib, [5, 0, 0], [0, -1, 0])).toBeCloseTo(w, 2);   // symmetric
+    expect(w / t).toBeGreaterThan(3);
+    expect(w / t).toBeLessThan(5.5);
+    // Close to the declared width profile (the overlap + blend add a little).
+    expect(w).toBeGreaterThan(W * ribbonWidthAt(0.5) * 0.9);
+    expect(w).toBeLessThan(W * 1.25);
+  });
+
+  it('tapers in width to near zero at the tip, and stops just past it', () => {
+    const wRoot = extent(rib, [1, 0, 0], [0, 1, 0]);
+    const wTip = extent(rib, [10.3, 0, 0], [0, 1, 0]);
+    expect(wTip).toBeLessThan(wRoot * 0.15);
+    expect(rib.evaluate(11.5, 0, 0)).toBeGreaterThan(0);
+    // thickness tapers far less than width
+    const tTip = extent(rib, [9, 0, 0], [0, 0, 1]);
+    expect(tTip).toBeGreaterThan(extent(rib, [1, 0, 0], [0, 0, 1]) * 0.3);
+  });
+
+  it('welds into a cap with a smooth fillet and no seam at the base', () => {
+    // Cap: a slab whose top is z = 0; the lock is rooted 0.3 inside it and
+    // rises out of it along +X with a gentle lift.
+    const cap = api.box([60, 60, 10]).translate([0, 0, -5]);
+    const lock = ribbonLock(api, [-2, 0, -0.3], [4, 0, 1.2], [10, 0, 2], { width: W, thickness: TH, tipFloor: 0.02, outward: up });
+    const k = TH * 0.6;
+    const joined = cap.smoothUnion(lock, k);
+    // No gap: walking out along the lock's spine from inside the cap stays solid.
+    for (let x = -1; x <= 6; x += 0.1) {
+      const z = x < 0 ? -0.3 : Math.min(1.2, x * 0.25);
+      expect(joined.evaluate(x, 0, z)).toBeLessThan(0);
+    }
+    // Fillet: in the concave corner beside the root the blend is filled in
+    // (strictly below the hard union), i.e. no crease line.
+    const corner: Vec3 = [1, W * 0.9, 0.12];
+    const hard = Math.min(cap.evaluate(...corner), lock.evaluate(...corner));
+    expect(joined.evaluate(...corner)).toBeLessThan(hard);
+    // Continuity: the field along a line over the junction has no jumps (the
+    // ellipsoid bound isn't 1-Lipschitz, so allow a few × the step).
+    let prev = joined.evaluate(-3, 0.5, 0.4);
+    for (let x = -3; x <= 4; x += 0.05) {
+      const v = joined.evaluate(x, 0.5, 0.4);
+      expect(Math.abs(v - prev)).toBeLessThan(0.25);
+      prev = v;
+    }
+  });
+
+  it('is deterministic and orientation-correct for an arbitrary path', () => {
+    const a = ribbonLock(api, [1, 2, 3], [4, 6, 5], [9, 7, 3], { width: 1.5, thickness: 0.4, tipFloor: 0.02, twist: 30, outward: up });
+    const b = ribbonLock(api, [1, 2, 3], [4, 6, 5], [9, 7, 3], { width: 1.5, thickness: 0.4, tipFloor: 0.02, twist: 30, outward: up });
+    const pts: Vec3[] = [[4, 6, 5], [3, 4, 4], [6, 6.5, 4.5], [8, 7, 3.4]];
+    expect(pts.map((p) => a.evaluate(...p))).toEqual(pts.map((p) => b.evaluate(...p)));
+    expect(a.evaluate(4, 6, 5)).toBeLessThan(0);   // passes through mid
   });
 });
 

@@ -4066,6 +4066,79 @@ function hairLock(sdf: SdfApi, root: Vec3, mid: Vec3, tip: Vec3, r0: number, tip
   return n!;
 }
 
+/** Unit outward normal of `n` at `p` (central-difference gradient, step `h`).
+ *  Used to lay ribbon locks flat on the skull: off the surface the SDF gradient
+ *  still points away from the nearest skin, which is the "outward" we want. */
+function sdfNormal(n: Node, p: Vec3, h: number): Vec3 {
+  const g: Vec3 = [
+    n.evaluate(p[0] + h, p[1], p[2]) - n.evaluate(p[0] - h, p[1], p[2]),
+    n.evaluate(p[0], p[1] + h, p[2]) - n.evaluate(p[0], p[1] - h, p[2]),
+    n.evaluate(p[0], p[1], p[2] + h) - n.evaluate(p[0], p[1], p[2] - h),
+  ];
+  return norm3(g);
+}
+
+/** Shape of one ribbon lock (`ribbonLock`). `width` / `thickness` are the ROOT
+ *  half-width / half-thickness (semi-axes of the flattened cross-section). */
+interface RibbonSpec {
+  width: number;
+  thickness: number;
+  /** Floor for the tip's semi-axes, so the point still meshes. */
+  tipFloor: number;
+  /** Twist of the cross-section about the path, root → tip (deg). */
+  twist?: number;
+  /** Outward reference normal at a point (the skull's): the ribbon's wide axis
+   *  is laid perpendicular to it, so the lock lies ON the head. */
+  outward(p: Vec3): Vec3;
+  /** Ellipsoids along the path (default 9). */
+  seg?: number;
+}
+
+/** Ribbon half-width at path parameter s ∈ [0, 1] as a fraction of the root:
+ *  holds its breadth through the first half, then tapers to a point. */
+function ribbonWidthAt(s: number): number { return Math.max(0, 1 - s ** 2.2) ** 0.75; }
+/** Ribbon half-thickness fraction — tapers far less than the width (a vinyl
+ *  lock stays chunky right up to its point). */
+function ribbonThickAt(s: number): number { return 1 - 0.55 * s ** 1.3; }
+
+/** One anime / vinyl-toy RIBBON lock: a flat, lens-section lock swept along the
+ *  quadratic root → mid → tip (through mid) whose WIDE axis lies tangent to the
+ *  skull (perpendicular to `outward`), tapering in width to a sharp point while
+ *  staying chunky in thickness. Built as a chain of `seg` flattened ellipsoids
+ *  (semi-axes: along-path ≈ 1.3 segment lengths, so neighbours overlap ~2.6×,
+ *  width, thickness), each oriented on the path tangent and smooth-welded to the
+ *  next with a thickness-sized blend — the overlap + blend fill the scallops so
+ *  the edges read as one smooth vinyl surface. Ellipsoids (not a custom swept
+ *  primitive) keep the lock inside the SDF compiler's fast path. */
+function ribbonLock(sdf: SdfApi, root: Vec3, mid: Vec3, tip: Vec3, spec: RibbonSpec): Node {
+  const seg = spec.seg ?? 9;
+  const ctrl = sub3(scale3(mid, 2), scale3(add3(root, tip), 0.5));
+  const bz = (s: number): Vec3 => add3(add3(scale3(root, (1 - s) * (1 - s)), scale3(ctrl, 2 * s * (1 - s))), scale3(tip, s * s));
+  const dbz = (s: number): Vec3 => add3(scale3(sub3(ctrl, root), 2 * (1 - s)), scale3(sub3(tip, ctrl), 2 * s));
+  let L = 0;
+  for (let k = 0; k < 16; k++) L += len3(sub3(bz((k + 1) / 16), bz(k / 16)));
+  const half = (L / seg) * 1.3;
+  let n: Node | null = null;
+  let prevTh = spec.thickness;
+  for (let i = 0; i < seg; i++) {
+    // Shifted toward the tip so the last ellipsoid is already narrow: a sharp point.
+    const s = (i + 0.75) / seg;
+    const c = bz(s);
+    const T = norm3(dbz(s));
+    let W = cross3(spec.outward(c), T);
+    if (len3(W) < 1e-6) W = cross3(Math.abs(T[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0], T);
+    W = norm3(W);
+    let N = cross3(T, W);
+    if (spec.twist) { const a = spec.twist * s; W = rotAxis(W, T, a); N = rotAxis(N, T, a); }
+    const w = Math.max(spec.width * ribbonWidthAt(s), spec.tipFloor);
+    const th = Math.min(Math.max(spec.thickness * ribbonThickAt(s), spec.tipFloor * 0.8), Math.max(w, spec.tipFloor));
+    const piece = sdf.ellipsoid(Math.max(half, w), w, th).rotate(eulerFromBasis(T, W, N)).translate(c);
+    n = n ? n.smoothUnion(piece, Math.min(th, prevTh) * 0.9) : piece;
+    prevTh = th;
+  }
+  return n!;
+}
+
 /** `F.hair(rig, { style: 'mop' })`: a cap that hugs the actual head (an offset
  *  of the head SDF — pass `on: head` for a non-default `F.head` shape) plus N
  *  irregular tapered LOCKS laid along the scalp: a zig-zag fringe over the
@@ -4232,7 +4305,7 @@ function hairHead(sdf: SdfApi, rig: Rig, on: unknown): Node {
 
 // --- Anime hair (spiky-bob / vinyl-toy anime hair) -------------------------
 
-const ANIME_ONLY_FIELDS = ['spike', 'swoop'];
+const ANIME_ONLY_FIELDS = ['spike', 'swoop', 'lockShape', 'chunk'];
 
 interface AnimeCapOpts {
   /** Hairline plane heights (× headZ above the head centre) at the FRONT (face
@@ -4284,17 +4357,23 @@ function animeCap(sdf: SdfApi, S: ScalpFrame, head: Node, o: AnimeCapOpts): { ca
   return { cap, uncut };
 }
 
-/** `F.hair(rig, { style: 'anime' })`: the classic anime / vinyl-toy spiky bob —
- *  a thin cap hugging the real head + chunky swoopy pointed locks: a fringe of
- *  5–9 broad locks sweeping over the forehead, sideburns and an over-the-ear
- *  lock each side, layered pointed locks round the back and nape, and crown
- *  tufts that flick up and out. Seeded like 'mop' (same seed ⇒ same hair). */
+/** `F.hair(rig, { style: 'anime' })`: the classic anime / vinyl-toy (Funko) mop —
+ *  a thin cap hugging the real head + a FEW big, flat, swoopy RIBBON locks
+ *  (`ribbonLock`) that lie on the skull and come to sharp points: 4–6 broad
+ *  fringe locks sweeping sideways over the forehead and overlapping like
+ *  shingles, a sideburn + an over-the-ear lock each side curving forward to a
+ *  point at cheek level, 3–5 crown locks flicking up and back, and layered back
+ *  locks pointing down to the nape. `lockShape: 'tube'` builds the same layout
+ *  from round tapered tubes; `chunk` scales lock width. Seeded like 'mop'
+ *  (same seed ⇒ same hair). */
 function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: number, volume: number, lenMul: number, ears: string): Node {
-  const nLocks = Math.round(num(o.locks, 24, 'hair.locks', 12, 48));
+  const nLocks = Math.round(num(o.locks, 14, 'hair.locks', 8, 40));
   const seed = Math.round(num(o.seed, 1, 'hair.seed'));
   const fringe = num(o.fringe, 1, 'hair.fringe', 0, 1.5);
   const spike = num(o.spike, 1, 'hair.spike', 0, 3);
   const swoop = num(o.swoop, 1, 'hair.swoop', -1, 3);
+  const chunk = num(o.chunk, 1, 'hair.chunk', 0.4, 2.5);
+  const lockShape = o.lockShape === undefined ? 'ribbon' : assertEnum(o.lockShape, ['ribbon', 'tube'] as const, 'hair.lockShape');
   const head = hairHead(sdf, rig, o.on);
   const rand = mulberry32(seed);
   const jit = (amt: number): number => (rand() * 2 - 1) * amt;
@@ -4303,8 +4382,8 @@ function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: nu
   const tv = t * volume;
   const winTop = browUp / az + 0.3;
   const { cap: cut, uncut } = animeCap(sdf, S, head, {
-    front: (S.eyeUp + browUp) / (2 * az), back: -0.85 - 0.12 * (lenMul - 1),
-    window: { width: 1.2, top: winTop, tilt: 26 }, thickness: tv * 0.45, crown: volume,
+    front: (S.eyeUp + browUp) / (2 * az), back: -0.95 - 0.12 * (lenMul - 1),
+    window: { width: 1.2, top: winTop, tilt: 26 }, thickness: tv * 0.45, crown: volume * 2,
   });
   // Face-side points are placed by HEIGHT (march out horizontally at a given
   // height above the head centre): the ellipsoid (θ, φ) parametrisation drifts
@@ -4318,73 +4397,90 @@ function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: nu
     const tt = marchToSurface(head, o0, d, Math.max(ax, ay) * 3) ?? Math.max(ax, ay);
     return add3(o0, scale3(d, tt + off));
   };
+  /** Point at (θ, φ) `off` outside the uncut cap; φ past π/2 carries on over the top to the back. */
   const over = (th: number, ph: number, off: number): Vec3 => S.on(uncut, th, ph, off);
-  const r0 = Rbar * 0.17 * volume;
+  // Lock size: ribbon root half-width W0 (≈ 0.3 head radii) with a ~3.6:1
+  // width:thickness lens; the tube fallback uses the legacy round radius.
+  const W0 = Rbar * 0.3 * chunk * Math.sqrt(volume);
+  const T0 = W0 / 3;
+  const r0 = Rbar * 0.17 * volume * chunk;
   const tipFloor = Math.max(Rbar * 0.022, 0.15);
-  const width = (): number => r0 * (0.85 + 0.3 * rand());
+  const outward = (p: Vec3): Vec3 => sdfNormal(uncut, p, Rbar * 0.02);
   const locks: Node[] = [];
-  const lock = (a: Vec3, b: Vec3, c: Vec3, rr: number): void => { locks.push(hairLock(sdf, a, b, c, rr, tipFloor, 4, 0.78)); };
+  /** One lock root → mid → tip; `wMul` scales it, `twist` (deg) turns the ribbon. */
+  const lock = (a: Vec3, b: Vec3, c: Vec3, wMul: number, twist = 0): void => {
+    const k = wMul * (0.9 + 0.2 * rand());
+    locks.push(lockShape === 'ribbon'
+      ? ribbonLock(sdf, a, b, c, { width: W0 * k, thickness: T0 * Math.sqrt(k), tipFloor, twist, outward })
+      : hairLock(sdf, a, b, c, r0 * k, tipFloor, 4, 0.78));
+  };
+  // Offsets are in units of the lock's own thickness: roots buried in the cap,
+  // bodies lying ON it (half their thickness proud), tips settling onto it.
+  const T = lockShape === 'ribbon' ? T0 : r0;
   const winTopPh = elev(winTop * az);
 
-  const nF = clamp(Math.round(nLocks * 0.3), 5, 9);
-  const nCrown = Math.max(3, Math.round(nLocks * 0.2));
-  const nNape = Math.max(3, Math.round(nLocks * 0.22));
-  const nLayer = Math.max(0, nLocks - nF - 8 - nCrown - nNape);
+  const nF = clamp(Math.round(nLocks * 0.32), 4, 6);
+  const nCrown = clamp(Math.round(nLocks * 0.25), 3, 5);
+  const nBack = Math.max(3, nLocks - nF - 4 - nCrown);
+  // Fringe sweep side (seeded): the whole fringe swoops one way, fanning a little.
+  const sgn = rand() < 0.5 ? 1 : -1;
 
-  // Fringe: broad pointed locks rooted on the crown front, falling over the
-  // window's arch to just above the brows and fanning sideways (`swoop`).
+  // Fringe: broad ribbons rooted well back on the crown front, arching over the
+  // window's top edge and sweeping sideways to points just above the brows —
+  // each crosses its neighbour, so they overlap like shingles.
   for (let i = 0; i < nF; i++) {
     const uu = nF > 1 ? (i / (nF - 1)) * 2 - 1 : 0;
-    const th = uu * 60;
-    const rr = width() * (1.1 - 0.2 * Math.abs(uu));
-    const sweep = swoop * (16 * Math.sign(uu) * Math.abs(uu) ** 0.7 + jit(5));
-    // Tip height: just above the brows (`fringe` 1), higher for shorter fringes
-    // and toward the temples, alternating long/short; never above the arch.
-    const tipH = Math.min(browUp + az * (0.12 + (1 - fringe) * 0.3 + (i % 2 ? 0.05 : 0) + 0.12 * Math.abs(uu) ** 1.6 + jit(0.02)), winTop * az - az * 0.03);
-    const rootPh = winTopPh + 0.32;
-    lock(over(th * 0.7, rootPh, -rr * 0.7), skinAt(th + sweep * 0.45, (winTop * az + tipH) / 2 + az * 0.04, tv * 0.4 + rr * 0.75), skinAt(th + sweep, tipH, rr * 0.3), rr);
+    const th = uu * 56;
+    const sweep = swoop * (16 * sgn + 10 * uu + jit(4));
+    const tipH = Math.min(browUp + az * (0.1 + (1 - fringe) * 0.3 + (i % 2 ? 0.06 : 0) + 0.14 * Math.abs(uu) ** 1.6 + jit(0.02)), winTop * az - az * 0.03);
+    const layer = (i % 2 ? 0.6 : 0) * T;
+    lock(over(th * 0.6 - sweep * 0.3, winTopPh + 0.5, -T * 1.2),
+      skinAt(th + sweep * 0.45, (winTop * az + tipH) / 2 + az * 0.06, tv * 0.45 + T * 0.2 + layer),
+      skinAt(th + sweep, tipH, T * 0.3 + layer * 0.5), 1.05 - 0.15 * Math.abs(uu), jit(10));
   }
-  // Sides (each): a sideburn in front of the ear, a lock over the ear, and an
-  // outward flick behind it — they break the cap's side edge into points.
+  // Sides (each): a sideburn curving FORWARD to a point at cheek level, and a
+  // bigger over-the-ear lock whose point kicks forward and out below it.
   for (const s of [1, -1]) {
-    let rr = width() * 0.95;
-    const sbTip = S.eyeUp - az * (0.1 + 0.1 * lenMul + jit(0.02));
-    lock(over(s * 74, browPh + 0.32, -rr * 0.8), skinAt(s * 82, (browUp + sbTip) / 2, tv * 0.4 + rr * 0.55), skinAt(s * (80 + jit(3)), sbTip, rr * 0.3), rr);
-    rr = width();
-    const earTip = eyePh - 0.3 * lenMul + jit(0.05);
-    lock(over(s * 92, 0.5, -rr * 0.8), over(s * 96, (0.5 + earTip) / 2, rr * 0.35), over(s * (100 + jit(4)), earTip, rr * 0.3 + (ears === 'cover' ? Rbar * 0.09 : 0)), rr);
-    rr = width();
-    lock(over(s * 118, 0.62, -rr * 0.8), over(s * 124, 0.25, rr * 0.4), over(s * (132 + jit(5)), -0.08 - 0.12 * lenMul, rr * 0.3 + Rbar * (0.1 + 0.06 * rand())), rr);
-    // Temple flick: a lock off the upper side that kicks OUT past the skull —
-    // the toy-hair width above the ears comes from points, not a thick shell.
-    rr = width() * 1.05;
-    lock(over(s * 80, 0.95, -rr * 0.8), over(s * 86, 0.6, rr * 0.5 + Rbar * 0.05), over(s * (90 + jit(4)), 0.12 + jit(0.05), rr * 0.3 + Rbar * (0.2 + 0.06 * rand())), rr);
+    const sbTip = S.eyeUp - az * (0.18 + 0.12 * lenMul + jit(0.02));
+    lock(over(s * 76, browPh + 0.42, -T * 1.2),
+      skinAt(s * 94, (browUp + sbTip) / 2, tv * 0.45 + T * 0.6),
+      skinAt(s * (82 + jit(3)), sbTip, T * 0.3), 0.75, s * (25 + jit(8)));
+    const earTip = eyePh - 0.1 * lenMul + jit(0.04);
+    lock(over(s * 104, 0.8, -T * 1.2),
+      over(s * 108, 0.35, T * 0.9 + Rbar * 0.15),
+      over(s * (94 + jit(4)), earTip, T * 0.6 + Rbar * (0.2 + 0.04 * rand()) + (ears === 'cover' ? Rbar * 0.06 : 0)), 1.1, s * (65 + jit(8)));
+    // Temple flare: a broad lock off the upper side sweeping down and OUT past
+    // the skull — the toy-hair width above the ears.
+    lock(over(s * 55, 1.2, -T * 1.2),
+      over(s * 84, 0.8, T * 0.9 + Rbar * 0.14),
+      over(s * (98 + jit(4)), 0.25 + jit(0.05), T * 0.6 + Rbar * (0.26 + 0.05 * rand())), 1.2, s * (50 + jit(8)));
   }
-  // Layer locks laid over the back and upper sides, ending in proud points.
-  for (let i = 0; i < nLayer; i++) {
-    const th = 105 + (150 * (i + 0.5)) / nLayer + jit(8);
-    const rr = width();
-    lock(over(th, 0.95, -rr * 0.8), over(th + jit(4), 0.55, rr * 0.1), over(th + jit(8), 0.15 + jit(0.08), rr * 0.25 + Rbar * 0.05 * rand()), rr);
-  }
-  // Nape: layered pointed locks hanging below the back of the cap.
-  for (let i = 0; i < nNape; i++) {
-    const th = 118 + 124 * (nNape > 1 ? i / (nNape - 1) : 0.5) + jit(5);
-    const rr = width() * 1.1;
-    const tipPh = -0.6 - 0.3 * lenMul + (i % 2 ? 0.12 : 0) + jit(0.06);
-    lock(over(th, 0.3, -rr * 0.8), over(th + jit(4), (0.3 + tipPh) / 2, rr * 0.1), over(th + jit(6), tipPh, rr * 0.3 + Rbar * (0.04 + 0.04 * rand())), rr);
-  }
-  // Crown tufts: spiky locks that flick up and OUT off the top (`spike` sets how far).
+  // Crown: big locks rooted over the front of the top that run back over the
+  // crown and flick UP and OUT past it toward sharp tips (`spike` = how far),
+  // fanning from straight back (middle) to the upper back corners (ends).
   for (let i = 0; i < nCrown; i++) {
-    const th = 35 + 290 * (nCrown > 1 ? i / (nCrown - 1) : 0.5) + jit(14);
-    const rr = width() * 1.25;
-    const rootPh = 0.9 + jit(0.08);
-    const lift = (0.22 + 0.14 * rand()) * Rbar * spike;
-    lock(over(th, rootPh + 0.12, -rr * 0.9), over(th + jit(6), rootPh, rr * 0.2 + lift * 0.35), over(th + jit(10), rootPh - 0.12, rr * 0.2 + lift), rr);
+    const uu = nCrown > 1 ? (i / (nCrown - 1)) * 2 - 1 : 0;
+    const thR = uu * 60 + jit(8);
+    const thT = (uu < 0 ? -1 : 1) * (180 - 55 * Math.abs(uu)) + jit(10);
+    const lift = (0.22 + 0.12 * rand()) * Rbar * spike;
+    lock(over(thR, 0.8 + jit(0.06), -T * 1.2),
+      over(thT, 1.42, T * 0.8 + lift * 0.35),
+      over(thT, 0.95 + jit(0.08), T * 0.5 + lift), 1.15, jit(14));
   }
-  // Group the locks in one hard union (they overlap the cap and each other), then
-  // smooth-weld the group into the cap ONCE — one blend instead of one per lock
-  // keeps the SDF cheap to mesh.
-  return cut.smoothUnion(sdf.union(...locks), r0 * 0.35);
+  // Back: big layered locks from the top of the back down to points at the
+  // nape, alternating two rows so they overlap.
+  for (let i = 0; i < nBack; i++) {
+    const uu = nBack > 1 ? (i / (nBack - 1)) * 2 - 1 : 0;
+    const th = 180 + uu * 58 + jit(6);
+    const row = i % 2;
+    const tipPh = -0.5 - 0.2 * lenMul + row * 0.12 + jit(0.05);
+    lock(over(th, 1.15 - row * 0.25, -T * 1.2),
+      over(th + jit(5), 0.35 - row * 0.1, T * (0.8 + row * 0.6)),
+      over(th + jit(8), tipPh, T * (0.5 + row * 0.4) + Rbar * 0.03 * rand()), 1.25, jit(10));
+  }
+  // Hard-union the locks (they overlap the cap and each other), then melt the
+  // group into the cap ONCE with a small blend — no seam at any root.
+  return cut.smoothUnion(sdf.union(...locks), T * 0.6);
 }
 
 /** `F.hair.cap(rig, { on, thickness, crown, hairlinePlane, window })` — the
@@ -4416,19 +4512,30 @@ function buildHairCap(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return animeCap(sdf, S, head, { front, back, window, thickness, crown }).cap;
 }
 
-/** `F.hair.tuft(rig, { base, dir, length, width, curve })` — one chunky tapered
- *  anime lock: from `base` along `dir` for `length`, root radius `width`, tapering
- *  to a point. `curve` bends it — a number flicks the middle toward the head's up
- *  (× length; negative droops), or a Vec3 offsets the middle directly. Bury the
- *  base a little inside the cap so it welds. */
+/** `F.hair.tuft(rig, { base, dir, length, width, thickness, curve, shape, twist })`
+ *  — one chunky anime lock from `base` along `dir` for `length`, tapering to a
+ *  point. `shape: 'ribbon'` (default) is a flat lens-section lock whose wide
+ *  axis lies tangent to the head (perpendicular to the ray from the head
+ *  centre): `width` = root half-width, `thickness` = root half-thickness
+ *  (default width / 3.6), `twist` = degrees the section turns root → tip.
+ *  `shape: 'tube'` is the round tapered tube (`width` = root radius; no
+ *  thickness/twist). `curve` bends it — a number flicks the middle toward the
+ *  head's up (× length; negative droops), or a Vec3 offsets the middle
+ *  directly. Bury the base a little inside the cap so it welds. */
 function buildHairTuft(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair.tuft(opts)');
-  assertNoUnknownKeys(o, ['base', 'dir', 'length', 'width', 'curve'], 'hair.tuft(opts)');
+  assertNoUnknownKeys(o, ['base', 'dir', 'length', 'width', 'thickness', 'curve', 'shape', 'twist'], 'hair.tuft(opts)');
   const base = asPoint3(o.base, 'hair.tuft.base');
   const dir = norm3(assertNumberTuple(o.dir, 3, 'hair.tuft.dir') as Vec3);
+  const shape = o.shape === undefined ? 'ribbon' : assertEnum(o.shape, ['ribbon', 'tube'] as const, 'hair.tuft.shape');
+  if (shape === 'tube' && (o.thickness !== undefined || o.twist !== undefined)) {
+    throw new ValidationError("hair.tuft: thickness / twist only apply to shape 'ribbon'. See /ai/figure.md");
+  }
   const R = Math.cbrt(rig.r.headX * rig.r.head * rig.r.headZ);
   const length = num(o.length, R * 0.5, 'hair.tuft.length', 1e-3);
-  const width = num(o.width, R * 0.15, 'hair.tuft.width', 1e-3);
+  const width = num(o.width, shape === 'ribbon' ? R * 0.28 : R * 0.15, 'hair.tuft.width', 1e-3);
+  const thickness = num(o.thickness, width / 3.6, 'hair.tuft.thickness', 1e-3);
+  const twist = num(o.twist, 0, 'hair.tuft.twist', -720, 720);
   let bend: Vec3;
   if (Array.isArray(o.curve)) bend = assertNumberTuple(o.curve, 3, 'hair.tuft.curve') as Vec3;
   else {
@@ -4439,7 +4546,10 @@ function buildHairTuft(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   }
   const tip = add3(base, scale3(dir, length));
   const mid = add3(add3(base, scale3(dir, length * 0.5)), bend);
-  return hairLock(sdf, base, mid, tip, width, Math.max(R * 0.022, 0.15), 4, 0.78);
+  const tipFloor = Math.max(R * 0.022, 0.15);
+  if (shape === 'tube') return hairLock(sdf, base, mid, tip, width, tipFloor, 4, 0.78);
+  const hc = rig.joints.head as Vec3;
+  return ribbonLock(sdf, base, mid, tip, { width, thickness, tipFloor, twist, outward: (p) => norm3(sub3(p, hc)) });
 }
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -5332,7 +5442,8 @@ export interface FigureNamespace {
     (rig: Rig, opts?: object): Node;
     /** The 'anime' cap alone (thin skull offset, tilted hairline plane, arched face window). */
     cap(rig: Rig, opts?: object): Node;
-    /** One chunky tapered anime lock from `base` along `dir`. */
+    /** One chunky anime lock from `base` along `dir`, tapering to a point: a flat
+     *  ribbon lying on the head (default) or `shape: 'tube'`. */
     tuft(rig: Rig, opts?: object): Node;
   };
   /** Drop a finished figure onto a floor and turn it to face an axis:
@@ -6256,4 +6367,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { placeFigure, mulberry32, surfacePoint, buildHead, buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };
+export const __figureTestables__ = { placeFigure, mulberry32, surfacePoint, buildHead, buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ribbonLock, ribbonWidthAt, ribbonThickAt, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };

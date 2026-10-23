@@ -1288,24 +1288,36 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //       same seed ⇒ identical hair), flick: 0..3 (1, side flicks outward),
 //       fringe: 0..1.5 (1 = to the brows; lower = shorter), on: headNode }
 //     `length` drops the nape locks; `volume` thickens cap + locks.
-//   'anime' — the classic anime / vinyl-toy spiky bob (Funko hair): a THIN cap
+//   'anime' — the classic anime / vinyl-toy mop (Funko hair): a THIN cap
 //     hugging the real (headScale'd) skull, trimmed by a tilted hairline plane
-//     (high at the face, low at the nape) with an arched face window, plus
-//     chunky swoopy pointed locks — a fringe of 5–9 broad locks over the
-//     forehead, a sideburn + over-the-ear lock + temple flick + side flick each
-//     side, layered pointed nape locks and crown tufts flicking up and out. No
-//     side pads, so it doesn't read as a helmet from 3/4. Pass `on: head`.
-//     Extra keys: { locks: 12..48 (24), seed (1), on: headNode,
+//     (high at the face, low at the nape) with an arched face window, plus a
+//     FEW big, flat RIBBON locks that lie on the skull and come to sharp
+//     points: 4–6 broad fringe locks sweeping sideways over the forehead and
+//     overlapping like shingles, per side a sideburn curving forward to a point
+//     at cheek level + an over-the-ear lock + a temple flare kicking out, 3–5
+//     crown locks running back over the top and flicking up, and layered back
+//     locks pointing down to the nape. Pass `on: head`.
+//     Extra keys: { locks: 8..40 (14 ≈ 16 visible locks), seed (1), on: headNode,
 //       fringe: 0..1.5 (1 = tips just above the brows; lower = shorter),
-//       spike: 0..3 (1, how far crown tufts flick out), swoop: −1..3 (1, how
-//       far the fringe locks fan sideways; 0 = straight down) }
+//       spike: 0..3 (1, how far crown locks flick up), swoop: −1..3 (1, how
+//       far the fringe sweeps sideways; 0 = straight down),
+//       lockShape: 'ribbon' (default — flat lens-section locks ~3:1 wide:thick,
+//         wide axis tangent to the skull) | 'tube' (round tapered tubes, same layout),
+//       chunk: 0.4..2.5 (1, lock width multiplier) }
 //     `length` drops sideburns/nape; `volume` widens the crown + thickens locks.
-//     Meshes ~3× faster than 'mop' (locks are hard-unioned, welded once).
+//     Locks are hard-unioned and welded into the cap once (small smooth blend,
+//     no root seams).
 //   Helpers for hand-built hairdos (same pieces 'anime' uses):
 //     F.hair.cap(rig, { on, thickness, crown, hairlinePlane: { front, back },
 //       window: { width, top, tilt } | false })   // heights in head-Z radii above the head centre
-//     F.hair.tuft(rig, { base, dir, length, width, curve })   // one tapered lock;
-//       curve: number = flick toward head-up (× length), or a Vec3 mid offset
+//     F.hair.tuft(rig, { base, dir, length, width, thickness, curve, shape, twist })
+//       // one lock tapering to a point. shape: 'ribbon' (default) — a flat lock
+//       // whose wide axis lies tangent to the head (⊥ the ray from the head
+//       // centre); width = root HALF-width (default 0.28 head radii), thickness =
+//       // root half-thickness (default width/3.6), twist = degrees the section
+//       // turns root→tip. shape: 'tube' — round; width = root radius (no
+//       // thickness/twist). curve: number = flick toward head-up (× length), or
+//       // a Vec3 mid offset. Bury the base a little inside the cap so it welds.
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
 //   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
