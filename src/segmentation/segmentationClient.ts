@@ -105,7 +105,7 @@ const hasWorker = () => typeof Worker !== 'undefined';
 const pinCreaseDeg = () => getConfig().segmentation.edgePinCreaseDeg;
 const runnerOpts = () => {
   const c = getConfig().segmentation;
-  return { undoDepth: c.undoDepth, defaultEdgeSmoothing: c.defaultEdgeSmoothing, anchorMinRegionFrac: c.seedsFromPartsMinRegionFrac };
+  return { undoDepth: c.undoDepth, defaultEdgeSmoothing: c.defaultEdgeSmoothing, anchorMinRegionFrac: c.seedsFromPartsMinRegionFrac, autoAbsorbFrac: c.autoAbsorbSpeckFrac };
 };
 
 async function ensureLoaded(meshKey: string, mesh: () => SegMesh): Promise<void> {

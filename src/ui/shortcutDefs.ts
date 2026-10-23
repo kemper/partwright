@@ -73,5 +73,18 @@ export function getShortcutDocs(): ShortcutDoc[] {
       keys: `${combo(MOD_LABEL, 'F')} / ${combo(MOD_LABEL, ALT_LABEL, 'F')}`,
       description: 'Open the code editor’s Find / Find-and-Replace panel (replace jumps straight to the replace field).',
     },
+    {
+      keys: 'V / P / B',
+      description: 'Detect parts panel: switch between the Select, Pin and Fix tools.',
+    },
+    {
+      keys: '1–9, 0',
+      description: 'Detect parts panel: pick a label chip (hair, face, …), then click that part on the model.',
+    },
+    {
+      keys: 'M · R · Enter',
+      description:
+        'Detect parts panel: M merges the selected parts; R renames the part under the cursor (with one part selected, just type its name); Enter accepts the parts. S solos the selection, hold H to hide pins, Esc clears the selection.',
+    },
   ];
 }

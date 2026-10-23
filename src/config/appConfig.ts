@@ -449,6 +449,17 @@ export interface AppConfig {
     /** Part panel label chips: a chip's pin counts as "missed" (its part
      *  came out empty or a speck) below this fraction of the surface area. */
     chipMissAreaFrac: number;
+    /** Detection folds "specks" — regions under this fraction of the surface
+     *  that no placed pin or hand fix holds — into the neighbour they border
+     *  most. 0 = off. */
+    autoAbsorbSpeckFrac: number;
+    /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
+     *  (the panel opens with the first label chip armed) when its largest
+     *  piece has at least this many triangles. */
+    fusedPieceMinTris: number;
+    /** Phone layout (below 768 px): the part panel is a bottom sheet this
+     *  fraction of the window height, so the model stays visible above it. */
+    mobileSheetHeightFrac: number;
   };
 }
 
@@ -597,6 +608,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     seedTagScreenFraction: 0.026,
     fixBrushRadiusFrac: 0.012,
     chipMissAreaFrac: 0.0005,
+    autoAbsorbSpeckFrac: 0.002,
+    fusedPieceMinTris: 2000,
+    mobileSheetHeightFrac: 0.45,
   },
 };
 

@@ -24,7 +24,7 @@ import {
   ValidationError, assertArray, assertBoolean, assertEnum, assertNumber, assertNumberTuple,
   assertObject, assertNoUnknownKeys, assertString,
 } from '../validation/apiValidation';
-import { MAX_EDGE_SMOOTHING, acceptColors, hexToRgb, isHexColor, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
+import { MAX_EDGE_SMOOTHING, acceptColors, hexToRgb, isHexColor, UNASSIGNED_COLOR, type BrushMode, type DraftSummary, type PartEditOp } from './draft';
 import { medianEdgeLength, toSegMesh } from './features';
 import { LABEL_PRESETS } from './labelPresets';
 import { AbortedError } from './growth';
@@ -60,9 +60,24 @@ export interface PartDetectionHost {
 export type PartDetectionEvent = 'draft' | 'busy' | 'seeds' | 'presets' | 'view';
 
 const EDIT_OPS = [
-  'merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries',
+  'merge', 'rename', 'setColor', 'delete', 'reassign', 'brush', 'split', 'absorbSmall', 'smoothBoundaries',
   'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo',
 ] as const;
+
+const BRUSH_MODES = ['triangles', 'patches'] as const satisfies readonly BrushMode[];
+
+/** A brush stroke in progress, previewed on the overlay before it lands
+ *  (the panel's Select-tool brush). */
+export interface BrushGhost {
+  points: [number, number, number][];
+  radius: number;
+  mode: BrushMode;
+  /** `#rrggbb` the brushed area previews in (the target part's colour). */
+  color: string;
+  /** Triangles of the shown overlay mesh the stroke passed over (a dab
+   *  smaller than the triangle it lands on still takes that triangle). */
+  faces?: number[];
+}
 
 /** How the overlay draws parts: everything, or only a solo set (the rest
  *  greyed out). */
@@ -156,6 +171,10 @@ export function createPartDetection(host: PartDetectionHost) {
   let soloNames = new Set<string>();
   let keepPresetsOnce = false;
   let presetRun: { stop: boolean } | null = null;
+  /** Brush preview: the brushed overlay triangles (marked incrementally as
+   *  the stroke grows) recoloured toward the target part. */
+  let ghost: { g: BrushGhost; mesh: MeshData | null; labels: Int32Array; hit: Uint8Array; done: number; touched: Set<number> } | null = null;
+  let centroidCache: { mesh: MeshData; c: Float32Array } | null = null;
 
   function importAt(index: number): ImportedMesh {
     const imports = host.getImports();
@@ -185,6 +204,7 @@ export function createPartDetection(host: PartDetectionHost) {
   function clearDraftState(): void {
     const hadDraft = draft !== null;
     draft = null;
+    ghost = null;
     gen++;
     cutState = null;
     overlayLabels = null;
@@ -242,6 +262,7 @@ export function createPartDetection(host: PartDetectionHost) {
     const keepCut = !!cutState && cutState.gen === gen && !!prev && prev.meshKey === next.meshKey
       && prev.summary.edgeSmoothing === next.summary.edgeSmoothing && sameArray(prev.triPart, next.triPart);
     draft = next;
+    ghost = null;
     gen++;
     if (keepCut) cutState!.gen = gen;
     else cutState = null;
@@ -361,7 +382,55 @@ export function createPartDetection(host: PartDetectionHost) {
     if (!draft || !overlayVisible) return;
     if (previewIndex !== null || !overlayLabels) { refreshOverlay(); return; }
     const colors = colorsFromLabels(overlayLabels.labels, partPalette(draft, true));
+    if (ghost) paintGhost(colors);
     if (!host.recolorOverlay?.(colors)) refreshOverlay();
+  }
+
+  /** Triangle centroids of the mesh the overlay shows (cached per mesh). */
+  function centroidsOf(mesh: MeshData): Float32Array {
+    if (centroidCache?.mesh === mesh) return centroidCache.c;
+    const c = new Float32Array(mesh.numTri * 3);
+    const vp = mesh.vertProperties, tv = mesh.triVerts, np = mesh.numProp;
+    for (let t = 0; t < mesh.numTri; t++) {
+      for (let k = 0; k < 3; k++) {
+        const v = tv[t * 3 + k] * np;
+        c[t * 3] += vp[v] / 3; c[t * 3 + 1] += vp[v + 1] / 3; c[t * 3 + 2] += vp[v + 2] / 3;
+      }
+    }
+    centroidCache = { mesh, c };
+    return c;
+  }
+
+  /** Mark the overlay triangles the ghost's new points cover, then tint
+   *  them (or, in patches mode, every part they touch) in `colors`. */
+  function paintGhost(colors: Uint8Array): void {
+    if (!ghost) return;
+    const { g, labels, hit } = ghost;
+    const mesh = ghost.mesh ?? host.getDisplayedMesh();
+    if (!mesh || mesh.numTri !== labels.length) return;
+    const c = centroidsOf(mesh);
+    const r2 = g.radius * g.radius;
+    for (const f of g.faces ?? []) {
+      if (f < 0 || f >= labels.length || hit[f]) continue;
+      hit[f] = 1;
+      if (labels[f] >= 0) ghost.touched.add(labels[f]);
+    }
+    for (; ghost.done < g.points.length; ghost.done++) {
+      const p = g.points[ghost.done];
+      for (let t = 0; t < labels.length; t++) {
+        if (hit[t]) continue;
+        const dx = c[t * 3] - p[0], dy = c[t * 3 + 1] - p[1], dz = c[t * 3 + 2] - p[2];
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
+        hit[t] = 1;
+        if (labels[t] >= 0) ghost.touched.add(labels[t]);
+      }
+    }
+    const tint = mixRgb(hexToRgb(g.color), WHITE, 0.2);
+    const patches = g.mode === 'patches';
+    for (let t = 0; t < labels.length; t++) {
+      if (!(hit[t] || (patches && ghost.touched.has(labels[t])))) continue;
+      colors[t * 3] = tint[0]; colors[t * 3 + 1] = tint[1]; colors[t * 3 + 2] = tint[2];
+    }
   }
 
   function displayedPartsAndColors(d: DraftState, styled = false): { mesh: MeshData; triPart: Int32Array; triColors: Uint8Array } | null {
@@ -609,6 +678,23 @@ export function createPartDetection(host: PartDetectionHost) {
         const radius = assertNumber(x.radius, `${where}.radius`, { optional: true, min: 0 });
         const base = { op, point: assertNumberTuple(x.point, 3, `${where}.point`) as [number, number, number], to: parseRef(x.to, `${where}.to`) };
         return radius === undefined ? base : { ...base, radius };
+      }
+      case 'brush': {
+        keys('to', 'points', 'triangles', 'radius', 'mode');
+        const to = parseRef(x.to, `${where}.to`);
+        const points = x.points === undefined ? undefined
+          : assertArray(x.points, `${where}.points`).map((p, j) => assertNumberTuple(p, 3, `${where}.points[${j}]`) as [number, number, number]);
+        const triangles = x.triangles === undefined ? undefined
+          : assertArray(x.triangles, `${where}.triangles`).map((t, j) => assertNumber(t, `${where}.triangles[${j}]`, { integer: true, min: 0 })!);
+        const radius = assertNumber(x.radius, `${where}.radius`, { optional: true, min: 0 });
+        const mode = x.mode === undefined ? undefined : assertEnum(x.mode, BRUSH_MODES, `${where}.mode`);
+        if (!points?.length && !triangles?.length) throw new ValidationError(`${where}: brush needs points (with a radius) or triangles`);
+        if (points?.length && !(radius !== undefined && radius > 0)) throw new ValidationError(`${where}.radius must be > 0 when points are given`);
+        return {
+          op, to,
+          ...(points ? { points } : {}), ...(triangles ? { triangles } : {}),
+          ...(radius !== undefined ? { radius } : {}), ...(mode ? { mode } : {}),
+        };
       }
       case 'split':
         keys('id', 'seeds');
@@ -1231,6 +1317,26 @@ export function createPartDetection(host: PartDetectionHost) {
       applyView();
     },
     getHoveredPart(): string | null { return hovered; },
+    /** Preview a brush stroke on the overlay (the panel's Select-tool brush):
+     *  the covered triangles — or, in `patches` mode, every part they touch —
+     *  show in the target colour until the stroke lands. Pass the growing
+     *  stroke on each move; null clears it. Not an edit: nothing changes
+     *  until editParts({op:'brush'}). */
+    setBrushGhost(g: BrushGhost | null): void {
+      if (!g) {
+        if (!ghost) return;
+        ghost = null;
+        applyView();
+        return;
+      }
+      if (!draft || !overlayLabels || previewIndex !== null) return;
+      const restart = !ghost || ghost.labels !== overlayLabels.labels || ghost.g.mode !== g.mode || ghost.g.radius !== g.radius
+        || g.points.length < ghost.done;
+      if (restart) {
+        ghost = { g, mesh: overlayLabels.mesh, labels: overlayLabels.labels, hit: new Uint8Array(overlayLabels.labels.length), done: 0, touched: new Set() };
+      } else ghost!.g = g;
+      applyView();
+    },
     /** The draft part nearest a world point (e.g. from probePixel). */
     partAt(point: unknown) {
       try {

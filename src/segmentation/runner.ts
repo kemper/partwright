@@ -39,11 +39,16 @@ export class SegmentationRunner {
   /** Automatic pins skip regions under this fraction of their part. */
   private anchorMinRegionFrac: number;
 
-  constructor(mesh: SegMesh, opts: { undoDepth?: number; defaultEdgeSmoothing?: number; anchorMinRegionFrac?: number } = {}) {
+  /** Detection folds unpinned regions under this fraction of the surface
+   *  into their neighbours (0 = off). */
+  private autoAbsorbFrac: number;
+
+  constructor(mesh: SegMesh, opts: { undoDepth?: number; defaultEdgeSmoothing?: number; anchorMinRegionFrac?: number; autoAbsorbFrac?: number } = {}) {
     this.mesh = mesh;
     this.undoDepth = opts.undoDepth ?? 20;
     this.defaultEdgeSmoothing = opts.defaultEdgeSmoothing ?? DEFAULT_EDGE_SMOOTHING;
     this.anchorMinRegionFrac = opts.anchorMinRegionFrac ?? 0.01;
+    this.autoAbsorbFrac = opts.autoAbsorbFrac ?? 0;
   }
 
   features(opts: FeatureOptions = {}): MeshFeatures {
@@ -106,6 +111,7 @@ export class SegmentationRunner {
     model.cache = this.detectorCache;
     model.undoDepth = this.undoDepth;
     model.anchorMinRegionFrac = this.anchorMinRegionFrac;
+    model.autoAbsorbFrac = this.autoAbsorbFrac;
     model.edgeSmoothing = this.defaultEdgeSmoothing;
     if (typeof saved.edgeSmoothing === 'number') model.edgeSmoothing = Math.max(0, Math.min(MAX_EDGE_SMOOTHING, Math.round(saved.edgeSmoothing)));
     this.revision++;
@@ -138,8 +144,10 @@ export class SegmentationRunner {
     const model = new PartDraftModel(this.mesh, f, { detectorId: d.id, params, featureOptions, seeds: d.seeds === 'none' ? [] : seeds }, result);
     model.undoDepth = this.undoDepth;
     model.anchorMinRegionFrac = this.anchorMinRegionFrac;
+    model.autoAbsorbFrac = this.autoAbsorbFrac;
     model.edgeSmoothing = this.defaultEdgeSmoothing;
     model.cache = this.detectorCache;
+    model.absorbSpecksNow();
     return model;
   }
 

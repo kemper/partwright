@@ -4,6 +4,7 @@
 // panel draws the chips, listPartDetectors() hands the same lists to agents
 // so a seeded detectParts can use the same names and colours.
 
+import { SKIN_TONE } from '../color/naturalTones';
 import { overlayColor } from './draft';
 
 export interface LabelChip {
@@ -21,7 +22,7 @@ export interface LabelPreset {
 }
 
 /** Skin tone shared by the face and arms chips. */
-const SKIN = '#e8b98f';
+const SKIN = SKIN_TONE;
 
 export const LABEL_PRESETS: readonly LabelPreset[] = [
   {
@@ -37,6 +38,7 @@ export const LABEL_PRESETS: readonly LabelPreset[] = [
       { name: 'socks', color: '#e4e8ee' },
       { name: 'shoes', color: '#2a2a2e' },
       { name: 'ball', color: '#fafafa' },
+      { name: 'base', color: '#4b4b52' },
     ],
   },
   {
@@ -65,4 +67,17 @@ export function chipState(
   const p = parts.find((x) => x.name === name);
   if (p && p.areaFrac >= minAreaFrac) return 'owned';
   return pinned ? 'missed' : 'idle';
+}
+
+/** A Separate-pieces draft that found only 1–2 pieces on a big mesh: the
+ *  pieces are real, but the largest one is a fused figure whose regions
+ *  (hair, face…) need labels. The import banner and the panel use this to
+ *  word the proposal consistently and to open ready to label. */
+export function isFusedPiecesDraft(
+  detector: string,
+  parts: readonly { triCount: number }[],
+  minTris: number,
+): boolean {
+  if (detector !== 'pieces' || parts.length === 0 || parts.length > 2) return false;
+  return Math.max(...parts.map((p) => p.triCount)) >= minTris;
 }

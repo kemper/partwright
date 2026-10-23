@@ -2,7 +2,7 @@
 // visible colour, the method-switch clear, and the chip state helper.
 import { describe, expect, it } from 'vitest';
 import { acceptColors } from '../../src/segmentation/draft';
-import { chipState, LABEL_PRESETS, labelPreset } from '../../src/segmentation/labelPresets';
+import { chipState, isFusedPiecesDraft, LABEL_PRESETS, labelPreset } from '../../src/segmentation/labelPresets';
 import { SegmentationRunner } from '../../src/segmentation/runner';
 import type { SegMesh } from '../../src/segmentation/types';
 
@@ -83,10 +83,17 @@ describe('accept colours', () => {
 });
 
 describe('label chips', () => {
-  it('ships a figure set of nine and a generic part 1…9 set, all #rrggbb', () => {
-    expect(labelPreset('figure').chips.map((c) => c.name)).toEqual(['hair', 'face', 'eyes', 'shirt', 'arms', 'shorts', 'socks', 'shoes', 'ball']);
+  it('ships a figure set of ten (key 0 picks "base") and a generic part 1…9 set, all #rrggbb', () => {
+    expect(labelPreset('figure').chips.map((c) => c.name)).toEqual(['hair', 'face', 'eyes', 'shirt', 'arms', 'shorts', 'socks', 'shoes', 'ball', 'base']);
     expect(labelPreset('generic').chips[8].name).toBe('part 9');
     for (const p of LABEL_PRESETS) for (const c of p.chips) expect(c.color).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it('isFusedPiecesDraft: 1–2 pieces with a big largest piece is a fused figure', () => {
+    expect(isFusedPiecesDraft('pieces', [{ triCount: 450000 }, { triCount: 6000 }], 2000)).toBe(true);
+    expect(isFusedPiecesDraft('pieces', [{ triCount: 12 }, { triCount: 12 }], 2000)).toBe(false);
+    expect(isFusedPiecesDraft('pieces', [{ triCount: 9000 }, { triCount: 9000 }, { triCount: 9000 }], 2000)).toBe(false);
+    expect(isFusedPiecesDraft('auto-merge', [{ triCount: 450000 }], 2000)).toBe(false);
   });
 
   it('chipState: owned beats missed; a pinned chip with no (or a speck) part is missed', () => {
