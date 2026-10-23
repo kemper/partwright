@@ -4,39 +4,34 @@
 //
 //   npm run pr:screenshots -- test-results/before.png test-results/after.png
 //   npm run pr:screenshots -- --layout proof.md before.png after.png
-//   npm run pr:screenshots -- --refresh            # re-post the last upload (e.g. after opening the PR)
+//   npm run pr:screenshots -- --refresh            # re-post the last upload
 //
 // 1. Pushes the images to the shared, never-merged `pr-assets` branch as one
 //    upload batch (`<branch-folder>/<UTC stamp>/<image>`), using git plumbing
 //    with a temporary index: your working tree, index and HEAD are untouched.
-// 2. Finds the open PR for the current branch (or --pr N) and creates or
-//    updates ONE comment rendering the newest upload inline (earlier uploads
-//    collapse to links), via `gh api` (REST).
-// 3. Reads the rendered comment back and fails unless GitHub shows every
-//    image, so a broken link can't go unnoticed.
+// 2. The `Visual proof comment` workflow (.github/workflows/pr-visual-proof.yml)
+//    posts the newest upload as ONE PR comment and checks GitHub renders every
+//    image. It runs on the PR's next open/push, and this script dispatches it
+//    right away when `gh` is allowed to (locally; cloud sessions can't, so it
+//    prints the GitHub MCP call to make instead). The comment must come from
+//    the workflow: cloud sessions' GitHub proxy defangs image links that a
+//    session posts itself.
 //
 // --layout <file.md>  Markdown for the comment, e.g. a before/after table.
 //                     Reference images by file name (`![after](after.png)`);
 //                     links are pinned to the upload. Default: two per row.
 // --pr <n>            Target PR (default: the open PR whose head is this branch).
-// --refresh           Skip the upload; re-render the comment from pr-assets.
-//
-// No open PR yet? The upload is kept; run `--refresh` once the PR exists.
+// --branch <name>     Act for another branch: its pr-assets folder and open PR
+//                     (default: the checked-out branch).
+// --refresh           Skip the upload; just ask the workflow to post again.
 
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import {
-  COMMENT_MARKER,
-  folderForBranch,
-  groupBatches,
-  missingImages,
-  renderComment,
-  resolveProofMarkdown,
-  safeFileName,
-} from './lib/visualProof.mjs';
+import { folderForBranch, groupBatches, resolveProofMarkdown, safeFileName } from './lib/visualProof.mjs';
 
+const WORKFLOW = 'pr-visual-proof.yml';
 const ASSETS_BRANCH = 'pr-assets';
 const ASSETS_REF = `refs/remotes/origin/${ASSETS_BRANCH}`;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
@@ -50,24 +45,18 @@ function git(args, opts = {}) {
   return execFileSync('git', args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...opts }).trim();
 }
 
-/** `gh api` call; `body` is sent as JSON on stdin. */
-function gh(path, { method = 'GET', body, accept, paginate = false } = {}) {
-  const args = ['api', path, '-X', method];
-  if (accept) args.push('-H', `Accept: ${accept}`);
-  if (paginate) args.push('--paginate', '--slurp');
-  if (body) args.push('--input', '-');
-  const out = execFileSync('gh', args, {
+/** `gh api` REST call; `body` is sent as JSON on stdin. */
+function gh(path, { method = 'GET', body } = {}) {
+  const out = execFileSync('gh', ['api', path, '-X', method, ...(body ? ['--input', '-'] : [])], {
     encoding: 'utf8',
     input: body ? JSON.stringify(body) : undefined,
     stdio: ['pipe', 'pipe', 'pipe'],
-    maxBuffer: 64 * 1024 * 1024,
   });
-  const json = out.trim() ? JSON.parse(out) : null;
-  return paginate ? json.flat() : json;
+  return out.trim() ? JSON.parse(out) : null;
 }
 
 function parseArgs(argv) {
-  const opts = { images: [], layout: null, pr: null, refresh: false };
+  const opts = { images: [], layout: null, pr: null, branch: null, refresh: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -77,9 +66,10 @@ function parseArgs(argv) {
     };
     if (a === '--layout' || a.startsWith('--layout=')) opts.layout = value();
     else if (a === '--pr' || a.startsWith('--pr=')) opts.pr = Number(value());
+    else if (a === '--branch' || a.startsWith('--branch=')) opts.branch = value();
     else if (a === '--refresh') opts.refresh = true;
     else if (a === '-h' || a === '--help') {
-      console.log('usage: npm run pr:screenshots -- [--layout proof.md] [--pr N] <image>...\n       npm run pr:screenshots -- --refresh [--pr N]');
+      console.log('usage: npm run pr:screenshots -- [--layout proof.md] [--pr N] [--branch B] <image>...\n       npm run pr:screenshots -- --refresh [--pr N] [--branch B]');
       process.exit(0);
     } else if (a.startsWith('--')) fail(`unknown option ${a}`);
     else opts.images.push(a);
@@ -183,87 +173,57 @@ function findPr(slug, branch) {
   return prs.length > 0 ? prs[0].number : null;
 }
 
-function postComment(slug, pr, folder, assetsSha, uploaded) {
+/** Sanity check: the upload is exactly what the workflow will show. */
+function checkUpload(assetsSha, folder, uploaded) {
   // -z: unquoted paths, so non-ASCII file names survive.
   const paths = git(['ls-tree', '-r', '-z', '--full-tree', '--name-only', assetsSha, '--', `${folder}/`]).split('\0').filter(Boolean);
-  const batches = groupBatches(paths, folder);
-  if (batches.length === 0) throw new Error(`no screenshots under ${ASSETS_BRANCH}/${folder}/`);
-  // Pin links to the last commit that touched this folder, so a --refresh
-  // after other PRs' uploads produces the same comment.
-  const sha = git(['log', '-1', '--format=%H', assetsSha, '--', `:(top)${folder}`]);
-  const latest = batches[batches.length - 1];
-  if (uploaded) {
-    const shown = new Set(latest.images.map((img) => img.path));
-    const lost = uploaded.filter((path) => !shown.has(path));
-    if (latest.stamp !== uploaded[0].split('/')[1] || lost.length > 0) {
-      throw new Error(`the comment would leave out ${lost.join(', ') || 'this upload'}; please report this as a pr:screenshots bug`);
-    }
+  const latest = groupBatches(paths, folder).at(-1);
+  const shown = new Set((latest?.images ?? []).map((img) => img.path));
+  const lost = uploaded.filter((path) => !shown.has(path));
+  if (latest?.stamp !== uploaded[0].split('/')[1] || lost.length > 0) {
+    throw new Error(`the comment would leave out ${lost.join(', ') || 'this upload'}; please report this as a pr:screenshots bug`);
   }
-  const proofMarkdown = latest.proofPath ? git(['show', `${sha}:${latest.proofPath}`]) : null;
-  const body = renderComment({ repoSlug: slug, sha, batches, proofMarkdown });
+}
 
-  const comments = gh(`repos/${slug}/issues/${pr}/comments?per_page=100`, { paginate: true });
-  const existing = comments.find((c) => c.body?.startsWith(COMMENT_MARKER));
-  const post = () => gh(`repos/${slug}/issues/${pr}/comments`, { method: 'POST', body: { body } });
-  let comment;
-  let action = 'Updated';
-  if (!existing) {
-    action = 'Posted';
-    comment = post();
-  } else if (!existing.body.startsWith(body)) {
-    // startsWith: the posting proxy may append an attribution footer.
-    try {
-      comment = gh(`repos/${slug}/issues/comments/${existing.id}`, { method: 'PATCH', body: { body } });
-    } catch (e) {
-      // Someone else's comment we may not edit: post our own instead.
-      if (!/HTTP 403/.test(stderrOf(e))) throw e;
-      action = 'Posted';
-      comment = post();
-    }
-  } else {
-    action = 'Unchanged';
-    comment = existing;
+/** Ask the workflow to post now; returns false where gh may not dispatch. */
+function dispatch(slug, pr, stamp) {
+  const inputs = { pr: String(pr), ...(stamp ? { upload: stamp } : {}) };
+  try {
+    gh(`repos/${slug}/actions/workflows/${WORKFLOW}/dispatches`, { method: 'POST', body: { ref: 'main', inputs } });
+    console.log(`Started the Visual proof workflow for PR #${pr}; the comment appears in about a minute (a red check means an image didn't render).`);
+    return true;
+  } catch (e) {
+    console.log(`Couldn't start the workflow from here (${stderrOf(e).split('\n')[0]}).`);
+    console.log("It runs on the PR's next push. To post now, use the GitHub MCP tool:");
+    console.log(`  actions_run_trigger method=run_workflow owner=${slug.split('/')[0]} repo=${slug.split('/')[1]} workflow_id=${WORKFLOW} ref=main inputs=${JSON.stringify(inputs)}`);
+    return false;
   }
-
-  // Confirm GitHub renders every image of the newest upload.
-  const html = gh(`repos/${slug}/issues/comments/${comment.id}`, { accept: 'application/vnd.github.html+json' }).body_html;
-  const missing = missingImages(html, slug, sha, latest.images);
-  console.log(`${action} Visual proof comment: ${comment.html_url}`);
-  if (missing.length > 0) {
-    throw new Error(
-      `GitHub isn't rendering ${missing.map((m) => m.name).join(', ')} as images. Check the --layout file's image references. ` +
-        "In a cloud session, links to screenshots this session didn't upload get defanged: re-run with the image files to re-upload them.",
-    );
-  }
-  console.log(`Verified: GitHub renders all ${latest.images.length} image(s).`);
 }
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
-  if (branch === 'HEAD') fail('detached HEAD; check out the PR branch first');
+  const branch = opts.branch ?? git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (branch === 'HEAD') fail('detached HEAD; check out the PR branch first (or pass --branch)');
   const slug = git(['remote', 'get-url', 'origin']).replace(/\.git$/, '').replace(/^.*[:/]([^/]+\/[^/]+)$/, '$1');
   const folder = folderForBranch(branch);
 
-  let assetsSha;
-  let uploaded = null;
+  let stamp = null;
   if (opts.refresh) {
-    assetsSha = fetchAssets();
-    if (!assetsSha) fail(`no ${ASSETS_BRANCH} branch yet; upload some screenshots first`);
+    if (!fetchAssets()) fail(`no ${ASSETS_BRANCH} branch yet; upload some screenshots first`);
   } else {
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     const batch = `${folder}/${stamp}`;
-    assetsSha = upload(opts.images, opts.layout, batch, branch);
-    uploaded = opts.images.map((f) => `${batch}/${safeFileName(basename(f))}`);
+    const assetsSha = upload(opts.images, opts.layout, batch, branch);
+    checkUpload(assetsSha, folder, opts.images.map((f) => `${batch}/${safeFileName(basename(f))}`));
     console.log(`Uploaded ${opts.images.length} image(s) to ${ASSETS_BRANCH}/${batch} (${assetsSha.slice(0, 7)}).`);
   }
 
   const pr = opts.pr ?? findPr(slug, branch);
   if (!pr) {
-    console.log(`No open PR for ${branch} yet. After opening it, run: npm run pr:screenshots -- --refresh`);
+    console.log(`No open PR for ${branch} yet; the Visual proof workflow posts the screenshots when it's opened.`);
     return;
   }
-  postComment(slug, pr, folder, assetsSha, uploaded);
+  dispatch(slug, pr, stamp);
 }
 
 try {
