@@ -25,6 +25,7 @@ import {
   CHARACTER_PRESETS,
   POSE_PRESETS,
   randomSpec,
+  seededRandom,
   POSE_PRESET_LABELS,
 } from '../figure/characterSpec';
 
@@ -207,7 +208,9 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   };
 
   // A change handler that mutates the spec then re-previews.
-  const onEdit = (mutate: (s: CharacterSpec) => void): void => { mutate(spec); preview(); };
+  // An edit moves the spec off whichever preset it started from, so drop the
+  // card highlight (markActive is defined with the preset list below).
+  const onEdit = (mutate: (s: CharacterSpec) => void): void => { mutate(spec); markActive(null); preview(); };
 
   const body = shell.body;
 
@@ -220,12 +223,17 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   presetTitle.classList.remove('mt-1');
   const randomBtn = el('button', BUTTON_SMALL_SECONDARY);
   randomBtn.textContent = '🎲 Random';
-  randomBtn.title = 'Build a brand-new random character (click again for another)';
+  const RANDOM_TITLE = 'Build a brand-new random character (click again for another)';
+  randomBtn.title = RANDOM_TITLE;
   randomBtn.addEventListener('click', () => {
     // Keep the stand toggle — it's a print-setup choice, not part of "who".
     const keepBase = spec.base;
-    spec = randomSpec();
+    // Seeded so a roll you like can be re-created with
+    // partwright.randomCharacter({ seed }) — the seed shows on hover.
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    spec = randomSpec(seededRandom(seed));
     spec.base = keepBase;
+    randomBtn.title = `${RANDOM_TITLE} — last roll: seed ${seed}`;
     markActive(null);
     rebuild();
     preview({ immediate: true });
@@ -248,7 +256,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     const preset = p.patch();
     const item = el('div');
     item.setAttribute('role', 'listitem');
-    const card = el('button', 'w-full h-full flex flex-col items-stretch text-left rounded border border-zinc-700 bg-zinc-800/60 hover:bg-zinc-700/70 overflow-hidden transition-colors');
+    const card = el('button', 'w-full h-full flex flex-col items-stretch text-left rounded border border-zinc-700 bg-zinc-800/60 [@media(hover:hover)]:hover:bg-zinc-700/70 overflow-hidden transition-colors');
     card.setAttribute('aria-label', p.label);
     card.setAttribute('aria-pressed', 'false');
     card.title = `${p.label} — ${p.description}`;

@@ -248,7 +248,7 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
   { id: 'toddler', label: 'Toddler', description: 'Three years old, waving hello', patch: withSpec(s => {
     s.body = { ...s.body, height: 30, headsTall: 4, age: 3, build: 'average', weight: 0.6 };
     s.pose = POSE_PRESETS.waving();
-    s.face = { ...s.face, shape: 'round', nose: 'button', expression: 'bigSmile', lids: 'none', brows: 'thin' };
+    s.face = { ...s.face, shape: 'round', nose: 'button', expression: 'bigSmile', lids: 'none', brows: 'rounded' };
     s.hair = { style: 'short', length: 'short', volume: 1.1 };
     s.clothing.pants = { on: true, leg: 'slim', rise: 'high', length: 'full' };
     s.colors = { ...s.colors, skin: '#f1c9a8', hair: '#c9923f', brows: '#a8782f', iris: '#3d6e9e', top: '#f3c94b', pants: '#4f8fcf' };
@@ -271,7 +271,7 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
   }) },
   { id: 'grandma', label: 'Grandma', description: 'Silver bun, long-sleeve dress', patch: withSpec(s => {
     s.body = { ...s.body, height: 58, headsTall: 6.75, age: 72, sex: 'female', bust: 0.45, weight: 0.6, belly: 0.3 };
-    s.face = { ...s.face, shape: 'round', nose: 'snub', lids: 'hooded', brows: 'natural', expression: 'smile' };
+    s.face = { ...s.face, shape: 'round', nose: 'snub', lids: 'upper', brows: 'natural', expression: 'smile' };
     s.hair = { style: 'bun', length: 'mid', volume: 1.1 };
     s.clothing.top = { on: true, sleeve: 'long', length: 'dress' };
     s.clothing.pants = { on: false, leg: 'slim', rise: 'mid', length: 'full' };

@@ -25,6 +25,19 @@ const OUT_DIR = resolve(ROOT, 'public/character-presets');
 // Front-¾ from slightly above: shows face, hair and outfit together.
 const VIEW = [{ az: -68, el: 10 }]; // front is az -90 in the preview rasterizer (scripts/cli/views.mjs)
 
+// Minimum paintable triangles for a face label to count as visible (a buried
+// feature paints 0 to a few dozen; a visible one ~1,000+).
+const MIN_FACE_LABEL_TRIS = 200;
+
+function faceLabelProblems(spec, labels) {
+  const counts = new Map((labels || []).map((l) => [l.name, l.triangleCount]));
+  const required = ['eyes', 'lips', 'brows'];
+  if (spec.face.lids !== 'closed') required.push('iris', 'pupil');
+  return required
+    .filter((name) => (counts.get(name) ?? 0) < MIN_FACE_LABEL_TRIS)
+    .map((name) => `${name}=${counts.get(name) ?? 0} tris`);
+}
+
 function parseArgs(argv) {
   const a = { only: null, size: 360 };
   for (let i = 0; i < argv.length; i++) {
@@ -54,6 +67,15 @@ async function main() {
       const s = r.ok ? r.stats : null;
       if (!r.ok || !s.isManifold || s.componentCount !== 1 || !r.render) {
         failures.push(`${p.id}: ${r.ok ? `isManifold=${s.isManifold} components=${s.componentCount}` : r.error}`);
+        console.error(`FAIL ${p.id}`);
+        continue;
+      }
+      // Face features must actually show: a buried label (lids swallowing the
+      // pupil, a brow sunk under the ridge) still builds manifold but bakes a
+      // blank face. Fail well below the ~1k+ triangles a visible one paints.
+      const buried = faceLabelProblems(p.patch(), s.labels);
+      if (buried.length) {
+        failures.push(`${p.id}: buried face features — ${buried.join(', ')}`);
         console.error(`FAIL ${p.id}`);
         continue;
       }

@@ -13020,7 +13020,7 @@ async function main() {
         const o = assertObject(opts, 'randomCharacter(opts)', { optional: true }) ?? {};
         assertNoUnknownKeys(o, ['seed', 'save', 'label'], 'randomCharacter(opts)');
         return {
-          seed: assertNumber(o.seed, 'randomCharacter(opts).seed', { optional: true, integer: true }),
+          seed: assertNumber(o.seed, 'randomCharacter(opts).seed', { optional: true, integer: true, min: 0, max: 2 ** 32 - 1 }),
           save: assertBoolean(o.save, 'randomCharacter(opts).save', { optional: true }),
           label: assertString(o.label, 'randomCharacter(opts).label', { optional: true }),
         };

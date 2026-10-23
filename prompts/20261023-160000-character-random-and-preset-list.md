@@ -68,3 +68,22 @@ first sample the badge's bounding box is null, so the helper threw, and
 so the poll keeps sampling until the ResizeObserver relayout catches up. The
 change is test-only. I carried it on this branch because the session may only
 push here.
+
+## Assistant
+
+## Review follow-up
+
+The work-reviewer found nothing blocking. I acted on all of its findings:
+- **Toddler and Grandma presets.** They used exactly the combos the randomizer
+  avoids: thin brows, and hooded lids, where Grandma's pupil painted only 26
+  triangles. They now use rounded brows and upper lids.
+- **Bake gate.** It now fails any preset whose eyes, iris, pupil, lips or brows
+  paint fewer than 200 triangles (iris and pupil are skipped for closed lids).
+  The old Grandma fails it.
+- **Panel.** Random now rolls a seed and shows it in the button tooltip, so a
+  roll you like can be re-created with `randomCharacter({ seed })`. Editing a
+  control clears the preset card's highlight. The card hover is wrapped in the
+  hover-capable media query used elsewhere in the UI.
+- **API.** `randomCharacter`'s seed is limited to 0..2^32-1, because
+  `seededRandom` takes the seed as an unsigned 32-bit number, so seeds outside
+  that range would silently repeat earlier rolls.
