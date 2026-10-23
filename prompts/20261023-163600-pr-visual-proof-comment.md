@@ -21,9 +21,17 @@ tool rewrites image Markdown it posts; GitHub then reads the URL as relative.
 Hosting is not the problem, the posting path is, so an image-host library would
 not help.
 
-**Fix (in progress)**: keep `pr-assets` for storage (no history noise on main),
-and have a GitHub Action post one "Visual proof" comment with its own token, so
-the Markdown never passes through the session's tool. The rendering is a pure,
-testable module (`scripts/lib/visualProof.mjs`). Before finishing it, test
-whether plain `gh api` REST writes keep image links intact; if so, the script
-can post directly and the Action is unnecessary.
+**Test, then correction**: on this branch's draft PR, image Markdown written via
+`create_pull_request`, `update_pull_request` and `gh api` (REST) all stored and
+rendered intact. So the session's tooling does not mangle links; the broken
+bodies were hand-typed by agents, and nothing checked that images rendered.
+
+**Fix**: no GitHub Action (a WIP version was dropped). `npm run pr:screenshots`
+(now `scripts/pr-screenshots.mjs`) keeps storing images on `pr-assets` (one
+sub-folder per upload, so no history noise on main), then upserts one "Visual
+proof" PR comment via `gh api` and reads the rendered HTML back, failing unless
+GitHub shows every image. Agents never type an image URL. A comment rather than
+the PR body, so later body edits can't clobber it. `--layout` covers
+before/after tables; `--refresh` covers screenshots taken before the PR exists.
+Rendering is a pure module (`scripts/lib/visualProof.mjs`) with unit tests.
+CLAUDE.md and work-reviewer updated to the new flow.

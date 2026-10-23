@@ -1,21 +1,21 @@
-// Pure helpers for the "Visual proof" PR comment (.github/workflows/pr-visual-proof.yml).
+// Pure helpers for the PR "Visual proof" comment written by
+// `npm run pr:screenshots` (scripts/pr-screenshots.mjs).
 //
-// `npm run pr:screenshots` pushes screenshots to the never-merged `pr-assets`
-// branch, one folder per PR branch and one sub-folder per upload ("batch"):
+// Screenshots live on the never-merged `pr-assets` branch, one folder per PR
+// branch and one sub-folder per upload ("batch"):
 //
 //   <folder>/<YYYYMMDD-HHMMSS>/<image>…   (+ optional proof.md layout)
 //
-// The workflow lists that folder and renders it into one PR comment with the
-// helpers below. The comment is posted with the workflow's own GITHUB_TOKEN,
-// so the image Markdown never passes through an agent's GitHub tool (which
-// rewrites image links in the text it posts, breaking them).
+// The script renders that folder into one PR comment with these helpers, so
+// image links are generated, never hand-typed, and nothing lands in the PR
+// branch's history.
 
 export const COMMENT_MARKER = '<!-- pr-visual-proof -->';
 
 const STAMP_RE = /^\d{8}-\d{6}$/;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
 
-/** pr-assets folder for a PR head branch (mirrors scripts/pr-screenshots.sh). */
+/** pr-assets folder for a PR head branch. */
 export function folderForBranch(branch) {
   return branch.replace(/\//g, '-');
 }
@@ -112,7 +112,22 @@ export function renderComment({ repoSlug, sha, batches, proofMarkdown = null }) 
   }
   out.push(
     '',
-    `<sub>Uploaded ${stampLabel(latest.stamp)} with <code>npm run pr:screenshots</code> and posted by the <code>pr-visual-proof</code> workflow (pr-assets@${sha.slice(0, 7)}). It is updated in place on each new upload.</sub>`,
+    `<sub>Uploaded ${stampLabel(latest.stamp)} with <code>npm run pr:screenshots</code> (pr-assets@${sha.slice(0, 7)}). This comment is updated in place on each new upload.</sub>`,
   );
   return out.join('\n');
+}
+
+/**
+ * The pinned screenshot URLs GitHub actually rendered as images in a comment's
+ * HTML (`Accept: application/vnd.github.html+json`), used to confirm the
+ * comment shows every image rather than a broken link.
+ */
+export function renderedImageSrcs(html, repoSlug) {
+  const prefix = `https://github.com/${repoSlug}/blob/`;
+  const srcs = [];
+  for (const m of html.matchAll(/<img\b[^>]*?\bsrc="([^"]+)"/gi)) {
+    const src = m[1].replace(/&amp;/g, '&');
+    if (src.startsWith(prefix)) srcs.push(src);
+  }
+  return srcs;
 }
