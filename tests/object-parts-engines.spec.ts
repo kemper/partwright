@@ -106,6 +106,42 @@ return base.fuse(peg).fuse(loose);`);
     expect(blocked.error).toMatch(/BREP objects can't delete a separate piece/);
   });
 
+  test('BREP labels index the displayed mesh (#1061)', async ({ page }) => {
+    test.setTimeout(180_000);
+    await start(page, 'brep labels', 'replicad');
+    const p = pw(page);
+    await p.save(`const { BREP } = api;
+const base = BREP.label(BREP.box([20, 20, 4]), 'base');
+const peg = BREP.label(BREP.cylinder(3, 10).translate([0, 0, 4]), 'peg');
+const loose = BREP.label(BREP.box([4, 4, 4]).translate([30, 0, 0]), 'loose');
+return base.fuse(peg).fuse(loose);`);
+    const listed = await p.list();
+    // The separate cube is its own piece, and every triangle of it is "loose".
+    const loosePart = listed.parts.find(x => x.name === 'loose')!;
+    const loosePiece = listed.pieces.find(pc => pc.triangleCount === loosePart.triangleCount)!;
+    expect(loosePiece).toBeDefined();
+    expect(loosePiece.part).toBe('loose');
+    // The fused box keeps a holed top face, so it's more than a plain 12-tri box.
+    expect(listed.parts.find(x => x.name === 'base')!.triangleCount).toBeGreaterThan(12);
+    const main = listed.pieces.find(pc => pc !== loosePiece)!;
+    expect(['base', 'peg']).toContain(main.part);
+  });
+
+  test('BREP.toManifold labels survive later booleans in a JS session (#1061)', async ({ page }) => {
+    test.setTimeout(180_000);
+    await start(page, 'brep in js');
+    const p = pw(page);
+    await p.save(`const { Manifold, BREP } = api;
+const brep = BREP.toManifold(BREP.label(BREP.box([4, 4, 4]), 'brepbox'), Manifold).translate([30, 0, 0]);
+return api.label(Manifold.cube([20, 20, 4], true), 'plate').add(brep);`);
+    const listed = await p.list();
+    expect(listed.parts.map(x => x.name).sort()).toEqual(['brepbox', 'plate']);
+    const box = listed.parts.find(x => x.name === 'brepbox')!;
+    const boxPiece = listed.pieces.find(pc => pc.part === 'brepbox')!;
+    expect(boxPiece).toBeDefined();
+    expect(boxPiece.triangleCount).toBe(box.triangleCount);
+  });
+
   test('imported mesh: a detected part is removed and the opening capped', async ({ page }) => {
     test.setTimeout(180_000);
     await start(page, 'import delete');
