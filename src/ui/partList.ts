@@ -8,6 +8,7 @@
 // re-renders on every session-state change (the parts section also refreshes on
 // every mesh update via refreshObjectParts).
 
+import { eyeIconSVG, eyeOffIconSVG } from './icons';
 import { getState, onStateChange, type SessionState, type Part, type Version, type PartLayoutEntry } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
 import { buildPartTree, groupNames, type PartTreeNode } from './partTree';
@@ -38,6 +39,12 @@ export interface PartListCallbacks {
   getHighlightKey: () => string | null;
   /** Tint `part:<name>` / `piece:<n>` / `unlabeled` in the viewport; null clears. */
   onHighlight: (key: string | null) => void;
+  /** Hide or show the open object's `part:<name>` / `piece:<n>` in the viewport. */
+  onSetObjectPartHidden: (key: string, hidden: boolean) => void;
+  /** Delete the open object's `part:<name>` or `piece:<n>` (writes it into the code). */
+  onDeleteObjectPart: (key: string) => void | Promise<void>;
+  /** Whether the open object's parts/pieces can be deleted (JS objects only). */
+  canDeleteObjectParts: () => boolean;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
@@ -46,13 +53,13 @@ export interface PartListCallbacks {
  *  `partwright.listObjectParts()` (minus the object id/name). */
 export interface ObjectPartsView {
   /** api.label regions, in declaration order. `color` is the drawn colour. */
-  parts: { name: string; triangleCount: number; color?: string }[];
+  parts: { name: string; triangleCount: number; color?: string; hidden?: boolean }[];
   /** Labels the code declared that ended up with no triangles. */
   lostParts: string[];
   /** Triangles no part covers (0 when the object declares no parts). */
   unlabeledTriangleCount: number;
   /** Connected components; `part` names the part covering most of each. */
-  pieces: { index: number; triangleCount: number; part?: string }[];
+  pieces: { index: number; triangleCount: number; part?: string; hidden?: boolean }[];
 }
 
 let railEl: HTMLElement | null = null;
@@ -357,8 +364,8 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     row.appendChild(spacer);
   }
 
-  // Selection checkbox (multi-select bulk delete). Only offered when more than
-  // one part exists — a session must always keep at least one. Subtle until
+  // Selection checkbox (multi-select bulk delete/merge). Only offered when more
+  // than one part exists — a lone object has nothing to multi-select. Subtle until
   // hover on pointer devices, but always shown on touch and whenever a
   // selection is already in progress (so it can't silently hide checked rows).
   if (partCount > 1) {
@@ -418,20 +425,23 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     beginRename(name, part);
   });
 
-  // Delete (only when more than one part remains).
-  if (partCount > 1) {
-    const del = iconBtn('✕', 'Delete this object'); // ✕
-    // Visible by default so it's reachable on touch (no hover); only fade-until-
-    // hover on hover-capable devices.
-    del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
-    del.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (await confirmDialog(`Delete object "${part.name}" and all of its versions? This cannot be undone.`, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
-        void cb.onDeletePart(part.id);
-      }
-    });
-    row.appendChild(del);
-  }
+  // Delete. On the session's only object this resets it to a fresh, empty
+  // object instead (a session always keeps one), so say so in the confirm.
+  const isLast = partCount <= 1;
+  const del = iconBtn('✕', isLast ? 'Delete this object (resets to a blank object)' : 'Delete this object'); // ✕
+  // Visible by default so it's reachable on touch (no hover); only fade-until-
+  // hover on hover-capable devices.
+  del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const msg = isLast
+      ? `Delete object "${part.name}" and all of its versions? It will be replaced with a blank "Object 1". This cannot be undone.`
+      : `Delete object "${part.name}" and all of its versions? This cannot be undone.`;
+    if (await confirmDialog(msg, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
+      void cb.onDeletePart(part.id);
+    }
+  });
+  row.appendChild(del);
 
   return row;
 }
@@ -480,21 +490,26 @@ function buildObjectPartsSection(): HTMLElement {
     n.textContent = text;
     section.appendChild(n);
   };
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string }) => {
+  const deletable = cb.canDeleteObjectParts();
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; hidden?: boolean; deleteLabel?: string; deleteConfirm?: string }) => {
+    // The row wraps the select button and its delete ✕ — a button can't nest
+    // inside another button.
+    const row = document.createElement('div');
+    row.className = 'group/op flex items-center';
     const b = document.createElement('button');
     const on = active === key;
     b.dataset.objectPart = key;
     b.setAttribute('aria-pressed', String(on));
     b.title = opts.title;
     // ≥44px tall on mobile (the rail is a full-width touch pane there).
-    b.className = 'w-full flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
+    b.className = 'flex-1 min-w-0 flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left transition-colors '
       + (on ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 [@media(hover:hover)]:hover:text-zinc-200');
     const sw = document.createElement('span');
     sw.className = 'shrink-0 w-2.5 h-2.5 rounded-sm border border-zinc-600';
     sw.style.background = opts.color ?? '#71717a';
     b.appendChild(sw);
     const label = document.createElement('span');
-    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '');
+    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '') + (opts.hidden ? ' opacity-50' : '');
     label.textContent = name;
     b.appendChild(label);
     const c = document.createElement('span');
@@ -505,7 +520,37 @@ function buildObjectPartsSection(): HTMLElement {
       e.stopPropagation();
       cb.onHighlight(on ? null : key);
     });
-    section.appendChild(b);
+    row.appendChild(b);
+    if (opts.hidden !== undefined) {
+      const hidden = opts.hidden;
+      const eye = iconBtn('', hidden ? 'Show in the viewport' : 'Hide in the viewport (view only — the code and exports keep it)');
+      eye.innerHTML = hidden ? eyeOffIconSVG() : eyeIconSVG();
+      eye.dataset.hideObjectPart = key;
+      eye.setAttribute('aria-pressed', String(hidden));
+      // A hidden row keeps its eye visible so it's obvious why the part is
+      // missing; otherwise it fades in on hover like the ✕.
+      if (!hidden) eye.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      eye.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cb.onSetObjectPartHidden(key, !hidden);
+      });
+      row.appendChild(eye);
+    }
+    if (deletable && opts.deleteLabel && opts.deleteConfirm) {
+      const { deleteLabel, deleteConfirm } = opts;
+      const del = iconBtn('✕', deleteLabel); // ✕
+      del.dataset.deleteObjectPart = key;
+      // Visible on touch; fades in on hover/focus on pointer devices.
+      del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (await confirmDialog(deleteConfirm, { title: deleteLabel, confirmLabel: 'Delete', danger: true })) {
+          void cb.onDeleteObjectPart(key);
+        }
+      });
+      row.appendChild(del);
+    }
+    section.appendChild(row);
   };
 
   heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid.');
@@ -517,7 +562,13 @@ function buildObjectPartsSection(): HTMLElement {
     note('No labelled parts — wrap shapes in api.label(shape, "name") to name them.');
   }
   for (const p of view.parts) {
-    item(`part:${p.name}`, p.name, p.triangleCount, { color: p.color, title: `Highlight part "${p.name}" (${p.triangleCount} triangles)` });
+    item(`part:${p.name}`, p.name, p.triangleCount, {
+      color: p.color,
+      title: `Highlight part "${p.name}" (${p.triangleCount} triangles)`,
+      hidden: !!p.hidden,
+      deleteLabel: 'Delete part',
+      deleteConfirm: `Delete part "${p.name}"? This adds api.removePart(${JSON.stringify(p.name)}) to the top of the code and saves a new version — earlier versions keep the part.`,
+    });
   }
   if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
     item('unlabeled', 'Unlabeled', view.unlabeledTriangleCount, { italic: true, title: 'Highlight the geometry no part covers' });
@@ -544,7 +595,12 @@ function buildObjectPartsSection(): HTMLElement {
     heading(`Pieces · ${view.pieces.length}`, 'Physically separate solids — what comes off the print bed as its own lump (e.g. the moving parts of a print-in-place mechanism).');
     for (const piece of view.pieces) {
       const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
-      item(`piece:${piece.index}`, name, piece.triangleCount, { title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}` });
+      item(`piece:${piece.index}`, name, piece.triangleCount, {
+        title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
+        hidden: !!piece.hidden,
+        deleteLabel: 'Delete piece',
+        deleteConfirm: `Delete piece ${piece.index + 1}${piece.part ? ` ("${piece.part}")` : ''}? This adds an api.removePiece([x, y, z]) line to the top of the code and saves a new version — earlier versions keep the piece.`,
+      });
     }
   }
   return section;
@@ -718,27 +774,25 @@ function buildActionBar(state: SessionState): HTMLElement {
     bar.appendChild(mergeBtn);
   }
 
-  // A session must always keep at least one part, so a select-all delete is
-  // refused (mirrors the single-row delete, which hides when only one remains).
+  // Deleting every object resets the session to one blank object (a session
+  // always keeps one), so the confirm spells that out.
   const wouldEmptySession = selected.size >= state.parts.length;
   const delBtn = document.createElement('button');
   delBtn.id = 'btn-delete-parts';
-  delBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white transition-colors '
-    + (wouldEmptySession ? 'bg-red-600/40 opacity-60 cursor-default' : 'bg-red-600/80 hover:bg-red-600');
+  delBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white transition-colors bg-red-600/80 hover:bg-red-600';
   delBtn.textContent = `Delete ${selected.size}`;
-  if (wouldEmptySession) {
-    delBtn.disabled = true;
-    delBtn.title = 'At least one object must remain — deselect one to delete.';
-  } else {
-    delBtn.title = 'Delete the selected objects and all their versions';
-  }
+  delBtn.title = wouldEmptySession
+    ? 'Delete every object and all their versions, leaving one blank object'
+    : 'Delete the selected objects and all their versions';
   delBtn.addEventListener('click', async () => {
-    if (delBtn.disabled) return;
     const ids = [...selected];
     if (ids.length === 0) return;
-    const msg = ids.length === 1
-      ? 'Delete this object and all of its versions? This cannot be undone.'
-      : `Delete ${ids.length} objects and all of their versions? This cannot be undone.`;
+    const base = ids.length === 1
+      ? 'Delete this object and all of its versions?'
+      : `Delete ${ids.length} objects and all of their versions?`;
+    const msg = wouldEmptySession
+      ? `${base} They will be replaced with a blank "Object 1". This cannot be undone.`
+      : `${base} This cannot be undone.`;
     if (!(await confirmDialog(msg, { title: 'Delete objects', confirmLabel: 'Delete', danger: true }))) return;
     clearSelection();
     render(getState()); // hide the bar immediately; the delete re-renders on commit

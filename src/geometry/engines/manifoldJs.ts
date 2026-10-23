@@ -312,6 +312,37 @@ export const manifoldJsEngine: Engine = {
     // on every run. See `src/surface/surfaceOps.ts`.
     const surfaceOps: SurfaceOp[] = [];
 
+    // Parts deleted in code via `api.removePart(name)` — what the object list's
+    // part ✕ writes. A later `api.label(shape, name)` for a removed name returns
+    // an empty Manifold, so the part drops out of every union it feeds (and is
+    // never registered, so it doesn't list as a lost part). Order matters: the
+    // removal must run before the label, hence the guard in removePart.
+    const removedParts = new Set<string>();
+    const removePart = (name: unknown): void => {
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error("api.removePart(name): name must be a non-empty string naming an api.label(...) part, e.g. api.removePart('wheel')");
+      }
+      for (const declared of labelRegistry.values()) {
+        if (declared === name) {
+          throw new Error(`api.removePart('${name}') must come before api.label(…, '${name}') — move it to the top of the code.`);
+        }
+      }
+      removedParts.add(name);
+    };
+
+    // Pieces (separate solids) deleted in code via `api.removePiece([x, y, z])`
+    // — what the object list's piece ✕ writes. Applied to the returned model
+    // after the code runs: every separate piece touching one of these points is
+    // dropped. A point (not an index) so the right piece stays removed when
+    // edits elsewhere reorder the pieces.
+    const removedPieces: [number, number, number][] = [];
+    const removePiece = (point: unknown): void => {
+      if (!Array.isArray(point) || point.length !== 3 || point.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error('api.removePiece(point): point must be [x, y, z] — a point on or inside the separate piece to remove.');
+      }
+      removedPieces.push(point as [number, number, number]);
+    };
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const label = (shape: any, name: unknown, options?: unknown): any => {
       if (!shape || typeof shape.asOriginal !== 'function' || typeof shape.add !== 'function') {
@@ -320,6 +351,7 @@ export const manifoldJsEngine: Engine = {
       if (typeof name !== 'string' || name.length === 0) {
         throw new Error('api.label(shape, name): name must be a non-empty string');
       }
+      if (removedParts.has(name)) return Manifold.union([]);
       // Optional { color } — a hex string ('#rrggbb' / '#rgb', same form as a
       // `color` param so `{ color: p.accent }` works) or an [r,g,b] array 0..1.
       if (options !== undefined && options !== null) {
@@ -803,6 +835,8 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
       label,
       labeledUnion,
+      removePart,
+      removePiece,
       paint,
       surface,
       material,
@@ -896,6 +930,14 @@ export const manifoldJsEngine: Engine = {
         };
       }
 
+      // Labels present before api.removePiece drops pieces — a label that lived
+      // only on removed pieces is gone, not "lost", so its colour is dropped too.
+      let labelsBeforePieceRemoval: Map<string, Set<number>> | undefined;
+      if (removedPieces.length > 0) {
+        labelsBeforePieceRemoval = resolveLabelMap(result.getMesh(), labelRegistry);
+        result = withoutPiecesAt(Manifold, result, removedPieces);
+      }
+
       const mesh = result.getMesh();
       // Merge any BREP-side labels that flowed through `BREP.toManifold(...)`
       // calls during this run. Each call queued a `Map<label, Set<triangleId>>`
@@ -906,6 +948,14 @@ export const manifoldJsEngine: Engine = {
       // same label name comes from both BREP and an `api.label` call, the
       // triangle sets union — friendliest answer.
       const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
+      if (labelsBeforePieceRemoval) {
+        for (const [name, before] of labelsBeforePieceRemoval) {
+          if (before.size > 0 && !labelMap?.get(name)?.size) {
+            labelMap?.delete(name);
+            labelColors.delete(name);
+          }
+        }
+      }
       // Fold in any colors declared via `BREP.label(s, name, { color })` in this
       // run (Phase C). An `api.label` color for the same name wins (it's the
       // more direct manifold-side declaration), so only set names not already
@@ -1065,4 +1115,29 @@ function resolveLabelMap(
     for (let t = startTri; t < endTri; t++) set.add(t);
   }
   return out;
+}
+
+/** Drop every separate piece (connected component) of `model` that touches one
+ *  of `points` — the post-run half of `api.removePiece`. A piece "touches" a
+ *  point when a tiny cube centred on it overlaps the piece, so a point taken on
+ *  the piece's surface matches it (and only it: pieces are physically apart).
+ *  Returns `model` untouched when nothing matches. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function withoutPiecesAt(Manifold: any, model: any, points: [number, number, number][]): any {
+  const pieces = model.decompose();
+  const box = model.boundingBox();
+  const diag = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+  const e = Math.max(diag * 1e-3, 1e-3);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const touches = (piece: any, p: [number, number, number]): boolean => {
+    const b = piece.boundingBox();
+    for (let i = 0; i < 3; i++) {
+      if (p[i] < b.min[i] - e || p[i] > b.max[i] + e) return false;
+    }
+    return !piece.intersect(Manifold.cube([e, e, e], true).translate(p)).isEmpty();
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const keep = pieces.filter((piece: any) => !points.some(p => touches(piece, p)));
+  if (keep.length === pieces.length) return model;
+  return keep.length > 0 ? Manifold.compose(keep) : Manifold.union([]);
 }

@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick, recolorMesh } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, getDisplayedMesh, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick, recolorMesh } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -72,6 +72,7 @@ import { createSessionBar } from './ui/sessionBar';
 import { createPartList, refreshObjectParts, type ObjectPartsView } from './ui/partList';
 import { summarizeObjectParts, type ObjectPartsSummary } from './geometry/meshPieces';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive } from './renderer/triangleHighlight';
+import { applyHiddenTriangles } from './renderer/hiddenTriangles';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
 import { openPartsOverview } from './ui/partsOverview';
 import { createGalleryView, refreshGallery } from './ui/gallery';
@@ -355,7 +356,8 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
-import { nextStarter, isStarterCode } from './editor/starters';
+import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
+import { insertRemovalLine, removePartCall, removePieceCall, pieceAnchorPoint } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
@@ -685,6 +687,10 @@ let objectPartsCache: { mesh: MeshData; labels: Map<string, Set<number>> | null;
 /** Which part/piece is tinted in the viewport: `part:<name>` | `piece:<n>` |
  *  `unlabeled`, or null. Cleared implicitly when a mesh update sweeps the tint. */
 let objectPartHighlightKey: string | null = null;
+// Parts/pieces hidden in the viewport (the object list's eye toggle), per object
+// id, as `part:<name>` / `piece:<n>` keys. Per-tab view state like the
+// highlight: not saved, not exported, never sent to other tabs.
+const hiddenObjectParts = new Map<string, Set<string>>();
 
 /** The mesh the parts/pieces summary is computed against: the mesh the label
  *  map indexes (see currentLabelMesh), falling back to the displayed mesh. */
@@ -739,16 +745,67 @@ function currentObjectPartsView(): ObjectPartsView | null {
   // alongside the labels the engine already reports as lost.
   const lost = new Set(currentLostLabels ?? []);
   for (const p of summary.parts) if (p.triangles.size === 0) lost.add(p.name);
+  const hidden = hiddenKeysForCurrentObject();
   return {
     parts: summary.parts.filter(p => p.triangles.size > 0).map(p => {
       const decl = declared?.get(p.name);
       const color = triColors ? dominantTriColor(triColors, p.triangles) : decl ? toHex(decl) : null;
-      return { name: p.name, triangleCount: p.triangles.size, ...(color ? { color } : {}) };
+      return { name: p.name, triangleCount: p.triangles.size, ...(color ? { color } : {}), ...(hidden.has(`part:${p.name}`) ? { hidden: true } : {}) };
     }),
     lostParts: [...lost],
     unlabeledTriangleCount: summary.unlabeled.length,
-    pieces: summary.pieces.map(p => ({ index: p.index, triangleCount: p.triangles.length, ...(p.part ? { part: p.part } : {}) })),
+    pieces: summary.pieces.map(p => ({ index: p.index, triangleCount: p.triangles.length, ...(p.part ? { part: p.part } : {}), ...(hidden.has(`piece:${p.index}`) ? { hidden: true } : {}) })),
   };
+}
+
+function hiddenKeysForCurrentObject(): Set<string> {
+  const id = getCurrentPart()?.id;
+  return (id && hiddenObjectParts.get(id)) || new Set<string>();
+}
+
+/** Hide the current object's hidden parts/pieces in the displayed mesh (and
+ *  show everything else). Called after every mesh update, since each one builds
+ *  fresh geometry. Returns the number of displayed triangles hidden. */
+function reapplyHiddenObjectParts(): number {
+  const keys = hiddenKeysForCurrentObject();
+  const summary = keys.size > 0 ? currentObjectPartsSummary() : null;
+  const labelMesh = objectPartsMesh();
+  const displayed = getDisplayedMesh();
+  if (!summary || !labelMesh || !displayed) return applyHiddenTriangles(null);
+  // Piece numbers only mean something for the pieces they were picked from —
+  // drop the ones an edit made disappear.
+  for (const k of [...keys]) if (k.startsWith('piece:') && !summary.pieces[Number(k.slice(6))]) keys.delete(k);
+  const tris = new Set<number>();
+  for (const k of keys) {
+    const src = k.startsWith('part:')
+      ? summary.parts.find(p => p.name === k.slice(5))?.triangles
+      : summary.pieces[Number(k.slice(6))]?.triangles;
+    if (src) for (const t of src) tris.add(t);
+  }
+  // The label mesh's triangle ids index the displayed mesh unless it was
+  // re-tessellated since the run (a texture, a paint refine) — then map them.
+  const same = displayed.numTri === labelMesh.numTri && displayed.triVerts === labelMesh.triVerts;
+  const shown = same ? tris : (remapTriangleSets(new Map([['hidden', tris]]), labelMesh, displayed).get('hidden') ?? new Set<number>());
+  return applyHiddenTriangles(shown);
+}
+
+/** Hide or show one part (`part:<name>`) or piece (`piece:<n>`) of the current
+ *  object in the viewport. Returns the hidden keys, or an error string. */
+function setObjectPartHidden(key: string, hide: boolean): string[] | string {
+  const obj = getCurrentPart();
+  const summary = currentObjectPartsSummary();
+  if (!obj || !summary) return 'No geometry loaded — run code first.';
+  const known = key.startsWith('part:')
+    ? summary.parts.some(p => p.name === key.slice(5) && p.triangles.size > 0)
+    : key.startsWith('piece:') && summary.pieces.length > 1 && !!summary.pieces[Number(key.slice(6))];
+  if (!known) return `Unknown part or piece "${key}".`;
+  let keys = hiddenObjectParts.get(obj.id);
+  if (!keys) { keys = new Set(); hiddenObjectParts.set(obj.id, keys); }
+  if (hide) keys.add(key); else keys.delete(key);
+  if (hide && objectPartHighlightKey === key) setObjectPartHighlight(null);
+  reapplyHiddenObjectParts();
+  refreshObjectParts();
+  return [...keys];
 }
 
 /** Tint one part (`part:<name>`), piece (`piece:<n>`), or the unlabeled
@@ -1058,7 +1115,9 @@ function captureThumbnail(
   mesh: MeshData | null = currentMeshData,
   opts: { rawColors?: boolean } = {},
 ): Promise<Blob | null> {
-  if (!mesh) return Promise.resolve(null);
+  // An empty model (a blank object) has nothing to draw; a rendered tile would
+  // just be the blank background.
+  if (!mesh || mesh.numTri === 0) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
   // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
   // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
@@ -5955,6 +6014,87 @@ async function main() {
     }
   }
 
+  /** Delete one part (an `api.label` region) or one piece (a separate solid)
+   *  of the open object. Writes an `api.removePart` / `api.removePiece` line at
+   *  the top of the code, re-runs, and saves a version, so the model stays
+   *  parametric and the deletion is undoable from the version history. Only
+   *  manifold-js objects can do this; anything that doesn't actually remove the
+   *  target (e.g. a part detected on an imported mesh) restores the old code. */
+  async function deleteObjectPartOrPiece(target: { part: string } | { piece: number }): Promise<
+    { ok: true; removed: string; call: string; version?: { id: string; index: number; label: string }; saveWarning?: string }
+    | { error: string }
+  > {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    const lang = getActiveLanguage();
+    if (lang !== 'manifold-js') {
+      return { error: `Deleting a part or piece works on JS (manifold-js) objects; this object is ${lang}. Edit its code to remove it instead.` };
+    }
+    const summary = currentObjectPartsSummary();
+    const mesh = objectPartsMesh();
+    if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
+
+    let call: string;
+    let what: string;
+    if ('part' in target) {
+      const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
+      if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
+      call = removePartCall(part.name);
+      what = `part "${part.name}"`;
+    } else {
+      if (summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
+      const piece = summary.pieces.find(p => p.index === target.piece);
+      if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
+      const point = pieceAnchorPoint(mesh, piece.triangles);
+      if (!point) return { error: `Piece ${target.piece} has no triangles.` };
+      call = removePieceCall(point);
+      what = `piece ${target.piece + 1}`;
+    }
+
+    const previousCode = getValue();
+    const nextCode = insertRemovalLine(previousCode, call);
+    if (nextCode === previousCode) return { error: `The code already removes ${what}.` };
+    const restore = async (why: string) => {
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `${why} The code was restored.` };
+    };
+    setValue(nextCode);
+    if (!(await runCodeSync(nextCode))) return { error: 'Run was superseded by a concurrent execution — retry.' };
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') return restore(`Deleting ${what} broke the run: ${geo.error ?? 'run error'}.`);
+    const after = currentObjectPartsSummary();
+    const stillThere = 'part' in target
+      ? !!after?.parts.some(p => p.name === target.part && p.triangles.size > 0)
+      : (after?.pieces.length ?? 0) >= summary.pieces.length;
+    if (stillThere) {
+      return restore(`Couldn't delete ${what} from code — it isn't created by an api.label(...) call in this object's code (e.g. it was detected on an imported mesh).`);
+    }
+    const saved = await saveCurrentVersion(`delete ${what}`);
+    return {
+      ok: true,
+      removed: what,
+      call,
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+    };
+  }
+
+  /** Load the blank-object code (an empty model) into the editor for the fresh
+   *  part a delete-the-last-object reset left behind, and stash it as that
+   *  part's draft so switching away and back (or reloading) keeps it blank
+   *  instead of re-seeding a starter shape. */
+  async function loadBlankPartIntoEditor(): Promise<void> {
+    clearMesh();
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    dropPaintState();
+    setValue(BLANK_OBJECT_CODE);
+    await runCodeSync(BLANK_OBJECT_CODE, { surfaceErrors: false });
+    const { session, currentPart } = getState();
+    if (session && currentPart) await writeDraft(session.id, 'manifold-js', BLANK_OBJECT_CODE, currentPart.id);
+    await restoreAttachmentsForActiveSession();
+  }
+
   /** Reload the active session's attachments (stored on the Session row) into
    *  the in-memory mirror. Session-level data: restored on every session open,
    *  independent of version/part loading, so attachments survive a refresh even
@@ -6129,7 +6269,9 @@ async function main() {
       if (isReadOnlyViewer()) return;
       const wasCurrent = getState().currentPart?.id === partId;
       const result = await deletePart(partId);
-      if (result && wasCurrent) {
+      if (result?.reset) {
+        await loadBlankPartIntoEditor();
+      } else if (result && wasCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
         await restoreDraftIfNewer();
       }
@@ -6139,7 +6281,9 @@ async function main() {
       const result = await deleteParts(partIds);
       // Only reload the editor when the active part was among those removed
       // (deleteParts reports this via newCurrent).
-      if (result && result.newCurrent) {
+      if (result?.reset) {
+        await loadBlankPartIntoEditor();
+      } else if (result && result.newCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
         await restoreDraftIfNewer();
       }
@@ -6153,6 +6297,18 @@ async function main() {
       await setPartGroup(partIds, group);
     },
     getObjectParts: () => currentObjectPartsView(),
+    onSetObjectPartHidden: (key: string, hide: boolean) => {
+      const r = setObjectPartHidden(key, hide);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    canDeleteObjectParts: () => getActiveLanguage() === 'manifold-js' && !isReadOnlyViewer() && !isSharedPreview(),
+    onDeleteObjectPart: async (key: string) => {
+      setObjectPartHighlight(null);
+      const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+      const r = await deleteObjectPartOrPiece(target);
+      if ('error' in r) showToast(r.error, { variant: 'warn' });
+      else showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, { variant: 'success' });
+    },
     getHighlightKey: () => getObjectPartHighlightKey(),
     onHighlight: (key: string | null) => { setObjectPartHighlight(key); },
     onReorderParts: async (layout) => {
@@ -7671,7 +7827,7 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); refreshObjectParts(); });
+  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -12403,21 +12559,25 @@ async function main() {
       return { grouped: ids.length, group: clean };
     },
 
-    /** Delete a part and its versions. Refuses to delete a session's last part.
-     *  Deleting the active part activates and loads an adjacent one. Pass a part
-     *  name, id string, 0-based index, or { id } / { name }. */
+    /** Delete a part and its versions. Deleting the active part activates and
+     *  loads an adjacent one; deleting a session's last part resets it to a
+     *  fresh, empty "Object 1" (`reset: true`). Pass a part name, id string,
+     *  0-based index, or { id } / { name }. */
     async deleteObject(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'deleteObject');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
       const result = await deletePart(part.id);
-      if (!result) return { error: 'Cannot delete the last object of a session.' };
-      if (wasCurrent) {
+      if (!result) return { error: `Could not delete object "${part.name}".` };
+      if (result.reset) {
+        await loadBlankPartIntoEditor();
+      } else if (wasCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
       return {
         deleted: { id: result.deleted.id, name: result.deleted.name },
         newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
+        ...(result.reset ? { reset: true } : {}),
       };
     },
 
@@ -12495,6 +12655,33 @@ async function main() {
       const view = currentObjectPartsView();
       if (!obj || !view) return { error: 'No geometry loaded — run code first.' };
       return { object: { id: obj.id, name: obj.name }, ...view };
+    },
+
+    /** Hide (or, with `hidden: false`, show) one part (by label name) or piece
+     *  (`{ piece: index }`, from listObjectParts) of the current object in the
+     *  viewport — the eye toggle in the object list. View-only: code, versions
+     *  and exports keep it. -> { ok, hidden: [keys] } or { error } */
+    setObjectPartHidden(target: string | { piece?: number }, hidden: boolean = true) {
+      if (typeof hidden !== 'boolean') return { error: 'setObjectPartHidden(target, hidden): hidden must be true or false.' };
+      let key: string;
+      if (typeof target === 'string' && target.length > 0) key = `part:${target}`;
+      else if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) key = `piece:${target.piece}`;
+      else return { error: 'setObjectPartHidden(target, hidden): pass a part name or { piece: index } from listObjectParts().' };
+      const r = setObjectPartHidden(key, hidden);
+      return typeof r === 'string' ? { error: r } : { ok: true, hidden: r };
+    },
+
+    /** Delete one part (by label name) or piece (`{ piece: index }`, from
+     *  listObjectParts) of the current manifold-js object — the same as its ✕
+     *  in the object list. Inserts `api.removePart('name')` /
+     *  `api.removePiece([x,y,z])` at the top of the code, re-runs, and saves a
+     *  version. -> { ok, removed, call, version? } or { error } */
+    async deleteObjectPart(target: string | { piece?: number }) {
+      if (typeof target === 'string' && target.length > 0) return deleteObjectPartOrPiece({ part: target });
+      if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) {
+        return deleteObjectPartOrPiece({ piece: target.piece as number });
+      }
+      return { error: 'deleteObjectPart(target): pass a part name or { piece: index } from listObjectParts().' };
     },
 
     /** Tint one part (by label name) or piece (`{ piece: index }`, from
@@ -16537,6 +16724,8 @@ async function main() {
         'setPartsView':      { signature: 'setPartsView({mode:"all"|"solo", parts?}) -- Solo view: only these parts (default: the selection) in colour, the rest grey', docs: '/ai/segmentation.md' },
         'getPartsView':      { signature: 'getPartsView() -- Current overlay view -> {mode, parts}', docs: '/ai/segmentation.md' },
         'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
+        'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
+        'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")

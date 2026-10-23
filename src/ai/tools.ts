@@ -981,7 +981,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObject',
-    description: "Delete an object and all its versions. Refuses to delete a session's last remaining object. If the active object is deleted, an adjacent object becomes active. Address it by name, id (from listObjects), or 0-based index.",
+    description: "Delete an object and all its versions. If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1195,6 +1195,29 @@ const ALL_TOOLS: ToolDefinition[] = [
         piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
         unlabeled: { type: 'boolean', description: 'true = tint the geometry no part covers.' },
         clear: { type: 'boolean', description: 'true = remove the highlight.' },
+      },
+    },
+  },
+  {
+    name: 'setObjectPartHidden',
+    description: 'Hide (or show again) one part (by api.label name) or piece (0-based index) of the current object in the viewport — the eye toggle in the object list. View only: the code, versions and exports still include it; useful to see inside or behind a part. Hidden state lasts until shown again (piece hides reset when the pieces change). Pass exactly one of part / piece; hidden defaults to true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        hidden: { type: 'boolean', description: 'true = hide (default), false = show again.' },
+      },
+    },
+  },
+  {
+    name: 'deleteObjectPart',
+    description: "Delete one part (by api.label name) or one piece (0-based index) of the current JS (manifold-js) object, as listed by listObjectParts — the same as its ✕ in the object list. Inserts api.removePart('name') or api.removePiece([x,y,z]) at the top of the code, re-runs, and saves a version (earlier versions keep the part). Refuses on other engines, on a single-piece object, and when the part isn't created by an api.label call in the code (e.g. detected on an import) — then the code is left unchanged. Pass exactly one of part / piece.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
       },
     },
   },
@@ -1698,7 +1721,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
-  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
+  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -1765,6 +1788,7 @@ const ALWAYS_AVAILABLE = new Set([
   'deleteObject',
   'listObjectParts',
   'highlightObjectPart',
+  'setObjectPartHidden',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1826,8 +1850,8 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
-  // A visual-only tint; re-applying it is idempotent.
-  'highlightObjectPart',
+  // Visual-only view state; re-applying it is idempotent.
+  'highlightObjectPart', 'setObjectPartHidden',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated', 'renderParts',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -1835,7 +1859,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2568,6 +2592,17 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (typeof input.piece === 'number') return api.highlightObjectPart({ piece: input.piece });
       if (input.unlabeled === true) return api.highlightObjectPart({ unlabeled: true });
       return { error: 'highlightObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
+    }
+    case 'setObjectPartHidden': {
+      const hidden = input.hidden === undefined ? true : input.hidden === true;
+      if (typeof input.part === 'string') return api.setObjectPartHidden(input.part, hidden);
+      if (typeof input.piece === 'number') return api.setObjectPartHidden({ piece: input.piece }, hidden);
+      return { error: 'setObjectPartHidden: pass one of part (name) or piece (index).' };
+    }
+    case 'deleteObjectPart': {
+      if (typeof input.part === 'string') return api.deleteObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.deleteObjectPart({ piece: input.piece });
+      return { error: 'deleteObjectPart: pass one of part (name) or piece (index).' };
     }
     case 'assertPaint':
       return api.assertPaint(input);

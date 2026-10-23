@@ -166,6 +166,15 @@ export function nextStarter(lang: Language): Starter {
   return starter;
 }
 
+/** Code for a blank object — what deleting a session's last object leaves
+ *  behind. Returns an empty Manifold so the viewport shows nothing. Counts as
+ *  an untouched starter ({@link isStarterCode}), so it never prompts a save. */
+export const BLANK_OBJECT_CODE = `// Blank object — build a shape and return it, e.g.
+// return Manifold.cube([20, 20, 20], true);
+const { Manifold } = api;
+return Manifold.union([]);
+`;
+
 /** Whitespace-insensitive comparison key. Auto-format (js-beautify) and the
  *  editor reflow only whitespace, so stripping it lets a seeded-then-formatted
  *  starter still match its source while any real token edit still differs. */
@@ -174,7 +183,7 @@ function normalize(code: string): string {
 }
 
 const STARTER_KEYS: Set<string> = new Set(
-  Object.values(STARTERS).flat().map((s) => normalize(s.code)),
+  [...Object.values(STARTERS).flat().map((s) => s.code), BLANK_OBJECT_CODE].map(normalize),
 );
 
 /** True when `code` is an untouched starter (any engine) — used to decide a
