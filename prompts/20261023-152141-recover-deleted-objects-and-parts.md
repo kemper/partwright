@@ -58,3 +58,12 @@ too destructive for an unscoped chat tool.
 
 **Side fix.** playwright.config.ts now also finds the sandbox Chromium under
 `chrome-linux64/` (the image changed layout; the e2e suite couldn't launch).
+
+## Assistant
+
+**CodeQL follow-up.** CodeQL flagged `parseQuoted` (js/incomplete-sanitization):
+it converted a single-quoted literal to JSON by swapping quotes without
+handling backslashes, so a name like `'a\"b'` mis-parsed (returned null). Not
+exploitable — it only reads removal lines from the user's own code — but a real
+parse bug, so it now decodes JS escapes directly instead of round-tripping
+through JSON.parse; a unit test covers both quote styles.

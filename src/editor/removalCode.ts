@@ -68,13 +68,27 @@ const NUM = String.raw`(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?)`;
 const PART_RE = /^api\.removePart\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)\s*;?\s*(?:\/\/.*)?$/;
 const PIECE_RE = new RegExp(String.raw`^api\.removePiece\(\s*\[\s*${NUM}\s*,\s*${NUM}\s*,\s*${NUM}\s*\]\s*\)\s*;?\s*(?:\/\/\s*(.*?))?\s*$`, 'i');
 
+const SIMPLE_ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+
+/** Decode a single- or double-quoted JS string literal (as matched by
+ *  PART_RE). Handles the common escapes; null for a malformed \u escape. */
 function parseQuoted(lit: string): string | null {
-  if (lit.startsWith('"')) {
-    try { return JSON.parse(lit) as string; } catch { return null; }
+  const body = lit.slice(1, -1);
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== '\\') { out += c; continue; }
+    const e = body[++i];
+    if (e === 'u') {
+      const hex = body.slice(i + 1, i + 5);
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null;
+      out += String.fromCharCode(parseInt(hex, 16));
+      i += 4;
+    } else {
+      out += SIMPLE_ESCAPES[e] ?? e;
+    }
   }
-  // Single-quoted: swap the quotes so JSON.parse handles the escapes.
-  const body = lit.slice(1, -1).replace(/\\'/g, "'").replace(/"/g, '\\"');
-  try { return JSON.parse(`"${body}"`) as string; } catch { return null; }
+  return out;
 }
 
 /** Every `api.removePart` / `api.removePiece` call in `code` written on a line

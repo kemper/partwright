@@ -68,6 +68,12 @@ describe('findRemovalLines', () => {
     ]);
   });
 
+  it('decodes escapes in both quote styles', () => {
+    const name = 'it\'s "x"\\y';
+    const lines = [removePartCall(name), `api.removePart('it\\'s \\"x\\"\\\\y');`].join('\n');
+    expect(findRemovalLines(lines).map(r => r.name)).toEqual([name, name]);
+  });
+
   it('ignores code without removals', () => {
     expect(findRemovalLines('const a = 1;\nreturn a;')).toEqual([]);
   });
