@@ -69,7 +69,8 @@ import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
-import { createPartList, refreshObjectParts, type ObjectPartsView } from './ui/partList';
+import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPartsView } from './ui/partList';
+import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
 import { summarizeObjectParts, type ObjectPartsSummary } from './geometry/meshPieces';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
@@ -296,6 +297,9 @@ import {
   renamePart,
   deletePart,
   deleteParts,
+  listDeletedObjects,
+  restoreDeletedObjects,
+  purgeDeletedObjects,
   reorderParts,
   setPartGroup,
   partSaveState,
@@ -357,7 +361,7 @@ import {
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
-import { insertRemovalLine, removePartCall, removePieceCall, pieceAnchorPoint } from './editor/removalCode';
+import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
@@ -6035,11 +6039,13 @@ async function main() {
     if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
 
     let call: string;
+    let line: string;
     let what: string;
     if ('part' in target) {
       const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
       if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
       call = removePartCall(part.name);
+      line = call;
       what = `part "${part.name}"`;
     } else {
       if (summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
@@ -6048,11 +6054,14 @@ async function main() {
       const point = pieceAnchorPoint(mesh, piece.triangles);
       if (!point) return { error: `Piece ${target.piece} has no triangles.` };
       call = removePieceCall(point);
+      // The call only records a point, so name the piece in a trailing comment
+      // — what Recover deleted shows for it.
+      line = `${call} ${removePieceComment(piece.index, piece.part ?? undefined)}`;
       what = `piece ${target.piece + 1}`;
     }
 
     const previousCode = getValue();
-    const nextCode = insertRemovalLine(previousCode, call);
+    const nextCode = insertRemovalLine(previousCode, line);
     if (nextCode === previousCode) return { error: `The code already removes ${what}.` };
     const restore = async (why: string) => {
       setValue(previousCode);
@@ -6071,6 +6080,7 @@ async function main() {
       return restore(`Couldn't delete ${what} from code — it isn't created by an api.label(...) call in this object's code (e.g. it was detected on an imported mesh).`);
     }
     const saved = await saveCurrentVersion(`delete ${what}`);
+    refreshRecoverable();
     return {
       ok: true,
       removed: what,
@@ -6078,6 +6088,224 @@ async function main() {
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
     };
+  }
+
+  // === Recover deleted ===
+  // Two kinds of deletion come back through one modal (src/ui/recoverDeletedModal.ts):
+  // OBJECTS, which a delete moves into the session's deleted-objects bin
+  // (sessionManager.restoreDeletedObjects), and PARTS / PIECES, which a delete
+  // writes into the object's code as an `api.removePart` / `api.removePiece`
+  // line (restored by removing the line — restoreObjectPartOrPiece).
+
+  /** Whether `part` is a pristine blank object — never saved and still the
+   *  untouched starter — so a restore may replace it (the placeholder
+   *  "Object 1" that deleting the last object leaves behind). */
+  async function isUntouchedBlankPart(part: Part): Promise<boolean> {
+    const state = getState();
+    if (state.currentPart?.id === part.id) {
+      return state.versionCount === 0 && isStarterCode(getValue()) && !hasColorRegions();
+    }
+    return (await partSaveState(part)) === 'empty';
+  }
+
+  /** Restore binned objects (with their versions) into the active session. When
+   *  the session's only object is the placeholder a delete-the-last-object
+   *  reset made for one of these objects (created alongside that delete) and
+   *  is still untouched, it is dropped in the same step and the first restored
+   *  object opens. */
+  async function restoreObjectsFromBin(ids: string[]): Promise<{ restored: Part[]; droppedBlank: boolean } | { error: string }> {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    const { parts, currentPart } = getState();
+    const sole = parts.length === 1 ? parts[0] : null;
+    const deletedAts = (await listDeletedObjects()).filter(e => ids.includes(e.id)).map(e => e.deletedAt);
+    const isPlaceholder = !!sole && deletedAts.some(at => Math.abs(sole.created - at) < 60_000) && (await isUntouchedBlankPart(sole));
+    const dropBlankPartId = isPlaceholder ? sole.id : undefined;
+    const before = currentPart?.id;
+    const r = await restoreDeletedObjects(ids, { dropBlankPartId });
+    if (!r) return { error: 'Nothing to restore — it is no longer in Recover deleted (expired, or already restored in another tab).' };
+    if (getState().currentPart?.id !== before) {
+      // The open object (the dropped blank) is gone — don't stash its buffer.
+      await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
+      await restoreDraftIfNewer();
+    }
+    refreshRecoverable();
+    return { restored: r.restored, droppedBlank: !!r.droppedBlankId };
+  }
+
+  /** Restore a part/piece removed in code: switch to `objectId` when given and
+   *  not open, take out the removal line whose canonical call is `call`, re-run
+   *  and save a version. A run error puts the old code back. If nothing comes
+   *  back (the label or the geometry at the piece's point changed since), the
+   *  line was already a no-op, so dropping it is still kept — with a note. */
+  async function restoreObjectPartOrPiece(call: string, objectId?: string): Promise<
+    { ok: true; restored: string; object: { id: string; name: string }; version?: { id: string; index: number; label: string }; saveWarning?: string; note?: string }
+    | { error: string }
+  > {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (objectId && getState().currentPart?.id !== objectId) {
+      if (!getState().parts.some(p => p.id === objectId)) return { error: 'That object no longer exists in this session.' };
+      await selectPart(objectId);
+    }
+    const obj = getState().currentPart;
+    if (!obj) return { error: 'No object is open.' };
+    const lang = getActiveLanguage();
+    if (lang !== 'manifold-js') return { error: `Parts and pieces are restored in JS (manifold-js) code; "${obj.name}" is ${lang}.` };
+    const previousCode = getValue();
+    const entry = findRemovalLines(previousCode).find(r => r.call === call);
+    if (!entry) return { error: `"${obj.name}" has no ${call} line in its code — it may already be restored.` };
+    const what = removalTitle(entry);
+    const piecesBefore = currentObjectPartsSummary()?.pieces.length ?? 0;
+    const nextCode = removeRemovalLine(previousCode, call);
+    setValue(nextCode);
+    if (!(await runCodeSync(nextCode))) return { error: 'Run was superseded by a concurrent execution — retry.' };
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') {
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `Restoring ${what} broke the run: ${geo.error ?? 'run error'}. The code was restored.` };
+    }
+    const after = currentObjectPartsSummary();
+    const back = entry.kind === 'part'
+      ? !!after?.parts.some(p => p.name === entry.name && p.triangles.size > 0)
+      : (after?.pieces.length ?? 0) > piecesBefore;
+    const saved = await saveCurrentVersion(`restore ${what}`);
+    refreshRecoverable();
+    return {
+      ok: true,
+      restored: what,
+      object: { id: obj.id, name: obj.name },
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+      ...(back ? {} : { note: entry.kind === 'part'
+        ? `Nothing came back — no api.label(…, ${JSON.stringify(entry.name)}) in the code produces geometry any more. The no-op removal line was dropped.`
+        : 'Nothing came back — no piece touches that point any more. The no-op removal line was dropped.' }),
+    };
+  }
+
+  function removalTitle(r: RemovalLine): string {
+    return r.kind === 'part' ? `part "${r.name}"` : (r.label ?? `piece at [${r.point.join(', ')}]`);
+  }
+
+  // Removal lines of the session's NON-open objects, read from each one's latest
+  // version and cached (they can't change until the object is opened, at which
+  // point its live editor code is used instead and the entry is dropped).
+  let removalCacheSession: string | null = null;
+  const otherObjectRemovals = new Map<string, RemovalLine[]>();
+  async function objectRemovals(part: Part): Promise<RemovalLine[]> {
+    if (getState().currentPart?.id === part.id) {
+      otherObjectRemovals.delete(part.id);
+      return getActiveLanguage() === 'manifold-js' ? findRemovalLines(getValue()) : [];
+    }
+    const cached = otherObjectRemovals.get(part.id);
+    if (cached) return cached;
+    const latest = await getLatestVersion(part.id);
+    const lines = latest && effectiveVersionLanguage(latest, getState().session) === 'manifold-js'
+      ? findRemovalLines(latest.code) : [];
+    otherObjectRemovals.set(part.id, lines);
+    return lines;
+  }
+
+  /** Everything Recover deleted lists for the active session. */
+  async function listRecoverable(): Promise<{ objects: Awaited<ReturnType<typeof listDeletedObjects>>; parts: { object: Part; removal: RemovalLine }[] }> {
+    const sid = getState().session?.id ?? null;
+    if (sid !== removalCacheSession) { removalCacheSession = sid; otherObjectRemovals.clear(); }
+    if (!sid) return { objects: [], parts: [] };
+    const objects = await listDeletedObjects();
+    const parts: { object: Part; removal: RemovalLine }[] = [];
+    for (const object of getState().parts) {
+      for (const removal of await objectRemovals(object)) parts.push({ object, removal });
+    }
+    return { objects, parts };
+  }
+
+  let recoverableTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Recount what Recover deleted lists (debounced) for the rail link, and
+   *  re-render the modal if it's open. */
+  function refreshRecoverable(): void {
+    if (recoverableTimer) clearTimeout(recoverableTimer);
+    recoverableTimer = setTimeout(() => {
+      recoverableTimer = null;
+      void listRecoverable()
+        .then(r => setRecoverableCount(r.objects.length + r.parts.length))
+        .catch(() => {});
+      refreshRecoverDeletedModal();
+    }, 150);
+  }
+
+  const recoverController: RecoverDeletedController = {
+    async list() {
+      const r = await listRecoverable();
+      const retentionMs = getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+      const currentId = getState().currentPart?.id;
+      return {
+        objects: r.objects.map(o => {
+          const latest = o.versions.reduce<Version | null>((best, v) => (!best || v.index > best.index ? v : best), null);
+          return {
+            id: o.id,
+            name: o.part.name,
+            ...(o.part.group ? { group: o.part.group } : {}),
+            versionCount: o.versions.length,
+            deletedAt: o.deletedAt,
+            expiresAt: o.deletedAt + retentionMs,
+            thumbnail: latest?.thumbnail ?? null,
+          };
+        }),
+        parts: r.parts.map(({ object, removal }) => ({
+          objectId: object.id,
+          objectName: object.name,
+          kind: removal.kind,
+          title: removalTitle(removal),
+          call: removal.call,
+          current: object.id === currentId,
+        })),
+      };
+    },
+    async restoreObject(id) {
+      const r = await restoreObjectsFromBin([id]);
+      return 'error' in r ? r.error : null;
+    },
+    async restorePart(objectId, call) {
+      const r = await restoreObjectPartOrPiece(call, objectId);
+      if ('error' in r) return r.error;
+      if (r.note) showToast(r.note, { variant: 'neutral' });
+      return null;
+    },
+    async purgeObject(id) { await purgeDeletedObjects([id]); refreshRecoverable(); },
+    async emptyBin() { await purgeDeletedObjects(); refreshRecoverable(); },
+    readOnly: () => isReadOnlyViewer() || isSharedPreview(),
+    retentionDays: () => getConfig().ui.deletedObjectRetentionDays,
+  };
+
+  function openRecoverDeleted(): void {
+    if (!getState().session) { showToast('Open a session first.', { variant: 'warn' }); return; }
+    openRecoverDeletedModal(recoverController);
+  }
+
+  /** Persist the open object's editor buffer as its draft — before a delete,
+   *  so the bin keeps the unsaved work too. */
+  async function stashCurrentDraft(): Promise<void> {
+    const { session, currentPart } = getState();
+    if (session && currentPart) {
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
+    }
+  }
+
+  /** The Undo toast after deleting objects from the rail. */
+  function offerObjectUndo(ids: string[], names: string[]): void {
+    const what = names.length === 1 ? `object "${names[0]}"` : `${names.length} objects`;
+    showToast(`Deleted ${what}.`, {
+      variant: 'neutral',
+      action: {
+        label: 'Undo',
+        run: () => {
+          void restoreObjectsFromBin(ids).then((r) => {
+            if ('error' in r) showToast(r.error, { variant: 'warn' });
+          });
+        },
+      },
+    });
   }
 
   /** Load the blank-object code (an empty model) into the editor for the fresh
@@ -6268,25 +6496,32 @@ async function main() {
     onDeletePart: async (partId: string) => {
       if (isReadOnlyViewer()) return;
       const wasCurrent = getState().currentPart?.id === partId;
+      // The open object's unsaved buffer goes into the bin with it, so an
+      // Undo / Recover brings back exactly what was on screen.
+      if (wasCurrent) await stashCurrentDraft();
       const result = await deletePart(partId);
       if (result?.reset) {
         await loadBlankPartIntoEditor();
       } else if (result && wasCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
       }
+      if (result) { offerObjectUndo([partId], [result.deleted.name]); refreshRecoverable(); }
     },
     onDeleteParts: async (partIds: string[]) => {
       if (isReadOnlyViewer()) return;
+      const names = getState().parts.filter(p => partIds.includes(p.id)).map(p => p.name);
+      if (partIds.includes(getState().currentPart?.id ?? '')) await stashCurrentDraft();
       const result = await deleteParts(partIds);
       // Only reload the editor when the active part was among those removed
       // (deleteParts reports this via newCurrent).
       if (result?.reset) {
         await loadBlankPartIntoEditor();
       } else if (result && result.newCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
       }
+      if (result) { offerObjectUndo(result.deletedIds, names); refreshRecoverable(); }
     },
     onMergeParts: async (partIds: string[]) => {
       if (isReadOnlyViewer()) return;
@@ -6305,9 +6540,22 @@ async function main() {
     onDeleteObjectPart: async (key: string) => {
       setObjectPartHighlight(null);
       const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+      const objectId = getState().currentPart?.id;
       const r = await deleteObjectPartOrPiece(target);
       if ('error' in r) showToast(r.error, { variant: 'warn' });
-      else showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, { variant: 'success' });
+      else {
+        showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
+          variant: 'success',
+          action: {
+            label: 'Undo',
+            run: () => {
+              void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
+                if ('error' in u) showToast(u.error, { variant: 'warn' });
+              });
+            },
+          },
+        });
+      }
     },
     getHighlightKey: () => getObjectPartHighlightKey(),
     onHighlight: (key: string | null) => { setObjectPartHighlight(key); },
@@ -6317,7 +6565,12 @@ async function main() {
     },
     onViewAllParts: () => { void openAssembly(); },
     onToggleCollapse: () => togglePartsRail(),
+    onOpenRecoverDeleted: () => openRecoverDeleted(),
   });
+  // Keep the rail's "Recover deleted (N)" count current: session/object
+  // changes, and every run (a hand-edited removal line changes the list).
+  onStateChange(() => refreshRecoverable());
+  refreshRecoverable();
 
   // Keep the editor title showing the active part's name (falls back to the
   // generic filename when no part/session is open). The element is looked up on
@@ -7827,7 +8080,7 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); });
+  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -12567,18 +12820,97 @@ async function main() {
       const part = resolvePartTarget(target, 'deleteObject');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
+      if (wasCurrent) await stashCurrentDraft();
       const result = await deletePart(part.id);
       if (!result) return { error: `Could not delete object "${part.name}".` };
       if (result.reset) {
         await loadBlankPartIntoEditor();
       } else if (wasCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
       }
+      refreshRecoverable();
       return {
         deleted: { id: result.deleted.id, name: result.deleted.name },
         newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
         ...(result.reset ? { reset: true } : {}),
       };
+    },
+
+    /** What "Recover deleted" lists for the active session: OBJECTS in the
+     *  deleted-objects bin (restorable until `expiresAt`) and PARTS / PIECES
+     *  removed in code (an `api.removePart` / `api.removePiece` line in one of
+     *  the session's JS objects). Pass an object's `id`/`name` to
+     *  restoreObject(), a part's `call` (or name) to restoreObjectPart(). */
+    async listDeleted() {
+      if (!getState().session) return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      const r = await listRecoverable();
+      const retentionMs = getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+      return {
+        objects: r.objects.map(o => ({
+          id: o.id,
+          name: o.part.name,
+          ...(o.part.group ? { group: o.part.group } : {}),
+          versionCount: o.versions.length,
+          deletedAt: new Date(o.deletedAt).toISOString(),
+          expiresAt: new Date(o.deletedAt + retentionMs).toISOString(),
+        })),
+        parts: r.parts.map(({ object, removal }) => ({
+          object: { id: object.id, name: object.name },
+          kind: removal.kind,
+          ...(removal.kind === 'part' ? { name: removal.name } : { point: removal.point, ...(removal.label ? { label: removal.label } : {}) }),
+          call: removal.call,
+        })),
+      };
+    },
+
+    /** Restore an object from Recover deleted (by id or name, from
+     *  listDeleted().objects), with all of its versions, at its old place in
+     *  the list. If the session's only object is an untouched blank (left by
+     *  deleting the last object) it is replaced. -> { restored, droppedBlank }
+     *  or { error } */
+    async restoreObject(target: string | { id?: string; name?: string }) {
+      if (!getState().session) return { error: 'restoreObject: no active session.' };
+      const want = typeof target === 'string' ? target : (target && typeof target === 'object' ? (target.id ?? target.name) : undefined);
+      if (typeof want !== 'string' || want.length === 0) {
+        return { error: 'restoreObject(target): pass a deleted object\'s id or name, or { id } / { name }, from listDeleted().objects.' };
+      }
+      const bin = await listDeletedObjects();
+      const byId = bin.find(o => o.id === want);
+      const byName = bin.filter(o => o.part.name === want);
+      if (!byId && byName.length > 1) return { error: `restoreObject: ${byName.length} deleted objects are named ${JSON.stringify(want)} — pass the id from listDeleted().` };
+      const entry = byId ?? byName[0];
+      if (!entry) return { error: `restoreObject: no deleted object matching ${JSON.stringify(want)}. Use listDeleted() to see what can be restored.` };
+      const r = await restoreObjectsFromBin([entry.id]);
+      if ('error' in r) return r;
+      return {
+        restored: r.restored.map(p => ({ id: p.id, name: p.name })),
+        ...(r.droppedBlank ? { droppedBlank: true } : {}),
+      };
+    },
+
+    /** Permanently delete objects from Recover deleted (ids or names from
+     *  listDeleted().objects); no argument empties the bin. -> { purged } */
+    async purgeDeletedObjects(targets?: string[]) {
+      if (!getState().session) return { error: 'purgeDeletedObjects: no active session.' };
+      if (targets !== undefined && (!Array.isArray(targets) || targets.some(x => typeof x !== 'string'))) {
+        return { error: 'purgeDeletedObjects(targets?): pass an array of deleted-object ids or names, or nothing to empty the bin.' };
+      }
+      if (isReadOnlyViewer() || isSharedPreview()) return { error: 'This tab is read-only.' };
+      let ids: string[] | undefined;
+      if (targets) {
+        const bin = await listDeletedObjects();
+        ids = bin.filter(o => targets.includes(o.id) || targets.includes(o.part.name)).map(o => o.id);
+      }
+      const purged = await purgeDeletedObjects(ids);
+      refreshRecoverable();
+      return { purged };
+    },
+
+    /** Open the Recover deleted modal (the rail's "Recover deleted" link). */
+    showRecoverDeleted() {
+      if (!getState().session) return { error: 'No active session.' };
+      openRecoverDeleted();
+      return { ok: true };
     },
 
     /** Save current state as a new version in the active session.
@@ -12682,6 +13014,37 @@ async function main() {
         return deleteObjectPartOrPiece({ piece: target.piece as number });
       }
       return { error: 'deleteObjectPart(target): pass a part name or { piece: index } from listObjectParts().' };
+    },
+
+    /** Bring back a part or piece deleted with deleteObjectPart / the ✕ — the
+     *  inverse: removes its `api.removePart` / `api.removePiece` line, re-runs
+     *  and saves a version. Pass a part name (looked up in the open object,
+     *  then the session's other objects), a removal `call` from
+     *  listDeleted().parts, or `{ object, part }` / `{ object, call }`. Opens
+     *  the owning object when it isn't the open one.
+     *  -> { ok, restored, object, version?, note? } or { error } */
+    async restoreObjectPart(target: string | { object?: string; part?: string; call?: string }) {
+      if (!getState().session) return { error: 'restoreObjectPart: no active session.' };
+      let objectRef: string | undefined;
+      let part: string | undefined;
+      let call: string | undefined;
+      if (typeof target === 'string' && target.length > 0) {
+        if (target.startsWith('api.remove')) call = target; else part = target;
+      } else if (target && typeof target === 'object') {
+        ({ object: objectRef, part, call } = target);
+        if ((part === undefined) === (call === undefined)) return { error: 'restoreObjectPart({ object?, part | call }): pass exactly one of part / call.' };
+      } else {
+        return { error: 'restoreObjectPart(target): pass a part name, a removal call from listDeleted().parts, or { object, part | call }.' };
+      }
+      if (call !== undefined) call = findRemovalLines(call)[0]?.call ?? call;
+      const r = await listRecoverable();
+      const currentId = getState().currentPart?.id;
+      let hits = r.parts.filter(p => (call !== undefined ? p.removal.call === call : p.removal.kind === 'part' && p.removal.name === part));
+      if (objectRef !== undefined) hits = hits.filter(p => p.object.id === objectRef || p.object.name === objectRef);
+      if (hits.length > 1) hits = hits.some(p => p.object.id === currentId) ? hits.filter(p => p.object.id === currentId) : hits;
+      if (hits.length === 0) return { error: `restoreObjectPart: nothing removed matches ${JSON.stringify(call ?? part)}. Use listDeleted().parts to see what can be restored.` };
+      if (hits.length > 1) return { error: `restoreObjectPart: ${JSON.stringify(call ?? part)} is removed in ${hits.length} objects (${hits.map(h => h.object.name).join(', ')}) — pass { object, ${call !== undefined ? 'call' : 'part'} }.` };
+      return restoreObjectPartOrPiece(hits[0].removal.call, hits[0].object.id);
     },
 
     /** Tint one part (by label name) or piece (`{ piece: index }`, from
@@ -16701,7 +17064,11 @@ async function main() {
         'changeObject':    { signature: 'await changeObject(name|id|index) -- Switch active object (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
-        'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions (moved to Recover deleted; restoreObject brings it back)', docs: '/ai.md#console-api--windowpartwright' },
+        'listDeleted':     { signature: 'await listDeleted() -- What Recover deleted lists: binned objects {id, name, versionCount, deletedAt, expiresAt} + parts/pieces removed in code {object, kind, name|point, label?, call}', docs: '/ai.md#recover-deleted' },
+        'restoreObject':   { signature: 'await restoreObject(id|name) -- Restore a deleted object with all its versions -> {restored, droppedBlank?}', docs: '/ai.md#recover-deleted' },
+        'purgeDeletedObjects': { signature: 'await purgeDeletedObjects(ids|names?) -- Permanently delete binned objects (no arg empties the bin) -> {purged}', docs: '/ai.md#recover-deleted' },
+        'showRecoverDeleted': { signature: 'showRecoverDeleted() -- Open the Recover deleted modal', docs: '/ai.md#recover-deleted' },
         'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps}', docs: '/ai/segmentation.md' },
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
@@ -16726,6 +17093,7 @@ async function main() {
         'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
         'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
         'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
+        'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the api.removePart/api.removePiece line, re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")

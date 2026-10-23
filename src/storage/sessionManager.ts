@@ -24,8 +24,10 @@ import {
   updatePart as dbUpdatePart,
   updatePartOrders as dbUpdatePartOrders,
   updatePartGroups as dbUpdatePartGroups,
-  deletePart as dbDeletePart,
-  deleteParts as dbDeleteParts,
+  trashParts as dbTrashParts,
+  untrashParts as dbUntrashParts,
+  listDeletedObjects as dbListDeletedObjects,
+  purgeDeletedObjects as dbPurgeDeletedObjects,
   addNote as dbAddNote,
   listNotes as dbListNotes,
   deleteNote as dbDeleteNote,
@@ -34,13 +36,13 @@ import {
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
   listDrafts as dbListDrafts,
-  deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
   type Part,
   type Version,
   type VersionOperation,
+  type DeletedObject,
   type SessionNote,
   type AttachedImage,
   type SessionAttachment,
@@ -72,6 +74,7 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
 import { appPath } from '../deployment';
+import { getConfig } from '../config/appConfig';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -564,7 +567,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft, DeletedObject } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -984,6 +987,76 @@ async function activateFreshPart(part: Part, parts: Part[]): Promise<void> {
   notify();
 }
 
+/** The active session's "Recently deleted" objects, newest first. Entries
+ *  older than `ui.deletedObjectRetentionDays` are purged as a side effect, so
+ *  the bin never outlives its retention window by more than one read. */
+export async function listDeletedObjects(): Promise<DeletedObject[]> {
+  if (!currentState.session) return [];
+  const all = await dbListDeletedObjects(currentState.session.id);
+  const cutoff = Date.now() - getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+  const expired = all.filter(e => e.deletedAt < cutoff);
+  if (expired.length > 0) await dbPurgeDeletedObjects(expired.map(e => e.id));
+  return all.filter(e => e.deletedAt >= cutoff);
+}
+
+export interface RestoreDeletedResult {
+  /** Parts put back into the session, in their restored display order. */
+  restored: Part[];
+  /** Id of the untouched blank object that was dropped because a restore made
+   *  it redundant (the placeholder a delete-the-last-object reset created). */
+  droppedBlankId?: string;
+}
+
+/**
+ * Put bin entries back into the active session: each object returns with its
+ * versions and drafts at (about) its original place in the list, keeping its
+ * group. `dropBlankPartId` names a placeholder object to discard in the same
+ * step — the blank "Object 1" a delete-the-last-object reset left behind — when
+ * the caller has verified it is still untouched. Doesn't change the current
+ * object. Returns null when nothing matched.
+ */
+export async function restoreDeletedObjects(ids: string[], opts: { dropBlankPartId?: string } = {}): Promise<RestoreDeletedResult | null> {
+  if (!currentState.session) return null;
+  const sid = currentState.session.id;
+  const entries = (await dbListDeletedObjects(sid)).filter(e => ids.includes(e.id));
+  if (entries.length === 0) return null;
+  const dropId = opts.dropBlankPartId && currentState.parts.some(p => p.id === opts.dropBlankPartId)
+    ? opts.dropBlankPartId : undefined;
+  const survivors = currentState.parts.filter(p => p.id !== dropId);
+  // Merge by each object's stored order (a restored object sorts before a live
+  // one at the same order — it held that slot first), then renumber 0..n-1.
+  const merged = [...survivors.map(p => ({ part: p, restored: false })), ...entries.map(e => ({ part: e.part, restored: true }))]
+    .sort((a, b) => a.part.order - b.part.order || Number(b.restored) - Number(a.restored));
+  const orders = new Map(merged.map((m, i) => [m.part.id, i] as const));
+  const restored = await dbUntrashParts(entries.map(e => e.id), orders);
+  await dbUpdatePartOrders(survivors.map(p => ({ id: p.id, order: orders.get(p.id)! })));
+  if (dropId) await dbTrashParts([dropId]).then(() => dbPurgeDeletedObjects([dropId]));
+  const restoredIds = new Set(restored.map(p => p.id));
+  const parts = merged
+    .filter(m => !m.restored || restoredIds.has(m.part.id))
+    .map(m => ({ ...m.part, order: orders.get(m.part.id)! }));
+  const current = dropId && currentState.currentPart?.id === dropId ? null : currentState.currentPart;
+  currentState = {
+    ...currentState,
+    parts,
+    currentPart: current ? parts.find(p => p.id === current.id) ?? current : current,
+  };
+  // The dropped blank was the current object: open the first restored one.
+  if (!current && restored.length > 0) await changePart(restored[0].id);
+  else { broadcastPartChange(); updateURL(); notify(); }
+  return { restored: parts.filter(p => restoredIds.has(p.id)), ...(dropId ? { droppedBlankId: dropId } : {}) };
+}
+
+/** Permanently delete bin entries of the active session (by object id). Pass
+ *  no ids to empty the whole bin. Returns how many entries were removed. */
+export async function purgeDeletedObjects(ids?: string[]): Promise<number> {
+  if (!currentState.session) return 0;
+  const entries = await dbListDeletedObjects(currentState.session.id);
+  const targets = ids ? entries.filter(e => ids.includes(e.id)) : entries;
+  await dbPurgeDeletedObjects(targets.map(e => e.id));
+  return targets.length;
+}
+
 /**
  * Delete every part in `targets` (which must cover the whole session) and
  * replace them with one fresh, empty part carrying the default name — the
@@ -995,8 +1068,7 @@ async function replaceAllPartsWithFresh(targets: Part[]): Promise<Part | null> {
   if (!currentState.session) return null;
   const sid = currentState.session.id;
   const fresh = await dbCreatePart(sid, DEFAULT_PART_NAME, 0);
-  await dbDeleteParts(targets.map(p => p.id));
-  for (const p of targets) void dbDeletePartDrafts(sid, p.id).catch(() => {});
+  await dbTrashParts(targets.map(p => p.id));
   await activateFreshPart(fresh, [fresh]);
   return fresh;
 }
@@ -1108,7 +1180,8 @@ export interface DeletePartResult {
 }
 
 /**
- * Delete a part and all its versions. When the active part is deleted, the
+ * Delete a part and all its versions — moved to the "Recently deleted" bin
+ * (see {@link restoreDeletedObjects}), not erased. When the active part is deleted, the
  * adjacent part — preferring the previous one in display order — becomes active.
  * Deleting the session's last part resets it instead: the part is replaced by a
  * fresh, empty one with the default name (reported as `newCurrent`), since a
@@ -1124,8 +1197,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
     return fresh ? { deleted: target, newCurrent: fresh, reset: true } : null;
   }
 
-  await dbDeletePart(partId);
-  void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
+  await dbTrashParts([partId]);
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -1157,7 +1229,8 @@ export interface DeletePartsResult {
 }
 
 /**
- * Delete several parts and all their versions in one atomic transaction. When
+ * Delete several parts and all their versions in one atomic transaction (moved
+ * to the "Recently deleted" bin, like {@link deletePart}). When
  * the active part is among those deleted, the nearest survivor above it in
  * display order — else the first remaining — becomes active. Mirrors the
  * single-part rule: a selection covering every part resets the session to one
@@ -1175,9 +1248,7 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   }
 
   const deletedSet = new Set(targets.map(p => p.id));
-  await dbDeleteParts(targets.map(p => p.id));
-  const sid = currentState.session.id;
-  for (const id of deletedSet) void dbDeletePartDrafts(sid, id).catch(() => {});
+  await dbTrashParts(targets.map(p => p.id));
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;

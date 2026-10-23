@@ -111,12 +111,12 @@ test.describe('Objects rail — parts and pieces', () => {
     const section = page.locator('#parts-rail #object-parts');
     const dialog = page.getByRole('dialog');
 
-    // Part ✕ → confirm → the handle is gone, the rest stays, and the code says why.
+    // Part ✕ (no confirm — it's recoverable) → the handle is gone, the rest
+    // stays, and the code says why.
     const handleRow = section.locator('[data-object-part="part:handle"]');
     await handleRow.hover();
     await section.locator('[data-delete-object-part="part:handle"]').click();
-    await expect(dialog).toContainText('api.removePart("handle")');
-    await dialog.getByRole('button', { name: 'Delete' }).click();
+    await expect(dialog).toHaveCount(0);
     await expect(section.locator('[data-object-part="part:handle"]')).toHaveCount(0);
     await expect(section.locator('[data-object-part="part:body"]')).toBeVisible();
     const labels = () => page.evaluate(async () =>
@@ -135,14 +135,14 @@ test.describe('Objects rail — parts and pieces', () => {
     // Piece ✕ → the separate coaster goes, and its label goes with it (not "lost").
     await section.locator('[data-object-part="piece:1"]').hover();
     await section.locator('[data-delete-object-part="piece:1"]').click();
-    await dialog.getByRole('button', { name: 'Delete' }).click();
     await expect(section).not.toContainText('Pieces');
     await expect.poll(labels).toContain('delete piece 2');
     state = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       return { code: pw.getCode(), versions: (await pw.listVersions()).map(v => v.label), listed: pw.listObjectParts() };
     });
-    expect(state.code).toMatch(/^api\.removePiece\(\[-?[\d.]+, -?[\d.]+, -?[\d.]+\]\);$/m);
+    // The removal line names the piece it took, for Recover deleted.
+    expect(state.code).toMatch(/^api\.removePiece\(\[-?[\d.]+, -?[\d.]+, -?[\d.]+\]\); \/\/ piece 2 \("coaster"\)$/m);
     expect(state.listed.pieces).toHaveLength(1);
     expect(state.listed.parts.map(p => p.name)).toEqual(['body', 'rim', 'inside']);
     expect(state.listed.lostParts).toEqual([]);

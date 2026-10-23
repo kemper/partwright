@@ -14,6 +14,13 @@ export function removePieceCall(point: readonly [number, number, number]): strin
   return `api.removePiece([${point.map(formatCoord).join(', ')}]);`;
 }
 
+/** The trailing comment a piece removal carries, naming the piece the way the
+ *  object list showed it (its removal call only records a point), e.g.
+ *  `// piece 3 ("wheel")`. `index` is 0-based. */
+export function removePieceComment(index: number, part?: string): string {
+  return `// piece ${index + 1}${part ? ` (${JSON.stringify(part)})` : ''}`;
+}
+
 function formatCoord(v: number): string {
   const r = Math.round(v * 1e4) / 1e4;
   return String(Object.is(r, -0) ? 0 : r);
@@ -22,10 +29,12 @@ function formatCoord(v: number): string {
 /** Insert `line` near the top of `code` — after any leading comment/blank lines
  *  (so a header comment stays first) but before any statement, because
  *  `api.removePart` must run before the `api.label` it cancels. Returns `code`
- *  unchanged when the exact line is already there. */
+ *  unchanged when the same removal call is already there (a trailing comment
+ *  on either side doesn't count). */
 export function insertRemovalLine(code: string, line: string): string {
   const lines = code.split('\n');
-  if (lines.some(l => l.trim() === line)) return code;
+  const call = stripTrailingComment(line);
+  if (lines.some(l => stripTrailingComment(l.trim()) === call)) return code;
   let i = 0;
   let inBlock = false;
   for (; i < lines.length; i++) {
@@ -43,6 +52,73 @@ export function insertRemovalLine(code: string, line: string): string {
   }
   lines.splice(i, 0, line);
   return lines.join('\n');
+}
+
+function stripTrailingComment(line: string): string {
+  const i = line.indexOf(');');
+  return i >= 0 && /^\s*\/\//.test(line.slice(i + 2)) ? line.slice(0, i + 2) : line.trim();
+}
+
+/** A removal written into an object's code — what "Recover deleted" lists. */
+export type RemovalLine =
+  | { kind: 'part'; name: string; call: string; source: string }
+  | { kind: 'piece'; point: [number, number, number]; label?: string; call: string; source: string };
+
+const NUM = String.raw`(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?)`;
+const PART_RE = /^api\.removePart\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)\s*;?\s*(?:\/\/.*)?$/;
+const PIECE_RE = new RegExp(String.raw`^api\.removePiece\(\s*\[\s*${NUM}\s*,\s*${NUM}\s*,\s*${NUM}\s*\]\s*\)\s*;?\s*(?:\/\/\s*(.*?))?\s*$`, 'i');
+
+function parseQuoted(lit: string): string | null {
+  if (lit.startsWith('"')) {
+    try { return JSON.parse(lit) as string; } catch { return null; }
+  }
+  // Single-quoted: swap the quotes so JSON.parse handles the escapes.
+  const body = lit.slice(1, -1).replace(/\\'/g, "'").replace(/"/g, '\\"');
+  try { return JSON.parse(`"${body}"`) as string; } catch { return null; }
+}
+
+/** Every `api.removePart` / `api.removePiece` call in `code` written on a line
+ *  of its own (the shape the object list's ✕ writes, or a hand-written
+ *  equivalent), in source order. `call` is the canonical form (what
+ *  {@link removePartCall} / {@link removePieceCall} would write) — a stable id
+ *  for the removal; `source` is the exact trimmed line. A piece's `label` is its
+ *  trailing comment (see {@link removePieceComment}). */
+export function findRemovalLines(code: string): RemovalLine[] {
+  const out: RemovalLine[] = [];
+  for (const raw of code.split('\n')) {
+    const source = raw.trim();
+    if (!source.startsWith('api.remove')) continue;
+    const pm = PART_RE.exec(source);
+    if (pm) {
+      const name = parseQuoted(pm[1]);
+      if (name) out.push({ kind: 'part', name, call: removePartCall(name), source });
+      continue;
+    }
+    const qm = PIECE_RE.exec(source);
+    if (qm) {
+      const point: [number, number, number] = [Number(qm[1]), Number(qm[2]), Number(qm[3])];
+      const label = qm[4]?.trim();
+      out.push({ kind: 'piece', point, ...(label ? { label } : {}), call: removePieceCall(point), source });
+    }
+  }
+  return out;
+}
+
+/** Remove the line holding the removal whose canonical `call` matches (see
+ *  {@link findRemovalLines}) — the inverse of {@link insertRemovalLine}.
+ *  Returns `code` unchanged when no such line exists. */
+export function removeRemovalLine(code: string, call: string): string {
+  const lines = code.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t.startsWith('api.remove')) continue;
+    const hit = findRemovalLines(t)[0];
+    if (hit && hit.call === call) {
+      lines.splice(i, 1);
+      return lines.join('\n');
+    }
+  }
+  return code;
 }
 
 /** A point on the surface of a piece, for `api.removePiece`: the centroid of
