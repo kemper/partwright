@@ -149,6 +149,81 @@ describe('figure hair — mop', () => {
   });
 });
 
+describe('figure hair — anime', () => {
+  const rig = buildRig({ height: 100, proportions: 'funko', headScale: { x: 2.3, y: 1.8, z: 2.1 } });
+  const head = buildHead(api, rig, { faceShape: 'round', cheek: 1.2 });
+  const c = rig.joints.head, f = rig.dir.headForward;
+  const pts: Vec3[] = [];
+  for (let i = 0; i < 60; i++) {
+    const a = i * 2.39996, e = Math.sin(i * 1.7) * 1.2, R = rig.r.head * (0.9 + (i % 6) * 0.12);
+    pts.push([c[0] + R * Math.cos(e) * Math.cos(a), c[1] + R * Math.cos(e) * Math.sin(a), c[2] + R * Math.sin(e)]);
+  }
+  const sample = (n: { evaluate: (x: number, y: number, z: number) => number }): number[] => pts.map((p) => n.evaluate(p[0], p[1], p[2]));
+  // The first point outside `n` marching from the head centre along `d`.
+  const exitAlong = (n: { evaluate: (x: number, y: number, z: number) => number }, from: Vec3, d: Vec3): Vec3 => {
+    let t = 0;
+    while (n.evaluate(from[0] + d[0] * t, from[1] + d[1] * t, from[2] + d[2] * t) <= 0) t += 0.05;
+    return [from[0] + d[0] * t, from[1] + d[1] * t, from[2] + d[2] * t];
+  };
+  const hair = buildHair(api, rig, { style: 'anime', on: head, seed: 5 });
+
+  it('is deterministic for a seed and varies with it', () => {
+    const a = sample(hair);
+    const b = sample(buildHair(api, rig, { style: 'anime', on: head, seed: 5 }));
+    const d = sample(buildHair(api, rig, { style: 'anime', on: head, seed: 6 }));
+    expect(a).toEqual(b);
+    expect(d).not.toEqual(a);
+  });
+
+  it('caps the crown and the back of the scaled head', () => {
+    const top = exitAlong(head, c, [0, 0, 1]);
+    expect(hair.evaluate(top[0], top[1], top[2] + 0.3)).toBeLessThan(0);
+    const back = exitAlong(head, c, [-f[0], -f[1], -f[2]]);
+    expect(hair.evaluate(back[0] - f[0] * 0.3, back[1] - f[1] * 0.3, back[2])).toBeLessThan(0);
+  });
+
+  it('leaves the eyes and brows uncovered (the face window), but hairs the forehead above', () => {
+    for (const a of [rig.face.eyeL, rig.face.eyeR, rig.face.browL, rig.face.browR]) {
+      const p = exitAlong(head, [a[0], c[1], a[2]], f);   // the real skin in front of the anchor
+      expect(hair.evaluate(p[0] + f[0] * 0.4, p[1] + f[1] * 0.4, p[2])).toBeGreaterThan(0);
+    }
+    const fh: Vec3 = [0, c[1], c[2] + rig.r.headZ * 0.75];
+    const p = exitAlong(head, fh, f);
+    expect(hair.evaluate(p[0] + f[0] * 0.4, p[1] + f[1] * 0.4, p[2])).toBeLessThan(0);
+  });
+
+  it('validates its keys', () => {
+    expect(() => buildHair(api, rig, { style: 'anime', spread: 1 })).toThrow(/only apply to style 'mop'/);
+    expect(() => buildHair(api, rig, { style: 'mop', spike: 1 })).toThrow(/only apply to style 'anime'/);
+    expect(() => buildHair(api, rig, { style: 'short', swoop: 1 })).toThrow(/only apply to style 'anime'/);
+    expect(() => buildHair(api, rig, { style: 'anime', locks: 4 })).toThrow();
+    expect(() => buildHair(api, rig, { style: 'anime', ears: 'over', spike: 2, swoop: -0.5, fringe: 0.5 })).not.toThrow();
+  });
+
+  it('F.hair.cap / F.hair.tuft helpers', () => {
+    const r = F.rig({ height: 100, proportions: 'funko', headScale: { x: 2.3, y: 1.8, z: 2.1 } });
+    const h = F.head(r, { faceShape: 'round', cheek: 1.2 });
+    const cap = F.hair.cap(r, { on: h, hairlinePlane: { back: -0.7 }, window: { width: 1.1 } });
+    const top = exitAlong(h, r.joints.head, [0, 0, 1]);
+    expect(cap.evaluate(top[0], top[1], top[2] + 0.3)).toBeLessThan(0);
+    const e = exitAlong(h, [r.face.eyeL[0], r.joints.head[1], r.face.eyeL[2]], r.dir.headForward);
+    expect(cap.evaluate(e[0], e[1] - 0.4, e[2])).toBeGreaterThan(0);
+    // window:false keeps the forehead capped
+    const closed = F.hair.cap(r, { on: h, window: false });
+    expect(closed.evaluate(e[0], e[1] - 0.4, e[2] + r.r.headZ * 0.35)).toBeLessThan(0);
+    // A tuft runs from base along dir and ends in a point.
+    const base: Vec3 = [0, 0, 120];
+    const tuft = F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0 });
+    expect(tuft.evaluate(0, 0, 120)).toBeCloseTo(-2, 6);
+    expect(tuft.evaluate(10, 0, 120)).toBeLessThan(0.0);
+    expect(tuft.evaluate(10, 0, 120)).toBeGreaterThan(-1);
+    expect(tuft.evaluate(5, 0, 123)).toBeGreaterThan(0);
+    expect(F.hair.tuft(r, { base, dir: [1, 0, 0], length: 10, width: 2, curve: 0.3 }).evaluate(5, 0, 123)).toBeLessThan(0);
+    expect(() => F.hair.tuft(r, { base, dir: [1, 0, 0], bogus: 1 })).toThrow();
+    expect(() => F.hair.cap(r, { window: { size: 2 } })).toThrow();
+  });
+});
+
 describe('figure rig — two-hand sphere hold', () => {
   for (const cup of ['sides', 'under'] as const) {
     it(`cup:'${cup}' lands both palms on the ball`, () => {
@@ -242,5 +317,49 @@ describe('figure surfacePoint', () => {
     const q = surfacePoint(s, [1, -10, 3], [0, -1, 0], { reach: 20 })!;
     expect(q[1]).toBeCloseTo(-3, 5);
     expect(surfacePoint(s, [40, 40, 40], [0, 0, 1], { reach: 2 })).toBeNull();
+  });
+});
+
+describe('figure brows — conformal seating (#1055)', () => {
+  // A brow marking is `on.round(proud) ∩ arc`; it adds paintable surface only
+  // where it pokes OUTSIDE the skin. Search for one such solid point.
+  type Evaluable = { evaluate: (x: number, y: number, z: number) => number };
+  const exposed = (brows: Evaluable & { bounds: () => { min: Vec3; max: Vec3 } }, skin: Evaluable): boolean => {
+    const b = brows.bounds(), S = 0.25;
+    for (let x = b.min[0]; x <= b.max[0]; x += S) for (let y = b.min[1]; y <= b.max[1]; y += S) for (let z = b.min[2]; z <= b.max[2]; z += S) {
+      if (brows.evaluate(x, y, z) < 0 && skin.evaluate(x, y, z) > 0) return true;
+    }
+    return false;
+  };
+  const funko = { height: 100, proportions: 'funko', headScale: { x: 2.3, y: 1.8, z: 2.1 } } as const;
+  const faceOf = (rig: ReturnType<typeof buildRig>, head: object) =>
+    F.face.assemble(F.head(rig, head), rig, { eyes: false, mouth: false, brows: false, ears: false });
+
+  it('seat on a cheek-bulged face (cheek 1.5)', () => {
+    const rig = F.rig({ height: 100 });
+    const face = faceOf(rig, { cheek: 1.5 });
+    expect(exposed(F.face.brows(rig, { on: face }), face)).toBe(true);
+  });
+
+  it('seat on a headScaled Funko face', () => {
+    const rig = F.rig(funko);
+    const face = faceOf(rig, { faceShape: 'round', jaw: 1.6, cheek: 1.3 });
+    expect(exposed(F.face.brows(rig, { shape: 'arched', thickness: 3, on: face }), face)).toBe(true);
+  });
+
+  it('follow a face translated after building', () => {
+    const rig = F.rig(funko);
+    const face = faceOf(rig, { faceShape: 'round', cheek: 1.1 }).translate([0, 0, -3.5]);
+    const brows = F.face.brows(rig, { on: face });
+    expect(exposed(brows, face)).toBe(true);
+    // …and sit where the moved face's brow line is (≈ rig brow height − 3.5).
+    const b = brows.bounds();
+    expect(Math.abs((b.min[2] + b.max[2]) / 2 - (rig.face.browL[2] - 3.5))).toBeLessThan(rig.r.headZ * 0.15);
+  });
+
+  it('throw instead of silently painting nothing when `on` is the wrong node', () => {
+    const rig = F.rig({ height: 100 });
+    const elsewhere = api.sphere(5).translate([200, 0, 0]);
+    expect(() => F.face.brows(rig, { on: elsewhere })).toThrow(/0 triangles/);
   });
 });

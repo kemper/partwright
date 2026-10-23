@@ -1213,6 +1213,16 @@ curvature guess, and the `'brows'` label paints cleanly. (Omit `on` and it falls
 back to a sunk capsule strip positioned by an analytic skull approximation —
 fine for default heads, less robust on unusual proportions.)
 
+The `on` brow **seats on the real surface**: if the welded forehead isn't where
+the rig anchors expect (a `cheek` ≳ 1.2 weld or a `headScale`'d Funko head pushes
+it forward), each brow arc is projected onto the actual surface along
+`headForward`; and a face **translated after building** carries its brows along —
+pass the moved node itself, `on: face.translate(0, 0, dz)` (a translate buried
+inside a weld can't be seen — pass the face, not the weld). If the brow still
+can't reach the `on` surface (wrong node), `F.face.brows` **throws** ("…would
+paint 0 triangles") instead of silently returning a buried, invisible brow. The
+same guard covers `F.nipples(rig, { on })`.
+
 Pick a **`shape`** preset (individual knobs override it):
 
 | `shape` | Look |
@@ -1265,10 +1275,10 @@ Pass `chest: false` to drop the areola spheres on a figure with no bare chest, o
 
 ```js
 F.hair(rig, { style, hairline, length, volume, part, texture, ears })
-//   ears: 'cover' (default, hair over the ears) | 'behind' (tucked behind them,
+//   ears: 'cover' (default, hair over the ears; 'over' is an alias) | 'behind' (tucked behind them,
 //         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
-//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop' | 'anime'
 //   'mop' — shaggy anime / vinyl-toy hair: a cap hugging the real head (pass
 //     `on: head`, your F.head node, for a non-default faceShape) + N irregular
 //     tapered locks: a zig-zag fringe ending just above the brows, sideburns and
@@ -1278,6 +1288,24 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //       same seed ⇒ identical hair), flick: 0..3 (1, side flicks outward),
 //       fringe: 0..1.5 (1 = to the brows; lower = shorter), on: headNode }
 //     `length` drops the nape locks; `volume` thickens cap + locks.
+//   'anime' — the classic anime / vinyl-toy spiky bob (Funko hair): a THIN cap
+//     hugging the real (headScale'd) skull, trimmed by a tilted hairline plane
+//     (high at the face, low at the nape) with an arched face window, plus
+//     chunky swoopy pointed locks — a fringe of 5–9 broad locks over the
+//     forehead, a sideburn + over-the-ear lock + temple flick + side flick each
+//     side, layered pointed nape locks and crown tufts flicking up and out. No
+//     side pads, so it doesn't read as a helmet from 3/4. Pass `on: head`.
+//     Extra keys: { locks: 12..48 (24), seed (1), on: headNode,
+//       fringe: 0..1.5 (1 = tips just above the brows; lower = shorter),
+//       spike: 0..3 (1, how far crown tufts flick out), swoop: −1..3 (1, how
+//       far the fringe locks fan sideways; 0 = straight down) }
+//     `length` drops sideburns/nape; `volume` widens the crown + thickens locks.
+//     Meshes ~3× faster than 'mop' (locks are hard-unioned, welded once).
+//   Helpers for hand-built hairdos (same pieces 'anime' uses):
+//     F.hair.cap(rig, { on, thickness, crown, hairlinePlane: { front, back },
+//       window: { width, top, tilt } | false })   // heights in head-Z radii above the head centre
+//     F.hair.tuft(rig, { base, dir, length, width, curve })   // one tapered lock;
+//       curve: number = flick toward head-up (× length), or a Vec3 mid offset
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
 //   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
@@ -1425,8 +1453,10 @@ const skin = F.weld(rig, [F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig, {
 // Glossy bead eyes seated on the REAL face front (cheeks bulge past the anchor).
 const eyes = sdf.union(...[rig.face.eyeL, rig.face.eyeR].map((a) => sdf.ellipsoid(5.3, 3.8, 5.6)
   .translate(F.surfacePoint(face, a, fwd).map((v, i) => v - fwd[i] * 1.6)))).label('eyes');
-const brows = F.face.brows(rig, { shape: 'arched', thickness: 3, on: face }).label('brows');
-const hair = F.hair(rig, { style: 'mop', on: head, seed: 7, locks: 32 }).label('hair');
+// Brows seat on the real face (cheek bulge / a moved face included) — pass the node you union.
+const brows = F.face.brows(rig, { shape: 'arched', thickness: 3, width: 1.5, on: face });
+// Anime spiky-bob: thin cap + fringe/sideburn/crown/nape locks ('mop' for a curlier shag).
+const hair = F.hair(rig, { style: 'anime', on: head, seed: 7, fringe: 0.7 }).label('hair');
 const shirt = F.clothing.top(rig, { sleeve: 'short' }).label('shirt');
 const ball = F.heldSphere(rig).label('ball');
 const base = F.base(rig, { radius: 36 }).label('base');
