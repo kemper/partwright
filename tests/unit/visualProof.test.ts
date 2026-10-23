@@ -62,7 +62,7 @@ describe('PR visual proof comment', () => {
     expect(imageUrl(SLUG, SHA, 'b/s/café.png')).toContain('/caf%C3%A9.png?raw=true');
   });
 
-  it('renders the newest batch two images per row and collapses earlier uploads', () => {
+  it('renders the newest batch two images per row and only counts earlier uploads', () => {
     const batches = groupBatches(
       ['b/20261022-090000/old.png', 'b/20261023-100000/a.png', 'b/20261023-100000/b.png', 'b/20261023-100000/c.png'],
       'b',
@@ -71,12 +71,9 @@ describe('PR visual proof comment', () => {
     expect(body.startsWith(COMMENT_MARKER)).toBe(true);
     expect(body).toContain('| a | b |');
     expect(body).toContain(`![c](https://github.com/${SLUG}/blob/${SHA}/b/20261023-100000/c.png?raw=true)`);
-    expect(body).toContain('Earlier screenshots (1 upload)');
-    expect(body).toContain(`- 2026-10-22 09:00 UTC: [old](https://github.com/${SLUG}/blob/${SHA}/b/20261022-090000/old.png?raw=true)`);
-    // Earlier uploads are links, not inline images.
-    expect(body).not.toContain('![old]');
-    const legacy = renderComment({ repoSlug: SLUG, sha: SHA, batches: groupBatches(['b/20261022-090000/my shot.png', 'b/20261023-100000/a.png'], 'b') });
-    expect(legacy).toContain('- 2026-10-22 09:00 UTC: my shot\n');
+    expect(body).toContain('It replaces 1 earlier upload.');
+    // Earlier uploads aren't linked: links to another session's uploads get defanged.
+    expect(body).not.toContain('old');
   });
 
   it('uses an uploaded layout, resolving only the batch\'s own images', () => {
