@@ -53,3 +53,18 @@ no in-app AI tool, matching `buildCharacter`, which doesn't have one either.
 **Playwright config.** The sandbox browser detector only looked under
 `chrome-linux/`. This image ships `chrome-linux64/`, so local Playwright runs
 failed until I added the second path.
+
+## Assistant
+
+## CI follow-up: editor-hints race (not caused by this PR)
+
+The e2e shard 1 failed on `editor-hints.spec.ts` ("lays out on one row…"). It
+fails the same way on an untouched `origin/main` checkout, even though the
+staging gate passed it earlier the same day. The hints strip first lays out in
+a 335 px slot, which is under the 360 px cut-off, so it hides the "Did you
+know?" badge. The test then widens the slot and immediately samples. On that
+first sample the badge's bounding box is null, so the helper threw, and
+`expect.poll` doesn't retry thrown errors. The helper now returns `'pending'`,
+so the poll keeps sampling until the ResizeObserver relayout catches up. The
+change is test-only. I carried it on this branch because the session may only
+push here.
