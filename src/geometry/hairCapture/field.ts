@@ -75,8 +75,28 @@ export function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/** Throw unless the grid is `nAz` × `nEl` positive EVEN integers — the build
+ *  samples the skin at half resolution, and the capture supersamples per cell. */
+export function assertGridSize(nAz: unknown, nEl: unknown, where: string): void {
+  const ok = (v: unknown): boolean => typeof v === 'number' && Number.isInteger(v) && v >= 2 && v % 2 === 0;
+  if (!ok(nAz) || !ok(nEl)) throw new Error(`${where}: grid must be positive even integers (az × el), got ${String(nAz)} × ${String(nEl)}`);
+}
+
+/** Quantize radii to bytes over [rMin, rMax] (rounded out to 1e-3). A constant
+ *  field gets a non-zero span so the mapping never divides by zero. */
+export function quantizeRadii(R: Float64Array): { rMin: number; rMax: number; bytes: Uint8Array } {
+  let rMin = Infinity, rMax = -Infinity;
+  for (const v of R) { rMin = Math.min(rMin, v); rMax = Math.max(rMax, v); }
+  rMin = Math.floor(rMin * 1000) / 1000; rMax = Math.ceil(rMax * 1000) / 1000;
+  if (!(rMax - rMin > 1e-9)) rMax = rMin + 1e-3;
+  const bytes = new Uint8Array(R.length);
+  for (let i = 0; i < R.length; i++) bytes[i] = Math.round(((R[i] - rMin) / (rMax - rMin)) * 255);
+  return { rMin, rMax, bytes };
+}
+
 /** Decode a preset's quantized grids into Float64 grids. */
 export function decodePreset(p: HairCapturePreset): HairGrids {
+  assertGridSize(p.nAz, p.nEl, `hair preset '${p.name}'`);
   const n = p.nAz * p.nEl;
   const rb = b64ToBytes(p.radius), mb = b64ToBytes(p.mask);
   if (rb.length !== n || mb.length !== n) throw new Error(`hair preset '${p.name}': grid size mismatch (${rb.length}/${mb.length} vs ${n})`);
