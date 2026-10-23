@@ -15,6 +15,16 @@ export const COMMENT_MARKER = '<!-- pr-visual-proof -->';
 const STAMP_RE = /^\d{8}-\d{6}$/;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
 
+/**
+ * The name an image is stored under on pr-assets: only [A-Za-z0-9._-], so its
+ * URL needs no percent-encoding. Cloud sessions' GitHub proxy defangs image
+ * links (wraps them in backticks) unless they literally match a path the
+ * session itself pushed, and an encoded name never matches.
+ */
+export function safeFileName(name) {
+  return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+(?=\.[^.]+$)/g, '') || 'image';
+}
+
 /** pr-assets folder for a PR head branch. */
 export function folderForBranch(branch) {
   return branch.replace(/\//g, '-');
@@ -50,9 +60,14 @@ export function groupBatches(paths, folder) {
   return batches.sort((a, b) => a.stamp.localeCompare(b.stamp));
 }
 
+// encodeURIComponent leaves !'()* alone; a bare ")" would end a Markdown link.
+function encodeSegment(s) {
+  return encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 /** Image URL pinned to a pr-assets commit; works for public and private repos. */
 export function imageUrl(repoSlug, sha, path) {
-  const encoded = path.split('/').map(encodeURIComponent).join('/');
+  const encoded = path.split('/').map(encodeSegment).join('/');
   return `https://github.com/${repoSlug}/blob/${sha}/${encoded}?raw=true`;
 }
 
@@ -81,16 +96,23 @@ function autoLayout(images, urlFor) {
 }
 
 /**
- * Point the relative image references in an uploaded proof.md at the batch's
- * pinned URLs: `![x](after.png)` and `<img src="after.png">`. Anything that
- * isn't one of the batch's own files is left alone.
+ * Point the image references in an uploaded proof.md at the batch's pinned
+ * URLs: `![x](after.png)`, `![x](<my shot.png>)` and `<img src="after.png">`,
+ * matched by file name (a directory prefix like `test-results/` is ignored),
+ * including names with spaces or parentheses. Absolute URLs and names that
+ * aren't among the batch's images are left alone.
  */
 export function resolveProofMarkdown(markdown, batch, urlFor) {
-  const byName = new Map(batch.images.map((img) => [img.name, urlFor(img.path)]));
-  const swap = (ref) => byName.get(ref.replace(/^\.\//, '')) ?? ref;
-  return markdown
-    .replace(/(!\[[^\]]*\]\()([^)\s]+)((?:\s+"[^"]*")?\))/g, (_, open, ref, close) => open + swap(ref) + close)
-    .replace(/(<img\b[^>]*\bsrc=")([^"]+)(")/gi, (_, open, ref, close) => open + swap(ref) + close);
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let out = markdown;
+  for (const img of batch.images) {
+    const url = urlFor(img.path);
+    const name = escape(img.name);
+    out = out
+      .replace(new RegExp(`(!\\[[^\\]]*\\]\\()<?(?:[^\\s()<>"]*/)?${name}>?((?:\\s+"[^"]*")?\\))`, 'g'), (_, open, close) => open + url + close)
+      .replace(new RegExp(`(<img\\b[^>]*\\bsrc=")(?:[^"]*/)?${name}(")`, 'gi'), (_, open, close) => open + url + close);
+  }
+  return out;
 }
 
 /**
@@ -106,7 +128,10 @@ export function renderComment({ repoSlug, sha, batches, proofMarkdown = null }) 
   if (earlier.length > 0) {
     out.push('', `<details><summary>Earlier screenshots (${earlier.length} upload${earlier.length === 1 ? '' : 's'})</summary>`, '');
     for (const b of earlier) {
-      out.push(`- ${stampLabel(b.stamp)}: ${b.images.map((img) => `[${title(img.name)}](${urlFor(img.path)})`).join(' · ')}`);
+      // Names from before uploads were made URL-safe would get their links
+      // defanged (see safeFileName), so those are listed without one.
+      const entry = (img) => (safeFileName(img.name) === img.name ? `[${title(img.name)}](${urlFor(img.path)})` : title(img.name));
+      out.push(`- ${stampLabel(b.stamp)}: ${b.images.map(entry).join(' · ')}`);
     }
     out.push('', '</details>');
   }
@@ -119,10 +144,9 @@ export function renderComment({ repoSlug, sha, batches, proofMarkdown = null }) 
 
 /**
  * The pinned screenshot URLs GitHub actually rendered as images in a comment's
- * HTML (`Accept: application/vnd.github.html+json`), used to confirm the
- * comment shows every image rather than a broken link.
+ * HTML (`Accept: application/vnd.github.html+json`).
  */
-export function renderedImageSrcs(html, repoSlug) {
+function renderedImageSrcs(html, repoSlug) {
   const prefix = `https://github.com/${repoSlug}/blob/`;
   const srcs = [];
   for (const m of html.matchAll(/<img\b[^>]*?\bsrc="([^"]+)"/gi)) {
@@ -130,4 +154,10 @@ export function renderedImageSrcs(html, repoSlug) {
     if (src.startsWith(prefix)) srcs.push(src);
   }
   return srcs;
+}
+
+/** The images GitHub did not render in the comment HTML (empty = all shown). */
+export function missingImages(html, repoSlug, sha, images) {
+  const shown = new Set(renderedImageSrcs(html, repoSlug).map((src) => src.split('?')[0]));
+  return images.filter((img) => !shown.has(imageUrl(repoSlug, sha, img.path).split('?')[0]));
 }

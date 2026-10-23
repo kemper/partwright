@@ -35,3 +35,17 @@ the PR body, so later body edits can't clobber it. `--layout` covers
 before/after tables; `--refresh` covers screenshots taken before the PR exists.
 Rendering is a pure module (`scripts/lib/visualProof.mjs`) with unit tests.
 CLAUDE.md and work-reviewer updated to the new flow.
+
+**Review follow-up, and the real root cause**: a review pass found should-fixes
+(non-ASCII names dropped by quoted `ls-tree` output, push errors hidden behind
+a blind retry, fetch errors read as "no branch", `)` in names breaking links),
+all fixed. Testing awkward names then reproduced the original mangling: the
+cloud session's GitHub proxy wraps image (and plain) link URLs in backticks
+unless they literally match a path this session pushed. A probe showed this
+session's plain-named uploads pass while percent-encoded names and another
+session's uploads get wrapped. So the old PRs broke because their links weren't
+traceable to the posting session, not because agents typed them. Fix: store
+images under URL-safe names (`safeFileName`), rewrite `--layout` references to
+match, list legacy unsafe names without links, and keep the render check as the
+backstop (its error says to re-upload from the current session). CLAUDE.md
+corrected accordingly.
