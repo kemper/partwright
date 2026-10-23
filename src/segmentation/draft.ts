@@ -145,6 +145,11 @@ export interface DraftSummary {
 
 export type PartRef = number | string;
 
+/** What a `brush` edit moves into its target part: the brushed `triangles`
+ *  themselves (fixed, like the Fix brush), or every part it touched, whole
+ *  (`patches` — a brush-merge). */
+export type BrushMode = 'triangles' | 'patches';
+
 /** Batch edit operations (editParts). Part refs are 1-based ids or names. */
 export type PartEditOp =
   | { op: 'merge'; ids: PartRef[]; name?: string }
@@ -152,6 +157,7 @@ export type PartEditOp =
   | { op: 'setColor'; id: PartRef; color: string | null }
   | { op: 'delete'; id: PartRef }
   | { op: 'reassign'; point: [number, number, number]; to: PartRef; radius?: number }
+  | { op: 'brush'; to: PartRef; points?: [number, number, number][]; triangles?: number[]; radius?: number; mode?: BrushMode }
   | { op: 'split'; id: PartRef; seeds: SegSeed[] }
   | { op: 'absorbSmall'; minAreaFrac: number }
   | { op: 'smoothBoundaries'; iterations?: number }
@@ -213,6 +219,11 @@ export class PartDraftModel {
   /** Automatic pins skip regions smaller than this fraction of their part
    *  (appConfig.segmentation.seedsFromPartsMinRegionFrac, threaded in). */
   anchorMinRegionFrac = 0.01;
+  /** Detection and pin re-grows fold "specks" — regions smaller than this
+   *  fraction of the surface that no placed pin or hand fix holds — into the
+   *  neighbour they border most (appConfig.segmentation.autoAbsorbSpeckFrac,
+   *  threaded in). 0 = off. */
+  autoAbsorbFrac = 0;
   /** Overlay colour remembered per part name, so colours stay put across
    *  edits (see displayColors). */
   private colorMemo = new Map<string, string>();
@@ -282,6 +293,7 @@ export class PartDraftModel {
     c.focusMask = this.focusMask ? this.focusMask.slice() : null;
     c.fixedTri = this.fixedTri ? this.fixedTri.slice() : null;
     c.anchorMinRegionFrac = this.anchorMinRegionFrac;
+    c.autoAbsorbFrac = this.autoAbsorbFrac;
     c.colorMemo = new Map(this.colorMemo);
     c.edgeSmoothing = this.edgeSmoothing;
     c.cache = this.cache;
@@ -551,6 +563,29 @@ export class PartDraftModel {
         this.compact();
         return;
       }
+      case 'brush': {
+        const hit = this.brushTriangles(op.points ?? [], op.radius, op.triangles ?? []);
+        const target = this.resolveOrCreate(op.to);
+        if (op.mode === 'patches') {
+          // Brush-merge: every part the brush touched moves in whole, pins and
+          // locks included (like merge); brushed unassigned triangles join too.
+          const touched = new Set<number>();
+          for (const t of hit) { const L = this.triPart[t]; if (L >= 0 && L !== target) touched.add(L); }
+          const mergedNames = new Set([...touched].map((L) => this.names[L]));
+          const targetName = this.names[target];
+          if ([...mergedNames].some((nm) => this.lockedNames.has(nm))) this.lockedNames.add(targetName);
+          for (let t = 0; t < this.triPart.length; t++) if (touched.has(this.triPart[t])) this.triPart[t] = target;
+          if (this.fixedTri) for (let t = 0; t < this.fixedTri.length; t++) if (touched.has(this.fixedTri[t])) this.fixedTri[t] = target;
+          for (const t of hit) if (this.triPart[t] < 0) this.triPart[t] = target;
+          for (const sd of this.seeds) if (mergedNames.has(sd.label)) sd.label = targetName;
+          this.compact();
+          this.pruneLocks();
+        } else {
+          for (const t of hit) { this.triPart[t] = target; this.fix(t, target); }
+          this.compact();
+        }
+        return;
+      }
       case 'split': {
         const i = this.resolvePart(op.id);
         if (!Array.isArray(op.seeds) || op.seeds.length < 2) throw new Error('split needs at least two seeds ({ label, point })');
@@ -798,6 +833,7 @@ export class PartDraftModel {
       if (!allow) this.fixedTri = null;
       else for (let t = 0; t < this.fixedTri.length; t++) if (allow[t]) this.fixedTri[t] = -1;
     }
+    this.absorbSpecks(allow);
     this.pruneLocks();
     this.syncAnchors();
   }
@@ -857,6 +893,79 @@ export class PartDraftModel {
   // ------------------------------------------------------------------ pins
 
   /** Triangle a pin sits on (its resolved triangle, else the nearest). */
+  /** Triangles a brush covers: listed triangles, plus every triangle whose
+   *  centroid lies within `radius` of a brush point on the same piece as that
+   *  point (a stroke never jumps a gap to another body). */
+  private brushTriangles(points: readonly (readonly number[])[], radius: number | undefined, triangles: readonly number[]): Set<number> {
+    if (points.length === 0 && triangles.length === 0) throw new Error('brush needs points (with a radius) or triangles');
+    const f = this.features;
+    const hit = new Set<number>();
+    for (const t of triangles) {
+      if (!Number.isInteger(t) || t < 0 || t >= f.triCount) throw new Error(`brush.triangles: ${t} is not a triangle index (0–${f.triCount - 1})`);
+      hit.add(t);
+    }
+    if (points.length === 0) return hit;
+    if (!(typeof radius === 'number' && radius > 0)) throw new Error('brush.radius must be > 0 when points are given');
+    for (const p of points) {
+      if (!Array.isArray(p) || p.length !== 3 || p.some((x) => !Number.isFinite(x))) throw new Error('brush.points must be [x, y, z] triples');
+    }
+    // One piece for the whole mesh (the common fused figurine) needs no
+    // nearest-triangle lookup per point.
+    const pieceOf = f.pieceCount > 1 ? points.map((p) => f.pieceOfTri[Math.max(0, nearestTriangle(f, p as [number, number, number]))]) : null;
+    const r2 = radius * radius;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const p of points) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k] - radius); hi[k] = Math.max(hi[k], p[k] + radius); }
+    const c = f.triCentroid;
+    const reached = new Uint8Array(points.length);
+    for (let t = 0; t < f.triCount; t++) {
+      const x = c[t * 3], y = c[t * 3 + 1], z = c[t * 3 + 2];
+      if (x < lo[0] || x > hi[0] || y < lo[1] || y > hi[1] || z < lo[2] || z > hi[2]) continue;
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const dx = x - p[0], dy = y - p[1], dz = z - p[2];
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
+        if (pieceOf && f.pieceOfTri[t] !== pieceOf[i]) continue;
+        hit.add(t);
+        reached[i] = 1;
+      }
+    }
+    // A dab smaller than the triangles it lands on (a coarse CAD mesh) still
+    // takes the triangle under it.
+    for (let i = 0; i < points.length; i++) {
+      if (reached[i]) continue;
+      const t = nearestTriangle(f, points[i] as [number, number, number]);
+      if (t >= 0) hit.add(t);
+    }
+    return hit;
+  }
+
+  /** Fold specks (see autoAbsorbFrac) into their neighbours. Triangles
+   *  under placed pins, hand-fixed triangles and anything outside `allow`
+   *  weigh as much as the whole surface, so their regions are never specks. */
+  private absorbSpecks(allow: Uint8Array | null = null): void {
+    if (!(this.autoAbsorbFrac > 0)) return;
+    const f = this.features;
+    const total = f.totalArea || 1;
+    const w = Float64Array.from(f.triArea);
+    for (const sd of this.seeds) {
+      if (sd.auto) continue;
+      const t = this.pinTriangle(sd);
+      if (t >= 0) w[t] = total;
+    }
+    if (this.fixedTri) for (let t = 0; t < w.length; t++) if (this.fixedTri[t] >= 0) w[t] = total;
+    if (allow) for (let t = 0; t < w.length; t++) if (!allow[t]) w[t] = total;
+    if (absorbSmallRegions(this.triPart, this.adjacency, w, this.autoAbsorbFrac * total) > 0) this.compact();
+  }
+
+  /** Apply the speck pass to a fresh draft (the runner sets autoAbsorbFrac
+   *  after constructing the model), keeping the pins in step. */
+  absorbSpecksNow(): void {
+    if (!(this.autoAbsorbFrac > 0)) return;
+    this.absorbSpecks();
+    this.pruneLocks();
+    this.syncAnchors();
+  }
+
   private pinTriangle(sd: SegSeed): number {
     if (typeof sd.triangle === 'number' && sd.triangle >= 0 && sd.triangle < this.triPart.length) return sd.triangle;
     // Resolve once and remember: the lookup is a linear scan of the mesh.
@@ -960,6 +1069,7 @@ export class PartDraftModel {
     const g = growFromSeeds(f, seedTris, seedLabels, { ...this.growthOptions(allow), seedMaxRadius: seedRadii });
     for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = g.triLabel[t];
     this.compact();
+    this.absorbSpecks(allow);
   }
 
   /** Throw a clear error when a pin for part `label` can't take effect

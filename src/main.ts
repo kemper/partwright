@@ -152,6 +152,7 @@ import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
+import { isFusedPiecesDraft } from './segmentation/labelPresets';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -4790,7 +4791,7 @@ async function main() {
     if (!ctl || !cfg.autoDetectOnImport || !target || target.numTri > cfg.autoDetectMaxTriangles) { openConvert(true); return; }
     const targetKey = importMeshKey(target);
     showToast('Looking for separate parts…', { variant: 'neutral', source: 'parts' });
-    const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; parts?: unknown[]; partsTruncated?: number; error?: string };
+    const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; proposedBy?: string; parts?: { triCount: number }[]; partsTruncated?: number; error?: string };
     // The user moved on while detection ran (another version, object or
     // session) — don't pop a panel over a different model.
     const now = getActiveImports()[importIndex];
@@ -4803,8 +4804,15 @@ async function main() {
     }
     if (!r.proposed) { openConvert(true); return; }
     const count = (r.parts?.length ?? 0) + (r.partsTruncated ?? 0);
+    // One or two pieces on a big mesh: the pieces are real, but the largest
+    // is a fused figure — say both, so the banner never reads as "2 parts"
+    // next to a "one fused solid" warning (#1050). The panel opens with a
+    // label chip armed in that case.
+    const fused = isFusedPiecesDraft(r.proposedBy ?? '', r.parts ?? [], cfg.fusedPieceMinTris);
     openPartDetectionPanel(ctl, {
-      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
+      context: fused
+        ? `Imported ${filename}: found ${count} separate parts, and the largest is one fused solid, so its regions (hair, face…) aren't split yet. Label them with the chips below, or Accept to keep the ${count} parts as they are.`
+        : `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
       secondaryAction: {
         label: 'Convert to code instead',
         run: () => { void ctl.discardParts(); openConvert(false); },
@@ -17163,7 +17171,7 @@ async function main() {
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z], color?:"#rrggbb"}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). A seed colour becomes its part\'s colour. Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
-        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"brush"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method; brush {to, points+radius | triangles, mode?:"triangles"|"patches"} is one brush stroke (patches = brush-merge whole parts)', docs: '/ai/segmentation.md' },
         'renderParts':       { signature: 'renderParts({views?:["front",...|{azimuth,elevation}], azimuth?, elevation?, focus?:part, size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks); custom angles and focus (zoom onto one part) -> {image, views, focus?, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
         'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft; tiles are captioned with the detector + the params that differ -> {results:[{caption, quality, partCount}], image}', docs: '/ai/segmentation.md' },
         'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },

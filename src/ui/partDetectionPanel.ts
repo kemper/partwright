@@ -23,8 +23,16 @@
 //   - hovering the model names the part under the cursor and jumps the list
 //     to it; hovering a row highlights the part on the model;
 //   - Select tool (V): click a part to select it (Shift/Ctrl-click toggles,
-//     Alt-click removes), Shift-drag paints a selection across parts, Esc
-//     clears; the action bar merges / solos / locks / colours / deletes;
+//     Alt-click removes), Shift-drag paints a fresh selection across parts,
+//     Esc clears; the action bar merges / solos / locks / colours / deletes;
+//   - Select-tool brush: a plain drag that starts on a part brushes more of
+//     the model into it (one `brush` edit on release, previewed as a ghost in
+//     the part's colour); Alt-drag swallows every touched part whole. Mouse
+//     and pen only: a one-finger drag still orbits on touch;
+//   - type to name: with one part selected, letters open a rename popover at
+//     the cursor (existing part names + chip names; a taken name merges); R
+//     opens it for the part under the cursor; M merges the selection; Enter
+//     accepts;
 //   - Pin tool (P): click to add a pin for the chosen part (or a new name);
 //     only the parts around it re-grow;
 //   - Fix tool (B): drag to paint triangles into a part — fixed triangles
@@ -32,14 +40,21 @@
 //   - in any tool, drag a pin to move it and right-click it to delete it;
 //     the eye toggle or holding H hides pins;
 //   - clicks are press-and-release without moving, so dragging still orbits
-//     (except the Fix brush and Shift-drag select, which own the drag).
+//     (except the brushes and Shift-drag select, which own the drag).
+//
+// Once a draft exists the Start details (method, presets, Detect) fold into
+// a summary line; a 1–2-piece Separate-pieces proposal on a fused figure
+// opens with the first chip armed. Below the md breakpoint the panel is a
+// bottom sheet with compact rows (swatch, name, size, ⋯ menu).
 
 import { pickFace } from '../color/facePicker';
 import { openPaintWithin, setDetectPartsEntry } from '../color/paintUI';
 import { getConfig } from '../config/appConfig';
 import { addPointerSuppressor, getCanvas } from '../renderer/viewport';
 import { MAX_EDGE_SMOOTHING, overlayColor } from '../segmentation/draft';
-import { chipState, labelPreset, LABEL_PRESETS, type LabelChip, type LabelPresetId } from '../segmentation/labelPresets';
+import { chipState, isFusedPiecesDraft, labelPreset, LABEL_PRESETS, type LabelChip, type LabelPresetId } from '../segmentation/labelPresets';
+import { NATURAL_TONE_SWATCHES } from '../color/naturalTones';
+import type { BrushMode } from '../segmentation/draft';
 import type { PartDetectionApi } from '../segmentation/partDetection';
 import { createSeedMarkers } from '../segmentation/seedMarkers';
 import type { ParamSpec } from '../segmentation/types';
@@ -48,6 +63,7 @@ import { registerCommands } from './commandPalette';
 import { BUTTON_CANCEL, BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
 import { createToolPanelShell } from './toolPanel';
+import { setInitialPanelPosition } from './viewportPanelDrag';
 import { createSliderEntry, formatEntry } from './sliderEntry';
 
 let closeOpen: (() => void) | null = null;
@@ -70,6 +86,8 @@ const SECTION = 'text-[11px] uppercase tracking-wide text-zinc-400 font-semibold
 const HINT = 'text-[11px] text-zinc-500 leading-snug';
 /** Row icon buttons: a full-size touch target around a small glyph. */
 const ICON_BTN = 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center rounded text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60';
+/** The same, shown only from md up (phone rows fold these into ⋯). */
+const deskOnly = (cls: string) => cls.replace(' flex ', ' hidden md:flex ');
 const ICON_BTN_ON = 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center rounded text-blue-300 bg-blue-500/20 [@media(hover:hover)]:hover:bg-blue-500/30';
 const TOGGLE_ON = 'px-2 py-1 rounded text-[11px] text-blue-200 bg-blue-500/30 border border-blue-500/50';
 const ROW = 'flex items-center gap-1 rounded px-0.5';
@@ -93,6 +111,11 @@ type Tool = 'select' | 'pin' | 'fix';
 
 function isDraft(x: unknown): x is Draft {
   return !!x && typeof x === 'object' && Array.isArray((x as Draft).parts);
+}
+
+/** Below the md breakpoint the panel is a bottom sheet with compact rows. */
+function isPhone(): boolean {
+  return !window.matchMedia('(min-width: 768px)').matches;
 }
 
 function isTyping(t: EventTarget | null): boolean {
@@ -143,6 +166,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   /** Edge-length-relative denoise from a synced run (e.g. the "Denoised
    *  scan" preset) — carried into the next Detect while the box is blank. */
   let carriedEdgeLengths: number | null = null;
+  /** The Start section folds away once a draft exists (chips stay); the
+   *  expander brings the method, presets and Detect back. */
+  let startCollapsed = false;
+  let hadDraft = false;
+  /** Last pointer position over the canvas (where the rename popover opens). */
+  let lastPointer: { x: number; y: number } | null = null;
   const markers = createSeedMarkers();
   const cursorTag = el('div', 'fixed z-30 pointer-events-none px-1.5 py-0.5 rounded text-[11px] text-white bg-zinc-900/90 border border-zinc-600 hidden');
   document.body.appendChild(cursorTag);
@@ -170,6 +199,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       getCanvas().style.cursor = '';
       if (brushing?.timer) clearTimeout(brushing.timer);
       brushing = null;
+      if (selBrush?.raf) cancelAnimationFrame(selBrush.raf);
+      selBrush = null;
+      ctl.setBrushGhost(null);
+      closePopover();
       // The selection and solo view are the panel's; don't leave the model
       // greyed out with no control on screen.
       ctl.setPartSelection(null);
@@ -194,8 +227,24 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
    *  caps its height relative to its container, not to where it is docked,
    *  so a tall parts list could push Accept/Discard off-screen. */
   function fitToWindow(): void {
-    const top = shell.panel.getBoundingClientRect().top;
-    shell.panel.style.maxHeight = `${Math.max(240, window.innerHeight - Math.max(0, top) - 8)}px`;
+    const p = shell.panel;
+    if (isPhone()) {
+      // Phone: a bottom sheet, so the model stays visible (and clickable for
+      // Select / Pin / Fix) above it. Re-applied after a header drag.
+      const h = Math.round(window.innerHeight * getConfig().segmentation.mobileSheetHeightFrac);
+      Object.assign(p.style, { left: '0px', right: '0px', top: 'auto', bottom: '0px', width: '100%', maxWidth: '100%', height: `${h}px`, maxHeight: `${h}px` });
+      p.classList.add('rounded-b-none');
+      p.dataset.sheet = '';
+      return;
+    }
+    if ('sheet' in p.dataset) {
+      delete p.dataset.sheet;
+      p.classList.remove('rounded-b-none');
+      Object.assign(p.style, { width: '', maxWidth: '', height: '' });
+      setInitialPanelPosition(p);
+    }
+    const top = p.getBoundingClientRect().top;
+    p.style.maxHeight = `${Math.max(240, window.innerHeight - Math.max(0, top) - 8)}px`;
   }
   const onResize = () => fitToWindow();
   window.addEventListener('resize', onResize);
@@ -248,6 +297,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     initialHex: customHex,
     title: 'Colour for the custom label',
     className: 'w-11 h-11 md:w-6 md:h-6 rounded border border-zinc-600 shrink-0',
+    extraSwatches: NATURAL_TONE_SWATCHES,
     onPick: (hex) => { customHex = hex; },
   });
   const customAdd = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0`, 'Add');
@@ -278,7 +328,20 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     renderChips();
   });
   body.append(chipHead, chipStrip, customRow);
-  body.appendChild(el('div', HINT, 'Or detect automatically:'));
+  // Once a draft exists the rest of Start (method, presets, Detect) folds
+  // into this one-line summary; the chips above stay.
+  const startSummary = el('div', 'hidden flex items-center gap-2 text-[11px] text-zinc-400');
+  startSummary.dataset.startSummary = '';
+  const startSummaryText = el('span', 'flex-1 min-w-0 truncate');
+  const startToggle = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0 shrink-0`);
+  startToggle.type = 'button';
+  startToggle.setAttribute('aria-controls', 'parts-start-details');
+  startToggle.addEventListener('click', () => { startCollapsed = !startCollapsed; syncStart(); });
+  startSummary.append(startSummaryText, startToggle);
+  const startDetails = el('div', 'flex flex-col gap-3');
+  startDetails.id = 'parts-start-details';
+  body.append(startSummary, startDetails);
+  startDetails.appendChild(el('div', HINT, 'Or detect automatically:'));
   const algoSelect = el('select', `${INPUT} w-full`);
   algoSelect.setAttribute('aria-label', 'Detection method');
   for (const d of info.detectors) {
@@ -288,7 +351,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   }
   algoSelect.value = info.detectors.find((d) => d.id === 'auto-merge') ? 'auto-merge' : info.detectors[0].id;
   const algoHint = el('div', HINT);
-  body.append(algoSelect, algoHint);
+  startDetails.append(algoSelect, algoHint);
 
   const presetRow = el('div', 'flex items-center gap-1.5');
   const presetBtn = el('button', BUTTON_SMALL_SECONDARY, '▶ Try presets');
@@ -305,10 +368,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   stripClose.setAttribute('aria-label', 'Close presets');
   stripWrap.append(strip, stripClose);
   const appliedBanner = el('div', 'hidden flex items-center gap-2 text-[11px] text-emerald-200 bg-emerald-500/10 border border-emerald-500/30 rounded px-2 py-1');
-  body.append(presetRow, stripWrap, appliedBanner);
+  startDetails.append(presetRow, stripWrap);
+  body.append(appliedBanner);
 
   const paramBox = el('div', 'flex flex-col gap-1.5');
-  body.appendChild(paramBox);
+  startDetails.appendChild(paramBox);
   const paramInputs = new Map<string, { get: () => unknown; set: (v: unknown) => void }>();
   const smoothInput = el('input', `${INPUT} w-20`);
   smoothInput.type = 'number';
@@ -400,7 +464,20 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   status.setAttribute('aria-live', 'polite');
   actionRow.append(detectBtn, liveLabel, cancelBtn, status);
   const needPinsHint = el('div', `${HINT} hidden`, 'This method grows parts from pins: pick a label chip above (or the Pin tool below) and click the model once or more per part.');
-  body.append(actionRow, needPinsHint);
+  startDetails.append(actionRow, needPinsHint);
+
+  /** Fold or show the Start details (see startCollapsed). */
+  function syncStart(): void {
+    const has = isDraft(ctl.getPartDraft());
+    const collapsed = has && startCollapsed;
+    startDetails.classList.toggle('hidden', collapsed);
+    startSummary.classList.toggle('hidden', !has);
+    startToggle.textContent = collapsed ? '▸ Detection settings' : '▾ Hide settings';
+    startToggle.title = collapsed ? 'Show the method, presets and Detect' : 'Fold the detection settings away';
+    startToggle.setAttribute('aria-expanded', String(!collapsed));
+    const b = ctl.isBusy();
+    startSummaryText.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : `Method: ${detectorOf(algoSelect.value).name}`;
+  }
 
   function detectOptions(algorithm = algoSelect.value): Record<string, unknown> {
     const params: Record<string, unknown> = {};
@@ -551,7 +628,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     pin: el('button', BUTTON_SMALL_SECONDARY, 'Pin (P)'),
     fix: el('button', BUTTON_SMALL_SECONDARY, 'Fix (B)'),
   };
-  toolBtns.select.title = 'Click parts on the model to select them; Shift-drag to paint-select';
+  toolBtns.select.title = 'Click parts to select them; drag on the model to brush that area into the part you start in (Alt-drag: whole parts); Shift-drag to paint-select';
   toolBtns.pin.title = 'Click the model to add a pin for a part (or a new part)';
   toolBtns.fix.title = 'Drag on the model to paint triangles into a part; fixed triangles stay put';
   const markerBtn = el('button', ICON_BTN_ON, '👁');
@@ -572,12 +649,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   targetInput.setAttribute('aria-label', 'Target part');
   const targetList = el('datalist');
   targetList.id = 'parts-target-list';
-  const brushRange = el('input', 'w-20 accent-blue-500 hidden');
+  const brushRange = el('input', 'w-20 accent-blue-500');
   brushRange.type = 'range';
   brushRange.min = '0.3'; brushRange.max = '4'; brushRange.step = '0.1'; brushRange.value = '1';
-  brushRange.setAttribute('aria-label', 'Fix brush size');
-  brushRange.title = 'Brush size (× the default in Advanced Settings)';
-  targetRow.append(targetLabel, targetInput, targetList, brushRange);
+  brushRange.setAttribute('aria-label', 'Brush size');
+  brushRange.title = 'Brush size for the Select brush and the Fix tool (× the default in Advanced Settings)';
+  toolRow.appendChild(brushRange);
+  targetRow.append(targetLabel, targetInput, targetList);
   // Typing another name disarms the chip (its colour no longer applies).
   targetInput.addEventListener('input', () => {
     if (armed && targetInput.value.trim() !== armed.name) { armed = null; renderChips(); }
@@ -585,7 +663,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   body.append(toolRow, toolHint, targetRow);
 
   const TOOL_HINTS: Record<Tool, string> = {
-    select: 'Click a part to select it · Shift-click toggles · Alt-click removes · Shift-drag paints a selection · Esc clears. Hover the model to find a part in the list.',
+    select: 'Click a part to select it · drag from a part to brush more of the model into it (Alt-drag swallows whole parts) · Shift-click toggles · Shift-drag paints a fresh selection · M merges · with one part selected just type a name (R renames the part under the cursor) · Enter accepts · Esc clears.',
     pin: 'Click the model to add a pin for the part above (type a new name to start a new part). Only nearby parts re-grow. Drag a pin to move it; right-click (or long-press) it to delete.',
     fix: 'Drag on the model to paint triangles into the part above. Fixed triangles stay put when pins move. Right-drag still pans; switch tool to orbit.',
   };
@@ -599,7 +677,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
     toolHint.textContent = TOOL_HINTS[tool];
     targetRow.classList.toggle('hidden', tool === 'select');
-    brushRange.classList.toggle('hidden', tool !== 'fix');
+    brushRange.classList.toggle('hidden', tool === 'pin');
     getCanvas().style.cursor = tool === 'select' ? '' : 'crosshair';
     if (tool !== 'select' && !targetInput.value) {
       const sel = ctl.getPartSelection().parts[0];
@@ -632,6 +710,16 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   /** Rebuilt only when the selection (or the parts) change — hover also
    *  emits 'view', and rebuilding would wipe a half-typed merge name. */
   let actionBarKey = '';
+  /** The action bar's merge-name box (M merges under its name). */
+  let mergeNameInput: HTMLInputElement | null = null;
+  async function mergeSelection(): Promise<void> {
+    const sel = ctl.getPartSelection().parts;
+    if (sel.length < 2) { showToast('Select two or more parts to merge (Shift-click or Shift-drag)', { variant: 'neutral', source: 'parts' }); return; }
+    const name = mergeNameInput?.value.trim() || sel[0].name;
+    // Clear the selection: the next Shift-drag starts a new set instead of
+    // dragging the merged part along.
+    if (await edit([{ op: 'merge', ids: sel.map((p) => p.id), name }])) ctl.setPartSelection(null);
+  }
   function renderActionBar(force = false): void {
     const sel = ctl.getPartSelection().parts;
     const key = JSON.stringify([sel, ctl.getPartsView().mode]);
@@ -639,21 +727,26 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     actionBarKey = key;
     actionBar.classList.toggle('hidden', sel.length === 0);
     actionBar.replaceChildren();
+    mergeNameInput = null;
     if (sel.length === 0) return;
     actionBar.appendChild(el('span', 'text-[11px] text-blue-100 mr-1', `${sel.length} selected`));
+    if (sel.length === 1) {
+      const rename = el('button', BUTTON_SMALL_SECONDARY, 'Rename…');
+      rename.title = 'Name this part (or just start typing). A name another part has merges the two.';
+      rename.addEventListener('click', () => {
+        const r = rename.getBoundingClientRect();
+        openRenamePopover(sel[0].name, '', { x: r.left, y: r.bottom + 4 });
+      });
+      actionBar.appendChild(rename);
+    }
     const mergeName = el('input', `${INPUT} w-28`);
+    mergeNameInput = mergeName;
     mergeName.value = sel[0].name;
     mergeName.setAttribute('aria-label', 'Merged part name');
     const mergeBtn = el('button', BUTTON_SMALL_SECONDARY, 'Merge');
     mergeBtn.disabled = sel.length < 2;
-    mergeBtn.title = 'Merge the selected parts into one, named as typed';
-    const doMerge = async () => {
-      const name = mergeName.value.trim();
-      if (sel.length < 2 || !name) return;
-      // Clear the selection: a following Shift-drag starts a new set
-      // instead of dragging the merged part along.
-      if (await edit([{ op: 'merge', ids: sel.map((p) => p.id), name }])) ctl.setPartSelection(null);
-    };
+    mergeBtn.title = 'Merge the selected parts into one, named as typed (M)';
+    const doMerge = () => mergeSelection();
     mergeBtn.addEventListener('click', () => { void doMerge(); });
     mergeName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void doMerge(); } });
     const solo = el('button', BUTTON_SMALL_SECONDARY, ctl.getPartsView().mode === 'solo' ? 'Show all' : 'Solo');
@@ -669,6 +762,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       initialHex: '#cccccc',
       title: 'Colour the selected parts',
       className: 'w-6 h-6 rounded border border-zinc-600 shrink-0',
+      extraSwatches: NATURAL_TONE_SWATCHES,
       onPick: (hex) => { void edit(sel.map((p) => ({ op: 'setColor', id: p.id, color: hex }))); },
     });
     const redetect = el('button', BUTTON_SMALL_SECONDARY, 'Re-detect inside');
@@ -726,6 +820,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     rowsByName.clear();
     nameInputs.clear();
     if (isDraft(d)) justSaved = null;
+    // A draft appearing folds the Start details; no draft shows them again.
+    if (isDraft(d) && !hadDraft) startCollapsed = true;
+    if (!isDraft(d)) startCollapsed = false;
+    hadDraft = isDraft(d);
+    syncStart();
     syncFooter();
     acceptBtn.disabled = !isDraft(d) || d.parts.length === 0;
     discardBtn.disabled = !isDraft(d) && ctl.getSeeds().length === 0;
@@ -767,9 +866,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     draftBox.appendChild(head);
     draftBox.appendChild(el('div', HINT,
       `Boundary groove ${q.boundaryCreaseMean.toFixed(1)}° · islands ${q.islandCount} · unassigned ${(d.unassigned.areaFrac * 100).toFixed(1)}% · drag ⋮⋮ to reorder`));
-    if (d.detector === 'pieces' && d.parts.length <= 2) {
+    // The import banner already says this (in the same words) while shown.
+    if (d.detector === 'pieces' && d.parts.length <= 2 && !contextBanner) {
+      const n = d.parts.length;
       draftBox.appendChild(el('div', 'text-[11px] text-amber-300/90 leading-snug',
-        `Only ${d.parts.length} separate piece${d.parts.length === 1 ? '' : 's'}: this mesh is one fused solid. Try Auto patches (no pins) or Crease watershed (pins) to split it along its grooves.`));
+        `${n === 1 ? 'One solid piece' : `Only ${n} separate pieces`}: the largest is one fused solid, so its regions (hair, face…) aren't split yet. Pick a label chip above and click each part on the model, or try Auto patches.`));
     }
     if (d.focus) {
       const banner = el('div', 'flex items-center gap-2 text-[11px] text-blue-200 bg-blue-500/10 border border-blue-500/30 rounded px-2 py-1');
@@ -791,7 +892,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       row.dataset.partId = String(p.id);
       row.dataset.partName = p.name;
       rowsByName.set(p.name, row);
-      const handle = el('span', 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center text-zinc-500 cursor-grab touch-none select-none', '⋮⋮');
+      const handle = el('span', deskOnly('shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center text-zinc-500 cursor-grab touch-none select-none'), '⋮⋮');
       handle.title = 'Drag to reorder (or Alt+↑/↓ in the name box)';
       handle.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -822,7 +923,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       handle.addEventListener('pointerup', endDrag);
       handle.addEventListener('pointercancel', () => { dragRow = null; dropLine.classList.add('hidden'); });
       // A 44 px touch target around the native checkbox.
-      const checkWrap = el('label', 'shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center cursor-pointer');
+      const checkWrap = el('label', deskOnly('shrink-0 w-11 h-11 md:w-6 md:h-6 flex items-center justify-center cursor-pointer'));
       const check = el('input');
       check.type = 'checkbox';
       checkWrap.appendChild(check);
@@ -834,9 +935,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
         initialHex: p.displayColor,
         title: `Colour for ${p.name}`,
         className: 'w-5 h-5 rounded border border-zinc-600 shrink-0',
+        extraSwatches: NATURAL_TONE_SWATCHES,
         onPick: (hex) => { void edit([{ op: 'setColor', id: p.id, color: hex }]); },
       });
-      const num = el('span', 'text-[11px] text-zinc-500 w-5 text-right shrink-0', String(p.id));
+      const num = el('span', 'hidden md:inline text-[11px] text-zinc-500 w-5 text-right shrink-0', String(p.id));
       const name = el('input', `${INPUT} flex-1 min-w-0`);
       name.value = p.name;
       name.setAttribute('aria-label', `Name of part ${p.id}`);
@@ -853,30 +955,53 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
         if (to >= 1 && to <= d.parts.length) void edit([{ op: 'reorder', id: p.id, position: to }]).then(() => nameInputs.get(to)?.focus());
       });
       nameInputs.set(p.id, name);
-      const pct = el('span', 'text-[10px] text-zinc-500 w-9 text-right shrink-0', `${(p.areaFrac * 100).toFixed(1)}%`);
-      pct.title = `${p.triCount} triangles${p.regions > 1 ? `, ${p.regions} separate regions` : ''}`;
-      const pins = el('span', 'text-[10px] text-zinc-500 w-6 text-right shrink-0', `📍${p.pins}`);
+      // A part its pin barely grew (a placed pin that "missed") is flagged.
+      const tiny = p.areaFrac < getConfig().segmentation.chipMissAreaFrac;
+      const pct = el('span', `text-[10px] ${tiny ? 'text-amber-300' : 'text-zinc-500'} w-10 text-right shrink-0`, `${tiny ? '⚠ ' : ''}${(p.areaFrac * 100).toFixed(1)}%`);
+      pct.title = tiny
+        ? `Almost nothing (${p.triCount} triangles): its pin barely grew. Move the pin nearer the middle of the part, or brush the area in.`
+        : `${p.triCount} triangles${p.regions > 1 ? `, ${p.regions} separate regions` : ''}`;
+      if (tiny) row.dataset.partTiny = '';
+      const pins = el('span', 'hidden md:inline text-[10px] text-zinc-500 w-6 text-right shrink-0', `📍${p.pins}`);
       pins.title = `${p.pins} pin${p.pins === 1 ? '' : 's'}`;
       const locked = 'locked' in p && p.locked === true;
-      const lock = el('button', locked ? ICON_BTN_ON : ICON_BTN, locked ? '🔒' : '🔓');
+      const lock = el('button', deskOnly(locked ? ICON_BTN_ON : ICON_BTN), locked ? '🔒' : '🔓');
       lock.title = locked ? 'Unlock: detection may change this part again' : 'Lock: keep this part as it is when detection re-runs';
       lock.setAttribute('aria-label', `${locked ? 'Unlock' : 'Lock'} ${p.name}`);
       lock.setAttribute('aria-pressed', String(locked));
       lock.addEventListener('click', () => { void edit([{ op: 'lock', id: p.id, locked: !locked }]); });
       const soloOn = soloSet.has(p.name);
-      const solo = el('button', soloOn ? ICON_BTN_ON : ICON_BTN, '◐');
+      const solo = el('button', deskOnly(soloOn ? ICON_BTN_ON : ICON_BTN), '◐');
       solo.title = soloOn ? 'Show all parts' : 'Solo: show only this part in colour';
       solo.setAttribute('aria-label', `Solo ${p.name}`);
       solo.setAttribute('aria-pressed', String(soloOn));
       solo.addEventListener('click', () => ctl.setPartsView(soloOn ? { mode: 'all' } : { mode: 'solo', parts: [p.name] }));
-      const del = el('button', ICON_BTN, '✕');
+      const del = el('button', deskOnly(ICON_BTN), '✕');
       del.title = 'Remove part (its triangles become unassigned)';
       del.setAttribute('aria-label', `Remove part ${p.name}`);
       del.addEventListener('click', () => { void edit([{ op: 'delete', id: p.id }]); });
       // Mouse only: a tap would leave the hover stuck.
       row.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') ctl.setHoveredPart(p.name); });
       row.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && ctl.getHoveredPart() === p.name) ctl.setHoveredPart(null); });
-      row.append(handle, checkWrap, sw.el, num, name, pct, pins, lock, solo, del);
+      // Phone rows: name, swatch, size and a ⋯ menu with the rest.
+      const more = el('button', ICON_BTN.replace(' flex ', ' flex md:hidden '), '⋯');
+      more.title = `More for ${p.name}`;
+      more.setAttribute('aria-label', `More for ${p.name}`);
+      more.setAttribute('aria-haspopup', 'menu');
+      more.addEventListener('click', () => {
+        // Read selection / solo now: they change without re-rendering rows.
+        const isSel = ctl.getPartSelection().parts.some((x) => x.name === p.name);
+        const v = ctl.getPartsView();
+        const isSolo = v.mode === 'solo' && v.parts.includes(p.name);
+        openRowMenu(more, [
+          { label: isSel ? 'Deselect' : 'Select', run: () => ctl.setPartSelection([p.name], { mode: 'toggle' }) },
+          { label: isSolo ? 'Show all' : 'Solo', run: () => ctl.setPartsView(isSolo ? { mode: 'all' } : { mode: 'solo', parts: [p.name] }) },
+          { label: locked ? 'Unlock' : 'Lock', run: () => { void edit([{ op: 'lock', id: p.id, locked: !locked }]); } },
+          { label: 'Rename…', run: () => { const r = more.getBoundingClientRect(); openRenamePopover(p.name, '', { x: r.left, y: r.bottom + 4 }); } },
+          { label: 'Remove', run: () => { void edit([{ op: 'delete', id: p.id }]); } },
+        ]);
+      });
+      row.append(handle, checkWrap, sw.el, num, name, pct, pins, lock, solo, del, more);
       list.appendChild(row);
     }
     draftBox.appendChild(list);
@@ -954,6 +1079,152 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
   }
 
+  // ======================================================== rename popover
+  /** The open popover (rename box or a row's ⋯ menu); one at a time. */
+  let popover: { el: HTMLElement; close: () => void } | null = null;
+  function closePopover(): void { popover?.close(); }
+
+  function placeFloating(box: HTMLElement, at: { x: number; y: number }): void {
+    const r = box.getBoundingClientRect();
+    box.style.left = `${Math.max(8, Math.min(at.x, window.innerWidth - r.width - 8))}px`;
+    box.style.top = `${Math.max(8, Math.min(at.y, window.innerHeight - r.height - 8))}px`;
+  }
+
+  /** Mount a floating box that closes on a press outside it. */
+  function mountPopover(box: HTMLElement, at: { x: number; y: number }): void {
+    closePopover();
+    document.body.appendChild(box);
+    placeFloating(box, at);
+    const outside = (e: PointerEvent) => { if (!box.contains(e.target as Node)) close(); };
+    const close = () => {
+      if (popover?.el !== box) return;
+      popover = null;
+      document.removeEventListener('pointerdown', outside, true);
+      box.remove();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    popover = { el: box, close };
+  }
+
+  function rowAnchor(name: string): { x: number; y: number } | null {
+    const r = rowsByName.get(name)?.getBoundingClientRect();
+    return r ? { x: r.left + 24, y: r.bottom + 2 } : null;
+  }
+
+  /** Name candidates: the draft's other parts (picking one merges into it)
+   *  and the label chips (picking one also gives a fresh part its colour). */
+  function nameSuggestions(exclude: string): { name: string; color: string; merges: boolean }[] {
+    const d = ctl.getPartDraft();
+    const out = (isDraft(d) ? d.parts : []).filter((p) => p.name !== exclude).map((p) => ({ name: p.name, color: p.displayColor, merges: true }));
+    for (const c of chipList()) if (c.name !== exclude && !out.some((o) => o.name === c.name)) out.push({ name: c.name, color: c.color, merges: false });
+    return out;
+  }
+
+  /** "Click a patch, type a name": a small autocomplete at the cursor. Enter
+   *  renames the part; a name another part has merges the two (rename's
+   *  merge rule); Esc cancels. */
+  function openRenamePopover(partName: string, initial: string, at: { x: number; y: number } | null): void {
+    const box = el('div', 'fixed z-40 w-60 max-w-[calc(100vw-1rem)] rounded-lg border border-zinc-600 bg-zinc-900/95 shadow-xl p-1.5 flex flex-col gap-1');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', `Rename ${partName}`);
+    box.dataset.renamePopover = '';
+    const input = el('input', `${INPUT} w-full min-h-11 md:min-h-0`);
+    input.value = initial;
+    input.placeholder = `name for “${partName}”`;
+    input.setAttribute('aria-label', 'Part name');
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'true');
+    input.setAttribute('aria-controls', 'parts-rename-list');
+    const list = el('div', 'flex flex-col max-h-56 overflow-y-auto');
+    list.id = 'parts-rename-list';
+    list.setAttribute('role', 'listbox');
+    box.append(input, list, el('div', 'text-[10px] text-zinc-500 px-1 leading-snug', 'Enter names it · a taken name merges · Esc cancels'));
+    let items: { name: string; color: string; merges: boolean; typed?: boolean }[] = [];
+    let active = 0;
+    const paintActive = () => {
+      list.querySelectorAll<HTMLElement>('[role="option"]').forEach((o, i) => {
+        o.setAttribute('aria-selected', String(i === active));
+        o.classList.toggle('bg-blue-500/25', i === active);
+      });
+    };
+    const render = () => {
+      const q = input.value.trim();
+      const ql = q.toLowerCase();
+      const all = nameSuggestions(partName);
+      const starts = (n: string) => n.toLowerCase().startsWith(ql);
+      const matches = q ? all.filter((x) => x.name.toLowerCase().includes(ql)).sort((a, b) => Number(!starts(a.name)) - Number(!starts(b.name))) : all;
+      items = matches.slice(0, 8);
+      if (q && q !== partName && !all.some((x) => x.name === q)) items.push({ name: q, color: '', merges: false, typed: true });
+      // Default: the first name that starts with what was typed, else the
+      // typed text itself.
+      active = !q || (items.length && !items[0].typed && starts(items[0].name)) ? 0 : Math.max(0, items.length - 1);
+      list.replaceChildren();
+      items.forEach((it) => {
+        const b = el('button', 'flex items-center gap-2 text-left px-2 min-h-11 md:min-h-0 py-1 rounded text-[12px] text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60');
+        b.type = 'button';
+        b.setAttribute('role', 'option');
+        b.dataset.name = it.name;
+        const dot = el('span', 'w-3 h-3 rounded-full border border-zinc-400/70 shrink-0');
+        if (it.color) dot.style.backgroundColor = it.color;
+        b.append(dot, el('span', 'flex-1 min-w-0 truncate', it.typed ? `“${it.name}”` : it.name),
+          el('span', 'text-[10px] text-zinc-500 shrink-0', it.typed ? 'new part' : it.merges ? 'merge into' : 'label'));
+        // pointerdown, so the outside-press closer never sees it first.
+        b.addEventListener('pointerdown', (e) => { e.preventDefault(); void apply(it.name); });
+        list.appendChild(b);
+      });
+      paintActive();
+    };
+    const apply = async (raw: string) => {
+      popover?.close();
+      const v = raw.trim().slice(0, 64);
+      if (!v || v === partName) return;
+      const d = ctl.getPartDraft();
+      const merges = isDraft(d) && d.parts.some((p) => p.name === v);
+      const chip = chipList().find((c) => c.name === v);
+      const cur = isDraft(d) ? d.parts.find((p) => p.name === partName) : undefined;
+      const ops: Record<string, unknown>[] = [{ op: 'rename', id: partName, name: v }];
+      if (!merges && chip && !cur?.color) ops.push({ op: 'setColor', id: v, color: chip.color });
+      if (!await edit(ops)) return;
+      ctl.setPartSelection(null);
+      if (merges) showToast(`Merged “${partName}” into “${v}”`, { variant: 'neutral', source: 'parts' });
+    };
+    input.addEventListener('input', render);
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); popover?.close(); }
+      else if (e.key === 'Enter') { e.preventDefault(); void apply(items[active]?.name ?? input.value); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!items.length) return;
+        active = (active + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+        paintActive();
+      } else if (e.key === 'Tab' && items[active]) { e.preventDefault(); input.value = items[active].name; render(); }
+    });
+    render();
+    const canvas = getCanvas().getBoundingClientRect();
+    mountPopover(box, at ? { x: at.x + 12, y: at.y + 12 } : { x: canvas.left + canvas.width / 2 - 120, y: canvas.top + canvas.height / 3 });
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  /** A row's ⋯ menu (phone rows fold their buttons into it). */
+  function openRowMenu(anchor: HTMLElement, items: { label: string; run: () => void }[]): void {
+    const menu = el('div', 'fixed z-40 min-w-[9rem] rounded-lg border border-zinc-600 bg-zinc-900/95 shadow-xl p-1 flex flex-col');
+    menu.setAttribute('role', 'menu');
+    for (const it of items) {
+      const b = el('button', 'text-left px-3 min-h-11 md:min-h-0 py-1 rounded text-[12px] text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60', it.label);
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.addEventListener('click', () => { popover?.close(); it.run(); });
+      menu.appendChild(b);
+    }
+    menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); popover?.close(); anchor.focus(); } });
+    const r = anchor.getBoundingClientRect();
+    mountPopover(menu, { x: r.right - 150, y: r.bottom + 4 });
+    (menu.querySelector('button') as HTMLButtonElement | null)?.focus();
+  }
+
   // ======================================================== viewport interaction
   /** Pins are rebuilt only when they, their colours or the emphasised set
    *  change (hovering would otherwise rebuild every pin mesh per part). */
@@ -976,6 +1247,13 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   /** Pin edits: with a draft they are draft ops (only nearby parts re-grow);
    *  before the first detection they edit the pending pin list. */
   async function addPin(label: string, point: [number, number, number], chip: LabelChip | null = null): Promise<void> {
+    // A chip armed while a seedless method is still selected (the panel
+    // opened ready to label a fused figure) switches method on its first
+    // pin, not before, so the proposal survives until the user commits.
+    if (chip && detectorOf(algoSelect.value).seeds === 'none' && info.detectors.some((x) => x.id === 'crease-watershed')) {
+      algoSelect.value = 'crease-watershed';
+      await onMethodChanged(true);
+    }
     const seed = chip ? { label, point, color: chip.color } : { label, point };
     if (isDraft(ctl.getPartDraft())) {
       if (!await edit([{ op: 'addSeed', seed }])) return;
@@ -989,11 +1267,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       const r = await ctl.detectParts(detectOptions()).finally(() => { chipDetecting = false; });
       if ('error' in r) { showToast(String(r.error), { variant: 'warn', source: 'parts' }); return; }
     }
-    if (chip) checkChipPin(chip.name);
+    checkPin(label);
   }
 
-  /** After a chip pin: flag the chip when its part came out empty. */
-  function checkChipPin(name: string): void {
+  /** After a pin lands: warn when its part came out empty or a speck (the
+   *  row also shows ⚠, and a chip shows "missed — click again"). */
+  function checkPin(name: string): void {
     const d = ctl.getPartDraft();
     const state = chipState(name, isDraft(d) ? d.parts : [], true, getConfig().segmentation.chipMissAreaFrac);
     if (state === 'missed') {
@@ -1017,9 +1296,19 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
 
   let pinDrag: { index: number; point: [number, number, number] | null; x: number; y: number; at: number } | null = null;
   let press: { x: number; y: number; shift: boolean; alt: boolean; additive: boolean } | null = null;
-  let paintSelect: Set<string> | null = null;
+  /** Shift-drag paint-select: starts a FRESH selection once the pointer
+   *  moves (a Shift-click without moving still toggles one part). */
+  let paintSelect: { set: Set<string>; x: number; y: number; first: string | null; started: boolean } | null = null;
   let brushing: { target: string; stroke: string; pending: [number, number, number][]; timer: ReturnType<typeof setTimeout> | null } | null = null;
   let strokeSeq = 0;
+  /** Select-tool brush (#1050): a plain drag that starts on a part brushes
+   *  more of the model into it (Alt: every touched part, whole). Previewed
+   *  as a ghost; lands as one `brush` edit on release. Mouse/pen only — a
+   *  one-finger drag still orbits on touch (the Fix tool brushes there). */
+  let selBrush: {
+    target: string; color: string; mode: BrushMode; radius: number;
+    points: [number, number, number][]; faces: number[]; x: number; y: number; alt: boolean; moved: boolean; raf: number;
+  } | null = null;
 
   const partUnder = (evt: MouseEvent): string | null => {
     const hit = pickFace(evt);
@@ -1034,12 +1323,27 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       if (evt.button === 0) { pinDrag = { index: idx, point: null, x: evt.clientX, y: evt.clientY, at: performance.now() }; return true; }
     }
     if (evt.button !== 0) return false;
-    if (tool === 'select' && evt.shiftKey && isDraft(ctl.getPartDraft())) {
+    const draftNow = ctl.getPartDraft();
+    if (tool === 'select' && evt.shiftKey && isDraft(draftNow)) {
       // Shift-drag paints a selection across parts (owns the drag).
-      paintSelect = new Set(ctl.getPartSelection().parts.map((p) => p.name));
-      const nm = partUnder(evt);
-      if (nm) { paintSelect.add(nm); ctl.setPartSelection([...paintSelect]); }
+      paintSelect = { set: new Set(), x: evt.clientX, y: evt.clientY, first: partUnder(evt), started: false };
       return true;
+    }
+    if (tool === 'select' && !evt.ctrlKey && !evt.metaKey && evt.pointerType !== 'touch' && isDraft(draftNow)) {
+      // A drag that starts on a part brushes into it; a press elsewhere
+      // (background, unassigned) still orbits.
+      const hit = pickFace(evt);
+      const part = hit ? ctl.partAtFace(hit.triangleIndex) : null;
+      if (hit && part) {
+        selBrush = {
+          target: part.name,
+          color: draftNow.parts.find((x) => x.name === part.name)?.displayColor ?? '#ffffff',
+          mode: evt.altKey ? 'patches' : 'triangles',
+          radius: brushRadius() * Number(brushRange.value),
+          points: [hit.point], faces: [hit.triangleIndex], x: evt.clientX, y: evt.clientY, alt: evt.altKey, moved: false, raf: 0,
+        };
+        return true;
+      }
     }
     if (tool === 'fix' && isDraft(ctl.getPartDraft())) {
       const target = targetInput.value.trim();
@@ -1094,11 +1398,54 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       return;
     }
     if (paintSelect) {
+      const ps = paintSelect;
+      if (!ps.started) {
+        if (Math.hypot(evt.clientX - ps.x, evt.clientY - ps.y) <= CLICK_SLOP_PX) return;
+        // A paint-select drag always starts from an empty selection.
+        ps.started = true;
+        if (ps.first) ps.set.add(ps.first);
+        ctl.setPartSelection([...ps.set]);
+      }
       const nm = partUnder(evt);
-      if (nm && !paintSelect.has(nm)) { paintSelect.add(nm); ctl.setPartSelection([...paintSelect]); }
+      if (nm && !ps.set.has(nm)) { ps.set.add(nm); ctl.setPartSelection([...ps.set]); }
       return;
     }
+    if (selBrush) { brushMove(evt); return; }
     if (brushing) brushAt(evt);
+  }
+
+  function brushMove(evt: PointerEvent): void {
+    const b = selBrush!;
+    if (!b.moved) {
+      if (Math.hypot(evt.clientX - b.x, evt.clientY - b.y) <= CLICK_SLOP_PX) return;
+      b.moved = true;
+      // The brush starts from an empty selection (and clears it after); the
+      // hover highlight would wash out the preview.
+      ctl.setPartSelection(null);
+      ctl.setHoveredPart(null);
+      cursorTag.classList.add('hidden');
+    }
+    const hit = pickFace(evt);
+    if (hit) {
+      const last = b.points[b.points.length - 1];
+      // Dabs closer than a third of the radius add nothing but cost.
+      if (Math.hypot(hit.point[0] - last[0], hit.point[1] - last[1], hit.point[2] - last[2]) >= b.radius / 3) b.points.push(hit.point);
+      if (hit.triangleIndex !== b.faces[b.faces.length - 1]) b.faces.push(hit.triangleIndex);
+    }
+    if (!b.raf) {
+      b.raf = requestAnimationFrame(() => {
+        if (selBrush !== b) return;
+        b.raf = 0;
+        ctl.setBrushGhost({ points: b.points.slice(), faces: b.faces.slice(), radius: b.radius, mode: b.mode, color: b.color });
+      });
+    }
+  }
+
+  async function finishBrush(b: NonNullable<typeof selBrush>): Promise<void> {
+    ctl.setBrushGhost({ points: b.points.slice(), faces: b.faces.slice(), radius: b.radius, mode: b.mode, color: b.color });
+    const ok = await edit([{ op: 'brush', to: b.target, points: b.points, radius: b.radius, mode: b.mode }]);
+    ctl.setBrushGhost(null);
+    if (ok) ctl.setPartSelection(null);
   }
 
   function onWindowUp(evt: PointerEvent): void {
@@ -1112,7 +1459,21 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       // A click on a pin (no drag) acts like a click on the model there.
       press = { x, y, shift: evt.shiftKey, alt: evt.altKey, additive: evt.shiftKey || evt.ctrlKey || evt.metaKey };
     }
-    if (paintSelect) { paintSelect = null; return; }
+    if (paintSelect) {
+      const ps = paintSelect;
+      paintSelect = null;
+      if (ps.started) return;
+      // No drag: a Shift-click, which toggles the part under it.
+      press = { x: ps.x, y: ps.y, shift: true, alt: evt.altKey, additive: true };
+    }
+    if (selBrush) {
+      const b = selBrush;
+      selBrush = null;
+      if (b.raf) cancelAnimationFrame(b.raf);
+      if (b.moved) { void finishBrush(b); return; }
+      // No drag: a plain click, which selects.
+      press = { x: b.x, y: b.y, shift: false, alt: b.alt, additive: false };
+    }
     if (brushing) { flushBrush(); brushing = null; return; }
     if (!press) return;
     const p = press;
@@ -1144,7 +1505,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   let hoverRaf = 0;
   let hoverEvt: PointerEvent | null = null;
   function onCanvasHover(evt: PointerEvent): void {
-    if (evt.buttons !== 0 || pinDrag || paintSelect || brushing) return;
+    lastPointer = { x: evt.clientX, y: evt.clientY };
+    if (evt.buttons !== 0 || pinDrag || paintSelect || brushing || selBrush) return;
     hoverEvt = evt;
     if (hoverRaf) return;
     hoverRaf = requestAnimationFrame(() => {
@@ -1174,23 +1536,47 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   }
 
   function onKeyDown(evt: KeyboardEvent): void {
-    if (isTyping(evt.target) || evt.metaKey || evt.ctrlKey) return;
+    if (isTyping(evt.target) || evt.metaKey || evt.ctrlKey || popover) return;
+    const modal = !!document.querySelector('[role="dialog"][aria-modal="true"]');
     const k = evt.key.toLowerCase();
+    const sel = ctl.getPartSelection().parts;
+    // Type-to-name: with ONE part selected (Select tool), letters start its
+    // name in the rename popover instead of acting as shortcuts ("shirt"
+    // must not toggle Solo on its first letter). R is always "rename".
+    if (tool === 'select' && sel.length === 1 && !modal && !evt.altKey && !evt.repeat && /^[a-z]$/i.test(evt.key) && k !== 'r') {
+      evt.preventDefault();
+      openRenamePopover(sel[0].name, evt.key, lastPointer ?? rowAnchor(sel[0].name));
+      return;
+    }
     if (k === 'h' && !evt.repeat && !evt.altKey) { holdHide = true; applyMarkerVisibility(); return; }
     if (evt.repeat || evt.altKey) return;
-    // 1–9 pick label chips while the panel is open, like V/P/B (never from a
-    // text field — isTyping above — or under a modal dialog).
-    if (/^[1-9]$/.test(evt.key) && !evt.shiftKey) {
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      const chip = chipList()[Number(evt.key) - 1];
+    // 1–9 (and 0 for the tenth) pick label chips while the panel is open,
+    // like V/P/B (never from a text field — isTyping above — or under a
+    // modal dialog).
+    if (/^[0-9]$/.test(evt.key) && !evt.shiftKey) {
+      if (modal) return;
+      const chip = chipList()[(Number(evt.key) + 9) % 10];
       if (chip) { evt.preventDefault(); void pickChip(chip); }
       return;
     }
+    if (modal) return;
     if (k === 'v') setTool('select');
     else if (k === 'p') setTool('pin');
     else if (k === 'b') setTool('fix');
     else if (k === 's') toggleSolo();
-    else if ((evt.key === 'Delete' || evt.key === 'Backspace') && ctl.getPartSelection().parts.length) {
+    else if (k === 'm') { evt.preventDefault(); void mergeSelection(); }
+    else if (k === 'r') {
+      const target = ctl.getHoveredPart() ?? (sel.length === 1 ? sel[0].name : null);
+      if (!target) { showToast('Hover a part on the model (or select one) to rename it', { variant: 'neutral', source: 'parts' }); return; }
+      evt.preventDefault();
+      openRenamePopover(target, '', lastPointer ?? rowAnchor(target));
+    } else if (evt.key === 'Enter') {
+      // Enter accepts, unless a button has focus (Enter activates it).
+      if (document.activeElement instanceof HTMLButtonElement) return;
+      if (acceptBtn.classList.contains('hidden') || acceptBtn.disabled) return;
+      evt.preventDefault();
+      acceptBtn.click();
+    } else if ((evt.key === 'Delete' || evt.key === 'Backspace') && ctl.getPartSelection().parts.length) {
       evt.preventDefault();
       void edit(ctl.getPartSelection().parts.map((p) => ({ op: 'delete', id: p.name })));
     }
@@ -1321,14 +1707,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       b.setAttribute('aria-pressed', String(on));
       b.title = state === 'missed'
         ? `The last “${chip.name}” pin grew no part — click the model again`
-        : `${on ? 'Armed' : 'Pick'} “${chip.name}”: then click it on the model${i < 9 ? ` (key ${i + 1})` : ''}`;
+        : `${on ? 'Armed' : 'Pick'} “${chip.name}”: then click it on the model${i < 10 ? ` (key ${(i + 1) % 10})` : ''}`;
       const dot = el('span', 'w-3 h-3 rounded-full border border-zinc-400/70 shrink-0');
       dot.style.backgroundColor = state === 'owned' && part ? part.displayColor : chip.color;
       b.appendChild(dot);
       b.appendChild(el('span', '', chip.name));
       if (state === 'owned') b.appendChild(el('span', 'text-emerald-300', '✓'));
       if (state === 'missed') b.appendChild(el('span', 'text-[11px] text-amber-300', 'missed — click again'));
-      if (i < 9) b.appendChild(el('span', 'hidden md:inline text-[10px] text-zinc-500', String(i + 1)));
+      if (i < 10) b.appendChild(el('span', 'hidden md:inline text-[10px] text-zinc-500', String((i + 1) % 10)));
       b.addEventListener('click', () => { void pickChip(chip); });
       chipStrip.appendChild(b);
     });
@@ -1382,10 +1768,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const d = ctl.getPartDraft();
     const from = isDraft(d) ? info.detectors.find((x) => x.id === d.detector) : undefined;
     let cleared = false;
-    if (isDraft(d) && d.parts.length > 0 && next.seeds !== 'none' && from?.seeds === 'none'
+    // Seeded → seeded keeps the draft: its pins are the next method's input.
+    const keepsPins = next.seeds !== 'none' && from?.seeds !== 'none';
+    if (isDraft(d) && d.parts.length > 0 && d.detector !== next.id && !keepsPins
       && !d.focus && !d.parts.some((p) => 'locked' in p && p.locked)) {
       cleared = await edit([{ op: 'clear', algorithm: next.id }]);
-      if (cleared) showUndoBanner(`Started fresh for ${next.name}: cleared the ${from.name} parts.`);
+      if (cleared) showUndoBanner(`Started fresh for ${next.name}: cleared the ${from?.name ?? d.detector} parts.`);
     }
     if (viaChip) {
       showToast(cleared
@@ -1403,6 +1791,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     presetBtn.disabled = !!b && !stripOpen;
     cancelBtn.classList.toggle('hidden', !b?.cancellable);
     status.textContent = b ? `${b.message} ${Math.round(b.fraction * 100)}%` : '';
+    syncStart();
   }
   const unsubscribe = ctl.subscribe((ev) => {
     if (ev === 'draft') {
@@ -1412,6 +1801,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       const d = ctl.getPartDraft();
       if (contextBanner && (!isDraft(d) || d.detector !== proposedBy)) { contextBanner.remove(); contextBanner = null; }
       cachedDiag = 0;
+      // The hover tag names a part of the old draft until the pointer moves.
+      cursorTag.classList.add('hidden');
       // Any later change makes the banner's Undo undo something else.
       appliedBanner.classList.add('hidden');
       renderDraft();
@@ -1443,9 +1834,22 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   algoSelect.addEventListener('change', () => { void onMethodChanged(); });
   buildParams();
   setTool(isDraft(ctl.getPartDraft()) ? 'select' : detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
+  // A Separate-pieces proposal of 1–2 pieces on a fused figure: open ready
+  // to label it — the first chip is armed, so the first click on the model
+  // names a part (the method switches on that click; see addPin).
+  if (isDraft(opened) && isFusedPiecesDraft(opened.detector, opened.parts, getConfig().segmentation.fusedPieceMinTris)) {
+    armed = chipList()[0];
+    targetInput.value = armed.name;
+    setTool('pin');
+    contextBanner?.insertBefore(
+      el('div', 'text-[12px] text-blue-200 leading-snug', `“${armed.name}” is ready: click the ${armed.name} on the model, then pick the next label (keys 1–9).`),
+      contextBanner.children[1] ?? null,
+    );
+  }
   renderDraft();
   renderPins();
   applyMarkerVisibility();
+  fitToWindow();
   requestAnimationFrame(fitToWindow);
   // Opened mid-run (e.g. during the import-time pass): show it and its Cancel now.
   syncBusy();

@@ -24,6 +24,17 @@ return Manifold.cube([20, 20, 10]).add(Manifold.cube([10, 10, 10]).translate([5,
   await page.waitForSelector('text=Ready', { timeout: 30_000 });
 }
 
+/** Where a world point lands on screen (the viewport's current camera). */
+async function screenXY(page: Page, p: [number, number, number]): Promise<{ x: number; y: number }> {
+  return page.evaluate(async (pt) => {
+    const vp = await import('/src/renderer/viewport.ts');
+    const cam = vp.getCamera();
+    const v = cam.position.clone().set(pt[0], pt[1], pt[2]).project(cam);
+    const r = vp.getCanvas().getBoundingClientRect();
+    return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+  }, p);
+}
+
 test.describe('Part detection', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
@@ -206,7 +217,9 @@ test.describe('Part detection', () => {
     await page.getByLabel('Name of part 1').press('Alt+ArrowDown');
     await page.waitForFunction((nm) => ((window as unknown as { partwright: PW }).partwright.getPartDraft() as { parts: { name: string }[] }).parts[1]?.name === nm, first);
 
-    // Presets: clicking a tile applies it and closes the strip.
+    // Presets: with a draft, the Start details are folded — unfold them,
+    // then clicking a tile applies it and closes the strip.
+    await panel.getByRole('button', { name: '▸ Detection settings' }).click();
     await panel.getByRole('button', { name: '▶ Try presets' }).click();
     await page.waitForFunction(() => document.querySelectorAll('[aria-label="Preset results"] button[data-index]').length >= 2, undefined, { timeout: 60_000 });
     await page.locator('[aria-label="Preset results"] button[data-index="0"]').click();
@@ -277,6 +290,151 @@ test.describe('Part detection', () => {
     await panel.getByLabel('Part to paint within').selectOption('face');
     await panel.getByRole('button', { name: 'Open Paint' }).click();
     await expect(page.locator('#paint-within-part')).toHaveValue('face');
+    // The Labels list shows each part in its OWN colour, not the brush's.
+    const faceSwatch = page.locator('#paint-label-list [data-label-name="face"] button[data-action="set-label-color"]');
+    await expect(faceSwatch).toHaveCSS('background-color', 'rgb(232, 185, 143)');
+  });
+
+  /** Import the block, detect base + top, and open the panel at a size
+   *  where the model is clear of the docked panel. */
+  async function openBlockPanel(page: Page) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [2, 2, 0] }, { label: 'top', point: [10, 10, 20] }],
+    }));
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+    return panel;
+  }
+  const draftTris = async (page: Page) => Object.fromEntries(((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft())) as { parts: { name: string; triCount: number }[] }).parts.map((p) => [p.name, p.triCount]));
+
+  test('select brush: a drag brushes into the part it starts in; Alt-drag merges whole parts', async ({ page }) => {
+    test.setTimeout(180_000);
+    const panel = await openBlockPanel(page);
+    // A draft folds the Start details into a summary line; the chips stay.
+    await expect(panel.locator('#parts-start-details')).toBeHidden();
+    await expect(panel.getByRole('button', { name: '▸ Detection settings' })).toBeVisible();
+    await expect(panel.locator('[data-chip="hair"]')).toBeVisible();
+
+    const before = await draftTris(page);
+    const drag = async (from: [number, number, number], to: [number, number, number], alt = false) => {
+      const a = await screenXY(page, from);
+      const b = await screenXY(page, to);
+      if (alt) await page.keyboard.down('Alt');
+      await page.mouse.move(a.x, a.y);
+      await page.mouse.down();
+      for (let i = 1; i <= 12; i++) await page.mouse.move(a.x + (b.x - a.x) * i / 12, a.y + (b.y - a.y) * i / 12);
+      await page.mouse.up();
+      if (alt) await page.keyboard.up('Alt');
+    };
+    // From the base's front face up onto the top block: those triangles join the base.
+    await drag([16, 0, 3], [9, 5, 17]);
+    await expect.poll(async () => (await draftTris(page)).base, { timeout: 30_000 }).toBeGreaterThan(before.base);
+    expect((await draftTris(page)).top).toBeLessThan(before.top);
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartSelection()) as { parts: unknown[] }).parts).toHaveLength(0);
+    // One stroke is one undo step.
+    await panel.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await draftTris(page)).base, { timeout: 30_000 }).toBe(before.base);
+
+    // Alt-drag from the top block down onto the base: the base joins "top" whole.
+    await drag([13, 5, 17], [16, 0, 3], true);
+    await expect.poll(async () => Object.keys(await draftTris(page)), { timeout: 30_000 }).toEqual(['top']);
+
+    // The API twin validates its input.
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.editParts({ ops: [{ op: 'brush', to: 'top', points: [[1, 2, 3]] }] })) as { error?: string };
+    expect(bad.error).toMatch(/radius/);
+  });
+
+  test('type a name to rename (a taken name merges); M merges, R renames, Enter accepts', async ({ page }) => {
+    test.setTimeout(180_000);
+    const panel = await openBlockPanel(page);
+    const names = async () => Object.keys(await draftTris(page)).sort();
+    const click = async (p: [number, number, number]) => { const xy = await screenXY(page, p); await page.mouse.click(xy.x, xy.y); };
+    const TOP: [number, number, number] = [13, 7, 20];
+    const BASE: [number, number, number] = [17, 3, 10];
+    const pop = page.locator('[data-rename-popover]');
+
+    // Click the top block, then just type: the popover opens at the cursor.
+    await click(TOP);
+    await expect.poll(async () => ((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartSelection())) as { parts: { name: string }[] }).parts.map((p) => p.name)).toEqual(['top']);
+    await page.keyboard.type('cap');
+    await expect(pop).toBeVisible();
+    await expect(pop.getByRole('option', { name: /“cap”/ })).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['base', 'cap']);
+    await expect(pop).toHaveCount(0);
+
+    // Esc cancels without renaming (and doesn't close the panel).
+    await click(TOP);
+    await page.keyboard.type('zz');
+    await expect(pop).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(pop).toHaveCount(0);
+    await expect(panel).toBeVisible();
+    expect(await names()).toEqual(['base', 'cap']);
+
+    // R renames the part under the cursor.
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setPartSelection(null));
+    const capXY = await screenXY(page, TOP);
+    await page.mouse.move(capXY.x - 3, capXY.y);
+    await page.mouse.move(capXY.x, capXY.y);
+    // Hovering names the part (its row highlights) before R.
+    await expect(panel.locator('[data-part-name="cap"]')).toHaveClass(/bg-zinc-700\/50/);
+    await page.keyboard.press('r');
+    await expect(pop).toBeVisible();
+    await page.keyboard.type('hat');
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['base', 'hat']);
+
+    // A taken name merges: click the base, type "ha" → "hat" is offered first.
+    await click(BASE);
+    await page.keyboard.type('ha');
+    await expect(pop.getByRole('option').first()).toHaveAttribute('data-name', 'hat');
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['hat']);
+
+    // M merges the selection (after undoing that merge).
+    await panel.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['base', 'hat']);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setPartSelection(['base', 'hat']));
+    await page.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('m');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['base']);
+
+    // Enter accepts.
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('[data-parts-saved]')).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('phone: the panel is a bottom sheet with compact rows', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [2, 2, 0] }, { label: 'top', point: [10, 10, 20] }],
+    }));
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+    await expect.poll(async () => {
+      const b = await panel.boundingBox();
+      return b ? [Math.round(b.x), Math.round(b.width), Math.round(b.y + b.height)] : null;
+    }).toEqual([0, 375, 812]);
+    const box = (await panel.boundingBox())!;
+    expect(box.height).toBeLessThan(812 * 0.5);
+    // Compact rows: lock / solo / remove fold into ⋯.
+    await expect(panel.getByRole('button', { name: 'Lock top' })).toBeHidden();
+    await panel.getByRole('button', { name: 'More for top' }).click();
+    await page.getByRole('menuitem', { name: 'Solo' }).click();
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartsView()) as { mode: string }).mode).toBe('solo');
   });
 
   test('acceptParts applyColors:false saves labels only; seed colours validate', async ({ page }) => {

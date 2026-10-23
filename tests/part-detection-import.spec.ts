@@ -62,6 +62,28 @@ test.describe('Part detection on import', () => {
     });
   });
 
+  test('a fused figure opens ready to label, with one consistent message', async ({ page }) => {
+    test.setTimeout(90_000);
+    // Count these 12-triangle boxes as a big fused mesh.
+    await page.evaluate(async () => {
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, segmentation: { ...c.segmentation, fusedPieceMinTris: 10 } });
+    });
+    await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByText(/found 2 separate parts, and the largest is one fused solid/)).toBeVisible();
+    // Said once: no second, contradictory note in the part list.
+    await expect(panel.getByText(/one fused solid/)).toHaveCount(1);
+    // The first chip is armed and the Pin tool is on; the proposal stays
+    // until the first click.
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel.getByRole('button', { name: 'Pin (P)' })).toHaveAttribute('aria-pressed', 'true');
+    const draft = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as { detector?: string };
+    expect(draft.detector).toBe('pieces');
+  });
+
   test('dismissing an untouched import proposal discards it', async ({ page }) => {
     test.setTimeout(90_000);
     await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));

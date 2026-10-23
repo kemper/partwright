@@ -465,6 +465,17 @@ export interface AppConfig {
     /** renderParts `focus`: padding around the focused part's bounding box,
      *  as a fraction of its largest dimension. */
     focusPadding: number;
+    /** Detection folds "specks" — regions under this fraction of the surface
+     *  that no placed pin or hand fix holds — into the neighbour they border
+     *  most. 0 = off. */
+    autoAbsorbSpeckFrac: number;
+    /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
+     *  (the panel opens with the first label chip armed) when its largest
+     *  piece has at least this many triangles. */
+    fusedPieceMinTris: number;
+    /** Phone layout (below 768 px): the part panel is a bottom sheet this
+     *  fraction of the window height, so the model stays visible above it. */
+    mobileSheetHeightFrac: number;
   };
 }
 
@@ -617,6 +628,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     chipMissAreaFrac: 0.0005,
     seedMissEdgeLengths: 3,
     focusPadding: 0.15,
+    autoAbsorbSpeckFrac: 0.002,
+    fusedPieceMinTris: 2000,
+    mobileSheetHeightFrac: 0.45,
   },
 };
 

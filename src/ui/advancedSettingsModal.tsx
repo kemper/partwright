@@ -1222,6 +1222,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={0.05} step={0.0005}
           onChange={v => set('segmentation', 'chipMissAreaFrac', v)}
         />
+        <Field
+          label="Auto-absorb specks below"
+          unit="of surface"
+          hint="Detection folds tiny stray regions into their neighbour."
+          tooltip="After detection (and after each pin re-grow), regions smaller than this fraction of the model's surface join the neighbouring part they border most — unless a placed pin or a Fix-brush stroke holds them. 0 turns it off. 0.002 = 0.2%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoAbsorbSpeckFrac}
+          value={c.segmentation.autoAbsorbSpeckFrac}
+          min={0} max={0.05} step={0.0005}
+          onChange={v => set('segmentation', 'autoAbsorbSpeckFrac', v)}
+        />
+        <Field
+          label="Fused figure threshold"
+          unit="triangles"
+          hint="When to open the part panel ready to label a fused figure."
+          tooltip="If the import-time Separate-pieces pass finds only 1–2 pieces and the largest has at least this many triangles, the mesh is treated as a fused figure: the part panel opens with the first label chip armed, so the first click on the model labels it."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.fusedPieceMinTris}
+          value={c.segmentation.fusedPieceMinTris}
+          min={0} max={1_000_000} step={100} integer
+          onChange={v => set('segmentation', 'fusedPieceMinTris', v)}
+        />
+        <Field
+          label="Phone panel height"
+          unit="of window"
+          hint="Height of the part panel's bottom sheet below 768 px."
+          tooltip="On narrow screens the Detect parts panel docks to the bottom as a sheet this fraction of the window height, so the model stays visible and clickable above it. 0.45 = 45%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.mobileSheetHeightFrac}
+          value={c.segmentation.mobileSheetHeightFrac}
+          min={0.25} max={0.9} step={0.05}
+          onChange={v => set('segmentation', 'mobileSheetHeightFrac', v)}
+        />
       </Section>
 
       <Section title="UI">

@@ -342,6 +342,49 @@ describe('part draft edits', () => {
     expect(s.parts.length).toBe(2);
   });
 
+  it('brush (triangles) moves the brushed triangles into the target and fixes them', () => {
+    const r = fresh();
+    const s = r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.3, 0.09], [0.2, 0.4, 0.09], [0.2, 0.5, 0.09], [0.2, 0.6, 0.09]], radius: 0.06 }]);
+    expect(s.quality.islandCount).toBe(1); // a brushed stripe of "right" inside "left"
+    // Fixed: a pin edit nearby does not undo it.
+    const s2 = r.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.05, 0.5, 0.135] } }]);
+    expect(s2.parts.find((p) => p.name === 'right')!.triCount).toBe(s.parts.find((p) => p.name === 'right')!.triCount);
+    // Triangle indices work too, and a new name makes a new part.
+    const s3 = r.edit([{ op: 'brush', to: 'dot', triangles: [0, 1] }]);
+    expect(s3.parts.find((p) => p.name === 'dot')!.triCount).toBe(2);
+  });
+
+  it('brush (patches) merges every touched part whole, pins included', () => {
+    const r = fresh();
+    r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'blob', radius: 0.05 }]);
+    const s = r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.5, 0.09]], radius: 0.03, mode: 'patches' }]);
+    expect(s.parts.map((p) => p.name)).toEqual(['left', 'right']);
+    // touching "left" too swallows it whole, and its pins follow
+    const s2 = r.edit([{ op: 'brush', to: 'right', points: [[0.1, 0.5, 0.12]], radius: 0.04, mode: 'patches' }]);
+    expect(s2.parts.map((p) => p.name)).toEqual(['right']);
+    expect(s2.seeds.every((sd) => sd.label === 'right')).toBe(true);
+  });
+
+  it('brush validates its input', () => {
+    const r = fresh();
+    expect(() => r.edit([{ op: 'brush', to: 'right' }])).toThrow(/points|triangles/);
+    expect(() => r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.5, 0.09]] }])).toThrow(/radius/);
+    expect(() => r.edit([{ op: 'brush', to: 'right', triangles: [1e9] }])).toThrow(/triangle index/);
+  });
+
+  it('auto-absorb folds unpinned specks after detection, but keeps pinned ones', () => {
+    // A seed between the two big parts with a tiny catchment would be a speck
+    // without its pin; with autoAbsorbFrac, unpinned stray regions vanish.
+    const r = new SegmentationRunner(groove(21), { autoAbsorbFrac: 0.05 });
+    r.detect({ algorithm: 'crease-watershed', seeds: seeds3 });
+    let s = r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'right', radius: 0.05 }]);
+    expect(s.quality.islandCount).toBe(1); // hand fixes are never absorbed
+    s = r.edit([{ op: 'rerun' }]);
+    expect(s.quality.islandCount).toBe(0);
+    const tiny = r.edit([{ op: 'addSeed', seed: { label: 'tiny', point: [0.5, 0.5, 0] } }]);
+    expect(tiny.parts.some((p) => p.name === 'tiny')).toBe(true); // its own pin holds it
+  });
+
   it('addSeed re-runs the detector and keeps colours by name', () => {
     const r = fresh();
     r.edit([{ op: 'setColor', id: 'left', color: '#00ff00' }]);
