@@ -1347,7 +1347,9 @@ function buildRig(rawOpts: unknown): Rig {
   });
   const ring = {
     // Choker/necklace ring at the base of the neck (roughly circular).
-    neck: ringFrameRaw(shoulderZ + neckLen * 0.35, r.neck, r.neck, 'neck'),
+    // A sunk head (`headSink`) can drop the chin past the usual ring height:
+    // keep the ring clear below the chin (identical when headSink = 0).
+    neck: ringFrameRaw(Math.min(shoulderZ + neckLen * 0.35, chinP[2] - neckLen * 0.3), r.neck, r.neck, 'neck'),
     // Belt/waistband ring at the natural waist (lateral = waist girth, depth = hip).
     waist: ringFrameRaw(navelZ, r.waist, r.hipsY, 'waist'),
   };
@@ -2658,7 +2660,10 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
         const sr = r.foot * 0.16, sh = r.foot * 0.3;
         const rows = Math.ceil(cleatN / 2);
         for (let i = 0; i < cleatN; i++) {
-          const row = Math.floor(i / 2), sx = (i % 2 ? -1 : 1) * W * 0.5;
+          // Pairs straddle the centreline; an odd last stud is centred, so the
+          // layout is symmetric and both shoes match.
+          const row = Math.floor(i / 2);
+          const sx = cleatN % 2 === 1 && i === cleatN - 1 ? 0 : (i % 2 ? -1 : 1) * W * 0.5;
           const y = L * (rows > 1 ? 0.62 - (1.3 * row) / (rows - 1) : 0);
           const stud = sdf.cylinder(sr, sh + soleThick * 0.5).translate([sx, y, soleZ - (sh - soleThick * 0.5) / 2]);
           soleN = soleN.union(stud);
@@ -3139,7 +3144,7 @@ function buildBeadEyes(sdf: SdfApi, rig: Rig, o: Record<string, unknown>): Node 
   const H = W * num(o.aspect, 1.06, 'eyes.aspect', 0.5, 2);
   const D = W * 0.72;
   let hl = 1;
-  if (o.highlight === false) hl = 0;
+  if (o.highlight === false || o.highlight === 0) hl = 0;
   else if (o.highlight !== undefined && o.highlight !== true) hl = num(o.highlight, 1, 'eyes.highlight', 0.2, 3);
   const on = o.on as Node | undefined;
   if (on !== undefined && (!on || typeof on.evaluate !== 'function')) throw new ValidationError("eyes.on must be an SDF node (the face/skin the beads sit on). See /ai/figure.md");
@@ -6606,7 +6611,11 @@ function embossContours(shape: unknown, size: number | undefined, font: FontVari
     try {
       cs = textToContours(shape, { size: 10, font, spacing });
     } catch (e) {
-      throw new ValidationError(`emboss(text): ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      if (/not yet loaded/.test(msg)) {
+        throw new ValidationError('emboss(text): the Liberation Sans fonts are not loaded yet. Call it as `F.emboss(...)` / `figure.emboss(...)` (the engine preloads the fonts when the code contains `emboss(`), or pass a CrossSection / [x, y] contours instead of a string. The next run works once the fonts are cached. See /ai/figure.md');
+      }
+      throw new ValidationError(`emboss(text): ${msg}`);
     }
   } else if (shape && typeof (shape as { toPolygons?: unknown }).toPolygons === 'function') {
     cs = (shape as { toPolygons(): Array<Array<[number, number]>> }).toPolygons();
@@ -6615,7 +6624,11 @@ function embossContours(shape: unknown, size: number | undefined, font: FontVari
   } else {
     throw new ValidationError('emboss(shape) must be a string, a CrossSection, or an array of [x, y] contours. See /ai/figure.md');
   }
-  cs = cs.filter((c) => Array.isArray(c) && c.length >= 3).map((c) => c.map((p) => [Number(p[0]), Number(p[1])] as [number, number]));
+  cs = cs.filter((c) => Array.isArray(c) && c.length >= 3).map((c) => c.map((p, i) => {
+    const x = Array.isArray(p) ? Number(p[0]) : NaN, y = Array.isArray(p) ? Number(p[1]) : NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new ValidationError(`emboss(shape): contour point ${i} must be a finite [x, y] pair. Got ${JSON.stringify(p)}. See /ai/figure.md`);
+    return [x, y] as [number, number];
+  }));
   if (cs.length === 0) throw new ValidationError('emboss(shape): no closed contours (need ≥ 3 points each). See /ai/figure.md');
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const c of cs) for (const [x, y] of c) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
@@ -6664,8 +6677,15 @@ function buildEmboss(sdf: SdfApi, shape: unknown, on: unknown, opts?: unknown): 
   up = norm3(up);
   const right = norm3(cross3(up, n));
   // The prism spans from well inside the cloth (deep enough for its curvature
-  // across the lettering) to past the grown surface.
-  const inner = Math.max(ext * 0.5, depth * 4), outer = depth * 2;
+  // across the lettering) to past the grown surface — but never through it:
+  // march back along −n to the far side and stop at 80% of that thickness, so
+  // lettering wider than a thin part (a strap, a sleeve edge) can't poke out of
+  // the opposite surface.
+  let inner = Math.max(ext * 0.5, depth * 4);
+  const eps = Math.max(depth * 0.05, 1e-3);
+  const back = marchToSurface(body, sub3(P, scale3(n, eps)), scale3(n, -1), inner * 2 + eps);
+  if (back !== null) inner = Math.min(inner, (back + eps) * 0.8);
+  const outer = depth * 2;
   const half = (inner + outer) / 2;
   const centre = add3(P, scale3(n, (outer - inner) / 2));
   const prism = sdf.__polygonPrism(contours, half).rotate(eulerFromBasis(right, up, n)).translate(centre);

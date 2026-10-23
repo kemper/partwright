@@ -93,8 +93,8 @@ export function textToContours(text: string, opts: TextOptions = {}): Vec2[][] {
     throw new Error(
       'api.text: Liberation Sans fonts are not yet loaded. ' +
       'This usually means the text-detection heuristic did not fire before this run. ' +
-      'Use `api.text(...)` or `api.Curves.text(...)` directly (not a destructured alias) ' +
-      'so the engine can pre-load the fonts. The next run will work once fonts are cached.',
+      'Use `api.text(...)`, `api.Curves.text(...)` or the figure library\'s `F.emboss(...)` directly ' +
+      '(not a destructured alias) so the engine can pre-load the fonts. The next run will work once fonts are cached.',
     );
   }
 
