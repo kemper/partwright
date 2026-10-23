@@ -228,7 +228,7 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
@@ -1646,14 +1646,31 @@ async function refineForRehydrate(
   const paintGen = paintGeneration;
   const superseded = (): boolean => gen !== rehydrateGeneration || paintGen !== paintGeneration;
   const abort = new AbortController();
+  // No time limit: a heavily painted file can take minutes to rebuild. The
+  // worker reports each step, so the bar moves and the elapsed time ticks;
+  // the user decides when to stop waiting (Cancel / Escape).
+  const started = performance.now();
+  let fraction = 0;
+  let step = 'Rebuilding smooth paint edges…';
   const progressId = startProgress({
     title: 'Restoring paint',
-    message: 'Rebuilding smooth paint edges…',
-    indeterminate: true,
+    message: step,
+    hint: 'Smooth brush strokes are rebuilt one by one. Cancel opens the model without them; the saved paint is kept.',
     onCancel: () => abort.abort(),
   });
+  const refresh = (): void => {
+    updateProgress(progressId, fraction, `${step} · ${Math.round((performance.now() - started) / 1000)}s`);
+  };
+  const ticker = window.setInterval(refresh, 1000);
   try {
-    const r = await refineInWorker({ base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal });
+    const r = await refineInWorker({
+      base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal,
+      onProgress: (done, total, label) => {
+        fraction = total > 0 ? done / total : 0;
+        step = label;
+        refresh();
+      },
+    });
     if (superseded()) return null;
     const parentToChildren = childrenByParent(r.childToParent);
     recordMeshLineage(r.mesh, base, parentToChildren);
@@ -1670,6 +1687,7 @@ async function refineForRehydrate(
     const { mesh, parentToChildren } = refineMeshForRegions(base, descriptors);
     return { mesh, parentToChildren, strokeTris: null };
   } finally {
+    window.clearInterval(ticker);
     endProgress(progressId);
   }
 }
