@@ -16,6 +16,7 @@ import { showToast } from './toast';
 import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
+import { assetPath } from '../deployment';
 import {
   type CharacterSpec,
   DEFAULT_SPEC,
@@ -23,6 +24,7 @@ import {
   decodeSpecComment,
   CHARACTER_PRESETS,
   POSE_PRESETS,
+  randomSpec,
   POSE_PRESET_LABELS,
 } from '../figure/characterSpec';
 
@@ -124,6 +126,22 @@ function toggleRow(label: string, value: boolean, onChange: (v: boolean) => void
   return labelledRow(label, input);
 }
 
+/** Thumbnail stand-in when a preset's baked image is missing: a tiny
+ *  head-over-body silhouette in the preset's own skin/hair/top/pants colours. */
+function fallbackFigure(spec: CharacterSpec): HTMLElement {
+  const wrap = el('div', 'flex flex-col items-center gap-px');
+  wrap.setAttribute('aria-hidden', 'true');
+  const head = el('span', 'w-5 h-5 rounded-full border-t-4');
+  head.style.background = spec.colors.skin;
+  head.style.borderTopColor = spec.hair.style === 'bald' ? spec.colors.skin : spec.colors.hair;
+  const torso = el('span', 'w-7 h-6 rounded-t-md');
+  torso.style.background = spec.clothing.top.on ? spec.colors.top : spec.colors.skin;
+  const legs = el('span', 'w-5 h-5');
+  legs.style.background = spec.clothing.pants.on ? spec.colors.pants : spec.colors.skin;
+  wrap.append(head, torso, legs);
+  return wrap;
+}
+
 // Friendly option label maps for the enums that read poorly raw.
 const HAIR_STYLES: [string, string][] = [
   ['bald', 'Bald'], ['short', 'Short'], ['long', 'Long'], ['bob', 'Bob'], ['bun', 'Bun'],
@@ -193,15 +211,78 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
 
   const body = shell.body;
 
-  // --- Quick presets ---
-  const presetWrap = el('div', 'flex flex-wrap gap-1');
+  // --- Start from a preset (scrollable pick-list) or roll a random one ---
+  // Each card shows a baked thumbnail (public/character-presets/<id>.webp, see
+  // scripts/bake-character-presets.mjs) with the preset's palette as a fallback
+  // strip, so the list is scannable even before/without the image.
+  const presetHeader = el('div', 'flex items-center justify-between gap-2 mt-1');
+  const presetTitle = sectionTitle('Start from a preset');
+  presetTitle.classList.remove('mt-1');
+  const randomBtn = el('button', BUTTON_SMALL_SECONDARY);
+  randomBtn.textContent = '🎲 Random';
+  randomBtn.title = 'Build a brand-new random character (click again for another)';
+  randomBtn.addEventListener('click', () => {
+    // Keep the stand toggle — it's a print-setup choice, not part of "who".
+    const keepBase = spec.base;
+    spec = randomSpec();
+    spec.base = keepBase;
+    markActive(null);
+    rebuild();
+    preview({ immediate: true });
+  });
+  presetHeader.append(presetTitle, randomBtn);
+
+  const presetList = el('div', 'grid grid-cols-2 gap-1.5 max-h-[15rem] shrink-0 overflow-y-auto pr-0.5');
+  presetList.setAttribute('role', 'list');
+  presetList.setAttribute('aria-label', 'Character presets');
+  const cards = new Map<string, HTMLButtonElement>();
+  const markActive = (id: string | null): void => {
+    for (const [cid, card] of cards) {
+      const on = cid === id;
+      card.classList.toggle('border-blue-500', on);
+      card.classList.toggle('border-zinc-700', !on);
+      card.setAttribute('aria-pressed', String(on));
+    }
+  };
   for (const p of CHARACTER_PRESETS) {
-    const b = el('button', BUTTON_SMALL_SECONDARY);
-    b.textContent = p.label;
-    b.addEventListener('click', () => { spec = p.patch(); rebuild(); preview({ immediate: true }); });
-    presetWrap.appendChild(b);
+    const preset = p.patch();
+    const item = el('div');
+    item.setAttribute('role', 'listitem');
+    const card = el('button', 'w-full h-full flex flex-col items-stretch text-left rounded border border-zinc-700 bg-zinc-800/60 hover:bg-zinc-700/70 overflow-hidden transition-colors');
+    card.setAttribute('aria-label', p.label);
+    card.setAttribute('aria-pressed', 'false');
+    card.title = `${p.label} — ${p.description}`;
+
+    // Light tile = the bake's own render background (scripts/bake-character-presets.mjs).
+    const thumbWrap = el('div', 'relative h-20 bg-[#f4f4f6] flex items-center justify-center');
+    const strip = el('div', 'absolute inset-x-0 bottom-0 h-1.5 flex');
+    for (const hex of [preset.colors.skin, preset.colors.hair, preset.colors.top, preset.colors.pants]) {
+      const seg = el('span', 'flex-1');
+      seg.style.background = hex;
+      strip.appendChild(seg);
+    }
+    const img = el('img', 'h-full w-full object-contain');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = assetPath(`/character-presets/${p.id}.webp`);
+    img.addEventListener('error', () => { img.remove(); thumbWrap.prepend(fallbackFigure(preset)); });
+    thumbWrap.append(img, strip);
+
+    const text = el('div', 'px-1.5 py-1');
+    const name = el('div', 'text-[12px] text-zinc-100 font-medium leading-tight truncate');
+    name.textContent = p.label;
+    const desc = el('div', 'text-[10px] text-zinc-400 leading-tight line-clamp-2');
+    desc.textContent = p.description;
+    text.append(name, desc);
+
+    card.append(thumbWrap, text);
+    card.addEventListener('click', () => { spec = p.patch(); markActive(p.id); rebuild(); preview({ immediate: true }); });
+    cards.set(p.id, card);
+    item.appendChild(card);
+    presetList.appendChild(item);
   }
-  body.append(sectionTitle('Start from a preset'), presetWrap);
+  body.append(presetHeader, presetList);
 
   // The controls live in a container we can wholesale-rebuild when a preset
   // replaces the entire spec (simpler than threading setters to every widget).

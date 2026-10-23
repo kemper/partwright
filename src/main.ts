@@ -153,7 +153,7 @@ import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
 import { specToCode } from './figure/characterCodegen';
-import { normalizeSpec } from './figure/characterSpec';
+import { normalizeSpec, CHARACTER_PRESETS, randomSpec, seededRandom } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
 import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -13005,6 +13005,33 @@ async function main() {
       return { code };
     },
 
+    /** The Character Creator's built-in starting characters (same list as the
+     *  panel's preset picker). Each entry carries its full spec, ready to pass
+     *  to buildCharacter (optionally tweaked first). */
+    listCharacterPresets() {
+      return CHARACTER_PRESETS.map(p => ({ id: p.id, label: p.label, description: p.description, spec: p.patch() }));
+    },
+
+    /** Roll a random, coherent character (the panel's 🎲 Random button) and build
+     *  it. Pass `seed` for a reproducible result; the seed used is returned so
+     *  a roll you like can be re-created. `save:true` commits a version. */
+    async randomCharacter(opts?: { seed?: number; save?: boolean; label?: string }) {
+      const parsed = guard(() => {
+        const o = assertObject(opts, 'randomCharacter(opts)', { optional: true }) ?? {};
+        assertNoUnknownKeys(o, ['seed', 'save', 'label'], 'randomCharacter(opts)');
+        return {
+          seed: assertNumber(o.seed, 'randomCharacter(opts).seed', { optional: true, integer: true }),
+          save: assertBoolean(o.save, 'randomCharacter(opts).save', { optional: true }),
+          label: assertString(o.label, 'randomCharacter(opts).label', { optional: true }),
+        };
+      });
+      if ('error' in parsed) return parsed;
+      const seed = parsed.seed ?? Math.floor(Math.random() * 2 ** 31);
+      const spec = randomSpec(seededRandom(seed));
+      const r = await partwrightAPI.buildCharacter(spec, { save: parsed.save, label: parsed.label ?? 'Random character' });
+      return { seed, spec, ...r };
+    },
+
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
      *  target: { index } or { id } from listVersions().
      *  transformFn: (code: string) => string — modifies the parent's code. Return the full new code.
@@ -16696,6 +16723,8 @@ async function main() {
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
         'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted human figure from a Character Creator spec (body/pose/face/hair/clothing/colors). save:true commits a version. Same engine as the 🧍 Character panel.', docs: '/ai/figure.md' },
+        'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
+        'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?}) -- Build a random, coherent human figure (the panel\'s Random button) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },

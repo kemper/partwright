@@ -28,6 +28,7 @@
     "lint:deps": "madge --circular --extensions ts,tsx src",
     "lint:catalog": "node scripts/lint-catalog.mjs",
     "audit:catalog": "node scripts/catalog-audit.cjs",
+    "bake:character-presets": "node scripts/bake-character-presets.mjs",
     "model:preview": "node scripts/model-preview.mjs",
     "figure:smoke": "node scripts/figure-smoke.mjs",
     "segment:bench": "node scripts/segment-bench.mjs",

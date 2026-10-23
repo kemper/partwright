@@ -66,6 +66,7 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
     heading: 'Character Creator (no-code figures)',
     body:
       'Want a printable human figure without writing any code? Open <strong class="text-zinc-300">Character Creator</strong> from the <strong class="text-zinc-300">Tools</strong> menu (or the command palette) for a GUI over the whole figure system. Choose a body build, pose, face, hair, garments, and footwear with sliders and presets, and a live preview updates as you go — Partwright generates the underlying model code for you, so you can keep tweaking in the panel or drop into the editor to take it further. ' +
+      'To get going fast, scroll the <strong class="text-zinc-300">preset list</strong> at the top of the panel (child, grandparent, chibi, athlete, elf ranger, a bare mannequin, and more) and click one to start from it, or press <strong class="text-zinc-300">🎲 Random</strong> to roll a brand-new character — press it again for another. ' +
       'The preview cancels an in-flight render the moment you change a control, so dragging a slider stays responsive even though each figure rebuild is heavy.',
   },
   {

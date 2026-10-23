@@ -33,7 +33,13 @@ lipShape, ears, brows}, hair:{style, length, volume}, clothing:{top, pants, feet
 colors:{…}, base }` — every field falls back to a sensible default, so a partial
 patch works (`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
 The generated code embeds the spec as a `// @character` header so the panel can
-re-open it. Reach for the **hand-written recipe below** when you need anything
+re-open it.
+To start from something other than the default, `partwright.listCharacterPresets()`
+returns the panel's starting characters (`{id, label, description, spec}` —
+child, elder, chibi, athlete, elf, mannequin, …) and
+`partwright.randomCharacter({ seed?, save? })` rolls a random but coherent one
+(an age archetype drives proportions; the seed is returned, so the same seed
+re-creates the same character). Reach for the **hand-written recipe below** when you need anything
 the spec doesn't cover (props, accessories, custom geometry, multi-figure scenes).
 
 ## The one pattern

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
 import { specToCode } from '../../src/figure/characterCodegen';
 import {
   DEFAULT_SPEC,
@@ -6,6 +7,10 @@ import {
   decodeSpecComment,
   normalizeSpec,
   CHARACTER_PRESETS,
+  POSE_PRESETS,
+  randomSpec,
+  seededRandom,
+  type CharacterSpec,
 } from '../../src/figure/characterSpec';
 
 describe('characterCodegen', () => {
@@ -118,5 +123,121 @@ describe('characterSpec normalize/decode', () => {
     normalizeSpec(JSON.parse('{"__proto__":{"polluted":true},"constructor":{"x":1}}'));
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+// Every enum value the figure API accepts (mirrors the sdfFigure assertEnum
+// lists) — a random or preset spec must never step outside these.
+const ENUMS = {
+  build: ['slim', 'average', 'stocky'],
+  sex: ['neutral', 'male', 'female'],
+  shape: ['oval', 'round', 'square', 'long', 'heart', 'diamond'],
+  lids: ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'],
+  gaze: ['middle', 'center', 'left', 'right', 'up', 'down'],
+  nose: ['straight', 'button', 'snub', 'roman', 'aquiline', 'broad', 'pointed', 'bulbous'],
+  expression: ['bigSmile', 'smile', 'slightSmile', 'neutral', 'slightFrown', 'frown', 'deepFrown'],
+  lipShape: ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat'],
+  ears: ['round', 'pointed', 'detailed'],
+  brows: ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'],
+  hairStyle: ['bald', 'short', 'long', 'bob', 'bun', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids'],
+  hairLength: ['short', 'mid', 'long'],
+};
+
+function expectValidSpec(s: CharacterSpec, tag: string): void {
+  const b = s.body;
+  expect(ENUMS.build, tag).toContain(b.build);
+  expect(ENUMS.sex, tag).toContain(b.sex);
+  expect(b.height, tag).toBeGreaterThanOrEqual(24);
+  expect(b.height, tag).toBeLessThanOrEqual(90);
+  expect(b.headsTall, tag).toBeGreaterThanOrEqual(2.5);
+  expect(b.headsTall, tag).toBeLessThanOrEqual(9);
+  for (const k of ['weight', 'muscle'] as const) {
+    expect(b[k], `${tag} ${k}`).toBeGreaterThanOrEqual(0);
+    expect(b[k], `${tag} ${k}`).toBeLessThanOrEqual(1);
+  }
+  for (const k of ['bust', 'belly'] as const) {
+    expect(b[k], `${tag} ${k}`).toBeGreaterThanOrEqual(0);
+    expect(b[k], `${tag} ${k}`).toBeLessThanOrEqual(2);
+  }
+  expect(Object.keys(POSE_PRESETS), tag).toContain(s.pose.preset);
+  expect(ENUMS.shape, tag).toContain(s.face.shape);
+  expect(ENUMS.lids, tag).toContain(s.face.lids);
+  expect(ENUMS.gaze, tag).toContain(s.face.gaze);
+  expect(ENUMS.nose, tag).toContain(s.face.nose);
+  expect(ENUMS.expression, tag).toContain(s.face.expression);
+  expect(ENUMS.lipShape, tag).toContain(s.face.lipShape);
+  expect(ENUMS.ears, tag).toContain(s.face.ears);
+  expect(ENUMS.brows, tag).toContain(s.face.brows);
+  expect(ENUMS.hairStyle, tag).toContain(s.hair.style);
+  expect(ENUMS.hairLength, tag).toContain(s.hair.length);
+  for (const [k, hex] of Object.entries(s.colors)) expect(hex, `${tag} colors.${k}`).toMatch(/^#[0-9a-f]{6}$/);
+  // Same shape as the default — no missing or stray keys.
+  expect(normalizeSpec(s), tag).toEqual(s);
+}
+
+describe('character presets', () => {
+  it('have unique ids and labels, none a substring of another', () => {
+    const ids = CHARACTER_PRESETS.map(p => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const labels = CHARACTER_PRESETS.map(p => p.label);
+    for (const a of labels) for (const b of labels) if (a !== b) expect(b.includes(a), `${a} in ${b}`).toBe(false);
+    for (const p of CHARACTER_PRESETS) expect(p.description.length, p.id).toBeGreaterThan(0);
+  });
+
+  it('each ship a baked thumbnail (npm run bake:character-presets)', () => {
+    for (const p of CHARACTER_PRESETS) {
+      expect(existsSync(`public/character-presets/${p.id}.webp`), p.id).toBe(true);
+    }
+  });
+
+  it('are all valid specs', () => {
+    for (const p of CHARACTER_PRESETS) expectValidSpec(p.patch(), p.id);
+  });
+});
+
+describe('randomSpec', () => {
+  it('is deterministic for a seed and varies across seeds', () => {
+    expect(randomSpec(seededRandom(7))).toEqual(randomSpec(seededRandom(7)));
+    const distinct = new Set(Array.from({ length: 20 }, (_, i) => JSON.stringify(randomSpec(seededRandom(i)))));
+    expect(distinct.size).toBe(20);
+  });
+
+  it('always produces a valid, codegen-able spec', () => {
+    for (let i = 0; i < 300; i++) {
+      const s = randomSpec(seededRandom(i));
+      expectValidSpec(s, `seed ${i}`);
+      expect(decodeSpecComment(specToCode(s)), `seed ${i}`).toEqual(normalizeSpec(s));
+    }
+  });
+
+  it('keeps rolls coherent and clear of known-bad combos', () => {
+    for (let i = 0; i < 300; i++) {
+      const s = randomSpec(seededRandom(i));
+      if (s.body.headsTall < 6) {
+        expect(s.body.bust, `seed ${i}`).toBe(0);
+        expect(s.body.muscle, `seed ${i}`).toBe(0);
+      }
+      expect(s.colors.pants, `seed ${i}`).not.toBe(s.colors.top);
+      // Combos that currently bury a painted feature or detach hair strands in
+      // the figure builder are kept out of one-click rolls.
+      expect(s.face.lids, `seed ${i}`).not.toBe('hooded');
+      expect(['center', 'left', 'right'], `seed ${i}`).toContain(s.face.gaze);
+      expect(s.face.brows, `seed ${i}`).not.toBe('thin');
+      expect(['locs', 'boxBraids'], `seed ${i}`).not.toContain(s.hair.style);
+    }
+  });
+
+  it('covers a spread of hair styles and age groups', () => {
+    const styles = new Set<string>();
+    let kids = 0, elders = 0;
+    for (let i = 0; i < 300; i++) {
+      const s = randomSpec(seededRandom(i));
+      styles.add(s.hair.style);
+      if (s.body.age < 12) kids++;
+      if (s.body.age > 60) elders++;
+    }
+    expect(styles.size).toBeGreaterThanOrEqual(10);
+    expect(kids).toBeGreaterThan(0);
+    expect(elders).toBeGreaterThan(0);
   });
 });

@@ -19,6 +19,8 @@ type PW = {
   getCode: () => string;
   buildCharacter: (spec: unknown, opts?: { save?: boolean; label?: string }) =>
     Promise<{ code: string; error?: string; geometry?: { triangleCount?: number; componentCount?: number; isManifold?: boolean }; version?: { label?: string } }>;
+  listCharacterPresets: () => Array<{ id: string; label: string; description: string; spec: unknown }>;
+  randomCharacter: (opts?: unknown) => Promise<{ seed?: number; spec?: unknown; code?: string; error?: string }>;
 };
 
 test.describe('Character Creator', () => {
@@ -137,5 +139,63 @@ test.describe('Character Creator', () => {
     );
     // The mid-build switch terminated the running build at least once.
     expect(restarts.some(r => /cancel/i.test(r))).toBe(true);
+  });
+
+  test('the Random button rolls a new character and the preset list scrolls', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-random'));
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+
+    // The preset list is a scrollable pick-list holding every built-in preset.
+    const list = panel.getByRole('list', { name: 'Character presets' });
+    const count = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listCharacterPresets().length);
+    await expect(list.getByRole('listitem')).toHaveCount(count);
+    const scrolls = await list.evaluate(n => n.scrollHeight > n.clientHeight);
+    expect(scrolls).toBe(true);
+
+    await panel.getByRole('button', { name: /Random/ }).click();
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+    await page.waitForFunction(
+      () => (window as unknown as { partwright: PW }).partwright.getCode().includes('@character v1'),
+      { timeout: 60_000 },
+    );
+    const first = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode().split('\n')[0]);
+
+    // A second roll produces a different character (no confirm the second time).
+    await panel.getByRole('button', { name: /Random/ }).click();
+    await page.waitForFunction(
+      (prev) => (window as unknown as { partwright: PW }).partwright.getCode().split('\n')[0] !== prev,
+      first,
+      { timeout: 60_000 },
+    );
+  });
+
+  test('randomCharacter is reproducible by seed and validates its options', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('character-random-api');
+      const a = await pw.randomCharacter({ seed: 1234 });
+      const b = await pw.randomCharacter({ seed: 1234 });
+      const bad = await pw.randomCharacter({ seed: 'x' });
+      const unknownKey = await pw.randomCharacter({ colour: 'red' });
+      return { a, b, bad, unknownKey, presets: pw.listCharacterPresets() };
+    });
+    expect(out.a.error).toBeUndefined();
+    expect(out.a.seed).toBe(1234);
+    expect(out.a.code).toContain('@character v1');
+    expect(out.b.code).toBe(out.a.code);
+    expect(out.bad.error).toContain('seed');
+    expect(out.unknownKey.error).toContain('colour');
+    expect(out.presets.length).toBeGreaterThan(10);
+    expect(out.presets.map(p => p.id)).toContain('chibi');
   });
 });
