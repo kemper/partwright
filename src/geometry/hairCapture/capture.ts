@@ -12,7 +12,7 @@
 // grid), inpaints the radius under the no-hair cells so it stays smooth across
 // the edge, then quantizes both to bytes (see field.ts for the format).
 
-import { bytesToB64, cellDir, dirVec, type HairCapturePreset, type V3 } from './field';
+import { assertGridSize, bytesToB64, cellDir, dirVec, quantizeRadii, type HairCapturePreset, type V3 } from './field';
 
 /** A head's landmark frame (world space). */
 export interface HeadLandmarks {
@@ -155,6 +155,7 @@ class DirBins {
 /** Capture a hair mesh into a preset. `tris` = 9 floats per hair triangle (world). */
 export function captureHair(tris: Float32Array, lm: HeadLandmarks, opts: CaptureOptions): HairCapturePreset {
   const nAz = opts.nAz ?? 128, nEl = opts.nEl ?? 64;
+  assertGridSize(nAz, nEl, 'captureHair');
   const elMin = opts.elMin ?? -90, elMax = opts.elMax ?? 90;
   const SS = opts.superSample ?? 4;
   const g = { nAz, nEl, elMin, elMax };
@@ -291,14 +292,9 @@ export function captureHair(tris: Float32Array, lm: HeadLandmarks, opts: Capture
     }
     R.set(tmp);
   }
-  let rMin = Infinity, rMax = -Infinity;
-  for (let i = 0; i < n; i++) { rMin = Math.min(rMin, R[i]); rMax = Math.max(rMax, R[i]); }
-  rMin = Math.floor(rMin * 1000) / 1000; rMax = Math.ceil(rMax * 1000) / 1000;
-  const rb = new Uint8Array(n), mb = new Int8Array(n);
-  for (let i = 0; i < n; i++) {
-    rb[i] = Math.round(((R[i] - rMin) / (rMax - rMin)) * 255);
-    mb[i] = Math.round(M[i] * MASK_SCALE);
-  }
+  const { rMin, rMax, bytes: rb } = quantizeRadii(R);
+  const mb = new Int8Array(n);
+  for (let i = 0; i < n; i++) mb[i] = Math.round(M[i] * MASK_SCALE);
   return {
     name: opts.name, source: opts.source, nAz, nEl, elMin, elMax, centre, shape, rMin, rMax,
     maskScale: MASK_SCALE, radius: bytesToB64(rb), mask: bytesToB64(new Uint8Array(mb.buffer)),

@@ -65,6 +65,17 @@ describe('rig — headSink', () => {
   it('validates its range', () => {
     expect(() => buildRig({ headSink: 2 })).toThrow(/headSink/);
   });
+
+  it('keeps rig.ring.neck clear below the sunk chin (unchanged without a sink)', () => {
+    expect(buildRig({ headSink: 0 }).ring.neck).toEqual(base.ring.neck);
+    for (const s of [0.42, 0.7, 1, 1.5]) {
+      const rig = buildRig({ headSink: s });
+      expect(rig.ring.neck.center[2]).toBeLessThan(rig.joints.chin[2] - neckLen * 0.25);
+      // …and a neck trim zone there doesn't reach up into the chin.
+      const z = F.trimZone(rig, { ring: 'neck', width: rig.r.neck * 0.5 });
+      expect(ev(z, add(rig.joints.chin, [0, 0, 0.05]))).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('rig — pose.hold per-hand cups + handScale', () => {
@@ -180,6 +191,16 @@ describe('clothing.shoes — style toy', () => {
     expect(cleated.bounds().min[2]).toBeLessThan(rig.sole.L.groundZ - rig.r.foot * 0.1);
   });
 
+  it('an odd cleat count centres its last stud — symmetric, the same on both shoes', () => {
+    const three = F.clothing.shoes(rig, { style: 'toy', cleats: 3 }) as Ev;
+    for (const so of [rig.sole.L, rig.sole.R]) {
+      // 3 studs = a front pair + one heel stud on the centreline (local y = −0.68 × 0.8 × length).
+      const back = -0.68 * 0.8 * so.length;
+      const p: Vec3 = [so.point[0] + so.heading[0] * back, so.point[1] + so.heading[1] * back, so.groundZ - rig.r.foot * 0.15];
+      expect(ev(three, p)).toBeLessThan(0);
+    }
+  });
+
   it('rejects toy-only knobs on a fitted shoe and bad cleat counts', () => {
     expect(() => F.clothing.shoes(rig, { height: 1.2 })).toThrow(/toy/);
     expect(() => F.clothing.shoes(rig, { style: 'toy', cleats: 2.5 })).toThrow(/cleats/);
@@ -278,6 +299,15 @@ describe('emboss — conformal lettering', () => {
     expect(ev(e, [q[0], -12.25, q[2]])).toBeGreaterThan(0);
   });
 
+  it('never pokes through a part thinner than the lettering (clamped to the far side)', () => {
+    const big: Array<Array<[number, number]>> = [[[-5, -5], [5, -5], [5, 5], [-5, 5]]];
+    const rod = sdf.cylinder(2, 40);
+    const e = F.emboss(big, rod, { at: [2, 0, 0], depth: 0.4 });
+    expect(ev(e, [-2.2, 0, 0])).toBeGreaterThan(0);     // nothing out of the far side
+    expect(ev(e, [-1.9, 0, 0])).toBeGreaterThan(0);
+    expect(ev(e, [2.2, 0, 2])).toBeLessThan(0);         // still proud on the near side
+  });
+
   it('accepts a CrossSection-like shape and validates its inputs', () => {
     const cs = { toPolygons: () => square };
     expect(() => F.emboss(cs, slab, { at: [0, -11, 0] })).not.toThrow();
@@ -285,6 +315,11 @@ describe('emboss — conformal lettering', () => {
     expect(() => F.emboss(42 as never, slab, { at: [0, -11, 0] })).toThrow(/string/);
     expect(() => F.emboss(square, slab, { at: [0, -11, 0], tilt: 3 })).toThrow();
     expect(() => F.emboss(square, slab, { at: [500, 500, 500] })).toThrow(/surface/);
+    // Malformed contour points are a ValidationError, not a TypeError.
+    const bad = [[[0, 0], null, [1, 1], [0, 1]]] as unknown as Array<Array<[number, number]>>;
+    expect(() => F.emboss(bad, slab, { at: [0, -11, 0] })).toThrow(/finite \[x, y\]/);
+    // Text with no fonts loaded (the unit tier never preloads them) names emboss.
+    expect(() => F.emboss('N', slab, { at: [0, -11, 0], size: 5 })).toThrow(/emboss\(text\).*not loaded/);
     void rig;
   });
 });
@@ -307,12 +342,14 @@ describe("face.eyes — style 'bead'", () => {
     expect(ev(eyes, add(s, mul(fwd, 5 * 0.4)))).toBeLessThan(0);          // but proud of the face
   });
 
-  it('highlight: false drops the glint; style-specific keys are validated', () => {
-    const plain = F.face.eyes(rig, { style: 'bead', on: face, highlight: false });
-    const labels = new Set<string>();
-    const walk = (n: { labelName?: string; _children?: unknown[] }): void => { if (n.labelName) labels.add(n.labelName); for (const c of n._children ?? []) walk(c as never); };
-    walk(plain as never);
-    expect([...labels]).toEqual(['eyes']);
+  it('highlight: false (or 0) drops the glint; style-specific keys are validated', () => {
+    for (const highlight of [false, 0]) {
+      const plain = F.face.eyes(rig, { style: 'bead', on: face, highlight });
+      const labels = new Set<string>();
+      const walk = (n: { labelName?: string; _children?: unknown[] }): void => { if (n.labelName) labels.add(n.labelName); for (const c of n._children ?? []) walk(c as never); };
+      walk(plain as never);
+      expect([...labels]).toEqual(['eyes']);
+    }
     expect(() => F.face.eyes(rig, { style: 'bead', lids: 'half' })).toThrow(/bead/);
     expect(() => F.face.eyes(rig, { on: face })).toThrow(/bead/);
   });

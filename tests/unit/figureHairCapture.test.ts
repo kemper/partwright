@@ -5,12 +5,12 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  bakeField, blurGrid, bytesToB64, cellDir, decodePreset, DEFAULT_KNOBS, dilateGrid, fieldValue, sampleCubic, sourceDir,
+  assertGridSize, bakeField, blurGrid, bytesToB64, cellDir, decodePreset, DEFAULT_KNOBS, dilateGrid, fieldValue, quantizeRadii, sampleCubic, sourceDir,
   type HairCapturePreset, type HairGrids,
 } from '../../src/geometry/hairCapture/field';
 import { captureHair, landmarksFromParts, removeSmallIslands, toLandmark, type HeadLandmarks } from '../../src/geometry/hairCapture/capture';
 import { HAIR_PRESETS } from '../../src/geometry/hairCapture/presets';
-import { measureHeadLandmarks } from '../../src/geometry/figureHairCapture';
+import { carryField, measureHeadLandmarks } from '../../src/geometry/figureHairCapture';
 import { __figureTestables__, createFigureNamespace } from '../../src/geometry/sdfFigure';
 import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
@@ -110,6 +110,39 @@ describe('captured hair — field decode / interpolation', () => {
     expect(d[8 * g.nAz + 8]).toBe(0);
     const b = blurGrid(g.radius, g, 2);
     for (const v of b) expect(v).toBeCloseTo(g.radius[0], 9);   // constant stays constant
+  });
+});
+
+describe('captured hair — robustness', () => {
+  it('rejects odd, zero and NaN grid sizes with a clear error', () => {
+    for (const [a, e] of [[127, 64], [128, 63], [0, 64], [NaN, 64], [128, 0.5]] as const) {
+      expect(() => assertGridSize(a, e, 'test')).toThrow(/positive even integers/);
+      expect(() => decodePreset({ ...HAIR_PRESETS.tsubasa, nAz: a, nEl: e })).toThrow(/positive even integers/);
+    }
+    const lm: HeadLandmarks = { origin: [0, 0, 0], forward: [1, 0, 0], left: [0, 1, 0], up: [0, 0, 1], W: 1, H: 1 };
+    const tris = sphereSoup(1.5, [0, 0, 0], (p) => p[2] > 0, 12, 6);
+    expect(() => captureHair(tris, lm, { name: 'x', source: 't', nAz: 63, nEl: 32 })).toThrow(/positive even integers/);
+    expect(() => captureHair(tris, lm, { name: 'x', source: 't', nAz: 64, nEl: NaN })).toThrow(/positive even integers/);
+    expect(() => assertGridSize(64, 32, 'test')).not.toThrow();
+  });
+
+  it('quantizes a constant radius field without dividing by zero', () => {
+    const q = quantizeRadii(new Float64Array(16).fill(1.25));
+    expect(q.rMax).toBeGreaterThan(q.rMin);
+    for (const b of q.bytes) expect(Number.isFinite(b)).toBe(true);
+    const g = decodePreset({ ...synthPreset(() => 1.5), rMin: q.rMin, rMax: q.rMax });
+    for (const v of g.radius) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it('carries the field exactly, grows the bounds only by pad, and treats NaN as outside', () => {
+    const box = sdfT.primBox(4) as unknown as Parameters<typeof carryField>[0];
+    const ball = carryField(box, (x, y, z) => Math.hypot(x, y, z) - 1, 0.25);
+    expect(ball.evaluate(0, 0, 0)).toBeCloseTo(-1, 9);
+    expect(ball.evaluate(1.5, 0, 0)).toBeCloseTo(0.5, 9);
+    expect((ball as unknown as { bounds(): { max: number[] } }).bounds().max[0]).toBeCloseTo(2.25, 9);
+    const broken = carryField(box, () => NaN, 0.25);
+    expect(broken.evaluate(0, 0, 0)).toBeGreaterThan(1e6);
+    expect(carryField(box, () => Infinity, 0.25).evaluate(0.3, 0, 0)).toBeGreaterThan(1e6);
   });
 });
 

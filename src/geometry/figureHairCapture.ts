@@ -164,9 +164,22 @@ export function buildCapturedHair<N extends CapNode<N>>(
     if (v.rho < 1e-9) return v.d * Math.min(S[0], S[1], S[2]);
     return v.d * worldDir([m[0] / v.rho, m[1] / v.rho, m[2] / v.rho]).lam;
   };
-  // A box carrying the hair field: displace(1, box − hair) evaluates to exactly
-  // `hair` while keeping the box's tight bounds for the mesher.
-  return box.displace(1, (x, y, z) => box.evaluate(x, y, z) - hairAt(x, y, z));
+  return carryField(box, hairAt, pad);
+}
+
+/** Value standing in for a non-finite field sample: far OUTSIDE, so a NaN can
+ *  never turn into solid hair. */
+const OUTSIDE = 1e9;
+
+/** A node whose evaluate() is `field`, carried by `box`: displace(pad,
+ *  (box − field) / pad) evaluates to exactly `field` (box − pad·(box − field)/pad)
+ *  while the bounds stay the box's, grown only by `pad` (the existing margin) —
+ *  not a fixed world unit that would bloat a small figure's march. */
+export function carryField<N extends CapNode<N>>(box: N, field: (x: number, y: number, z: number) => number, pad: number): N {
+  return box.displace(pad, (x, y, z) => {
+    const h = field(x, y, z);
+    return (box.evaluate(x, y, z) - (Number.isFinite(h) ? h : OUTSIDE)) / pad;
+  });
 }
 
 /** Minimum hair thickness above the target skull, × hair.thickness. */
