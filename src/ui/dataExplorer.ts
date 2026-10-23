@@ -55,6 +55,7 @@ function recordLabel(store: StoreName, rec: Record<string, unknown>): string {
     case 'aiAttachments': return String(rec.label || rec.mediaType || rec.id || '');
     case 'importInbox':
     case 'exportInbox': return `${String(rec.source ?? '')} · ${String(rec.filename ?? rec.id ?? '')}`.trim();
+    case 'deletedObjects': return String((rec.part as { name?: unknown } | undefined)?.name ?? rec.id ?? '(unnamed)');
   }
 }
 

@@ -20,6 +20,10 @@ const VARIANT_STYLE: Record<ToastVariant, string> = {
   warn: 'background:#451a03;color:#fbbf24;', // amber-950 / amber-400
 };
 
+function coarsePointer(): boolean {
+  try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; }
+}
+
 export function showToast(
   message: string,
   opts: {
@@ -29,11 +33,16 @@ export function showToast(
     log?: boolean;
     /** Subsystem tag for the Diagnostic Log entry (defaults to 'app'). */
     source?: ErrorSource;
+    /** An inline button (e.g. "Undo") — clicking it runs `run` and dismisses
+     *  the toast. A toast with an action stays up for `ui.undoToastDurationMs`
+     *  by default and, unlike a plain toast, takes pointer input. */
+    action?: { label: string; run: () => void };
   } = {},
 ): void {
   const {
     variant = 'neutral',
-    durationMs = getConfig().ui.toastDurationMs,
+    action,
+    durationMs = action ? getConfig().ui.undoToastDurationMs : getConfig().ui.toastDurationMs,
     log = true,
     source = 'app',
   } = opts;
@@ -54,9 +63,26 @@ export function showToast(
   toast.style.cssText =
     'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);' +
     'padding:8px 16px;border-radius:6px;font-size:13px;z-index:9999;' +
-    'max-width:600px;text-align:center;pointer-events:none;' +
+    'max-width:min(600px,calc(100vw - 32px));text-align:center;' +
+    (action ? 'pointer-events:auto;' : 'pointer-events:none;') +
     'box-shadow:0 4px 12px rgba(0,0,0,0.4);' +
     VARIANT_STYLE[variant];
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.toastAction = '';
+    btn.textContent = action.label;
+    btn.style.cssText =
+      'margin-left:12px;padding:2px 10px;border-radius:4px;font-weight:600;' +
+      'background:rgba(255,255,255,0.12);color:inherit;cursor:pointer;' +
+      // A fingertip-sized target on touch screens.
+      `min-height:${coarsePointer() ? 44 : 28}px;`;
+    btn.addEventListener('click', () => {
+      toast.remove();
+      action.run();
+    });
+    toast.appendChild(btn);
+  }
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), durationMs);
 }

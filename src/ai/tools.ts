@@ -1024,13 +1024,29 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObject',
-    description: "Delete an object and all its versions. If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
+    description: "Delete an object and all its versions. It moves to the session's Recover deleted bin (restoreObject brings it back until it expires). If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
         object: { description: 'The object to delete — its name, id (from listObjects), or 0-based index.' },
         id: { type: 'string', description: 'Deprecated alias for `object` — an object id from listObjects().' },
       },
+    },
+  },
+  {
+    name: 'listDeleted',
+    description: 'List what can be undeleted in this session (the Recover deleted modal): objects in the deleted-objects bin {id, name, versionCount, deletedAt, expiresAt} and parts/pieces removed in code by deleteObjectPart {object, kind, name | point+label, call}. Use before restoreObject / restoreObjectPart.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'restoreObject',
+    description: "Undelete an object from the Recover deleted bin (id or name from listDeleted().objects) with all of its versions, back at its old place in the object list. If the session's only object is an untouched blank (left by deleting the last object) it is replaced. Returns {restored, droppedBlank?}.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        object: { type: 'string', description: 'Deleted object id or name from listDeleted().objects.' },
+      },
+      required: ['object'],
     },
   },
   {
@@ -1264,6 +1280,18 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
         piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+      },
+    },
+  },
+  {
+    name: 'restoreObjectPart',
+    description: "Undo deleteObjectPart: bring back a part or piece removed in code by taking out its removal line (api.removePart / api.removePiece, or remove_part / remove_piece in OpenSCAD), re-running and saving a version. Pass `part` (an api.label name) or `call` (the removal call from listDeleted().parts — required for pieces), plus `object` when the same removal exists in several objects. Opens the owning object if it isn't the current one. Returns {ok, restored, object, version?, note?} — `note` means nothing came back (the label/geometry changed since) and the no-op line was just dropped.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Removed part (api.label) name.' },
+        call: { type: 'string', description: 'Removal call from listDeleted().parts, e.g. api.removePiece([1, 2, 3]); or remove_piece([1, 2, 3]);' },
+        object: { type: 'string', description: 'Optional owning object name or id (from listDeleted().parts).' },
       },
     },
   },
@@ -1832,6 +1860,8 @@ const ALWAYS_AVAILABLE = new Set([
   'changeObject',
   'renameObject',
   'deleteObject',
+  'listDeleted',
+  'restoreObject',
   'listObjectParts',
   'highlightObjectPart',
   // Text-only likeness score: renders offscreen but returns no image, so it is
@@ -1875,7 +1905,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
@@ -1899,7 +1929,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   // Visual-only view state; re-applying it is idempotent.
   'highlightObjectPart', 'setObjectPartHidden',
@@ -1910,7 +1940,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2671,6 +2701,17 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (typeof input.piece === 'number') return api.deleteObjectPart({ piece: input.piece });
       return { error: 'deleteObjectPart: pass one of part (name) or piece (index).' };
     }
+    case 'restoreObjectPart': {
+      const target: Record<string, unknown> = {};
+      if (typeof input.part === 'string') target.part = input.part;
+      if (typeof input.call === 'string') target.call = input.call;
+      if (typeof input.object === 'string') target.object = input.object;
+      return api.restoreObjectPart(target);
+    }
+    case 'listDeleted':
+      return api.listDeleted();
+    case 'restoreObject':
+      return api.restoreObject(input.object);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

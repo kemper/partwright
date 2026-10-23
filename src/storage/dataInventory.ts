@@ -4,9 +4,9 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox' | 'deletedObjects';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox', 'deletedObjects'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
@@ -20,6 +20,7 @@ export const STORE_LABELS: Record<StoreName, string> = {
   aiAttachments: 'Image attachments',
   importInbox: 'Recent imports',
   exportInbox: 'Recent exports',
+  deletedObjects: 'Recently deleted objects',
 };
 
 function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
@@ -89,7 +90,7 @@ export function listLocalStorageEntries(): LocalStorageEntry[] {
 // === Selective wipe ===
 
 export interface WipeSelection {
-  /** Sessions, parts, versions, and notes (the core modeling data + legacy DB). */
+  /** Sessions, parts, versions, notes and the deleted-objects bin (the core modeling data + legacy DB). */
   modelingData: boolean;
   /** AI chat transcripts. */
   chats: boolean;
@@ -182,7 +183,7 @@ export async function wipeData(sel: WipeSelection): Promise<void> {
   // previously omitted here, and since the DB delete below targets the LEGACY
   // 'mainifold' database (DB_NAME is now 'partwright'), they survived every wipe
   // as orphaned rows. db.ts's deleteSession/clearAllData already sweep them.
-  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox');
+  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox', 'deletedObjects');
   if (sel.chats) stores.push('aiChats');
   if (sel.apiKeys) stores.push('aiKeys');
   if (sel.attachments) stores.push('aiAttachments');
