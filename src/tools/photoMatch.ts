@@ -979,9 +979,15 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
   }
   const refRegion = new Int32Array(N).fill(-2);
   const lowConf = new Map<number, Map<number, string>>(); // region → partner → reason
+  // Model area per region: a confusable partner only makes a region
+  // low-confidence when it is big enough to shift that region's numbers (an
+  // eye highlight swallowed by the hair doesn't make the HAIR unreliable).
+  const areaM = new Float64Array(nR);
+  for (let p = 0; p < N; p++) if (M.labels[p] >= 0) areaM[M.labels[p]]++;
   const noteLow = (i: number, j: number, why: string) => {
     if (i === j) return;
     for (const [a, b] of [[i, j], [j, i]]) {
+      if (areaM[b] < 0.1 * areaM[a]) continue;
       if (!lowConf.has(a)) lowConf.set(a, new Map());
       if (!lowConf.get(a)!.has(b)) lowConf.get(a)!.set(b, why);
     }
@@ -1046,9 +1052,15 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       // (a') a region whose photo pixels (those under the model region) look
       //      like ANOTHER cluster's colour: that cluster swallows them (white
       //      shorts on the photo vs blue in the model → the white jersey grows).
+      //      Only when the region's OWN colour found (almost) nothing in the
+      //      photo — a mis-shaped region that merely overlaps a neighbour
+      //      (too-big hair over the face) still has its own pixels and must
+      //      keep its findings: they are exactly what fixes it.
       const labDist = (l: ArrayLike<number>, k: number) => Math.hypot((l[0] - cen[k * 3]) * wL, l[1] - cen[k * 3 + 1], l[2] - cen[k * 3 + 2]);
+      const ownPx = new Float64Array(nR);
+      for (const p of fgIdx) if (refRegion[p] >= 0) ownPx[refRegion[p]]++;
       for (let i = 0; i < nR; i++) {
-        if (!scored[i]) continue;
+        if (!scored[i] || ownPx[i] >= 0.25 * areaM[i]) continue;
         let n = 0;
         const m = [0, 0, 0];
         for (let p = 0; p < N; p++) if (M.labels[p] === i && R.mask[p]) { m[0] += lab[p * 3]; m[1] += lab[p * 3 + 1]; m[2] += lab[p * 3 + 2]; n++; }
@@ -1061,7 +1073,7 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
           else if (cnt[k] && d < od) { od = d; other = k; }
         }
         if (other >= 0 && od < T.ambiguousDeltaE && od < own) {
-          for (const j of groups[other].members) noteLow(i, j, `its photo colour matches ${regions[j].name}'s (ΔE ${Math.round(od)})`);
+          for (const j of groups[other].members) noteLow(i, j, `${regions[i].name} looks ${regions[j].name}-coloured in the photo, ΔE ${Math.round(od)}`);
         }
       }
       // (b) regions sharing one colour cluster that TOUCH in the model: the

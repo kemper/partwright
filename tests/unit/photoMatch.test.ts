@@ -11,6 +11,8 @@ interface FigOpts {
   hairWidth?: number; shoeWidth?: number; shortsColor?: Rgb; noise?: number;
   /** A ball disc drawn on top (figure units): centre u/v, radius r. */
   ball?: { u: number; v: number; r: number; color?: Rgb };
+  /** Where the hair cap ends on the head (figure units, default 15). */
+  hairLine?: number;
   /** Per-pixel backdrop (overrides bg) — e.g. a busy halftone. */
   bgFn?: (x: number, y: number) => Rgb;
 }
@@ -33,7 +35,7 @@ function figure(o: FigOpts = {}): RgbaImage {
     let c: Rgb = o.bgFn ? o.bgFn(x, y) : bg;
     // head: ellipse centred v=25, radius 25 (wide) — hair on top third
     const hx = u / hairW, hy = (v - 25) / 25;
-    if (hx * hx + hy * hy <= 1) c = v < 15 ? C.hair : C.skin;
+    if (hx * hx + hy * hy <= 1) c = v < (o.hairLine ?? 15) ? C.hair : C.skin;
     else if (v >= 50 && v < 75 && Math.abs(u) < 18) c = C.jersey;
     else if (v >= 75 && v < 88 && Math.abs(u) < 16) c = o.shortsColor ?? C.shorts;
     else if (v >= 88 && v < 100 && Math.abs(Math.abs(u) - 9) < shoeW / 2) c = C.shoes;
@@ -248,6 +250,24 @@ describe('photoMatch — ambiguous regions, merge & ignore', () => {
     expect(r.regions.find((x) => x.name === 'shoes')!.lowConfidence).toBeUndefined();
   });
 
+  it('a tiny confusable part does not make its big neighbour low-confidence', () => {
+    const tiny = { ball: { u: -14, v: 60, r: 2.5 } };
+    const { model, labels } = labelled(tiny, WITH_BALL);
+    const r = photoMatch({ reference: figure(tiny), model, modelLabels: labels, regions: WITH_BALL });
+    expect(r.regions.find((x) => x.name === 'jersey')!.lowConfidence).toBeUndefined();
+    expect(r.regions.find((x) => x.name === 'ball')!.lowConfidence).toMatch(/jersey/);
+  });
+
+  it('a mis-shaped region over a neighbour keeps its findings (not low-confidence)', () => {
+    // Model hair reaches far down the face: the photo under it is mostly skin,
+    // but the hair colour still finds the photo's hair — so hair must keep its
+    // "taller than in the photo" finding instead of being suppressed.
+    const r = photoMatch({ reference: figure(), model: figure({ hairLine: 38, bg: [255, 255, 255] }), regions: REGIONS });
+    const hair = r.regions.find((x) => x.name === 'hair')!;
+    expect(hair.lowConfidence).toBeUndefined();
+    expect(r.worst.join('\n')).toMatch(/hair: model (region \d+% larger|\d+% taller)/);
+  });
+
   it('merge scores a group as one region and clears the flag', () => {
     const { model, labels } = labelled(ballFig, WITH_BALL);
     const r = photoMatch({ reference: figure(ballFig), model, modelLabels: labels, regions: WITH_BALL, merge: [['jersey', 'ball'], ['nope']] });
@@ -273,7 +293,7 @@ describe('photoMatch — ambiguous regions, merge & ignore', () => {
     const ref = figure({ shortsColor: [244, 244, 244] });
     const r = photoMatch({ reference: ref, model: figure({ bg: [255, 0, 255] }), modelBg: [255, 0, 255], regions: REGIONS });
     const shorts = r.regions.find((x) => x.name === 'shorts')!;
-    expect(shorts.lowConfidence ?? '').toMatch(/photo colour matches jersey's/);
+    expect(shorts.lowConfidence ?? '').toMatch(/shorts looks jersey-coloured in the photo/);
     const off = photoMatch({ reference: ref, model: figure({ bg: [255, 0, 255] }), modelBg: [255, 0, 255], regions: REGIONS, tuning: { ambiguousDeltaE: 0 } });
     expect(off.regions.every((x) => !x.lowConfidence)).toBe(true);
   });

@@ -25,8 +25,8 @@
 // `--match-photo front.png@0,0 --match-photo back.png@180,0` (or `@back`) — to
 // score every view from ONE model build: `stats.photoMatches[]` holds each
 // view, `stats.photoMatch` the combined summary (mean silhouetteIoU, minIoU,
-// interleaved worst[]). --match-crop/--match-bg/--match-mask may be given once
-// (all photos; mask: single photo only) or once per photo, in order.
+// interleaved worst[]). --match-crop/--match-bg/--match-pixel-aspect/--match-mask may be
+// given once (all photos; mask: single photo only) or once per photo, in order.
 // Same scorer as the browser's partwright.photoMatch (src/tools/photoMatch.ts).
 //
 // This is a thin back-compat wrapper: the implementation now lives in
@@ -64,7 +64,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: [], matchCrop: [], matchBg: [], matchMask: [], matchBgTol: null, matchBgMode: null, matchExclude: null, matchMerge: [], matchIgnore: null, matchBands: null, matchFit: null, matchOverlay: null, matchPixelAspect: null };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: [], matchCrop: [], matchBg: [], matchMask: [], matchBgTol: null, matchBgMode: null, matchExclude: null, matchMerge: [], matchIgnore: null, matchBands: null, matchFit: null, matchOverlay: null, matchPixelAspect: [] };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -90,7 +90,7 @@ function parseArgs(argv) {
     else if (t === '--match-bands') a.matchBands = Number(argv[++i]);
     else if (t === '--match-fit') a.matchFit = argv[++i];
     else if (t === '--match-overlay') a.matchOverlay = argv[++i];
-    else if (t === '--match-pixel-aspect') a.matchPixelAspect = Number(argv[++i]);
+    else if (t === '--match-pixel-aspect') a.matchPixelAspect.push(argv[++i]);
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -115,12 +115,15 @@ async function main() {
     const crops = pairPerView(a.matchCrop, n, '--match-crop'); if (crops.error) fail(crops.error);
     const bgs = pairPerView(a.matchBg, n, '--match-bg'); if (bgs.error) fail(bgs.error);
     const masks = pairPerView(a.matchMask, n, '--match-mask', false); if (masks.error) fail(masks.error);
+    const aspects = pairPerView(a.matchPixelAspect, n, '--match-pixel-aspect'); if (aspects.error) fail(aspects.error);
     for (let i = 0; i < n; i++) {
       const spec = parsePhotoSpec(a.matchPhoto[i]); if (spec.error) fail(spec.error);
       const { crop, error: cropErr } = parseCrop(crops.values[i]); if (cropErr) fail(cropErr);
       const view = spec.view ?? (views ? views[Math.min(i, views.length - 1)] : { name: 'front', ...NAMED_VIEWS.front });
+      const pixelAspect = aspects.values[i] == null ? null : Number(aspects.values[i]);
+      if (pixelAspect !== null && !(pixelAspect > 0)) fail('--match-pixel-aspect expects a positive number.');
       matchViews.push({
-        photo: resolve(spec.path), view, crop, bg: bgs.values[i],
+        photo: resolve(spec.path), view, crop, bg: bgs.values[i], pixelAspect,
         mask: masks.values[i] ? resolve(masks.values[i]) : null,
         debugPng: a.matchOverlay ? indexedPath(resolve(a.matchOverlay), i) : null,
       });
@@ -129,7 +132,6 @@ async function main() {
   if (a.matchBgTol !== null && !Number.isFinite(a.matchBgTol)) { console.error('--match-bg-tol expects a number.'); process.exit(2); }
   if (a.matchBgMode !== null && !['auto', 'border', 'grabcut'].includes(a.matchBgMode)) fail('--match-bg-mode expects "auto", "border" or "grabcut".');
   if (a.matchBands !== null && !(Number.isInteger(a.matchBands) && a.matchBands >= 2 && a.matchBands <= 60)) fail('--match-bands expects an integer 2–60.');
-  if (a.matchPixelAspect !== null && !(a.matchPixelAspect > 0)) { console.error('--match-pixel-aspect expects a positive number.'); process.exit(2); }
   if (a.matchFit !== null && a.matchFit !== 'height' && a.matchFit !== 'box') { console.error('--match-fit expects "height" or "box".'); process.exit(2); }
   let result;
   if (matchViews.length) {
@@ -143,7 +145,7 @@ async function main() {
         const { results, combined } = await runPhotoMatch(session, result.render, {
           views: matchViews, bgTolerance: a.matchBgTol, bgMode: a.matchBgMode ?? 'auto',
           exclude: list(a.matchExclude), merge: parseMergeGroups(a.matchMerge), ignore: list(a.matchIgnore),
-          bands: a.matchBands, fit: a.matchFit, pixelAspect: a.matchPixelAspect,
+          bands: a.matchBands, fit: a.matchFit,
         });
         // One photo: the per-view result (unchanged shape). Several: the
         // combined summary here + every view under photoMatches[].

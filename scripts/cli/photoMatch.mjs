@@ -74,9 +74,9 @@ async function loadRgba(path) {
  * Score the previewed model against one or more photos (one model build).
  * @param session   a createPreviewSession() handle (its `load` gives SSR access)
  * @param render    PreviewResult.render (positions/triVerts/triColors/triLabel/labelNames)
- * @param opts      { views: [{ photo, view: {name, az, el}, crop?, bg?, mask?, debugPng? }],
+ * @param opts      { views: [{ photo, view: {name, az, el}, crop?, bg?, mask?, pixelAspect?, debugPng? }],
  *                    bgTolerance?, bgMode?, exclude?: string[], merge?: string[][], ignore?: string[],
- *                    bands?: number, fit?: 'height'|'box', pixelAspect?: number }
+ *                    bands?: number, fit?: 'height'|'box', pixelAspect?: number (default for views) }
  * @returns { results: [...per-view], combined | null }
  */
 export async function runPhotoMatch(session, render, opts) {
@@ -119,7 +119,7 @@ export async function runPhotoMatch(session, render, opts) {
       merge: opts.merge ?? [],
       ignore: opts.ignore ?? [],
       fit: opts.fit === 'box' ? 'box' : 'height',
-      pixelAspect: opts.pixelAspect ?? null,
+      pixelAspect: v.pixelAspect ?? opts.pixelAspect ?? null,
       debug: !!v.debugPng,
       tuning,
     });
