@@ -15,7 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
-npm run pr:screenshots -- a.png b.png  # post screenshots as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
+npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -217,18 +217,21 @@ What to capture:
 - **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
 - **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
 
-**How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs`; works in cloud sessions and locally):
+**How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs` + the `Visual proof comment` workflow, `.github/workflows/pr-visual-proof.yml`):
 
 ```bash
 npm run pr:screenshots -- test-results/after.png test-results/mobile.png      # images two per row
 npm run pr:screenshots -- --layout proof.md before.png after.png               # your own layout
-npm run pr:screenshots -- --refresh                                            # re-post the last upload (e.g. right after opening the PR)
+npm run pr:screenshots -- --refresh                                            # ask the workflow to post again
 ```
 
-It pushes the images to the shared, never-merged **`pr-assets`** branch (`<branch-folder>/<stamp>/…`, via git plumbing, so your checkout, index and branch are untouched and screenshots never enter `main`'s history), then creates or updates **one "Visual proof" comment** on the branch's open PR through `gh api` (REST). The newest upload shows inline and earlier uploads collapse to links. It then reads the rendered comment back and **exits non-zero unless GitHub shows every image**, so a broken link can't slip through. Screenshots taken before the PR exists are kept: run it with `--refresh` after opening the PR. Use `--pr N` to target a PR explicitly.
+The script pushes the images to the shared, never-merged **`pr-assets`** branch (`<branch-folder>/<stamp>/…`, URL-safe names, via git plumbing, so your checkout, index and branch are untouched and screenshots never enter `main`'s history). The **workflow** then posts the newest upload as **one "Visual proof" comment** on the PR, authored by `github-actions[bot]` and updated in place on later uploads. It reads the comment back and **fails (red check) unless GitHub renders every image**. The workflow runs when the PR is opened or pushed to, so screenshots uploaded before the PR exists, or before your next push, are picked up automatically. To post right away:
+- **Locally**, the script dispatches the workflow itself.
+- **In a cloud session** it can't (gh may not dispatch workflows there), so it prints the GitHub MCP call to make: `actions_run_trigger` with `method: run_workflow`, `workflow_id: pr-visual-proof.yml`, `ref: main`, `inputs: {pr: "N", upload: "<stamp>"}`.
+Use `--pr N` to target a PR explicitly, and `--branch <name>` to act for a branch you don't have checked out.
 
-- **Never hand-write image links into the PR body, and upload from the session that posts.** In cloud sessions the GitHub proxy defangs image links and plain links it can't trace to files this session pushed itself: it wraps the URL in backticks, so GitHub reads it as a relative link back to the PR. That is what broke visual proof in mid-October 2026 PRs (kemper/partwright#1054, #1060, #1062, #1063). It matches paths literally, so a percent-encoded name (spaces, accents, parentheses) is defanged too. The script stores images under URL-safe names, generates every link, and its render check catches anything defanged. If the check fails on `--refresh` in a new session, re-run with the image files to re-upload them. If the body should mention the screenshots, write a line like "Visual proof: see the comment below."
-- **Before/after layout:** write a small Markdown file that references images by file name (any directory prefix is ignored), and pass it with `--layout`. The script pins the links:
+- **Never write image links into a PR body or comment yourself.** In cloud sessions the GitHub proxy defangs image links in text a session posts, inconsistently: it wraps some URLs in backticks, so GitHub reads them as relative links back to the PR. That is what broke visual proof in mid-October 2026 PRs (kemper/partwright#1054, #1060, #1062, #1063). Comments the workflow posts don't go through that proxy. If the PR body should mention the screenshots, write a line like "Visual proof: see the comment below."
+- **Before/after layout:** write a small Markdown file that references images by file name (any directory prefix is ignored), and pass it with `--layout`. The workflow pins the links:
 
   ```md
   The panel no longer overlaps the toolbar at 375 px.
@@ -238,11 +241,11 @@ It pushes the images to the shared, never-merged **`pr-assets`** branch (`<branc
   | ![before](before.png) | ![after](after.png) |
   ```
 
-- **The comment is yours, not a review.** When it comes back as a PR activity event, treat it as an echo of your own post: no action needed.
-- **`pr-assets` is append-only.** Never merge, rebase or delete it; older PR comments link to its commits.
-- **Local sessions** can also use `gh pr comment <n> --attach 'shot.png'` (gh ≥ 2.99, needs GraphQL, which cloud sessions block). `pr:screenshots` is the default everywhere.
+- **The comment is the bot's, not a review.** When it, or the workflow's check, comes back as a PR activity event, it's an echo of your own upload: no action needed, unless the check is red.
+- **`pr-assets` is append-only.** Never merge, rebase or delete it; PR comments link to its commits.
+- **Two PRs from one branch** share a folder. Pick the upload explicitly with the dispatch input `upload: "<stamp>"`, which the script prints.
 
-Re-shoot when a later push changes the visuals; the proof must match the current head, and a re-upload updates the same comment. "The Visual proof comment shows the current shots" is part of the mark-ready gate.
+Re-shoot when a later push changes the visuals; the proof must match the current head, and a re-upload updates the same comment. "The Visual proof comment shows the current shots and its check is green" is part of the mark-ready gate.
 
 **Scope by change type:**
 

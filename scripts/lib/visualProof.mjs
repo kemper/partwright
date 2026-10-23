@@ -116,28 +116,21 @@ export function resolveProofMarkdown(markdown, batch, urlFor) {
 }
 
 /**
- * The full comment body. The newest batch is shown inline (its proof.md
- * layout, else the auto layout); earlier batches collapse to links.
+ * The full comment body: the newest batch inline (its proof.md layout, else the
+ * auto layout). Earlier uploads are only counted, not linked: a link to a file
+ * this session didn't push gets defanged by the cloud proxy (see safeFileName),
+ * so links to past uploads from other sessions would break on a later refresh.
  */
 export function renderComment({ repoSlug, sha, batches, proofMarkdown = null }) {
   const urlFor = (path) => imageUrl(repoSlug, sha, path);
   const latest = batches[batches.length - 1];
   const out = [COMMENT_MARKER, '## Visual proof', ''];
   out.push(proofMarkdown ? resolveProofMarkdown(proofMarkdown.trim(), latest, urlFor) : autoLayout(latest.images, urlFor));
-  const earlier = batches.slice(0, -1).reverse();
-  if (earlier.length > 0) {
-    out.push('', `<details><summary>Earlier screenshots (${earlier.length} upload${earlier.length === 1 ? '' : 's'})</summary>`, '');
-    for (const b of earlier) {
-      // Names from before uploads were made URL-safe would get their links
-      // defanged (see safeFileName), so those are listed without one.
-      const entry = (img) => (safeFileName(img.name) === img.name ? `[${title(img.name)}](${urlFor(img.path)})` : title(img.name));
-      out.push(`- ${stampLabel(b.stamp)}: ${b.images.map(entry).join(' · ')}`);
-    }
-    out.push('', '</details>');
-  }
+  const earlier = batches.length - 1;
+  const replaced = earlier > 0 ? ` It replaces ${earlier} earlier upload${earlier === 1 ? '' : 's'}.` : '';
   out.push(
     '',
-    `<sub>Uploaded ${stampLabel(latest.stamp)} with <code>npm run pr:screenshots</code> (pr-assets@${sha.slice(0, 7)}). This comment is updated in place on each new upload.</sub>`,
+    `<sub>Uploaded ${stampLabel(latest.stamp)} with <code>npm run pr:screenshots</code> (pr-assets@${sha.slice(0, 7)}).${replaced} This comment is updated in place on each new upload.</sub>`,
   );
   return out.join('\n');
 }
