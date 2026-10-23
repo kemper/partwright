@@ -85,9 +85,12 @@ describe('#1059 codegen', () => {
   it('shag + captured knobs', () => {
     const shag = specToCode(spec(s => { s.hair = { ...s.hair, style: 'shag', notched: false, crownSize: 1.4, backWidth: 0.5, tipWidth: 0.6, spikiness: 2 }; }));
     expect(shag).toContain("F.hair(rig, { style: 'shag', length: 'mid', notched: false, crownSize: 1.4, backWidth: 0.5, tipWidth: 0.6, on: head })");
-    const cap = specToCode(spec(s => { s.hair = { ...s.hair, style: 'captured', spikiness: 1.8, smooth: 0.3, mirror: true, tilt: 5, windowScale: 1.1, fringe: 0.1, crownSize: 2 }; }));
-    expect(cap).toContain("F.hair(rig, { style: 'captured', length: 'mid', spikiness: 1.8, smooth: 0.3, mirror: true, tilt: 5, windowScale: 1.1, fringe: 0.3, on: head })");
+    const cap = specToCode(spec(s => { s.hair = { ...s.hair, style: 'captured', spikiness: 1.8, smooth: 0.3, mirror: true, tilt: 5, windowScale: 1.1, capturedFringe: 0.6, crownSize: 2 }; }));
+    expect(cap).toContain("F.hair(rig, { style: 'captured', length: 'mid', spikiness: 1.8, smooth: 0.3, mirror: true, tilt: 5, windowScale: 1.1, fringe: 0.6, on: head })");
     expect(specToCode(spec(s => { s.hair.style = 'captured'; }))).toContain("F.hair(rig, { style: 'captured', length: 'mid', on: head })");
+    // The lock styles' `fringe` (kept across a style switch) never reaches captured —
+    // it was ignored there before captured had its own knob (back-compat).
+    expect(specToCode(spec(s => { s.hair = { ...s.hair, style: 'captured', fringe: 0.5 }; }))).toContain("F.hair(rig, { style: 'captured', length: 'mid', on: head })");
   });
 
   it('collar + cuff trim splits the parted top into top + trim', () => {
@@ -150,6 +153,12 @@ describe('#1059 codegen', () => {
     expect(specToCode(spec(s => { s.clothing.feet = { ...s.clothing.feet, style: 'toy', cleats: 1 }; }))).toContain('cleats: 2');
   });
 
+  it('socks stop at the ankle when there is no footwear', () => {
+    const bare = body(specToCode(spec(s => { s.clothing.socks.on = true; s.clothing.feet.on = false; })));
+    expect(bare).toContain("bone: 'lowerLeg', from: -0.1, to: 1, radius: rig.r.lowerLeg * 2.6");
+    expect(bare).not.toContain('to: 1.1');
+  });
+
   it('knee-length shorts', () => {
     expect(specToCode(spec(s => { s.clothing.pants.length = 'shorts'; }))).toContain("F.clothing.pants(rig, { leg: 'slim', rise: 'mid', length: 'shorts' })");
     expect(specToCode(spec(s => { s.clothing.pants.length = 'shorts'; s.clothing.pants.hem = 0.7; }))).toContain("length: 'shorts', hem: 0.7 }");
@@ -199,13 +208,63 @@ describe('#1059 validation + schema', () => {
     expect(validateSpec(normalizeSpec({ pose: { hold: { cupL: null } }, colors: { sole: null } }))).toEqual([]);
   });
 
+  it('print text must be printable and not blank (validation, not build time)', () => {
+    const errs = (text: string) => validateSpec(normalizeSpec({ clothing: { top: { print: [{ text }] } } })).join('\n');
+    for (const ok of ['N', '10', "O'Neil", 'A&B #7', 'éè', '★']) expect(errs(ok), ok).toBe('');
+    for (const bad of ['   ', '', 'a\nb', 'a\u2028b', 'a\u2029b', 'tab\t', 'zw\u200bj']) expect(errs(bad), JSON.stringify(bad)).toContain('clothing.top.print[0].text');
+    expect(validateSpec(normalizeSpec({ pose: { preset: 'x'.repeat(33) } })).join('')).toContain('pose.preset must have at most 32');
+  });
+
   it('the JSON schema carries the print list and the new enums (Gemini-safe keywords only)', () => {
-    const s = specJsonSchema() as { properties: { clothing: { properties: { top: { properties: { print: { type: string; items: { properties: Record<string, { enum?: string[] }> } } } } } } } };
+    const s = specJsonSchema() as { properties: { clothing: { properties: { top: { properties: { print: { type: string; maxItems: number; items: { properties: Record<string, { enum?: string[] }> } } } } } } } };
     const print = s.properties.clothing.properties.top.properties.print;
     expect(print.type).toBe('array');
+    expect(print.maxItems).toBe(6);
     expect(print.items.properties.where.enum).toEqual(['chest', 'back']);
     const json = JSON.stringify(specJsonSchema());
     for (const k of ['additionalProperties', 'exclusiveMinimum', 'exclusiveMaximum', '$schema']) expect(json).not.toContain(k);
+  });
+});
+
+// ---- header / body injection hardening ---------------------------------------
+
+describe('generated code is injection-safe for hostile string fields', () => {
+  const HOSTILE = [
+    '\u2028globalThis.__pwned = 1; //',
+    '\u2029globalThis.__pwned = 2; //',
+    "'); globalThis.__pwned = 3; ('",
+    '\\\'); globalThis.__pwned = 4; //',
+    '*/ globalThis.__pwned = 5; /*',
+    '\nglobalThis.__pwned = 6; //',
+    '\r\nglobalThis.__pwned = 7; //',
+    '"}\u2028globalThis.__pwned = 8; //',
+  ];
+
+  /** A do-nothing api: every property is a callable that returns the same proxy. */
+  const stubApi = (): unknown => {
+    const fn: unknown = new Proxy(function () { /* stub */ }, {
+      get: (_t, k) => (k === Symbol.toPrimitive ? () => 0 : fn),
+      apply: () => fn,
+    });
+    return fn;
+  };
+
+  it('neither the header nor the body lets a string field run as code, and the spec round-trips', () => {
+    for (const h of HOSTILE) {
+      // Straight to the codegen (bypassing validateSpec), as a hand-edited header could.
+      const s = spec(x => {
+        x.pose.preset = h;
+        x.clothing.top.print = [{ text: h, where: 'chest', size: 0.6, x: 0, z: 0, color: '#111111', font: 'bold' }];
+      });
+      const code = specToCode(s);
+      expect(code.split('\n')[0], JSON.stringify(h)).not.toMatch(/[\u2028\u2029]/);
+      delete (globalThis as { __pwned?: unknown }).__pwned;
+      expect(() => new Function('api', code)(stubApi()), JSON.stringify(h)).not.toThrow();
+      expect((globalThis as { __pwned?: unknown }).__pwned, JSON.stringify(h)).toBeUndefined();
+      expect(decodeSpecComment(code), JSON.stringify(h)).toEqual(normalizeSpec(s));
+      // …and validation rejects the lettering outright.
+      if (/[\u2028\u2029\n\r]/.test(h)) expect(validateSpec(s).join('\n')).toContain('clothing.top.print[0].text');
+    }
   });
 });
 

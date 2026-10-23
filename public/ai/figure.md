@@ -52,8 +52,8 @@ The spec (v2) mirrors this API:
           lockShape, swoop /* anime only */, chunk, spike /* anime + shag */,
           crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare,
           notched, crownSize, backWidth, tipWidth /* shag only */,
-          preset, spikiness, smooth, mirror, tilt, windowScale /* captured only */,
-          fringe /* mop + anime + shag + captured */, seed /* mop + anime + shag */ },
+          preset, spikiness, smooth, mirror, tilt, windowScale, capturedFringe /* captured only */,
+          fringe, seed /* mop + anime + shag */ },
   clothing: {
     top: { on, sleeve, length,
            trim: { collar, cuffs },                      // contrast bands (colors.trim)
@@ -113,7 +113,7 @@ a few points of it on `photoMatch`. The loop:
    clothing, colours and anything held.
 2. **Fill in a CharacterSpec** — `proportions`, `headScale`, `headSink`, hair `style`
    (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`/`backWidth`
-   for a shaggy layered jet-black mop; `'captured'` + `volume`/`fringe` for the
+   for a shaggy layered jet-black mop; `'captured'` + `volume`/`capturedFringe` for the
    captured Tsubasa hairdo), sleeves / knee shorts (`pants.length: 'shorts'`) /
    socks / footwear (`style: 'toy'`, `cleats`), collar + cuff `trim`, chest / back
    `print` lettering, bead eyes, `colors` sampled from the photo, `pose.hold`
@@ -145,7 +145,7 @@ buildCharacter({
           hold: { kind: 'ball', radius: 10.5, cupR: 'under', handScale: 1.3, color: '#111111' } },
   face: { shape: 'round', lids: 'none', nose: 'straight', brows: 'arched', ears: 'round', mouth: false,
           eyeStyle: 'bead', eyeSize: 1.65, browThickness: 3, browWidth: 1.5, jaw: 1.4, cheek: 1.1 },
-  hair: { style: 'shag', seed: 11, spike: 0.55, flare: 0.8, backWidth: 0.7 },   // or { style: 'captured', volume: 0.7, fringe: 0.7 }
+  hair: { style: 'shag', seed: 11, spike: 0.55, flare: 0.8, backWidth: 0.7 },   // or { style: 'captured', volume: 0.7, capturedFringe: 0.7 }
   clothing: {
     top: { sleeve: 'short', trim: { collar: true, cuffs: true },
            print: [{ text: 'N', x: 0.55, z: 0.24, size: 0.55, color: '#1f5fc8' },

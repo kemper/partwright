@@ -31,7 +31,7 @@ import {
   LOCK_HAIR_STYLES,
   BUILDS, SEXES, FACE_SHAPES, LID_STYLES, NOSE_TYPES, LIP_SHAPES, BROW_SHAPES,
   HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES, PANTS_RISES, PRINT_FONTS,
-  PRINT_DEFAULT,
+  PRINT_DEFAULT, isPrintableText,
 } from '../figure/characterSpec';
 
 /** The slice of the console API the panel drives. */
@@ -120,7 +120,7 @@ function colorRow(label: string, value: string, onChange: (v: string) => void): 
   const swatch = createColorSwatch({
     initialHex: value,
     title: label,
-    className: 'w-11 h-11 md:w-8 md:h-6 shrink-0 rounded border border-zinc-600 hover:border-white/70 cursor-pointer transition-colors',
+    className: 'w-11 h-11 md:w-8 md:h-6 shrink-0 rounded border border-zinc-600 [@media(hover:hover)]:hover:border-white/70 cursor-pointer transition-colors',
     onPick: (hex) => onChange(hex),
   });
   return labelledRow(label, swatch.el);
@@ -168,13 +168,30 @@ function toggleRow(label: string, value: boolean, onChange: (v: boolean) => void
   return row;
 }
 
-function textRow(label: string, value: string, maxLength: number, onChange: (v: string) => void): HTMLElement {
+/** A short text field committed on change. `accept` vets the trimmed value;
+ *  a rejected value reverts the box and explains why with a toast. */
+function textRow(
+  label: string,
+  value: string,
+  maxLength: number,
+  accept: (v: string) => string | null,
+  onChange: (v: string) => void,
+): HTMLElement {
   const input = el('input', `bg-zinc-900 border border-zinc-600 rounded px-1.5 py-0.5 text-[12px] text-zinc-100 w-[7.5rem] ${TOUCH}`);
   input.type = 'text';
   input.value = value;
   input.maxLength = maxLength;
   input.setAttribute('aria-label', label);
-  input.addEventListener('change', () => { if (input.value.trim()) onChange(input.value.trim()); else input.value = value; });
+  input.addEventListener('change', () => {
+    const v = input.value.trim();
+    const problem = accept(v);
+    if (problem) {
+      input.value = value;
+      showToast(problem, { variant: 'warn', source: 'character' });
+      return;
+    }
+    onChange(v);
+  });
   return labelledRow(label, input);
 }
 
@@ -185,7 +202,7 @@ function collapsible(id: string, title: string, open: Set<string>): { wrap: HTML
   const wrap = el('details', 'rounded border border-zinc-700/70 bg-zinc-900/40');
   wrap.dataset.section = id;
   if (open.has(id)) wrap.open = true;
-  const summary = el('summary', `cursor-pointer select-none px-2 py-1 text-[11px] uppercase tracking-wide text-zinc-400 font-semibold hover:text-zinc-200 flex items-center ${TOUCH}`);
+  const summary = el('summary', `cursor-pointer select-none px-2 py-1 text-[11px] uppercase tracking-wide text-zinc-400 font-semibold [@media(hover:hover)]:hover:text-zinc-200 flex items-center ${TOUCH}`);
   // `display: flex` drops the native disclosure marker, so draw our own chevron.
   const chevron = el('span', 'mr-1.5 text-zinc-500');
   chevron.setAttribute('aria-hidden', 'true');
@@ -226,6 +243,10 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   // re-rendering a character after the user dismissed the panel.
   let timer: number | undefined;
   let closed = false;
+  // While Save runs, previews hold off (a preview build would cancel the
+  // save's build); an edit made meanwhile queues one preview for after it.
+  let saving = false;
+  let previewAfterSave = false;
 
   const shell = createToolPanelShell({
     title: 'Character Creator',
@@ -260,8 +281,10 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   // engine shows its own "Rendering…" status.
   const preview = (opts?: { immediate?: boolean }): void => {
     window.clearTimeout(timer);
+    if (saving) { previewAfterSave = true; return; }
     const fire = async () => {
       if (closed) return;
+      if (saving) { previewAfterSave = true; return; }
       if (!(await confirmClobber())) return;
       if (closed) return; // panel was dismissed while the confirm dialog was open
       void api.buildCharacter(spec, { save: false });
@@ -455,7 +478,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     if (spec.hair.style === 'captured') {
       controls.append(sliderRow('Spikiness', spec.hair.spikiness, 0, 3, 0.05, v => onEdit(s => { s.hair.spikiness = v; })));
       controls.append(sliderRow('Smooth', spec.hair.smooth, 0, 1, 0.05, v => onEdit(s => { s.hair.smooth = v; })));
-      controls.append(sliderRow('Fringe', Math.max(0.3, spec.hair.fringe), 0.3, 1.5, 0.05, v => onEdit(s => { s.hair.fringe = v; })));
+      controls.append(sliderRow('Fringe', spec.hair.capturedFringe, 0.3, 2, 0.05, v => onEdit(s => { s.hair.capturedFringe = v; })));
       controls.append(sliderRow('Tilt', spec.hair.tilt, -40, 40, 1, v => onEdit(s => { s.hair.tilt = v; })));
       controls.append(sliderRow('Face window', spec.hair.windowScale, 0.5, 2, 0.05, v => onEdit(s => { s.hair.windowScale = v; })));
       controls.append(toggleRow('Mirror', spec.hair.mirror, v => onEdit(s => { s.hair.mirror = v; })));
@@ -514,7 +537,9 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
       card.setAttribute('role', 'group');
       card.setAttribute('aria-label', `Print ${i + 1}`);
       const edit = (m: (p: typeof item) => void) => onEdit(s => { m(s.clothing.top.print[i]); });
-      card.append(textRow('Text', item.text, 12, v => edit(p => { p.text = v; })));
+      card.append(textRow('Text', item.text, 12,
+        v => (isPrintableText(v) ? null : 'Print text: letters, numbers, punctuation, symbols or spaces only (and not blank).'),
+        v => edit(p => { p.text = v; })));
       card.append(segmentedRow('Where', item.where, [['chest', 'Chest'], ['back', 'Back']], v => { spec.clothing.top.print[i].where = v as typeof item.where; rebuild(); preview(); }));
       card.append(sliderRow('Size', item.size, 0.1, 2.5, 0.05, v => edit(p => { p.size = v; })));
       card.append(sliderRow('Sideways', item.x, -1.5, 1.5, 0.05, v => edit(p => { p.x = v; })));
@@ -557,8 +582,15 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     for (const [key, label] of colorKeys) {
       controls.append(colorRow(label, spec.colors[key] ?? spec.colors.feet, v => onEdit(s => { s.colors[key] = v; })));
     }
-    // Sole: null = the footwear colour until picked.
+    // Sole: null = the footwear colour until picked; the button returns to that.
     controls.append(colorRow('Sole', spec.colors.sole ?? spec.colors.feet, v => onEdit(s => { s.colors.sole = v; })));
+    if (spec.colors.sole !== null) {
+      const sameAsShoes = el('button', `${BUTTON_SMALL_SECONDARY} self-end ${TOUCH}`);
+      sameAsShoes.type = 'button';
+      sameAsShoes.textContent = 'Sole: same as footwear';
+      sameAsShoes.addEventListener('click', () => { spec.colors.sole = null; rebuild(); preview({ immediate: true }); });
+      controls.append(sameAsShoes);
+    }
   }
 
   rebuild();
@@ -567,18 +599,27 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   const saveBtn = el('button', BUTTON_PRIMARY);
   saveBtn.textContent = 'Save to session';
   saveBtn.addEventListener('click', async () => {
-    if (!(await confirmClobber())) return;
-    // Drop a pending (debounced) preview: it would fire mid-save and cancel the
-    // save's build, leaving the stale preview mesh behind.
+    if (saving) return;
+    // Hold previews off from here on — including while the confirm dialog is
+    // open — and drop a pending debounced one: it would fire mid-save and
+    // cancel the save's build, leaving the stale preview mesh behind.
+    saving = true;
     window.clearTimeout(timer);
-    saveBtn.disabled = true;
     const prev = saveBtn.textContent;
-    saveBtn.textContent = 'Saving…';
-    const r = await api.buildCharacter(spec, { save: true });
-    saveBtn.disabled = false;
-    saveBtn.textContent = prev;
-    if (r.error) showToast(r.error, { variant: 'warn', source: 'character' });
-    else showToast('Character saved as a new version', { variant: 'success', source: 'character' });
+    try {
+      if (!(await confirmClobber())) return;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      const r = await api.buildCharacter(spec, { save: true });
+      if (r.error) showToast(r.error, { variant: 'warn', source: 'character' });
+      else showToast('Character saved as a new version', { variant: 'success', source: 'character' });
+    } finally {
+      saving = false;
+      saveBtn.disabled = false;
+      saveBtn.textContent = prev;
+      // An edit made during the save isn't in the saved version — show it now.
+      if (previewAfterSave && !closed) { previewAfterSave = false; preview({ immediate: true }); }
+    }
   });
   shell.footer.appendChild(saveBtn);
 

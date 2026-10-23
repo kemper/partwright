@@ -31,10 +31,11 @@ function fmt(v: number | boolean | string): string {
   // Single-quoted literal, fully escaped — backslash/quote plus any control
   // char (newlines included) that a hand-edited @character header could smuggle
   // into a string value, so the generated code always parses.
-  const s = v.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\u0000-\u001f]/g, c => {
+  const s = v.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\u0000-\u001f\u2028\u2029]/g, c => {
     if (c === '\n') return '\\n';
     if (c === '\r') return '\\r';
     if (c === '\t') return '\\t';
+    if (c === '\u2028' || c === '\u2029') return '\\u' + c.charCodeAt(0).toString(16);
     return '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0');
   });
   return `'${s}'`;
@@ -209,7 +210,8 @@ export function specToCode(spec: CharacterSpec): string {
       });
       hairOpts = `${hairOpts.slice(0, -2)}${knobs ? `, ${knobs.slice(2, -2)}` : ''}, on: head }`;
     } else if (hair.style === 'captured') {
-      // Measured on the real head. The captured fringe floor is 0.3.
+      // Measured on the real head. Captured reads its OWN fringe knob — the
+      // lock styles' `fringe` was ignored here before, so old specs keep their code.
       const knobs = obj({
         preset: hair.preset !== 'tsubasa' ? hair.preset : undefined,
         spikiness: hair.spikiness !== 1 ? hair.spikiness : undefined,
@@ -217,7 +219,7 @@ export function specToCode(spec: CharacterSpec): string {
         mirror: hair.mirror ? true : undefined,
         tilt: hair.tilt !== 0 ? hair.tilt : undefined,
         windowScale: hair.windowScale !== 1 ? hair.windowScale : undefined,
-        fringe: hair.fringe !== 1 ? Math.max(0.3, hair.fringe) : undefined,
+        fringe: hair.capturedFringe !== 1 ? hair.capturedFringe : undefined,
       });
       hairOpts = `${hairOpts.slice(0, -2)}${knobs ? `, ${knobs.slice(2, -2)}` : ''}, on: head }`;
     }
@@ -285,10 +287,12 @@ export function specToCode(spec: CharacterSpec): string {
     // The shin skin grown proud and clipped to the sock span (a trim zone along
     // each lower-leg bone, past the ankle into the shoe); stripes split a band
     // off the top.
-    const from = 1 - socks.height;
-    L.push(`const shins = F.legs(rig).round(rig.r.lowerLeg * 0.28).intersect(F.trimZone(rig, { bone: 'lowerLeg', from: ${fmt(from)}, to: 1.1, radius: rig.r.lowerLeg * 2.6 }));`);
+    // Without footwear the sock ends at the ankle instead of running into the shoe.
+    const sockTo = clothing.feet.on ? 1.1 : 1;
+    const from = Math.min(1 - socks.height, sockTo - 0.05);
+    L.push(`const shins = F.legs(rig).round(rig.r.lowerLeg * 0.28).intersect(F.trimZone(rig, { bone: 'lowerLeg', from: ${fmt(from)}, to: ${fmt(sockTo)}, radius: rig.r.lowerLeg * 2.6 }));`);
     if (stripes > 0) {
-      const to = Math.min(1.1, from + socks.stripeSpan);
+      const to = Math.min(sockTo, from + socks.stripeSpan);
       const n = stripes > 1 ? `, stripes: ${stripes}` : '';
       L.push(`const sock = F.trim(shins, F.trimZone(rig, { bone: 'lowerLeg', from: ${fmt(from)}, to: ${fmt(to)}, radius: rig.r.lowerLeg * 2.8${n} }));`);
       L.push(`const socks = sock.rest.label('socks'), sockStripe = sock.band.label('sockStripe');`);

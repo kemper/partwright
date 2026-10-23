@@ -243,6 +243,10 @@ export interface HairSpec {
   tilt: number;
   /** Captured: face-window size multiplier (0.5–2). */
   windowScale: number;
+  /** Captured: fringe amount (0.3–2). Separate from the lock styles' `fringe`,
+   *  which 'captured' ignored before it had its own knob — so an older spec
+   *  carrying a lock fringe still regenerates the same captured code. */
+  capturedFringe: number;
 }
 
 /** One piece of lettering on the top (`F.emboss`), e.g. a chest initial or a
@@ -348,14 +352,14 @@ function noHold(): HoldSpec {
 }
 
 type LockKnob = 'lockShape' | 'chunk' | 'spike' | 'swoop' | 'fringe' | 'seed' | 'crown' | 'layers' | 'raggedness' | 'flare'
-  | 'notched' | 'crownSize' | 'backWidth' | 'tipWidth' | 'preset' | 'spikiness' | 'smooth' | 'mirror' | 'tilt' | 'windowScale';
+  | 'notched' | 'crownSize' | 'backWidth' | 'tipWidth' | 'preset' | 'spikiness' | 'smooth' | 'mirror' | 'tilt' | 'windowScale' | 'capturedFringe';
 
 /** Library defaults of the lock-style + captured hair knobs (none are emitted at these values). */
 function lockDefaults(): Pick<HairSpec, LockKnob> {
   return {
     lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1,
     notched: true, crownSize: 1, backWidth: 1, tipWidth: 0.4,
-    preset: 'tsubasa', spikiness: 1, smooth: 0, mirror: false, tilt: 0, windowScale: 1,
+    preset: 'tsubasa', spikiness: 1, smooth: 0, mirror: false, tilt: 0, windowScale: 1, capturedFringe: 1,
   };
 }
 
@@ -605,7 +609,7 @@ type FieldSpec =
   | { t: 'num'; min?: number; max?: number; nullable?: boolean; d: string }
   | { t: 'bool'; d: string }
   | { t: 'color'; nullable?: boolean; d: string }
-  | { t: 'str'; minLen?: number; maxLen?: number; d: string }
+  | { t: 'str'; minLen?: number; maxLen?: number; printable?: boolean; d: string }
   | { t: 'headScale'; d: string }
   | { t: 'list'; item: FieldSpec; max: number; d: string }
   | { t: 'obj'; fields: Record<string, FieldSpec>; d: string };
@@ -638,7 +642,7 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     mittens: b('Fingerless vinyl-toy mitten hands.'),
   }, 'Body proportions.'),
   pose: o({
-    preset: { t: 'str', d: 'UI label of the last pose preset (ignored by codegen).' },
+    preset: { t: 'str', maxLen: 32, d: 'UI label of the last pose preset (ignored by codegen).' },
     armL: joint('Left arm (ignored while holding a ball).'),
     armR: joint('Right arm (ignored while holding a ball).'),
     legL: joint('Left leg.'),
@@ -703,13 +707,14 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     mirror: b('captured only: mirror the hairdo left↔right.'),
     tilt: n('captured only: tilt the hairdo forward(+)/back (deg) −40–40.', -40, 40),
     windowScale: n('captured only: face-window size 0.5–2 (1).', 0.5, 2),
-  }, 'Hair (captured also reads volume, length and fringe — fringe min 0.3 there).'),
+    capturedFringe: n('captured only: fringe amount 0.3–2 (1). (`fringe` is the lock styles\' knob.)', 0.3, 2),
+  }, 'Hair (captured also reads volume and length).'),
   clothing: o({
     top: o({
       on: b('Wear a top.'), sleeve: e(SLEEVES, 'Sleeves.'), length: e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh."),
       trim: o({ collar: b('Contrast collar band (colors.trim).'), cuffs: b('Contrast sleeve cuffs (colors.trim; needs sleeves).') }, 'Collar / cuff trim.'),
       print: { t: 'list', max: 6, d: "Lettering / numbers on the top, e.g. [{ text: 'N', where: 'chest', x: 0.55 }, { text: '10', where: 'back', size: 1 }]. Each paints its own colour.", item: o({
-        text: { t: 'str', minLen: 1, maxLen: 12, d: 'The letters / digits (1–12 characters).' },
+        text: { t: 'str', minLen: 1, maxLen: 12, printable: true, d: 'The letters / digits (1–12 characters: letters, numbers, punctuation, symbols and spaces; not blank).' },
         where: e(PRINT_PLACES, "'chest' (front) or 'back'."),
         size: n('Lettering height in chest half-widths 0.1–2.5 (0.6; a big back number ≈ 1).', 0.1, 2.5),
         x: n("Sideways offset in chest half-widths, + = the figure's left (−1.5–1.5).", -1.5, 1.5),
@@ -749,6 +754,15 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
 };
 
 const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+/** Lettering allow-list: Unicode letters / numbers / punctuation / symbols and
+ *  plain spaces only — no control, format or line/paragraph-separator
+ *  characters (U+2028/U+2029 are JS line terminators). */
+const PRINTABLE_RE = /^[\p{L}\p{N}\p{P}\p{S} ]+$/u;
+
+/** True when `s` is printable garment lettering (see PRINTABLE_RE) and not blank. */
+export function isPrintableText(s: string): boolean {
+  return PRINTABLE_RE.test(s) && s.trim().length >= 1;
+}
 
 /** Validate a (normalized) spec against the field tree: enums, numeric ranges
  *  (the figure library's own bounds), colours, booleans and unknown keys.
@@ -776,6 +790,10 @@ export function validateSpec(spec: unknown): string[] {
         return;
       case 'str':
         if (typeof v !== 'string') { errs.push(`${path} must be a string`); return; }
+        if (f.printable && !isPrintableText(v)) {
+          errs.push(`${path} must be letters, numbers, punctuation, symbols or spaces, with at least one non-space (got ${JSON.stringify(v)})`);
+          return;
+        }
         if (f.minLen !== undefined && v.length < f.minLen) errs.push(`${path} must have at least ${f.minLen} character(s)`);
         if (f.maxLen !== undefined && v.length > f.maxLen) errs.push(`${path} must have at most ${f.maxLen} characters (got ${v.length})`);
         return;
@@ -816,7 +834,7 @@ export function specJsonSchema(): Record<string, unknown> {
   const conv = (f: FieldSpec): Record<string, unknown> => {
     switch (f.t) {
       case 'enum': return { type: 'string', enum: [...f.values], description: f.d };
-      case 'list': return { type: 'array', description: f.d, items: conv(f.item) };
+      case 'list': return { type: 'array', description: f.d, maxItems: f.max, items: conv(f.item) };
       case 'num': {
         const s: Record<string, unknown> = { type: 'number', description: f.d };
         if (f.min !== undefined) s.minimum = f.min;
@@ -844,7 +862,11 @@ const HEADER_RE = /^\s*\/\/\s*@character\s+v(\d+)\s+(\{.*\})\s*$/m;
 
 /** The one-line header comment that embeds the spec in generated code. */
 export function encodeSpecComment(spec: CharacterSpec): string {
-  return `// @character v${SPEC_VERSION} ${JSON.stringify(spec)}`;
+  // JSON.stringify leaves U+2028 / U+2029 raw, and JS treats both as line
+  // terminators — a string field carrying one would end this `//` comment and
+  // run the rest as code. Escape them (JSON.parse reads `\u2028` back exactly).
+  const json = JSON.stringify(spec).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  return `// @character v${SPEC_VERSION} ${json}`;
 }
 
 /** Recover a spec from generated code's header comment (migrating an older
