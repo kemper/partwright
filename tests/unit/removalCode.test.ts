@@ -7,6 +7,11 @@ describe('removal code lines', () => {
     expect(removePartCall('it\'s "x"')).toBe('api.removePart("it\'s \\"x\\"");');
   });
 
+  it('writes OpenSCAD syntax for scad', () => {
+    expect(removePartCall('lid', 'scad')).toBe('remove_part("lid");');
+    expect(removePieceCall([1, 2.5, -3], 'scad')).toBe('remove_piece([1, 2.5, -3]);');
+  });
+
   it('rounds piece points and avoids -0', () => {
     expect(removePieceCall([1.234567, -0.00001, 30])).toBe('api.removePiece([1.2346, 0, 30]);');
   });

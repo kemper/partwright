@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, type BrepShape } from '../brepRuntime';
+import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
@@ -162,9 +162,21 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     },
   });
 
+  // Parts deleted in code via `api.removePart(name)` (the object list's ✕):
+  // a later `BREP.label(shape, name)` returns an empty shape. Must run before
+  // the label, so the ✕ inserts it at the top of the code.
+  const removedParts = new Set<string>();
+  const removePart = (name: unknown): void => {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new Error("api.removePart(name): name must be a non-empty string naming a BREP.label(...) part, e.g. api.removePart('lid')");
+    }
+    removedParts.add(name);
+  };
+
   const api = {
     BREP,
     Manifold,
+    removePart,
     CrossSection: manifoldModule.CrossSection,
     imports: brepImports,
     meshImports,
@@ -180,6 +192,7 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
   let shape: BrepShape | null = null;
   let userScriptError: { error: string; diagnostics?: ReturnType<typeof runtimeDiagnostic> } | null = null;
   try {
+    setBrepRemovedParts(removedParts);
     const fn = new Function('api', `"use strict";\n${jsCode}`);
     const result = fn(api) as unknown;
     if (!result || typeof result !== 'object' || !('_shape' in result)) {
@@ -198,6 +211,8 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
       error: msg,
       diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, undefined, 'JavaScript'),
     };
+  } finally {
+    setBrepRemovedParts(null);
   }
 
   if (userScriptError || !shape) {

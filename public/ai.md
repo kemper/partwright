@@ -617,14 +617,24 @@ Three words, three different things — keep them straight, especially when a us
 
 **Hiding a part or piece** (the eye on its row in the rail, or `setObjectPartHidden('handle')` / `setObjectPartHidden({ piece: 1 }, false)`) is view-only: the triangles simply aren't drawn, so you can see inside or behind it. The code, saved versions, exports and `renderViews` are unchanged. A fused part leaves an opening where it was, since its surface is just gone from view. Hidden state is per tab and per object, survives re-runs, and resets piece hides when the pieces change. To take a part out of the model itself, delete it instead.
 
-**Deleting a part or piece** (the ✕ on its row in the rail, or `deleteObjectPart('handle')` / `deleteObjectPart({ piece: 1 })`) works on manifold-js objects and stays parametric — it writes one line at the top of the code and saves a version:
+**Deleting a part or piece** (the ✕ on its row in the rail, or `deleteObjectPart('handle')` / `deleteObjectPart({ piece: 1 })`) stays parametric — it writes one line at the top of the code and saves a version:
 
 ```js
 api.removePart('handle');       // a later api.label(shape, 'handle') returns an empty Manifold
 api.removePiece([-70, 0, 3]);   // after the run, drop the separate piece touching this point
 ```
 
-`api.removePart` must run **before** the `api.label` it cancels (it throws otherwise), so keep it at the top. Because the labelled shape becomes empty, removing a part that was used as a *cutter* (e.g. `.subtract(api.label(cavity, 'inside'))`) removes the cut too. `api.removePiece` takes a point on (or in) the piece rather than an index, so the right piece stays removed when edits elsewhere reorder the pieces. Delete the line to bring the part back. Parts detected on an imported mesh can't be removed this way.
+`api.removePart` must run **before** the `api.label` it cancels (it throws otherwise), so keep it at the top. Because the labelled shape becomes empty, removing a part that was used as a *cutter* (e.g. `.subtract(api.label(cavity, 'inside'))`) removes the cut too. `api.removePiece` takes a point on (or in) the piece rather than an index, so the right piece stays removed when edits elsewhere reorder the pieces. Delete the line to bring the part back.
+
+Per engine:
+
+| Object | Part delete | Piece delete |
+|---|---|---|
+| manifold-js | `api.removePart('name')` | `api.removePiece([x, y, z])` |
+| Part detected on an import (`api.importWithParts`) | `api.removePart('name')` — the part's triangles are dropped and each opening it leaves is capped flat, so the import stays a closed solid | as manifold-js |
+| OpenSCAD | `remove_part("name");` — drops that `label("name")` top-level object | `remove_piece([x, y, z]);` |
+| BREP (replicad) | `api.removePart('name')` — `BREP.label(shape, 'name')` returns an empty shape (STEP export follows) | not supported yet — label the piece and delete the part |
+| Voxel | (no parts) | `api.removePiece([x, y, z])` — deletes that face-connected piece's voxels |
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 

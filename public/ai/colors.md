@@ -342,7 +342,10 @@ label("post") translate([0,20,0]) cylinder(r=2, h=8);
 ```
 
 Then `paintByLabel({label:'body', color:[1,0,0]})` works exactly like
-the manifold-js case. Constraints:
+the manifold-js case. To delete a labelled object or a separate piece
+(what the object list's ✕ writes), add at the top of the file
+`remove_part("wheel");` or `remove_piece([x, y, z]);` — the object, or
+the piece touching that point, is dropped after compiling. Constraints:
 
 - **Top-level only.** Labels inside a SCAD boolean (the `{ ... }` of
   `difference()`, `intersection()`, `union()`, `hull()`, etc.) are

@@ -221,6 +221,7 @@ const list = BREP.listEdges(shape, filter?);
 // Note: BREP.label takes NO color argument (unlike manifold-js api.label).
 // Replicad models always render gray until you call paintByLabel after runAndSave.
 BREP.label(shape, 'name');                      // wrap a shape with a label
+api.removePart('name');                         // at the TOP of the code: a later BREP.label(…, 'name') returns an empty shape (the object list's part ✕ writes this)
 
 // Self-coloring — pass an optional { color } (hex '#rrggbb' / '#rgb', or an
 // [r,g,b] array in 0..1), exactly like the manifold-js `api.label` 3rd arg.

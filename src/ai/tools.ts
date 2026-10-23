@@ -1212,7 +1212,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObjectPart',
-    description: "Delete one part (by api.label name) or one piece (0-based index) of the current JS (manifold-js) object, as listed by listObjectParts — the same as its ✕ in the object list. Inserts api.removePart('name') or api.removePiece([x,y,z]) at the top of the code, re-runs, and saves a version (earlier versions keep the part). Refuses on other engines, on a single-piece object, and when the part isn't created by an api.label call in the code (e.g. detected on an import) — then the code is left unchanged. Pass exactly one of part / piece.",
+    description: "Delete one part (by label name) or one piece (0-based index) of the current object, as listed by listObjectParts — the same as its ✕ in the object list. Inserts a removal line at the top of the code (api.removePart('name') / api.removePiece([x,y,z]) in JS, BREP and voxel objects; remove_part(\"name\"); / remove_piece([x,y,z]); in OpenSCAD), re-runs, and saves a version (earlier versions keep the part). A part detected on an imported mesh is cut out and its opening capped. Refuses piece deletes on BREP objects and on a single-piece object, and restores the code if the target doesn't actually go away. Pass exactly one of part / piece.",
     input_schema: {
       type: 'object',
       properties: {

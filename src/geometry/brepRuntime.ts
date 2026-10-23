@@ -65,6 +65,30 @@ let initPromise: Promise<void> | null = null;
 // itself is a singleton; the engine drains and resets it between runs.
 let brepAllocations: BrepShape[] = [];
 
+// Part names removed in code via `api.removePart(name)` for the run in
+// progress — the engine hands over its live set before evaluating user code
+// and clears it after. `BREP.label(shape, name)` returns an empty shape for a
+// removed name, so the part drops out of every boolean it feeds (OCCT treats
+// an empty compound as a no-op operand). Null outside a run.
+let removedLabels: ReadonlySet<string> | null = null;
+
+/** Point `BREP.label` at the current run's removed part names (null to clear). */
+export function setBrepRemovedParts(names: ReadonlySet<string> | null): void {
+  removedLabels = names;
+}
+
+/** An empty BREP shape — what a removed part's `BREP.label` returns. */
+function emptyShape(): AnyShape {
+  return replicadModule.makeCompound([]);
+}
+
+/** True for a shape with no faces (e.g. a removed part), which fillet/chamfer
+ *  would otherwise reject with "no edge was selected". */
+function isEmptyShape(shape: AnyShape): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (shape.faces as any[]).length === 0;
+}
+
 function pushBrepAllocation(s: BrepShape): void {
   brepAllocations.push(s);
 }
@@ -295,6 +319,7 @@ function wrapInner(
       if (typeof radius !== 'number' || !isFinite(radius) || radius <= 0) {
         throw new Error('BREP.fillet(radius): radius must be a positive number.');
       }
+      if (isEmptyShape(shape)) return wrap(shape.clone(), faceLabels, labelSignatures, labelColors);
       // Pre-check: when a filter is given, ask the underlying EdgeFinder how
       // many edges it actually matches before we hand the work to OCCT. A
       // zero-match filter and a too-large radius both surface as the same
@@ -318,6 +343,7 @@ function wrapInner(
       if (typeof distance !== 'number' || !isFinite(distance) || distance <= 0) {
         throw new Error('BREP.chamfer(distance): distance must be a positive number.');
       }
+      if (isEmptyShape(shape)) return wrap(shape.clone(), faceLabels, labelSignatures, labelColors);
       if (filter) {
         const matched = countMatchedEdges(shape, filter);
         if (matched === 0) {
@@ -1344,6 +1370,7 @@ export function createBrepNamespace(): BrepNamespace {
       if (typeof name !== 'string' || name.length === 0) {
         throw new Error('BREP.label(shape, name): name must be a non-empty string.');
       }
+      if (removedLabels?.has(name)) return wrap(emptyShape());
       // Optional { color } — mirrors the manifold-js `api.label` 3rd arg. A hex
       // string ('#rrggbb' / '#rgb', same form as a `color` param so
       // `{ color: p.accent }` round-trips) or an [r,g,b] array in 0..1. Stored
