@@ -38,3 +38,12 @@ counts over time estimates: steps are coarse but honest.
 
 **Not done here.** Skipping the rebuild entirely (cache/persist the refined
 mesh) is in open PR #1074, so not duplicated.
+
+## Assistant (review follow-up)
+
+A review pass found the first hash only multiplied each coordinate's bits, so
+grid-aligned meshes (voxels, integer CAD, mm STLs) — whose low mantissa bits
+are all zero — piled into a few slots and probed quadratically (11–48 s on
+~100k-vert grids). Switched to a full avalanche mix before masking, merged all
+NaN payloads to one key for parity with the old string keys, and added an
+integer-grid unit case that fails on the old hash (3.5 s → 0.17 s).

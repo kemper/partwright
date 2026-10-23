@@ -136,13 +136,15 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
 }
 
 /** Map each vertex to a dense id shared by every vertex at the exact same
- *  position (same float values; +0 and -0 count as equal). Open-addressing
+ *  position (same float values; +0/-0 and all NaNs count as equal). Open-addressing
  *  hash over the coordinate bit patterns — no string keys. */
 function canonicalVertexIds(vertProperties: Float32Array, numVert: number, numProp: number): Int32Array {
   const bits = new Uint32Array(vertProperties.buffer, vertProperties.byteOffset, vertProperties.length);
   const key = (v: number, a: number): number => {
     const b = bits[v * numProp + a];
-    return b === 0x80000000 ? 0 : b; // -0 → +0
+    if (b === 0x80000000) return 0; // -0 → +0
+    if ((b & 0x7f800000) === 0x7f800000 && (b & 0x7fffff) !== 0) return 0x7fc00000; // any NaN → one NaN
+    return b;
   };
   let size = 1;
   while (size < numVert * 2) size <<= 1;
@@ -153,7 +155,13 @@ function canonicalVertexIds(vertProperties: Float32Array, numVert: number, numPr
   let next = 0;
   for (let v = 0; v < numVert; v++) {
     const x = key(v, 0), y = key(v, 1), z = key(v, 2);
-    let h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & mask;
+    // Mix every bit before masking: grid-aligned coordinates (voxels,
+    // integer-sized CAD) have all-zero low mantissa bits, so a hash that only
+    // multiplies would put them in a handful of slots and probe quadratically.
+    let h = Math.imul(x, 0x9e3779b1);
+    h = Math.imul(h ^ y ^ (h >>> 15), 0x85ebca6b);
+    h = Math.imul(h ^ z ^ (h >>> 13), 0xc2b2ae35);
+    h = (h ^ (h >>> 16)) & mask;
     for (;;) {
       const r = table[h];
       if (r === -1) {

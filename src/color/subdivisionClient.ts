@@ -11,6 +11,7 @@ import type { MeshData } from '../geometry/types';
 import type { RegionDescriptor } from './regions';
 import type { PatternContext } from './colorPattern';
 import type { RefineRequest, RefineResponse, RefineDone } from './subdivisionWorker';
+import type { RefineProgress } from './refinePipeline';
 import { registerWorker, markWorkerStarted, markWorkerRestarted, markWorkerStopped } from '../diagnostics/workerStats';
 
 let worker: Worker | null = null;
@@ -22,7 +23,7 @@ interface PendingJob {
   reject: (err: Error) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
-  onProgress?: RefineJobInput['onProgress'];
+  onProgress?: RefineProgress;
 }
 
 let inFlight: PendingJob | null = null;
@@ -42,7 +43,7 @@ export interface RefineJobInput {
   signal?: AbortSignal;
   /** Step progress from the worker: `done` of `total` steps, plus a label for
    *  the step now running. */
-  onProgress?: (done: number, total: number, label: string) => void;
+  onProgress?: RefineProgress;
 }
 
 export interface RefinedResult {

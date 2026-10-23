@@ -90,4 +90,31 @@ describe('buildAdjacency', () => {
     expect([...neighbors[0]]).toEqual([1]);
     expect([...neighbors[1]]).toEqual([0]);
   });
+
+  it('stays fast on grid-aligned coordinates (voxel / integer-dimensioned meshes)', () => {
+    // Integer coordinates leave the low float bits all zero; a hash that only
+    // mixes low bits sends every vertex to a few slots and goes quadratic
+    // (seconds on this size — the default test timeout catches it).
+    const n = 320;
+    const verts: number[] = [];
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) verts.push(i, j, 0);
+    const tris: number[] = [];
+    const at = (i: number, j: number): number => i * (n + 1) + j;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) tris.push(at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j), at(i + 1, j + 1), at(i, j + 1));
+    }
+    const mesh = {
+      numProp: 3,
+      vertProperties: new Float32Array(verts),
+      triVerts: new Uint32Array(tris),
+      numVert: verts.length / 3,
+      numTri: tris.length / 3,
+    } as MeshData;
+    const started = performance.now();
+    const { neighbors } = buildAdjacency(mesh);
+    const ms = performance.now() - started;
+    // An interior triangle of a regular grid touches 12 others by corner.
+    expect(neighbors[(n / 2) * n * 2 + n].length).toBe(12);
+    expect(ms).toBeLessThan(3000);
+  });
 });
