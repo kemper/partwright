@@ -3,7 +3,7 @@ import { parseBinarySTLToMeshGL } from './scadToManifold';
 import { parseAmfObjects } from './amfParser';
 import { scanScadLabels } from './scadLabels';
 import { withoutPiecesAt } from '../removePieces';
-import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
+import { getManifoldModule, manifoldJsEngine, resolveLabelMap } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
 import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoader';
@@ -631,31 +631,4 @@ function canonicalMeshOf(manifold: unknown): MeshData {
   };
 }
 
-/** Bucket triangle ids by label name using the composed mesh's
- *  `runOriginalID` + `runIndex` arrays. Mirrors the manifold-js
- *  resolveLabelMap (kept private to that engine) but lives here so SCAD
- *  doesn't have to depend on it. */
-function resolveLabelMap(
-  mesh: MeshData,
-  registry: Map<number, string>,
-): Map<string, Set<number>> | undefined {
-  if (registry.size === 0) return undefined;
-  const out = new Map<string, Set<number>>();
-  const runOriginalID = mesh.runOriginalID;
-  const runIndex = mesh.runIndex;
-  if (!runOriginalID || !runIndex || runOriginalID.length === 0) return out;
-  for (let i = 0; i < runOriginalID.length; i++) {
-    const name = registry.get(runOriginalID[i]);
-    if (name === undefined) continue;
-    const startTri = runIndex[i] / 3;
-    const endTri = runIndex[i + 1] / 3;
-    let set = out.get(name);
-    if (!set) {
-      set = new Set<number>();
-      out.set(name, set);
-    }
-    for (let t = startTri; t < endTri; t++) set.add(t);
-  }
-  return out;
-}
 
