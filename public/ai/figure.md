@@ -121,7 +121,11 @@ F.rig({
   muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   bust,        // 0..2 chest mound (default 0; sex:'female' pre-fills ~0.35). Independent of sex.
   belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
+  headScale,   // number or {x,y,z} (0.3..4, default 1) — enlarge the HEAD only (toys, chibis). See below.
+  proportions, // 'funko' | 'chibi' — toy body-plan presets (defaults for headsTall/build/headScale/faceLayout). See below.
+  faceLayout,  // { eyeSpread (default 1), eyeHeight (default 0, × head half-height) } — slide the eyes.
   pose: {      // all optional; neutral standing defaults
+    hold,       // { sphere: { radius, center? }, cup: 'sides'|'under', height? } — both hands on a ball (solves the arms)
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist, palm | thumb }   degrees — override per side
     legL, legR, // { raiseSide, raiseFwd, bend, twist }   degrees
@@ -307,6 +311,52 @@ The rig exposes (read-only, for custom parts):
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
 so a `stocky` figure's `rig.r.upperArm` is 1.22× the average; size custom
 accessories off `rig.r.*` and they track the build automatically.
+
+> **Toy heads — `headScale`, `proportions`, `faceLayout`.**
+> - **`headScale`** (a number, or `{x, y, z}` = width / depth / height in the head
+>   frame) grows the head **up from the chin**: crown, `r.head/headX/headZ` and
+>   every `rig.face` anchor scale with it, so `F.head`, `F.face.*`, `F.faceDetail`,
+>   `F.hair`, the neck blend and `F.placeOnHead` all follow — never mutate
+>   `rig.r` / `rig.face` by hand. **`height` stays the TOTAL crown height**: the
+>   body below the chin shrinks to make room (`{height:100, headScale:1.7}` is still
+>   100 tall). The body's girth does *not* grow with the head.
+> - **`proportions: 'funko'`** = `headsTall: 3`, `build: 'slim'`,
+>   `headScale: {x: 2.5, y: 1.8, z: 1.7}` (head ≈ 45% of the height, ~1.3× wider
+>   than tall), `faceLayout: {eyeSpread: 1.25, eyeHeight: -0.35}`, plus limb radii
+>   ×0.82–0.9 (chest ×0.95) and feet ×1.15. **`'chibi'`** = `headsTall: 3`,
+>   `build: 'average'`, `headScale: {x: 1.4, y: 1.25, z: 1.25}` (head ≈ 38%),
+>   `faceLayout: {eyeSpread: 1.1, eyeHeight: -0.12}`, feet ×1.1. Any explicit
+>   `headsTall` / `build` / `headScale` / `faceLayout` on the same call wins.
+> - **`faceLayout`** — `eyeSpread` multiplies the eyes' (and brows') lateral
+>   offset; `eyeHeight` moves the eyes along head-up (× head half-height; negative
+>   = lower). Brows, nose and mouth follow at 60% of `eyeHeight`, so the eye→nose
+>   gap stays readable and the mouth never lands on the chin.
+>
+> **Two-hand ball hold — `pose.hold`.** `pose: { hold: { sphere: { radius: 12 },
+> cup: 'sides' } }` solves BOTH arms (shoulder, elbow, twist + wrist roll — a
+> deterministic IK over the rig's own FK) so each palm rests on the ball:
+> `'sides'` (default) = hands on its lower sides, fingers wrapping forward;
+> `'under'` = cradled from below. `center` defaults to just in front of the torso
+> at belly/chest height (`height` overrides the z). Don't also pass
+> `arms`/`armL`/`armR` (rejected). The result lands on **`rig.hold`**
+> `{ center, radius, cup, contactL, contactR, residual }` (`residual` = worst
+> palm-to-contact gap; ≲10% of `r.hand` is a clean cup) and **`F.heldSphere(rig)`**
+> returns the ball as an SDF sphere to label. Build `F.hands(rig, { grip: 'open' })`
+> (the solve assumes the default hand size).
+>
+> **Floor + facing — `rig.floorZ` / `F.place`.** `rig.floorZ` is the sole bottom
+> (lowest `sole.*.groundZ`; `F.ground` keeps it current). Finish a figure with
+> `return F.place(model, rig, { floor: 0, face: '+X' })` on the **built** mesh
+> (after `.build({ detail })`, so the face-detail regions still line up): it drops
+> the model's true bottom (base or soles; `drop: 'sole'` forces `rig.floorZ`) to
+> `floor` and turns the builder's −Y front to `face` ('-Y' | '+X' | '+Y' | '-X').
+> `height: 113` additionally rescales to that total height.
+>
+> **`F.surfacePoint(surface, point, dir, { reach })`** returns the first
+> inside→outside crossing of any SDF node along the line through `point` — seat a
+> custom feature on the REAL built face instead of an `evaluate` loop:
+> `F.surfacePoint(face, rig.face.eyeL, rig.dir.headForward)` is the cheek-bulged
+> face front at the eye (or `null`).
 
 ## Parts — every builder takes `rig` first
 
@@ -1218,7 +1268,16 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //   ears: 'cover' (default, hair over the ears) | 'behind' (tucked behind them,
 //         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
-//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop'
+//   'mop' — shaggy anime / vinyl-toy hair: a cap hugging the real head (pass
+//     `on: head`, your F.head node, for a non-default faceShape) + N irregular
+//     tapered locks: a zig-zag fringe ending just above the brows, sideburns and
+//     outward side flicks, a shaggy mid layer, layered nape locks and crown
+//     tufts — no bald temple strip. Extra keys (mop only):
+//     { locks: 8..64 (28), spread: 0..3 (1, how far tips lift/lean), seed (1 —
+//       same seed ⇒ identical hair), flick: 0..3 (1, side flicks outward),
+//       fringe: 0..1.5 (1 = to the brows; lower = shorter), on: headNode }
+//     `length` drops the nape locks; `volume` thickens cap + locks.
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
 //   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
@@ -1348,6 +1407,40 @@ only** — within-limb smoothness (the elbow/knee bend) is fixed inside the limb
 builders, so raising `weld.k` won't change a knee that looks kinked. **Label the result** (`.label('skin')`) so the whole welded
 body is one paint region — labelling individual parts would degrade the welds to
 hard seams (see `/ai/sdf.md` paint-by-label).
+
+## Funko / chibi figure — the recipe
+
+All four toy primitives together (a vinyl-pop soccer player holding a ball):
+
+```js
+const { sdf } = api, F = sdf.figure;
+const rig = F.rig({ height: 100, proportions: 'funko', sex: 'male',
+  pose: { hold: { sphere: { radius: 12 }, cup: 'sides' }, legs: { raiseSide: 5 } } });
+const fwd = rig.dir.headForward;
+const head = F.head(rig, { faceShape: 'round', cheek: 1.1 });
+const face = F.face.assemble(head, rig, { eyes: false, mouth: false, brows: false, ears: false,
+  nose: { type: 'straight', tipRadius: 2.1, projection: 1.7 } });
+const skin = F.weld(rig, [F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig, { grip: 'open' }),
+  F.legs(rig), F.feet(rig), face]).label('skin');
+// Glossy bead eyes seated on the REAL face front (cheeks bulge past the anchor).
+const eyes = sdf.union(...[rig.face.eyeL, rig.face.eyeR].map((a) => sdf.ellipsoid(5.3, 3.8, 5.6)
+  .translate(F.surfacePoint(face, a, fwd).map((v, i) => v - fwd[i] * 1.6)))).label('eyes');
+const brows = F.face.brows(rig, { shape: 'arched', thickness: 3, on: face }).label('brows');
+const hair = F.hair(rig, { style: 'mop', on: head, seed: 7, locks: 32 }).label('hair');
+const shirt = F.clothing.top(rig, { sleeve: 'short' }).label('shirt');
+const ball = F.heldSphere(rig).label('ball');
+const base = F.base(rig, { radius: 36 }).label('base');
+const model = sdf.union(skin, eyes, brows, hair, shirt, ball, base)
+  .build({ edgeLength: 0.78, detail: F.faceDetail(rig) });
+return F.place(model, rig, { face: '+X' });   // floor at z = 0, facing +X
+```
+
+> **Previewing a `+X`-facing figure headlessly.** `model:preview --view az,el`
+> puts the camera at azimuth `az` measured from **+X** (toward +Y): for a figure
+> placed with `face: '+X'`, **az 0 = front, 180 = back, 270 (or −90) = profile**,
+> e.g. `--view "0,8;180,8;270,8;-35,20"`. The *named* views are fixed to the
+> builder's −Y front (`--views front` = az −90), so on a `+X` figure the named
+> `front` is a profile and `right` is the face.
 
 ## Workflow that lands a likeness
 
