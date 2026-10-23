@@ -192,4 +192,35 @@ test.describe('Recover deleted', () => {
     expect(api.code).not.toContain('api.remove');
     expect(api.parts).toEqual(['body', 'handle', 'coaster']);
   });
+
+  test('OpenSCAD remove_part / remove_piece lines are restorable too', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const r = await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW & { setActiveLanguage(l: string): Promise<unknown>; listObjectParts(): { parts: { name: string }[]; pieces: { index: number; part?: string }[] } } }).partwright;
+      await p.createSession('Recover scad');
+      await p.setActiveLanguage('scad');
+      await p.runAndSave(`label("base") cube([20, 20, 4]);
+label("peg") translate([5, 5, 4]) cube([4, 4, 10]);
+translate([40, 0, 0]) cube([5, 5, 5]);`, 'v1');
+      await p.deleteObjectPart('peg');
+      const loose = p.listObjectParts().pieces.find(pc => !pc.part)!;
+      await p.deleteObjectPart({ piece: loose.index });
+      const listed = (await p.listDeleted()).parts.map(x => ({ kind: x.kind, call: x.call, label: x.label }));
+      const part = await p.restoreObjectPart('peg');
+      const piece = await p.restoreObjectPart(listed.find(x => x.kind === 'piece')!.call);
+      const after = p.listObjectParts();
+      return { listed, part, piece, code: p.getCode(), parts: after.parts.map(x => x.name), pieces: after.pieces.length };
+    });
+    expect(r.listed).toEqual([
+      { kind: 'piece', call: expect.stringMatching(/^remove_piece\(\[/), label: expect.stringMatching(/^piece \d+$/) },
+      { kind: 'part', call: 'remove_part("peg");', label: undefined },
+    ]);
+    expect(r.part.ok).toBe(true);
+    expect(r.piece.ok).toBe(true);
+    expect(r.code).not.toMatch(/remove_p/);
+    expect(r.parts).toEqual(['base', 'peg']);
+    expect(r.pieces).toBe(3);
+  });
 });

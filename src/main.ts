@@ -6018,12 +6018,25 @@ async function main() {
     }
   }
 
-  /** Delete one part (an `api.label` region) or one piece (a separate solid)
-   *  of the open object. Writes an `api.removePart` / `api.removePiece` line at
-   *  the top of the code, re-runs, and saves a version, so the model stays
-   *  parametric and the deletion is undoable from the version history. Only
-   *  manifold-js objects can do this; anything that doesn't actually remove the
-   *  target (e.g. a part detected on an imported mesh) restores the old code. */
+  /** Why the open object's `part:<name>` / `piece:<n>` can't be deleted from
+   *  the object list, or null when it can. Shown as the disabled ✕'s tooltip,
+   *  so the reason is visible before anyone clicks. */
+  function objectPartDeleteBlocker(key: string): string | null {
+    const lang = getActiveLanguage();
+    if (key.startsWith('piece:') && lang === 'replicad') {
+      return 'BREP objects can\'t delete a separate piece yet — wrap it in BREP.label(shape, "name") and delete that part instead.';
+    }
+    if (key.startsWith('part:') && lang === 'voxel') return 'Voxel objects have no deletable parts.';
+    return null;
+  }
+
+  /** Delete one part (an `api.label` / `label()` / `BREP.label` region, or a
+   *  part detected on an import) or one piece (a separate solid) of the open
+   *  object. Writes a removal line at the top of the code (`api.removePart` /
+   *  `api.removePiece` in the JS engines, `remove_part` / `remove_piece` in
+   *  OpenSCAD), re-runs, and saves a version, so the model stays parametric and
+   *  the deletion is undoable from the version history. Anything that doesn't
+   *  actually remove the target restores the old code. */
   async function deleteObjectPartOrPiece(target: { part: string } | { piece: number }): Promise<
     { ok: true; removed: string; call: string; version?: { id: string; index: number; label: string }; saveWarning?: string }
     | { error: string }
@@ -6031,9 +6044,9 @@ async function main() {
     if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
     if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
     const lang = getActiveLanguage();
-    if (lang !== 'manifold-js') {
-      return { error: `Deleting a part or piece works on JS (manifold-js) objects; this object is ${lang}. Edit its code to remove it instead.` };
-    }
+    const blocker = objectPartDeleteBlocker('part' in target ? `part:${target.part}` : `piece:${target.piece}`);
+    if (blocker) return { error: blocker };
+    const syntax = lang === 'scad' ? 'scad' : 'js';
     const summary = currentObjectPartsSummary();
     const mesh = objectPartsMesh();
     if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
@@ -6044,7 +6057,7 @@ async function main() {
     if ('part' in target) {
       const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
       if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
-      call = removePartCall(part.name);
+      call = removePartCall(part.name, syntax);
       line = call;
       what = `part "${part.name}"`;
     } else {
@@ -6053,9 +6066,9 @@ async function main() {
       if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
       const point = pieceAnchorPoint(mesh, piece.triangles);
       if (!point) return { error: `Piece ${target.piece} has no triangles.` };
-      call = removePieceCall(point);
+      call = removePieceCall(point, syntax);
       // The call only records a point, so name the piece in a trailing comment
-      // — what Recover deleted shows for it.
+      // (`//` in JS and OpenSCAD alike) — what Recover deleted shows for it.
       line = `${call} ${removePieceComment(piece.index, piece.part ?? undefined)}`;
       what = `piece ${target.piece + 1}`;
     }
@@ -6077,7 +6090,7 @@ async function main() {
       ? !!after?.parts.some(p => p.name === target.part && p.triangles.size > 0)
       : (after?.pieces.length ?? 0) >= summary.pieces.length;
     if (stillThere) {
-      return restore(`Couldn't delete ${what} from code — it isn't created by an api.label(...) call in this object's code (e.g. it was detected on an imported mesh).`);
+      return restore(`Couldn't delete ${what} from code — the code doesn't create it in a way the removal line can reach.`);
     }
     const saved = await saveCurrentVersion(`delete ${what}`);
     refreshRecoverable();
@@ -6094,8 +6107,10 @@ async function main() {
   // Two kinds of deletion come back through one modal (src/ui/recoverDeletedModal.ts):
   // OBJECTS, which a delete moves into the session's deleted-objects bin
   // (sessionManager.restoreDeletedObjects), and PARTS / PIECES, which a delete
-  // writes into the object's code as an `api.removePart` / `api.removePiece`
-  // line (restored by removing the line — restoreObjectPartOrPiece).
+  // writes into the object's code as a removal line — `api.removePart` /
+  // `api.removePiece` (JS, BREP, voxel, imports) or `remove_part` /
+  // `remove_piece` (OpenSCAD) — restored by removing the line
+  // (restoreObjectPartOrPiece).
 
   /** Whether `part` is a pristine blank object — never saved and still the
    *  untouched starter — so a restore may replace it (the placeholder
@@ -6150,8 +6165,6 @@ async function main() {
     }
     const obj = getState().currentPart;
     if (!obj) return { error: 'No object is open.' };
-    const lang = getActiveLanguage();
-    if (lang !== 'manifold-js') return { error: `Parts and pieces are restored in JS (manifold-js) code; "${obj.name}" is ${lang}.` };
     const previousCode = getValue();
     const entry = findRemovalLines(previousCode).find(r => r.call === call);
     if (!entry) return { error: `"${obj.name}" has no ${call} line in its code — it may already be restored.` };
@@ -6196,13 +6209,12 @@ async function main() {
   async function objectRemovals(part: Part): Promise<RemovalLine[]> {
     if (getState().currentPart?.id === part.id) {
       otherObjectRemovals.delete(part.id);
-      return getActiveLanguage() === 'manifold-js' ? findRemovalLines(getValue()) : [];
+      return findRemovalLines(getValue());
     }
     const cached = otherObjectRemovals.get(part.id);
     if (cached) return cached;
     const latest = await getLatestVersion(part.id);
-    const lines = latest && effectiveVersionLanguage(latest, getState().session) === 'manifold-js'
-      ? findRemovalLines(latest.code) : [];
+    const lines = latest ? findRemovalLines(latest.code) : [];
     otherObjectRemovals.set(part.id, lines);
     return lines;
   }
@@ -6536,7 +6548,9 @@ async function main() {
       const r = setObjectPartHidden(key, hide);
       if (typeof r === 'string') showToast(r, { variant: 'warn' });
     },
-    canDeleteObjectParts: () => getActiveLanguage() === 'manifold-js' && !isReadOnlyViewer() && !isSharedPreview(),
+    getObjectPartDelete: (key: string) => (isReadOnlyViewer() || isSharedPreview()
+      ? { show: false }
+      : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
     onDeleteObjectPart: async (key: string) => {
       setObjectPartHighlight(null);
       const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
@@ -13017,7 +13031,8 @@ async function main() {
     },
 
     /** Bring back a part or piece deleted with deleteObjectPart / the ✕ — the
-     *  inverse: removes its `api.removePart` / `api.removePiece` line, re-runs
+     *  inverse: removes its removal line (`api.removePart` / `api.removePiece`,
+     *  or OpenSCAD `remove_part` / `remove_piece`), re-runs
      *  and saves a version. Pass a part name (looked up in the open object,
      *  then the session's other objects), a removal `call` from
      *  listDeleted().parts, or `{ object, part }` / `{ object, call }`. Opens
@@ -13029,7 +13044,7 @@ async function main() {
       let part: string | undefined;
       let call: string | undefined;
       if (typeof target === 'string' && target.length > 0) {
-        if (target.startsWith('api.remove')) call = target; else part = target;
+        if (findRemovalLines(target).length > 0) call = target; else part = target;
       } else if (target && typeof target === 'object') {
         ({ object: objectRef, part, call } = target);
         if ((part === undefined) === (call === undefined)) return { error: 'restoreObjectPart({ object?, part | call }): pass exactly one of part / call.' };
@@ -17093,7 +17108,7 @@ async function main() {
         'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
         'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
         'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
-        'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the api.removePart/api.removePiece line, re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
+        'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the removal line (api.removePart/api.removePiece, or remove_part/remove_piece in OpenSCAD), re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")

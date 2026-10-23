@@ -1,8 +1,8 @@
 // "Recover deleted" — one place to bring back what was deleted in the active
 // session: OBJECTS moved to the deleted-objects bin (restorable until they
 // expire) and PARTS / PIECES removed in code by the object list's ✕ (an
-// `api.removePart` / `api.removePiece` line — restorable while the line is
-// there). Opened from the Objects rail footer, the command palette, and
+// `api.removePart` / `api.removePiece` line, or OpenSCAD `remove_part` /
+// `remove_piece` — restorable while the line is there). Opened from the Objects rail footer, the command palette, and
 // `partwright.showRecoverDeleted()`. The data and the restore actions come from
 // main.ts through a controller, so this module only renders.
 
@@ -214,7 +214,7 @@ async function render(): Promise<void> {
   foot.className = 'flex items-center gap-2 pt-1';
   const note = document.createElement('div');
   note.className = 'flex-1 text-[11px] text-zinc-500 leading-snug';
-  note.textContent = `Deleted objects are kept ${c.retentionDays()} days. Removed parts and pieces stay recoverable while their api.removePart / api.removePiece line is in the code.`;
+  note.textContent = `Deleted objects are kept ${c.retentionDays()} days. Removed parts and pieces stay recoverable while their removal line is in the code.`;
   foot.appendChild(note);
   if (!readOnly && data.objects.length > 0) {
     const empty = document.createElement('button');

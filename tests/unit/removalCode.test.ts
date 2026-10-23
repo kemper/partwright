@@ -7,6 +7,11 @@ describe('removal code lines', () => {
     expect(removePartCall('it\'s "x"')).toBe('api.removePart("it\'s \\"x\\"");');
   });
 
+  it('writes OpenSCAD syntax for scad', () => {
+    expect(removePartCall('lid', 'scad')).toBe('remove_part("lid");');
+    expect(removePieceCall([1, 2.5, -3], 'scad')).toBe('remove_piece([1, 2.5, -3]);');
+  });
+
   it('rounds piece points and avoids -0', () => {
     expect(removePieceCall([1.234567, -0.00001, 30])).toBe('api.removePiece([1.2346, 0, 30]);');
   });
@@ -61,11 +66,20 @@ describe('findRemovalLines', () => {
       'return x;',
     ].join('\n');
     expect(findRemovalLines(code)).toEqual([
-      { kind: 'part', name: 'wheel', call: 'api.removePart("wheel");', source: 'api.removePart("wheel");' },
-      { kind: 'part', name: "it's", call: 'api.removePart("it\'s");', source: "api.removePart('it\\'s');" },
-      { kind: 'piece', point: [1.5, -2, 300], label: 'piece 3 ("hub")', call: 'api.removePiece([1.5, -2, 300]);', source: 'api.removePiece([1.5, -2, 3e2]); // piece 3 ("hub")' },
-      { kind: 'piece', point: [0, 0, 0], call: 'api.removePiece([0, 0, 0]);', source: 'api.removePiece([0, 0, 0])' },
+      { kind: 'part', name: 'wheel', syntax: 'js', call: 'api.removePart("wheel");', source: 'api.removePart("wheel");' },
+      { kind: 'part', name: "it's", syntax: 'js', call: 'api.removePart("it\'s");', source: "api.removePart('it\\'s');" },
+      { kind: 'piece', point: [1.5, -2, 300], label: 'piece 3 ("hub")', syntax: 'js', call: 'api.removePiece([1.5, -2, 300]);', source: 'api.removePiece([1.5, -2, 3e2]); // piece 3 ("hub")' },
+      { kind: 'piece', point: [0, 0, 0], syntax: 'js', call: 'api.removePiece([0, 0, 0]);', source: 'api.removePiece([0, 0, 0])' },
     ]);
+  });
+
+  it('lists OpenSCAD removals in their own syntax', () => {
+    const code = ['remove_part("peg");', 'remove_piece([1, 2, 3]); // piece 2', 'cube(10);'].join('\n');
+    expect(findRemovalLines(code)).toEqual([
+      { kind: 'part', name: 'peg', syntax: 'scad', call: 'remove_part("peg");', source: 'remove_part("peg");' },
+      { kind: 'piece', point: [1, 2, 3], label: 'piece 2', syntax: 'scad', call: 'remove_piece([1, 2, 3]);', source: 'remove_piece([1, 2, 3]); // piece 2' },
+    ]);
+    expect(removeRemovalLine(code, removePartCall('peg', 'scad'))).toBe(['remove_piece([1, 2, 3]); // piece 2', 'cube(10);'].join('\n'));
   });
 
   it('decodes escapes in both quote styles', () => {

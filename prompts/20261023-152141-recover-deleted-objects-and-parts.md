@@ -67,3 +67,15 @@ handling backslashes, so a name like `'a\"b'` mis-parsed (returned null). Not
 exploitable — it only reads removal lines from the user's own code — but a real
 parse bug, so it now decodes JS escapes directly instead of round-tripping
 through JSON.parse; a unit test covers both quote styles.
+
+## Assistant
+
+**Merged main (#1060: part deletes on OpenSCAD, BREP, imports, voxel).** Main
+now writes OpenSCAD `remove_part("x");` / `remove_piece([…]);` lines and allows
+deletes beyond manifold-js. Restore follows: `findRemovalLines` parses both
+syntaxes (each entry carries `syntax`, canonical `call` in that syntax),
+restore no longer requires manifold-js, and the piece-name comment is written
+for both (`//` works in OpenSCAD too). Kept main's disabled-✕-with-reason
+behaviour and dropped only its confirm dialog. ai.md keeps main's per-engine
+table and points the Recover deleted section at it. New e2e restores an
+OpenSCAD part + piece.

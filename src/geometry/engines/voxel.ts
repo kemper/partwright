@@ -44,7 +44,9 @@ const manifoldOnlyNamespaceGuard = (ns: 'paint' | 'surface') => new Proxy({}, {
   },
 });
 
-function createVoxelApi(params?: ParamCapture['params']) {
+/** `removedPieces` collects `api.removePiece([x, y, z])` calls — what the
+ *  object list's ✕ writes; each run path applies them to the returned grid. */
+function createVoxelApi(params: ParamCapture['params'] | undefined, removedPieces: [number, number, number][]) {
   const voxels = (() => new VoxelGrid()) as VoxelsHandle;
   voxels.decode = (data: string) => decodeGrid(data);
   voxels.color = (c) => normalizeColor(c);
@@ -57,8 +59,14 @@ function createVoxelApi(params?: ParamCapture['params']) {
   // (manifold-js, voxel, replicad) so a Customizer-driven voxel model gets the
   // same live slider/toggle panel. Omitted only on paths that don't capture a
   // schema (none currently — both run paths pass it).
+  const removePiece = (point: unknown): void => {
+    if (!Array.isArray(point) || point.length !== 3 || point.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+      throw new ValidationError('api.removePiece(point): point must be [x, y, z] — a point on the separate piece to remove.');
+    }
+    removedPieces.push(point as [number, number, number]);
+  };
   return {
-    voxels, VoxelGrid, sdf,
+    voxels, VoxelGrid, sdf, removePiece,
     paint: manifoldOnlyNamespaceGuard('paint'),
     surface: manifoldOnlyNamespaceGuard('surface'),
     ...(params ? { params } : {}),
@@ -80,7 +88,8 @@ export const voxelEngine: Engine = {
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
     const capture = createParamCapture(paramOverrides);
-    const api = createVoxelApi(capture.params);
+    const removedPieces: [number, number, number][] = [];
+    const api = createVoxelApi(capture.params, removedPieces);
     let result: unknown;
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
@@ -115,6 +124,7 @@ export const voxelEngine: Engine = {
     }
 
     const grid = result as VoxelGrid;
+    for (const p of removedPieces) grid.removePieceAt(p);
     if (grid.size === 0) {
       const error = 'The voxel grid is empty — set some voxels (e.g. v.set(0,0,0,"#fff") or v.fillBox(...)) before returning it.';
       return {
@@ -169,7 +179,8 @@ export interface VoxelPaintRun extends VoxelMesh { grid: VoxelGrid }
  *  rendering only — paint operates on the un-supersampled, block-meshed grid
  *  so triangle indices map cleanly to user-authored voxels. */
 export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string, unknown>): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
-  const api = createVoxelApi(createParamCapture(paramOverrides).params);
+  const removedPieces: [number, number, number][] = [];
+  const api = createVoxelApi(createParamCapture(paramOverrides).params, removedPieces);
   let result: unknown;
   try {
     const fn = new Function('api', `"use strict";\n${jsCode}`);
@@ -179,6 +190,7 @@ export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string,
   }
   if (!isVoxelGrid(result)) return { ok: false, error: 'Voxel code must return a grid.' };
   const grid = result as VoxelGrid;
+  for (const p of removedPieces) grid.removePieceAt(p);
   if (grid.size === 0) return { ok: false, error: 'The voxel grid is empty.' };
   const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(grid);
   return { ok: true, data: { grid, mesh, triVoxel, triNormal } };

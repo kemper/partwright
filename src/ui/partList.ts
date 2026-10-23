@@ -13,6 +13,7 @@ import { getState, onStateChange, type SessionState, type Part, type Version, ty
 import { getLatestVersion } from '../storage/db';
 import { buildPartTree, groupNames, type PartTreeNode } from './partTree';
 import { confirmDialog, promptDialog } from './dialogs';
+import { showToast } from './toast';
 import { openPartsOverview } from './partsOverview';
 import { registerCommands } from './commandPalette';
 
@@ -43,8 +44,9 @@ export interface PartListCallbacks {
   onSetObjectPartHidden: (key: string, hidden: boolean) => void;
   /** Delete the open object's `part:<name>` or `piece:<n>` (writes it into the code). */
   onDeleteObjectPart: (key: string) => void | Promise<void>;
-  /** Whether the open object's parts/pieces can be deleted (JS objects only). */
-  canDeleteObjectParts: () => boolean;
+  /** Whether to show a delete ✕ for the open object's `part:<name>` /
+   *  `piece:<n>`, and — when it can't be deleted — why (shown disabled). */
+  getObjectPartDelete: (key: string) => { show: boolean; reason?: string };
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
   /** Open the "Recover deleted" modal (deleted objects + removed parts). */
@@ -528,7 +530,6 @@ function buildObjectPartsSection(): HTMLElement {
     n.textContent = text;
     section.appendChild(n);
   };
-  const deletable = cb.canDeleteObjectParts();
   const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; hidden?: boolean; deleteLabel?: string }) => {
     // The row wraps the select button and its delete ✕ — a button can't nest
     // inside another button.
@@ -574,15 +575,23 @@ function buildObjectPartsSection(): HTMLElement {
       });
       row.appendChild(eye);
     }
-    if (deletable && opts.deleteLabel) {
-      const del = iconBtn('✕', opts.deleteLabel); // ✕
+    const delState = opts.deleteLabel ? cb.getObjectPartDelete(key) : { show: false };
+    if (delState.show && opts.deleteLabel) {
+      const reason = delState.reason;
+      const del = iconBtn('✕', reason ?? opts.deleteLabel); // ✕
       del.dataset.deleteObjectPart = key;
-      // Visible on touch; fades in on hover/focus on pointer devices.
+      // Visible on touch; fades in on hover/focus on pointer devices. A blocked
+      // delete stays clickable-looking-but-dim so its tooltip explains why.
       del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      if (reason) {
+        del.setAttribute('aria-disabled', 'true');
+        del.className = del.className.replace('text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700', 'text-zinc-600 cursor-not-allowed');
+      }
       // No confirm — the delete is one code line, undoable from its toast or
       // from Recover deleted.
       del.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (reason) { showToast(reason, { variant: 'neutral' }); return; }
         void cb.onDeleteObjectPart(key);
       });
       row.appendChild(del);
@@ -603,7 +612,7 @@ function buildObjectPartsSection(): HTMLElement {
       color: p.color,
       title: `Highlight part "${p.name}" (${p.triangleCount} triangles)`,
       hidden: !!p.hidden,
-      deleteLabel: `Delete part — adds api.removePart(${JSON.stringify(p.name)}) to the code (recoverable)`,
+      deleteLabel: 'Delete part — adds a removal line to the top of the code (recoverable)',
     });
   }
   if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
@@ -634,7 +643,7 @@ function buildObjectPartsSection(): HTMLElement {
       item(`piece:${piece.index}`, name, piece.triangleCount, {
         title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
         hidden: !!piece.hidden,
-        deleteLabel: 'Delete piece — adds an api.removePiece([x, y, z]) line to the code (recoverable)',
+        deleteLabel: 'Delete piece — adds a removal line to the top of the code (recoverable)',
       });
     }
   }
