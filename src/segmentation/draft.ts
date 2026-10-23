@@ -189,6 +189,7 @@ interface Snapshot {
    *  restore the one the restored partition was measured on. */
   features: MeshFeatures;
   fixedTri: Int32Array | null;
+  placeholderNames: string[];
 }
 
 /** A crease at least this sharp (°) counts as a real seam for the
@@ -220,10 +221,13 @@ export class PartDraftModel {
    *  (appConfig.segmentation.seedsFromPartsMinRegionFrac, threaded in). */
   anchorMinRegionFrac = 0.01;
   /** Detection and pin re-grows fold "specks" — regions smaller than this
-   *  fraction of the surface that no placed pin or hand fix holds — into the
-   *  neighbour they border most (appConfig.segmentation.autoAbsorbSpeckFrac,
+   *  fraction of the surface that nothing claims (see absorbSpecks) — into
+   *  the neighbour they border most (appConfig.segmentation.autoAbsorbSpeckFrac,
    *  threaded in). 0 = off. */
   autoAbsorbFrac = 0;
+  /** Part names a seedless detector made up ("patch 3"); renaming or
+   *  naming a part in a merge makes its name the user's. */
+  placeholderNames = new Set<string>();
   /** Overlay colour remembered per part name, so colours stay put across
    *  edits (see displayColors). */
   private colorMemo = new Map<string, string>();
@@ -292,6 +296,7 @@ export class PartDraftModel {
     c.lockedNames = new Set(this.lockedNames);
     c.focusMask = this.focusMask ? this.focusMask.slice() : null;
     c.fixedTri = this.fixedTri ? this.fixedTri.slice() : null;
+    c.placeholderNames = new Set(this.placeholderNames);
     c.anchorMinRegionFrac = this.anchorMinRegionFrac;
     c.autoAbsorbFrac = this.autoAbsorbFrac;
     c.colorMemo = new Map(this.colorMemo);
@@ -308,6 +313,9 @@ export class PartDraftModel {
     const count = Math.max(maxIdx + 1, result.partNames?.length ?? 0);
     this.names = Array.from({ length: count }, (_, i) => result.partNames?.[i] ?? `part ${i + 1}`);
     this.colors = Array.from({ length: count }, () => null);
+    // Names nobody chose (a seedless detector's "patch 3", or a fallback
+    // "part N") — the only parts auto-absorb may fold away.
+    this.placeholderNames = new Set(this.names.filter((_, i) => result.genericNames || result.partNames?.[i] === undefined));
     this.diagnostics = result.diagnostics;
     this.compact();
   }
@@ -505,7 +513,10 @@ export class PartDraftModel {
         // now-empty merged parts) leaves it in place; name it afterwards so the
         // new name may reuse a merged part's name.
         this.compact();
-        if (op.name !== undefined) this.names[keep] = this.uniqueNameFor(keep, op.name);
+        if (op.name !== undefined) {
+          this.names[keep] = this.uniqueNameFor(keep, op.name);
+          this.placeholderNames.delete(this.names[keep]);
+        }
         if (anyLocked) this.lockedNames.add(this.names[keep]);
         // The merged part owns every merged part's pins.
         for (const sd of this.seeds) if (mergedNames.has(sd.label)) sd.label = this.names[keep];
@@ -521,6 +532,8 @@ export class PartDraftModel {
         if (holder >= 0 && holder !== i) { this.applyOp({ op: 'merge', ids: [holder + 1, i + 1], name: nm }); return; }
         const was = this.names[i];
         this.names[i] = nm;
+        this.placeholderNames.delete(was);
+        this.placeholderNames.delete(nm);
         if (this.lockedNames.delete(was)) this.lockedNames.add(nm);
         for (const sd of this.seeds) if (sd.label === was) sd.label = nm;
         const memo = this.colorMemo.get(was);
@@ -794,7 +807,10 @@ export class PartDraftModel {
           nm = `${prefix} ${k}`;
         }
         let j = index.get(nm);
-        if (j === undefined) { j = this.names.length; this.names.push(nm); this.colors.push(null); index.set(nm, j); }
+        if (j === undefined) {
+          j = this.names.length; this.names.push(nm); this.colors.push(null); index.set(nm, j);
+          if (result.genericNames || raw === undefined) this.placeholderNames.add(nm);
+        }
         return j;
       });
       for (let t = 0; t < this.triPart.length; t++) {
@@ -939,21 +955,25 @@ export class PartDraftModel {
     return hit;
   }
 
-  /** Fold specks (see autoAbsorbFrac) into their neighbours. Triangles
-   *  under placed pins, hand-fixed triangles and anything outside `allow`
-   *  weigh as much as the whole surface, so their regions are never specks. */
+  /** Fold specks (see autoAbsorbFrac) into their neighbours. A speck is a
+   *  small region with no pin of any kind (placed or automatic) whose part
+   *  nobody named, coloured or locked: protected triangles weigh as much as
+   *  the whole surface, so their regions are never specks. Hand-fixed
+   *  triangles and anything outside `allow` are protected too. */
   private absorbSpecks(allow: Uint8Array | null = null): void {
     if (!(this.autoAbsorbFrac > 0)) return;
     const f = this.features;
     const total = f.totalArea || 1;
     const w = Float64Array.from(f.triArea);
     for (const sd of this.seeds) {
-      if (sd.auto) continue;
       const t = this.pinTriangle(sd);
       if (t >= 0) w[t] = total;
     }
-    if (this.fixedTri) for (let t = 0; t < w.length; t++) if (this.fixedTri[t] >= 0) w[t] = total;
-    if (allow) for (let t = 0; t < w.length; t++) if (!allow[t]) w[t] = total;
+    const keep = this.names.map((nm, i) => !this.placeholderNames.has(nm) || this.colors[i] !== null || this.lockedNames.has(nm));
+    for (let t = 0; t < w.length; t++) {
+      const L = this.triPart[t];
+      if ((L >= 0 && keep[L]) || (this.fixedTri && this.fixedTri[t] >= 0) || (allow && !allow[t])) w[t] = total;
+    }
     if (absorbSmallRegions(this.triPart, this.adjacency, w, this.autoAbsorbFrac * total) > 0) this.compact();
   }
 
@@ -961,6 +981,9 @@ export class PartDraftModel {
    *  after constructing the model), keeping the pins in step. */
   absorbSpecksNow(): void {
     if (!(this.autoAbsorbFrac > 0)) return;
+    // A fresh detection's automatic pins are stand-ins, not claims: drop
+    // them for the pass (syncAnchors puts them back on what's left).
+    this.seeds = this.seeds.filter((sd) => !sd.auto);
     this.absorbSpecks();
     this.pruneLocks();
     this.syncAnchors();
@@ -1247,6 +1270,7 @@ export class PartDraftModel {
       detectorId: this.detectorId, params: { ...this.params }, featureOptions: { ...this.featureOptions }, edgeSmoothing: this.edgeSmoothing,
       features: this.features,
       fixedTri: this.fixedTri ? this.fixedTri.slice() : null,
+      placeholderNames: [...this.placeholderNames],
     };
   }
 
@@ -1254,6 +1278,7 @@ export class PartDraftModel {
     this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
     this.lockedNames = new Set(s.locked); this.focusMask = s.focusMask;
     this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features; this.fixedTri = s.fixedTri;
+    this.placeholderNames = new Set(s.placeholderNames);
   }
 }
 

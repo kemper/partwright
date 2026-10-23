@@ -23,16 +23,18 @@
 //   - hovering the model names the part under the cursor and jumps the list
 //     to it; hovering a row highlights the part on the model;
 //   - Select tool (V): click a part to select it (Shift/Ctrl-click toggles,
-//     Alt-click removes), Shift-drag paints a fresh selection across parts,
-//     Esc clears; the action bar merges / solos / locks / colours / deletes;
-//   - Select-tool brush: a plain drag that starts on a part brushes more of
-//     the model into it (one `brush` edit on release, previewed as a ghost in
-//     the part's colour); Alt-drag swallows every touched part whole. Mouse
-//     and pen only: a one-finger drag still orbits on touch;
-//   - type to name: with one part selected, letters open a rename popover at
-//     the cursor (existing part names + chip names; a taken name merges); R
-//     opens it for the part under the cursor; M merges the selection; Enter
-//     accepts;
+//     Alt-click removes), Shift-drag adds parts to the selection, Esc
+//     clears; the action bar merges / solos / locks / colours / deletes;
+//   - Select-tool brush ("grab your part and paint more of it"): a drag that
+//     starts on a SELECTED part brushes more of the model into it (one
+//     `brush` edit on release, previewed as a ghost in the part's colour);
+//     Alt-drag swallows every touched part whole. Any other drag orbits.
+//     Mouse and pen only: a one-finger drag still orbits on touch;
+//   - type to name: with one part selected, a letter that isn't a panel
+//     shortcut opens a rename popover at the cursor, pre-filled (existing
+//     part names + chip names; Enter takes the exact text, and a taken name
+//     merges); R opens it empty for the part under the cursor; M merges the
+//     selection; Enter accepts;
 //   - Pin tool (P): click to add a pin for the chosen part (or a new name);
 //     only the parts around it re-grow;
 //   - Fix tool (B): drag to paint triangles into a part — fixed triangles
@@ -95,6 +97,9 @@ const ROW_SELECTED = 'bg-blue-500/15 ring-1 ring-blue-500/40';
 const ROW_HOVER = 'bg-zinc-700/50';
 /** A press that moves less than this (px) counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 6;
+/** Letters the panel uses as shortcuts — they never start a typed name
+ *  (R opens the rename box empty instead). */
+const PANEL_SHORTCUT_KEYS = new Set(['v', 'p', 'b', 's', 'h', 'm', 'r']);
 /** Holding a pin this long without dragging deletes it (touch has no
  *  right-click). An interaction convention, not a tuning knob. */
 const PIN_LONG_PRESS_MS = 600;
@@ -183,6 +188,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       unhookPointer();
       window.removeEventListener('pointermove', onWindowMove);
       window.removeEventListener('pointerup', onWindowUp);
+      window.removeEventListener('pointercancel', onWindowCancel);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('resize', onResize);
@@ -628,7 +634,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     pin: el('button', BUTTON_SMALL_SECONDARY, 'Pin (P)'),
     fix: el('button', BUTTON_SMALL_SECONDARY, 'Fix (B)'),
   };
-  toolBtns.select.title = 'Click parts to select them; drag on the model to brush that area into the part you start in (Alt-drag: whole parts); Shift-drag to paint-select';
+  toolBtns.select.title = 'Click parts to select them; drag from a selected part to brush more of the model into it (Alt-drag: whole parts); Shift-drag adds to the selection; any other drag orbits';
   toolBtns.pin.title = 'Click the model to add a pin for a part (or a new part)';
   toolBtns.fix.title = 'Drag on the model to paint triangles into a part; fixed triangles stay put';
   const markerBtn = el('button', ICON_BTN_ON, '👁');
@@ -663,7 +669,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   body.append(toolRow, toolHint, targetRow);
 
   const TOOL_HINTS: Record<Tool, string> = {
-    select: 'Click a part to select it · drag from a part to brush more of the model into it (Alt-drag swallows whole parts) · Shift-click toggles · Shift-drag paints a fresh selection · M merges · with one part selected just type a name (R renames the part under the cursor) · Enter accepts · Esc clears.',
+    select: 'Click a part to select it · drag from the SELECTED part to brush more of the model into it (Alt-drag swallows whole parts; other drags orbit) · Shift-click toggles · Shift-drag adds parts · M merges · with one part selected just type a name (names starting with V, P, B, S, H, M or R: press R first) · Enter accepts · Esc clears.',
     pin: 'Click the model to add a pin for the part above (type a new name to start a new part). Only nearby parts re-grow. Drag a pin to move it; right-click (or long-press) it to delete.',
     fix: 'Drag on the model to paint triangles into the part above. Fixed triangles stay put when pins move. Right-drag still pans; switch tool to orbit.',
   };
@@ -1141,7 +1147,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     list.setAttribute('role', 'listbox');
     box.append(input, list, el('div', 'text-[10px] text-zinc-500 px-1 leading-snug', 'Enter names it · a taken name merges · Esc cancels'));
     let items: { name: string; color: string; merges: boolean; typed?: boolean }[] = [];
-    let active = 0;
+    let active = -1;
+    let navigated = false;
     const paintActive = () => {
       list.querySelectorAll<HTMLElement>('[role="option"]').forEach((o, i) => {
         o.setAttribute('aria-selected', String(i === active));
@@ -1156,9 +1163,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       const matches = q ? all.filter((x) => x.name.toLowerCase().includes(ql)).sort((a, b) => Number(!starts(a.name)) - Number(!starts(b.name))) : all;
       items = matches.slice(0, 8);
       if (q && q !== partName && !all.some((x) => x.name === q)) items.push({ name: q, color: '', merges: false, typed: true });
-      // Default: the first name that starts with what was typed, else the
-      // typed text itself.
-      active = !q || (items.length && !items[0].typed && starts(items[0].name)) ? 0 : Math.max(0, items.length - 1);
+      // Enter takes exactly what was typed ("eye" never becomes "eyes");
+      // the highlight says so: an exact (case-insensitive) match, else the
+      // typed text. Arrow / Tab / a click pick a suggestion instead.
+      navigated = false;
+      const exact = items.findIndex((x) => !x.typed && x.name.toLowerCase() === ql);
+      active = !q ? -1 : exact >= 0 ? exact : items.findIndex((x) => x.typed);
       list.replaceChildren();
       items.forEach((it) => {
         const b = el('button', 'flex items-center gap-2 text-left px-2 min-h-11 md:min-h-0 py-1 rounded text-[12px] text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/60');
@@ -1193,13 +1203,26 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); popover?.close(); }
-      else if (e.key === 'Enter') { e.preventDefault(); void apply(items[active]?.name ?? input.value); }
-      else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        // A picked suggestion, an exact match, or the typed text itself.
+        const picked = (navigated || (active >= 0 && !items[active].typed)) ? items[active]?.name : undefined;
+        void apply(picked ?? input.value);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (!items.length) return;
-        active = (active + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+        active = active < 0 ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
+          : (active + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+        navigated = true;
         paintActive();
-      } else if (e.key === 'Tab' && items[active]) { e.preventDefault(); input.value = items[active].name; render(); }
+      } else if (e.key === 'Tab') {
+        // Complete with the highlighted suggestion, else the first one.
+        const it = navigated && items[active] ? items[active] : items.find((x) => !x.typed);
+        if (!it) return;
+        e.preventDefault();
+        input.value = it.name;
+        render();
+      }
     });
     render();
     const canvas = getCanvas().getBoundingClientRect();
@@ -1219,10 +1242,26 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       b.addEventListener('click', () => { popover?.close(); it.run(); });
       menu.appendChild(b);
     }
-    menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); popover?.close(); anchor.focus(); } });
+    // Keyboard model as in the command palette: arrows / Home / End move,
+    // Enter activates, Escape closes back to the ⋯ button.
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    let at = 0;
+    const focusAt = (i: number) => {
+      at = (i + buttons.length) % buttons.length;
+      buttons.forEach((b, k) => { b.tabIndex = k === at ? 0 : -1; });
+      buttons[at].focus();
+    };
+    menu.addEventListener('keydown', (e) => {
+      const move: Record<string, () => number> = {
+        ArrowDown: () => at + 1, ArrowUp: () => at - 1, Home: () => 0, End: () => buttons.length - 1,
+      };
+      if (e.key in move) { e.preventDefault(); e.stopPropagation(); focusAt(move[e.key]()); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); buttons[at].click(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); popover?.close(); anchor.focus(); }
+    });
     const r = anchor.getBoundingClientRect();
     mountPopover(menu, { x: r.right - 150, y: r.bottom + 4 });
-    (menu.querySelector('button') as HTMLButtonElement | null)?.focus();
+    focusAt(0);
   }
 
   // ======================================================== viewport interaction
@@ -1250,11 +1289,12 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     // A chip armed while a seedless method is still selected (the panel
     // opened ready to label a fused figure) switches method on its first
     // pin, not before, so the proposal survives until the user commits.
+    const seed = chip ? { label, point, color: chip.color } : { label, point };
     if (chip && detectorOf(algoSelect.value).seeds === 'none' && info.detectors.some((x) => x.id === 'crease-watershed')) {
       algoSelect.value = 'crease-watershed';
-      await onMethodChanged(true);
+      // Clearing the proposal and placing this pin are one undo step.
+      if (await onMethodChanged(true, seed)) { checkPin(label); return; }
     }
-    const seed = chip ? { label, point, color: chip.color } : { label, point };
     if (isDraft(ctl.getPartDraft())) {
       if (!await edit([{ op: 'addSeed', seed }])) return;
     } else {
@@ -1325,16 +1365,17 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     if (evt.button !== 0) return false;
     const draftNow = ctl.getPartDraft();
     if (tool === 'select' && evt.shiftKey && isDraft(draftNow)) {
-      // Shift-drag paints a selection across parts (owns the drag).
-      paintSelect = { set: new Set(), x: evt.clientX, y: evt.clientY, first: partUnder(evt), started: false };
+      // Shift-drag paints a selection across parts (owns the drag), adding
+      // to the current selection.
+      paintSelect = { set: new Set(ctl.getPartSelection().parts.map((p) => p.name)), x: evt.clientX, y: evt.clientY, first: partUnder(evt), started: false };
       return true;
     }
     if (tool === 'select' && !evt.ctrlKey && !evt.metaKey && evt.pointerType !== 'touch' && isDraft(draftNow)) {
-      // A drag that starts on a part brushes into it; a press elsewhere
-      // (background, unassigned) still orbits.
+      // "Grab your part and paint more of it": a drag that starts on a
+      // SELECTED part brushes into it. Anywhere else a drag still orbits.
       const hit = pickFace(evt);
       const part = hit ? ctl.partAtFace(hit.triangleIndex) : null;
-      if (hit && part) {
+      if (hit && part && ctl.getPartSelection().parts.some((s) => s.name === part.name)) {
         selBrush = {
           target: part.name,
           color: draftNow.parts.find((x) => x.name === part.name)?.displayColor ?? '#ffffff',
@@ -1401,7 +1442,6 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       const ps = paintSelect;
       if (!ps.started) {
         if (Math.hypot(evt.clientX - ps.x, evt.clientY - ps.y) <= CLICK_SLOP_PX) return;
-        // A paint-select drag always starts from an empty selection.
         ps.started = true;
         if (ps.first) ps.set.add(ps.first);
         ctl.setPartSelection([...ps.set]);
@@ -1540,10 +1580,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const modal = !!document.querySelector('[role="dialog"][aria-modal="true"]');
     const k = evt.key.toLowerCase();
     const sel = ctl.getPartSelection().parts;
-    // Type-to-name: with ONE part selected (Select tool), letters start its
-    // name in the rename popover instead of acting as shortcuts ("shirt"
-    // must not toggle Solo on its first letter). R is always "rename".
-    if (tool === 'select' && sel.length === 1 && !modal && !evt.altKey && !evt.repeat && /^[a-z]$/i.test(evt.key) && k !== 'r') {
+    // Type-to-name: with ONE part selected (Select tool), a letter that is
+    // not a panel shortcut starts its name in the rename popover. Shortcut
+    // letters keep their meaning; names starting with one go through R,
+    // which always opens the popover empty.
+    if (tool === 'select' && sel.length === 1 && !modal && !evt.altKey && !evt.repeat && /^[a-z]$/i.test(evt.key) && !PANEL_SHORTCUT_KEYS.has(k)) {
       evt.preventDefault();
       openRenamePopover(sel[0].name, evt.key, lastPointer ?? rowAnchor(sel[0].name));
       return;
@@ -1571,8 +1612,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       evt.preventDefault();
       openRenamePopover(target, '', lastPointer ?? rowAnchor(target));
     } else if (evt.key === 'Enter') {
-      // Enter accepts, unless a button has focus (Enter activates it).
-      if (document.activeElement instanceof HTMLButtonElement) return;
+      // Enter accepts — only when nothing else claimed it: another dialog
+      // confirming on Enter (it handles the key first and closes itself), or
+      // a focused control (Enter activates it).
+      if (evt.defaultPrevented) return;
+      if (evt.target !== document.body && evt.target !== getCanvas()) return;
       if (acceptBtn.classList.contains('hidden') || acceptBtn.disabled) return;
       evt.preventDefault();
       acceptBtn.click();
@@ -1587,6 +1631,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
    *  listener. */
   function onEscape(evt: KeyboardEvent): void {
     if (evt.key !== 'Escape' || isTyping(evt.target)) return;
+    // An open popover or ⋯ menu handles Escape itself (closes first).
+    if (popover) return;
     if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
     if (stripOpen) setStripOpen(false);
     else if (ctl.getPartSelection().parts.length) ctl.setPartSelection(null);
@@ -1602,8 +1648,24 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
   }
 
+  /** A cancelled gesture (pen lifted out of range, touch taken over by the
+   *  browser) applies nothing: drop every stroke in progress. */
+  function onWindowCancel(): void {
+    if (selBrush?.raf) cancelAnimationFrame(selBrush.raf);
+    selBrush = null;
+    paintSelect = null;
+    if (brushing?.timer) clearTimeout(brushing.timer);
+    brushing = null;
+    // A pin dragged mid-cancel snaps back to where it is stored.
+    if (pinDrag) { pinsKey = ''; renderPins(); }
+    pinDrag = null;
+    press = null;
+    ctl.setBrushGhost(null);
+  }
+
   window.addEventListener('pointermove', onWindowMove);
   window.addEventListener('pointerup', onWindowUp);
+  window.addEventListener('pointercancel', onWindowCancel);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   document.addEventListener('keydown', onEscape, true);
@@ -1760,7 +1822,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
    *  method takes over: new pins would otherwise only re-grow locally inside
    *  the old patches and leave them mixed in. Locks or a focus mean the
    *  user is deliberately re-detecting part of the model, so those keep it. */
-  async function onMethodChanged(viaChip = false): Promise<void> {
+  /** `withSeed`: a chip's first pin on a seedless draft — the clear and
+   *  the pin land as ONE batch, so a single Undo restores the old parts.
+   *  Returns whether that pin was applied here. */
+  async function onMethodChanged(viaChip = false, withSeed: Record<string, unknown> | null = null): Promise<boolean> {
     void ctl.showPresetPreview(null);
     carriedEdgeLengths = null;
     buildParams();
@@ -1772,8 +1837,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const keepsPins = next.seeds !== 'none' && from?.seeds !== 'none';
     if (isDraft(d) && d.parts.length > 0 && d.detector !== next.id && !keepsPins
       && !d.focus && !d.parts.some((p) => 'locked' in p && p.locked)) {
-      cleared = await edit([{ op: 'clear', algorithm: next.id }]);
-      if (cleared) showUndoBanner(`Started fresh for ${next.name}: cleared the ${from?.name ?? d.detector} parts.`);
+      const ops: Record<string, unknown>[] = [{ op: 'clear', algorithm: next.id }];
+      if (withSeed) ops.push({ op: 'addSeed', seed: withSeed });
+      cleared = await edit(ops);
+      if (cleared) showUndoBanner(`Started fresh for ${next.name}: cleared the ${from?.name ?? d.detector} parts${withSeed ? ' and placed your pin' : ''}.`);
     }
     if (viaChip) {
       showToast(cleared
@@ -1782,6 +1849,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
     renderDraft();
     scheduleLive();
+    return cleared && !!withSeed;
   }
 
 

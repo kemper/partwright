@@ -80,8 +80,23 @@ test.describe('Part detection on import', () => {
     // until the first click.
     await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('aria-pressed', 'true');
     await expect(panel.getByRole('button', { name: 'Pin (P)' })).toHaveAttribute('aria-pressed', 'true');
-    const draft = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as { detector?: string };
-    expect(draft.detector).toBe('pieces');
+    const draftNow = () => page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as Promise<{ detector?: string; parts?: { name: string }[] }>;
+    expect((await draftNow()).detector).toBe('pieces');
+
+    // The first click switches method, clears the pieces and places the pin
+    // as ONE step: a single Undo brings both pieces back.
+    const xy = await page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      const cam = vp.getCamera();
+      const v = cam.position.clone().set(5, 5, 10).project(cam);
+      const r = vp.getCanvas().getBoundingClientRect();
+      return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+    });
+    await page.mouse.click(xy.x, xy.y);
+    await expect.poll(async () => (await draftNow()).parts?.map((p) => p.name), { timeout: 30_000 }).toEqual(['hair']);
+    await expect(panel.getByText(/Started fresh for Crease watershed/)).toBeVisible();
+    await panel.getByRole('button', { name: 'Undo', exact: true }).first().click();
+    await expect.poll(async () => { const d = await draftNow(); return [d.detector, d.parts?.length]; }, { timeout: 30_000 }).toEqual(['pieces', 2]);
   });
 
   test('dismissing an untouched import proposal discards it', async ({ page }) => {

@@ -478,8 +478,8 @@ export interface AppConfig {
      *  as a fraction of its largest dimension. */
     focusPadding: number;
     /** Detection folds "specks" — regions under this fraction of the surface
-     *  that no placed pin or hand fix holds — into the neighbour they border
-     *  most. 0 = off. */
+     *  with no pin of any kind, no hand fix, and whose part nobody named,
+     *  coloured or locked — into the neighbour they border most. 0 = off. */
     autoAbsorbSpeckFrac: number;
     /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
      *  (the panel opens with the first label chip armed) when its largest
