@@ -558,13 +558,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintStroke',
-    description: 'Paint a SMOOTH brush stroke along a path of surface points, subdividing the mesh under the stroke so the painted edge is rounded (not stair-stepped along triangle boundaries). This is the only paint tool that changes the tessellation — it is more expensive than the region selectors, so reach for `paintNear`/`paintInBox`/`paintConnected`/`paintRegion` first and use this ONLY when a visibly rounded painted edge matters (e.g. a curved racing stripe, a soft-edged logo patch). Get `points` from `probePixel` against a rendered view (render → pick pixels along the desired stroke → probePixel each → pass the world-space hits here). `radius` is in mesh units. `resolution` sets smoothness (target triangle edge = radius / resolution; higher = smoother + more triangles), default 256, range 2–1024. For absolute control, `maxEdge` overrides it with a target edge length in mesh units (e.g. maxEdge 0.1 for crisp 0.1-unit edges). `shape` is circle (default), square, or diamond.',
+    description: 'Paint a SMOOTH brush stroke along a path of surface points, subdividing the mesh under the stroke so the painted edge is rounded (not stair-stepped along triangle boundaries). This is the only paint tool that changes the tessellation — it is more expensive than the region selectors, so reach for `paintNear`/`paintInBox`/`paintConnected`/`paintRegion` first and use this ONLY when a visibly rounded painted edge matters (e.g. a curved racing stripe, a soft-edged logo patch). Get `points` from `probePixel` against a rendered view (render → pick pixels along the desired stroke → probePixel each → pass the world-space hits here). `radius` is in mesh units. `points` is a path: gaps between consecutive points are filled automatically, so a few corner points paint a continuous band. `resolution` sets smoothness (target triangle edge = radius / resolution; higher = smoother + more triangles), default 16, range 2–1024 (the edge is clipped exactly, so 16 already gives a smooth curve). For absolute control, `maxEdge` overrides it with a target edge length in mesh units (e.g. maxEdge 0.1 for crisp 0.1-unit edges). `shape` is circle (default), square, or diamond.',
     input_schema: {
       type: 'object',
       properties: {
         points: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Ordered world-space surface points [[x,y,z], ...] along the stroke path (from probePixel). A single point stamps a rounded dot.' },
         radius: { type: 'number', description: 'Brush radius in mesh units (must be > 0).' },
-        resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 256, clamped 2–1024.' },
+        resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 16, clamped 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target edge length (mesh units). Takes precedence over resolution.' },
         shape: { type: 'string', enum: ['circle', 'square', 'diamond'], description: 'Brush footprint shape. Default "circle".' },
         wrapAngleDeg: { type: 'number', description: 'Wrap tolerance (0–180): the max edge bend, in degrees, paint may flow across. The stroke follows gentle curves/bumps but stops at sharper folds — 90 stops at right-angle corners (so paint on one face of a box stays off the adjacent faces), 180 (default) wraps across any edge. Lower it to keep a stroke on a single face.' },
@@ -661,6 +661,30 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
       },
       required: ['offset', 'thickness', 'color'],
+    },
+  },
+  {
+    name: 'paintPattern',
+    description: 'Paint an algorithmic colour PATTERN over a part in ONE call: "soccer" (truncated-icosahedron ball — 12 pentagons in colors[1] on colors[0], fitted to the part), "stripes", "spots", "patches", "gradient", "checker". Scope it with withinPart (a label / detected part). smooth:true (soccer, stripes, checker) clips the colour seams sub-triangle so edges are crisp, saved as one small descriptor — NEVER fake pattern edges with many paintStroke calls (that bloats the session and still leaves pinholes). Soccer recipe: {pattern:"soccer", withinPart:"ball", colors:["#ffffff","#111111"], smooth:true}. Returns {id, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere?}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', enum: ['soccer', 'stripes', 'spots', 'patches', 'gradient', 'checker'] },
+        colors: { type: 'array', items: { type: 'string' }, description: 'Palette as hex strings: [base, mark, third?]. Soccer: [white, black].' },
+        withinPart: { type: 'string', description: 'Part (label) to paint — e.g. a detected part after detectParts → acceptParts, or an api.label region (listLabels). Soccer fits the ball to this part.' },
+        scope: { type: 'object', description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).' },
+        scale: { type: 'number', description: 'Feature size (stripe period / spot spacing / checker cell). Default ~1/8 of the model diagonal. Unused by soccer.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Stripe axis (bands run across it). Default z.' },
+        warp: { type: 'number', description: 'Noise wiggle 0..1 for stripes/patches/checker edges.' },
+        coverage: { type: 'number', description: 'Stripe duty / spot radius / base fraction (0..1). Soccer: pentagon size factor, 1 = standard ball, up to 1.45.' },
+        seed: { type: 'number' },
+        anchors: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'gradient: extremity points. soccer: anchors[0] = a world point one pentagon is centred toward (default +X of the ball centre); anchors[1] sets the roll (default +Z).' },
+        smooth: { type: 'boolean', description: 'Clip seams sub-triangle along the analytic pattern boundary (soccer / stripes / checker only). Default false.' },
+        resolution: { type: 'number', description: 'Smoothing detail: target edge = model diagonal / resolution. Default: soccer radius/100, else diagonal/256.' },
+        maxEdge: { type: 'number', description: 'Absolute target edge length for the smoothed seam (overrides resolution).' },
+        name: { type: 'string' },
+      },
+      required: ['pattern', 'colors'],
     },
   },
   {
@@ -1680,7 +1704,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
-  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
+  'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
@@ -1829,7 +1853,7 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteO
  *  image-returning ones additionally need the Views vision toggle. */
 const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -2355,6 +2379,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintInOrientedBox(input);
     case 'paintSlab':
       return api.paintSlab(input);
+    case 'paintPattern':
+      return api.paintPattern(input);
     case 'paintNearestRegion':
       return api.paintNearestRegion(input);
     case 'findFaces':

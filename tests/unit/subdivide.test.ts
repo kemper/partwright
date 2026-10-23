@@ -2,7 +2,7 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
+import { brushRefineRegion, buildRefinedMesh, densifyStrokePath, strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
 import { closestPointOnTriangle } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -60,6 +60,46 @@ describe('strokeSignedDist', () => {
     expect(at(s, [10, 0, 0])).toBeCloseTo(-2);   // inside the second sample
     expect(at(s, [5, 0, 0])).toBeGreaterThan(0); // between, outside both
   });
+});
+
+describe('strokeSignedDist sample grid', () => {
+  // A long stroke (≥ the grid threshold) is evaluated through a hash grid over
+  // its samples. It must equal the brute-force minimum wherever that is below
+  // the grid's bound (4·radius) and never report inside where brute force says
+  // outside.
+  const brute = (s: BrushStroke, p: number[]): number => {
+    let best = Infinity;
+    for (const q of s.samples) {
+      const one: BrushStroke = { ...s, samples: [q], sampleNormals: s.sampleNormals ? [s.sampleNormals[s.samples.indexOf(q)]] : undefined, sampleTangents: undefined };
+      best = Math.min(best, strokeSignedDist(p[0], p[1], p[2], one));
+    }
+    return best;
+  };
+  const path = (n: number): [number, number, number][] =>
+    Array.from({ length: n }, (_, i) => [Math.cos(i / 9) * 20, Math.sin(i / 9) * 20, i * 0.05] as [number, number, number]);
+  let seed = 7;
+  const rand = (): number => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+
+  for (const [label, extra] of [
+    ['circle', { shape: 'circle' }],
+    ['square', { shape: 'square' }],
+    ['diamond', { shape: 'diamond' }],
+    ['slab circle', { shape: 'circle', surface: 'slab', depth: 0.6 }],
+    ['slab square', { shape: 'square', surface: 'slab', depth: 0.6 }],
+  ] as const) {
+    test(`${label}: matches brute force near the footprint`, () => {
+      const samples = path(120);
+      const s = { samples, radius: 0.8, maxEdge: 0.05, ...extra } as BrushStroke;
+      if (s.surface === 'slab') s.sampleNormals = samples.map(() => [0, 0, 1] as [number, number, number]);
+      for (let i = 0; i < 3000; i++) {
+        const p = [(rand() - 0.5) * 50, (rand() - 0.5) * 50, rand() * 8 - 1];
+        const g = at(s, p as [number, number, number]);
+        const b = brute(s, p);
+        if (b < 4 * s.radius) expect(g).toBeCloseTo(b, 9);
+        else expect(g).toBeGreaterThan(0);
+      }
+    });
+  }
 });
 
 describe('strokeFootprintTriangles spatial grid', () => {
@@ -513,5 +553,45 @@ describe('clipByField — no streak slivers when the boundary grazes a corner', 
     // Centroids well inside the footprint must still resolve as painted.
     const painted = strokeFootprintTriangles(out, stroke);
     expect(painted.size).toBeGreaterThan(0);
+  });
+});
+
+describe('densifyStrokePath', () => {
+  test('fills gaps so consecutive samples are at most `step` apart, keeping the given points', () => {
+    const pts: [number, number, number][] = [[0, 0, 0], [10, 0, 0], [10, 3, 0]];
+    const out = densifyStrokePath(pts, 1);
+    for (const p of pts) expect(out).toContainEqual(p);
+    for (let i = 1; i < out.length; i++) {
+      const a = out[i - 1], b = out[i];
+      expect(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])).toBeLessThanOrEqual(1 + 1e-9);
+    }
+    expect(out.length).toBe(14); // 10 + 3 segments, plus the start point
+  });
+
+  test('widens the step to respect the sample cap on a very long path', () => {
+    const out = densifyStrokePath([[0, 0, 0], [1000, 0, 0]], 0.01, 500);
+    expect(out.length).toBeLessThanOrEqual(501);
+  });
+
+  test('leaves a single point alone', () => {
+    expect(densifyStrokePath([[1, 2, 3]], 0.1)).toEqual([[1, 2, 3]]);
+  });
+});
+
+describe('long strokes on coarse faces', () => {
+  // Regression: a stroke with enough samples to use the sample grid clamps far
+  // field values to the grid bound, so a big triangle's six field samples all
+  // read the same value. That looked like a straight boundary to the refiner,
+  // which skipped the triangle and the stroke painted nothing.
+  test('a 49-sample stroke inside one big triangle still refines and paints', () => {
+    const mesh = meshFromTris([
+      [[0, 0, 0], [100, 0, 0], [0, 100, 0]],
+    ]);
+    const samples = densifyStrokePath([[11, 4, 0], [17, 4, 0]], 0.125);
+    expect(samples.length).toBeGreaterThanOrEqual(24);
+    const stroke: BrushStroke = { samples, radius: 0.5, shape: 'circle', maxEdge: 0.1 };
+    const { mesh: refined } = buildRefinedMesh(mesh, [brushRefineRegion(stroke)]);
+    expect(refined.numTri).toBeGreaterThan(100);
+    expect(strokeFootprintTriangles(refined, stroke).size).toBeGreaterThan(50);
   });
 });
