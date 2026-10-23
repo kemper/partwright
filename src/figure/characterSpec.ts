@@ -5,7 +5,12 @@
 // `// @character v2 {json}` header comment in the generated code, so re-opening
 // the panel restores every control exactly (and the code stays hand-editable).
 // Older headers (`@character v1`) migrate through `normalizeSpec` with defaults
-// that regenerate their original code.
+// that regenerate their original code. Fields added since (the #1059 details:
+// head sink, per-hand cup, bead eyes, brow weight, shag/captured knobs, trim,
+// print, socks, toy shoes, shorts) are ADDITIVE v2 fields whose defaults
+// reproduce the code the spec generated before they existed, so an older v2
+// header regenerates byte-identical code below the header line
+// (tests/unit/fixtures/characterV2Code.json) — no version bump needed.
 //
 // Every enum here is a real, validated option of the figure API
 // (`src/geometry/sdfFigure.ts`) — keep them in sync with the assertEnum lists
@@ -36,16 +41,27 @@ export const HAIR_STYLES = [
 ] as const;
 export const HAIR_LENGTHS = ['short', 'mid', 'long'] as const;
 export const LOCK_SHAPES = ['ribbon', 'tube'] as const;
-/** 'shag' crown: 5 sharp back-fanning spikes + 2 side-up spikes, or small random locks. */
+/** 'shag' crown: 7 big needle-pointed spikes spread round the back + sides of the crown (sized by `crownSize`), or 7 small random locks. */
 export const HAIR_CROWNS = ['spiky', 'tousled'] as const;
 export const SLEEVES = ['none', 'short', 'long'] as const;
 export const TOP_LENGTHS = ['shirt', 'dress'] as const;
 export const PANTS_LEGS = ['slim', 'cargo'] as const;
 export const PANTS_RISES = ['low', 'mid', 'high'] as const;
-export const PANTS_LENGTHS = ['full', 'briefs'] as const;
+/** 'shorts' = knee-length (cut at `pants.hem` along the thigh); 'briefs' = no legs. */
+export const PANTS_LENGTHS = ['full', 'shorts', 'briefs'] as const;
 export const FOOTWEAR_KINDS = ['shoes', 'boots'] as const;
 export const HOLD_KINDS = ['none', 'ball'] as const;
 export const HOLD_CUPS = ['sides', 'under'] as const;
+/** 'iris' = white dome + iris + pupil (+ optional lids); 'bead' = the glossy
+ *  vinyl-toy bead with a specular glint (labels 'eyes' + 'eyeHighlight'). */
+export const EYE_STYLES = ['iris', 'bead'] as const;
+/** Captured-hair presets (`F.hair({ style: 'captured', preset })`). */
+export const HAIR_PRESETS = ['tsubasa'] as const;
+/** 'fitted' hugs the foot; 'toy' = a chunky vinyl-toy sneaker (shoes only). */
+export const SHOE_STYLES = ['fitted', 'toy'] as const;
+/** Where a garment print sits: the chest (front) or the back. */
+export const PRINT_PLACES = ['chest', 'back'] as const;
+export const PRINT_FONTS = ['bold', 'regular', 'italic', 'bold-italic'] as const;
 
 export type Build = typeof BUILDS[number];
 export type Sex = typeof SEXES[number];
@@ -70,6 +86,11 @@ export type PantsLength = typeof PANTS_LENGTHS[number];
 export type FootwearKind = typeof FOOTWEAR_KINDS[number];
 export type HoldKind = typeof HOLD_KINDS[number];
 export type HoldCup = typeof HOLD_CUPS[number];
+export type EyeStyle = typeof EYE_STYLES[number];
+export type HairPreset = typeof HAIR_PRESETS[number];
+export type ShoeStyle = typeof SHOE_STYLES[number];
+export type PrintPlace = typeof PRINT_PLACES[number];
+export type PrintFont = typeof PRINT_FONTS[number];
 
 /** Per-axis head multiplier (x = width, y = depth, z = height), or one number
  *  for all three. `null` in the spec = the style's default. */
@@ -99,6 +120,11 @@ export interface HoldSpec {
   cup: HoldCup;
   /** The soccer-panel (pentagon) colour; the ball's base colour is `colors.ball`. */
   color: string;
+  /** Per-hand cup override (null = `cup`) — e.g. right hand under, left on the side. */
+  cupL: HoldCup | null;
+  cupR: HoldCup | null;
+  /** Hand size the hold solve assumes (0.5–2.5); big vinyl mitten hands ≈ 1.3. */
+  handScale: number;
 }
 
 export interface PoseSpec {
@@ -128,6 +154,11 @@ export interface BodySpec {
   proportions: Proportions;
   /** Head size multiplier; null = the style's default. */
   headScale: HeadScale | null;
+  /** Lower the head onto the shoulders by this × the neck length (0–1.5) —
+   *  the neckless vinyl-toy look. 0 = a normal neck. */
+  headSink: number;
+  /** Fingerless vinyl-toy mitten hands (`F.hands({ fingers: false })`). */
+  mittens: boolean;
 }
 
 export interface FaceSpec {
@@ -147,6 +178,21 @@ export interface FaceSpec {
   eyeSize: number;
   /** Build the lip ridge. Off for a mouthless vinyl-toy face. */
   mouth: boolean;
+  /** 'iris' (default) or the glossy vinyl-toy 'bead' (ignores lids / gaze / iris / pupil). */
+  eyeStyle: EyeStyle;
+  /** Bead height ÷ width (0.5–2). */
+  eyeAspect: number;
+  /** Bead glint size (0 = none, 0.2–3; 1 = the default glint). */
+  highlight: number;
+  /** Brow weight multiplier (0.1–5) — bold toy brows ≈ 3. */
+  browThickness: number;
+  /** Brow span multiplier (0.3–2). */
+  browWidth: number;
+  /** Head-shape multipliers on the face shape: jaw width (0.5–1.6), chin
+   *  (0.5–1.6) and cheek fullness (0.3–1.8). A Funko's wide lower face ≈ jaw 1.4, cheek 1.1. */
+  jaw: number;
+  chin: number;
+  cheek: number;
 }
 
 export interface HairSpec {
@@ -168,7 +214,7 @@ export interface HairSpec {
   fringe: number;
   /** Lock layout seed (same seed ⇒ same hair). */
   seed: number;
-  /** Shag crown: 'spiky' (back-fanning spikes) or 'tousled'. */
+  /** Shag crown: 'spiky' (7 spikes round the crown) or 'tousled'. */
   crown: HairCrown;
   /** Shag: overlapping lock layers over the sides + back (1–3). */
   layers: number;
@@ -176,12 +222,69 @@ export interface HairSpec {
   raggedness: number;
   /** Shag: mop mass above the ears (0–3). */
   flare: number;
+  /** Shag: a notched (toothed) fringe hairline (default true). */
+  notched: boolean;
+  /** Shag: crown-spike size (0.3–2.5). */
+  crownSize: number;
+  /** Shag: how far the side/back layers stand off the skull (0.3–1.6). */
+  backWidth: number;
+  /** Shag: side/back lock tip width × root width (0–0.8). */
+  tipWidth: number;
+  // Captured-only knobs ('captured' replays a hairdo measured off a real mesh).
+  /** Which captured hairdo. */
+  preset: HairPreset;
+  /** Captured: spike sharpness (0–3). */
+  spikiness: number;
+  /** Captured: smooths the captured relief (0–1). */
+  smooth: number;
+  /** Captured: mirror the hairdo left↔right. */
+  mirror: boolean;
+  /** Captured: tilt the hairdo forward(+)/back (−40–40 deg). */
+  tilt: number;
+  /** Captured: face-window size multiplier (0.5–2). */
+  windowScale: number;
+}
+
+/** One piece of lettering on the top (`F.emboss`), e.g. a chest initial or a
+ *  back number. Sizes and offsets are in chest half-widths (`rig.r.chestX`), so
+ *  they scale with the figure. Each print paints its own `color`. */
+export interface PrintSpec {
+  text: string;
+  where: PrintPlace;
+  /** Lettering height in chest half-widths (0.1–2.5). */
+  size: number;
+  /** Sideways offset (+ = the figure's left), chest half-widths (−1.5–1.5). */
+  x: number;
+  /** Vertical offset from the chest line (+ = up), chest half-widths (−2–2). */
+  z: number;
+  color: string;
+  font: PrintFont;
 }
 
 export interface ClothingSpec {
-  top: { on: boolean; sleeve: Sleeve; length: TopLength };
-  pants: { on: boolean; leg: PantsLeg; rise: PantsRise; length: PantsLength };
-  feet: { on: boolean; kind: FootwearKind };
+  top: {
+    on: boolean; sleeve: Sleeve; length: TopLength;
+    /** Contrast trim (colour `colors.trim`): a collar band and/or sleeve cuffs. */
+    trim: { collar: boolean; cuffs: boolean };
+    /** Lettering / numbers on the top. */
+    print: PrintSpec[];
+  };
+  /** `hem` (length 'shorts' only): where the leg is cut, as a fraction of the
+   *  hip→knee bone (0.2–1.2; 0.9 = just above the knee). */
+  pants: { on: boolean; leg: PantsLeg; rise: PantsRise; length: PantsLength; hem: number };
+  /** Socks up the shin (colour `colors.socks`), optionally with `stripes`
+   *  contrast bands (`colors.sockStripe`) over the top `stripeSpan`. */
+  socks: {
+    on: boolean;
+    /** Sock height as a fraction of the shin (0.2–1.4; 1.1 = just over the knee). */
+    height: number;
+    /** Contrast bands at the sock top (0 = plain, 1 = one band, n = hoops). */
+    stripes: number;
+    /** How much of the shin (from the sock top) the bands cover (0.05–1.4). */
+    stripeSpan: number;
+  };
+  /** `style`/`height`/`cleats` apply to shoes only; `size` scales either. */
+  feet: { on: boolean; kind: FootwearKind; style: ShoeStyle; size: number; height: number; cleats: number };
 }
 
 export interface ColorsSpec {
@@ -198,6 +301,14 @@ export interface ColorsSpec {
   base: string;
   /** Held ball base colour (the panels are `pose.hold.color`). */
   ball: string;
+  /** Collar / cuff trim. */
+  trim: string;
+  socks: string;
+  sockStripe: string;
+  /** Footwear sole; null = the same as `feet`. */
+  sole: string | null;
+  /** Bead-eye glint. */
+  eyeHighlight: string;
 }
 
 export interface CharacterSpec {
@@ -233,27 +344,42 @@ function standingPose(): PoseSpec {
 }
 
 function noHold(): HoldSpec {
-  return { kind: 'none', radius: 7, cup: 'sides', color: '#161616' };
+  return { kind: 'none', radius: 7, cup: 'sides', color: '#161616', cupL: null, cupR: null, handScale: 1 };
 }
 
-/** Library defaults of the lock-style hair knobs (none are emitted at these values). */
-function lockDefaults(): Pick<HairSpec, 'lockShape' | 'chunk' | 'spike' | 'swoop' | 'fringe' | 'seed' | 'crown' | 'layers' | 'raggedness' | 'flare'> {
-  return { lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1 };
+type LockKnob = 'lockShape' | 'chunk' | 'spike' | 'swoop' | 'fringe' | 'seed' | 'crown' | 'layers' | 'raggedness' | 'flare'
+  | 'notched' | 'crownSize' | 'backWidth' | 'tipWidth' | 'preset' | 'spikiness' | 'smooth' | 'mirror' | 'tilt' | 'windowScale';
+
+/** Library defaults of the lock-style + captured hair knobs (none are emitted at these values). */
+function lockDefaults(): Pick<HairSpec, LockKnob> {
+  return {
+    lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1,
+    notched: true, crownSize: 1, backWidth: 1, tipWidth: 0.4,
+    preset: 'tsubasa', spikiness: 1, smooth: 0, mirror: false, tilt: 0, windowScale: 1,
+  };
 }
+
+/** Defaults filled into each `clothing.top.print` item that omits a field. */
+export const PRINT_DEFAULT: PrintSpec = { text: '10', where: 'chest', size: 0.6, x: 0, z: 0, color: '#1a1a1a', font: 'bold' };
 
 export const DEFAULT_SPEC: CharacterSpec = {
-  body: { height: 60, headsTall: 7, build: 'average', sex: 'neutral', age: 25, weight: 0.5, muscle: 0, bust: 0, belly: 0, proportions: 'realistic', headScale: null },
+  body: { height: 60, headsTall: 7, build: 'average', sex: 'neutral', age: 25, weight: 0.5, muscle: 0, bust: 0, belly: 0, proportions: 'realistic', headScale: null, headSink: 0, mittens: false },
   pose: standingPose(),
-  face: { shape: 'oval', lids: 'almond', gaze: 'center', nose: 'straight', expression: 'slightSmile', lipShape: 'natural', ears: 'detailed', brows: 'natural', layout: { eyeSpread: null, eyeHeight: null }, eyeSize: 1, mouth: true },
+  face: {
+    shape: 'oval', lids: 'almond', gaze: 'center', nose: 'straight', expression: 'slightSmile', lipShape: 'natural', ears: 'detailed', brows: 'natural', layout: { eyeSpread: null, eyeHeight: null }, eyeSize: 1, mouth: true,
+    eyeStyle: 'iris', eyeAspect: 1.06, highlight: 1, browThickness: 1, browWidth: 1, jaw: 1, chin: 1, cheek: 1,
+  },
   hair: { style: 'short', length: 'mid', volume: 1, ...lockDefaults() },
   clothing: {
-    top: { on: true, sleeve: 'short', length: 'shirt' },
-    pants: { on: true, leg: 'slim', rise: 'mid', length: 'full' },
-    feet: { on: true, kind: 'shoes' },
+    top: { on: true, sleeve: 'short', length: 'shirt', trim: { collar: false, cuffs: false }, print: [] },
+    pants: { on: true, leg: 'slim', rise: 'mid', length: 'full', hem: 0.9 },
+    socks: { on: false, height: 1.1, stripes: 1, stripeSpan: 0.34 },
+    feet: { on: true, kind: 'shoes', style: 'fitted', size: 1, height: 1, cleats: 0 },
   },
   colors: {
     skin: '#c68642', eyes: '#f7f6f2', iris: '#5b3a21', pupil: '#161616', lips: '#a85b4b',
     brows: '#2a1d14', hair: '#2a1d14', top: '#2f6f8f', pants: '#2c3144', feet: '#202024', base: '#4a4a4a', ball: '#f7f7f7',
+    trim: '#1f5fc8', socks: '#f4f4f4', sockStripe: '#1f5fc8', sole: null, eyeHighlight: '#ffffff',
   },
   base: true,
   place: true,
@@ -314,8 +440,8 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
     s.body = { ...s.body, height: 64, headsTall: 7.5, sex: 'female', bust: 0.5 };
     s.face = { ...s.face, shape: 'oval', lipShape: 'full', lids: 'almond', expression: 'slightSmile' };
     s.hair = { style: 'long', length: 'long', volume: 1.1, ...lockDefaults() };
-    s.clothing.top = { on: true, sleeve: 'short', length: 'dress' };
-    s.clothing.pants = { on: false, leg: 'slim', rise: 'mid', length: 'full' };
+    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'short', length: 'dress' };
+    s.clothing.pants = { ...s.clothing.pants, on: false, leg: 'slim', rise: 'mid', length: 'full' };
     s.colors = { ...s.colors, top: '#a8466a', hair: '#3a2417' };
   }) },
   { id: 'adultM', label: 'Adult man', patch: withSpec(s => {
@@ -341,8 +467,8 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
     s.pose = POSE_PRESETS.contrapposto();
     s.face = { ...s.face, expression: 'slightSmile' };
     s.hair = { style: 'ponytail', length: 'long', volume: 0.9, ...lockDefaults() };
-    s.clothing.top = { on: true, sleeve: 'none', length: 'shirt' };
-    s.clothing.pants = { on: true, leg: 'slim', rise: 'mid', length: 'briefs' };
+    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'none', length: 'shirt' };
+    s.clothing.pants = { ...s.clothing.pants, on: true, leg: 'slim', rise: 'mid', length: 'briefs' };
     s.colors = { ...s.colors, top: '#c43d3d', pants: '#1f2330' };
   }) },
   { id: 'dancer', label: 'Dancer', patch: withSpec(s => {
@@ -350,8 +476,8 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
     s.pose = POSE_PRESETS.armsUp();
     s.face = { ...s.face, lipShape: 'full', expression: 'slightSmile' };
     s.hair = { style: 'bun', length: 'mid', volume: 1, ...lockDefaults() };
-    s.clothing.top = { on: true, sleeve: 'none', length: 'shirt' };
-    s.clothing.pants = { on: true, leg: 'slim', rise: 'high', length: 'briefs' };
+    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'none', length: 'shirt' };
+    s.clothing.pants = { ...s.clothing.pants, on: true, leg: 'slim', rise: 'high', length: 'briefs' };
     s.colors = { ...s.colors, top: '#c45c93', pants: '#c45c93' };
   }) },
 ];
@@ -393,6 +519,8 @@ const BEAD = '#0b0b0d';
 /** Style eye-size defaults: anime chibi eyes run big, vinyl-toy beads bigger. */
 const CHIBI_EYE_SIZE = 1.4;
 const FUNKO_EYE_SIZE = 1.8;
+/** Funko toys have no visible neck: the style sinks the head onto the shoulders. */
+const FUNKO_HEAD_SINK = 0.4;
 
 /** Switch the body plan and apply that style's sensible defaults: the rig's
  *  head count + build, the style's own head scale / eye layout (cleared to
@@ -408,13 +536,18 @@ export function applyStyle(spec: CharacterSpec, style: Proportions): void {
   spec.body.headScale = null;
   spec.face.layout = { eyeSpread: null, eyeHeight: null };
   if (style === 'funko') {
-    spec.face = { ...spec.face, shape: 'round', lids: 'none', nose: 'button', expression: 'neutral', brows: 'arched', ears: 'round', eyeSize: FUNKO_EYE_SIZE, mouth: false };
+    // Glossy bead eyes with a glint, and the head sunk onto the shoulders.
+    spec.face = { ...spec.face, shape: 'round', lids: 'none', nose: 'button', expression: 'neutral', brows: 'arched', ears: 'round', eyeSize: FUNKO_EYE_SIZE, mouth: false, eyeStyle: 'bead' };
     spec.colors.eyes = BEAD; spec.colors.iris = BEAD; spec.colors.pupil = BEAD;
+    spec.body.headSink = FUNKO_HEAD_SINK;
+    spec.body.mittens = true;
     return;
   }
+  if (spec.body.headSink === FUNKO_HEAD_SINK) spec.body.headSink = 0;
+  spec.body.mittens = false;
   if (wasBead) { spec.colors.eyes = D.colors.eyes; spec.colors.iris = D.colors.iris; spec.colors.pupil = D.colors.pupil; }
   if (style === 'chibi') {
-    spec.face = { ...spec.face, shape: 'round', lids: 'none', nose: 'button', expression: 'smile', ears: 'round', eyeSize: CHIBI_EYE_SIZE, mouth: true };
+    spec.face = { ...spec.face, shape: 'round', lids: 'none', nose: 'button', expression: 'smile', ears: 'round', eyeSize: CHIBI_EYE_SIZE, mouth: true, eyeStyle: 'iris' };
   } else {
     spec.face = { ...D.face, layout: { eyeSpread: null, eyeHeight: null } };
   }
@@ -450,6 +583,17 @@ export function normalizeSpec(partial: unknown, fromVersion?: number): Character
     }
   };
   merge(base as unknown as Record<string, unknown>, p);
+  // Arrays replace wholesale; fill each print item's omitted fields from the
+  // defaults (non-object items are left for validateSpec to report).
+  const print = (base.clothing?.top as { print?: unknown } | undefined)?.print;
+  if (Array.isArray(print)) {
+    base.clothing.top.print = print.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const filled = { ...PRINT_DEFAULT } as Record<string, unknown>;
+      merge(filled, item);
+      return filled;
+    }) as PrintSpec[];
+  }
   // Detach from the caller's objects (merge assigns new sub-objects by reference).
   return cloneSpec(base);
 }
@@ -457,17 +601,19 @@ export function normalizeSpec(partial: unknown, fromVersion?: number): Character
 // ---- validation + JSON schema -----------------------------------------------
 
 type FieldSpec =
-  | { t: 'enum'; values: readonly string[]; d: string }
+  | { t: 'enum'; values: readonly string[]; nullable?: boolean; d: string }
   | { t: 'num'; min?: number; max?: number; nullable?: boolean; d: string }
   | { t: 'bool'; d: string }
-  | { t: 'color'; d: string }
-  | { t: 'str'; d: string }
+  | { t: 'color'; nullable?: boolean; d: string }
+  | { t: 'str'; minLen?: number; maxLen?: number; d: string }
   | { t: 'headScale'; d: string }
+  | { t: 'list'; item: FieldSpec; max: number; d: string }
   | { t: 'obj'; fields: Record<string, FieldSpec>; d: string };
 
-const e = (values: readonly string[], d: string): FieldSpec => ({ t: 'enum', values, d });
+const e = (values: readonly string[], d: string, nullable?: boolean): FieldSpec => ({ t: 'enum', values, nullable, d });
 const n = (d: string, min?: number, max?: number, nullable?: boolean): FieldSpec => ({ t: 'num', min, max, nullable, d });
-const c = (d: string): FieldSpec => ({ t: 'color', d });
+const c = (d: string, nullable?: boolean): FieldSpec => ({ t: 'color', nullable, d });
+const b = (d: string): FieldSpec => ({ t: 'bool', d });
 const o = (fields: Record<string, FieldSpec>, d: string): FieldSpec => ({ t: 'obj', fields, d });
 const joint = (d: string): FieldSpec => o({
   raiseSide: n('Lift sideways (deg).'), raiseFwd: n('Swing forward(+)/back(−) (deg).'),
@@ -488,6 +634,8 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     belly: n('Belly 0–2.', 0, 2),
     proportions: e(PROPORTIONS, "Body plan: 'realistic' human canon, 'chibi' big round head, 'funko' vinyl-pop toy (huge wide head, short body)."),
     headScale: { t: 'headScale', d: 'Head size multiplier {x: width, y: depth, z: height} (0.3–4 each; a number = uniform). null/omit = the style default (funko {2.5,1.8,1.7}, chibi {1.4,1.25,1.25}).' },
+    headSink: n('Lower the head onto the shoulders by this × the neck length, 0–1.5 (Funko "no neck" ≈ 0.4; 0 = a normal neck).', 0, 1.5),
+    mittens: b('Fingerless vinyl-toy mitten hands.'),
   }, 'Body proportions.'),
   pose: o({
     preset: { t: 'str', d: 'UI label of the last pose preset (ignored by codegen).' },
@@ -502,6 +650,9 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
       radius: n('Ball radius, world units (≈ 0.1 × height).', 0.1),
       cup: e(HOLD_CUPS, "'sides' = palms on the ball's lower sides; 'under' = cradled from below."),
       color: c('Ball panel (pentagon) colour; the base colour is colors.ball.'),
+      cupL: e(HOLD_CUPS, 'Left-hand cup override (null = cup).', true),
+      cupR: e(HOLD_CUPS, "Right-hand cup override (null = cup) — e.g. cupR 'under' + cupL 'sides'.", true),
+      handScale: n('Hand size the hold assumes, 0.5–2.5 (big vinyl mitten hands ≈ 1.3).', 0.5, 2.5),
     }, 'Two-hand held object.'),
   }, 'Pose (joint angles in degrees, 0 = neutral).'),
   face: o({
@@ -518,7 +669,15 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
       eyeHeight: n('Eye height in head half-heights (−0.6–0.6, negative = lower); null = style default.', -0.6, 0.6, true),
     }, 'Eye placement on the face.'),
     eyeSize: n('Eye size multiplier 0.5–3 (1 = default; funko bead eyes ≈ 1.8).', 0.5, 3),
-    mouth: { t: 'bool', d: 'Build the lips (false = mouthless vinyl-toy face).' },
+    mouth: b('Build the lips (false = mouthless vinyl-toy face).'),
+    eyeStyle: e(EYE_STYLES, "'iris' = white eye + iris + pupil; 'bead' = glossy vinyl-toy bead with a white glint (paints colors.eyes + colors.eyeHighlight; ignores lids/gaze/iris/pupil)."),
+    eyeAspect: n('bead only: height ÷ width 0.5–2 (1.06).', 0.5, 2),
+    highlight: n('bead only: glint size, 0 = none, 0.2–3 (1).', 0, 3),
+    browThickness: n('Brow weight 0.1–5 (1; bold toy brows ≈ 3).', 0.1, 5),
+    browWidth: n('Brow span 0.3–2 (1).', 0.3, 2),
+    jaw: n('Jaw width × the face shape 0.5–1.6 (1; a Funko\'s wide lower face ≈ 1.4).', 0.5, 1.6),
+    chin: n('Chin × the face shape 0.5–1.6 (1).', 0.5, 1.6),
+    cheek: n('Cheek fullness × the face shape 0.3–1.8 (1).', 0.3, 1.8),
   }, 'Face.'),
   hair: o({
     style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (the Captain Tsubasa Funko)."),
@@ -530,23 +689,63 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     swoop: n('anime only: fringe sideways sweep −1–3.', -1, 3),
     fringe: n('mop/anime/shag: fringe amount 0–1.5.', 0, 1.5),
     seed: n('mop/anime/shag: lock layout seed (integer).'),
-    crown: e(HAIR_CROWNS, "shag only: 'spiky' = 5 sharp back-fanning spikes + 2 side-up spikes; 'tousled' = small random crown locks."),
+    crown: e(HAIR_CROWNS, "shag only: 'spiky' = 7 big needle-pointed spikes spread round the back + sides of the crown, arching up past the dome (spike = lift, crownSize = size); 'tousled' = 7 small random crown locks."),
     layers: n('shag only: overlapping lock layers over the sides + back, integer 1–3.', 1, 3),
     raggedness: n('shag only: jitter of lock length / lean / hem 0–2.', 0, 2),
     flare: n('shag only: mop mass above the ears 0–3.', 0, 3),
-  }, 'Hair.'),
+    notched: b('shag only: notched (toothed) fringe hairline (default true).'),
+    crownSize: n('shag only: crown-spike size 0.3–2.5 (1).', 0.3, 2.5),
+    backWidth: n('shag only: how far the side/back layers stand off the skull 0.3–1.6 (1; narrower back silhouette < 1).', 0.3, 1.6),
+    tipWidth: n('shag only: side/back lock tip width × root 0–0.8 (0.4).', 0, 0.8),
+    preset: e(HAIR_PRESETS, 'captured only: which captured hairdo.'),
+    spikiness: n('captured only: spike sharpness 0–3 (1).', 0, 3),
+    smooth: n('captured only: smooth the captured relief 0–1 (0).', 0, 1),
+    mirror: b('captured only: mirror the hairdo left↔right.'),
+    tilt: n('captured only: tilt the hairdo forward(+)/back (deg) −40–40.', -40, 40),
+    windowScale: n('captured only: face-window size 0.5–2 (1).', 0.5, 2),
+  }, 'Hair (captured also reads volume, length and fringe — fringe min 0.3 there).'),
   clothing: o({
-    top: o({ on: { t: 'bool', d: 'Wear a top.' }, sleeve: e(SLEEVES, 'Sleeves.'), length: e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh.") }, 'Top.'),
-    pants: o({ on: { t: 'bool', d: 'Wear pants.' }, leg: e(PANTS_LEGS, 'Leg cut.'), rise: e(PANTS_RISES, 'Waist rise.'), length: e(PANTS_LENGTHS, "'briefs' = shorts.") }, 'Pants.'),
-    feet: o({ on: { t: 'bool', d: 'Wear footwear.' }, kind: e(FOOTWEAR_KINDS, 'Footwear.') }, 'Footwear.'),
+    top: o({
+      on: b('Wear a top.'), sleeve: e(SLEEVES, 'Sleeves.'), length: e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh."),
+      trim: o({ collar: b('Contrast collar band (colors.trim).'), cuffs: b('Contrast sleeve cuffs (colors.trim; needs sleeves).') }, 'Collar / cuff trim.'),
+      print: { t: 'list', max: 6, d: "Lettering / numbers on the top, e.g. [{ text: 'N', where: 'chest', x: 0.55 }, { text: '10', where: 'back', size: 1 }]. Each paints its own colour.", item: o({
+        text: { t: 'str', minLen: 1, maxLen: 12, d: 'The letters / digits (1–12 characters).' },
+        where: e(PRINT_PLACES, "'chest' (front) or 'back'."),
+        size: n('Lettering height in chest half-widths 0.1–2.5 (0.6; a big back number ≈ 1).', 0.1, 2.5),
+        x: n("Sideways offset in chest half-widths, + = the figure's left (−1.5–1.5).", -1.5, 1.5),
+        z: n('Vertical offset from the chest line in chest half-widths, + = up (−2–2).', -2, 2),
+        color: c('Print colour.'),
+        font: e(PRINT_FONTS, 'Font (bold).'),
+      }, 'One print.') },
+    }, 'Top.'),
+    pants: o({
+      on: b('Wear pants.'), leg: e(PANTS_LEGS, 'Leg cut.'), rise: e(PANTS_RISES, 'Waist rise.'),
+      length: e(PANTS_LENGTHS, "'full' trousers, 'shorts' knee-length (cut at hem), 'briefs' no legs."),
+      hem: n("shorts only: leg cut as a fraction of the hip→knee bone 0.2–1.2 (0.9 = just above the knee).", 0.2, 1.2),
+    }, 'Pants.'),
+    socks: o({
+      on: b('Wear socks up the shin (colors.socks).'),
+      height: n('Sock height as a fraction of the shin 0.2–1.4 (1.1 = just over the knee).', 0.2, 1.4),
+      stripes: n('Contrast bands at the sock top, integer 0–12 (0 = plain, 1 = one band, 3+ = hoops; colors.sockStripe).', 0, 12),
+      stripeSpan: n('How much of the shin, from the sock top, the bands cover 0.05–1.4 (0.34).', 0.05, 1.4),
+    }, 'Socks.'),
+    feet: o({
+      on: b('Wear footwear.'), kind: e(FOOTWEAR_KINDS, 'Footwear.'),
+      style: e(SHOE_STYLES, "shoes only: 'fitted' hugs the foot; 'toy' = chunky vinyl-toy sneaker."),
+      size: n('Footprint scale 0.5–2 (1; toy shoes ≈ 1.3).', 0.5, 2),
+      height: n('toy shoes only: upper height 0.4–2.5 (1).', 0.4, 2.5),
+      cleats: n('toy shoes only: studs under the sole, 0 = none or an integer 2–12.', 0, 12),
+    }, 'Footwear.'),
   }, 'Clothing.'),
   colors: o({
-    skin: c('Skin.'), eyes: c('Eye whites.'), iris: c('Iris.'), pupil: c('Pupil.'), lips: c('Lips.'),
+    skin: c('Skin.'), eyes: c('Eye whites (the whole bead for bead eyes).'), iris: c('Iris.'), pupil: c('Pupil.'), lips: c('Lips.'),
     brows: c('Brows.'), hair: c('Hair.'), top: c('Top.'), pants: c('Pants.'), feet: c('Footwear.'),
     base: c('Stand.'), ball: c('Held ball base colour.'),
+    trim: c('Collar / cuff trim.'), socks: c('Socks.'), sockStripe: c('Sock bands.'),
+    sole: c('Footwear sole (null = same as feet).', true), eyeHighlight: c('Bead-eye glint.'),
   }, "Paint colours, '#rrggbb'."),
-  base: { t: 'bool', d: 'Include a round stand.' },
-  place: { t: 'bool', d: "Finish with F.place (bottom at z = 0, facing +X). Default true; v1 specs migrate to false." },
+  base: b('Include a round stand.'),
+  place: b("Finish with F.place (bottom at z = 0, facing +X). Default true; v1 specs migrate to false."),
 };
 
 const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -559,7 +758,8 @@ export function validateSpec(spec: unknown): string[] {
   const walk = (v: unknown, f: FieldSpec, path: string): void => {
     switch (f.t) {
       case 'enum':
-        if (typeof v !== 'string' || !f.values.includes(v)) errs.push(`${path} must be one of ${f.values.map(x => `'${x}'`).join(' | ')} (got ${JSON.stringify(v)})`);
+        if (v === null && f.nullable) return;
+        if (typeof v !== 'string' || !f.values.includes(v)) errs.push(`${path} must be one of ${f.values.map(x => `'${x}'`).join(' | ')}${f.nullable ? ' or null' : ''} (got ${JSON.stringify(v)})`);
         return;
       case 'num':
         if (v === null && f.nullable) return;
@@ -571,10 +771,18 @@ export function validateSpec(spec: unknown): string[] {
         if (typeof v !== 'boolean') errs.push(`${path} must be true or false (got ${JSON.stringify(v)})`);
         return;
       case 'color':
-        if (typeof v !== 'string' || !HEX_RE.test(v)) errs.push(`${path} must be a hex colour like '#c68642' (got ${JSON.stringify(v)})`);
+        if (v === null && f.nullable) return;
+        if (typeof v !== 'string' || !HEX_RE.test(v)) errs.push(`${path} must be a hex colour like '#c68642'${f.nullable ? ' or null' : ''} (got ${JSON.stringify(v)})`);
         return;
       case 'str':
-        if (typeof v !== 'string') errs.push(`${path} must be a string`);
+        if (typeof v !== 'string') { errs.push(`${path} must be a string`); return; }
+        if (f.minLen !== undefined && v.length < f.minLen) errs.push(`${path} must have at least ${f.minLen} character(s)`);
+        if (f.maxLen !== undefined && v.length > f.maxLen) errs.push(`${path} must have at most ${f.maxLen} characters (got ${v.length})`);
+        return;
+      case 'list':
+        if (!Array.isArray(v)) { errs.push(`${path} must be an array`); return; }
+        if (v.length > f.max) errs.push(`${path} must have at most ${f.max} items (got ${v.length})`);
+        v.forEach((item, i) => walk(item, f.item, `${path}[${i}]`));
         return;
       case 'headScale': {
         if (v === null) return;
@@ -608,6 +816,7 @@ export function specJsonSchema(): Record<string, unknown> {
   const conv = (f: FieldSpec): Record<string, unknown> => {
     switch (f.t) {
       case 'enum': return { type: 'string', enum: [...f.values], description: f.d };
+      case 'list': return { type: 'array', description: f.d, items: conv(f.item) };
       case 'num': {
         const s: Record<string, unknown> = { type: 'number', description: f.d };
         if (f.min !== undefined) s.minimum = f.min;

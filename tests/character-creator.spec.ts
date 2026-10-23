@@ -222,6 +222,92 @@ test.describe('Character Creator', () => {
     expect(api.spec?.hair).toMatchObject({ style: 'shag', crown: 'tousled', layers: 2 });
   });
 
+  test('kit details: trim, socks, toy cleats and a print build a manifold figure from the panel', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-kit'));
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+    await expect(panel).toBeVisible();
+
+    await panel.getByRole('group', { name: 'Proportions' }).getByRole('button', { name: 'Funko' }).click();
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+
+    // Funko switches to bead eyes; the details section shows it (collapsed by default).
+    const details = panel.locator('details[data-section="details"]');
+    await expect(details).not.toHaveAttribute('open', '');
+    await details.locator('summary').click();
+    await expect(details.getByRole('group', { name: 'Eye style' }).getByRole('button', { name: 'Bead' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(details.getByText('Glint', { exact: true })).toBeVisible();
+
+    // Kit details: collar + cuff trim, socks, toy shoes (cleats appear only for toy).
+    const kit = panel.locator('details[data-section="kit"]');
+    await kit.locator('summary').click();
+    await kit.getByRole('checkbox', { name: 'Collar trim' }).check();
+    await kit.getByRole('checkbox', { name: 'Cuff trim' }).check();
+    await kit.getByRole('checkbox', { name: 'Socks' }).check();
+    await expect(kit.getByText('Sock stripes', { exact: true })).toBeVisible();
+    await expect(kit.getByText('Cleats', { exact: true })).toHaveCount(0);
+    await kit.getByRole('group', { name: 'Shoe style' }).getByRole('button', { name: 'Toy' }).click();
+    await expect(kit.getByText('Cleats', { exact: true })).toBeVisible();
+
+    // Print: add one (a chest "10" by default) and change its text.
+    const print = panel.locator('details[data-section="print"]');
+    await print.locator('summary').click();
+    await print.getByRole('button', { name: '+ Add print' }).click();
+    const card = panel.getByRole('group', { name: 'Print 1' });
+    await card.getByRole('textbox', { name: 'Text' }).fill('N');
+    await card.getByRole('textbox', { name: 'Text' }).press('Enter');
+    // The sections stay open across the control rebuilds.
+    await expect(panel.locator('details[data-section="kit"]')).toHaveAttribute('open', '');
+    await kit.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/character-creator-kit-panel.png' });
+
+    await panel.getByRole('button', { name: 'Save to session' }).click();
+    await expect(page.getByText(/Character saved/)).toBeVisible({ timeout: 150_000 });
+    const out = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW & { getGeometryData: () => { isManifold?: boolean; triangleCount?: number } } }).partwright;
+      return { code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+    expect(out.code).toContain("F.emboss('N', topG.all");
+    expect(out.code).toContain("trim = topTrim.band.label('trim')");
+    expect(out.code).toContain("sockStripe = sock.band.label('sockStripe')");
+    expect(out.code).toContain("style: 'toy'");
+    expect(out.code).toContain("F.face.eyes(rig, { style: 'bead', on: face");
+    expect(out.geo.isManifold).toBe(true);
+    expect(out.geo.triangleCount ?? 0).toBeGreaterThan(1000);
+    await page.screenshot({ path: 'test-results/character-creator-kit-render.png' });
+  });
+
+  test('the panel fits a 375 px phone with the detail sections open', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-mobile'));
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+    await expect(panel).toBeVisible();
+    for (const id of ['details', 'kit', 'print']) await panel.locator(`details[data-section="${id}"] summary`).click();
+    const box = await panel.boundingBox();
+    expect(box && box.x >= 0 && box.x + box.width <= 375).toBe(true);
+    // Touch targets: the older controls grow to 44 px on the stacked layout.
+    const sel = await panel.getByRole('combobox', { name: 'Style', exact: true }).boundingBox();
+    expect(sel?.height ?? 0).toBeGreaterThanOrEqual(43.5);
+    // The eye-layout reset is there (disabled at the style default).
+    await expect(panel.getByRole('button', { name: 'Reset eye layout' })).toBeDisabled();
+    await panel.locator('details[data-section="kit"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/character-creator-375.png' });
+  });
+
   test('buildCharacter validates every field and getCharacterSpec needs a header', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
