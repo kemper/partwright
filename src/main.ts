@@ -745,6 +745,10 @@ async function decodeImageToRgba(src: string): Promise<{ width: number; height: 
   return { width: id.width, height: id.height, data: id.data };
 }
 
+/** Most reference views one photoMatch call scores (each is a full render +
+ *  score; structural cap, not a tuning knob). */
+const PHOTO_MATCH_MAX_VIEWS = 8;
+
 /** Resolve photoMatch's `image` argument: a data URL, or an attachment by id
  *  or label. Omitted → the only image attachment (error when 0 or several). */
 function resolvePhotoMatchImage(image: string | undefined): { src: string; source: string } | { error: string } {
@@ -12007,11 +12011,16 @@ async function main() {
         if (o.views !== undefined) {
           for (const k of ['image', 'view', 'mask'] as const) if (o[k] !== undefined) throw new ValidationError(`photoMatch(options): with views, put ${k} inside each view (views[i].${k === 'view' ? 'azimuth/elevation' : k}).`);
           const arr = assertArray(o.views, 'photoMatch(options).views') as unknown[];
-          if (arr.length < 1 || arr.length > 8) throw new ValidationError('photoMatch(options).views must hold 1–8 views.');
+          if (arr.length < 1 || arr.length > PHOTO_MATCH_MAX_VIEWS) throw new ValidationError(`photoMatch(options).views must hold 1–${PHOTO_MATCH_MAX_VIEWS} views.`);
+          // A crop is in ONE photo's pixels: broadcast it only when there is one photo.
+          if (o.crop !== undefined && arr.length > 1) throw new ValidationError('photoMatch(options): with several views, put crop inside each view (views[i].crop).');
           views = arr.map((raw, i) => {
             const p = `photoMatch(options).views[${i}]`;
             const v = assertObject(raw, p)!;
             assertNoUnknownKeys(v, ['image', 'azimuth', 'elevation', 'ortho', 'label', 'crop', 'bg', 'bgTolerance', 'mask', 'pixelAspect'], p);
+            // Several views must each name their photo — an omitted image
+            // would silently score every view against the same attachment.
+            if (arr.length > 1 && v.image === undefined) throw new ValidationError(`${p}.image is required when views holds several photos.`);
             return {
               image: assertString(v.image, `${p}.image`, { optional: true }),
               view: {

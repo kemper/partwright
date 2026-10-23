@@ -34,12 +34,14 @@ that eye — called at checkpoints, not every pass.
 ## Procedure
 
 1. **Numbers first (free).** One call, one build, every view:
-   `node scripts/model-preview.mjs MODEL --json --match-photo a.png@AZ,EL --match-photo b.png@AZ,EL --match-bands 20 [flags] > /tmp/…/critic.json`
+   `node scripts/model-preview.mjs MODEL --json --match-photo a.png@AZ,EL --match-photo b.png@AZ,EL --match-bands 20 [flags] > <scratch>/critic.json`
+   where `<scratch>` is the session scratchpad directory named in your system
+   prompt (else `.plans/`, which is gitignored) — never the bare system `/tmp`.
    Read `stats.photoMatch` (mean `silhouetteIoU`, `worst[]`) and each
    `stats.photoMatches[i].outline[]` / `regions[]` (note `lowConfidence`
    regions — their size numbers are unreliable).
 2. **Render at the matching angles.** One PNG with every reference angle tiled:
-   `node scripts/model-preview.mjs MODEL --png <out>.png --size 900 --view "AZ1,EL1;AZ2,EL2"`
+   `node scripts/model-preview.mjs MODEL --png <scratch>/critic-views.png --size 900 --view "AZ1,EL1;AZ2,EL2"`
    (add `--palette-file` if needed). Add a second angle set only if a defect
    could hide there (underside, 3/4 back).
 3. **Look.** `Read` each reference photo once and the render once. Compare
@@ -62,8 +64,9 @@ FIX 3: …
 NOTES: <optional: numbers to distrust and why, or "none">
 ```
 
-Rules: you are **read-only** — don't edit the model or any tracked file (write
-renders/JSON only under `.plans/` or a temp dir). Be specific and quantitative;
+Rules: you are **read-only by instruction** (your tools include Bash, so this is
+a rule, not a sandbox) — don't edit the model or any tracked file; write
+renders/JSON only to the session scratchpad (or `.plans/`). Be specific and quantitative;
 "hair looks off" is useless, "hair silhouette 15% narrower at the temples, both
 sides, front view" is actionable. If the model already matches well, say so and
 list at most the remaining polish items.

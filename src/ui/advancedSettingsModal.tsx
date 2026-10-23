@@ -1015,10 +1015,10 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           label="Photo match: busy-background threshold"
           unit="RGB"
           hint="Border noise above which the background is treated as busy."
-          tooltip="The photo's backdrop is normally estimated from a ring inside its border. When that ring is so varied (halftone, scenery) that its estimated tolerance reaches this value, the automatic mode switches to a colour-model segmentation (GrabCut-lite) that learns subject vs backdrop colours instead."
+          tooltip="The photo's backdrop is normally estimated from a ring inside its border. When that ring is so varied (halftone, scenery) that its estimated tolerance reaches this value (the estimate itself tops out at 90), the automatic mode switches to a colour-model segmentation (GrabCut-lite) that learns subject vs backdrop colours instead. It also switches when the border estimate finds almost no subject."
           defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBusyBorderTolerance}
           value={c.import.photoMatchBusyBorderTolerance}
-          min={10} max={255} integer
+          min={10} max={90} integer
           onChange={v => set('import', 'photoMatchBusyBorderTolerance', v)}
         />
       </Section>

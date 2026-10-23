@@ -330,6 +330,72 @@ describe('photoMatch — segmentation inputs', () => {
     expect(photoMatch({ reference: figure(), model: figure({ bg: [255, 255, 255] }), regions: REGIONS }).segmentation.photo.method).toBe('border');
   });
 
+  // Flat-colour test image (optionally an ellipse "subject" in another colour).
+  const flatImg = (W: number, H: number, bgC: Rgb, fgC?: Rgb): RgbaImage => {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const inside = fgC && ((x - W / 2) / (W * 0.18)) ** 2 + ((y - H / 2) / (H * 0.33)) ** 2 <= 1;
+      data.set([...(inside ? fgC! : bgC), 255], (y * W + x) * 4);
+    }
+    return { width: W, height: H, data };
+  };
+
+  it('a uniform photo is an honest "no foreground" in every bg mode (never the inner rectangle)', () => {
+    for (const bgMode of ['auto', 'grabcut', 'border'] as const) {
+      const r = photoMatch({ reference: flatImg(800, 600, [128, 128, 128]), model: figure({ bg: [255, 255, 255] }), regions: REGIONS, bgMode });
+      expect(r.segmentation.photo.bbox).toBeNull();
+      expect(r.silhouetteIoU).toBe(0);
+      expect(r.worst[0]).toMatch(/No foreground found in the photo/);
+    }
+  });
+
+  it('a low-contrast subject is found when separable, otherwise reported as missing', () => {
+    const model = figure({ bg: [255, 255, 255] });
+    // ~8 RGB per channel from the backdrop: above the tolerance floor → found.
+    const found = photoMatch({ reference: flatImg(400, 400, [120, 120, 120], [128, 128, 128]), model, regions: REGIONS });
+    expect(found.segmentation.photo.bbox).not.toBeNull();
+    const b = found.segmentation.photo.bbox!;
+    expect(b.w).toBeLessThan(200); // the ellipse (~144 px wide), not the frame
+    // 8 RGB on one channel only: not separable — no invented silhouette.
+    for (const bgMode of ['auto', 'grabcut'] as const) {
+      const r = photoMatch({ reference: flatImg(400, 400, [120, 120, 120], [128, 120, 120]), model, regions: REGIONS, bgMode });
+      const bb = r.segmentation.photo.bbox;
+      if (bb) expect(bb.w * bb.h).toBeLessThan(400 * 400 * 0.5);
+      else expect(r.worst[0]).toMatch(/No foreground found/);
+    }
+  });
+
+  it('a tight crop that fills the frame keeps the border path (warning only)', () => {
+    // Crop to the figure's bbox: foreground > 85% of the frame.
+    const ref = figure();
+    const r = photoMatch({ reference: ref, crop: { x: 90, y: 20, w: 60, h: 200 }, model: figure({ bg: [255, 255, 255] }), regions: REGIONS });
+    expect(r.segmentation.photo.method).not.toBe('grabcut');
+  });
+
+  it('sanity-checks a mask: inverted, and a different aspect than the photo', () => {
+    const ref = figure();
+    const inv = { width: ref.width, height: ref.height, data: new Uint8ClampedArray(ref.width * ref.height * 4) };
+    for (let p = 0; p < ref.width * ref.height; p++) {
+      const fg = ref.data[p * 4] + ref.data[p * 4 + 1] + ref.data[p * 4 + 2] > 0;
+      inv.data.fill(fg ? 0 : 255, p * 4, p * 4 + 3); inv.data[p * 4 + 3] = 255;
+    }
+    const r = photoMatch({ reference: ref, mask: inv, model: figure({ bg: [255, 255, 255] }), regions: REGIONS });
+    expect(r.warnings.join('\n')).toMatch(/is it inverted\?/);
+    const wide = flatImg(ref.width * 2, ref.height, [0, 0, 0], [255, 255, 255]);
+    const r2 = photoMatch({ reference: ref, mask: wide, model: figure({ bg: [255, 255, 255] }), regions: REGIONS });
+    expect(r2.warnings.join('\n')).toMatch(/mask aspect .* differs from the photo/);
+  });
+
+  it('caps the normalised width of an edge-on (very wide) silhouette', () => {
+    const W = 1200, H = 60;
+    // Model: a 1180×6 sliver → aspect ~200.
+    const data = new Uint8ClampedArray(W * H * 4).fill(255);
+    for (let y = 27; y < 33; y++) for (let x = 10; x < 1190; x++) data.set([40, 40, 200, 255], (y * W + x) * 4);
+    const r = photoMatch({ reference: figure(), model: { width: W, height: H, data }, regions: REGIONS });
+    expect(r.normalized.width).toBeLessThanOrEqual(10 * r.normalized.height + 8);
+    expect(r.warnings.join('\n')).toMatch(/width capped/);
+  });
+
   it('warns when the photo subject is too small to judge', () => {
     const small = photoMatch({ reference: figure({ W: 120, H: 130, scale: 1, offY: -10 }), model: figure({ bg: [255, 255, 255] }), regions: REGIONS });
     expect(small.segmentation.photo.subjectPx).toBeLessThan(120);
@@ -350,6 +416,14 @@ describe('photoMatch — multi-view', () => {
     expect(c.views.map((v) => v.label)).toEqual(['front', 'back']);
     expect(c.worst[0]).toMatch(/^\[back\] /);
   });
+
+  it('lists a warning shared by several views once, tagged with every view', () => {
+    const a = photoMatch({ reference: figure(), model: figure({ bg: [255, 255, 255] }), regions: REGIONS, ignore: ['nope'] });
+    const b = photoMatch({ reference: figure(), model: figure({ bg: [255, 255, 255] }), regions: REGIONS, ignore: ['nope'] });
+    const c = combinePhotoMatches([{ label: 'front', result: a }, { label: 'back', result: b }]);
+    const hits = c.warnings.filter((w) => /ignore: no region named nope/.test(w));
+    expect(hits).toEqual([expect.stringMatching(/^\[front, back\] ignore:/)]);
+  });
 });
 
 describe('model:preview photo-match CLI helpers', () => {
@@ -360,6 +434,8 @@ describe('model:preview photo-match CLI helpers', () => {
     expect(parsePhotoSpec('photo@2x.png', () => false)).toEqual({ path: 'photo@2x.png', view: null });
     expect(parsePhotoSpec('odd@1,2', () => true)).toEqual({ path: 'odd@1,2', view: null });
     expect(parsePhotoSpec('x.png@sideways', () => false).error).toMatch(/neither/);
+    // Inherited object keys are not view names.
+    expect(parsePhotoSpec('x.png@constructor', () => false).error).toMatch(/neither/);
   });
   it('parses merge groups and pairs per-view flags', () => {
     expect(parseMergeGroups(['jersey+ball+socks', 'a,b;c+d'])).toEqual([['jersey', 'ball', 'socks'], ['a', 'b'], ['c', 'd']]);

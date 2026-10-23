@@ -704,6 +704,21 @@ function segment(img: Rgb3, colors: Rgb[], tol: number[], frame = 0, hysteresis 
   return cleanMask(mask, W, H);
 }
 
+/** GrabCut-lite refinement passes (structural: converges in 3–5). */
+const GRABCUT_ITERATIONS = 6;
+/** A photo silhouette covering less / more of the frame than this is
+ *  implausible: warned about, and (below the minimum) the auto mode retries
+ *  with the colour model. */
+const FG_FRACTION_MIN = 0.02;
+const FG_FRACTION_MAX = 0.85;
+/** Cap on a normalised silhouette's width/height, so an edge-on flat model (or
+ *  a degenerate photo bbox) can't allocate a huge comparison canvas. */
+const MAX_NORMALIZED_ASPECT = 10;
+/** Findings kept in a multi-view summary. */
+const COMBINED_MAX_WORST = 6;
+
+const fgFraction = (m: Uint8Array) => { let n = 0; for (let p = 0; p < m.length; p++) n += m[p]; return n / Math.max(1, m.length); };
+
 /** GrabCut-lite: colour-model segmentation for busy backdrops (halftone,
  *  scenery) where no single backdrop colour exists. The border band is
  *  definite background; everything inside starts as "probably subject". Each
@@ -712,7 +727,7 @@ function segment(img: Rgb3, colors: Rgb[], tol: number[], frame = 0, hysteresis 
  *  score (a cheap smoothness term standing in for the graph cut) and
  *  re-labels. The result is cleaned like the border path (largest component +
  *  hole fill). Returns the mask and the margin the border band occupies. */
-function segmentGrabcut(img: Rgb3, iterations = 6): { mask: Uint8Array; margin: number } {
+function segmentGrabcut(img: Rgb3, iterations = GRABCUT_ITERATIONS): { mask: Uint8Array; margin: number } {
   const { width: W, height: H, rgb } = img;
   const N = W * H;
   const margin = frameInset(W, H) + Math.max(2, Math.round(Math.min(W, H) * 0.04));
@@ -729,11 +744,12 @@ function segmentGrabcut(img: Rgb3, iterations = 6): { mask: Uint8Array; margin: 
     if (Math.min(x, y, W - 1 - x, H - 1 - y) < margin) hard[p] = 1; else fg[p] = 1;
   }
   // Histogram of the selected pixels, blurred ±1 bin per channel so unseen
-  // neighbouring shades still get probability, then normalised (log).
+  // neighbouring shades still get probability, then normalised by its ACTUAL
+  // mass (edge bins lose kernel weight) into log-probabilities. An empty
+  // selection yields the flat prior, never a spuriously confident model.
   const hist = (sel: (p: number) => boolean): Float64Array => {
     let h = new Float64Array(NB);
-    let n = 0;
-    for (let p = 0; p < N; p++) if (sel(p)) { h[bin[p]]++; n++; }
+    for (let p = 0; p < N; p++) if (sel(p)) h[bin[p]]++;
     for (let axis = 0; axis < 3; axis++) {
       const sh = axis === 0 ? 0 : axis === 1 ? 4 : 8;
       const o = new Float64Array(NB);
@@ -746,9 +762,11 @@ function segmentGrabcut(img: Rgb3, iterations = 6): { mask: Uint8Array; margin: 
       }
       h = o;
     }
-    const tot = Math.max(1, n * 64);
+    let mass = 0;
+    for (let i = 0; i < NB; i++) mass += h[i];
+    const eps = 0.5, tot = mass + eps * NB;
     const out = new Float64Array(NB);
-    for (let i = 0; i < NB; i++) out[i] = Math.log((h[i] + 0.5) / tot);
+    for (let i = 0; i < NB; i++) out[i] = Math.log((h[i] + eps) / tot);
     return out;
   };
   const score = new Float32Array(N);
@@ -780,6 +798,9 @@ function segmentGrabcut(img: Rgb3, iterations = 6): { mask: Uint8Array; margin: 
       if (next[p] !== cur[p]) changed++;
     }
     fg = next;
+    // No subject left: nothing to learn a subject model from — stop (the
+    // caller reports an empty silhouette instead of inventing one).
+    if (fgFraction(fg) === 0) return { mask: fg, margin };
     if (changed < N * 0.001) break;
   }
   // Keep every sizeable piece, not just the largest: a part the backdrop's
@@ -803,6 +824,10 @@ function segmentGrabcut(img: Rgb3, iterations = 6): { mask: Uint8Array; margin: 
       }
     }
   }
+  // A "subject" that fills the whole inner rectangle (touching the border band
+  // on all four sides) is the backdrop itself, not a figure: reject it.
+  const bb = maskBBox(cleaned, W, H);
+  if (bb && bb.x <= margin && bb.y <= margin && bb.x + bb.w >= W - margin && bb.y + bb.h >= H - margin) return { mask: new Uint8Array(N), margin };
   return { mask: cleaned, margin };
 }
 
@@ -818,8 +843,6 @@ function prepareLabels(labels: Int32Array, img: RgbaImage, W: number, H: number)
 }
 
 const WORK_SIDE = 640; // working resolution cap (longer side) before segmentation
-
-const fgFraction = (m: Uint8Array) => { let n = 0; for (let p = 0; p < m.length; p++) n += m[p]; return n / Math.max(1, m.length); };
 
 interface MatchRegion { name: string; members: number[]; colors: Rgb[]; color: Rgb | null }
 
@@ -860,10 +883,12 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     if (mode === 'auto' && input.bgTolerance == null) {
       const busy = refBg.tol.some((x) => x >= T.busyBorderTolerance);
       const f = fgFraction(refMask);
-      if (busy || f > 0.85 || f < 0.02) {
+      // Only a busy border or an (almost) empty result retries: a tight crop
+      // that fills the frame keeps the border result + its warning.
+      if (busy || f < FG_FRACTION_MIN) {
         const g = segmentGrabcut(ref);
         const gf = fgFraction(g.mask);
-        if (gf >= 0.02 && gf <= 0.85) {
+        if (gf >= FG_FRACTION_MIN && gf <= FG_FRACTION_MAX) {
           refMask = g.mask; margin = g.margin; method = 'grabcut'; refBg = { colors: [], tol: [] };
           warnings.push(`photo backdrop is ${busy ? 'busy (no single border colour)' : 'not separable by its border colour'} — segmented with the colour model (bgMode 'grabcut'); if the outline still looks wrong, pass a manual mask.`);
         }
@@ -932,20 +957,32 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     warnings.push(`photo subject is only ${segPhoto.subjectPx} px tall (< ${T.minSubjectPx}) — one source pixel is ${r1(100 / segPhoto.subjectPx)}% of the height, so outline/band offsets below ~${r1(200 / segPhoto.subjectPx)}% are noise; use a larger reference for fine work.`);
   }
   if (segPhoto.touchesEdges.length) warnings.push(`photo silhouette touches the ${segPhoto.touchesEdges.join('/')} edge — it may be truncated by the crop, which skews the normalisation (crop wider, or exclude the matching model part).`);
-  if (method !== 'mask') {
-    if (segPhoto.fgFraction > 0.85) warnings.push('photo foreground covers >85% of the frame — background estimation probably failed; pass bg (and bgTolerance), a mask, or a tighter crop.');
-    if (segPhoto.fgFraction < 0.02) warnings.push('photo foreground covers <2% of the frame — the subject was mostly classified as background; pass bg/bgTolerance, a mask, or crop to the subject.');
+  if (method === 'mask') {
+    // A mask is trusted, but sanity-check the classic mistakes: an inverted
+    // mask (black subject on white) covers most of the frame and touches every
+    // edge; a mask cut from a different framing has a different aspect.
+    if (segPhoto.fgFraction > FG_FRACTION_MAX || segPhoto.touchesEdges.length === 4) warnings.push(`mask marks ${Math.round(segPhoto.fgFraction * 100)}% of the frame as subject${segPhoto.touchesEdges.length === 4 ? ' and touches all four edges' : ''} — is it inverted? White (opaque) must be the SUBJECT.`);
+    if (segPhoto.fgFraction < FG_FRACTION_MIN) warnings.push(`mask marks only ${r1(segPhoto.fgFraction * 100)}% of the frame as subject — check it is white-on-black and covers the crop.`);
+    const ma = input.mask!.width / input.mask!.height, ra = input.reference.width / input.reference.height;
+    if (Math.abs(ma / ra - 1) > 0.01) warnings.push(`mask aspect ${r3(ma)} differs from the photo's ${r3(ra)} — a mask must have the photo's framing (it is stretched onto the photo, so the outline is distorted).`);
+  } else {
+    if (segPhoto.fgFraction > FG_FRACTION_MAX) warnings.push('photo foreground covers >85% of the frame — background estimation probably failed; pass bg (and bgTolerance), a mask, or a tighter crop.');
+    if (segPhoto.fgFraction < FG_FRACTION_MIN) warnings.push('photo foreground covers <2% of the frame — the subject was mostly classified as background; pass bg/bgTolerance, a mask, or crop to the subject.');
   }
 
-  const pixelAspect = input.pixelAspect && input.pixelAspect > 0 ? input.pixelAspect : 1;
+  const pixelAspect = input.pixelAspect && input.pixelAspect > 0 ? Math.max(0.05, Math.min(20, input.pixelAspect)) : 1;
   const refAspect = (refBox.w * pixelAspect) / refBox.h, modAspect = modBox.w / modBox.h;
   // fit 'height' (default): both scaled to a common height, aspect kept, so the
   // band widths carry the overall aspect error too. fit 'box': the model is
   // also stretched to the photo's width, so bands/regions compare PROPORTIONS
   // only — use it when the photo is stretched or strongly foreshortened.
   const boxFit = input.fit === 'box';
-  const refTw = Math.max(1, Math.round(refAspect * TH));
-  const modTw = boxFit ? refTw : Math.max(1, Math.round(modAspect * TH));
+  // Widths are capped (MAX_NORMALIZED_ASPECT × height): an edge-on flat model
+  // or a sliver-thin photo bbox must not allocate a huge canvas.
+  const capW = (a: number) => Math.max(1, Math.min(Math.round(MAX_NORMALIZED_ASPECT * TH), Math.round(a * TH)));
+  if (refAspect > MAX_NORMALIZED_ASPECT || modAspect > MAX_NORMALIZED_ASPECT) warnings.push(`silhouette is more than ${MAX_NORMALIZED_ASPECT}× wider than tall (${refAspect > MAX_NORMALIZED_ASPECT ? 'photo' : 'model'}) — width capped for the comparison; check the camera angle (an edge-on view of a flat part?).`);
+  const refTw = capW(refAspect);
+  const modTw = boxFit ? refTw : capW(modAspect);
   const CW = Math.max(refTw, modTw) + 8;
   const R = normalize(refMask, ref.width, ref.height, refBox, TH, refTw, CW, ref.rgb, null, nR);
   const M = normalize(modMask, mod.width, mod.height, modBox, TH, modTw, CW, null, modLabels, nR);
@@ -1280,7 +1317,7 @@ export interface PhotoMatchCombined {
   warnings: string[];
 }
 
-export function combinePhotoMatches(views: readonly { label: string; result: PhotoMatchResult }[], maxWorst = 6): PhotoMatchCombined {
+export function combinePhotoMatches(views: readonly { label: string; result: PhotoMatchResult }[], maxWorst = COMBINED_MAX_WORST): PhotoMatchCombined {
   const ious = views.map((v) => v.result.silhouetteIoU);
   const lists = views.map((v) => v.result.worst.filter((w) => w !== 'no significant mismatch found').map((w) => `[${v.label}] ${w}`));
   const worst: string[] = [];
@@ -1292,7 +1329,13 @@ export function combinePhotoMatches(views: readonly { label: string; result: Pho
     minIoU: ious.length ? r3(Math.min(...ious)) : 0,
     views: views.map((v) => ({ label: v.label, silhouetteIoU: v.result.silhouetteIoU })),
     worst: worst.length ? worst : ['no significant mismatch found'],
-    warnings: views.flatMap((v) => v.result.warnings.map((w) => `[${v.label}] ${w}`)),
+    // Identical warnings from several views (an unknown exclude name, the same
+    // small-reference note) are listed once, tagged with every view they hit.
+    warnings: (() => {
+      const by = new Map<string, string[]>();
+      for (const v of views) for (const w of v.result.warnings) { if (!by.has(w)) by.set(w, []); if (!by.get(w)!.includes(v.label)) by.get(w)!.push(v.label); }
+      return [...by].map(([w, labels]) => `[${labels.join(', ')}] ${w}`);
+    })(),
   };
 }
 

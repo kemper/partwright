@@ -25,8 +25,8 @@
 // `--match-photo front.png@0,0 --match-photo back.png@180,0` (or `@back`) — to
 // score every view from ONE model build: `stats.photoMatches[]` holds each
 // view, `stats.photoMatch` the combined summary (mean silhouetteIoU, minIoU,
-// interleaved worst[]). --match-crop/--match-bg/--match-pixel-aspect/--match-mask may be
-// given once (all photos; mask: single photo only) or once per photo, in order.
+// interleaved worst[]). --match-bg/--match-pixel-aspect may be given once (all
+// photos) or once per photo; --match-crop/--match-mask once per photo, in order.
 // Same scorer as the browser's partwright.photoMatch (src/tools/photoMatch.ts).
 //
 // This is a thin back-compat wrapper: the implementation now lives in
@@ -112,7 +112,8 @@ async function main() {
   const matchViews = [];
   if (a.matchPhoto.length) {
     const n = a.matchPhoto.length;
-    const crops = pairPerView(a.matchCrop, n, '--match-crop'); if (crops.error) fail(crops.error);
+    // A crop is in one photo's pixels — never broadcast it to other photos.
+    const crops = pairPerView(a.matchCrop, n, '--match-crop', false); if (crops.error) fail(crops.error);
     const bgs = pairPerView(a.matchBg, n, '--match-bg'); if (bgs.error) fail(bgs.error);
     const masks = pairPerView(a.matchMask, n, '--match-mask', false); if (masks.error) fail(masks.error);
     const aspects = pairPerView(a.matchPixelAspect, n, '--match-pixel-aspect'); if (aspects.error) fail(aspects.error);
@@ -121,7 +122,7 @@ async function main() {
       const { crop, error: cropErr } = parseCrop(crops.values[i]); if (cropErr) fail(cropErr);
       const view = spec.view ?? (views ? views[Math.min(i, views.length - 1)] : { name: 'front', ...NAMED_VIEWS.front });
       const pixelAspect = aspects.values[i] == null ? null : Number(aspects.values[i]);
-      if (pixelAspect !== null && !(pixelAspect > 0)) fail('--match-pixel-aspect expects a positive number.');
+      if (pixelAspect !== null && !(pixelAspect >= 0.05 && pixelAspect <= 20)) fail('--match-pixel-aspect expects a number 0.05–20.');
       matchViews.push({
         photo: resolve(spec.path), view, crop, bg: bgs.values[i], pixelAspect,
         mask: masks.values[i] ? resolve(masks.values[i]) : null,

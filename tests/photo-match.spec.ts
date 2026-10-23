@@ -106,6 +106,8 @@ test.describe('Photo match', () => {
         await pw.photoMatch({ image: img, views: [{ image: img }] }),
         await pw.photoMatch({ views: [] }),
         await pw.photoMatch({ views: [{ image: img, bogus: 1 }] }),
+        await pw.photoMatch({ views: [{ image: img }, { azimuth: 180 }] }),
+        await pw.photoMatch({ crop: [0, 0, 10, 10], views: [{ image: img }, { image: img, azimuth: 180 }] }),
       ];
     });
     for (const x of r) expect(typeof x.error).toBe('string');

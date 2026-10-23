@@ -36,7 +36,7 @@ export function parsePhotoSpec(s, exists = existsSync) {
     const path = str.slice(0, at), cam = str.slice(at + 1).trim();
     const m = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/.exec(cam);
     if (m) return { path, view: { name: `${Number(m[1])},${Number(m[2])}`, az: Number(m[1]), el: Number(m[2]) } };
-    if (NAMED_VIEWS[cam]) return { path, view: { name: cam, ...NAMED_VIEWS[cam] } };
+    if (Object.hasOwn(NAMED_VIEWS, cam)) return { path, view: { name: cam, ...NAMED_VIEWS[cam] } };
     if (!/\.[a-z0-9]+$/i.test(cam)) return { error: `--match-photo "${str}": "@${cam}" is neither "az,el" nor a view name (${Object.keys(NAMED_VIEWS).join(', ')}).` };
   }
   return { path: str, view: null };
@@ -62,7 +62,7 @@ export function pairPerView(values, n, flag, broadcast = true) {
   if (!values || !values.length) return { values: Array(n).fill(null) };
   if (values.length === n) return { values };
   if (values.length === 1 && (broadcast || n === 1)) return { values: Array(n).fill(values[0]) };
-  return { error: `${flag} was given ${values.length}× for ${n} --match-photo — pass it once${broadcast ? ' (applies to every photo)' : ''} or once per photo, in the same order.` };
+  return { error: `${flag} was given ${values.length}× for ${n} --match-photo — pass it ${broadcast ? 'once (applies to every photo) or ' : ''}once per photo, in the same order.` };
 }
 
 async function loadRgba(path) {
