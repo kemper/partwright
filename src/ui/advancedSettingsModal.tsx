@@ -1301,6 +1301,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Undo toast duration"
+          unit="ms"
+          hint="How long a toast with an Undo button (after deleting) stays on screen."
+          tooltip="Deleting an object, part or piece shows a toast with an Undo button. It stays up longer than a plain toast so the button is reachable. After it fades, Recover deleted in the Objects list still brings the item back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.undoToastDurationMs}
+          value={c.ui.undoToastDurationMs}
+          min={2000} max={60_000} integer
+          onChange={v => set('ui', 'undoToastDurationMs', v)}
+        />
+        <Field
+          label="Keep deleted objects"
+          unit="days"
+          hint="How long deleted objects stay recoverable before they are permanently removed."
+          tooltip="Deleting an object moves it (with all of its versions) to the Recover deleted bin for this session. Entries older than this are purged permanently the next time the bin is read. Removed parts and pieces live in the code, so they never expire."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.deletedObjectRetentionDays}
+          value={c.ui.deletedObjectRetentionDays}
+          min={1} max={365} integer
+          onChange={v => set('ui', 'deletedObjectRetentionDays', v)}
+        />
+        <Field
           label="Pane slide"
           unit="ms"
           hint="How long the side panes (AI panel, code editor) take to slide open/closed."

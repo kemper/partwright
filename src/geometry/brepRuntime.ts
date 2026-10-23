@@ -38,6 +38,7 @@
 // when the session's active language is `replicad`).
 
 import { parseLabelColor } from '../color/labelColor';
+import { orderTrianglesByPart } from '../import/importParts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ReplicadModule = any;
@@ -418,24 +419,20 @@ function wrapInner(
         throw new Error('BREP.toManifold(Manifold): pass api.Manifold as the first arg.');
       }
       const mesh = toMeshData(shape, opts);
-      // If this BrepShape carries labels, stash the resolved triangle-label
-      // map for the engine to merge into its run labelMap. The Manifold we
-      // return doesn't have a place to carry BREP-side labels itself (its
-      // `runOriginalID` system is for manifold-3d's own provenance), so the
-      // side-channel is how `paintByLabel` ends up seeing them.
-      if (faceLabels.size > 0 || labelSignatures.length > 0) {
-        const labelMap = buildLabelMapFromShape(shape, faceLabels, labelSignatures);
-        if (labelMap.size > 0) pendingToManifoldLabels.push(labelMap);
-      }
+      // Carry each label as its own provenance run (a reserved originalID),
+      // and queue the id → name registry for the engine to merge into its run
+      // labelRegistry — so the labels follow the triangles through
+      // canonicalization AND any later booleans, exactly like `api.label`.
+      const labelMap = faceLabels.size > 0 || labelSignatures.length > 0
+        ? buildLabelMapFromShape(shape, faceLabels, labelSignatures)
+        : new Map<string, Set<number>>();
+      const { manifold, registry } = ofMeshWithLabels(Manifold, mesh, labelMap);
+      if (registry.size > 0) pendingToManifoldLabels.push(registry);
       // Queue any model-declared colors alongside the label map so a
       // `BREP.label(s, name, { color })` inside a manifold-js session paints
       // its underlay the same way `api.label` colors do.
       if (labelColors.size > 0) pendingToManifoldLabelColors.push(new Map(labelColors));
-      return Manifold.ofMesh({
-        numProp: mesh.numProp,
-        vertProperties: mesh.vertProperties,
-        triVerts: mesh.triVerts,
-      });
+      return manifold;
     },
     blobSTEP() {
       return shape.blobSTEP();
@@ -845,6 +842,41 @@ function toMeshData(shape: AnyShape, opts?: { tolerance?: number; angularToleran
   return weldDuplicateVertices(mesh.vertices, mesh.triangles);
 }
 
+/** `Manifold.ofMesh` a BREP tessellation with each label's triangles as their
+ *  own run, tagged with an id reserved via `Manifold.reserveIDs`. Returns the
+ *  Manifold and the id → label registry; resolve labels from the result's
+ *  `runOriginalID` (manifold-js `resolveLabelMap`), never from `labelMap`'s
+ *  triangle ids — `ofMesh` canonicalizes (reorders) triangles, so the
+ *  tessellation's ids don't index the returned mesh. Throws when the mesh
+ *  isn't manifold, like `ofMesh`. */
+export function ofMeshWithLabels(
+  Manifold: ManifoldModule,
+  mesh: BrepMesh,
+  labelMap: ReadonlyMap<string, ReadonlySet<number>>,
+): { manifold: unknown; registry: Map<number, string> } {
+  const registry = new Map<number, string>();
+  const names = [...labelMap.keys()];
+  if (names.length === 0) {
+    return { manifold: Manifold.ofMesh({ numProp: mesh.numProp, vertProperties: mesh.vertProperties, triVerts: mesh.triVerts }), registry };
+  }
+  const triPart = new Int32Array(mesh.numTri).fill(-1);
+  names.forEach((name, i) => {
+    for (const t of labelMap.get(name)!) if (t >= 0 && t < mesh.numTri) triPart[t] = i;
+  });
+  const { triVerts, runs } = orderTrianglesByPart(mesh.triVerts, triPart, names.length);
+  const base: number = Manifold.reserveIDs(runs.length);
+  const runIndex = new Uint32Array(runs.length + 1);
+  const runOriginalID = new Uint32Array(runs.length);
+  runs.forEach((run, k) => {
+    runIndex[k] = run.startTri * 3;
+    runIndex[k + 1] = run.endTri * 3;
+    runOriginalID[k] = base + k;
+    if (run.part >= 0) registry.set(base + k, names[run.part]);
+  });
+  const manifold = Manifold.ofMesh({ numProp: mesh.numProp, vertProperties: mesh.vertProperties, triVerts, runIndex, runOriginalID });
+  return { manifold, registry };
+}
+
 /** Build a `Map<label, Set<triangleId>>` for a labeled BrepShape, where the
  *  triangle ids index the WELDED mesh that `toMeshData` returns. Walks the
  *  replicad tessellation's `faceGroups` (each one tagged with the BREP face
@@ -902,57 +934,59 @@ function buildLabelMapFromShape(
       continue;
     }
     // Stage 2: spatial resolution. Two passes:
-    //   1) bbox-containment with smallest-volume tiebreak — eliminates faces
-    //      whose source bbox doesn't even reach the output centroid, and
-    //      picks the more-localised face when several contain it (a sphere's
-    //      bbox engulfs a cylinder, so the cylinder wins on its own seam).
-    //   2) if no bbox contained the centroid (rare; happens when the boolean
+    //   1) an area-weighted vote: each triangle's centroid goes to the
+    //      smallest source bbox containing it (the more-localised feature wins
+    //      where several contain it — a sphere's bbox engulfs a cylinder, so
+    //      the cylinder wins on its own seam), and the face takes the label
+    //      covering the most area.
+    //   2) if no bbox contained any triangle (rare; happens when the boolean
     //      slightly displaces a face past its source bbox), fall back to
     //      nearest cloud point across all signatures so we still produce a
     //      label rather than dropping the face.
     if (labelSignatures.length === 0) continue;
+    const eps = 1e-3;
+    // The smallest signature bbox containing point (x, y, z), or null.
+    const smallestContaining = (x: number, y: number, z: number): string | null => {
+      let best: string | null = null;
+      let bestVolume = Infinity;
+      for (const sig of labelSignatures) {
+        if (x < sig.min[0] - eps || x > sig.max[0] + eps) continue;
+        if (y < sig.min[1] - eps || y > sig.max[1] + eps) continue;
+        if (z < sig.min[2] - eps || z > sig.max[2] + eps) continue;
+        const vol = Math.max(sig.max[0] - sig.min[0], eps) * Math.max(sig.max[1] - sig.min[1], eps) * Math.max(sig.max[2] - sig.min[2], eps);
+        if (vol < bestVolume) { bestVolume = vol; best = sig.label; }
+      }
+      return best;
+    };
+
+    // Pass 1: each triangle votes, weighted by its area, for the smallest
+    // signature bbox containing its centroid; the face takes the label with
+    // the most area. Voting per triangle (not on the face's single centroid)
+    // matters for faces whose centroid falls outside their own surface — an
+    // annulus left when a peg is fused onto a box top has its centroid in the
+    // hole, inside the peg's bbox, which used to hand the whole top to the peg
+    // (#1061). Ties of nesting (an eye sphere inside a head) still go to the
+    // smaller feature, but only for the triangles actually inside its bbox.
+    const votes = new Map<string, number>();
     let cx = 0, cy = 0, cz = 0, n = 0;
     for (let t = startTri; t < endTri; t++) {
       const i0 = triangles[t * 3] * 3, i1 = triangles[t * 3 + 1] * 3, i2 = triangles[t * 3 + 2] * 3;
-      cx += (vertices[i0] + vertices[i1] + vertices[i2]) / 3;
-      cy += (vertices[i0 + 1] + vertices[i1 + 1] + vertices[i2 + 1]) / 3;
-      cz += (vertices[i0 + 2] + vertices[i1 + 2] + vertices[i2 + 2]) / 3;
-      n++;
+      const tx = (vertices[i0] + vertices[i1] + vertices[i2]) / 3;
+      const ty = (vertices[i0 + 1] + vertices[i1 + 1] + vertices[i2 + 1]) / 3;
+      const tz = (vertices[i0 + 2] + vertices[i1 + 2] + vertices[i2 + 2]) / 3;
+      cx += tx; cy += ty; cz += tz; n++;
+      const label = smallestContaining(tx, ty, tz);
+      if (label === null) continue;
+      const ux = vertices[i1] - vertices[i0], uy = vertices[i1 + 1] - vertices[i0 + 1], uz = vertices[i1 + 2] - vertices[i0 + 2];
+      const vx = vertices[i2] - vertices[i0], vy = vertices[i2 + 1] - vertices[i0 + 1], vz = vertices[i2 + 2] - vertices[i0 + 2];
+      const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+      votes.set(label, (votes.get(label) ?? 0) + area + 1e-12);
     }
     if (n === 0) continue;
     cx /= n; cy /= n; cz /= n;
-
-    const eps = 1e-3;
-    // Pass 1: bbox containment + smallest-volume.
-    //
-    // Known limitation — five subagents reported `paintByLabel` painting
-    // wrong triangles on multi-feature BREP composites. The
-    // smallest-volume tiebreak fails for nested features (an eye sphere
-    // inside a head cone): both bboxes contain a head surface triangle's
-    // centroid near the eye, and the smaller eye-bbox wins even though
-    // the triangle is geometrically on the head's surface. A point-cloud
-    // distance tiebreak was tried but didn't help — the 64-sample-per-face
-    // signatures are too sparse to reliably distinguish "on the eye
-    // surface" from "on the head surface near the eye". Documented as a
-    // known limit in `public/ai/replicad.md` "Gotchas cheat sheet" with
-    // the working workaround: coordinate-based selectors
-    // (paintInCylinder / paintSlab / paintInBox / paintNear) for
-    // multi-feature composites.
     let bestLabel: string | null = null;
-    let bestVolume = Infinity;
-    for (const sig of labelSignatures) {
-      if (cx < sig.min[0] - eps || cx > sig.max[0] + eps) continue;
-      if (cy < sig.min[1] - eps || cy > sig.max[1] + eps) continue;
-      if (cz < sig.min[2] - eps || cz > sig.max[2] + eps) continue;
-      const dx = Math.max(sig.max[0] - sig.min[0], eps);
-      const dy = Math.max(sig.max[1] - sig.min[1], eps);
-      const dz = Math.max(sig.max[2] - sig.min[2], eps);
-      const vol = dx * dy * dz;
-      if (vol < bestVolume) {
-        bestVolume = vol;
-        bestLabel = sig.label;
-      }
-    }
+    let bestArea = 0;
+    for (const [label, area] of votes) if (area > bestArea) { bestArea = area; bestLabel = label; }
     if (bestLabel !== null) {
       addTriRange(bestLabel, startTri, endTri);
       continue;
@@ -1226,10 +1260,11 @@ function reduceShapes(
  *  of the painting pipeline doesn't need a BREP-specific path. */
 export type BrepLabelMap = Map<string, Set<number>>;
 
-/** Per-run pending labels — populated by `BrepShape.toManifold()` calls
- *  inside a sandbox so the engine can drain + merge into its labelMap when
- *  the run ends. Module-level for the same reason as `brepAllocations`. */
-let pendingToManifoldLabels: BrepLabelMap[] = [];
+/** Per-run pending label registries (originalID → label name) — populated by
+ *  `BrepShape.toManifold()` calls inside a sandbox so the engine can merge them
+ *  into its run labelRegistry. Module-level for the same reason as
+ *  `brepAllocations`. */
+let pendingToManifoldLabels: Map<number, string>[] = [];
 
 /** Per-run pending label colors — the color sibling of
  *  `pendingToManifoldLabels`. A `BREP.label(shape, name, { color })` inside a
@@ -1291,10 +1326,11 @@ export function clearPendingBrepImports(): void {
   pendingBrepImports = [];
 }
 
-/** Engine helper: take and clear the queued labelMaps from BREP.toManifold
- *  calls during the just-finished run. The manifold-js engine merges these
- *  into its own labelRegistry-derived map so `paintByLabel` finds them. */
-export function consumeBrepToManifoldLabels(): BrepLabelMap[] {
+/** Engine helper: take and clear the label registries (originalID → name)
+ *  queued by BREP.toManifold calls during the just-finished run. The
+ *  manifold-js engine merges them into its own labelRegistry, so the labels
+ *  resolve from the final mesh's provenance like `api.label` ones. */
+export function consumeBrepToManifoldLabels(): Map<number, string>[] {
   const out = pendingToManifoldLabels;
   pendingToManifoldLabels = [];
   return out;

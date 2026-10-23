@@ -414,7 +414,11 @@ await partwright.createObject(name?)     // New empty object + switch to it -> {
 await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
-await partwright.deleteObject(name|id|index)   // Delete an object + its versions (the last one resets to a blank "Object 1")
+await partwright.deleteObject(name|id|index)   // Delete an object + its versions -- moved to Recover deleted, not erased (the last one resets to a blank "Object 1")
+await partwright.listDeleted()           // What can be undeleted: {objects:[{id, name, group?, versionCount, deletedAt, expiresAt}], parts:[{object:{id,name}, kind:'part'|'piece', name? | point+label?, call}]} -- see #recover-deleted
+await partwright.restoreObject(id|name)  // Undelete an object with all its versions -> {restored, droppedBlank?}
+await partwright.purgeDeletedObjects(ids|names?)  // Permanently delete binned objects (no arg empties the bin) -> {purged}
+partwright.showRecoverDeleted()          // Open the Recover deleted modal for the user
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops + labelPresets (the panel's label chips: names + default colours)
 await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z], color?:'#rrggbb'}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
@@ -433,6 +437,7 @@ partwright.listObjectParts()             // The current object's parts (api.labe
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
 partwright.setObjectPartHidden(name | {piece}, hidden = true)  // Hide/show a part/piece in the viewport only (code, versions, exports keep it) -> {ok, hidden}
 await partwright.deleteObjectPart(name | {piece})  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}
+await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo it: removes that line, re-runs, saves -> {ok, restored, object, version?, note?}
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,
 // createPart, changePart, renamePart, setPartGroup, deletePart, saveAllParts,
 // showPartsOverview (each calls the *Object* method above).
@@ -628,10 +633,10 @@ Three words, three different things — keep them straight, especially when a us
 
 ```js
 api.removePart('handle');       // a later api.label(shape, 'handle') returns an empty Manifold
-api.removePiece([-70, 0, 3]);   // after the run, drop the separate piece touching this point
+api.removePiece([-70, 0, 3]); // piece 2 ("coaster")   <- after the run, drop the separate piece touching this point
 ```
 
-`api.removePart` must run **before** the `api.label` it cancels (it throws otherwise), so keep it at the top. Because the labelled shape becomes empty, removing a part that was used as a *cutter* (e.g. `.subtract(api.label(cavity, 'inside'))`) removes the cut too. `api.removePiece` takes a point on (or in) the piece rather than an index, so the right piece stays removed when edits elsewhere reorder the pieces. Delete the line to bring the part back.
+`api.removePart` must run **before** the `api.label` it cancels (it throws otherwise), so keep it at the top. Because the labelled shape becomes empty, removing a part that was used as a *cutter* (e.g. `.subtract(api.label(cavity, 'inside'))`) removes the cut too. `api.removePiece` takes a point on (or in) the piece rather than an index, so the right piece stays removed when edits elsewhere reorder the pieces; the trailing comment names the piece for Recover deleted. Delete the line — or call `restoreObjectPart('handle')` — to bring the part back (see [Recover deleted](#recover-deleted)).
 
 Per engine:
 
@@ -642,6 +647,14 @@ Per engine:
 | OpenSCAD | `remove_part("name");` — drops that `label("name")` top-level object | `remove_piece([x, y, z]);` |
 | BREP (replicad) | `api.removePart('name')` — `BREP.label(shape, 'name')` returns an empty shape (STEP export follows) | not supported yet — label the piece and delete the part |
 | Voxel | (no parts) | `api.removePiece([x, y, z])` — deletes that face-connected piece's voxels |
+
+<a id="recover-deleted"></a>
+**Recover deleted.** Nothing deleted from the Objects rail is gone for good right away, so the rail's ✕ buttons don't ask for confirmation (multi-select delete still does). Each delete shows a toast with **Undo**, and after it fades the rail's **↺ Recover deleted (N)** link (also the command palette's "Recover deleted…") opens one modal for the active session with two sections:
+
+- **Objects** — `deleteObject` (and the rail ✕ / bulk delete / merge-and-replace) moves the object, all its versions and its unsaved draft into a per-session bin. `restoreObject(id|name)` puts it back at its old place in the list, in its group. Entries are purged after `ui.deletedObjectRetentionDays` (default 30, Advanced settings); `purgeDeletedObjects()` deletes them for good. The bin is local to this browser — it is never exported or shared. Restoring the object whose deletion left the untouched blank "Object 1" (deleting a session's last object) replaces that blank.
+- **Parts & pieces** — every removal line from the table above (`api.removePart` / `api.removePiece`, or OpenSCAD `remove_part` / `remove_piece`; written by `deleteObjectPart` or by hand) in the session's objects. `restoreObjectPart` removes the line, re-runs and saves a `restore …` version, opening the owning object first if needed. They never expire: they live in the code. If nothing comes back (you since deleted the label or moved the geometry) the line was already a no-op; it is dropped and the result carries a `note`.
+
+`listDeleted()` returns both lists; a piece is addressed by its `call` (`restoreObjectPart('api.removePiece([-70, 0, 3]);')`).
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 

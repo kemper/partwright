@@ -306,6 +306,14 @@ export interface AppConfig {
   ui: {
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
+    /** How long a toast carrying an action button (e.g. a delete's "Undo")
+     *  stays on screen (ms) — longer than a plain toast so the button can be
+     *  reached. After it fades, "Recover deleted" in the Objects list still
+     *  restores the item. */
+    undoToastDurationMs: number;
+    /** Days a deleted object stays in the "Recover deleted" bin before it is
+     *  permanently purged (checked whenever the bin is read). */
+    deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
@@ -588,6 +596,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   },
   ui: {
     toastDurationMs: 2200,
+    undoToastDurationMs: 8000,
+    deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
