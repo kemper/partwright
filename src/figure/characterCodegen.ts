@@ -174,6 +174,8 @@ export function specToCode(spec: CharacterSpec): string {
         seed: hair.seed !== 1 ? hair.seed : undefined,
       });
       hairOpts = `${hairOpts.slice(0, -2)}${knobs ? `, ${knobs.slice(2, -2)}` : ''}, on: head }`;
+    } else if (hair.style === 'captured') {
+      hairOpts = `${hairOpts.slice(0, -2)}, on: head }`;   // measured on the real head
     }
     L.push(`const hair = F.hair(rig, ${hairOpts}).label('hair');`);
     unionMembers.push('hair');

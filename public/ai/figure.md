@@ -43,7 +43,7 @@ The spec (v2) mirrors this API:
   face: { shape, lids, gaze, nose, expression, lipShape, ears, brows,
           layout: { eyeSpread: null | 0.5–2, eyeHeight: null | −0.6–0.6 },
           eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */ },
-  hair: { style /* … | 'mop' | 'anime' | 'shag' */, length, volume,
+  hair: { style /* … | 'mop' | 'anime' | 'shag' | 'captured' */, length, volume,
           lockShape, swoop /* anime only */, chunk, spike /* anime + shag */,
           crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare /* shag only */,
           fringe, seed /* mop + anime + shag */ },
@@ -1345,6 +1345,7 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
 //          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop' | 'anime' | 'shag'
+//          | 'captured'
 //   'mop' — shaggy anime / vinyl-toy hair: a cap hugging the real head (pass
 //     `on: head`, your F.head node, for a non-default faceShape) + N irregular
 //     tapered locks: a zig-zag fringe ending just above the brows, sideburns and
@@ -1393,6 +1394,41 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //       seed (1 — same seed ⇒ identical hair), on: headNode }
 //     `length` drops the hem; `volume` thickens the cap + locks.
 //     F.hair(rig, { style: 'shag', crown: 'spiky', on: head, seed: 11 })
+//   'captured' — a hairdo CAPTURED from a real mesh and replayed onto this head:
+//     a radial height field of the hair's outer surface + a coverage mask (face
+//     window, hem), smooth-interpolated, so spikes stay crisp with no stair
+//     steps. Measured on the real head (face front, face width, eye-to-chin) so
+//     it follows headScale / proportions / faceShape / head pose; where the head
+//     is bigger than the source's the hair is lifted (layers kept), never
+//     clipped. Much faster to build than the lock styles (one field, no locks).
+//     Pass `on: head`. Defaults reproduce the capture literally. Extra keys:
+//     { preset: 'tsubasa' (default — the Captain Tsubasa Funko's shaggy mop:
+//         a messy fringe of pointed locks, layered sides, a deep back to the nape),
+//       spikiness: 0..3 (1, amplifies the detail — spike height, point depth of
+//         the fringe + hem; < 1 calms it), smooth: 0..1 (0, softens tips and
+//         points), fringe: 0.3..2 (1, stretches the front hair below its roots;
+//         < 1 lifts the fringe off the brows), mirror: true (flip left↔right —
+//         the part / sweep goes the other way), tilt: −40..40 (0, deg — pitches
+//         the whole hairdo about the ear-to-ear axis; + sweeps it back),
+//       windowScale: 0.5..2 (1, face-window size — > 1 shows more face),
+//       on: headNode }
+//     `volume` scales the thickness ABOVE the skull (1 = literal);
+//     `length` ('short' | 'mid' | 'long') stretches the side/back hem;
+//     `thickness` sets the minimum cover where the head outgrows the capture.
+//     Overhangs fill in (the field is star-shaped from the head centre: a lock
+//     lying over the forehead keeps no gap beneath it; under-flaring tails are
+//     solid to the head) and rounded locks resting on the hair read as ridges.
+//     F.hair(rig, { style: 'captured', preset: 'tsubasa', on: head })
+//     F.hair(rig, { style: 'captured', on: head, volume: 1.35, spikiness: 1.8 })   // bigger + spikier
+//     Capture another hairdo (CLI, from a segmented session export or a hair-only STL):
+//       node scripts/capture-hair.mjs model.partwright.json --out src/geometry/hairCapture/presets/<name>.ts
+//         [--hair hair --skin skin --eyes eyes] [--forward +X --up +Z] [--grid 128x64]
+//       node scripts/capture-hair.mjs hair.stl --out … --origin x,y,z --width W --chin H
+//     (a session export needs accepted part labels — Part Detection → Accept —
+//     naming the hair, skin and eyes; an STL must be hair only and gives the
+//     landmarks by hand: face front at eye height on the midline, face
+//     half-width at eye height, eye-to-chin drop). Then add the preset to
+//     src/geometry/hairCapture/presets/index.ts. ≈ 24 KB of source per preset.
 //   Helpers for hand-built hairdos (same pieces 'anime' uses):
 //     F.hair.cap(rig, { on, thickness, crown, hairlinePlane: { front, back },
 //       window: { width, top, tilt, notches, depth, span } | false })   // heights in head-Z radii above the head centre

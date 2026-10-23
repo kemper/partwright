@@ -32,7 +32,7 @@ export const EAR_TYPES = ['round', 'pointed', 'detailed'] as const;
 export const BROW_SHAPES = ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'] as const;
 export const HAIR_STYLES = [
   'bald', 'short', 'long', 'bob', 'bun', 'bangs', 'ponytail',
-  'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag',
+  'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag', 'captured',
 ] as const;
 export const HAIR_LENGTHS = ['short', 'mid', 'long'] as const;
 export const LOCK_SHAPES = ['ribbon', 'tube'] as const;
@@ -521,7 +521,7 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     mouth: { t: 'bool', d: 'Build the lips (false = mouthless vinyl-toy face).' },
   }, 'Face.'),
   hair: o({
-    style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks."),
+    style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (the Captain Tsubasa Funko)."),
     length: e(HAIR_LENGTHS, 'Hair length.'),
     volume: n('Hair volume 0.3–4.', 0.3, 4),
     lockShape: e(LOCK_SHAPES, "anime only: flat 'ribbon' locks or round 'tube' locks."),

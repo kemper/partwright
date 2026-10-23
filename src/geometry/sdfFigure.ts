@@ -28,6 +28,7 @@ import {
   assertNoUnknownKeys,
   ValidationError,
 } from '../validation/apiValidation';
+import { buildCapturedHair, CAPTURED_HAIR_FIELDS } from './figureHairCapture';
 
 export type Vec3 = [number, number, number];
 
@@ -4805,20 +4806,21 @@ function tuftSurfacePoint(S: ScalpFrame, head: Node, v: unknown, name: string, d
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture', 'ears', ...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture', 'ears', ...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS, ...CAPTURED_HAIR_FIELDS], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag'] as const, 'hair.style');
+    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag', 'captured'] as const, 'hair.style');
   // Lock-style keys and the styles that read them: `locks`/`seed`/`fringe`/`on`
   // are shared by every lock style; `spread`/`flick` are mop-only,
   // `swoop`/`lockShape` anime-only, `spike`/`chunk` anime + shag, and
   // `layers`/`raggedness`/`crown`/`flare`/`tipWidth` shag-only.
   const keyStyles = (k: string): readonly string[] =>
-    ['locks', 'seed', 'fringe', 'on'].includes(k) ? ['mop', 'anime', 'shag']
+    ['locks', 'seed', 'fringe', 'on'].includes(k) ? ['mop', 'anime', 'shag', ...(['fringe', 'on'].includes(k) ? ['captured'] : [])]
       : ['spike', 'chunk'].includes(k) ? ['anime', 'shag']
       : ANIME_ONLY_FIELDS.includes(k) ? ['anime']
       : SHAG_ONLY_FIELDS.includes(k) ? ['shag']
+      : CAPTURED_HAIR_FIELDS.includes(k) ? ['captured']
       : ['mop'];
-  const misplaced = [...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS]
+  const misplaced = [...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS, ...CAPTURED_HAIR_FIELDS]
     .filter((k) => o[k] !== undefined && !keyStyles(k).includes(style));
   if (misplaced.length) {
     const owners = keyStyles(misplaced[0]).map((x) => `'${x}'`);
@@ -4878,6 +4880,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   let cap = style === 'mop' ? buildMopHair(sdf, rig, o, t, volume, lenMul, ears)
     : style === 'anime' ? buildAnimeHair(sdf, rig, o, t, volume, lenMul, ears)
     : style === 'shag' ? buildShagHair(sdf, rig, o, t, volume, lenMul)
+    : style === 'captured' ? buildCapturedHair(sdf, rig, o, hairHead(sdf, rig, o.on), t, volume, lenMul)
     : sdf.ellipsoid(r.headX + tv, r.head + tv, r.headZ + tv)
       .translate(add3(c, add3(scale3(f, -tv * 0.6), scale3(u, tv * 0.4))));
   if (style === 'long') {
@@ -5132,7 +5135,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // brows (the cartoon hairline), 'low' lands ON the brow line (bangs),
   // 'high' opens the forehead. Sides keep the temples framed.
   // The mop carves its own face window BEFORE laying the fringe over it.
-  if (style === 'mop' || style === 'anime' || style === 'shag') return cap;
+  if (style === 'mop' || style === 'anime' || style === 'shag' || style === 'captured') return cap;
   const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
   const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
