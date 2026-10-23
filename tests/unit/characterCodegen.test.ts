@@ -18,13 +18,14 @@ describe('characterCodegen', () => {
     expect(code).toContain(".label('skin')");
     expect(code).toContain('F.faceDetail(rig)');
     expect(code).toContain('F.handDetail(rig)');
-    // Returns a built union of the labelled regions.
-    expect(code).toMatch(/return sdf\.union\([^)]*\)\s*\n\s*\.build\(/);
+    // Builds a union of the labelled regions, then places it (v2).
+    expect(code).toMatch(/const model = sdf\.union\([^)]*\)\s*\n\s*\.build\(/);
+    expect(code).toContain("return F.place(model, rig, { face: '+X' });");
   });
 
   it('embeds the spec as a round-trippable header comment', () => {
     const code = specToCode(DEFAULT_SPEC);
-    expect(code.split('\n')[0]).toMatch(/^\/\/ @character v1 \{/);
+    expect(code.split('\n')[0]).toMatch(/^\/\/ @character v2 \{/);
     const decoded = decodeSpecComment(code);
     expect(decoded).toEqual(normalizeSpec(DEFAULT_SPEC));
   });

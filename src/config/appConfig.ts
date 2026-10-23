@@ -260,6 +260,32 @@ export interface AppConfig {
     /** Surface samples per mesh for convertToCode / evalAgainstImport
      *  chamfer+hausdorff reports (more = tighter noise floor, slower). */
     reconstructEvalSamples: number;
+    /** Photo match (`photoMatch` / `model:preview --match-photo`): the common
+     *  height (px) the photo and model silhouettes are resampled to before
+     *  comparing. Higher = finer detail, slower. */
+    photoMatchTargetHeight: number;
+    /** Photo match: floor of the auto-estimated background tolerance (RGB
+     *  distance). The estimate adapts above it to the backdrop's noise; keep it
+     *  low so dark hair on a black backdrop stays foreground. */
+    photoMatchBgToleranceMin: number;
+    /** Photo match: tolerance (RGB distance) around an explicit `bg` colour
+     *  when the caller passes no `bgTolerance`. */
+    photoMatchBgTolerance: number;
+    /** Photo match: k-means refinement iterations over the photo's colours
+     *  (seeded with the model's region colours). */
+    photoMatchKmeansIterations: number;
+    /** Photo match: number of horizontal bands in the width profile. */
+    photoMatchBands: number;
+    /** Photo match: colour difference (ΔE) above which a region is reported as
+     *  a colour mismatch. */
+    photoMatchColorShiftWarn: number;
+    /** Photo match: a photo pixel is credited to a model region of its colour
+     *  only within this distance (fraction of the figure height); further
+     *  away it's a photo detail with no model counterpart. */
+    photoMatchMaxRegionDistance: number;
+    /** Photo match: size (px) of the flat model render compared against the
+     *  photo. */
+    photoMatchRenderSize: number;
   };
   ui: {
     /** How long toast notifications stay on screen (ms). */
@@ -428,6 +454,9 @@ export interface AppConfig {
     seedTagScreenFraction: number;
     /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
     fixBrushRadiusFrac: number;
+    /** Part panel label chips: a chip's pin counts as "missed" (its part
+     *  came out empty or a speck) below this fraction of the surface area. */
+    chipMissAreaFrac: number;
   };
 }
 
@@ -513,6 +542,14 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     filamentConfidenceWarnThreshold: 0.9,
     reconstructCellBudget: 6_000_000,
     reconstructEvalSamples: 4000,
+    photoMatchTargetHeight: 160,
+    photoMatchBgToleranceMin: 10,
+    photoMatchBgTolerance: 40,
+    photoMatchKmeansIterations: 8,
+    photoMatchBands: 10,
+    photoMatchColorShiftWarn: 30,
+    photoMatchMaxRegionDistance: 0.12,
+    photoMatchRenderSize: 512,
   },
   ui: {
     toastDurationMs: 2200,
@@ -569,6 +606,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     seedDotFraction: 0.008,
     seedTagScreenFraction: 0.026,
     fixBrushRadiusFrac: 0.012,
+    chipMissAreaFrac: 0.0005,
   },
 };
 

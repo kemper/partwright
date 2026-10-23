@@ -6,8 +6,19 @@
 // two surfaces can't drift. The detector dropdown, its parameter controls and
 // its presets are generated from the registry.
 //
+// LABEL CHIPS (#1050) are the fast path: a strip of named parts with default
+// colours (hair, face, eyes… or part 1…9, plus custom ones). Picking a chip
+// (click, or 1–9) arms the Pin tool with that name and colour; each click on
+// the model then places a named pin and re-grows, so a figurine splits into
+// coloured parts without typing. Chips need a seeded method: picking one
+// while a seedless method (auto patches, pieces) is selected switches to
+// Crease watershed, and a seedless draft is cleared (undoably) rather than
+// mixed with pins. A chip shows ✓ once it owns a part, or "missed — click
+// again" when its pin grew nothing.
+//
 // Parts own their pins: every part has at least one (automatic pins are
-// drawn smaller and see-through). Viewport interaction while the panel is
+// drawn smaller and see-through, and hidden unless "Show automatic pins" is
+// on or their part is selected). Viewport interaction while the panel is
 // open:
 //   - hovering the model names the part under the cursor and jumps the list
 //     to it; hovering a row highlights the part on the model;
@@ -24,10 +35,11 @@
 //     (except the Fix brush and Shift-drag select, which own the drag).
 
 import { pickFace } from '../color/facePicker';
-import { setDetectPartsEntry } from '../color/paintUI';
+import { openPaintWithin, setDetectPartsEntry } from '../color/paintUI';
 import { getConfig } from '../config/appConfig';
 import { addPointerSuppressor, getCanvas } from '../renderer/viewport';
 import { MAX_EDGE_SMOOTHING, overlayColor } from '../segmentation/draft';
+import { chipState, labelPreset, LABEL_PRESETS, type LabelChip, type LabelPresetId } from '../segmentation/labelPresets';
 import type { PartDetectionApi } from '../segmentation/partDetection';
 import { createSeedMarkers } from '../segmentation/seedMarkers';
 import type { ParamSpec } from '../segmentation/types';
@@ -39,6 +51,10 @@ import { createToolPanelShell } from './toolPanel';
 import { createSliderEntry, formatEntry } from './sliderEntry';
 
 let closeOpen: (() => void) | null = null;
+/** Which label-chip set the panel shows, and the user's custom chips — kept
+ *  for this tab (not persisted) so reopening the panel keeps them. */
+let chipSetId: LabelPresetId = 'figure';
+const customChips: LabelChip[] = [];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const n = document.createElement(tag);
@@ -66,6 +82,11 @@ const CLICK_SLOP_PX = 6;
 const PIN_LONG_PRESS_MS = 600;
 /** How long the "Applied preset · Undo" banner stays up (ms). */
 const APPLIED_BANNER_MS = 8000;
+/** Label chips: a pill with a 44 px touch target on mobile. */
+const CHIP = 'shrink-0 inline-flex items-center gap-1.5 min-h-11 md:min-h-0 px-2 py-1 rounded-full border text-[12px] select-none';
+const CHIP_IDLE = 'border-zinc-600 bg-zinc-800 text-zinc-200 [@media(hover:hover)]:hover:border-zinc-400';
+const CHIP_ARMED = 'border-blue-400 bg-blue-500/25 text-blue-50 ring-1 ring-blue-400/60';
+const CHIP_MISSED = 'border-amber-500/70 bg-amber-500/10 text-amber-100';
 
 type Draft = Exclude<ReturnType<PartDetectionApi['getPartDraft']>, { draft: null }>;
 type Tool = 'select' | 'pin' | 'fix';
@@ -103,6 +124,19 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   let edgeTimer: ReturnType<typeof setTimeout> | null = null;
   let bannerTimer: ReturnType<typeof setTimeout> | null = null;
   let markersOn = true;
+  /** Automatic pins are hidden by default (placed pins always show; a
+   *  selected part shows its automatic pins too). */
+  let showAutoPins = false;
+  /** The chip the Pin tool is armed with (its name is the pin's part). */
+  let armed: LabelChip | null = null;
+  /** Chips whose last pin grew no part (shown as "missed — click again"). */
+  const chipMissed = new Set<string>();
+  /** Set right after Accept: the panel offers the next steps instead of a
+   *  live Accept button. Cleared when a draft appears again. */
+  let justSaved: { names: string[]; colored: boolean } | null = null;
+  /** A chip pin's first detection is running (picking another chip must not
+   *  cancel it). */
+  let chipDetecting = false;
   let holdHide = false;
   let lastSyncedRun = '';
   let focusedName: string | null = null;
@@ -191,6 +225,60 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
 
   // ======================================================== 1. START
   body.appendChild(step(1, 'Start'));
+  // --- Label chips -------------------------------------------------------------
+  const chipHead = el('div', 'flex items-center gap-1.5');
+  const chipSetSelect = el('select', `${INPUT} min-h-11 md:min-h-0`);
+  chipSetSelect.setAttribute('aria-label', 'Label set');
+  chipSetSelect.title = 'Which label chips to show: figure parts or generic part 1…9';
+  for (const p of LABEL_PRESETS) { const o = el('option', '', p.title); o.value = p.id; chipSetSelect.appendChild(o); }
+  chipSetSelect.value = chipSetId;
+  chipHead.append(el('span', 'text-[12px] text-zinc-300 flex-1 min-w-0', 'Label parts: pick one, click it on the model'), chipSetSelect);
+  // shrink-0: a scroll container in the panel's flex column would otherwise
+  // collapse to nothing on a short (phone) screen.
+  const chipStrip = el('div', 'shrink-0 flex gap-1.5 overflow-x-auto pb-1 md:flex-wrap md:overflow-visible md:pb-0');
+  chipStrip.setAttribute('role', 'toolbar');
+  chipStrip.setAttribute('aria-label', 'Label chips');
+  // "+ custom": name + colour, added to the strip.
+  const customRow = el('div', 'hidden flex items-center gap-1.5');
+  const customName = el('input', `${INPUT} flex-1 min-w-0 min-h-11 md:min-h-0`);
+  customName.placeholder = 'part name';
+  customName.setAttribute('aria-label', 'Custom label name');
+  let customHex = overlayColor(customChips.length + 9, null);
+  const customSwatch = createColorSwatch({
+    initialHex: customHex,
+    title: 'Colour for the custom label',
+    className: 'w-11 h-11 md:w-6 md:h-6 rounded border border-zinc-600 shrink-0',
+    onPick: (hex) => { customHex = hex; },
+  });
+  const customAdd = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0`, 'Add');
+  const customCancel = el('button', ICON_BTN, '✕');
+  customCancel.title = 'Cancel';
+  customCancel.setAttribute('aria-label', 'Cancel custom label');
+  customRow.append(customName, customSwatch.el, customAdd, customCancel);
+  function addCustomChip(): void {
+    const name = customName.value.trim().slice(0, 64);
+    if (!name) { customName.focus(); return; }
+    const chip = { name, color: customHex };
+    const at = customChips.findIndex((c) => c.name === name);
+    if (at >= 0) customChips[at] = chip; else customChips.push(chip);
+    customName.value = '';
+    customHex = overlayColor(customChips.length + 9, null);
+    customSwatch.setHex(customHex);
+    customRow.classList.add('hidden');
+    void pickChip(chip);
+  }
+  customAdd.addEventListener('click', addCustomChip);
+  customName.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addCustomChip(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); customRow.classList.add('hidden'); }
+  });
+  customCancel.addEventListener('click', () => customRow.classList.add('hidden'));
+  chipSetSelect.addEventListener('change', () => {
+    chipSetId = chipSetSelect.value as LabelPresetId;
+    renderChips();
+  });
+  body.append(chipHead, chipStrip, customRow);
+  body.appendChild(el('div', HINT, 'Or detect automatically:'));
   const algoSelect = el('select', `${INPUT} w-full`);
   algoSelect.setAttribute('aria-label', 'Detection method');
   for (const d of info.detectors) {
@@ -311,7 +399,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   const status = el('div', 'text-[11px] text-zinc-400 flex-1 truncate');
   status.setAttribute('aria-live', 'polite');
   actionRow.append(detectBtn, liveLabel, cancelBtn, status);
-  const needPinsHint = el('div', `${HINT} hidden`, 'This method grows parts from pins: pick the Pin tool below and click the model once or more per part, then Detect.');
+  const needPinsHint = el('div', `${HINT} hidden`, 'This method grows parts from pins: pick a label chip above (or the Pin tool below) and click the model once or more per part.');
   body.append(actionRow, needPinsHint);
 
   function detectOptions(algorithm = algoSelect.value): Record<string, unknown> {
@@ -417,7 +505,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       const r = await ctl.applyPartPreset(i);
       if ('error' in r) { showToast(String(r.error), { variant: 'warn', source: 'parts' }); return; }
       // Undo only makes sense when the preset replaced an earlier draft.
-      if ('canUndo' in r && r.canUndo) showAppliedBanner(name);
+      if ('canUndo' in r && r.canUndo) showUndoBanner(`Applied preset “${name}”.`);
     });
     return tile;
   }
@@ -439,14 +527,17 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     tiles[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
 
-  function showAppliedBanner(name: string): void {
+  /** A transient "<what happened> · Undo" banner (a preset applied, a
+   *  method switch that started fresh). */
+  function showUndoBanner(message: string): void {
     appliedBanner.replaceChildren();
     const undo = el('button', BUTTON_SMALL_SECONDARY, 'Undo');
     undo.addEventListener('click', async () => {
       appliedBanner.classList.add('hidden');
+      armed = null;
       await edit([{ op: 'undo' }]);
     });
-    appliedBanner.append(el('span', 'flex-1', `Applied preset “${name}”.`), undo);
+    appliedBanner.append(el('span', 'flex-1', message), undo);
     appliedBanner.classList.remove('hidden');
     if (bannerTimer) clearTimeout(bannerTimer);
     bannerTimer = setTimeout(() => appliedBanner.classList.add('hidden'), APPLIED_BANNER_MS);
@@ -487,6 +578,10 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   brushRange.setAttribute('aria-label', 'Fix brush size');
   brushRange.title = 'Brush size (× the default in Advanced Settings)';
   targetRow.append(targetLabel, targetInput, targetList, brushRange);
+  // Typing another name disarms the chip (its colour no longer applies).
+  targetInput.addEventListener('input', () => {
+    if (armed && targetInput.value.trim() !== armed.name) { armed = null; renderChips(); }
+  });
   body.append(toolRow, toolHint, targetRow);
 
   const TOOL_HINTS: Record<Tool, string> = {
@@ -497,6 +592,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
 
   function setTool(next: Tool): void {
     tool = next;
+    if (tool !== 'pin' && armed) { armed = null; renderChips(); }
     for (const [k, b] of Object.entries(toolBtns) as [Tool, HTMLButtonElement][]) {
       b.className = k === tool ? TOGGLE_ON : BUTTON_SMALL_SECONDARY;
       b.setAttribute('aria-pressed', String(k === tool));
@@ -554,7 +650,9 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const doMerge = async () => {
       const name = mergeName.value.trim();
       if (sel.length < 2 || !name) return;
-      if (await edit([{ op: 'merge', ids: sel.map((p) => p.id), name }])) ctl.setPartSelection([name]);
+      // Clear the selection: a following Shift-drag starts a new set
+      // instead of dragging the merged part along.
+      if (await edit([{ op: 'merge', ids: sel.map((p) => p.id), name }])) ctl.setPartSelection(null);
     };
     mergeBtn.addEventListener('click', () => { void doMerge(); });
     mergeName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void doMerge(); } });
@@ -627,8 +725,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     draftBox.replaceChildren();
     rowsByName.clear();
     nameInputs.clear();
+    if (isDraft(d)) justSaved = null;
+    syncFooter();
     acceptBtn.disabled = !isDraft(d) || d.parts.length === 0;
     discardBtn.disabled = !isDraft(d) && ctl.getSeeds().length === 0;
+    renderChips();
     edgeRow.classList.toggle('hidden', !isDraft(d));
     if (isDraft(d) && !edgeDragging && !edgeTimer) {
       edgeRange.value = String(d.edgeSmoothing);
@@ -638,6 +739,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     targetList.replaceChildren(...(isDraft(d) ? d.parts.map((p) => { const o = el('option'); o.value = p.name; return o; }) : []));
     if (!isDraft(d)) {
       const saved = ctl.importsWithParts();
+      if (justSaved) {
+        draftBox.appendChild(savedCard(justSaved));
+        renderActionBar(true);
+        return;
+      }
       if (saved.length) {
         const reopen = el('button', `${BUTTON_SMALL_SECONDARY} self-start`, 'Edit saved parts');
         reopen.title = 'Re-open the parts saved on this import (with their pins) to refine them';
@@ -796,6 +902,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     overlay.addEventListener('change', () => ctl.setPartsOverlay(overlay.checked));
     overlayRow.append(overlay, el('span', '', 'Show parts overlay'));
     draftBox.appendChild(overlayRow);
+    const autoRow = el('label', 'flex items-center gap-1.5 text-[12px] text-zinc-300');
+    autoRow.title = 'Automatic pins sit in the middle of every part region. Hidden by default (a selected part still shows its own); placed pins always show.';
+    const autoBox = el('input');
+    autoBox.type = 'checkbox';
+    autoBox.checked = showAutoPins;
+    autoBox.addEventListener('change', () => { showAutoPins = autoBox.checked; renderPins(); });
+    autoRow.append(autoBox, el('span', '', 'Show automatic pins'));
+    draftBox.appendChild(autoRow);
     renderActionBar(true);
     markHover();
   }
@@ -853,17 +967,40 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const partColor = new Map(isDraft(d) ? d.parts.map((p) => [p.name, p.displayColor] as const) : []);
     const labels = [...new Set(seeds.map((x) => x.label))];
     const colorOf = (label: string) => partColor.get(label) ?? overlayColor(Math.max(0, labels.indexOf(label)), null);
-    const key = JSON.stringify([seeds, [...emphasize], labels.map(colorOf)]);
+    const key = JSON.stringify([seeds, [...emphasize], labels.map(colorOf), showAutoPins]);
     if (key === pinsKey) return;
     pinsKey = key;
-    markers.update(seeds, colorOf, emphasize);
+    markers.update(seeds, colorOf, emphasize, { showAuto: showAutoPins });
   }
 
   /** Pin edits: with a draft they are draft ops (only nearby parts re-grow);
    *  before the first detection they edit the pending pin list. */
-  async function addPin(label: string, point: [number, number, number]): Promise<void> {
-    if (isDraft(ctl.getPartDraft())) await edit([{ op: 'addSeed', seed: { label, point } }]);
-    else { ctl.setSeeds([...ctl.getSeeds(), { label, point }]); renderDraft(); }
+  async function addPin(label: string, point: [number, number, number], chip: LabelChip | null = null): Promise<void> {
+    const seed = chip ? { label, point, color: chip.color } : { label, point };
+    if (isDraft(ctl.getPartDraft())) {
+      if (!await edit([{ op: 'addSeed', seed }])) return;
+    } else {
+      ctl.setSeeds([...ctl.getSeeds(), seed]);
+      renderDraft();
+      // A plain pin waits for Detect; a chip pin grows its part right away
+      // (with the pins placed so far), like a pin on an existing draft.
+      if (!chip) return;
+      chipDetecting = true;
+      const r = await ctl.detectParts(detectOptions()).finally(() => { chipDetecting = false; });
+      if ('error' in r) { showToast(String(r.error), { variant: 'warn', source: 'parts' }); return; }
+    }
+    if (chip) checkChipPin(chip.name);
+  }
+
+  /** After a chip pin: flag the chip when its part came out empty. */
+  function checkChipPin(name: string): void {
+    const d = ctl.getPartDraft();
+    const state = chipState(name, isDraft(d) ? d.parts : [], true, getConfig().segmentation.chipMissAreaFrac);
+    if (state === 'missed') {
+      chipMissed.add(name);
+      showToast(`The “${name}” pin missed: its part came out empty. Click again, nearer the middle of the ${name}.`, { variant: 'warn', source: 'parts' });
+    } else chipMissed.delete(name);
+    renderChips();
   }
   async function movePin(index: number, point: [number, number, number]): Promise<void> {
     if (isDraft(ctl.getPartDraft())) { await edit([{ op: 'moveSeed', index, point }]); return; }
@@ -989,8 +1126,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
     if (tool === 'pin') {
       const label = targetInput.value.trim();
-      if (!label) { showToast('Type a part name for the pin first', { variant: 'warn', source: 'parts' }); targetInput.focus(); return; }
-      void addPin(label, hit.point);
+      if (!label) { showToast('Pick a label chip (or type a part name) for the pin first', { variant: 'warn', source: 'parts' }); targetInput.focus(); return; }
+      void addPin(label, hit.point, armed && armed.name === label ? armed : null);
       return;
     }
     if (tool === 'select') {
@@ -1041,6 +1178,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     const k = evt.key.toLowerCase();
     if (k === 'h' && !evt.repeat && !evt.altKey) { holdHide = true; applyMarkerVisibility(); return; }
     if (evt.repeat || evt.altKey) return;
+    // 1–9 pick label chips while the panel is open, like V/P/B (never from a
+    // text field — isTyping above — or under a modal dialog).
+    if (/^[1-9]$/.test(evt.key) && !evt.shiftKey) {
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      const chip = chipList()[Number(evt.key) - 1];
+      if (chip) { evt.preventDefault(); void pickChip(chip); }
+      return;
+    }
     if (k === 'v') setTool('select');
     else if (k === 'p') setTool('pin');
     else if (k === 'b') setTool('fix');
@@ -1094,10 +1239,163 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       acceptBtn.disabled = false;
       return;
     }
-    showToast(`Saved ${(r as { parts: unknown[] }).parts.length} parts as labels`, { variant: 'success', source: 'parts' });
+    const saved = (r as { parts: { name: string; color: string | null }[] }).parts;
+    showToast(`Saved ${saved.length} parts as labels`, { variant: 'success', source: 'parts' });
     if ('note' in r && typeof r.note === 'string') showToast(r.note, { variant: 'neutral', source: 'parts' });
+    // Next steps replace Accept: paint one part, or edit the parts again.
+    armed = null;
+    chipMissed.clear();
+    if (tool !== 'select') setTool('select');
+    justSaved = { names: saved.map((p) => p.name), colored: saved.some((p) => p.color) };
+    renderDraft();
   });
-  footer.append(discardBtn, acceptBtn);
+  // After Accept: "Edit parts" (re-open them) and "Open Paint" (scoped to the
+  // part picked in the saved card).
+  const editSavedBtn = el('button', `${BUTTON_CANCEL} hidden`, 'Edit parts');
+  editSavedBtn.title = 'Re-open the saved parts (with their pins) to refine them';
+  editSavedBtn.addEventListener('click', async () => {
+    const saved = ctl.importsWithParts();
+    if (!saved.length) return;
+    const r = await ctl.reopenParts({ importIndex: saved[0] });
+    if ('error' in r) showToast(String(r.error), { variant: 'warn', source: 'parts' });
+  });
+  const openPaintBtn = el('button', `${BUTTON_PRIMARY} hidden`, 'Open Paint');
+  openPaintBtn.title = 'Open the Paint panel scoped to the chosen part, so colour can’t bleed across its edge';
+  let paintScopeSelect: HTMLSelectElement | null = null;
+  openPaintBtn.addEventListener('click', () => {
+    const scope = paintScopeSelect?.value || null;
+    shell.close();
+    openPaintWithin(scope);
+  });
+  footer.append(discardBtn, acceptBtn, editSavedBtn, openPaintBtn);
+
+  function syncFooter(): void {
+    const saved = justSaved !== null;
+    discardBtn.classList.toggle('hidden', saved);
+    acceptBtn.classList.toggle('hidden', saved);
+    editSavedBtn.classList.toggle('hidden', !saved);
+    openPaintBtn.classList.toggle('hidden', !saved);
+  }
+
+  function savedCard(s: { names: string[]; colored: boolean }): HTMLElement {
+    const card = el('div', 'flex flex-col gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-2');
+    card.dataset.partsSaved = '';
+    card.appendChild(el('div', 'text-[12px] text-emerald-100 font-semibold', '✓ Parts saved'));
+    card.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug',
+      `${s.names.length} part${s.names.length === 1 ? ' is' : 's are'} now labels on the import${s.colored ? ', in the colours shown' : ''}. Next: open Paint scoped to one part (colour can’t bleed across its edge), or edit the parts.`));
+    const row = el('label', 'flex items-center gap-1.5 text-[12px] text-zinc-300');
+    const sel = el('select', `${INPUT} flex-1 min-w-0 min-h-11 md:min-h-0`);
+    sel.setAttribute('aria-label', 'Part to paint within');
+    const whole = el('option', '', 'Whole model');
+    whole.value = '';
+    sel.appendChild(whole);
+    for (const nm of s.names) { const o = el('option', '', nm); o.value = nm; sel.appendChild(o); }
+    sel.value = s.names[0] ?? '';
+    paintScopeSelect = sel;
+    row.append(el('span', 'shrink-0', 'Paint within'), sel);
+    card.appendChild(row);
+    return card;
+  }
+
+  // ======================================================== label chips
+  function chipList(): LabelChip[] {
+    const base = labelPreset(chipSetId).chips;
+    return [...base, ...customChips.filter((c) => !base.some((b) => b.name === c.name))];
+  }
+
+  function renderChips(): void {
+    const d = ctl.getPartDraft();
+    const parts = isDraft(d) ? d.parts : [];
+    if (!isDraft(d) || parts.length === 0) chipMissed.clear();
+    const minFrac = getConfig().segmentation.chipMissAreaFrac;
+    chipStrip.replaceChildren();
+    chipList().forEach((chip, i) => {
+      const state = chipState(chip.name, parts, chipMissed.has(chip.name), minFrac);
+      if (state === 'owned') chipMissed.delete(chip.name);
+      const part = parts.find((p) => p.name === chip.name);
+      const on = armed?.name === chip.name;
+      const b = el('button', `${CHIP} ${on ? CHIP_ARMED : state === 'missed' ? CHIP_MISSED : CHIP_IDLE}`);
+      b.type = 'button';
+      b.dataset.chip = chip.name;
+      b.dataset.chipState = state;
+      b.setAttribute('aria-pressed', String(on));
+      b.title = state === 'missed'
+        ? `The last “${chip.name}” pin grew no part — click the model again`
+        : `${on ? 'Armed' : 'Pick'} “${chip.name}”: then click it on the model${i < 9 ? ` (key ${i + 1})` : ''}`;
+      const dot = el('span', 'w-3 h-3 rounded-full border border-zinc-400/70 shrink-0');
+      dot.style.backgroundColor = state === 'owned' && part ? part.displayColor : chip.color;
+      b.appendChild(dot);
+      b.appendChild(el('span', '', chip.name));
+      if (state === 'owned') b.appendChild(el('span', 'text-emerald-300', '✓'));
+      if (state === 'missed') b.appendChild(el('span', 'text-[11px] text-amber-300', 'missed — click again'));
+      if (i < 9) b.appendChild(el('span', 'hidden md:inline text-[10px] text-zinc-500', String(i + 1)));
+      b.addEventListener('click', () => { void pickChip(chip); });
+      chipStrip.appendChild(b);
+    });
+    const add = el('button', `${CHIP} ${CHIP_IDLE} border-dashed text-zinc-400`, '+ custom');
+    add.type = 'button';
+    add.title = 'Add a label with your own name and colour';
+    add.addEventListener('click', () => {
+      customRow.classList.toggle('hidden');
+      if (!customRow.classList.contains('hidden')) customName.focus();
+    });
+    chipStrip.appendChild(add);
+  }
+
+  /** Arm the Pin tool with a chip. Chips grow parts from pins, so a seedless
+   *  method (auto patches, pieces) switches to Crease watershed first. */
+  async function pickChip(chip: LabelChip): Promise<void> {
+    if (armed?.name === chip.name && tool === 'pin') {
+      // Picking the armed chip again disarms it.
+      armed = null;
+      setTool('select');
+      renderChips();
+      return;
+    }
+    if (justSaved) { showToast('These parts are saved: choose Edit parts to change them', { variant: 'neutral', source: 'parts' }); return; }
+    // Picking a chip means labelling by hand: a detection still running with
+    // no draft yet (the import-time proposal, a Detect click) would land a
+    // seedless draft over the chips, so stop it. A chip's own first
+    // detection keeps running, and a run over an existing draft is left
+    // alone (cancelling drops the draft).
+    if (ctl.isBusy()?.cancellable && !chipDetecting && !isDraft(ctl.getPartDraft())) ctl.cancel();
+    if (detectorOf(algoSelect.value).seeds === 'none' && info.detectors.some((x) => x.id === 'crease-watershed')) {
+      algoSelect.value = 'crease-watershed';
+      await onMethodChanged(true);
+    }
+    armed = chip;
+    targetInput.value = chip.name;
+    setTool('pin');
+    renderChips();
+  }
+
+  /** The method changed (dropdown or a chip). A seedless draft (generic
+   *  patches with automatic pins) is cleared — undoably — before a seeded
+   *  method takes over: new pins would otherwise only re-grow locally inside
+   *  the old patches and leave them mixed in. Locks or a focus mean the
+   *  user is deliberately re-detecting part of the model, so those keep it. */
+  async function onMethodChanged(viaChip = false): Promise<void> {
+    void ctl.showPresetPreview(null);
+    carriedEdgeLengths = null;
+    buildParams();
+    const next = detectorOf(algoSelect.value);
+    const d = ctl.getPartDraft();
+    const from = isDraft(d) ? info.detectors.find((x) => x.id === d.detector) : undefined;
+    let cleared = false;
+    if (isDraft(d) && d.parts.length > 0 && next.seeds !== 'none' && from?.seeds === 'none'
+      && !d.focus && !d.parts.some((p) => 'locked' in p && p.locked)) {
+      cleared = await edit([{ op: 'clear', algorithm: next.id }]);
+      if (cleared) showUndoBanner(`Started fresh for ${next.name}: cleared the ${from.name} parts.`);
+    }
+    if (viaChip) {
+      showToast(cleared
+        ? `Label chips grow parts from pins: switched to ${next.name} and started fresh (Undo brings the old parts back).`
+        : `Label chips grow parts from pins: switched the method to ${next.name}.`, { variant: 'neutral', source: 'parts' });
+    }
+    renderDraft();
+    scheduleLive();
+  }
+
 
   function syncBusy(): void {
     const b = ctl.isBusy();
@@ -1142,13 +1440,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     syncBusy();
   });
 
-  algoSelect.addEventListener('change', () => {
-    void ctl.showPresetPreview(null);
-    carriedEdgeLengths = null;
-    buildParams();
-    renderDraft();
-    scheduleLive();
-  });
+  algoSelect.addEventListener('change', () => { void onMethodChanged(); });
   buildParams();
   setTool(isDraft(ctl.getPartDraft()) ? 'select' : detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
   renderDraft();
