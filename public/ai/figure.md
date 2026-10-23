@@ -21,20 +21,80 @@ It is not a photoreal-human generator — lean into the clean, simplified look.
 
 ## Shortcut: `buildCharacter(spec)` / the 🧍 Character panel
 
-For a **standard humanoid** (body proportions, pose, face, hair, clothing,
-colours) you don't have to hand-write the recipe below — there's a no-code
-**Character Creator** panel (Tools ▸ 🧍 Character, or the command palette) whose
-console twin is `partwright.buildCharacter(spec, { save })`. It generates exactly
-the kind of code shown below from a plain spec object and (with `save: true`)
-commits a version. The spec mirrors this API: `{ body:{height, headsTall, build,
-sex, age, weight, muscle, bust, belly}, pose:{preset, armL/armR/legL/legR:{raiseSide,
-raiseFwd, bend, twist}, spine, head}, face:{shape, lids, gaze, nose, expression,
-lipShape, ears, brows}, hair:{style, length, volume}, clothing:{top, pants, feet},
-colors:{…}, base }` — every field falls back to a sensible default, so a partial
-patch works (`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
-The generated code embeds the spec as a `// @character` header so the panel can
-re-open it. Reach for the **hand-written recipe below** when you need anything
-the spec doesn't cover (props, accessories, custom geometry, multi-figure scenes).
+For a **standard humanoid or vinyl/chibi toy** (body proportions, pose, face,
+hair, clothing, colours, a held ball) you don't have to hand-write the recipe
+below — there's a no-code **Character Creator** panel (Tools ▸ 🧍 Character, or
+the command palette) whose console twin is `partwright.buildCharacter(spec, { save })`
+(in-app AI tool: `buildCharacter`). It generates exactly the kind of code shown
+below from a plain spec object and (with `save: true`) commits a version. Every
+field is validated — a bad one comes back in `{ error }` with its path — and
+every field falls back to a sensible default, so a partial patch works
+(`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
+
+The spec (v2) mirrors this API:
+
+```js
+{
+  body: { height, headsTall, build, sex, age, weight, muscle, bust, belly,
+          proportions: 'realistic' | 'chibi' | 'funko',   // rig({ proportions }); realistic = none
+          headScale: null | number | { x, y, z } },        // null = the style's default
+  pose: { preset, armL, armR, legL, legR: { raiseSide, raiseFwd, bend, twist }, spine, head,
+          hold: { kind: 'none' | 'ball', radius, cup: 'sides' | 'under', color } }, // color = ball panels
+  face: { shape, lids, gaze, nose, expression, lipShape, ears, brows,
+          layout: { eyeSpread: null | 0.5–2, eyeHeight: null | −0.6–0.6 },
+          eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */ },
+  hair: { style /* … | 'mop' | 'anime' */, length, volume,
+          lockShape, chunk, spike, swoop /* anime only */, fringe, seed /* mop + anime */ },
+  clothing: { top: { on, sleeve, length }, pants: { on, leg, rise, length }, feet: { on, kind } },
+  colors: { skin, eyes, iris, pupil, lips, brows, hair, top, pants, feet, base, ball },
+  base: true,
+  place: true,   // finish with F.place(model, rig, { face: '+X' }) — bottom at z = 0, facing +X
+}
+```
+
+`body.proportions` switches the body plan (in the panel, **Style** also applies
+fitting defaults: `funko` = `headsTall 3`, `build 'slim'`, bead-black eyes at
+`eyeSize 1.8`, no mouth, no lids, arched brows). `pose.hold.kind: 'ball'`
+solves both arms onto the ball (`armL`/`armR` are ignored), opens the hands, adds
+`F.heldSphere(rig)` labelled `ball`, and paints it with
+`api.paint.pattern({ pattern: 'soccer', withinPart: 'ball', colors: [colors.ball, hold.color] })`.
+The generated code embeds the spec as a `// @character v2 {json}` header so the
+panel can re-open it; `partwright.getCharacterSpec()` (AI tool
+`getCharacterSpec`) reads it back as `{ spec }` so you can tweak a field and
+rebuild. A `@character v1` header (or a spec object with `version: 1`) migrates
+with defaults that regenerate its original code — including `place: false`
+(the legacy builder frame: −Y front, soles at z = 0).
+
+Reach for the **hand-written recipe below** when you need anything the spec
+doesn't cover (props other than a ball, accessories, printed numbers/logos,
+trims and two-tone garments, custom shoes, multi-figure scenes).
+
+### Figure from a photo — fill a spec, don't write code
+
+Picking ~30 parameters costs far fewer tokens than writing, running and
+debugging 100+ lines of figure code — and every spec build is valid,
+manifold and painted by construction, so no turn is lost to a syntax error,
+a buried eye or a missing label. A Funko soccer player that took ≈5.7 k
+characters of hand-written code is a ≈0.9 k-character spec that scores within
+a few points of it on `photoMatch`. The loop:
+
+1. **View the photo once.** Note style (realistic / chibi / Funko), hair,
+   clothing, colours and anything held.
+2. **Fill in a CharacterSpec** — `proportions`, `headScale`, hair `style`
+   (+ `fringe`/`spike`/`swoop` for anime), sleeves / shorts (`pants.length:
+   'briefs'`) / footwear, `colors` sampled from the photo, `pose.hold` for a ball.
+3. **Call `buildCharacter(spec)`** (it saves a version; the code is not echoed).
+4. **Score with `photoMatch`** — text only (`exclude: ['base']`, the photo's
+   camera; a placed figure faces +X, so azimuth 0 is the front, 180 the back).
+5. **Adjust spec fields from `worst[]`** — "hair 29% shorter" → `hair.length`,
+   "feet region smaller" → `feet.kind: 'boots'` / legs apart, "ball region
+   larger" → `hold.radius`, a colour mismatch → that `colors` entry.
+   `getCharacterSpec()` returns the current spec to edit.
+6. **Repeat**, looking at an image (`renderView`) only at checkpoints — every
+   3–5 builds, and before finishing.
+7. **Drop to hand-written code only for what the spec can't express** (numbers,
+   logos, collar/cuff trims, custom shoes): `getCode()` gives the generated
+   figure code to extend — it stays ordinary, editable `api.sdf.figure` code.
 
 ## The one pattern
 

@@ -53,7 +53,7 @@ test.describe('Character Creator', () => {
     expect(out.r.geometry?.triangleCount ?? 0).toBeGreaterThan(1000);
     expect(out.r.version?.label).toBe('My character');
     // Self-contained, painted figure code with the round-trip header.
-    expect(out.code).toContain('@character v1');
+    expect(out.code).toContain('@character v2');
     expect(out.code).toContain('F.rig({');
     expect(out.code).toContain("api.paint.label('skin', '#c68642')");
     expect(out.code).toContain("F.hair(rig, { style: 'bun'");
@@ -90,12 +90,12 @@ test.describe('Character Creator', () => {
     await expect(panel).toBeVisible();
 
     // Pick a preset — this generates and live-previews the figure.
-    await panel.getByRole('button', { name: 'Chibi' }).click();
+    await panel.getByRole('group', { name: 'Character presets' }).getByRole('button', { name: 'Chibi' }).click();
     // A fresh session has starter code, so generating asks to replace it once.
     await page.getByRole('dialog', { name: 'Start a character' })
       .getByRole('button', { name: 'Replace', exact: true }).click();
     await page.waitForFunction(
-      () => (window as unknown as { partwright: PW }).partwright.getCode().includes('@character v1'),
+      () => (window as unknown as { partwright: PW }).partwright.getCode().includes('@character v2'),
       { timeout: 60_000 },
     );
 
@@ -104,8 +104,90 @@ test.describe('Character Creator', () => {
     await expect(page.getByText(/Character saved/)).toBeVisible({ timeout: 60_000 });
 
     const code = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
-    expect(code).toContain('@character v1');
+    expect(code).toContain('@character v2');
     expect(code).toContain('headsTall');
+  });
+
+  test('Funko style + anime hair + held ball builds a manifold figure and the panel restores it', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-funko'));
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+    await expect(panel).toBeVisible();
+
+    // Style → Funko (the starter code asks to be replaced once).
+    await panel.getByRole('group', { name: 'Proportions' }).getByRole('button', { name: 'Funko' }).click();
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+    await expect(panel.getByRole('group', { name: 'Proportions' }).getByRole('button', { name: 'Funko' }))
+      .toHaveAttribute('aria-pressed', 'true');
+
+    // Hair → anime reveals the anime-only lock knobs.
+    await expect(panel.getByText('Lock shape')).toHaveCount(0);
+    await panel.getByRole('combobox', { name: 'Style', exact: true }).selectOption('anime');
+    await expect(panel.getByText('Lock shape')).toBeVisible();
+
+    // Holding → ball reveals the ball controls and hides the arm sliders.
+    await panel.getByRole('group', { name: 'Holding' }).getByRole('button', { name: 'Ball' }).click();
+    await expect(panel.getByText('Ball size')).toBeVisible();
+    await expect(panel.getByText('Arms out')).toHaveCount(0);
+
+    // Save builds + commits the figure.
+    await panel.getByRole('button', { name: 'Save to session' }).click();
+    await expect(page.getByText(/Character saved/)).toBeVisible({ timeout: 120_000 });
+
+    const out = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW & { getGeometryData: () => { isManifold?: boolean; triangleCount?: number } } }).partwright;
+      return { code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+    expect(out.code).toContain('@character v2');
+    expect(out.code).toContain("proportions: 'funko'");
+    expect(out.code).toContain("style: 'anime'");
+    expect(out.code).toContain('F.heldSphere(rig)');
+    expect(out.code).toContain("pattern: 'soccer'");
+    expect(out.code).toContain("return F.place(model, rig, { face: '+X' });");
+    expect(out.geo.isManifold).toBe(true);
+    expect(out.geo.triangleCount ?? 0).toBeGreaterThan(1000);
+
+    // getCharacterSpec reads the same spec back (UI ↔ API parity).
+    const read = await page.evaluate(() => (window as unknown as { partwright: { getCharacterSpec: () => { spec?: { body: { proportions: string }; hair: { style: string }; pose: { hold: { kind: string } } } } } }).partwright.getCharacterSpec());
+    expect(read.spec?.body.proportions).toBe('funko');
+    expect(read.spec?.hair.style).toBe('anime');
+    expect(read.spec?.pose.hold.kind).toBe('ball');
+
+    // Close + reopen: the controls restore from the @character header.
+    await panel.getByRole('button', { name: 'Close' }).click();
+    await expect(panel).toHaveCount(0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const reopened = page.getByRole('dialog', { name: 'Character Creator' });
+    await expect(reopened.getByRole('group', { name: 'Proportions' }).getByRole('button', { name: 'Funko' }))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect(reopened.getByRole('group', { name: 'Holding' }).getByRole('button', { name: 'Ball' }))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect(reopened.getByRole('combobox', { name: 'Style', exact: true })).toHaveValue('anime');
+    await expect(reopened.getByText('Lock shape')).toBeVisible();
+  });
+
+  test('buildCharacter validates every field and getCharacterSpec needs a header', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { getCharacterSpec: () => { error?: string } } }).partwright;
+      await pw.createSession('character-validate');
+      const bad = await pw.buildCharacter({ body: { proportions: 'anime' }, hair: { chunk: 9 } });
+      return { bad: bad.error ?? '', noHeader: pw.getCharacterSpec().error ?? '' };
+    });
+    expect(out.bad).toContain('body.proportions');
+    expect(out.bad).toContain('hair.chunk');
+    expect(out.noHeader).toContain('@character');
   });
 
   test('switching presets mid-build cancels the in-flight render (no stacking)', async ({ page }) => {
@@ -129,7 +211,7 @@ test.describe('Character Creator', () => {
     await page.getByRole('dialog', { name: 'Start a character' })
       .getByRole('button', { name: 'Replace', exact: true }).click();
     await page.waitForTimeout(1500);                       // let the build start
-    await panel.getByRole('button', { name: 'Chibi' }).click();   // switch mid-build
+    await panel.getByRole('group', { name: 'Character presets' }).getByRole('button', { name: 'Chibi' }).click();   // switch mid-build
 
     await page.waitForFunction(
       () => (window as unknown as { partwright: PW }).partwright.getCode().includes('headsTall: 3.2'),

@@ -380,7 +380,8 @@ partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotati
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
-await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
+await partwright.buildCharacter(spec, {save?, label?}) // No-code figure: generate a posed, painted figure from a spec (body {proportions:'realistic'|'chibi'|'funko', headScale} / pose {hold:{kind:'ball'}} / face {layout, eyeSize, mouth} / hair {style:'anime'|'mop'|…} / clothing / colors) -> {code, ...runAndSave result}, or {error} listing every invalid field. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
+partwright.getCharacterSpec()                         // Read the spec from the current code's // @character header (v1 migrates to v2) -> {spec, version} | {error}. Tweak + buildCharacter(spec) again.
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -953,6 +954,8 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 The user can attach reference photos via `partwright.setImages([...])`; they appear in the Attachments tab and Gallery. Photos are one **kind** of session attachment — the same panel also holds reference models, PDFs, and notes (`getAttachments`/`addAttachment`), all of which persist across a chat clear. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
 **Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
+
+**Figure from a photo (a person, a Funko / chibi toy) — fill a spec, don't write code.** Picking parameters costs far fewer tokens than writing and debugging figure code, and every spec build is valid and painted by construction. (1) View the photo once. (2) Fill in a CharacterSpec: `body.proportions` ('realistic' | 'chibi' | 'funko'), `headScale`, hair `style` ('anime' / 'mop' + knobs), clothing, `colors`, `pose.hold` for a ball. (3) Call `buildCharacter(spec)`. (4) Score with `photoMatch` (text only; a built figure faces +X, so azimuth 0 = front). (5) Adjust spec fields from its `worst[]` (`getCharacterSpec()` returns the current spec). (6) Repeat, looking at images only at checkpoints. (7) Hand-write code only for what the spec can't express (numbers, logos, trims). Full recipe: `/ai/figure.md#figure-from-a-photo--fill-a-spec-dont-write-code`.
 
 ## Iteration workflow
 
