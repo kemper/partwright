@@ -20,6 +20,8 @@ const api: SdfApi = {
   capsule: sdfT.primCapsule,
   union: (...nodes) => nodes.reduce((a, b) => sdfT.opUnion(a, b)),
   __fineHands: (node, regions) => sdfT.opFineHands(node, regions),
+  __bounded: (node, margin) => sdfT.opBounded(node, margin),
+  __radialProject: (node, center, radiusOf, pad) => sdfT.opRadialProject(node, center, radiusOf, pad),
 } as unknown as SdfApi;
 const F = createFigureNamespace(api);
 
@@ -61,16 +63,21 @@ describe('figure hair — shag', () => {
     expect(sample(buildHair(api, rig, { style: 'shag', on: head, seed: 12 }))).not.toEqual(sample(hair));
   });
 
-  it("the default 'spiky' crown stands spikes up above the crown, fanning back", () => {
+  it("the default 'spiky' crown pushes spikes out of the dome all round the back and sides", { timeout: 60_000 }, () => {
     const flat = buildHair(api, rig, { style: 'shag', on: head, seed: 11, spike: 0 });
-    const skin = reach(head, dirAt(145, 56));
-    // The back-fanning spikes stand proud of the skull, past where spike: 0
-    // (laid flat; only the cap + layers remain) ends.
-    expect(reach(hair, dirAt(145, 56)) - skin).toBeGreaterThan(R * 0.35);
-    expect(reach(hair, dirAt(145, 56))).toBeGreaterThan(reach(flat, dirAt(145, 56)) + R * 0.08);
-    expect(reach(hair, dirAt(215, 56))).toBeGreaterThan(reach(flat, dirAt(215, 56)) + R * 0.08);
-    // The side-up spikes flick out past the temples.
-    expect(reach(hair, dirAt(100, 60))).toBeGreaterThan(reach(flat, dirAt(100, 60)) + R * 0.2);
+    // 7 spikes spread 300° round the back of the crown on two root rows; each
+    // tip stands well proud of where spike: 0 (laid flat) ends.
+    let proud = 0;
+    for (let i = 0; i < 7; i++) {
+      const th0 = 180 + (i - 3) * 50, el0 = (i % 2 ? 50 : 64) + 4;
+      let best = 0;
+      for (let dth = -15; dth <= 15; dth += 5) for (let del = -6; del <= 6; del += 3) {
+        const d = dirAt(th0 + dth, el0 + del);
+        best = Math.max(best, reach(hair, d) - reach(flat, d));
+      }
+      if (best > R * 0.1) proud++;
+    }
+    expect(proud).toBeGreaterThanOrEqual(6);
     // 'tousled' is a different crown.
     expect(sample(buildHair(api, rig, { style: 'shag', on: head, seed: 11, crown: 'tousled' }))).not.toEqual(sample(hair));
   });

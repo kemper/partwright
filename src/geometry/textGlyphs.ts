@@ -29,8 +29,10 @@ const fontCache = new Map<FontVariant, Font>();
 let loadPromise: Promise<void> | null = null;
 
 export function sourceUsesManifoldText(code: string): boolean {
-  // Match api.text(, api.textSection(, api.Curves.text(, api.Curves.textSection(
-  return /\bapi\.(?:Curves\.)?textSection\s*\(/.test(code) ||
+  // Match api.text(, api.textSection(, api.Curves.text(, api.Curves.textSection(,
+  // and the figure library's `F.emboss('10', …)`, which lays text out too.
+  return /\bemboss\s*\(/.test(code) ||
+         /\bapi\.(?:Curves\.)?textSection\s*\(/.test(code) ||
          /\bapi\.(?:Curves\.)?text\s*\(/.test(code) ||
          /\bCurves\.textSection\s*\(/.test(code) ||
          /\bCurves\.text\s*\(/.test(code);
