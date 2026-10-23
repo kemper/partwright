@@ -47,24 +47,40 @@ If the caller asks for replicad, say so and stop rather than burning passes.
 
 ## The loop
 
-1. **Read the target + constraints.** Note the defining features (pose,
-   proportions, distinctive markings). If a starting file is named, read it;
+0. **Feature checklist first.** Before writing geometry, reduce the target to a
+   checklist of 5–10 defining, checkable features (proportions as fractions of
+   height, silhouette masses, placement of held objects / limbs, colours). If
+   the caller passed a checklist path, read it; otherwise look at the reference
+   ONCE, write the list there (`.plans/<slug>.checklist.md`), and return it in
+   your output. Every pass is judged against this list.
+1. **Read the target + constraints.** If a starting file is named, read it;
    otherwise author from scratch.
 2. **Write the snippet** to the path the caller specifies (default under
    `.plans/`), using the engine's idioms below.
-3. **Render headlessly** (no browser, ~2–3 s):
-   `node scripts/model-preview.mjs <file> --lang <engine> --png <file>.png --size 460`
-   It prints a JSON stat block (`componentCount`, `bbox`, `triangleCount`,
-   `isManifold`, `volume`, `genus`, `warnings`) and writes a 4-view PNG
-   (front / right / top / iso).
-4. **Judge twice — objective then subjective.**
-   - *Objective (from the JSON, cheap):* tri-count under the ~500k catalog
-     budget; `bbox` proportions match the brief; the engine's one-piece check.
-   - *Subjective (Read the PNG):* does it read as the subject? Check the iso and
-     front views for the defining features and for floating/disconnected bits.
-5. **Adjust and re-render.** Fix the biggest discrepancy each pass. Keep going
-   until likeness is good *and* the gates pass. Budget ~5–8 passes; if you
-   plateau, stop and report honestly what's still off.
+3. **Score headlessly** (no browser, ~2–3 s + build). With reference photos,
+   every pass is ONE call that builds once and scores every view as text:
+   `node scripts/model-preview.mjs <file> --lang <engine> --json --match-photo front.png@0,0 --match-photo back.png@180,0 [--match-pixel-aspect R] [--match-exclude base] [--match-bands 20]`
+   → `stats.photoMatch.silhouetteIoU` is the **score** (mean over the views;
+   one photo → that view's IoU); `stats.photoMatches[i].worst[]` and
+   `.outline[]` ("photo-only at bands 2–4 left: up to 3.1% of height (hair) →
+   grow") say where; `regions[].lowConfidence` marks parts the photo can't
+   separate — don't chase their size numbers; `--match-merge "jersey+ball"` or
+   `--match-ignore x` them instead. Read `warnings` (a subject < 300 px tall
+   makes sub-1% offsets noise; a busy backdrop may need `--match-mask`).
+   Without photos: `--png <file>.png --size 460` and judge the 4-view PNG.
+   Also check the JSON gates every pass: tri-count under the ~500k catalog
+   budget, `bbox` proportions, the engine's one-piece check.
+4. **Keep or revert — by the numbers.** Make ONE targeted change per pass (the
+   top `worst[]` / `outline[]` item that maps to a checklist feature). Keep it
+   only if the score did not drop beyond noise (~0.005) AND no checklist item
+   regressed; otherwise revert to the previous file and try the next item.
+   Track the score per pass in your notes.
+5. **Stop on plateau, not on a pass count.** Stop when the score gained less
+   than ~0.005 over the last 3 kept passes (or every candidate change was
+   reverted), and return — that is the caller's checkpoint for the
+   `model-critic` agent. Look at a PNG yourself only at checkpoints (every ~5
+   passes, or at the plateau) — not every pass; the score covers routine
+   passes. If the gates fail, fix them before anything else.
 
 ## Engine idioms & gates
 
@@ -141,6 +157,8 @@ function flattenBottom(BASE) {
 FINAL: <path to model file>
 PREVIEW: <path to .png>
 STATS: manifold=<bool> components=<n> tris=<n> bbox=<[x,y,z]>
+SCORE: <first → final silhouetteIoU (mean over views)>, <kept>/<tried> changes kept, stopped on <plateau|batch end|gates>
+CHECKLIST: <path> — <n>/<m> features met; misses: <short list>
 LIKENESS: <2–4 sentences — what reads well, what's approximated>
 TRADE-OFFS: <bullets — what's still off and the cheapest next tweak for each>
 ```
