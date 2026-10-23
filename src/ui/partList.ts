@@ -8,6 +8,7 @@
 // re-renders on every session-state change (the parts section also refreshes on
 // every mesh update via refreshObjectParts).
 
+import { eyeIconSVG, eyeOffIconSVG } from './icons';
 import { getState, onStateChange, type SessionState, type Part, type Version, type PartLayoutEntry } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
 import { buildPartTree, groupNames, type PartTreeNode } from './partTree';
@@ -38,6 +39,8 @@ export interface PartListCallbacks {
   getHighlightKey: () => string | null;
   /** Tint `part:<name>` / `piece:<n>` / `unlabeled` in the viewport; null clears. */
   onHighlight: (key: string | null) => void;
+  /** Hide or show the open object's `part:<name>` / `piece:<n>` in the viewport. */
+  onSetObjectPartHidden: (key: string, hidden: boolean) => void;
   /** Delete the open object's `part:<name>` or `piece:<n>` (writes it into the code). */
   onDeleteObjectPart: (key: string) => void | Promise<void>;
   /** Whether the open object's parts/pieces can be deleted (JS objects only). */
@@ -50,13 +53,13 @@ export interface PartListCallbacks {
  *  `partwright.listObjectParts()` (minus the object id/name). */
 export interface ObjectPartsView {
   /** api.label regions, in declaration order. `color` is the drawn colour. */
-  parts: { name: string; triangleCount: number; color?: string }[];
+  parts: { name: string; triangleCount: number; color?: string; hidden?: boolean }[];
   /** Labels the code declared that ended up with no triangles. */
   lostParts: string[];
   /** Triangles no part covers (0 when the object declares no parts). */
   unlabeledTriangleCount: number;
   /** Connected components; `part` names the part covering most of each. */
-  pieces: { index: number; triangleCount: number; part?: string }[];
+  pieces: { index: number; triangleCount: number; part?: string; hidden?: boolean }[];
 }
 
 let railEl: HTMLElement | null = null;
@@ -488,7 +491,7 @@ function buildObjectPartsSection(): HTMLElement {
     section.appendChild(n);
   };
   const deletable = cb.canDeleteObjectParts();
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; deleteLabel?: string; deleteConfirm?: string }) => {
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; hidden?: boolean; deleteLabel?: string; deleteConfirm?: string }) => {
     // The row wraps the select button and its delete ✕ — a button can't nest
     // inside another button.
     const row = document.createElement('div');
@@ -506,7 +509,7 @@ function buildObjectPartsSection(): HTMLElement {
     sw.style.background = opts.color ?? '#71717a';
     b.appendChild(sw);
     const label = document.createElement('span');
-    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '');
+    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '') + (opts.hidden ? ' opacity-50' : '');
     label.textContent = name;
     b.appendChild(label);
     const c = document.createElement('span');
@@ -518,6 +521,21 @@ function buildObjectPartsSection(): HTMLElement {
       cb.onHighlight(on ? null : key);
     });
     row.appendChild(b);
+    if (opts.hidden !== undefined) {
+      const hidden = opts.hidden;
+      const eye = iconBtn('', hidden ? 'Show in the viewport' : 'Hide in the viewport (view only — the code and exports keep it)');
+      eye.innerHTML = hidden ? eyeOffIconSVG() : eyeIconSVG();
+      eye.dataset.hideObjectPart = key;
+      eye.setAttribute('aria-pressed', String(hidden));
+      // A hidden row keeps its eye visible so it's obvious why the part is
+      // missing; otherwise it fades in on hover like the ✕.
+      if (!hidden) eye.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      eye.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cb.onSetObjectPartHidden(key, !hidden);
+      });
+      row.appendChild(eye);
+    }
     if (deletable && opts.deleteLabel && opts.deleteConfirm) {
       const { deleteLabel, deleteConfirm } = opts;
       const del = iconBtn('✕', deleteLabel); // ✕
@@ -547,6 +565,7 @@ function buildObjectPartsSection(): HTMLElement {
     item(`part:${p.name}`, p.name, p.triangleCount, {
       color: p.color,
       title: `Highlight part "${p.name}" (${p.triangleCount} triangles)`,
+      hidden: !!p.hidden,
       deleteLabel: 'Delete part',
       deleteConfirm: `Delete part "${p.name}"? This adds api.removePart(${JSON.stringify(p.name)}) to the top of the code and saves a new version — earlier versions keep the part.`,
     });
@@ -578,6 +597,7 @@ function buildObjectPartsSection(): HTMLElement {
       const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
       item(`piece:${piece.index}`, name, piece.triangleCount, {
         title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
+        hidden: !!piece.hidden,
         deleteLabel: 'Delete piece',
         deleteConfirm: `Delete piece ${piece.index + 1}${piece.part ? ` ("${piece.part}")` : ''}? This adds an api.removePiece([x, y, z]) line to the top of the code and saves a new version — earlier versions keep the piece.`,
       });

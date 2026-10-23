@@ -428,6 +428,7 @@ await partwright.reopenParts({importIndex?})  // re-open parts saved on an impor
 await partwright.acceptParts({label?, smoothEdges?})   // commit: parts become labels via api.importWithParts(i); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
+partwright.setObjectPartHidden(name | {piece}, hidden = true)  // Hide/show a part/piece in the viewport only (code, versions, exports keep it) -> {ok, hidden}
 await partwright.deleteObjectPart(name | {piece})  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,
 // createPart, changePart, renamePart, setPartGroup, deletePart, saveAllParts,
@@ -612,7 +613,9 @@ Three words, three different things — keep them straight, especially when a us
 - "Make a matching lid" (printed separately, versioned on its own) → `createObject('Lid')`.
 - **Label every meaningful feature you build** — it makes the parts list useful and lets the user say "make the handle thicker".
 
-`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, and the pieces, each named by the part covering most of it. `highlightObjectPart('handle')` tints a part in the viewport (the same as clicking it in the rail) so you can show the user which one you mean. Labels are surfaces, not volumes: a part fused into a solid can be highlighted or painted, but not hidden on its own.
+`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, and the pieces, each named by the part covering most of it. `highlightObjectPart('handle')` tints a part in the viewport (the same as clicking it in the rail) so you can show the user which one you mean. Labels are surfaces, not volumes: hiding a part fused into a solid (below) hides its surface, leaving an opening into the solid.
+
+**Hiding a part or piece** (the eye on its row in the rail, or `setObjectPartHidden('handle')` / `setObjectPartHidden({ piece: 1 }, false)`) is view-only: the triangles simply aren't drawn, so you can see inside or behind it. The code, saved versions, exports and `renderViews` are unchanged. A fused part leaves an opening where it was, since its surface is just gone from view. Hidden state is per tab and per object, survives re-runs, and resets piece hides when the pieces change. To take a part out of the model itself, delete it instead.
 
 **Deleting a part or piece** (the ✕ on its row in the rail, or `deleteObjectPart('handle')` / `deleteObjectPart({ piece: 1 })`) works on manifold-js objects and stays parametric — it writes one line at the top of the code and saves a version:
 

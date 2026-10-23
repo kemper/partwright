@@ -160,6 +160,76 @@ test.describe('Objects rail — parts and pieces', () => {
     expect(bad[2].ok).toBe(true);
   });
 
+  test('hides a part and a piece in the viewport without touching the code', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.goto('/editor');
+    await waitForEngine(page);
+    type PW = {
+      createSession(n: string): Promise<unknown>;
+      runAndSave(c: string, l: string): Promise<unknown>;
+      run(): Promise<unknown>;
+      getCode(): string;
+      listObjectParts(): { parts: { name: string; hidden?: boolean }[]; pieces: { hidden?: boolean }[] };
+      setObjectPartHidden(t: unknown, h?: boolean): { ok?: boolean; hidden?: string[]; error?: string };
+    };
+    await page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('Mug hide');
+      await pw.runAndSave(code, 'mug');
+    }, MUG);
+
+    const section = page.locator('#parts-rail #object-parts');
+    const codeBefore = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
+    // Triangles the live viewport geometry actually draws (non-degenerate).
+    const drawn = () => page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      const solid = vp.getMeshGroup().children[0] as unknown as { geometry: { index: { array: ArrayLike<number> } | null; attributes: { position: { array: ArrayLike<number>; count: number } } } };
+      const g = solid.geometry;
+      const p = g.attributes.position.array;
+      const n = g.index ? g.index.array.length / 3 : g.attributes.position.count / 3;
+      let c = 0;
+      for (let t = 0; t < n; t++) {
+        const i = g.index ? [g.index.array[t * 3], g.index.array[t * 3 + 1], g.index.array[t * 3 + 2]] : [t * 3, t * 3 + 1, t * 3 + 2];
+        const same = (a: number, b: number) => p[a * 3] === p[b * 3] && p[a * 3 + 1] === p[b * 3 + 1] && p[a * 3 + 2] === p[b * 3 + 2];
+        if (!(same(i[0], i[1]) && same(i[1], i[2]))) c++;
+      }
+      return c;
+    });
+    const all = await drawn();
+
+    // Eye on the handle row → hidden: fewer triangles drawn, row marked, code unchanged.
+    await section.locator('[data-object-part="part:handle"]').hover();
+    await section.locator('[data-hide-object-part="part:handle"]').click();
+    await expect(section.locator('[data-hide-object-part="part:handle"]')).toHaveAttribute('aria-pressed', 'true');
+    const handleHidden = await drawn();
+    expect(handleHidden).toBeLessThan(all);
+    let state = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    expect(state.parts.find(p => p.name === 'handle')?.hidden).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode())).toBe(codeBefore);
+    await page.mouse.move(1100, 900);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: 'test-results/object-parts-hidden.png' });
+
+    // It stays hidden across a re-run.
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.run());
+    await expect.poll(drawn).toBe(handleHidden);
+
+    // The console twin hides a piece too, and shows things again.
+    const r = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setObjectPartHidden({ piece: 1 }));
+    expect(r.hidden).toEqual(['part:handle', 'piece:1']);
+    expect(await drawn()).toBeLessThan(handleHidden);
+    await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      pw.setObjectPartHidden('handle', false);
+      pw.setObjectPartHidden({ piece: 1 }, false);
+    });
+    expect(await drawn()).toBe(all);
+    state = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    expect(state.parts.some(p => p.hidden)).toBe(false);
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setObjectPartHidden('nope'));
+    expect(bad.error).toContain('Unknown part');
+  });
+
   test('collapses, flags lost labels, and lists a second object', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1200 });
     await page.goto('/editor');
