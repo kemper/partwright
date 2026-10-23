@@ -6014,12 +6014,25 @@ async function main() {
     }
   }
 
-  /** Delete one part (an `api.label` region) or one piece (a separate solid)
-   *  of the open object. Writes an `api.removePart` / `api.removePiece` line at
-   *  the top of the code, re-runs, and saves a version, so the model stays
-   *  parametric and the deletion is undoable from the version history. Only
-   *  manifold-js objects can do this; anything that doesn't actually remove the
-   *  target (e.g. a part detected on an imported mesh) restores the old code. */
+  /** Why the open object's `part:<name>` / `piece:<n>` can't be deleted from
+   *  the object list, or null when it can. Shown as the disabled ✕'s tooltip,
+   *  so the reason is visible before anyone clicks. */
+  function objectPartDeleteBlocker(key: string): string | null {
+    const lang = getActiveLanguage();
+    if (key.startsWith('piece:') && lang === 'replicad') {
+      return 'BREP objects can\'t delete a separate piece yet — wrap it in BREP.label(shape, "name") and delete that part instead.';
+    }
+    if (key.startsWith('part:') && lang === 'voxel') return 'Voxel objects have no deletable parts.';
+    return null;
+  }
+
+  /** Delete one part (an `api.label` / `label()` / `BREP.label` region, or a
+   *  part detected on an import) or one piece (a separate solid) of the open
+   *  object. Writes a removal line at the top of the code (`api.removePart` /
+   *  `api.removePiece` in the JS engines, `remove_part` / `remove_piece` in
+   *  OpenSCAD), re-runs, and saves a version, so the model stays parametric and
+   *  the deletion is undoable from the version history. Anything that doesn't
+   *  actually remove the target restores the old code. */
   async function deleteObjectPartOrPiece(target: { part: string } | { piece: number }): Promise<
     { ok: true; removed: string; call: string; version?: { id: string; index: number; label: string }; saveWarning?: string }
     | { error: string }
@@ -6027,9 +6040,9 @@ async function main() {
     if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
     if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
     const lang = getActiveLanguage();
-    if (lang !== 'manifold-js') {
-      return { error: `Deleting a part or piece works on JS (manifold-js) objects; this object is ${lang}. Edit its code to remove it instead.` };
-    }
+    const blocker = objectPartDeleteBlocker('part' in target ? `part:${target.part}` : `piece:${target.piece}`);
+    if (blocker) return { error: blocker };
+    const syntax = lang === 'scad' ? 'scad' : 'js';
     const summary = currentObjectPartsSummary();
     const mesh = objectPartsMesh();
     if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
@@ -6039,7 +6052,7 @@ async function main() {
     if ('part' in target) {
       const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
       if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
-      call = removePartCall(part.name);
+      call = removePartCall(part.name, syntax);
       what = `part "${part.name}"`;
     } else {
       if (summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
@@ -6047,7 +6060,7 @@ async function main() {
       if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
       const point = pieceAnchorPoint(mesh, piece.triangles);
       if (!point) return { error: `Piece ${target.piece} has no triangles.` };
-      call = removePieceCall(point);
+      call = removePieceCall(point, syntax);
       what = `piece ${target.piece + 1}`;
     }
 
@@ -6068,7 +6081,7 @@ async function main() {
       ? !!after?.parts.some(p => p.name === target.part && p.triangles.size > 0)
       : (after?.pieces.length ?? 0) >= summary.pieces.length;
     if (stillThere) {
-      return restore(`Couldn't delete ${what} from code — it isn't created by an api.label(...) call in this object's code (e.g. it was detected on an imported mesh).`);
+      return restore(`Couldn't delete ${what} from code — the code doesn't create it in a way the removal line can reach.`);
     }
     const saved = await saveCurrentVersion(`delete ${what}`);
     return {
@@ -6301,7 +6314,9 @@ async function main() {
       const r = setObjectPartHidden(key, hide);
       if (typeof r === 'string') showToast(r, { variant: 'warn' });
     },
-    canDeleteObjectParts: () => getActiveLanguage() === 'manifold-js' && !isReadOnlyViewer() && !isSharedPreview(),
+    getObjectPartDelete: (key: string) => (isReadOnlyViewer() || isSharedPreview()
+      ? { show: false }
+      : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
     onDeleteObjectPart: async (key: string) => {
       setObjectPartHighlight(null);
       const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };

@@ -1,17 +1,19 @@
 // Code edits behind the object list's part/piece delete (✕). Deleting a part or
-// piece of a manifold-js object doesn't bake the mesh — it writes an
-// `api.removePart('name')` / `api.removePiece([x, y, z])` line at the top of the
-// code, so the model stays parametric and the deletion is visible (and undoable)
-// in the source. Pure string/array helpers so they unit-test in the vitest tier.
+// piece doesn't bake the mesh — it writes one line at the top of the code
+// (`api.removePart('name')` / `api.removePiece([x, y, z])` in the JS engines,
+// `remove_part("name");` / `remove_piece([x, y, z]);` in OpenSCAD), so the model
+// stays parametric and the deletion is visible (and undoable) in the source.
+// Pure string/array helpers so they unit-test in the vitest tier.
 
-/** The line that deletes the `api.label` part `name`. */
-export function removePartCall(name: string): string {
-  return `api.removePart(${JSON.stringify(name)});`;
+/** The line that deletes the part `name` (`'scad'` for OpenSCAD syntax). */
+export function removePartCall(name: string, lang: 'js' | 'scad' = 'js'): string {
+  return lang === 'scad' ? `remove_part(${JSON.stringify(name)});` : `api.removePart(${JSON.stringify(name)});`;
 }
 
 /** The line that deletes the separate piece touching `point`. */
-export function removePieceCall(point: readonly [number, number, number]): string {
-  return `api.removePiece([${point.map(formatCoord).join(', ')}]);`;
+export function removePieceCall(point: readonly [number, number, number], lang: 'js' | 'scad' = 'js'): string {
+  const xyz = `[${point.map(formatCoord).join(', ')}]`;
+  return lang === 'scad' ? `remove_piece(${xyz});` : `api.removePiece(${xyz});`;
 }
 
 function formatCoord(v: number): string {
