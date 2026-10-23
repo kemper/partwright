@@ -7,7 +7,7 @@ import { createServer } from 'vite';
 
 /** Boot Vite SSR and load the headless segmentation entry. Caller closes. */
 export async function loadSegmentModule() {
-  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   const mod = await server.ssrLoadModule('/src/tools/segmentMesh.ts');
   return { mod, close: () => server.close() };
 }

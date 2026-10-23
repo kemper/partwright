@@ -356,7 +356,7 @@ function installPublicFetchShim() {
 // preview() pays only the model build (~50-300ms) instead of ~2s of server
 // startup. Caller must close().
 export async function createPreviewSession() {
-  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   installPublicFetchShim();
   const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
   return {
