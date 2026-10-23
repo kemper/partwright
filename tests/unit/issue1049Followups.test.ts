@@ -6,10 +6,13 @@
 import { describe, expect, it } from 'vitest';
 import type { MeshData } from '../../src/geometry/types';
 import { findFacesKeyError } from '../../src/color/findFacesOptions';
-import { partBoundaryLoops, resamplePolyline } from '../../src/color/partBoundary';
+import { capPolylinePoints, partBoundaryLoops, resamplePolyline } from '../../src/color/partBoundary';
+import { addRegion, clearRegions, getRegions, redoLastRegion, removeLastRegion, runAsUndoGroup } from '../../src/color/regions';
+import { normalizeImportParts } from '../../src/import/importParts';
+import { randomWalkerDetector } from '../../src/segmentation/randomWalker';
 import { validPaintRefine } from '../../src/color/paintRefinePersist';
 import { buildPatternContext, computePatternColors, patternRefineRegion, type ColorPatternSpec, type RGB } from '../../src/color/colorPattern';
-import { buildRefinedMesh, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
+import { buildRefinedMesh, buildStrokeMesh, propagateTriColors, type BrushStroke } from '../../src/color/subdivide';
 import { computeMeshFeatures } from '../../src/segmentation/features';
 import { geodesicBall, growFromSeeds } from '../../src/segmentation/growth';
 import { creaseWatershedDetector, resolveSeeds } from '../../src/segmentation/detectors';
@@ -309,5 +312,115 @@ describe('smooth-paint refinement is crack-free (no T-junctions)', () => {
     const { mesh } = buildStrokeMesh(m, [stroke]);
     expect(mesh.numTri).toBeGreaterThan(m.numTri);
     expect(openEdges(mesh)).toBe(0);
+  });
+});
+
+describe('#1074 review follow-ups', () => {
+  it('a cached refinement gets the base mesh colours back through toRoot (voxel / coloured bases)', () => {
+    // A coloured base: two-tone sphere with the `_painted` mask, as a voxel
+    // grid or coloured import carries.
+    const base = uvSphere(10, 16, 32);
+    const colors = new Uint8Array(base.numTri * 3) as Uint8Array & { _painted?: Uint8Array };
+    const painted = new Uint8Array(base.numTri);
+    for (let t = 0; t < base.numTri; t++) {
+      const up = centroidZ(base, t) > 0;
+      colors.set(up ? [200, 30, 30] : [20, 40, 220], t * 3);
+      painted[t] = up ? 1 : 0;
+    }
+    colors._painted = painted;
+    const coloured: MeshData = { ...base, triColors: colors };
+    const stroke: BrushStroke = { samples: [[10, 0, 0], [7.07, 7.07, 0]], radius: 2, shape: 'circle', maxEdge: 2 / 16 };
+    const { mesh: live, childToParent } = buildStrokeMesh(coloured, [stroke]);
+    expect(live.triColors).toBeDefined();
+    // The cache stores the plain mesh (no colours) + toRoot …
+    const plain: MeshData = { vertProperties: live.vertProperties, triVerts: live.triVerts, numVert: live.numVert, numTri: live.numTri, numProp: live.numProp };
+    // … and restore rebuilds the colours exactly as the live refine had them.
+    const restored = propagateTriColors(coloured, plain, childToParent);
+    expect(Array.from(restored.triColors!)).toEqual(Array.from(live.triColors!));
+    const livePainted = (live.triColors as Uint8Array & { _painted?: Uint8Array })._painted!;
+    const restoredPainted = (restored.triColors as Uint8Array & { _painted?: Uint8Array })._painted!;
+    expect(Array.from(restoredPainted)).toEqual(Array.from(livePainted));
+  });
+
+  it('capPolylinePoints never returns more than the cap and keeps open-chain ends', () => {
+    const circle: V3[] = Array.from({ length: 1000 }, (_, i) => [Math.cos(i / 1000 * 2 * Math.PI), Math.sin(i / 1000 * 2 * Math.PI), 0]);
+    const len = 1000 * 2 * Math.sin(Math.PI / 1000);
+    for (const max of [2, 3, 7, 64, 256]) {
+      const closed = capPolylinePoints(circle, true, len, max);
+      expect(closed.length).toBeLessThanOrEqual(max);
+      expect(closed.length).toBeGreaterThanOrEqual(max - 1);
+      const open = capPolylinePoints(circle.slice(0, 500), false, len / 2, max);
+      expect(open.length).toBeLessThanOrEqual(max);
+      expect(open[0]).toEqual(circle[0]);
+      expect(open[open.length - 1]).toEqual(circle[499]);
+    }
+    expect(capPolylinePoints(circle.slice(0, 5), false, 1, 10)).toHaveLength(5);
+  });
+
+  it('grid seed landings match a brute-force nearest-triangle scan', () => {
+    const m = uvSphere(10, 24, 48);
+    const seg: SegMesh = { positions: m.vertProperties, triVerts: m.triVerts };
+    let s = 7;
+    const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+    const pts: V3[] = Array.from({ length: 40 }, (_, i) => {
+      const r = i < 30 ? 9 + 2 * rnd() : 30 * rnd(); // near the surface, then far / inside / outside
+      const th = Math.PI * rnd(), ph = 2 * Math.PI * rnd();
+      return [r * Math.sin(th) * Math.cos(ph), r * Math.sin(th) * Math.sin(ph), r * Math.cos(th)];
+    });
+    pts.push([100, 0, 0], [0, 0, 0]);
+    const got = seedLandings(seg.positions, seg.triVerts, pts);
+    pts.forEach((p, i) => {
+      let best = Infinity;
+      for (let t = 0; t < m.numTri; t++) {
+        const tri = [0, 1, 2].map((k) => { const v = m.triVerts[t * 3 + k] * 3; return [m.vertProperties[v], m.vertProperties[v + 1], m.vertProperties[v + 2]]; });
+        const q = closestOnTriangle(p, tri[0], tri[1], tri[2]);
+        best = Math.min(best, Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+      }
+      expect(got[i].distance).toBeCloseTo(best, 5);
+    });
+  });
+
+  it('accepted parts keep each pin\'s maxRadius and colour (normalizeImportParts)', () => {
+    const parts = normalizeImportParts({
+      names: ['a', 'b'], colors: ['#ff0000', null], triPart: Int32Array.from([0, 1]),
+      source: { detectorId: 'crease-watershed', params: {}, seeds: [
+        { label: 'a', point: [0, 0, 0], maxRadius: 6, color: '#AABBCC' },
+        { label: 'b', point: [1, 0, 0], auto: true, maxRadius: -2, color: 'red' },
+        { label: '', point: [0, 0, 0] },
+      ] },
+    }, 2)!;
+    expect(parts.source!.seeds).toEqual([
+      { label: 'a', point: [0, 0, 0], maxRadius: 6, color: '#aabbcc' },
+      { label: 'b', point: [1, 0, 0], auto: true },
+    ]);
+  });
+
+  it('regions added in one runAsUndoGroup undo and redo as one step', () => {
+    clearRegions();
+    const d = { kind: 'triangles', ids: [0] } as const;
+    addRegion('before', [1, 0, 0], 'paintbrush', d, new Set([0]));
+    runAsUndoGroup(() => {
+      addRegion('loop 1', [0, 1, 0], 'paintbrush', d, new Set([1]));
+      addRegion('loop 2', [0, 1, 0], 'paintbrush', d, new Set([2]));
+    });
+    expect(getRegions().map((r) => r.name)).toEqual(['before', 'loop 1', 'loop 2']);
+    removeLastRegion();
+    expect(getRegions().map((r) => r.name)).toEqual(['before']);
+    redoLastRegion();
+    expect(getRegions().map((r) => r.name)).toEqual(['before', 'loop 1', 'loop 2']);
+    removeLastRegion();
+    removeLastRegion();
+    expect(getRegions()).toHaveLength(0);
+    clearRegions();
+  });
+
+  it('random-walker honours a seed maxRadius', () => {
+    const m = strip();
+    const f = computeMeshFeatures(m);
+    const seeds = [{ label: 'collar', point: [0.05, 0.5, 0] as V3, maxRadius: 0.5 }, { label: 'shirt', point: [3.95, 0.5, 0] as V3 }];
+    const r = randomWalkerDetector.run(m, f, { params: { beta: 3, convexFactor: 0.2, maxIterations: 200, minIslandPct: 0 }, seeds });
+    let collar = 0;
+    for (let t = 0; t < f.triCount; t++) if (r.triPart[t] === 0) { collar++; expect(centroidX(m, t)).toBeLessThan(0.6); }
+    expect(collar).toBeGreaterThan(0);
   });
 });

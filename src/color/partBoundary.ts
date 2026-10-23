@@ -165,3 +165,16 @@ export function resamplePolyline(points: [number, number, number][], closed: boo
   if (tail[0] !== last[0] || tail[1] !== last[1] || tail[2] !== last[2]) out.push([last[0], last[1], last[2]]);
   return out;
 }
+
+/** At most `maxPts` points along a seam loop, evenly spaced (closed loops
+ *  are returned without the repeated first point, open chains keep both
+ *  ends). Loops already short enough come back unchanged. */
+export function capPolylinePoints(points: [number, number, number][], closed: boolean, length: number, maxPts: number): [number, number, number][] {
+  if (points.length <= maxPts) return points;
+  const pts = resamplePolyline(points, closed, length / (closed ? maxPts : Math.max(1, maxPts - 1)));
+  if (closed) pts.pop(); // the closing repeat of the first point
+  // Float drift can leave one extra sample: drop the one just before the
+  // (kept) last point of an open chain, or the last of a closed loop.
+  while (pts.length > maxPts) pts.splice(closed ? pts.length - 1 : pts.length - 2, 1);
+  return pts;
+}

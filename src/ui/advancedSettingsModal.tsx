@@ -781,13 +781,31 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
         <Field
-          label="Persist smooth-paint mesh up to"
+          label="Cache smooth-paint mesh up to"
           unit="tris"
-          tooltip="Smooth paint (brush strokes, smooth slabs/boxes/cylinders, smooth patterns) subdivides the mesh under its edges. That refined mesh is saved with the version so reopening skips rebuilding every smooth edge. Above this triangle count it is not saved (the version still saves; reopening rebuilds the edges, which can take a while). 0 = never save it. Costs roughly 20 bytes per triangle of storage."
+          tooltip="Smooth paint (brush strokes, smooth slabs/boxes/cylinders, smooth patterns) subdivides the mesh under its edges. That refined mesh is cached locally in this browser (never in exports or share links) so reopening a painted version skips rebuilding every smooth edge. Above this triangle count it is not cached (reopening rebuilds the edges, which can take a while). 0 = never cache. Costs roughly 20 bytes per triangle."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefinePersistMaxTriangles}
           value={c.renderer.paintRefinePersistMaxTriangles}
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'paintRefinePersistMaxTriangles', v)}
+        />
+        <Field
+          label="Smooth-paint mesh cache size"
+          unit="MB"
+          tooltip="Total size of the local smooth-paint mesh cache. When it is full, the least recently used meshes are dropped (their versions just rebuild their smooth edges on the next open)."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheMaxMB}
+          value={c.renderer.paintRefineCacheMaxMB}
+          min={0} max={4096} integer
+          onChange={v => set('renderer', 'paintRefineCacheMaxMB', v)}
+        />
+        <Field
+          label="Smooth-paint cache touch interval"
+          unit="min"
+          tooltip="Reopening a cached version marks its mesh as recently used at most this often (marking rewrites the entry). Lower = more precise least-recently-used eviction, more writes."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheTouchMinutes}
+          value={c.renderer.paintRefineCacheTouchMinutes}
+          min={0} max={10_080} integer
+          onChange={v => set('renderer', 'paintRefineCacheTouchMinutes', v)}
         />
         <Field
           label="probePixels batch limit"
@@ -1337,6 +1355,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paintStrokePathSpacing}
           min={0.05} max={1}
           onChange={v => set('ui', 'paintStrokePathSpacing', v)}
+        />
+        <Field
+          label="Boundary paint loop limit"
+          unit="loops"
+          hint="paintAlongBoundary paints at most this many seam loops."
+          tooltip="paintAlongBoundary paints one smooth stroke per seam loop between two parts. A noisy seam can break into many small loops; only the longest this many are painted and the rest are reported as skippedLoops."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.boundaryPaintMaxLoops}
+          value={c.ui.boundaryPaintMaxLoops}
+          min={1} max={200} integer
+          onChange={v => set('ui', 'boundaryPaintMaxLoops', v)}
         />
         <Field
           label="Tooltip delay"

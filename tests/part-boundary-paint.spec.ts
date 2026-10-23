@@ -1,7 +1,7 @@
 // #1049 follow-ups golden path: findFaces rejects an explicit undefined
 // filter; probePixels batches probes; part triangles + seam loops + a smooth
-// band painted along a seam (collar); the smooth-paint refined mesh persists
-// with the version so a reload restores it without a rebuild; seed preview,
+// band painted along a seam (collar); the smooth-paint refined mesh is cached
+// locally (content-keyed) so a reload restores it without a rebuild; seed preview,
 // capped seeds, focused/custom-angle renderParts and captioned compare sheets
 // on an imported mesh.
 
@@ -100,7 +100,7 @@ test.describe('Part boundaries, batch probes and persisted smooth paint (#1049)'
     savePng(dataUrl, 'test-results/1049-collar-band.png');
   });
 
-  test('the smooth-paint refined mesh persists with the version and a reload restores it', async ({ page }) => {
+  test('the smooth-paint refined mesh is cached locally and a reload restores it from the cache', async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto('/editor');
     await waitForApi(page);
@@ -113,19 +113,40 @@ test.describe('Part boundaries, batch probes and persisted smooth paint (#1049)'
       pw.paintStroke({ points: [[0, -6, 2], [0, 6, 2]], radius: 2, maxEdge: 0.3, color: [1, 0.6, 0.1] });
       const sv = await pw.saveVersion('painted') as { id: string };
       const db = await import('/src/storage/db.ts');
-      const v = await db.getVersionById(sv.id) as { paintRefine?: { key?: string; mesh?: { numTri?: number; vertProperties?: unknown }; toRoot?: unknown } } | null;
+      const v = await db.getVersionById(sv.id) as Record<string, unknown> | null;
       return {
         tris: (pw.getMesh() as { numTri: number }).numTri,
         regions: (pw.listRegions() as unknown as { triangles: number }[]).map((r) => r.triangles),
-        key: v?.paintRefine?.key ?? '',
-        persistedTris: v?.paintRefine?.mesh?.numTri ?? 0,
-        typed: v?.paintRefine?.mesh?.vertProperties instanceof Float32Array && v?.paintRefine?.toRoot instanceof Int32Array,
+        versionHasIt: !!v && 'paintRefine' in v,
       };
     });
     expect(saved.tris).toBeGreaterThan(12);
-    expect(saved.key).toMatch(/^r1-/);
-    expect(saved.persistedTris).toBe(saved.tris);
-    expect(saved.typed).toBe(true);
+    // Nothing rides on the version record any more…
+    expect(saved.versionHasIt).toBe(false);
+    // …the refined mesh goes to the local content-keyed cache (written
+    // best-effort after the save commits).
+    const readCache = () => page.evaluate(async () => {
+      const db = await import('/src/storage/db.ts');
+      const idb = await db.openPartwrightDB();
+      const txn = idb.transaction('paintRefineCache', 'readonly');
+      const rows = await new Promise<Record<string, unknown>[]>((res, rej) => {
+        const r = txn.objectStore('paintRefineCache').getAll();
+        r.onsuccess = () => res(r.result as Record<string, unknown>[]);
+        r.onerror = () => rej(r.error);
+      });
+      return rows.map((row) => ({
+        key: String(row.key),
+        tris: (row.mesh as { numTri: number }).numTri,
+        typed: (row.mesh as { vertProperties: unknown }).vertProperties instanceof Float32Array && row.toRoot instanceof Int32Array,
+        bytes: Number(row.bytes),
+      }));
+    });
+    await expect.poll(async () => (await readCache()).length, { timeout: 10_000 }).toBe(1);
+    const [entry] = await readCache();
+    expect(entry.key).toMatch(/^r\d+-/);
+    expect(entry.tris).toBe(saved.tris);
+    expect(entry.typed).toBe(true);
+    expect(entry.bytes).toBeGreaterThan(0);
 
     await page.reload();
     await waitForApi(page);
@@ -140,43 +161,33 @@ test.describe('Part boundaries, batch probes and persisted smooth paint (#1049)'
       return {
         tris: (pw.getMesh() as { numTri: number }).numTri,
         regions: (pw.listRegions() as unknown as { triangles: number }[]).map((r) => r.triangles),
-        restored: errorLog.getEntries().some((e) => /Restored smooth paint from the saved mesh/.test(e.message)),
+        restored: errorLog.getEntries().some((e) => /Restored smooth paint from the local mesh cache/.test(e.message)),
       };
     });
-    // The restore came from the persisted mesh, not a rebuild…
+    // The restore came from the cache, not a rebuild…
     expect(after.restored).toBe(true);
     // …and it is the same refined mesh and the same painted sets.
     expect(after.tris).toBe(saved.tris);
     expect(after.regions).toEqual(saved.regions);
 
-    // Export embeds it (schema 1.21, base64), share links strip it, and an
-    // import restores live typed arrays.
+    // Exports and share links carry no mesh (schema unchanged); an import
+    // loads and simply rebuilds / reuses the local cache.
     const io = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const exported = await pw.exportSessionData() as { data: unknown };
-      const payload = (typeof exported.data === 'string' ? JSON.parse(exported.data) : exported.data) as { partwright: string; versions: { paintRefine?: { key?: unknown; toRoot?: unknown } }[] };
-      const { trimForShare } = await import('/src/share/shareLink.ts');
-      const trimmed = trimForShare(payload as never) as { versions: Record<string, unknown>[] };
+      const payload = (typeof exported.data === 'string' ? JSON.parse(exported.data) : exported.data) as { partwright: string; versions: Record<string, unknown>[] };
       const imported = await pw.importSessionData(exported.data) as { sessionId?: string; error?: string };
-      const db = await import('/src/storage/db.ts');
-      const re = imported.sessionId ? await db.getSessionLatestVersion(imported.sessionId) as { paintRefine?: { key?: string; toRoot?: unknown; mesh?: { vertProperties?: unknown } } } | null : null;
       const { SCHEMA_VERSION } = await import('/src/storage/sessionManager.ts');
       return {
         schema: payload.partwright,
         expected: SCHEMA_VERSION,
-        exportedKey: typeof payload.versions.at(-1)?.paintRefine?.key === 'string',
-        exportedBase64: typeof payload.versions.at(-1)?.paintRefine?.toRoot === 'string',
-        sharedHasIt: trimmed.versions.some((v) => 'paintRefine' in v),
+        exportedHasIt: payload.versions.some((v) => 'paintRefine' in v),
         importError: imported.error ?? null,
-        reimportedTyped: re?.paintRefine?.toRoot instanceof Int32Array && re?.paintRefine?.mesh?.vertProperties instanceof Float32Array,
       };
     });
     expect(io.schema).toBe(io.expected);
-    expect(io.exportedKey).toBe(true);
-    expect(io.exportedBase64).toBe(true);
-    expect(io.sharedHasIt).toBe(false);
+    expect(io.exportedHasIt).toBe(false);
     expect(io.importError).toBeNull();
-    expect(io.reimportedTyped).toBe(true);
   });
 
   test('seed preview, capped seeds, focused renderParts and captioned comparisons on an import', async ({ page }) => {
@@ -234,5 +245,27 @@ return Manifold.cube([20, 20, 10]).add(Manifold.cube([10, 10, 10]).translate([5,
     expect(r.cmp.results[1].caption).toBe('2. crease-watershed · creaseWeight=4 growth=summed');
     savePng(r.focused.image!, 'test-results/1049-renderParts-focus.png');
     savePng(r.cmp.image!, 'test-results/1049-compare-captions.png');
+
+    // The cap survives accept → reopen → rerun (it is saved with the parts).
+    // Accept without smooth edges so the import keeps its triangles and the
+    // re-run result is comparable.
+    const cycle = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      const before = (pw.getPartDraft() as { parts: { name: string; triCount: number }[] }).parts.find((p) => p.name === 'top')!.triCount;
+      const acc = await pw.acceptParts({ smoothEdges: false }) as { error?: string };
+      const re = await pw.reopenParts() as { error?: string };
+      const rerun = await pw.editParts({ ops: [{ op: 'rerun' }] }) as { parts: { name: string; triCount: number }[]; seeds: { label: string; auto?: boolean; maxRadius?: number }[] };
+      return {
+        accError: acc.error ?? null,
+        reopenError: re.error ?? null,
+        before,
+        after: rerun.parts.find((p) => p.name === 'top')?.triCount ?? -1,
+        cap: rerun.seeds.find((s) => s.label === 'top' && !s.auto)?.maxRadius,
+      };
+    });
+    expect(cycle.accError).toBeNull();
+    expect(cycle.reopenError).toBeNull();
+    expect(cycle.cap).toBe(6);
+    expect(cycle.after).toBe(cycle.before);
   });
 });

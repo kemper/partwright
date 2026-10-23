@@ -440,7 +440,7 @@ await partwright.deleteObjectPart(name | {piece})  // Delete a part/piece of the
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
 partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
-partwright.probePixels([[x,y], ...], view)                                // batch: many pixels, one camera -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount}
+partwright.probePixels([[x,y], ...], view)                                // batch: many pixels, one camera -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds on any miss; null = model not in view)
 partwright.paintConnected({seed, maxDeviationDeg?, color, name?})         // BFS-flood by seed-normal deviation (organic meshes)
 partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill (edge-bounded)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant

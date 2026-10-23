@@ -30,7 +30,7 @@
 // bounds the time) and supplies reachability: triangles in a seedless piece
 // are dropped from the system, which keeps it non-singular.
 
-import { AbortedError, growFromSeeds } from './growth';
+import { AbortedError, geodesicBall, growFromSeeds } from './growth';
 import { resolveSeeds } from './detectors';
 import { absorbSmallRegions, adjacencyFromPairs } from '../geometry/triSetOps';
 import type { DetectorResult, MeshFeatures, PartDetector, SegMesh, VertexCostField } from './types';
@@ -247,7 +247,7 @@ export const randomWalkerDetector: PartDetector = {
   ],
   run(mesh: SegMesh, f: MeshFeatures, ctx): DetectorResult {
     const t0 = performance.now();
-    const { names, seedTris, seedLabels } = resolveSeeds(f, ctx.seeds, ctx.allow, 'drop');
+    const { names, seedTris, seedLabels, seedMaxRadius } = resolveSeeds(f, ctx.seeds, ctx.allow, 'drop');
     if (names.length === 0) {
       throw new Error(ctx.allow
         ? 'No seeds fall inside the area being detected (focused part / unlocked parts) — place a seed there.'
@@ -272,7 +272,7 @@ export const randomWalkerDetector: PartDetector = {
     ctx.progress?.(0, 'Finding reachable surface…');
     const warm = growFromSeeds(f, seedTris, seedLabels, {
       growth: 'hybrid', creaseQuantumDeg: 5, creaseWeight: 1,
-      allow: ctx.allow, signal: ctx.signal,
+      allow: ctx.allow, signal: ctx.signal, seedMaxRadius,
       progress: (frac) => ctx.progress?.(0.05 * frac, 'Finding reachable surface…'),
     }).triLabel;
     const free = new Uint8Array(n);
@@ -313,6 +313,20 @@ export const randomWalkerDetector: PartDetector = {
       iterations.push(res.iterations); residuals.push(+res.residual.toExponential(2));
     }
 
+    // Per-seed `maxRadius`: a label whose seeds are ALL capped may only take
+    // triangles within one of their geodesic balls (null = unrestricted).
+    const reach: (Uint8Array | null)[] = names.map((_, k) => {
+      let mask: Uint8Array | null = null;
+      for (let i = 0; i < seedTris.length; i++) {
+        if (seedLabels[i] !== k) continue;
+        if (!Number.isFinite(seedMaxRadius[i])) return null;
+        const ball = geodesicBall(f, seedTris[i], seedMaxRadius[i], ctx.allow);
+        if (!mask) mask = ball;
+        else for (let t = 0; t < n; t++) mask[t] |= ball[t];
+      }
+      return mask;
+    });
+
     // Normalise (a truncated solve doesn't sum to 1) and take the argmax.
     ctx.progress?.(0.95, 'Assigning…');
     const triPart = new Int32Array(n).fill(-1);
@@ -322,6 +336,7 @@ export const randomWalkerDetector: PartDetector = {
       for (let k = 0; k < K; k++) {
         const v = prob[k][t];
         sum += v;
+        if (reach[k] && !reach[k]![t]) continue;
         if (v > bestP) { bestP = v; best = k; }
       }
       if (sum > 0) for (let k = 0; k < K; k++) prob[k][t] /= sum;
@@ -338,6 +353,8 @@ export const randomWalkerDetector: PartDetector = {
       // Absorption may pull unassigned or outside triangles in — keep the
       // allow contract and the unreachable triangles unassigned.
       for (let t = 0; t < n; t++) if ((ctx.allow && !ctx.allow[t]) || warm[t] < 0) triPart[t] = -1;
+      // …and the seed radius caps.
+      for (let t = 0; t < n; t++) { const k = triPart[t]; if (k >= 0 && reach[k] && !reach[k]![t]) triPart[t] = -1; }
     }
 
     let unreached = 0;

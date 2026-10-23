@@ -1,16 +1,17 @@
-// Persisted smooth-paint refinement (schema 1.21) — types + validation, pure.
+// Cached smooth-paint refinement — types + validation, pure.
 //
 // Smooth paint (brush strokes; smooth slab / box / cylinder / pattern regions)
 // subdivides the mesh under its edges. Reopening a version used to rebuild
 // that subdivision from the descriptors every time — tens of seconds on a
-// scan with many strokes. Like `Version.surfaceTexture`, the result is now
-// saved with the version: the refined mesh plus `toRoot` (each refined
+// scan with many strokes. The result is now cached LOCALLY (IndexedDB
+// `paintRefineCache`, LRU to a byte budget; never on the version record, in
+// exports or in share links): the refined mesh plus `toRoot` (each refined
 // triangle's source triangle on the run's base mesh, which carries labels,
-// parts and explicit triangle ids across), under a content KEY of the base
-// mesh + the refine descriptors (+ the run's label sizes, which pattern
-// scopes depend on). On load a matching key restores the mesh directly; any
-// mismatch (geometry, descriptors or labels changed, or the key scheme
-// evolved) just rebuilds, so a stale entry can never paint the wrong mesh.
+// parts, explicit triangle ids and the base's per-triangle colours across),
+// under a content KEY of the refine algorithm version + the base mesh (incl.
+// colours) + the refine descriptors + the run's label membership. A matching
+// key restores the mesh directly; any mismatch just rebuilds, so a stale
+// entry can never paint the wrong mesh.
 
 export interface PersistedPaintRefine {
   key: string;

@@ -131,6 +131,12 @@ const MAX_PASSES = 16;
  *  rather than freeze. */
 const MAX_REFINED_TRIANGLES = 5_000_000;
 
+/** Version of the refinement algorithm (passes, T-junction repair, clip).
+ *  Part of the smooth-paint cache key (main.ts paintRefineKey): bump it
+ *  whenever a change here alters the refined mesh for the same inputs, so
+ *  meshes cached by an older build are rebuilt instead of reused. */
+export const REFINE_ALGO_VERSION = 2;
+
 /** Boundary-clip snap tolerance (fraction of an edge). When the `field = 0`
  *  contour crosses an edge within this fraction of an endpoint, the crossing is
  *  snapped exactly onto that vertex instead of spawning a near-coincident new
@@ -1369,6 +1375,14 @@ function closeTJunctions(
 ): { mesh: MeshData; childToParent: Int32Array } | null {
   if (splits.size === 0) return null;
   const { vertProperties, triVerts, numVert, numTri, numProp: P } = mesh;
+  // Only a triangle with two corners on split edges can carry a hanging
+  // vertex: mark those endpoints so the (large) untouched rest of the mesh
+  // skips the chain lookups.
+  const onSplit = new Uint8Array(numVert);
+  for (const k of splits.keys()) {
+    onSplit[Math.floor(k / 0x4000000)] = 1;
+    onSplit[k % 0x4000000] = 1;
+  }
   // Hanging points strictly inside edge (a → b), in order from a to b.
   const chain = (a: number, b: number, out: number[]): void => {
     const m = splits.get(splitKey(a, b));
@@ -1386,6 +1400,11 @@ function closeTJunctions(
   const c01: number[] = [], c12: number[] = [], c20: number[] = [];
   for (let t = 0; t < numTri; t++) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    if (onSplit[v0] + onSplit[v1] + onSplit[v2] < 2) {
+      outTris.push(v0, v1, v2);
+      childParent.push(t);
+      continue;
+    }
     c01.length = 0; c12.length = 0; c20.length = 0;
     chain(v0, v1, c01); chain(v1, v2, c12); chain(v2, v0, c20);
     const sides = (c01.length ? 1 : 0) + (c12.length ? 1 : 0) + (c20.length ? 1 : 0);
@@ -1417,6 +1436,8 @@ function closeTJunctions(
     }
   }
   if (!changed) return null;
+  // Same OOM guard as the passes: past the ceiling keep the T-junctions.
+  if (outTris.length / 3 > MAX_REFINED_TRIANGLES) return null;
   const totalVert = numVert + extra.length / P;
   const vp = new Float32Array(totalVert * P);
   vp.set(vertProperties.subarray(0, numVert * P), 0);
@@ -1561,7 +1582,7 @@ function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32
  *  coloured model) keep its colours through paint subdivision instead of the
  *  refined triangles reverting to the default shade. No-op when the base carries
  *  no `triColors`, or when nothing was refined (output === base). */
-function propagateTriColors(base: MeshData, refined: MeshData, childToParent: Int32Array): MeshData {
+export function propagateTriColors(base: MeshData, refined: MeshData, childToParent: Int32Array): MeshData {
   const src = base.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
   if (!src || refined === base) return refined;
   const n = refined.numTri;

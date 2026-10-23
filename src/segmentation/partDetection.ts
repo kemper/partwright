@@ -803,7 +803,12 @@ export function createPartDetection(host: PartDetectionHost) {
       const imports = host.getImports();
       const m = imports[d.importIndex];
       const source: NonNullable<ImportedMeshParts['source']> = {
-        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
+        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => ({
+          label: x.label, point: x.point,
+          ...(x.auto ? { auto: true } : {}),
+          ...(x.color ? { color: x.color } : {}),
+          ...(x.maxRadius !== undefined ? { maxRadius: x.maxRadius } : {}),
+        })),
       };
       let parts: ImportedMeshParts = {
         names: s.parts.map((p) => p.name),

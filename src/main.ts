@@ -37,7 +37,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
-import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -182,7 +182,7 @@ import type { MeshData, MeshResult, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
 import { probeAtXY, probeRay, probePixel, probePixels, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
 import { findFacesKeyError } from './color/findFacesOptions';
-import { partBoundaryLoops, resamplePolyline } from './color/partBoundary';
+import { capPolylinePoints, partBoundaryLoops, resamplePolyline } from './color/partBoundary';
 import { validPaintRefine, type PersistedPaintRefine } from './color/paintRefinePersist';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
@@ -223,13 +223,13 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -1673,21 +1673,60 @@ async function refineForRehydrate(
   }
 }
 
-/** Content key of a smooth-paint refinement: the base mesh's content, the
- *  refine-driving descriptors (in region order) and the run's label sizes
- *  (pattern scopes resolve through labels). Same inputs → same refined mesh,
- *  so a persisted refine under this key can stand in for the rebuild. */
-function paintRefineKey(base: MeshData, refineDescriptors: RegionDescriptor[]): string {
-  const labels = currentLabelMap ? [...currentLabelMap.entries()].map(([k, v]) => `${k}:${v.size}`).sort().join(',') : '';
-  return `r1-${simpleHash(`${meshContentKey(base)}|${JSON.stringify(refineDescriptors)}|${labels}`)}`;
+/** FNV-1a over every label's name and its SORTED triangle ids (membership,
+ *  not just size — two runs whose labels cover different triangles of the
+ *  same counts must key apart). Memoized per label map. */
+const labelHashCache = new WeakMap<Map<string, Set<number>>, string>();
+function labelMembershipHash(labels: Map<string, Set<number>> | null): string {
+  if (!labels) return '';
+  const hit = labelHashCache.get(labels);
+  if (hit !== undefined) return hit;
+  let h = 0x811c9dc5;
+  const mix = (x: number) => { h ^= x & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 8) & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 16) & 0xff; h = Math.imul(h, 0x01000193); h ^= x >>> 24; h = Math.imul(h, 0x01000193); };
+  for (const name of [...labels.keys()].sort()) {
+    for (let i = 0; i < name.length; i++) mix(name.charCodeAt(i));
+    mix(0xffffffff);
+    const ids = Int32Array.from(labels.get(name)!).sort();
+    for (let i = 0; i < ids.length; i++) mix(ids[i]);
+    mix(0xfffffffe);
+  }
+  const out = `${labels.size}-${(h >>> 0).toString(36)}`;
+  labelHashCache.set(labels, out);
+  return out;
 }
 
-/** The smooth-paint refined mesh to persist with a save (schema 1.21), or
- *  undefined. Only when the live working mesh IS the refinement of the
- *  current refine set over the run's base mesh (no stroke in flight, no
- *  smooth image stamp — those replay on top of the restored mesh — and under
- *  the size cap). */
-function currentPaintRefineForSave(): PersistedPaintRefine | undefined {
+/** Content key of a smooth-paint refinement: the refine algorithm version,
+ *  the base mesh's content (incl. its colours), the refine-driving
+ *  descriptors (in region order) and the run's label membership (pattern
+ *  scopes resolve through labels). Same inputs → same refined mesh, so a
+ *  cached refine under this key can stand in for the rebuild. */
+function paintRefineKey(base: MeshData, refineDescriptors: RegionDescriptor[]): string {
+  return `r${REFINE_ALGO_VERSION}-${simpleHash(`${meshContentKey(base)}|${JSON.stringify(refineDescriptors)}|${labelMembershipHash(currentLabelMap)}`)}`;
+}
+
+/** Keys this tab already wrote to (or read from) the local refine cache, so
+ *  repeated saves of an unchanged painted model don't rewrite the entry. */
+const knownCachedRefines = new Set<string>();
+
+/** Cache the live smooth-paint refined mesh in the local IndexedDB cache
+ *  (`paintRefineCache`), keyed by content. Best-effort and fire-and-forget,
+ *  in its own transaction AFTER any version save has committed: a quota error
+ *  just skips caching, it never fails the save. Called after saves and after a
+ *  restore that had to rebuild (an imported / evicted session caches once). */
+function cacheCurrentPaintRefine(): void {
+  const r = currentPaintRefineForCache();
+  if (!r || knownCachedRefines.has(r.key)) return;
+  knownCachedRefines.add(r.key);
+  void putPaintRefineCache(r, getConfig().renderer.paintRefineCacheMaxMB * 1024 * 1024).then((ok) => {
+    if (!ok) knownCachedRefines.delete(r.key);
+  });
+}
+
+/** The smooth-paint refined mesh worth caching, or undefined. Only when the
+ *  live working mesh IS the refinement of the current refine set over the
+ *  run's base mesh (no stroke in flight, no smooth image stamp — those replay
+ *  on top of the restored mesh — and under the size cap). */
+function currentPaintRefineForCache(): PersistedPaintRefine | undefined {
   const base = paintBaseMesh;
   const mesh = currentMeshData;
   if (!base || !mesh || mesh === base) return undefined;
@@ -1704,30 +1743,30 @@ function currentPaintRefineForSave(): PersistedPaintRefine | undefined {
   };
 }
 
-/** A persisted refinement that matches `base` + these descriptors, ready to
- *  use in place of refineForRehydrate — or null (absent, stale, malformed). */
-function persistedRefineFor(
-  persisted: unknown,
+/** A cached refinement of `base` under these descriptors, ready to use in
+ *  place of refineForRehydrate — or null (miss, stale, malformed). The base
+ *  mesh's per-triangle colours (`triColors` + `_painted`, e.g. a voxel or
+ *  coloured import) aren't cached; they're carried onto the refined mesh
+ *  through `toRoot` exactly as buildRefinedMesh does. */
+async function cachedRefineFor(
   base: MeshData,
   descriptors: RegionDescriptor[],
-): { mesh: MeshData; parentToChildren: Map<number, number[]>; strokeTris: null } | null {
-  if (!persisted) return null;
+): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]>; strokeTris: null } | null> {
   const refine = descriptors.filter(descriptorRefines);
-  if (refine.length === 0 || !validPaintRefine(persisted, base.numTri)) return null;
-  if (persisted.key !== paintRefineKey(base, refine)) return null;
-  const m = persisted.mesh;
-  const mesh: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
-  const parentToChildren = childrenByParent(persisted.toRoot);
+  if (refine.length === 0) return null;
+  const key = paintRefineKey(base, refine);
+  const hit = await getPaintRefineCache(key, getConfig().renderer.paintRefineCacheTouchMinutes * 60_000);
+  if (!hit || hit.key !== key || !validPaintRefine(hit, base.numTri)) return null;
+  const m = hit.mesh;
+  const plain: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+  const mesh = propagateTriColors(base, plain, hit.toRoot);
+  const parentToChildren = childrenByParent(hit.toRoot);
   recordMeshLineage(mesh, base, parentToChildren);
+  knownCachedRefines.add(key);
   return { mesh, parentToChildren, strokeTris: null };
 }
 
-async function rehydrateColorRegions(
-  geometryData: Record<string, unknown> | null,
-  /** The version's persisted smooth-paint refinement (Version.paintRefine):
-   *  restores the refined mesh directly when its key still matches. */
-  persistedRefine?: unknown,
-): Promise<{ carried: string[]; dropped: string[] }> {
+async function rehydrateColorRegions(geometryData: Record<string, unknown> | null): Promise<{ carried: string[]; dropped: string[] }> {
   const gen = ++rehydrateGeneration;
   // Drop any in-flight worker job before we wipe + replace the region store;
   // otherwise its continuation could overwrite the freshly-rehydrated mesh
@@ -1771,13 +1810,16 @@ async function rehydrateColorRegions(
   // The refine below can take a while. Keep the version's descriptors in the
   // store meanwhile (unresolved), so a save in that window still writes them
   // and a takeover leaves them for the next run to resolve.
-  const restored = smoothImageStamps.length === 0 ? persistedRefineFor(persistedRefine, base, standardDescriptors) : null;
-  const waits = !restored && standardDescriptors.some(descriptorRefines);
+  const waits = standardDescriptors.some(descriptorRefines);
   if (waits) stageUnresolvedColorRegions(geometryData);
+  // A smooth image stamp replays on top of the standard refinement, so such a
+  // version is never cached (see currentPaintRefineForCache) — skip the lookup.
+  const restored = waits && smoothImageStamps.length === 0 ? await cachedRefineFor(base, standardDescriptors) : null;
+  if (gen !== rehydrateGeneration) return report;
   const refined = restored ?? await refineForRehydrate(base, standardDescriptors, gen);
   if (!refined) return report;
   if (restored) {
-    errorLog.capture({ level: 'info', source: 'storage', message: `Restored smooth paint from the saved mesh (${restored.mesh.numTri.toLocaleString()} triangles) — no rebuild needed.` });
+    errorLog.capture({ level: 'info', source: 'storage', message: `Restored smooth paint from the local mesh cache (${restored.mesh.numTri.toLocaleString()} triangles) — no rebuild needed.` });
   }
   if (waits) {
     suspendReconcile = true;
@@ -1860,6 +1902,9 @@ async function rehydrateColorRegions(
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
   markMeshRefineState();
+  // Rebuilt from scratch (an imported, evicted or never-cached version): cache
+  // it so the next open restores instantly.
+  if (waits && !restored) cacheCurrentPaintRefine();
 
   syncLockState();
 
@@ -2597,7 +2642,8 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), paintRefine: currentPaintRefineForSave() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
     // away and back doesn't trigger a recompile. The code/geometry didn't
@@ -7073,7 +7119,7 @@ async function main() {
     }
     lastFramedSessionId = getState().session?.id ?? null;
 
-    await rehydrateColorRegions(version.geometryData, version.paintRefine);
+    await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     await restoreAttachmentsForActiveSession();
   }
@@ -13017,7 +13063,7 @@ async function main() {
         setValue(nv.code);
         currentParamValues = { ...(nv.paramValues ?? {}) };
         await runCodeSync(nv.code, { preserveCamera: true });
-        await rehydrateColorRegions(nv.geometryData, nv.paintRefine);
+        await rehydrateColorRegions(nv.geometryData);
         applyVersionAnnotations(nv);
       }
       return {
@@ -13078,7 +13124,7 @@ async function main() {
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
       await runCodeSync(version.code, { preserveCamera: true });
-      await rehydrateColorRegions(version.geometryData, version.paintRefine);
+      await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
       // Labels are runtime state from the just-executed code. Surface
       // whether any were registered so callers can decide between
@@ -13118,7 +13164,7 @@ async function main() {
         // renders with the values it was saved at (matches loadVersion).
         currentParamValues = { ...(version.paramValues ?? {}) };
         await runCodeSync(version.code, { preserveCamera: true });
-        await rehydrateColorRegions(version.geometryData, version.paintRefine);
+        await rehydrateColorRegions(version.geometryData);
         applyVersionAnnotations(version);
       }
       return version ? { id: version.id, index: version.index, label: version.label } : null;
@@ -13168,7 +13214,8 @@ async function main() {
       }
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), paintRefine: currentPaintRefineForSave() });
+      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -13349,7 +13396,8 @@ async function main() {
       const annotationsCarried = (parent.annotations?.length ?? 0) > 0;
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), paintRefine: currentPaintRefineForSave() });
+      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -14109,8 +14157,9 @@ async function main() {
      *  probePixel). Returns `{ results, hitCount, missCount, modelPixelBounds? }`
      *  with one result per pixel in input order: `{ pixel, hit: true, point,
      *  normal, distance, triangleId }` or `{ pixel, hit: false }`.
-     *  `modelPixelBounds` (where the model projects) is present when any
-     *  pixel missed. Use it to trace a stroke or a seam from a render: pick
+     *  `modelPixelBounds` (where the model projects, `{minX, minY, maxX,
+     *  maxY}`) is present when any pixel missed; it is `null` when the model
+     *  doesn't project into the view at all (off-screen / degenerate mesh). Use it to trace a stroke or a seam from a render: pick
      *  10–50 pixels along it, probe them all, pass the points on. */
     probePixels(pixels: unknown, view?: unknown) {
       return guard(() => {
@@ -14570,14 +14619,17 @@ async function main() {
         ids.push(id);
       }
 
-      const triangles = new Set<number>(ids);
-      if (withinPart !== undefined) return commitPaintFromSet(triangles, color as [number, number, number], name, 'paintbrush', withinPart, 'paintFaces');
+      if (withinPart !== undefined) return commitPaintFromSet(new Set<number>(ids), color as [number, number, number], name, 'paintbrush', withinPart, 'paintFaces');
+      // Stored ids index the BASE mesh (that is how a reload / re-run resolves
+      // a `triangles` region), so ids of a refined paint mesh are recorded as
+      // their base triangles — and painted as such now, so live == reload.
+      const { ids: baseIds, live: triangles } = baseTriangleIds(new Set<number>(ids));
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'paintbrush',
-        { kind: 'triangles', ids: [...triangles] },
+        { kind: 'triangles', ids: baseIds },
         triangles,
       );
 
@@ -14645,9 +14697,7 @@ async function main() {
           between: [r.a, r.b],
           count: loops.length,
           loops: loops.map((l) => {
-            const pts = l.points.length > maxPts
-              ? resamplePolyline(l.points, l.closed, l.length / maxPts).slice(0, l.closed ? -1 : undefined)
-              : l.points;
+            const pts = capPolylinePoints(l.points, l.closed, l.length, maxPts);
             const round = (p: [number, number, number]) => p.map((c) => Math.round(c * 1e4) / 1e4) as [number, number, number];
             return { closed: l.closed, length: +l.length.toFixed(4), pointCount: l.points.length, points: pts.map(round) };
           }),
@@ -14681,13 +14731,17 @@ async function main() {
         const name = assertString(o.name, 'paintAlongBoundary(opts).name', { optional: true }) ?? `${r.a}/${r.b} band`;
         const loops = partBoundaryLoops(r.mesh, r.setA, r.setB);
         if (loops.length === 0) throw new ValidationError(`paintAlongBoundary: parts "${r.a}" and "${r.b}" do not touch — there is no seam between them.`);
-        const kept = loops.filter((l, i) => i === 0 || l.length >= width);
+        // Loops come longest first: drop seam specks shorter than the band,
+        // then keep at most the configured number of loops (each is one
+        // main-thread stroke).
+        const kept = loops.filter((l, i) => i === 0 || l.length >= width).slice(0, getConfig().ui.boundaryPaintMaxLoops);
         const radius = side === 'both' ? width / 2 : width;
         const withinPart = side === 'a' ? r.a : side === 'b' ? r.b : undefined;
         const step = radius * getConfig().ui.paintStrokePathSpacing;
         const regions: { id: number; name: string; triangles: number }[] = [];
         const failures: string[] = [];
-        kept.forEach((l, i) => {
+        // All loops are one undo step.
+        runAsUndoGroup(() => kept.forEach((l, i) => {
           const res = partwrightAPI.paintStroke({
             points: resamplePolyline(l.points, l.closed, step),
             radius,
@@ -14702,7 +14756,7 @@ async function main() {
           });
           if ('error' in res) failures.push(String(res.error));
           else regions.push({ id: res.id, name: res.name, triangles: res.triangles });
-        });
+        }));
         if (regions.length === 0) throw new ValidationError(`paintAlongBoundary: nothing was painted — ${failures[0] ?? 'the stroke missed the surface'}`);
         return {
           regions,
@@ -17236,7 +17290,7 @@ async function main() {
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
-        'probePixels':     { signature: 'probePixels([[x,y] | {x,y}, ...], view) -- Batch probePixel: many pixels of one rendered view in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?}', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixels':     { signature: 'probePixels([[x,y] | {x,y}, ...], view) -- Batch probePixel: many pixels of one rendered view in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds present on any miss; null = model not in view)', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
@@ -18134,12 +18188,13 @@ async function main() {
   ) {
     if (!currentMeshData) return { error: 'No geometry loaded' };
     const regionName = name ?? `Region ${getRegions().length + 1}`;
+    const base = baseTriangleIds(triangles);
     const region = addRegion(
       regionName,
       color,
       source,
-      scopedDescriptor({ kind: 'triangles', ids: [...triangles] }, withinPart),
-      triangles,
+      scopedDescriptor({ kind: 'triangles', ids: base.ids }, withinPart),
+      base.live,
     );
     const emptyErr = emptyScopeError(region, withinPart, method);
     if (emptyErr) return emptyErr;
@@ -18147,6 +18202,24 @@ async function main() {
     syncLockState();
     const stats = regionTriangleStats(region.triangles, currentMeshData);
     return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** A `triangles` descriptor stores BASE-mesh ids (rehydrate and re-runs
+   *  resolve it through the base → refined map). When the paint mesh has been
+   *  refined by smooth paint, map the given current-mesh ids to their base
+   *  triangles and return the full current-mesh set those cover, so the live
+   *  region matches what a reload resolves. Unrefined (or unrelated) meshes
+   *  pass through unchanged. */
+  function baseTriangleIds(tris: Set<number>): { ids: number[]; live: Set<number> } {
+    const mesh = currentMeshData;
+    const lineage = mesh ? meshLineage.get(mesh) : undefined;
+    if (!mesh || !lineage || lineage.root !== paintBaseMesh) return { ids: [...tris], live: tris };
+    const roots = new Set<number>();
+    for (const t of tris) roots.add(lineage.toRoot[t]);
+    roots.delete(-1);
+    const live = new Set<number>();
+    for (let t = 0; t < lineage.toRoot.length; t++) if (roots.has(lineage.toRoot[t])) live.add(t);
+    return { ids: [...roots], live };
   }
 
   /** Resolve two part names for the boundary calls: both must be labels of

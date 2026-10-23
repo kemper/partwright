@@ -207,11 +207,18 @@ export interface AppConfig {
     surfaceTexturePersistMaxTriangles: number;
     /** Triangle count above which the smooth-paint REFINED mesh (the mesh
      *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
-     *  patterns) is NOT persisted with the saved version. Persisting it lets a
-     *  reopened session skip rebuilding every smooth edge; above the cap the
-     *  version still saves and reopening rebuilds the edges as before. Costs
-     *  roughly 20 bytes per triangle of storage. 0 = never persist. */
+     *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
+     *  mesh lets reopening a painted version skip rebuilding every smooth
+     *  edge; above the cap reopening rebuilds the edges as before. Costs
+     *  roughly 20 bytes per triangle. 0 = never cache. */
     paintRefinePersistMaxTriangles: number;
+    /** Total size (MB) of the local smooth-paint mesh cache (IndexedDB
+     *  `paintRefineCache`). Least-recently-used entries are evicted past it. */
+    paintRefineCacheMaxMB: number;
+    /** A cache hit older than this many minutes is re-stamped as recently
+     *  used (each re-stamp rewrites the entry, so reads only touch it now and
+     *  then). */
+    paintRefineCacheTouchMinutes: number;
     /** Most pixels one `probePixels` call may cast (one ray each). */
     probePixelsMaxPixels: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
@@ -354,6 +361,11 @@ export interface AppConfig {
      *  points, as a fraction of the radius. Smaller = smoother band edge,
      *  more samples. */
     paintStrokePathSpacing: number;
+    /** `paintAlongBoundary` paints at most this many seam loops (the longest
+     *  ones); the rest are reported as `skippedLoops`. Each loop is one smooth
+     *  stroke on the main thread, so a noisy seam with hundreds of specks
+     *  would otherwise stall the tab. */
+    boundaryPaintMaxLoops: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -543,7 +555,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
-    paintRefinePersistMaxTriangles: 2_000_000,
+    paintRefinePersistMaxTriangles: 1_000_000,
+    paintRefineCacheMaxMB: 256,
+    paintRefineCacheTouchMinutes: 60,
     probePixelsMaxPixels: 4096,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
@@ -592,6 +606,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paletteHistoryMax: 48,
     paintStrokeResolution: 16,
     paintStrokePathSpacing: 0.25,
+    boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
