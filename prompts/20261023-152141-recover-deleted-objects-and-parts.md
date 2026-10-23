@@ -79,3 +79,21 @@ for both (`//` works in OpenSCAD too). Kept main's disabled-✕-with-reason
 behaviour and dropped only its confirm dialog. ai.md keeps main's per-engine
 table and points the Recover deleted section at it. New e2e restores an
 OpenSCAD part + piece.
+
+## Assistant
+
+**Review follow-ups (work-reviewer pass, nothing blocking).** The rail count
+now uses a `[sessionId, deletedAt]` index count instead of loading every bin
+entry's versions on each state/mesh event (v9 is unreleased, so the index joins
+the same upgrade block). Moving to the bin can hit the quota (two copies
+briefly), so a quota error falls back to a permanent delete and the toast /
+API result says so (`permanent: true`) instead of failing silently. A restore
+that finds nothing (another tab or a racing Undo got there first) now changes
+nothing — it used to drop the blank placeholder anyway. Purge refuses an
+ambiguous name like restore does; the modal's purge/empty and the expiry purge
+are skipped in read-only tabs. Undo reopens the object that was open, and a new
+e2e covers unsaved edits surviving delete → Undo. Small-danger button constant
+(44px on touch, hover only where hover exists), toast action 44px on coarse
+pointers, a superseded restore puts the old code back, named constants for the
+placeholder window and refresh debounce, and the modal shows the restore note
+instead of a stacked success toast.

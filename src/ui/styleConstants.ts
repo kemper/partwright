@@ -17,3 +17,7 @@ export const BUTTON_CANCEL = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover
 
 /** Smaller secondary button used in toolbars / inline rows. */
 export const BUTTON_SMALL_SECONDARY = 'px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
+
+/** Smaller destructive text button for inline rows (e.g. "Delete forever").
+ *  44px tall on touch layouts; hover tint only on hover-capable devices. */
+export const BUTTON_SMALL_DANGER = 'px-2 py-1 min-h-[44px] md:min-h-0 rounded text-[11px] text-red-300 [@media(hover:hover)]:hover:bg-red-900/40';

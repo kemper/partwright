@@ -313,6 +313,9 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('deletedObjects')) {
         const store = db.createObjectStore('deletedObjects', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
+        // Lets the rail count a session's unexpired entries without loading
+        // their (heavy) versions — see countDeletedObjects.
+        store.createIndex('sessionId_deletedAt', ['sessionId', 'deletedAt'], { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -855,6 +858,42 @@ export async function trashParts(ids: string[], deletedAt: number = Date.now()):
           for (const v of versions) versionStore.delete(v.id);
           for (const d of drafts) draftStore.delete(d.id);
         };
+      };
+    };
+  }
+  await txComplete(txn);
+}
+
+/** How many bin entries of one session were deleted at or after `since` — a
+ *  key-only index count, so the rail's badge never loads the entries' versions. */
+export async function countDeletedObjects(sessionId: string, since: number): Promise<number> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('deletedObjects')) return 0;
+  const store = await tx('deletedObjects', 'readonly');
+  return reqToPromise(store.index('sessionId_deletedAt').count(IDBKeyRange.bound([sessionId, since], [sessionId, Infinity])));
+}
+
+/** Permanently delete parts and their versions + drafts (no bin) — the
+ *  fallback when moving them to the bin would exceed the storage quota. */
+export async function hardDeleteParts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const db = await openDB();
+  const txn = db.transaction(['parts', 'versions', 'drafts'], 'readwrite');
+  const partStore = txn.objectStore('parts');
+  const versionStore = txn.objectStore('versions');
+  const draftStore = txn.objectStore('drafts');
+  for (const id of ids) {
+    const partReq = partStore.get(id);
+    partReq.onsuccess = () => {
+      const part = partReq.result as Part | undefined;
+      if (!part) return;
+      partStore.delete(id);
+      const vReq = versionStore.index('partId').getAllKeys(IDBKeyRange.only(id));
+      vReq.onsuccess = () => { for (const k of vReq.result) versionStore.delete(k); };
+      const dReq = draftStore.index('sessionId').getAllKeys(IDBKeyRange.only(part.sessionId));
+      dReq.onsuccess = () => {
+        const prefix = `${part.sessionId}:${id}:`;
+        for (const k of dReq.result) if (String(k).startsWith(prefix)) draftStore.delete(k);
       };
     };
   }

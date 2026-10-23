@@ -20,6 +20,10 @@ const VARIANT_STYLE: Record<ToastVariant, string> = {
   warn: 'background:#451a03;color:#fbbf24;', // amber-950 / amber-400
 };
 
+function coarsePointer(): boolean {
+  try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; }
+}
+
 export function showToast(
   message: string,
   opts: {
@@ -70,7 +74,9 @@ export function showToast(
     btn.textContent = action.label;
     btn.style.cssText =
       'margin-left:12px;padding:2px 10px;border-radius:4px;font-weight:600;' +
-      'background:rgba(255,255,255,0.12);color:inherit;cursor:pointer;min-height:28px;';
+      'background:rgba(255,255,255,0.12);color:inherit;cursor:pointer;' +
+      // A fingertip-sized target on touch screens.
+      `min-height:${coarsePointer() ? 44 : 28}px;`;
     btn.addEventListener('click', () => {
       toast.remove();
       action.run();

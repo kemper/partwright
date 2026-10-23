@@ -27,6 +27,8 @@ import {
   trashParts as dbTrashParts,
   untrashParts as dbUntrashParts,
   listDeletedObjects as dbListDeletedObjects,
+  countDeletedObjects as dbCountDeletedObjects,
+  hardDeleteParts as dbHardDeleteParts,
   purgeDeletedObjects as dbPurgeDeletedObjects,
   addNote as dbAddNote,
   listNotes as dbListNotes,
@@ -75,6 +77,7 @@ import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
 import { appPath } from '../deployment';
 import { getConfig } from '../config/appConfig';
+import { isQuotaError } from './quota';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -993,10 +996,22 @@ async function activateFreshPart(part: Part, parts: Part[]): Promise<void> {
 export async function listDeletedObjects(): Promise<DeletedObject[]> {
   if (!currentState.session) return [];
   const all = await dbListDeletedObjects(currentState.session.id);
-  const cutoff = Date.now() - getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+  const cutoff = binCutoff();
   const expired = all.filter(e => e.deletedAt < cutoff);
-  if (expired.length > 0) await dbPurgeDeletedObjects(expired.map(e => e.id));
+  // A read-only viewer tab never writes the shared session.
+  if (expired.length > 0 && !isViewerTab()) await dbPurgeDeletedObjects(expired.map(e => e.id));
   return all.filter(e => e.deletedAt >= cutoff);
+}
+
+/** How many unexpired objects the active session's bin holds — cheap (an
+ *  index count, no version blobs), for the rail's "Recover deleted (N)". */
+export async function countDeletedObjects(): Promise<number> {
+  if (!currentState.session) return 0;
+  return dbCountDeletedObjects(currentState.session.id, binCutoff());
+}
+
+function binCutoff(): number {
+  return Date.now() - getConfig().ui.deletedObjectRetentionDays * 86_400_000;
 }
 
 export interface RestoreDeletedResult {
@@ -1029,6 +1044,8 @@ export async function restoreDeletedObjects(ids: string[], opts: { dropBlankPart
     .sort((a, b) => a.part.order - b.part.order || Number(b.restored) - Number(a.restored));
   const orders = new Map(merged.map((m, i) => [m.part.id, i] as const));
   const restored = await dbUntrashParts(entries.map(e => e.id), orders);
+  // Another tab (or a concurrent Undo) restored them first: change nothing.
+  if (restored.length === 0) return null;
   await dbUpdatePartOrders(survivors.map(p => ({ id: p.id, order: orders.get(p.id)! })));
   if (dropId) await dbTrashParts([dropId]).then(() => dbPurgeDeletedObjects([dropId]));
   const restoredIds = new Set(restored.map(p => p.id));
@@ -1064,13 +1081,27 @@ export async function purgeDeletedObjects(ids?: string[]): Promise<number> {
  * instead of refusing. The fresh part is created before the old ones are
  * removed so an interruption can never leave the session with zero parts.
  */
-async function replaceAllPartsWithFresh(targets: Part[]): Promise<Part | null> {
+async function replaceAllPartsWithFresh(targets: Part[]): Promise<{ fresh: Part; recoverable: boolean } | null> {
   if (!currentState.session) return null;
   const sid = currentState.session.id;
   const fresh = await dbCreatePart(sid, DEFAULT_PART_NAME, 0);
-  await dbTrashParts(targets.map(p => p.id));
+  const recoverable = await trashOrDelete(targets.map(p => p.id));
   await activateFreshPart(fresh, [fresh]);
-  return fresh;
+  return { fresh, recoverable };
+}
+
+/** Move parts to the bin; if that would exceed the storage quota (the move
+ *  briefly holds two copies), delete them permanently instead so the delete
+ *  still happens. Returns whether they are recoverable. */
+async function trashOrDelete(ids: string[]): Promise<boolean> {
+  try {
+    await dbTrashParts(ids);
+    return true;
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    await dbHardDeleteParts(ids);
+    return false;
+  }
 }
 
 /**
@@ -1177,6 +1208,9 @@ export interface DeletePartResult {
   /** True when the deleted part was the session's last one and `newCurrent` is
    *  the fresh, empty part that replaced it. */
   reset?: boolean;
+  /** True when storage was too full to keep it in the bin, so it was deleted
+   *  permanently (not recoverable). */
+  permanent?: boolean;
 }
 
 /**
@@ -1193,11 +1227,11 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   const target = parts.find(p => p.id === partId);
   if (!target) return null;
   if (parts.length <= 1) {
-    const fresh = await replaceAllPartsWithFresh([target]);
-    return fresh ? { deleted: target, newCurrent: fresh, reset: true } : null;
+    const r = await replaceAllPartsWithFresh([target]);
+    return r ? { deleted: target, newCurrent: r.fresh, reset: true, ...(r.recoverable ? {} : { permanent: true }) } : null;
   }
 
-  await dbTrashParts([partId]);
+  const recoverable = await trashOrDelete([partId]);
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -1207,14 +1241,14 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
     const next = remaining[pos - 1] ?? remaining[0];
     currentState = { ...currentState, parts: remaining };
     await changePart(next.id);
-    return { deleted: target, newCurrent: next };
+    return { deleted: target, newCurrent: next, ...(recoverable ? {} : { permanent: true }) };
   }
 
   currentState = { ...currentState, parts: remaining };
   broadcastPartChange();
   updateURL();
   notify();
-  return { deleted: target, newCurrent: null };
+  return { deleted: target, newCurrent: null, ...(recoverable ? {} : { permanent: true }) };
 }
 
 export interface DeletePartsResult {
@@ -1226,6 +1260,9 @@ export interface DeletePartsResult {
   /** True when every part was deleted and `newCurrent` is the fresh, empty
    *  part that replaced them. */
   reset?: boolean;
+  /** True when storage was too full to keep them in the bin (deleted
+   *  permanently). */
+  permanent?: boolean;
 }
 
 /**
@@ -1243,12 +1280,12 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   const targets = parts.filter(p => idSet.has(p.id));
   if (targets.length === 0) return null;
   if (targets.length >= parts.length) {
-    const fresh = await replaceAllPartsWithFresh(targets);
-    return fresh ? { deletedIds: targets.map(p => p.id), newCurrent: fresh, reset: true } : null;
+    const r = await replaceAllPartsWithFresh(targets);
+    return r ? { deletedIds: targets.map(p => p.id), newCurrent: r.fresh, reset: true, ...(r.recoverable ? {} : { permanent: true }) } : null;
   }
 
   const deletedSet = new Set(targets.map(p => p.id));
-  await dbTrashParts(targets.map(p => p.id));
+  const recoverable = await trashOrDelete(targets.map(p => p.id));
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;
@@ -1262,14 +1299,14 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
     }
     currentState = { ...currentState, parts: remaining };
     await changePart(next.id);
-    return { deletedIds: [...deletedSet], newCurrent: next };
+    return { deletedIds: [...deletedSet], newCurrent: next, ...(recoverable ? {} : { permanent: true }) };
   }
 
   currentState = { ...currentState, parts: remaining };
   broadcastPartChange();
   updateURL();
   notify();
-  return { deletedIds: [...deletedSet], newCurrent: null };
+  return { deletedIds: [...deletedSet], newCurrent: null, ...(recoverable ? {} : { permanent: true }) };
 }
 
 /** One entry of a reorder layout: a part id, optionally reassigned to a group.

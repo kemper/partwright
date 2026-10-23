@@ -109,6 +109,29 @@ test.describe('Recover deleted', () => {
     expect(versions).toEqual(expect.arrayContaining(['beta v1', 'beta v2']));
   });
 
+  test('Undo reopens the deleted open object with its unsaved edits', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async ({ a, b }) => {
+      const p = (window as unknown as { partwright: PW & { setCode(c: string): void } }).partwright;
+      await p.createSession('Recover draft');
+      await p.runAndSave(a, 'alpha v1');
+      await p.createObject('Beta');
+      await p.runAndSave(b, 'beta v1');
+      p.setCode(b.replace('BETA', 'BETA_UNSAVED_EDIT'));
+    }, { a: cube('ALPHA'), b: cube('BETA', 20) });
+
+    const list = page.locator('#parts-list');
+    const beta = list.locator('[data-part-id]', { hasText: 'Beta' });
+    await beta.hover();
+    await beta.getByTitle(/Delete this object/).click();
+    await expect(page.locator('#editor-title')).toHaveText('Object 1');
+    await page.locator('[data-toast-action]').click();
+    await expect(page.locator('#editor-title')).toHaveText('Beta');
+    await expect.poll(() => page.evaluate(() =>
+      (window as unknown as { partwright: PW }).partwright.getCode())).toContain('BETA_UNSAVED_EDIT');
+  });
+
   test('restoring after deleting the last object replaces the blank placeholder', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);

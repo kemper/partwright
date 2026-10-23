@@ -298,6 +298,7 @@ import {
   deletePart,
   deleteParts,
   listDeletedObjects,
+  countDeletedObjects,
   restoreDeletedObjects,
   purgeDeletedObjects,
   reorderParts,
@@ -6104,6 +6105,11 @@ async function main() {
   }
 
   // === Recover deleted ===
+  /** How close (ms) a blank object's creation must be to an object's deletion
+   *  to count as the placeholder that delete-the-last-object reset made. */
+  const RESET_PLACEHOLDER_WINDOW_MS = 60_000;
+  /** Coalesces the rail count refresh across a burst of state/mesh events. */
+  const RECOVERABLE_REFRESH_DEBOUNCE_MS = 150;
   // Two kinds of deletion come back through one modal (src/ui/recoverDeletedModal.ts):
   // OBJECTS, which a delete moves into the session's deleted-objects bin
   // (sessionManager.restoreDeletedObjects), and PARTS / PIECES, which a delete
@@ -6134,7 +6140,7 @@ async function main() {
     const { parts, currentPart } = getState();
     const sole = parts.length === 1 ? parts[0] : null;
     const deletedAts = (await listDeletedObjects()).filter(e => ids.includes(e.id)).map(e => e.deletedAt);
-    const isPlaceholder = !!sole && deletedAts.some(at => Math.abs(sole.created - at) < 60_000) && (await isUntouchedBlankPart(sole));
+    const isPlaceholder = !!sole && deletedAts.some(at => Math.abs(sole.created - at) < RESET_PLACEHOLDER_WINDOW_MS) && (await isUntouchedBlankPart(sole));
     const dropBlankPartId = isPlaceholder ? sole.id : undefined;
     const before = currentPart?.id;
     const r = await restoreDeletedObjects(ids, { dropBlankPartId });
@@ -6172,7 +6178,10 @@ async function main() {
     const piecesBefore = currentObjectPartsSummary()?.pieces.length ?? 0;
     const nextCode = removeRemovalLine(previousCode, call);
     setValue(nextCode);
-    if (!(await runCodeSync(nextCode))) return { error: 'Run was superseded by a concurrent execution — retry.' };
+    if (!(await runCodeSync(nextCode))) {
+      setValue(previousCode);
+      return { error: 'Run was superseded by a concurrent execution — retry.' };
+    }
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') {
       setValue(previousCode);
@@ -6232,6 +6241,17 @@ async function main() {
     return { objects, parts };
   }
 
+  /** The rail link's count: an index count of the bin (no version blobs) plus
+   *  the removal lines in the session's objects (cached for non-open ones). */
+  async function countRecoverable(): Promise<number> {
+    const sid = getState().session?.id ?? null;
+    if (sid !== removalCacheSession) { removalCacheSession = sid; otherObjectRemovals.clear(); }
+    if (!sid) return 0;
+    let n = await countDeletedObjects();
+    for (const object of getState().parts) n += (await objectRemovals(object)).length;
+    return n;
+  }
+
   let recoverableTimer: ReturnType<typeof setTimeout> | null = null;
   /** Recount what Recover deleted lists (debounced) for the rail link, and
    *  re-render the modal if it's open. */
@@ -6239,11 +6259,9 @@ async function main() {
     if (recoverableTimer) clearTimeout(recoverableTimer);
     recoverableTimer = setTimeout(() => {
       recoverableTimer = null;
-      void listRecoverable()
-        .then(r => setRecoverableCount(r.objects.length + r.parts.length))
-        .catch(() => {});
+      void countRecoverable().then(setRecoverableCount).catch(() => {});
       refreshRecoverDeletedModal();
-    }, 150);
+    }, RECOVERABLE_REFRESH_DEBOUNCE_MS);
   }
 
   const recoverController: RecoverDeletedController = {
@@ -6281,11 +6299,20 @@ async function main() {
     async restorePart(objectId, call) {
       const r = await restoreObjectPartOrPiece(call, objectId);
       if ('error' in r) return r.error;
-      if (r.note) showToast(r.note, { variant: 'neutral' });
+      return r.note ? { note: r.note } : null;
+    },
+    async purgeObject(id) {
+      if (recoverController.readOnly()) return 'This tab is read-only.';
+      await purgeDeletedObjects([id]);
+      refreshRecoverable();
       return null;
     },
-    async purgeObject(id) { await purgeDeletedObjects([id]); refreshRecoverable(); },
-    async emptyBin() { await purgeDeletedObjects(); refreshRecoverable(); },
+    async emptyBin() {
+      if (recoverController.readOnly()) return 'This tab is read-only.';
+      await purgeDeletedObjects();
+      refreshRecoverable();
+      return null;
+    },
     readOnly: () => isReadOnlyViewer() || isSharedPreview(),
     retentionDays: () => getConfig().ui.deletedObjectRetentionDays,
   };
@@ -6304,16 +6331,24 @@ async function main() {
     }
   }
 
-  /** The Undo toast after deleting objects from the rail. */
-  function offerObjectUndo(ids: string[], names: string[]): void {
+  /** The toast after deleting objects from the rail: an Undo that brings them
+   *  back (reopening `reopenId`, the object that was open, if it's among them)
+   *  — or, when storage was too full to keep them in the bin, a warning. */
+  function offerObjectUndo(ids: string[], names: string[], opts: { reopenId?: string; permanent?: boolean } = {}): void {
     const what = names.length === 1 ? `object "${names[0]}"` : `${names.length} objects`;
+    if (opts.permanent) {
+      showToast(`Deleted ${what} permanently — browser storage is too full to keep it in Recover deleted.`, { variant: 'warn' });
+      return;
+    }
     showToast(`Deleted ${what}.`, {
       variant: 'neutral',
       action: {
         label: 'Undo',
         run: () => {
-          void restoreObjectsFromBin(ids).then((r) => {
-            if ('error' in r) showToast(r.error, { variant: 'warn' });
+          void restoreObjectsFromBin(ids).then(async (r) => {
+            if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+            const reopen = opts.reopenId;
+            if (reopen && getState().currentPart?.id !== reopen && getState().parts.some(p => p.id === reopen)) await selectPart(reopen);
           });
         },
       },
@@ -6518,12 +6553,16 @@ async function main() {
         await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
       }
-      if (result) { offerObjectUndo([partId], [result.deleted.name]); refreshRecoverable(); }
+      if (result) {
+        offerObjectUndo([partId], [result.deleted.name], { ...(wasCurrent ? { reopenId: partId } : {}), permanent: !!result.permanent });
+        refreshRecoverable();
+      }
     },
     onDeleteParts: async (partIds: string[]) => {
       if (isReadOnlyViewer()) return;
       const names = getState().parts.filter(p => partIds.includes(p.id)).map(p => p.name);
-      if (partIds.includes(getState().currentPart?.id ?? '')) await stashCurrentDraft();
+      const openId = getState().currentPart?.id;
+      if (openId && partIds.includes(openId)) await stashCurrentDraft();
       const result = await deleteParts(partIds);
       // Only reload the editor when the active part was among those removed
       // (deleteParts reports this via newCurrent).
@@ -6533,7 +6572,10 @@ async function main() {
         await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
       }
-      if (result) { offerObjectUndo(result.deletedIds, names); refreshRecoverable(); }
+      if (result) {
+        offerObjectUndo(result.deletedIds, names, { ...(openId && result.deletedIds.includes(openId) ? { reopenId: openId } : {}), permanent: !!result.permanent });
+        refreshRecoverable();
+      }
     },
     onMergeParts: async (partIds: string[]) => {
       if (isReadOnlyViewer()) return;
@@ -12847,6 +12889,7 @@ async function main() {
         deleted: { id: result.deleted.id, name: result.deleted.name },
         newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
         ...(result.reset ? { reset: true } : {}),
+        ...(result.permanent ? { permanent: true, note: 'Browser storage was too full to keep it in Recover deleted, so it was deleted permanently.' } : {}),
       };
     },
 
@@ -12913,7 +12956,14 @@ async function main() {
       let ids: string[] | undefined;
       if (targets) {
         const bin = await listDeletedObjects();
-        ids = bin.filter(o => targets.includes(o.id) || targets.includes(o.part.name)).map(o => o.id);
+        ids = [];
+        for (const want of targets) {
+          const byId = bin.find(o => o.id === want);
+          const byName = bin.filter(o => o.part.name === want);
+          if (!byId && byName.length > 1) return { error: `purgeDeletedObjects: ${byName.length} deleted objects are named ${JSON.stringify(want)} — pass ids from listDeleted().` };
+          const hit = byId ?? byName[0];
+          if (hit) ids.push(hit.id);
+        }
       }
       const purged = await purgeDeletedObjects(ids);
       refreshRecoverable();

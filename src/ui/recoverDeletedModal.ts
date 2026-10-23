@@ -7,7 +7,7 @@
 // main.ts through a controller, so this module only renders.
 
 import { createModalShell, type ModalShell } from './modalShell';
-import { BUTTON_CANCEL, BUTTON_SMALL_SECONDARY } from './styleConstants';
+import { BUTTON_CANCEL, BUTTON_SMALL_DANGER, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { confirmDialog } from './dialogs';
 import { showToast } from './toast';
 
@@ -38,12 +38,13 @@ export interface RecoverDeletedController {
   /** Restore a binned object. Resolves to an error message, or null. */
   restoreObject(id: string): Promise<string | null>;
   /** Restore a removed part/piece (switches to its object first when needed).
-   *  Resolves to an error message, or null. */
-  restorePart(objectId: string, call: string): Promise<string | null>;
-  /** Permanently delete one binned object. */
-  purgeObject(id: string): Promise<void>;
-  /** Permanently delete every binned object of the session. */
-  emptyBin(): Promise<void>;
+   *  Resolves to an error message, `{ note }` when the line was dropped but
+   *  nothing came back, or null. */
+  restorePart(objectId: string, call: string): Promise<string | { note: string } | null>;
+  /** Permanently delete one binned object. Resolves to an error message, or null. */
+  purgeObject(id: string): Promise<string | null>;
+  /** Permanently delete every binned object of the session. Error, or null. */
+  emptyBin(): Promise<string | null>;
   /** Read-only viewer / shared preview: list only, no actions. */
   readOnly(): boolean;
   retentionDays(): number;
@@ -129,11 +130,14 @@ function textBlock(main: string, sub: string): HTMLElement {
   return box;
 }
 
-/** Run a row action with its buttons disabled, then report + re-render. */
-async function act(row: HTMLElement, fn: () => Promise<string | null>, ok: string): Promise<void> {
+/** Run a row action with its buttons disabled, then report + re-render. The
+ *  action resolves to an error message, a `{ note }` to show instead of the
+ *  success message, or null. */
+async function act(row: HTMLElement, fn: () => Promise<string | { note: string } | null>, ok: string): Promise<void> {
   for (const b of row.querySelectorAll('button')) b.disabled = true;
-  const err = await fn().catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
-  if (err) showToast(err, { variant: 'warn' });
+  const r = await fn().catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+  if (typeof r === 'string') showToast(r, { variant: 'warn' });
+  else if (r) showToast(r.note, { variant: 'neutral' });
   else showToast(ok, { variant: 'success' });
   await render();
 }
@@ -173,17 +177,17 @@ async function render(): Promise<void> {
     row.appendChild(textBlock(o.group ? `${o.group} / ${o.name}` : o.name, `${versions} · deleted ${ago(o.deletedAt)} · expires in ${days} day${days === 1 ? '' : 's'}`));
     if (!readOnly) {
       const restore = document.createElement('button');
-      restore.className = BUTTON_SMALL_SECONDARY;
+      restore.className = `${BUTTON_SMALL_SECONDARY} min-h-[44px] md:min-h-0`;
       restore.textContent = 'Restore';
       restore.title = `Restore "${o.name}" with all of its versions`;
       restore.addEventListener('click', () => { void act(row, () => c.restoreObject(o.id), `Restored object "${o.name}".`); });
       const purge = document.createElement('button');
-      purge.className = 'px-2 py-1 rounded text-[11px] text-red-300 hover:bg-red-900/40 border border-transparent';
+      purge.className = BUTTON_SMALL_DANGER;
       purge.textContent = 'Delete forever';
       purge.title = `Permanently delete "${o.name}" and its versions`;
       purge.addEventListener('click', async () => {
         if (!(await confirmDialog(`Permanently delete "${o.name}" and its ${versions}? This cannot be undone.`, { title: 'Delete forever', confirmLabel: 'Delete forever', danger: true }))) return;
-        void act(row, async () => { await c.purgeObject(o.id); return null; }, `Permanently deleted "${o.name}".`);
+        void act(row, () => c.purgeObject(o.id), `Permanently deleted "${o.name}".`);
       });
       row.append(restore, purge);
     }
@@ -200,7 +204,7 @@ async function render(): Promise<void> {
     row.appendChild(textBlock(`${p.objectName} ▸ ${p.title}`, p.call));
     if (!readOnly) {
       const restore = document.createElement('button');
-      restore.className = BUTTON_SMALL_SECONDARY;
+      restore.className = `${BUTTON_SMALL_SECONDARY} min-h-[44px] md:min-h-0`;
       restore.textContent = p.current ? 'Restore' : `Restore (opens ${p.objectName})`;
       restore.title = `Remove ${p.call} from the code of "${p.objectName}", re-run and save a version`;
       restore.addEventListener('click', () => { void act(row, () => c.restorePart(p.objectId, p.call), `Restored ${p.title}.`); });
@@ -218,14 +222,15 @@ async function render(): Promise<void> {
   foot.appendChild(note);
   if (!readOnly && data.objects.length > 0) {
     const empty = document.createElement('button');
-    empty.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-red-300 hover:bg-red-900/40';
+    empty.className = `shrink-0 ${BUTTON_SMALL_DANGER}`;
     empty.textContent = 'Empty bin';
     empty.title = 'Permanently delete every deleted object listed above';
     empty.addEventListener('click', async () => {
       const n = data.objects.length;
       if (!(await confirmDialog(`Permanently delete ${n} deleted object${n === 1 ? '' : 's'} and all of their versions? This cannot be undone.`, { title: 'Empty bin', confirmLabel: 'Delete forever', danger: true }))) return;
-      await c.emptyBin();
-      showToast(`Permanently deleted ${n} object${n === 1 ? '' : 's'}.`, { variant: 'success' });
+      const err = await c.emptyBin();
+      if (err) showToast(err, { variant: 'warn' });
+      else showToast(`Permanently deleted ${n} object${n === 1 ? '' : 's'}.`, { variant: 'success' });
       await render();
     });
     foot.appendChild(empty);
