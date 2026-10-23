@@ -176,6 +176,52 @@ test.describe('Character Creator', () => {
     await expect(reopened.getByText('Lock shape')).toBeVisible();
   });
 
+  test('Funko style + shag hair (spiky crown) builds a manifold figure with only the shag knobs shown', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-shag'));
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+    await expect(panel).toBeVisible();
+
+    await panel.getByRole('group', { name: 'Proportions' }).getByRole('button', { name: 'Funko' }).click();
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+
+    // Hair → shag reveals the shag knobs (and not the anime-only ones).
+    await expect(panel.getByText('Raggedness')).toHaveCount(0);
+    await panel.getByRole('combobox', { name: 'Style', exact: true }).selectOption('shag');
+    await expect(panel.getByRole('combobox', { name: 'Crown', exact: true })).toHaveValue('spiky');
+    for (const label of ['Layers', 'Raggedness', 'Flare', 'Spike', 'Fringe']) await expect(panel.getByText(label, { exact: true })).toBeVisible();
+    await expect(panel.getByText('Lock shape')).toHaveCount(0);
+    await expect(panel.getByText('Swoop')).toHaveCount(0);
+
+    await panel.getByRole('button', { name: 'Save to session' }).click();
+    await expect(page.getByText(/Character saved/)).toBeVisible({ timeout: 120_000 });
+    const out = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW & { getGeometryData: () => { isManifold?: boolean; triangleCount?: number } } }).partwright;
+      return { code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+    expect(out.code).toContain("F.hair(rig, { style: 'shag', length: 'mid', on: head })");
+    expect(out.geo.isManifold).toBe(true);
+    expect(out.geo.triangleCount ?? 0).toBeGreaterThan(1000);
+    await page.screenshot({ path: 'test-results/character-creator-shag.png' });
+
+    // The spec API takes the shag knobs too (UI ↔ API parity) and the panel restores them.
+    const api = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { getCharacterSpec: () => { spec?: { hair: { style: string; crown: string; layers: number } } } } }).partwright;
+      const res = await pw.buildCharacter({ body: { proportions: 'funko' }, hair: { style: 'shag', crown: 'tousled', layers: 2, raggedness: 1.5 } });
+      return { code: res.code, error: res.error, spec: pw.getCharacterSpec().spec };
+    });
+    expect(api.error).toBeUndefined();
+    expect(api.code).toContain("crown: 'tousled', layers: 2, raggedness: 1.5");
+    expect(api.spec?.hair).toMatchObject({ style: 'shag', crown: 'tousled', layers: 2 });
+  });
+
   test('buildCharacter validates every field and getCharacterSpec needs a header', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);

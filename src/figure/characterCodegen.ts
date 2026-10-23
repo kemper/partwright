@@ -160,12 +160,16 @@ export function specToCode(spec: CharacterSpec): string {
     if (LOCK_HAIR_STYLES.includes(hair.style)) {
       // Lock styles: only the knobs this style reads, only when off-default,
       // and `on: head` so the locks hug the real (scaled / cheeked) head.
-      const anime = hair.style === 'anime';
+      const anime = hair.style === 'anime', shag = hair.style === 'shag';
       const knobs = obj({
         lockShape: anime && hair.lockShape !== 'ribbon' ? hair.lockShape : undefined,
-        chunk: anime && hair.chunk !== 1 ? hair.chunk : undefined,
-        spike: anime && hair.spike !== 1 ? hair.spike : undefined,
+        chunk: (anime || shag) && hair.chunk !== 1 ? hair.chunk : undefined,
+        spike: (anime || shag) && hair.spike !== 1 ? hair.spike : undefined,
         swoop: anime && hair.swoop !== 1 ? hair.swoop : undefined,
+        crown: shag && hair.crown !== 'spiky' ? hair.crown : undefined,
+        layers: shag && Math.round(hair.layers) !== 3 ? Math.round(hair.layers) : undefined,
+        raggedness: shag && hair.raggedness !== 1 ? hair.raggedness : undefined,
+        flare: shag && hair.flare !== 1 ? hair.flare : undefined,
         fringe: hair.fringe !== 1 ? hair.fringe : undefined,
         seed: hair.seed !== 1 ? hair.seed : undefined,
       });

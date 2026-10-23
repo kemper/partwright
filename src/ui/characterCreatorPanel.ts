@@ -30,7 +30,7 @@ import {
   POSE_PRESET_LABELS,
   LOCK_HAIR_STYLES,
   BUILDS, SEXES, FACE_SHAPES, LID_STYLES, NOSE_TYPES, LIP_SHAPES, BROW_SHAPES,
-  HAIR_LENGTHS, LOCK_SHAPES, SLEEVES, PANTS_RISES,
+  HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES, PANTS_RISES,
 } from '../figure/characterSpec';
 
 /** The slice of the console API the panel drives. */
@@ -165,7 +165,7 @@ const HAIR_STYLES: [string, string][] = [
   ['bald', 'Bald'], ['short', 'Short'], ['long', 'Long'], ['bob', 'Bob'], ['bun', 'Bun'],
   ['bangs', 'Bangs'], ['ponytail', 'Ponytail'], ['afro', 'Afro'], ['braids', 'Braids'],
   ['spiked', 'Spiked'], ['locs', 'Locs'], ['cornrows', 'Cornrows'], ['boxBraids', 'Box braids'],
-  ['mop', 'Mop (shaggy locks)'], ['anime', 'Anime (ribbon locks)'],
+  ['mop', 'Mop (shaggy locks)'], ['anime', 'Anime (ribbon locks)'], ['shag', 'Shag (layered mop)'],
 ];
 const STYLES: [Proportions, string][] = [['realistic', 'Realistic'], ['chibi', 'Chibi'], ['funko', 'Funko']];
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
@@ -345,13 +345,21 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     }));
     controls.append(selectRow('Length', spec.hair.length, HAIR_LENGTHS, v => onEdit(s => { s.hair.length = v as CharacterSpec['hair']['length']; })));
     controls.append(sliderRow('Volume', spec.hair.volume, 0.3, 4, 0.1, v => onEdit(s => { s.hair.volume = v; })));
-    // Lock knobs — only for the lock styles that read them (anime ⊃ mop).
+    // Lock knobs — only for the lock styles that read them (mop / anime / shag).
     if (LOCK_HAIR_STYLES.includes(spec.hair.style)) {
       if (spec.hair.style === 'anime') {
         controls.append(selectRow('Lock shape', spec.hair.lockShape, LOCK_SHAPES.map(s => [s, s === 'ribbon' ? 'Flat ribbon' : 'Round tube'] as [string, string]), v => onEdit(s => { s.hair.lockShape = v as CharacterSpec['hair']['lockShape']; })));
         controls.append(sliderRow('Lock width', spec.hair.chunk, 0.4, 2.5, 0.05, v => onEdit(s => { s.hair.chunk = v; })));
         controls.append(sliderRow('Spike', spec.hair.spike, 0, 3, 0.05, v => onEdit(s => { s.hair.spike = v; })));
         controls.append(sliderRow('Swoop', spec.hair.swoop, -1, 3, 0.05, v => onEdit(s => { s.hair.swoop = v; })));
+      }
+      if (spec.hair.style === 'shag') {
+        controls.append(selectRow('Crown', spec.hair.crown, HAIR_CROWNS.map(c => [c, c === 'spiky' ? 'Spiky' : 'Tousled'] as [string, string]), v => onEdit(s => { s.hair.crown = v as CharacterSpec['hair']['crown']; })));
+        controls.append(sliderRow('Spike', spec.hair.spike, 0, 3, 0.05, v => onEdit(s => { s.hair.spike = v; })));
+        controls.append(sliderRow('Layers', spec.hair.layers, 1, 3, 1, v => onEdit(s => { s.hair.layers = v; })));
+        controls.append(sliderRow('Raggedness', spec.hair.raggedness, 0, 2, 0.05, v => onEdit(s => { s.hair.raggedness = v; })));
+        controls.append(sliderRow('Flare', spec.hair.flare, 0, 3, 0.05, v => onEdit(s => { s.hair.flare = v; })));
+        controls.append(sliderRow('Lock width', spec.hair.chunk, 0.4, 2.5, 0.05, v => onEdit(s => { s.hair.chunk = v; })));
       }
       controls.append(sliderRow('Fringe', spec.hair.fringe, 0, 1.5, 0.05, v => onEdit(s => { s.hair.fringe = v; })));
       controls.append(sliderRow('Seed', spec.hair.seed, 1, 50, 1, v => onEdit(s => { s.hair.seed = v; }), { min: -1e6, max: 1e6 }));

@@ -43,8 +43,10 @@ The spec (v2) mirrors this API:
   face: { shape, lids, gaze, nose, expression, lipShape, ears, brows,
           layout: { eyeSpread: null | 0.5–2, eyeHeight: null | −0.6–0.6 },
           eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */ },
-  hair: { style /* … | 'mop' | 'anime' */, length, volume,
-          lockShape, chunk, spike, swoop /* anime only */, fringe, seed /* mop + anime */ },
+  hair: { style /* … | 'mop' | 'anime' | 'shag' */, length, volume,
+          lockShape, swoop /* anime only */, chunk, spike /* anime + shag */,
+          crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare /* shag only */,
+          fringe, seed /* mop + anime + shag */ },
   clothing: { top: { on, sleeve, length }, pants: { on, leg, rise, length }, feet: { on, kind } },
   colors: { skin, eyes, iris, pupil, lips, brows, hair, top, pants, feet, base, ball },
   base: true,
@@ -81,7 +83,8 @@ a few points of it on `photoMatch`. The loop:
 1. **View the photo once.** Note style (realistic / chibi / Funko), hair,
    clothing, colours and anything held.
 2. **Fill in a CharacterSpec** — `proportions`, `headScale`, hair `style`
-   (+ `fringe`/`spike`/`swoop` for anime), sleeves / shorts (`pants.length:
+   (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`
+   for a shaggy layered jet-black mop), sleeves / shorts (`pants.length:
    'briefs'`) / footwear, `colors` sampled from the photo, `pose.hold` for a ball.
 3. **Call `buildCharacter(spec)`** (it saves a version; the code is not echoed).
 4. **Score with `photoMatch`** — text only (`exclude: ['base']`, the photo's
@@ -410,7 +413,10 @@ accessories off `rig.r.*` and they track the build automatically.
 > (after `.build({ detail })`, so the face-detail regions still line up): it drops
 > the model's true bottom (base or soles; `drop: 'sole'` forces `rig.floorZ`) to
 > `floor` and turns the builder's −Y front to `face` ('-Y' | '+X' | '+Y' | '-X').
-> `height: 113` additionally rescales to that total height.
+> `height: 113` additionally rescales to that total height — measured to the
+> top of the bounds, so tall crown spikes shrink everything else; pass
+> `heightOf: 'body'` to measure floor → `rig.joints.crown` (the skull top as
+> rigged) instead, so the hair/hat doesn't change the figure's size.
 >
 > **`F.surfacePoint(surface, point, dir, { reach })`** returns the first
 > inside→outside crossing of any SDF node along the line through `point` — seat a
@@ -1338,7 +1344,7 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //   ears: 'cover' (default, hair over the ears; 'over' is an alias) | 'behind' (tucked behind them,
 //         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
-//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop' | 'anime'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids' | 'mop' | 'anime' | 'shag'
 //   'mop' — shaggy anime / vinyl-toy hair: a cap hugging the real head (pass
 //     `on: head`, your F.head node, for a non-default faceShape) + N irregular
 //     tapered locks: a zig-zag fringe ending just above the brows, sideburns and
@@ -1367,10 +1373,42 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //     `length` drops sideburns/nape; `volume` widens the crown + thickens locks.
 //     Locks are hard-unioned and welded into the cap once (small smooth blend,
 //     no root seams).
+//   'shag' — a shaggy LAYERED vinyl-toy mop (the jet-black spiky-mop look): the
+//     anime cap + many MEDIUM ribbon locks — an uneven, messy fringe (seeded
+//     length / lean / width per lock, added last with a tight blend so its points stay crisp),
+//     up to 3 overlapping layers over the sides + back each hanging lower than
+//     the last to a jittered ragged hem, a temple "flare" mop mass above the
+//     ears, and a crown. Side/back tails keep a chunky tip (no stringy points).
+//     Pass `on: head`. Extra keys:
+//     { crown: 'spiky' (default — 5 sharp spikes fanning back + 2 flicking up
+//         at the sides) | 'tousled' (7 small random crown locks),
+//       spike: 0..3 (1, crown-spike lift), layers: 1..3 (3, integer — 1 = the
+//         high side layer only, 2 + the ear-level layer, 3 + the nape layer),
+//       locks: 0.5..2 (1, lock DENSITY multiplier — not a count here),
+//       fringe: 0..1.5 (1 = tips just above the brows; lower = shorter),
+//       raggedness: 0..2 (1, jitter of lock length / lean / hem; 0 = tidy),
+//       flare: 0..3 (1, mop mass above the ears — widens the head at temple
+//         height; 0 = skull-hugging), tipWidth: 0..0.8 (0.4, side/back tail
+//         tip half-width × root width), chunk: 0.4..2.5 (1, lock width),
+//       seed (1 — same seed ⇒ identical hair), on: headNode }
+//     `length` drops the hem; `volume` thickens the cap + locks.
+//     F.hair(rig, { style: 'shag', crown: 'spiky', on: head, seed: 11 })
 //   Helpers for hand-built hairdos (same pieces 'anime' uses):
 //     F.hair.cap(rig, { on, thickness, crown, hairlinePlane: { front, back },
-//       window: { width, top, tilt } | false })   // heights in head-Z radii above the head centre
-//     F.hair.tuft(rig, { base, dir, length, width, thickness, curve, shape, twist })
+//       window: { width, top, tilt, notches, depth, span } | false })   // heights in head-Z radii above the head centre
+//       // notches: 0..24 (0) — a JAGGED hairline: that many pointed teeth of cap
+//       // hanging into the window's top edge (crisp hard points, unlike a
+//       // smooth-blended fringe); depth: tooth length × headZ (0.15);
+//       // span: ±degrees of azimuth they spread over (≈52).
+//     F.hair.tuft(rig, { base, dir, length, width, thickness, curve, shape, twist, tipWidth })
+//     F.hair.tuft(rig, { from: { az, el }, to: { az, el, out }, via?, on: head, width, … })
+//       // surface endpoints — no hand-written ray-march helpers: each point is
+//       // { az: deg (0 = face, +90 = figure's left, 180 = back), el: deg
+//       // elevation (radial march) OR h: height above the head centre × headZ
+//       // (horizontal march — use on the face side), out: units outside the
+//       // skin (from defaults slightly buried, to 0) }. via = an optional
+//       // surface mid point the lock passes through (else `curve` bends it).
+//       // tipWidth (ribbon only) = tip half-width floor, so tails stay chunky.
 //       // one lock tapering to a point. shape: 'ribbon' (default) — a flat lock
 //       // whose wide axis lies tangent to the head (⊥ the ray from the head
 //       // centre); width = root HALF-width (default 0.28 head radii), thickness =
@@ -1527,7 +1565,8 @@ const eyes = sdf.union(...[rig.face.eyeL, rig.face.eyeR].map((a) => sdf.ellipsoi
   .translate(F.surfacePoint(face, a, fwd).map((v, i) => v - fwd[i] * 1.6)))).label('eyes');
 // Brows seat on the real face (cheek bulge / a moved face included) — pass the node you union.
 const brows = F.face.brows(rig, { shape: 'arched', thickness: 3, width: 1.5, on: face });
-// Anime spiky-bob: thin cap + fringe/sideburn/crown/nape locks ('mop' for a curlier shag).
+// Anime spiky-bob: thin cap + fringe/sideburn/crown/nape locks ('shag' for a layered
+// spiky mop: F.hair(rig, { style: 'shag', crown: 'spiky', on: head }); 'mop' for curls).
 const hair = F.hair(rig, { style: 'anime', on: head, seed: 7, fringe: 0.7 }).label('hair');
 const shirt = F.clothing.top(rig, { sleeve: 'short' }).label('shirt');
 const ball = F.heldSphere(rig).label('ball');

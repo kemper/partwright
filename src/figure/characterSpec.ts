@@ -32,10 +32,12 @@ export const EAR_TYPES = ['round', 'pointed', 'detailed'] as const;
 export const BROW_SHAPES = ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'] as const;
 export const HAIR_STYLES = [
   'bald', 'short', 'long', 'bob', 'bun', 'bangs', 'ponytail',
-  'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime',
+  'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag',
 ] as const;
 export const HAIR_LENGTHS = ['short', 'mid', 'long'] as const;
 export const LOCK_SHAPES = ['ribbon', 'tube'] as const;
+/** 'shag' crown: 5 sharp back-fanning spikes + 2 side-up spikes, or small random locks. */
+export const HAIR_CROWNS = ['spiky', 'tousled'] as const;
 export const SLEEVES = ['none', 'short', 'long'] as const;
 export const TOP_LENGTHS = ['shirt', 'dress'] as const;
 export const PANTS_LEGS = ['slim', 'cargo'] as const;
@@ -59,6 +61,7 @@ export type BrowShape = typeof BROW_SHAPES[number];
 export type HairStyle = typeof HAIR_STYLES[number];
 export type HairLength = typeof HAIR_LENGTHS[number];
 export type LockShape = typeof LOCK_SHAPES[number];
+export type HairCrown = typeof HAIR_CROWNS[number];
 export type Sleeve = typeof SLEEVES[number];
 export type TopLength = typeof TOP_LENGTHS[number];
 export type PantsLeg = typeof PANTS_LEGS[number];
@@ -73,7 +76,7 @@ export type HoldCup = typeof HOLD_CUPS[number];
 export type HeadScale = number | { x: number; y: number; z: number };
 
 /** Hair styles built from seeded locks — the only ones the lock knobs apply to. */
-export const LOCK_HAIR_STYLES: readonly HairStyle[] = ['mop', 'anime'];
+export const LOCK_HAIR_STYLES: readonly HairStyle[] = ['mop', 'anime', 'shag'];
 
 /** A single FK joint. All angles in degrees; 0 is neutral. */
 export interface Joint {
@@ -151,12 +154,13 @@ export interface HairSpec {
   length: HairLength;
   volume: number;
   // Lock-style knobs — emitted only for the styles that read them:
-  // 'mop' + 'anime' share fringe/seed; lockShape/chunk/spike/swoop are 'anime'-only.
+  // 'mop' + 'anime' + 'shag' share fringe/seed; chunk/spike are 'anime' + 'shag';
+  // lockShape/swoop are 'anime'-only; crown/layers/raggedness/flare 'shag'-only.
   /** Anime lock cross-section: flat 'ribbon' (default) or round 'tube'. */
   lockShape: LockShape;
-  /** Anime lock width multiplier (0.4–2.5). */
+  /** Anime / shag lock width multiplier (0.4–2.5). */
   chunk: number;
-  /** Anime crown-lock lift (0–3). */
+  /** Anime / shag crown-lock (spike) lift (0–3). */
   spike: number;
   /** Anime sideways sweep of the fringe (−1–3). */
   swoop: number;
@@ -164,6 +168,14 @@ export interface HairSpec {
   fringe: number;
   /** Lock layout seed (same seed ⇒ same hair). */
   seed: number;
+  /** Shag crown: 'spiky' (back-fanning spikes) or 'tousled'. */
+  crown: HairCrown;
+  /** Shag: overlapping lock layers over the sides + back (1–3). */
+  layers: number;
+  /** Shag: jitter of lock length / lean / hem (0–2). */
+  raggedness: number;
+  /** Shag: mop mass above the ears (0–3). */
+  flare: number;
 }
 
 export interface ClothingSpec {
@@ -225,8 +237,8 @@ function noHold(): HoldSpec {
 }
 
 /** Library defaults of the lock-style hair knobs (none are emitted at these values). */
-function lockDefaults(): Pick<HairSpec, 'lockShape' | 'chunk' | 'spike' | 'swoop' | 'fringe' | 'seed'> {
-  return { lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1 };
+function lockDefaults(): Pick<HairSpec, 'lockShape' | 'chunk' | 'spike' | 'swoop' | 'fringe' | 'seed' | 'crown' | 'layers' | 'raggedness' | 'flare'> {
+  return { lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1 };
 }
 
 export const DEFAULT_SPEC: CharacterSpec = {
@@ -509,15 +521,19 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     mouth: { t: 'bool', d: 'Build the lips (false = mouthless vinyl-toy face).' },
   }, 'Face.'),
   hair: o({
-    style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'mop' = curly shag of seeded locks."),
+    style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks."),
     length: e(HAIR_LENGTHS, 'Hair length.'),
     volume: n('Hair volume 0.3–4.', 0.3, 4),
     lockShape: e(LOCK_SHAPES, "anime only: flat 'ribbon' locks or round 'tube' locks."),
-    chunk: n('anime only: lock width 0.4–2.5.', 0.4, 2.5),
-    spike: n('anime only: crown-lock lift 0–3.', 0, 3),
+    chunk: n('anime/shag: lock width 0.4–2.5.', 0.4, 2.5),
+    spike: n('anime/shag: crown-lock (spike) lift 0–3.', 0, 3),
     swoop: n('anime only: fringe sideways sweep −1–3.', -1, 3),
-    fringe: n('mop/anime: fringe amount 0–1.5.', 0, 1.5),
-    seed: n('mop/anime: lock layout seed (integer).'),
+    fringe: n('mop/anime/shag: fringe amount 0–1.5.', 0, 1.5),
+    seed: n('mop/anime/shag: lock layout seed (integer).'),
+    crown: e(HAIR_CROWNS, "shag only: 'spiky' = 5 sharp back-fanning spikes + 2 side-up spikes; 'tousled' = small random crown locks."),
+    layers: n('shag only: overlapping lock layers over the sides + back, integer 1–3.', 1, 3),
+    raggedness: n('shag only: jitter of lock length / lean / hem 0–2.', 0, 2),
+    flare: n('shag only: mop mass above the ears 0–3.', 0, 3),
   }, 'Hair.'),
   clothing: o({
     top: o({ on: { t: 'bool', d: 'Wear a top.' }, sleeve: e(SLEEVES, 'Sleeves.'), length: e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh.") }, 'Top.'),

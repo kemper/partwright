@@ -4092,6 +4092,10 @@ interface RibbonSpec {
   outward(p: Vec3): Vec3;
   /** Ellipsoids along the path (default 9). */
   seg?: number;
+  /** Optional tip half-width: the width then tapers from `width` to THIS at
+   *  the point (instead of to a needle), so long side/back tails stay chunky
+   *  rather than stringy. Omitted = the classic sharp taper (byte-identical). */
+  tipWidth?: number;
 }
 
 /** Ribbon half-width at path parameter s ∈ [0, 1] as a fraction of the root:
@@ -4130,7 +4134,9 @@ function ribbonLock(sdf: SdfApi, root: Vec3, mid: Vec3, tip: Vec3, spec: RibbonS
     W = norm3(W);
     let N = cross3(T, W);
     if (spec.twist) { const a = spec.twist * s; W = rotAxis(W, T, a); N = rotAxis(N, T, a); }
-    const w = Math.max(spec.width * ribbonWidthAt(s), spec.tipFloor);
+    const w = spec.tipWidth === undefined
+      ? Math.max(spec.width * ribbonWidthAt(s), spec.tipFloor)
+      : Math.max(spec.tipWidth + (spec.width - spec.tipWidth) * ribbonWidthAt(s), spec.tipFloor);
     const th = Math.min(Math.max(spec.thickness * ribbonThickAt(s), spec.tipFloor * 0.8), Math.max(w, spec.tipFloor));
     const piece = sdf.ellipsoid(Math.max(half, w), w, th).rotate(eulerFromBasis(T, W, N)).translate(c);
     n = n ? n.smoothUnion(piece, Math.min(th, prevTh) * 0.9) : piece;
@@ -4313,9 +4319,58 @@ interface AnimeCapOpts {
   front: number; back: number;
   /** Face window: width (× headX), top (× headZ above centre; the arch apex),
    *  tilt (deg; + swings the window's lower edge back toward the ears). `null` = no window. */
-  window: { width: number; top: number; tilt: number } | null;
+  window: { width: number; top: number; tilt: number; notches?: WindowNotches } | null;
   /** Shell thickness at the temples (hugs the skull) and the crown lift. */
   thickness: number; crown: number;
+}
+
+/** A jagged (notched) hairline: `count` pointed teeth of cap hanging down into
+ *  the face window's top arch, `depth` (× headZ) long, spread across `span`
+ *  degrees of azimuth either side of the face front. `depths` optionally gives
+ *  each tooth its own depth (× headZ) — the seeded shag uses it for a ragged edge. */
+interface WindowNotches { count: number; depth: number; span: number; depths?: number[] }
+
+/** Point on `head`'s skin at azimuth θ (deg; 0 = face front, +90 = the
+ *  figure's left), at height `h` above the head centre (along headUp), `off`
+ *  outside the skin — marched out HORIZONTALLY, so "just above the brows" is a
+ *  height, not an elevation angle (the ellipsoid (θ, φ) parametrisation drifts
+ *  on a headScale'd / cheek-bulged face). */
+function skinAtHeight(S: ScalpFrame, head: Node, thDeg: number, h: number, off: number): Vec3 {
+  const th = thDeg * DEG;
+  const d = norm3(add3(scale3(S.right, S.ax * Math.sin(th)), scale3(S.f, S.ay * Math.cos(th))));
+  const o0 = S.toWorld(0, 0, h);
+  const tt = marchToSurface(head, o0, d, Math.max(S.ax, S.ay) * 3) ?? Math.max(S.ax, S.ay);
+  return add3(o0, scale3(d, tt + off));
+}
+
+/** The teeth of a notched hairline, as one node to subtract FROM the window
+ *  (so the cap keeps them). Each tooth is a rhombus prism (two crossed slabs)
+ *  centred on the window edge where it meets the skin at that azimuth — found
+ *  by bisecting down the skin until the world-space window `winW` starts — and
+ *  extruded along the horizontal radial, so its lower half is a crisp point of
+ *  cap hanging over the forehead. Teeth whose azimuth the window never reaches
+ *  are skipped. Returns null when none land. */
+function windowTeeth(sdf: SdfApi, S: ScalpFrame, head: Node, winW: Node, zTop: number, n: WindowNotches): Node | null {
+  const { ax, ay, az } = S;
+  const teeth: Node[] = [];
+  const step = n.count > 1 ? (2 * n.span) / (n.count - 1) : 0;
+  // Tooth half-width: neighbouring teeth just meet (a continuous zig-zag).
+  const halfW = n.count > 1 ? Math.max(ax * step * DEG * 0.5, az * 0.03) : ax * 0.15;
+  for (let i = 0; i < n.count; i++) {
+    const th = n.count > 1 ? -n.span + step * i : 0;
+    const depth = (n.depths?.[i] ?? n.depth) * az;
+    if (!(depth > 0)) continue;
+    const inWin = (h: number): boolean => { const p = skinAtHeight(S, head, th, h, 0); return winW.evaluate(p[0], p[1], p[2]) < 0; };
+    let hi = zTop + az * 0.1, lo = zTop - az * 0.9;
+    if (inWin(hi) || !inWin(lo)) continue;
+    for (let k = 0; k < 24; k++) { const m = (hi + lo) / 2; if (inWin(m)) lo = m; else hi = m; }
+    const p = skinAtHeight(S, head, th, (hi + lo) / 2, 0);
+    const a = halfW, b = depth, N = Math.hypot(a, b), hh = (a * b) / N;
+    const beta = Math.atan2(a, b) / DEG, L = Math.max(ay, ax) * 0.8, tall = 4 * Math.max(a, b);
+    const slab = (ang: number): Node => sdf.box([2 * hh, L, tall]).rotate([0, ang, 0]);
+    teeth.push(slab(beta).intersect(slab(-beta)).rotate([0, 0, th]).rotate(S.headEuler).translate(p));
+  }
+  return teeth.length ? sdf.union(...teeth) : null;
 }
 
 /** The anime cap: a THIN offset of the real head (so the temples hug the skull —
@@ -4352,7 +4407,12 @@ function animeCap(sdf: SdfApi, S: ScalpFrame, head: Node, o: AnimeCapOpts): { ca
     const zTop = o.window.top * az;
     const fwdT = marchToSurface(head, S.toWorld(0, 0, zTop), S.f, ay * 3) ?? ay * 0.85;
     const win = sdf.ellipsoid(wx, wy, wz).translate([0, 0, -wz]).rotate([o.window.tilt, 0, 0]);
-    cap = cap.subtract(local(win, 0, fwdT + o.thickness, zTop));
+    let winW = local(win, 0, fwdT + o.thickness, zTop);
+    if (o.window.notches && o.window.notches.count > 0) {
+      const teeth = windowTeeth(sdf, S, head, winW, zTop, o.window.notches);
+      if (teeth) winW = winW.subtract(teeth);
+    }
+    cap = cap.subtract(winW);
   }
   return { cap, uncut };
 }
@@ -4389,14 +4449,7 @@ function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: nu
   // height above the head centre): the ellipsoid (θ, φ) parametrisation drifts
   // on a headScale'd / cheek-bulged face, so "just above the brows" must be a
   // height, not an elevation angle.
-  const ax = S.ax, ay = S.ay;
-  const skinAt = (thDeg: number, h: number, off: number): Vec3 => {
-    const th = thDeg * DEG;
-    const d = norm3(add3(scale3(S.right, ax * Math.sin(th)), scale3(S.f, ay * Math.cos(th))));
-    const o0 = S.toWorld(0, 0, h);
-    const tt = marchToSurface(head, o0, d, Math.max(ax, ay) * 3) ?? Math.max(ax, ay);
-    return add3(o0, scale3(d, tt + off));
-  };
+  const skinAt = (thDeg: number, h: number, off: number): Vec3 => skinAtHeight(S, head, thDeg, h, off);
   /** Point at (θ, φ) `off` outside the uncut cap; φ past π/2 carries on over the top to the back. */
   const over = (th: number, ph: number, off: number): Vec3 => S.on(uncut, th, ph, off);
   // Lock size: ribbon root half-width W0 (≈ 0.3 head radii) with a ~3.6:1
@@ -4483,6 +4536,148 @@ function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: nu
   return cut.smoothUnion(sdf.union(...locks), T * 0.6);
 }
 
+// --- Shag hair (shaggy layered vinyl-toy mop) -------------------------------
+
+const SHAG_ONLY_FIELDS = ['layers', 'raggedness', 'crown', 'flare', 'tipWidth'];
+const SHAG_CROWNS = ['spiky', 'tousled'] as const;
+
+/** `F.hair(rig, { style: 'shag' })`: a shaggy, LAYERED vinyl-toy mop (the
+ *  Captain-Tsubasa / jet-black spiky-mop look) — the anime cap plus many
+ *  MEDIUM ribbon locks:
+ *   - an uneven, messy fringe (seeded per-lock length, lean and width) added
+ *     last with a tight blend so its points stay crisp instead of melting
+ *     into the hairline;
+ *   - up to 3 overlapping layers of locks over the sides and back, each rooted
+ *     lower and hanging lower than the last, fanning out to a jittered, ragged
+ *     hem (`layers`, `raggedness`, `length`);
+ *   - mop mass above the ears (`flare`) — side puffs + side-layer locks pushed
+ *     out, the toy-hair width at temple height a thin cap can't give;
+ *   - `crown: 'spiky'` (default — 5 sharp spikes fanning back + 2 flicking up
+ *     at the sides; `spike` scales their lift) or 'tousled' (7 small random locks).
+ *  Side/back tails taper to a `tipWidth` floor (× root width) so they stay
+ *  chunky, not stringy. All placement is surface-marched onto the real head
+ *  (`on: head`), so it follows headScale / faceShape; same seed ⇒ same hair.
+ *  Lengths are in head-radius units, so it scales with the figure. */
+function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: number, volume: number, lenMul: number): Node {
+  const density = num(o.locks, 1, 'hair.locks', 0.5, 2);
+  const seed = Math.round(num(o.seed, 1, 'hair.seed'));
+  const fringe = num(o.fringe, 1, 'hair.fringe', 0, 1.5);
+  const layers = num(o.layers, 3, 'hair.layers', 1, 3);
+  if (!Number.isInteger(layers)) throw new ValidationError(`hair.layers must be an integer 1..3. Got ${layers}. See /ai/figure.md`);
+  const rag = num(o.raggedness, 1, 'hair.raggedness', 0, 2);
+  const crown = o.crown === undefined ? 'spiky' : assertEnum(o.crown, SHAG_CROWNS, 'hair.crown');
+  const spike = num(o.spike, 1, 'hair.spike', 0, 3);
+  const chunk = num(o.chunk, 1, 'hair.chunk', 0.4, 2.5);
+  const flare = num(o.flare, 1, 'hair.flare', 0, 3);
+  const tipFrac = num(o.tipWidth, 0.4, 'hair.tipWidth', 0, 0.8);
+  const head = hairHead(sdf, rig, o.on);
+  const rand = mulberry32(seed);
+  const jit = (amt: number): number => (rand() * 2 - 1) * amt;
+  const S = scalpFrame(rig);
+  const { ax, ay, az, browUp, c } = S;
+  const u = S.Rbar;   // lock sizes / offsets are in mean-head-radius units
+  const tv = t * volume;
+  const capT = tv * 1.07;
+  const winTop = browUp / az + 0.39;
+  const { cap } = animeCap(sdf, S, head, {
+    front: -0.02, back: -1.02 - 0.12 * (lenMul - 1),
+    window: { width: 1.2, top: winTop, tilt: 28 }, thickness: capT, crown: 3 * volume,
+  });
+  const wMul = chunk * Math.sqrt(volume);
+  const tipFloor = Math.max(u * 0.022, 0.15);
+  // Ribbons lie tangent to the head (⊥ the ray from the head centre), like F.hair.tuft.
+  const outward = (p: Vec3): Vec3 => norm3(sub3(p, c));
+  const ribbon = (a: Vec3, m: Vec3, b: Vec3, w: number, tip?: number, flat = 3.1): Node =>
+    ribbonLock(sdf, a, m, b, { width: w, thickness: w / flat, tipFloor, outward, tipWidth: tip === undefined ? undefined : w * tip });
+  /** Skin point at azimuth θ (deg), elevation φ (deg), `off` outside the skin. */
+  const onS = (th: number, ph: number, off: number): Vec3 => S.on(head, th, ph * DEG, off);
+  const atH = (th: number, h: number, off: number): Vec3 => skinAtHeight(S, head, th, h, off);
+  /** Mop-mass push-out for locks over the upper sides: peaks at the temples
+   *  (|sin θ| → 1) around 30° elevation, fades over the crown, face and nape. */
+  const flareOut = (th: number, ph: number): number =>
+    u * 0.18 * flare * Math.abs(Math.sin(th * DEG)) ** 1.5 * clamp(1 - Math.abs(ph - 34) / 30, 0, 1);
+
+  const fringeLocks: Node[] = [];
+  const locks: Node[] = [];
+
+  // Fringe: an uneven, messy row across the forehead — irregular spacing,
+  // lengths, leans and widths. Rooted inside the cap above the window top,
+  // passing over the hairline, to points above the brows (`fringe` 1; lower
+  // stops higher).
+  const nF = Math.max(3, Math.round(9 * density));
+  const midH = (winTop + 0.006) * az, rootH = (winTop + 0.24) * az;
+  for (let i = 0; i < nF; i++) {
+    const th = (nF > 1 ? -60 + (120 * i) / (nF - 1) : 0) + jit(5 * rag);
+    const lean = jit(10 * rag);
+    const tipH = Math.min(browUp + az * (0.205 + 0.32 * (1 - fringe) + jit(0.137 * rag)) - (Math.abs(th) > 50 ? az * 0.02 : 0), midH - az * 0.08);
+    const w = u * (0.176 + jit(0.026 * rag)) * wMul;
+    fringeLocks.push(ribbon(
+      atH(th * 0.8, rootH, -u * 0.044),
+      atH(th + lean * 0.4, midH, u * (0.106 + 0.035 * rand())),
+      atH(th + lean, tipH, u * (0.049 + 0.022 * rand())), w));
+  }
+
+  // Layers round the sides + back: each roots lower and hangs lower than the
+  // last, fanning OUT to a jittered, ragged hem. `length` drops the hem.
+  const drop = 14 * (lenMul - 1);
+  const layer = (rootPh: number, midPh: number, tipPh: number, step: number, th0: number, th1: number, w0: number, out: number): void => {
+    const st = step / density;
+    for (let th = th0; th <= th1; th += st * (0.85 + 0.3 * rand())) {
+      const lean = jit(8 * rag), tp = tipPh - drop + jit(8 * rag), tt = th + lean;
+      const rp = rootPh + jit(4 * rag), mp = midPh + jit(5 * rag);
+      locks.push(ribbon(
+        onS(th, rp, -u * 0.066),
+        onS(th + lean * 0.4, mp, u * (0.124 + 0.035 * rand()) + flareOut(th, mp)),
+        onS(tt, tp, out + u * 0.11 * rag * rand() + flareOut(tt, tp)),
+        u * w0 * (0.9 + 0.3 * rand()) * wMul, tipFrac));
+    }
+  };
+  for (const s of [1, -1]) {
+    // Side half: θ from the temple round to (just short of) the back centre.
+    const span = (a: number, b: number): [number, number] => (s > 0 ? [a, b] : [360 - b, 360 - a]);
+    let [t0, t1] = span(64, 178);
+    layer(66, 30, 4, 17, t0, t1, 0.194, u * 0.088);
+    if (layers >= 2) { [t0, t1] = span(70, 176); layer(34, 4, -22, 19, t0, t1, 0.247, u * 0.07); }
+  }
+  if (layers >= 3) layer(24, -6, -40, 18, 104, 256, 0.221, u * 0.13);   // outer-most nape layer (back only)
+  // A lock off each upper side sweeping back over the temple.
+  for (const s of [1, -1]) {
+    locks.push(ribbon(onS(s * 50, 62, -u * 0.066), onS(s * 80, 56, u * 0.177 + flareOut(80, 56)), onS(s * 100, 44, u * 0.353 + flareOut(100, 44)), u * 0.194 * wMul, tipFrac));
+  }
+
+  if (crown === 'spiky') {
+    // 5 sharp spikes fanning back from the crown + 2 flicking up and out at the sides.
+    [-70, -35, 0, 35, 70].forEach((dth, i) => {
+      const lift = u * (0.287 + 0.133 * (i % 2) + jit(0.027)) * spike;
+      locks.push(ribbon(onS(180 + dth * 0.25, 78, -u * 0.066), onS(180 + dth * 0.6, 66, u * 0.159 * Math.max(spike, 0.3)), onS(180 + dth, 56, lift), u * 0.23 * wMul, undefined, 2.5));
+    });
+    for (const s of [1, -1]) {
+      locks.push(ribbon(onS(s * 40, 70, -u * 0.066), onS(s * 70, 66, u * 0.177 * Math.max(spike, 0.3)), onS(s * 100, 60, u * 0.45 * spike + flareOut(100, 60)), u * 0.247 * wMul, undefined, 2.5));
+    }
+  } else {
+    // Tousled: small locks poking up at random over the crown.
+    for (let i = 0; i < 7; i++) {
+      const th = 180 + (i - 3) * 34 + jit(12 * rag);
+      locks.push(ribbon(onS(th * 0.6 + 72, 74, -u * 0.066), onS(th, 80, u * 0.133), onS(th + jit(30 * rag), 58 + jit(8 * rag), u * (0.199 + 0.155 * rand()) * spike), u * 0.194 * wMul));
+    }
+  }
+
+  // Mop mass above each ear: what a thin cap can't give (`flare` widens it).
+  let out = cap;
+  if (flare > 0) {
+    for (const s of [1, -1]) {
+      const puff = sdf.ellipsoid(u * (0.15 + 0.06 * flare), ay * 0.594, az * 0.43 * (0.92 + 0.08 * flare));
+      out = out.smoothUnion(S.local(puff, s * ax * (0.87 + 0.08 * flare), -ay * 0.149, az * 0.332), capT);
+    }
+  }
+  // Layers + crown melt into the cap with a small blend. The fringe goes on
+  // LAST with a much tighter blend (a thin fillet where it leaves the cap edge,
+  // no circular crease) — its points lie on the skin, away from the cap, so
+  // they stay crisp and legible instead of fusing into a ragged hairline.
+  out = out.smoothUnion(sdf.union(...locks), u * 0.053);
+  return out.smoothUnion(sdf.union(...fringeLocks), u * 0.03);
+}
+
 /** `F.hair.cap(rig, { on, thickness, crown, hairlinePlane, window })` — the
  *  'anime' cap on its own, for hand-built hairdos: a thin offset of the real
  *  head + crown/occiput masses, trimmed below a tilted hairline plane and cut by
@@ -4502,12 +4697,27 @@ function buildHairCap(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   let window: AnimeCapOpts['window'] = null;
   if (o.window !== false) {
     const w = obj(o.window, 'hair.cap.window');
-    assertNoUnknownKeys(w, ['width', 'top', 'tilt'], 'hair.cap.window');
+    assertNoUnknownKeys(w, ['width', 'top', 'tilt', 'notches', 'depth', 'span'], 'hair.cap.window');
     window = {
       width: num(w.width, 1.2, 'hair.cap.window.width', 0.3, 2),
       top: num(w.top, S.browUp / S.az + 0.3, 'hair.cap.window.top', -1, 1.2),
       tilt: num(w.tilt, 26, 'hair.cap.window.tilt', -60, 60),
     };
+    // Notched (jagged) hairline: `notches` pointed teeth of cap hanging into the
+    // window's top edge — crisp hard-edged points that a smooth-blended fringe
+    // can't give. Omitted / 0 = the classic clean arch (byte-identical).
+    const count = num(w.notches, 0, 'hair.cap.window.notches', 0, 24);
+    if (!Number.isInteger(count)) throw new ValidationError(`hair.cap.window.notches must be an integer 0..24. Got ${count}. See /ai/figure.md`);
+    if (count === 0 && (w.depth !== undefined || w.span !== undefined)) {
+      throw new ValidationError('hair.cap.window: depth / span only apply with notches ≥ 1. See /ai/figure.md');
+    }
+    if (count > 0) {
+      window.notches = {
+        count,
+        depth: num(w.depth, 0.15, 'hair.cap.window.depth', 0.01, 0.8),
+        span: num(w.span, 52 * Math.min(window.width / 1.2, 1.4), 'hair.cap.window.span', 5, 85),
+      };
+    }
   }
   return animeCap(sdf, S, head, { front, back, window, thickness, crown }).cap;
 }
@@ -4524,18 +4734,43 @@ function buildHairCap(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  directly. Bury the base a little inside the cap so it welds. */
 function buildHairTuft(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair.tuft(opts)');
-  assertNoUnknownKeys(o, ['base', 'dir', 'length', 'width', 'thickness', 'curve', 'shape', 'twist'], 'hair.tuft(opts)');
-  const base = asPoint3(o.base, 'hair.tuft.base');
-  const dir = norm3(assertNumberTuple(o.dir, 3, 'hair.tuft.dir') as Vec3);
+  assertNoUnknownKeys(o, ['base', 'dir', 'length', 'width', 'thickness', 'curve', 'shape', 'twist', 'tipWidth', 'from', 'to', 'via', 'on'], 'hair.tuft(opts)');
   const shape = o.shape === undefined ? 'ribbon' : assertEnum(o.shape, ['ribbon', 'tube'] as const, 'hair.tuft.shape');
-  if (shape === 'tube' && (o.thickness !== undefined || o.twist !== undefined)) {
-    throw new ValidationError("hair.tuft: thickness / twist only apply to shape 'ribbon'. See /ai/figure.md");
+  if (shape === 'tube' && (o.thickness !== undefined || o.twist !== undefined || o.tipWidth !== undefined)) {
+    throw new ValidationError("hair.tuft: thickness / twist / tipWidth only apply to shape 'ribbon'. See /ai/figure.md");
   }
   const R = Math.cbrt(rig.r.headX * rig.r.head * rig.r.headZ);
-  const length = num(o.length, R * 0.5, 'hair.tuft.length', 1e-3);
   const width = num(o.width, shape === 'ribbon' ? R * 0.28 : R * 0.15, 'hair.tuft.width', 1e-3);
   const thickness = num(o.thickness, width / 3.6, 'hair.tuft.thickness', 1e-3);
   const twist = num(o.twist, 0, 'hair.tuft.twist', -720, 720);
+  const tipWidth = o.tipWidth === undefined ? undefined : num(o.tipWidth, 0, 'hair.tuft.tipWidth', 0, width);
+  // Endpoints: the point form (`base` + `dir` + `length`) or the surface form
+  // (`from` / `to` / optional `via` as { az, el | h, out } on the head — no
+  // hand-written ray-march helpers needed).
+  const surfaceForm = o.from !== undefined || o.to !== undefined;
+  let base: Vec3, tip: Vec3, length: number, dir: Vec3;
+  let via: Vec3 | null = null;
+  if (surfaceForm) {
+    if (o.from === undefined || o.to === undefined) throw new ValidationError('hair.tuft: from and to go together (surface endpoints on the head). See /ai/figure.md');
+    for (const k of ['base', 'dir', 'length'] as const) {
+      if (o[k] !== undefined) throw new ValidationError(`hair.tuft: ${k} can't be combined with from/to (the surface endpoints define the lock). See /ai/figure.md`);
+    }
+    if (o.via !== undefined && o.curve !== undefined) throw new ValidationError('hair.tuft: give via (a surface mid point) or curve, not both. See /ai/figure.md');
+    const S = scalpFrame(rig);
+    const head = hairHead(sdf, rig, o.on);
+    base = tuftSurfacePoint(S, head, o.from, 'hair.tuft.from', -R * 0.05);
+    tip = tuftSurfacePoint(S, head, o.to, 'hair.tuft.to', 0);
+    if (o.via !== undefined) via = tuftSurfacePoint(S, head, o.via, 'hair.tuft.via', thickness);
+    length = len3(sub3(tip, base));
+    if (!(length > 1e-6)) throw new ValidationError('hair.tuft: from and to resolve to the same point. See /ai/figure.md');
+    dir = norm3(sub3(tip, base));
+  } else {
+    if (o.via !== undefined || o.on !== undefined) throw new ValidationError('hair.tuft: via / on only apply with from/to surface endpoints. See /ai/figure.md');
+    base = asPoint3(o.base, 'hair.tuft.base');
+    dir = norm3(assertNumberTuple(o.dir, 3, 'hair.tuft.dir') as Vec3);
+    length = num(o.length, R * 0.5, 'hair.tuft.length', 1e-3);
+    tip = add3(base, scale3(dir, length));
+  }
   let bend: Vec3;
   if (Array.isArray(o.curve)) bend = assertNumberTuple(o.curve, 3, 'hair.tuft.curve') as Vec3;
   else {
@@ -4544,28 +4779,51 @@ function buildHairTuft(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const perp = sub3(u, scale3(dir, dot3(u, dir)));
     bend = len3(perp) < 1e-6 ? [0, 0, 0] : scale3(norm3(perp), c * length);
   }
-  const tip = add3(base, scale3(dir, length));
-  const mid = add3(add3(base, scale3(dir, length * 0.5)), bend);
+  const mid = via ?? add3(add3(base, scale3(dir, length * 0.5)), bend);
   const tipFloor = Math.max(R * 0.022, 0.15);
   if (shape === 'tube') return hairLock(sdf, base, mid, tip, width, tipFloor, 4, 0.78);
   const hc = rig.joints.head as Vec3;
-  return ribbonLock(sdf, base, mid, tip, { width, thickness, tipFloor, twist, outward: (p) => norm3(sub3(p, hc)) });
+  return ribbonLock(sdf, base, mid, tip, { width, thickness, tipFloor, twist, outward: (p) => norm3(sub3(p, hc)), tipWidth });
+}
+
+/** Resolve a `F.hair.tuft` surface endpoint `{ az, el | h, out }` on `head`:
+ *  az = azimuth (deg; 0 = face front, +90 = the figure's left, 180 = back);
+ *  el = elevation (deg, −90..90; marched radially from the head centre) OR
+ *  h = height above the head centre in head-Z radii (marched horizontally —
+ *  use it on the face side, where "just above the brows" is a height);
+ *  out = distance outside the skin (world units; negative buries it). */
+function tuftSurfacePoint(S: ScalpFrame, head: Node, v: unknown, name: string, defOut: number): Vec3 {
+  const p = obj(v, name);
+  assertNoUnknownKeys(p, ['az', 'el', 'h', 'out'], name);
+  if (p.az === undefined) throw new ValidationError(`${name}.az is required (azimuth, degrees). See /ai/figure.md`);
+  const az = num(p.az, 0, `${name}.az`, -720, 720);
+  const out = num(p.out, defOut, `${name}.out`);
+  if ((p.el === undefined) === (p.h === undefined)) throw new ValidationError(`${name}: give exactly one of el (elevation, deg) or h (height, head-Z radii). See /ai/figure.md`);
+  if (p.el !== undefined) return S.on(head, az, num(p.el, 0, `${name}.el`, -90, 90) * DEG, out);
+  return skinAtHeight(S, head, az, num(p.h, 0, `${name}.h`, -1.5, 1.5) * S.az, out);
 }
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture', 'ears', ...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture', 'ears', ...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime'] as const, 'hair.style');
-  // Lock-style keys: `locks`/`seed`/`fringe`/`on` are shared by 'mop' and
-  // 'anime'; `spread`/`flick` are mop-only, `spike`/`swoop` anime-only.
-  const lockShared = ['locks', 'seed', 'fringe', 'on'];
-  const misplaced = style === 'mop' ? ANIME_ONLY_FIELDS.filter((k) => o[k] !== undefined)
-    : style === 'anime' ? MOP_ONLY_FIELDS.filter((k) => !lockShared.includes(k) && o[k] !== undefined)
-    : [...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS].filter((k) => o[k] !== undefined);
+    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids', 'mop', 'anime', 'shag'] as const, 'hair.style');
+  // Lock-style keys and the styles that read them: `locks`/`seed`/`fringe`/`on`
+  // are shared by every lock style; `spread`/`flick` are mop-only,
+  // `swoop`/`lockShape` anime-only, `spike`/`chunk` anime + shag, and
+  // `layers`/`raggedness`/`crown`/`flare`/`tipWidth` shag-only.
+  const keyStyles = (k: string): readonly string[] =>
+    ['locks', 'seed', 'fringe', 'on'].includes(k) ? ['mop', 'anime', 'shag']
+      : ['spike', 'chunk'].includes(k) ? ['anime', 'shag']
+      : ANIME_ONLY_FIELDS.includes(k) ? ['anime']
+      : SHAG_ONLY_FIELDS.includes(k) ? ['shag']
+      : ['mop'];
+  const misplaced = [...MOP_ONLY_FIELDS, ...ANIME_ONLY_FIELDS, ...SHAG_ONLY_FIELDS]
+    .filter((k) => o[k] !== undefined && !keyStyles(k).includes(style));
   if (misplaced.length) {
-    const owner = (k: string): string => lockShared.includes(k) ? "'mop' or 'anime'" : ANIME_ONLY_FIELDS.includes(k) ? "'anime'" : "'mop'";
-    throw new ValidationError(`hair: [${misplaced.join(', ')}] only apply to style ${owner(misplaced[0])}. See /ai/figure.md`);
+    const owners = keyStyles(misplaced[0]).map((x) => `'${x}'`);
+    const owner = owners.length > 1 ? `${owners.slice(0, -1).join(', ')} or ${owners[owners.length - 1]}` : owners[0];
+    throw new ValidationError(`hair: [${misplaced.join(', ')}] only apply to style ${owner}. See /ai/figure.md`);
   }
   // bald = no hair. Return a sub-cell sphere AT the head centre (not parked at
   // z ≈ −1e6): it meshes to nothing on any real grid and is swallowed inside
@@ -4619,6 +4877,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the face front. (volume puffs the offset; 1 = the classic cap.)
   let cap = style === 'mop' ? buildMopHair(sdf, rig, o, t, volume, lenMul, ears)
     : style === 'anime' ? buildAnimeHair(sdf, rig, o, t, volume, lenMul, ears)
+    : style === 'shag' ? buildShagHair(sdf, rig, o, t, volume, lenMul)
     : sdf.ellipsoid(r.headX + tv, r.head + tv, r.headZ + tv)
       .translate(add3(c, add3(scale3(f, -tv * 0.6), scale3(u, tv * 0.4))));
   if (style === 'long') {
@@ -4873,7 +5132,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // brows (the cartoon hairline), 'low' lands ON the brow line (bangs),
   // 'high' opens the forehead. Sides keep the temples framed.
   // The mop carves its own face window BEFORE laying the fringe over it.
-  if (style === 'mop' || style === 'anime') return cap;
+  if (style === 'mop' || style === 'anime' || style === 'shag') return cap;
   const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
   const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
@@ -5440,16 +5699,20 @@ export interface FigureNamespace {
    *  public/ai/figure.md for `style`/`hairline`/`length`/`volume`/`part`/`texture`. */
   hair: {
     (rig: Rig, opts?: object): Node;
-    /** The 'anime' cap alone (thin skull offset, tilted hairline plane, arched face window). */
+    /** The 'anime' cap alone (thin skull offset, tilted hairline plane, arched
+     *  face window; `window: { notches, depth, span }` makes a jagged hairline). */
     cap(rig: Rig, opts?: object): Node;
-    /** One chunky anime lock from `base` along `dir`, tapering to a point: a flat
-     *  ribbon lying on the head (default) or `shape: 'tube'`. */
+    /** One chunky anime lock tapering to a point: a flat ribbon lying on the head
+     *  (default) or `shape: 'tube'`. Endpoints: `base` + `dir` + `length`, or
+     *  surface points `from` / `to` (/ `via`) as `{ az, el | h, out }` on the
+     *  head (`on`). `tipWidth` floors the ribbon tip's half-width. */
     tuft(rig: Rig, opts?: object): Node;
   };
   /** Drop a finished figure onto a floor and turn it to face an axis:
    *  `F.place(model, rig, { floor: 0, face: '+X' })`. Call it on the BUILT mesh
    *  (after `.build({ detail })`). `drop`: 'auto' | 'sole' | 'bounds'; optional
-   *  `height` rescales to that total height. */
+   *  `height` rescales to that total height (`heightOf: 'body'` measures it to
+   *  the rig's crown instead, so hair spikes / hats don't shrink the figure). */
   place<T>(node: T, rig: Rig, opts?: object): T;
   /** The sphere a `pose.hold` rig is holding, as an SDF node (unlabelled) at
    *  `rig.hold.center` / `rig.hold.radius`. */
@@ -6253,10 +6516,13 @@ const FACE_YAW: Record<string, number> = { '-Y': 0, '+X': 90, '+Y': 180, '-X': -
  *     'bounds' (the node's bounding-box bottom).
  *   - `face`: '-Y' (default, the builder's front), '+X', '+Y', '-X'.
  *   - `height`: optional — uniformly scale so the model's total height (bottom
- *     to top of its bounds) equals this, about the floor. */
+ *     to top of its bounds) equals this, about the floor.
+ *   - `heightOf`: what `height` measures — 'all' (default, the full bounds,
+ *     hair spikes included) or 'body' (floor → the rig's crown, i.e. the top
+ *     of the skull as rigged — hair, hats and raised props excluded). */
 function placeFigure(node: unknown, rig: Rig, opts?: unknown): unknown {
   const o = obj(opts, 'place(opts)');
-  assertNoUnknownKeys(o, ['floor', 'face', 'drop', 'height'], 'place(opts)');
+  assertNoUnknownKeys(o, ['floor', 'face', 'drop', 'height', 'heightOf'], 'place(opts)');
   const n = node as Placeable;
   if (!n || typeof n.translate !== 'function' || typeof n.rotate !== 'function' || typeof n.scale !== 'function') {
     throw new ValidationError('place(node) must be a built Manifold or an SDF node. See /ai/figure.md');
@@ -6265,6 +6531,8 @@ function placeFigure(node: unknown, rig: Rig, opts?: unknown): unknown {
   const face = o.face === undefined ? '-Y' : assertEnum(o.face, ['-Y', '+X', '+Y', '-X'] as const, 'place.face');
   const drop = o.drop === undefined ? 'auto' : assertEnum(o.drop, ['auto', 'sole', 'bounds'] as const, 'place.drop');
   const height = o.height === undefined ? undefined : num(o.height, 1, 'place.height', 1e-6);
+  const heightOf = o.heightOf === undefined ? 'all' : assertEnum(o.heightOf, ['all', 'body'] as const, 'place.heightOf');
+  if (o.heightOf !== undefined && height === undefined) throw new ValidationError('place: heightOf only applies with height. See /ai/figure.md');
   const box = (): { min: ArrayLike<number>; max: ArrayLike<number> } | null =>
     typeof n.boundingBox === 'function' ? n.boundingBox() : typeof n.bounds === 'function' ? n.bounds() : null;
   const isMesh = typeof n.boundingBox === 'function';
@@ -6278,7 +6546,11 @@ function placeFigure(node: unknown, rig: Rig, opts?: unknown): unknown {
   if (height !== undefined) {
     const b = box();
     if (!b) throw new ValidationError('place: height needs a node with boundingBox()/bounds()');
-    const span = b.max[2] - minZ;
+    // 'all' = the full bounds (hair spikes, hats, raised props included);
+    // 'body' = up to the rig's crown (top of the skull as rigged), so tall
+    // crown spikes / a hat don't shrink the figure.
+    const top = heightOf === 'body' ? (rig.joints.crown as Vec3)[2] : b.max[2];
+    const span = top - minZ;
     if (!(span > 0)) throw new ValidationError('place: model has no vertical extent above its floor');
     out = out.translate([0, 0, -floor]).scale(height / span).translate([0, 0, floor]);
   }

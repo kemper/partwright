@@ -8,7 +8,7 @@ import { specToCode } from '../../src/figure/characterCodegen';
 import {
   DEFAULT_SPEC, SPEC_VERSION, STYLE_DEFAULTS,
   BUILDS, SEXES, PROPORTIONS, FACE_SHAPES, LID_STYLES, GAZES, NOSE_TYPES, EXPRESSIONS,
-  LIP_SHAPES, EAR_TYPES, BROW_SHAPES, HAIR_STYLES, HAIR_LENGTHS, LOCK_SHAPES, SLEEVES,
+  LIP_SHAPES, EAR_TYPES, BROW_SHAPES, HAIR_STYLES, HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES,
   PANTS_LEGS, PANTS_RISES, PANTS_LENGTHS, HOLD_CUPS,
   applyStyle, cloneSpec, decodeSpecComment, encodeSpecComment, normalizeSpec,
   resolvedHeadScale, specJsonSchema, validateSpec,
@@ -47,7 +47,7 @@ describe('CharacterSpec v1 → v2 migration', () => {
     expect(m.body.headScale).toBeNull();
     expect(m.face.layout).toEqual({ eyeSpread: null, eyeHeight: null });
     expect(m.pose.hold.kind).toBe('none');
-    expect(m.hair).toMatchObject({ lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1 });
+    expect(m.hair).toMatchObject({ lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1 });
     expect(typeof m.colors.ball).toBe('string');
     expect(validateSpec(m)).toEqual([]);
   });
@@ -100,6 +100,26 @@ describe('CharacterSpec v2 codegen', () => {
     expect(short).toContain("F.hair(rig, { style: 'short', length: 'mid' })");
     // all-default anime: just style + on.
     expect(specToCode(v2(s => { s.hair.style = 'anime'; }))).toContain("F.hair(rig, { style: 'anime', length: 'mid', on: head })");
+    // anime ignores the shag-only knobs.
+    const animeShagKnobs = specToCode(v2(s => { s.hair = { ...s.hair, style: 'anime', crown: 'tousled', layers: 2, raggedness: 0.5, flare: 2 }; }));
+    expect(animeShagKnobs).toContain("F.hair(rig, { style: 'anime', length: 'mid', on: head })");
+  });
+
+  it("emits the 'shag' knobs (crown/layers/raggedness/flare + chunk/spike) only off-default", () => {
+    // all-default shag: just style + on (crown 'spiky', 3 layers are the library defaults).
+    expect(specToCode(v2(s => { s.hair.style = 'shag'; }))).toContain("F.hair(rig, { style: 'shag', length: 'mid', on: head })");
+    const shag = specToCode(v2(s => {
+      s.hair = { ...s.hair, style: 'shag', crown: 'tousled', layers: 2, raggedness: 1.4, flare: 0.8, spike: 0.8, chunk: 1.2, swoop: 2, lockShape: 'tube', fringe: 0.6, seed: 11 };
+    }));
+    // swoop / lockShape are anime-only — never emitted for shag.
+    expect(shag).toContain("F.hair(rig, { style: 'shag', length: 'mid', chunk: 1.2, spike: 0.8, crown: 'tousled', layers: 2, raggedness: 1.4, flare: 0.8, fringe: 0.6, seed: 11, on: head })");
+    // A fractional layers value (hand-edited spec) is rounded to the integer the library needs.
+    expect(specToCode(v2(s => { s.hair = { ...s.hair, style: 'shag', layers: 1.6 }; }))).toContain('layers: 2,');
+    // Validation rejects a bad crown / out-of-range layers + raggedness, with paths.
+    const errs = validateSpec(v2(s => { s.hair = { ...s.hair, style: 'shag', crown: 'mohawk' as never, layers: 5, raggedness: -1 }; })).join(' | ');
+    expect(errs).toContain('hair.crown');
+    expect(errs).toContain('hair.layers');
+    expect(errs).toContain('hair.raggedness');
   });
 
   it('a held ball solves the arms, opens the hands, adds + patterns the ball', () => {
@@ -245,6 +265,7 @@ describe('CharacterSpec enums match the figure library', () => {
     same(HAIR_STYLES, libraryEnum(() => T.buildHair(api, rig, { style: BOGUS })));
     same(HAIR_LENGTHS, libraryEnum(() => T.buildHair(api, rig, { length: BOGUS })));
     same(LOCK_SHAPES, libraryEnum(() => T.buildHair(api, rig, { style: 'anime', lockShape: BOGUS })));
+    same(HAIR_CROWNS, libraryEnum(() => T.buildHair(api, rig, { style: 'shag', crown: BOGUS })));
     same(SLEEVES, libraryEnum(() => F.clothing.top(rig, { sleeve: BOGUS })));
     same(PANTS_LEGS, libraryEnum(() => F.clothing.pants(rig, { leg: BOGUS })));
     same(PANTS_RISES, libraryEnum(() => F.clothing.pants(rig, { rise: BOGUS })));
