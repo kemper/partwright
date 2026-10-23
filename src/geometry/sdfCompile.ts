@@ -46,6 +46,7 @@ const SUPPORTED = new Set([
   'sphere', 'box', 'ellipsoid', 'cylinder', 'torus', 'capsule',
   'union', 'subtract', 'intersect', 'smoothUnion', 'smoothSubtract', 'smoothIntersect',
   'translate', 'rotate', 'scale', 'mirror', 'round', 'shell', 'twist', 'bend', 'taper',
+  'bounded',
 ]);
 /** Wrappers transparent to evaluation — skip straight to the child. */
 const TRANSPARENT = new Set(['labelled', 'fineHands']);
@@ -278,6 +279,18 @@ class Emitter {
         E(`const ${mx}=${nc.x},${my}=${nc.y},${mz}=${nc.z};`);
         const cv = this.child(node._children[0], { x: mx, y: my, z: mz });
         E(`const ${out}=${cv}*Math.min(${s},1);`); return out;
+      }
+      case 'bounded': {
+        // Bounding-box culling: past `margin` outside the child's box, the box
+        // distance stands in for the child (which is then never evaluated).
+        const mn = p.min as Vec3, mx = p.max as Vec3;
+        const dx = this.v(), dy = this.v(), dz = this.v(), d = this.v();
+        E(`const ${dx}=Math.max(${L(mn[0])}-${c.x},${c.x}-${L(mx[0])},0),${dy}=Math.max(${L(mn[1])}-${c.y},${c.y}-${L(mx[1])},0),${dz}=Math.max(${L(mn[2])}-${c.z},${c.z}-${L(mx[2])},0);`);
+        E(`const ${d}=Math.sqrt(${dx}*${dx}+${dy}*${dy}+${dz}*${dz});`);
+        E(`let ${out};if(${d}>${L(p.margin as number)}){${out}=${d};}else{`);
+        const cv = this.child(node._children[0], c);
+        E(`${out}=${cv};}`);
+        return out;
       }
       default:
         // Unreachable: child() gates on SUPPORTED before calling emit().

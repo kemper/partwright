@@ -28,6 +28,7 @@ import {
   assertNoUnknownKeys,
   ValidationError,
 } from '../validation/apiValidation';
+import { textToContours, type FontVariant } from './textGlyphs';
 
 export type Vec3 = [number, number, number];
 
@@ -80,6 +81,12 @@ export interface SdfApi {
    *  per-sphere at a uniform fine grid and hard-unioned, so the coarse body
    *  march never webs the fingers. */
   __fineHands(node: Node, regions: FineRegion[]): Node;
+  /** Internal: bounding-box culling (optional — plain test APIs may omit it). */
+  __bounded?(node: Node, margin: number): Node;
+  /** Internal: extruded 2D polygon set (emboss lettering). */
+  __polygonPrism?(contours: Array<Array<[number, number]>>, halfDepth: number): Node;
+  /** Internal: radial-projection warp onto an ellipsoid (the hair window). */
+  __radialProject?(node: Node, center: Vec3, radiusOf: (ux: number, uy: number, uz: number) => number, pad: number): Node;
 }
 
 // --- Small vector math ----------------------------------------------------
@@ -168,9 +175,9 @@ const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'belly', 'pose', 'headScale', 'proportions', 'faceLayout'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'belly', 'pose', 'headScale', 'proportions', 'faceLayout', 'headSink'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine', 'hold'];
-const HOLD_FIELDS = ['sphere', 'cup', 'height'];
+const HOLD_FIELDS = ['sphere', 'cup', 'cupL', 'cupR', 'handScale', 'height'];
 const HOLD_CUPS = ['under', 'sides'] as const;
 const FACE_LAYOUT_FIELDS = ['eyeSpread', 'eyeHeight'];
 
@@ -336,6 +343,13 @@ export interface RigOptions {
    *  (default 0; negative = lower, Funko −0.35); the brows, nose and mouth
    *  follow at 60% of that shift. */
   faceLayout?: { eyeSpread?: number; eyeHeight?: number };
+  /** Lower the head onto the shoulders (the "no neck" toy look), in units of
+   *  the neck length (0..1.5, default 0; 1 drops the chin to the shoulder
+   *  line). The head centre, crown, chin and every face anchor move down, so
+   *  `F.head`, `F.face.*`, `F.hair`, `F.faceDetail`, brows and `placeOnHead`
+   *  all follow with no hand translation. The body is unchanged, so the crown
+   *  (and the figure's total height) drops by `headSink × neck length`. */
+  headSink?: number;
   pose?: {
     armL?: object; armR?: object; legL?: object; legR?: object;
     head?: object; spine?: object;
@@ -355,6 +369,13 @@ export interface HoldFrame {
   center: Vec3;
   radius: number;
   cup: 'under' | 'sides';
+  /** Per-hand cup (`pose.hold.cupL` / `cupR`, each defaulting to `cup`) — e.g.
+   *  one hand under the ball and one at its side. */
+  cupL: 'under' | 'sides';
+  cupR: 'under' | 'sides';
+  /** The hand size the solve assumed (`pose.hold.handScale`, default 1).
+   *  `F.hands` defaults its `size` to this, so the built hands match the solve. */
+  handScale: number;
   /** Per-hand contact points ON the sphere surface (where each palm rests). */
   contactL: Vec3;
   contactR: Vec3;
@@ -522,6 +543,8 @@ export interface Rig {
     height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; belly: number; pose: ResolvedPose;
     /** Present only when the head is scaled (`headScale` / `proportions`). */
     headScale?: HeadScale;
+    /** Present only when the head is lowered (`headSink` > 0). */
+    headSink?: number;
   };
 }
 
@@ -636,6 +659,12 @@ function figureSkin(name?: unknown): string | Record<SkinToneName, string> {
 
 interface ArmFK { S: Vec3; E: Vec3; W: Vec3; handC: Vec3; foreDir: Vec3; handSplay: Vec3 }
 
+/** Parsed `pose.hold`. `cupL`/`cupR` default to `cup`; `handScale` to 1. */
+interface HoldSpec {
+  radius: number; center?: Vec3; cup: 'under' | 'sides'; cupL: 'under' | 'sides'; cupR: 'under' | 'sides';
+  handScale: number; height?: number;
+}
+
 /** Solve BOTH arms for a two-hand sphere hold (`rig.pose.hold`). Works in the
  *  rig's pre-spine frame (the arm FK runs there; the spine lean is applied to
  *  the result afterwards), using the rig's own `armChain` as the forward model,
@@ -650,7 +679,7 @@ interface ArmFK { S: Vec3; E: Vec3; W: Vec3; handC: Vec3; foreDir: Vec3; handSpl
  *  The palm geometry mirrors buildHands' canonical hand at its default size
  *  (palm centre 0.43·rh along reach, palm face 0.25·rh off the slab axis). */
 function solveSphereHold(
-  spec: { radius: number; center?: Vec3; cup: 'under' | 'sides'; height?: number },
+  spec: HoldSpec,
   armChain: (side: number, p: JointPose) => ArmFK,
   spine: SpinePose,
   r: Record<string, number>,
@@ -666,24 +695,44 @@ function solveSphereHold(
   // Default centre: just in front of the torso (touching the belly/chest), at
   // belly height for a cradle, a bit higher for a side grip — in the body frame
   // so a leaning figure carries the ball with its chest.
-  const cz = spec.height ?? mix(z.hipZ, z.chestZ, spec.cup === 'under' ? 0.45 : 0.6);
+  const nUnder = (spec.cupL === 'under' ? 1 : 0) + (spec.cupR === 'under' ? 1 : 0);
+  const cz = spec.height ?? mix(z.hipZ, z.chestZ, nUnder === 2 ? 0.45 : nUnder === 0 ? 0.6 : 0.525);
   const centerL: Vec3 = spec.center ? toLocal(spec.center) : [0, -(r.chestY * 0.95 + R), cz];
   const centerW: Vec3 = spec.center ? [...spec.center] as Vec3 : toWorld(centerL);
-  const rh = r.hand * 1.15;   // F.hands' default hand radius (size 1)
-  // Contact normals (figure-LEFT hand; the right mirrors x) + the preferred
-  // finger direction (forward around the ball, a little inward).
-  const nL = norm3(spec.cup === 'under' ? [0.42, -0.05, -0.9] : [0.86, -0.2, -0.47]);
-  const prefL = norm3(spec.cup === 'under' ? [-0.45, -0.85, 0.1] : [-0.2, -1, 0.35]);
-  const solveSide = (side: number): { pose: JointPose; contact: Vec3; err: number } => {
-    const n: Vec3 = [nL[0] * side, nL[1], nL[2]];
+  const rh = r.hand * 1.15 * spec.handScale;   // F.hands' hand radius (size = handScale)
+  const solveSide = (side: number, cup: 'under' | 'sides'): { pose: JointPose; contact: Vec3; err: number } => {
+    // Contact normal (figure-LEFT hand; the right mirrors x) + the preferred
+    // finger direction (forward around the ball, a little inward).
+    const nL = norm3(cup === 'under' ? [0.42, -0.05, -0.9] : [0.86, -0.2, -0.47]);
+    const prefL = norm3(cup === 'under' ? [-0.45, -0.85, 0.1] : [-0.2, -1, 0.35]);
+    const n0: Vec3 = [nL[0] * side, nL[1], nL[2]];
     const prefRaw: Vec3 = [prefL[0] * side, prefL[1], prefL[2]];
-    const pref = norm3(sub3(prefRaw, scale3(n, dot3(prefRaw, n))));   // tangent to the ball
-    const contact = add3(centerL, scale3(n, R));
-    const target = add3(centerL, scale3(n, R - rh * 0.06));          // sink the palm a hair
-    const palmAim: Vec3 = [-n[0], -n[1], -n[2]];
-    const lo = [-20, -60, 0, -90], hi = [100, 130, 150, 90];
-    const mk = (p: number[]): JointPose => ({ raiseSide: p[0], raiseFwd: p[1], bend: p[2], twist: p[3], palmFacing: palmAim });
+    // 'under' (#1055): short toy arms often can't put the palm on the ball's
+    // very bottom — the fixed-normal solve left a ~23%-of-hand gap. Let the
+    // contact itself slide (two extra search DOFs: up the ball's side by dEl,
+    // round it by dAz, softly penalised) so the palm lands ON the ball where the
+    // arm can reach, still cradling it from below. 'sides' keeps its fixed contact.
+    const free = cup === 'under';
+    const az0 = Math.atan2(n0[1], n0[0]), el0 = Math.asin(clamp(n0[2], -1, 1));
+    const normalOf = (p: number[]): Vec3 => {
+      if (!free) return n0;
+      const a = az0 + side * p[5] * DEG, e = el0 + p[4] * DEG;
+      return [Math.cos(e) * Math.cos(a), Math.cos(e) * Math.sin(a), Math.sin(e)];
+    };
+    const frameOf = (p: number[]): { n: Vec3; target: Vec3; pref: Vec3; aim: Vec3 } => {
+      const n = normalOf(p);
+      return {
+        n,
+        target: add3(centerL, scale3(n, R - rh * 0.06)),                 // sink the palm a hair
+        pref: norm3(sub3(prefRaw, scale3(n, dot3(prefRaw, n)))),        // tangent to the ball
+        aim: [-n[0], -n[1], -n[2]],
+      };
+    };
+    const lo = [-20, -60, 0, -90, -8, -35], hi = [100, 130, 150, 90, 45, 35];
+    const nP = free ? 6 : 4;
+    const mk = (p: number[]): JointPose => ({ raiseSide: p[0], raiseFwd: p[1], bend: p[2], twist: p[3], palmFacing: frameOf(p).aim });
     const evalP = (p: number[]): { c: number; d: number } => {
+      const { n, target, pref } = frameOf(p);
       const a = armChain(side, mk(p));
       const palmN = norm3(cross3(a.foreDir, a.handSplay));
       const palmC = add3(add3(a.handC, scale3(a.foreDir, rh * 0.43)), scale3(palmN, rh * 0.25));
@@ -701,9 +750,10 @@ function solveSphereHold(
       const eIn = R + r.upperArm - len3(sub3(a.E, centerL));
       if (eIn > 0) c += 3 * (eIn / rh) ** 2;
       c += 0.02 * (p[3] / 90) ** 2;                  // mild preference for no twist
+      if (free) c += 0.1 * ((p[4] / 30) ** 2 + (p[5] / 30) ** 2);
       return { c, d };
     };
-    const seeds = [[15, 40, 60, 0], [30, 20, 90, -30], [5, 60, 40, 20], [45, 50, 110, 30]];
+    const seeds = [[15, 40, 60, 0, 0, 0], [30, 20, 90, -30, 0, 0], [5, 60, 40, 20, 0, 0], [45, 50, 110, 30, 0, 0]];
     let best: { p: number[]; c: number } | null = null;
     for (const seed of seeds) {
       let p = seed.slice();
@@ -711,7 +761,7 @@ function solveSphereHold(
       let step = 12, iters = 0;
       while (step > 0.01 && iters++ < 4000) {
         let improved = false;
-        for (let k = 0; k < 4; k++) {
+        for (let k = 0; k < nP; k++) {
           for (const sgn of [1, -1]) {
             const q = p.slice();
             q[k] = clamp(q[k] + sgn * step, lo[k], hi[k]);
@@ -724,14 +774,14 @@ function solveSphereHold(
       if (!best || cur < best.c) best = { p, c: cur };
     }
     const p = best!.p;
-    return { pose: mk(p), contact, err: evalP(p).d };
+    return { pose: mk(p), contact: add3(centerL, scale3(normalOf(p), R)), err: evalP(p).d };
   };
-  const L = solveSide(+1), Rr = solveSide(-1);
+  const L = solveSide(+1, spec.cupL), Rr = solveSide(-1, spec.cupR);
   return {
     armL: L.pose,
     armR: Rr.pose,
     frame: {
-      center: centerW, radius: R, cup: spec.cup,
+      center: centerW, radius: R, cup: spec.cup, cupL: spec.cupL, cupR: spec.cupR, handScale: spec.handScale,
       contactL: toWorld(L.contact), contactR: toWorld(Rr.contact),
       residual: Math.max(L.err, Rr.err),
     },
@@ -790,7 +840,7 @@ function buildRig(rawOpts: unknown): Rig {
   assertNoUnknownKeys(legsBase, LEG_FIELDS, 'rig.pose.legs');
   const mergeArm = (side: unknown) => ({ ...armsBase, ...obj(side, 'rig.pose.arm*') });
   // Two-hand sphere hold — solved below (after the arm FK closure exists).
-  let holdSpec: { radius: number; center?: Vec3; cup: 'under' | 'sides'; height?: number } | null = null;
+  let holdSpec: HoldSpec | null = null;
   if (poseRaw.hold !== undefined) {
     const ho = obj(poseRaw.hold, 'rig.pose.hold');
     assertNoUnknownKeys(ho, HOLD_FIELDS, 'rig.pose.hold');
@@ -801,10 +851,16 @@ function buildRig(rawOpts: unknown): Rig {
     const so = assertObject(ho.sphere, 'rig.pose.hold.sphere') as Record<string, unknown>;
     assertNoUnknownKeys(so, ['radius', 'center'], 'rig.pose.hold.sphere');
     if (so.radius === undefined) throw new ValidationError('rig.pose.hold.sphere.radius is required');
+    const cup = ho.cup === undefined ? 'sides' : assertEnum(ho.cup, HOLD_CUPS, 'rig.pose.hold.cup');
     holdSpec = {
       radius: num(so.radius, 1, 'rig.pose.hold.sphere.radius', 1e-3),
       center: so.center === undefined ? undefined : assertNumberTuple(so.center, 3, 'rig.pose.hold.sphere.center') as Vec3,
-      cup: ho.cup === undefined ? 'sides' : assertEnum(ho.cup, HOLD_CUPS, 'rig.pose.hold.cup'),
+      cup,
+      // Per-hand cups (#1055) — one hand under the ball, one at its side.
+      cupL: ho.cupL === undefined ? cup : assertEnum(ho.cupL, HOLD_CUPS, 'rig.pose.hold.cupL'),
+      cupR: ho.cupR === undefined ? cup : assertEnum(ho.cupR, HOLD_CUPS, 'rig.pose.hold.cupR'),
+      // Hand size the solve assumes; F.hands defaults its `size` to it.
+      handScale: num(ho.handScale, 1, 'rig.pose.hold.handScale', 0.5, 2.5),
       height: ho.height === undefined ? undefined : num(ho.height, 0, 'rig.pose.hold.height'),
     };
   }
@@ -1155,6 +1211,22 @@ function buildRig(rawOpts: unknown): Rig {
     r.head *= hs.y; r.headX *= hs.x; r.headZ *= hs.z;
   }
 
+  // --- headSink: lower the whole head onto the shoulders ------------------
+  // (#1055) Toy figures often have no visible neck. Move the head centre, crown,
+  // chin and every face anchor straight down by `headSink` neck-lengths, so
+  // every head-derived builder (head, face, ears, brows, hair, faceDetail,
+  // placeOnHead) follows — instead of hand-translating each node. 0 ⇒ untouched.
+  const headSink = num(o.headSink, 0, 'rig.headSink', 0, 1.5);
+  let chinP: Vec3 = [0, 0, chinZ];
+  if (headSink > 0) {
+    const dz = headSink * neckLen;
+    const down = (p: Vec3): Vec3 => [p[0], p[1], p[2] - dz];
+    for (const k of Object.keys(face) as Array<keyof FaceAnchors>) face[k] = down(face[k]);
+    headC = down(headC);
+    crownP = down(crownP);
+    chinP = down(chinP);
+  }
+
   // --- Spine: rigid-rotate the above-waist mass about the navel ----------
   // `spine.{lean,turn,side}` were parsed and validated but never applied.
   // Model the spine as a single waist pivot: rotate every above-navel joint and
@@ -1236,7 +1308,7 @@ function buildRig(rawOpts: unknown): Rig {
   // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
   const joints: Record<string, Vec3> = {
     hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
-    neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headC), crown: sPt(crownP), chin: sPt([0, 0, chinZ]),
+    neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headC), crown: sPt(crownP), chin: sPt(chinP),
     upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
     upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
     upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
@@ -1334,7 +1406,7 @@ function buildRig(rawOpts: unknown): Rig {
     forearm,
     floorZ: Math.min(soleL.groundZ, soleR.groundZ),
     ...(holdFrame ? { hold: holdFrame } : {}),
-    opts: { height: Hreq, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose, ...(hsActive ? { headScale: hs } : {}) },
+    opts: { height: Hreq, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose, ...(hsActive ? { headScale: hs } : {}), ...(headSink > 0 ? { headSink } : {}) },
   };
 }
 
@@ -1698,8 +1770,13 @@ function surfaceMarking(surface: Node, region: Node, relief: number, soften: num
  *  node that still sits on the rig (its bounds contain `anchor`, the rig head
  *  centre). So `face.translate(0, 0, dz)` carries its rig-anchored features
  *  along, while a translate that merely POSITIONS a primitive at the head
- *  (`sdf.sphere(r).translate(head)`) isn't mistaken for a move. A translate
- *  buried inside a union/weld can't be seen; pass the moved node itself. */
+ *  (`sdf.sphere(r).translate(head)`) isn't mistaken for a move.
+ *
+ *  When the node is a union / weld (#1055: `on: skin`, the whole welded body
+ *  with the moved face inside it), the translate is buried below the combine
+ *  nodes: search down through unions, smooth unions, labels and subtract/round
+ *  wrappers for translates whose child sits on the rig head, and take the most
+ *  specific one (the smallest such child — the face, not a whole moved body). */
 function peelTranslation(node: Node, anchor: Vec3): Vec3 {
   type Peelable = Node & { _children?: readonly Node[]; _cp?: { t?: Vec3 } };
   const contains = (n: Node): boolean => {
@@ -1708,12 +1785,34 @@ function peelTranslation(node: Node, anchor: Vec3): Vec3 {
   };
   let t: Vec3 = [0, 0, 0], best: Vec3 = [0, 0, 0];
   let n = node as Peelable;
+  let found = false;
   for (let guard = 0; guard < 64 && n; guard++) {
     if (n.kind === 'translate' && n._cp?.t) t = add3(t, n._cp.t);
     else if (n.kind !== 'labelled') break;
     n = n._children?.[0] as Peelable;
-    if (n && n.kind !== 'labelled' && typeof n.bounds === 'function' && contains(n)) best = t;
+    if (n && n.kind !== 'labelled' && typeof n.bounds === 'function' && contains(n)) { best = t; found = true; }
   }
+  if (found || !n) return best;
+  // Deep search below a combine node (a weld / union holding the moved face).
+  const COMBINE = new Set(['union', 'smoothUnion', 'labelled', 'fineHands', 'subtract', 'smoothSubtract', 'round', 'bounded']);
+  if (!COMBINE.has(n.kind ?? '')) return best;
+  let bestVol = Infinity;
+  const volOf = (m: Node): number => { const bb = m.bounds(); return (bb.max[0] - bb.min[0]) * (bb.max[1] - bb.min[1]) * (bb.max[2] - bb.min[2]); };
+  const walk = (m: Peelable, acc: Vec3, depth: number): void => {
+    if (!m || depth > 400) return;
+    if (m.kind === 'translate' && m._cp?.t) {
+      const child = m._children?.[0] as Peelable | undefined;
+      if (!child || typeof child.bounds !== 'function' || !contains(child)) return;   // positions a primitive — not a move
+      const acc2 = add3(acc, m._cp.t);
+      const v = volOf(child);
+      if (v < bestVol && (acc2[0] !== 0 || acc2[1] !== 0 || acc2[2] !== 0)) { bestVol = v; best = acc2; }
+      walk(child, acc2, depth + 1);
+      return;
+    }
+    if (!COMBINE.has(m.kind ?? '')) return;
+    for (const c of m._children ?? []) walk(c as Peelable, acc, depth + 1);
+  };
+  walk(n, t, 0);
   return best;
 }
 
@@ -1938,6 +2037,11 @@ function buildArms(sdf: SdfApi, rig: Rig, side?: 'L' | 'R'): Node {
  *  palm slab. */
 function eulerFromBasis(cx: Vec3, cy: Vec3, cz: Vec3): Vec3 {
   const D = 180 / Math.PI;
+  // Gimbal lock (cx ∥ ±Z, ry = ∓90°): rx and rz couple — take rz = 0 and read
+  // rx off cy (the general formula below divides 0 by 0 there).
+  if (Math.hypot(cx[0], cx[1]) < 1e-9) {
+    return cx[2] < 0 ? [Math.atan2(cy[0], cy[1]) * D, 90, 0] : [Math.atan2(-cy[0], cy[1]) * D, -90, 0];
+  }
   const ry = Math.atan2(-cx[2], Math.hypot(cx[0], cx[1]));
   const rz = Math.atan2(cx[1], cx[0]);
   const rx = Math.atan2(cy[2], cz[2]);
@@ -1966,7 +2070,8 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // `size` scales the whole hand around the wrist. The 1.15 baseline makes hands
   // a bit larger than the bare rig proportion by default (they read better);
   // `size` multiplies that, so size:1 = default, size:1.3 = noticeably bigger.
-  const sizeK = num(o.size, 1, 'hands.size', 0.3, 3);
+  // A `pose.hold` rig solved its arms for `hold.handScale`-sized hands — default to it.
+  const sizeK = num(o.size, rig.hold?.handScale ?? 1, 'hands.size', 0.3, 3);
   const j = rig.joints, r = rig.r, rh = r.hand * 1.15 * sizeK;
 
   // Per-finger [curl 0..1] and [spread °] for index→pinky, plus the thumb pose.
@@ -2429,9 +2534,24 @@ function footDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'boots'): Node {
   const name = `clothing.${kind}(opts)`;
   const o = obj(opts, name);
-  const keys = kind === 'boots' ? ['size', 'shaftZ', 'thickness', 'label', 'sole'] : ['size', 'thickness', 'label', 'sole'];
+  const keys = kind === 'boots' ? ['size', 'shaftZ', 'thickness', 'label', 'sole'] : ['size', 'thickness', 'label', 'sole', 'style', 'height', 'cleats'];
   assertNoUnknownKeys(o, keys, name);
   const j = rig.joints, r = rig.r;
+  // `style: 'toy'` (#1055, shoes only) — a chunky, rounded vinyl-toy sneaker
+  // (Funko): a big rounded body + toe cap well past the foot, on a thick flat
+  // sole. `height` scales the toy upper's height; `cleats` adds studs under the
+  // sole (true = 6, or a count 2..12). Default 'fitted' = the foot-hugging shoe.
+  const style = o.style === undefined ? 'fitted' : assertEnum(o.style, ['fitted', 'toy'] as const, `${kind}.style`);
+  if (style !== 'toy' && (o.height !== undefined || o.cleats !== undefined)) {
+    throw new ValidationError(`${kind}: height / cleats only apply to style 'toy'. See /ai/figure.md`);
+  }
+  const toyH = num(o.height, 1, `${kind}.height`, 0.4, 2.5);
+  let cleatN = 0;
+  if (o.cleats === true) cleatN = 6;
+  else if (o.cleats !== undefined && o.cleats !== false) {
+    cleatN = num(o.cleats, 6, `${kind}.cleats`, 2, 12);
+    if (!Number.isInteger(cleatN)) throw new ValidationError(`${kind}.cleats must be true/false or an integer 2..12. Got ${cleatN}. See /ai/figure.md`);
+  }
   // Footprint scale (chunkier/daintier footwear) and shell offset over the foot.
   const size = num(o.size, 1, `${kind}.size`, 0.1);
   const t = num(o.thickness, r.foot * 0.18, `${kind}.thickness`, 0.001);
@@ -2448,7 +2568,7 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
   if (so.label !== undefined && typeof so.label !== 'string') throw new ValidationError(`${kind}.sole.label must be a string`);
   const soleLabel = (so.label as string | undefined) ?? 'sole';
   const soleStyle = so.style === undefined ? 'welt' : assertEnum(so.style, ['welt', 'flush'] as const, `${kind}.sole.style`);
-  const soleThick = num(so.thickness, r.foot * 0.42, `${kind}.sole.thickness`, 0.001);
+  const soleThick = num(so.thickness, r.foot * (style === 'toy' ? 0.6 : 0.42), `${kind}.sole.thickness`, 0.001);
   // `lip` (alias `overhang`) — how far the welt sole sits proud of the upper.
   // Ignored for the flush style.
   const lipRaw = num(so.lip ?? so.overhang, r.foot * 0.1, `${kind}.sole.lip`, 0);
@@ -2481,7 +2601,18 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     // for chunkier/daintier footwear, then grown outward by the wall `t`.
     const { local: rawFoot } = footMassLocal(sdf, sole0, r, side, false);
     const footMass = size === 1 ? rawFoot : rawFoot.scale(size);
-    const offsetFoot = footMass.round(t);           // SDF parallel offset = the shoe shell
+    let offsetFoot = footMass.round(t);             // SDF parallel offset = the shoe shell
+    if (style === 'toy') {
+      // Toy sneaker, in the same local foot frame (+Y toe, z 0 = sole plane): a
+      // big rounded body over the midfoot + a fat toe cap, both centred LOW so
+      // the flat ground clip leaves a broad footprint, smooth-welded and unioned
+      // with the foot offset so the skin foot can never poke through.
+      const L = sole0.length * 0.8 * size, W = r.foot * 1.2 * size, Hh = r.foot * 1.05 * size * toyH;
+      const zc = Hh * 0.38;
+      const body = sdf.ellipsoid(W, L, Hh).translate([0, L * 0.08, zc]);
+      const toe = sdf.ellipsoid(W * 0.86, L * 0.5, Hh * 0.74).translate([0, L * 0.52, zc * 0.7]);
+      offsetFoot = body.smoothUnion(toe, r.foot * 0.45).union(offsetFoot);
+    }
 
     // Same plantarflexion + placement the bare foot uses, so shoe and foot stay
     // concentric in any pose (lifted foot → the shoe pitches with it).
@@ -2517,7 +2648,22 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       if (!soleOn) return { upper: weldCollarShaft(place(clipped)), sole: null };
       const band = sdf.box([big, big, soleThick]).translate([0, 0, soleZ + soleThick / 2]);
       const proud = lipCap > 0 ? clipped.round(lipCap) : clipped;
-      const sole = place(proud.intersect(band));
+      let soleN = proud.intersect(band);
+      if (cleatN > 0) {
+        // Studs under the toy sole, in two rows along the footprint (heel pair
+        // last), sunk into the sole and protruding below the ground plane — on a
+        // base they weld into it; without one the figure stands on its studs.
+        const L = sole0.length * 0.8 * size, W = r.foot * 1.2 * size;
+        const sr = r.foot * 0.16, sh = r.foot * 0.3;
+        const rows = Math.ceil(cleatN / 2);
+        for (let i = 0; i < cleatN; i++) {
+          const row = Math.floor(i / 2), sx = (i % 2 ? -1 : 1) * W * 0.5;
+          const y = L * (rows > 1 ? 0.62 - (1.3 * row) / (rows - 1) : 0);
+          const stud = sdf.cylinder(sr, sh + soleThick * 0.5).translate([sx, y, soleZ - (sh - soleThick * 0.5) / 2]);
+          soleN = soleN.union(stud);
+        }
+      }
+      const sole = place(soleN);
       return { upper, sole };
     }
 
@@ -2789,7 +2935,7 @@ function parseGaze(v: unknown, name: string): Gaze {
 
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius', 'style', 'lids', 'gaze', 'gazeL', 'gazeR'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style', 'lids', 'gaze', 'gazeL', 'gazeR', 'on', 'highlight', 'aspect'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
   // `gaze` aims BOTH irises/pupils; `gazeL` / `gazeR` override one eye (the
   // figure's own left / right) for cross-eyed or independent looks.
@@ -2797,7 +2943,11 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const gazeLeft = o.gazeL === undefined ? gazeBase : parseGaze(o.gazeL, 'eyes.gazeL');
   const gazeRight = o.gazeR === undefined ? gazeBase : parseGaze(o.gazeR, 'eyes.gazeR');
   const style = o.style === undefined ? 'iris'
-    : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
+    : assertEnum(o.style, ['solid', 'iris', 'bead'] as const, 'eyes.style');
+  if (style === 'bead') return buildBeadEyes(sdf, rig, o);
+  for (const k of ['on', 'highlight', 'aspect']) {
+    if (o[k] !== undefined) throw new ValidationError(`eyes.${k} only applies to style 'bead'. See /ai/figure.md`);
+  }
   // `lids`: a named preset string, or a { upper, lower } pair (each 0..1), or
   // 'none'/undefined for the bare eyeball.
   let lidFrac: LidFrac | null;
@@ -2965,6 +3115,49 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       // eye, not a bug-eyed bump.
       parts.push(clipDiscAt(discAt(c, rad * 0.10, rad * 0.55, g), c).label('iris'));
       parts.push(clipDiscAt(discAt(c, rad * 0.14, rad * 0.27, g), c).label('pupil'));
+    }
+  }
+  return parts.reduce((acc, n) => acc.union(n));
+}
+
+/** `F.face.eyes(rig, { style: 'bead', on, radius, aspect, highlight })` — glossy
+ *  vinyl-toy BEAD eyes (#1055): a flattened black ellipsoid bead per eye, seated
+ *  on the REAL face (`on`: the face/skin node you union — the cheek-bulged
+ *  front, not the rig anchor) and sunk a little into it, plus a specular
+ *  highlight — a big round glint up and to the viewer's left and a small one
+ *  below right, the same light on both eyes — each a small sphere on the bead's
+ *  surface. Labels: `'eyes'` (the bead) and `'eyeHighlight'` (paint it white).
+ *  `radius` = the bead's half-width (default 0.24 × head depth radius),
+ *  `aspect` = height ÷ width (1.06), `highlight`: true (default) | false | a
+ *  size multiplier. */
+function buildBeadEyes(sdf: SdfApi, rig: Rig, o: Record<string, unknown>): Node {
+  for (const k of ['lids', 'gaze', 'gazeL', 'gazeR']) {
+    if (o[k] !== undefined) throw new ValidationError(`eyes.${k} doesn't apply to style 'bead' (a bead has no iris or lids). See /ai/figure.md`);
+  }
+  const W = num(o.radius, rig.r.head * 0.24, 'eyes.radius', 0.01);
+  const H = W * num(o.aspect, 1.06, 'eyes.aspect', 0.5, 2);
+  const D = W * 0.72;
+  let hl = 1;
+  if (o.highlight === false) hl = 0;
+  else if (o.highlight !== undefined && o.highlight !== true) hl = num(o.highlight, 1, 'eyes.highlight', 0.2, 3);
+  const on = o.on as Node | undefined;
+  if (on !== undefined && (!on || typeof on.evaluate !== 'function')) throw new ValidationError("eyes.on must be an SDF node (the face/skin the beads sit on). See /ai/figure.md");
+  const f = rig.dir.headForward;
+  const parts: Node[] = [];
+  for (const a of [rig.face.eyeL, rig.face.eyeR]) {
+    // Seat on the real surface along headForward, then sink ~a quarter width in.
+    let front: Vec3 | null = on ? surfacePoint(on, a, f) : null;
+    if (!front) front = add3(a as Vec3, scale3(f, Math.max(W * 0.28, rig.r.head * 0.16)));
+    const c = sub3(front, scale3(f, W * 0.23));
+    parts.push(orientToHeadPose(sdf.ellipsoid(W, D, H), rig).translate(c).label('eyes'));
+    if (hl > 0) {
+      // Highlights in the canonical head frame (−Y forward, +Z up; −X = the
+      // figure's right = the viewer's left), centred ON the bead's front surface.
+      const glint = (x: number, z: number, r: number): Node => {
+        const y = -D * Math.sqrt(Math.max(0, 1 - (x / W) ** 2 - (z / H) ** 2));
+        return orientToHeadPose(sdf.sphere(r).translate([x, y, z]), rig).translate(c);
+      };
+      parts.push(glint(-0.32 * W, 0.41 * H, 0.226 * W * hl).union(glint(0.28 * W, -0.36 * H, 0.123 * W * hl)).label('eyeHighlight'));
     }
   }
   return parts.reduce((acc, n) => acc.union(n));
@@ -4066,6 +4259,12 @@ function hairLock(sdf: SdfApi, root: Vec3, mid: Vec3, tip: Vec3, r0: number, tip
   return n!;
 }
 
+/** Bounding-box cull `n` (see `opBounded` in sdf.ts) when the API provides it —
+ *  plain test APIs without the internal op get the node back unchanged. */
+function cullNode(sdf: SdfApi, n: Node, margin: number): Node {
+  return sdf.__bounded ? sdf.__bounded(n, margin) : n;
+}
+
 /** Unit outward normal of `n` at `p` (central-difference gradient, step `h`).
  *  Used to lay ribbon locks flat on the skull: off the surface the SDF gradient
  *  still points away from the nearest skin, which is the "outward" we want. */
@@ -4328,7 +4527,14 @@ interface AnimeCapOpts {
  *  the face window's top arch, `depth` (× headZ) long, spread across `span`
  *  degrees of azimuth either side of the face front. `depths` optionally gives
  *  each tooth its own depth (× headZ) — the seeded shag uses it for a ragged edge. */
-interface WindowNotches { count: number; depth: number; span: number; depths?: number[] }
+interface WindowNotches {
+  count: number; depth: number; span: number; depths?: number[];
+  /** Per-tooth azimuth (deg) instead of the even spread over ±span. */
+  azimuths?: number[];
+  /** Per-tooth TIP height (above the head centre, world units): the tooth hangs
+   *  from the window edge down to exactly this height (overrides depth). */
+  tipHeights?: number[];
+}
 
 /** Point on `head`'s skin at azimuth θ (deg; 0 = face front, +90 = the
  *  figure's left), at height `h` above the head centre (along headUp), `off`
@@ -4353,24 +4559,64 @@ function skinAtHeight(S: ScalpFrame, head: Node, thDeg: number, h: number, off: 
 function windowTeeth(sdf: SdfApi, S: ScalpFrame, head: Node, winW: Node, zTop: number, n: WindowNotches): Node | null {
   const { ax, ay, az } = S;
   const teeth: Node[] = [];
-  const step = n.count > 1 ? (2 * n.span) / (n.count - 1) : 0;
+  const azs = n.azimuths;
+  const step = azs && azs.length > 1 ? (Math.max(...azs) - Math.min(...azs)) / (azs.length - 1)
+    : n.count > 1 ? (2 * n.span) / (n.count - 1) : 0;
   // Tooth half-width: neighbouring teeth just meet (a continuous zig-zag).
   const halfW = n.count > 1 ? Math.max(ax * step * DEG * 0.5, az * 0.03) : ax * 0.15;
   for (let i = 0; i < n.count; i++) {
-    const th = n.count > 1 ? -n.span + step * i : 0;
-    const depth = (n.depths?.[i] ?? n.depth) * az;
-    if (!(depth > 0)) continue;
+    const th = azs ? azs[i] : n.count > 1 ? -n.span + step * i : 0;
     const inWin = (h: number): boolean => { const p = skinAtHeight(S, head, th, h, 0); return winW.evaluate(p[0], p[1], p[2]) < 0; };
     let hi = zTop + az * 0.1, lo = zTop - az * 0.9;
-    if (inWin(hi) || !inWin(lo)) continue;
+    if (inWin(hi)) continue;
+    if (!inWin(lo)) {
+      // Off the arch top (the window's side): step down to its first height.
+      if (!n.azimuths) continue;
+      let hit = false;
+      for (let h = hi - az * 0.05; h > zTop - az * 1.6; h -= az * 0.05) { if (inWin(h)) { lo = h; hi = h + az * 0.05; hit = true; break; } }
+      if (!hit) continue;
+    }
     for (let k = 0; k < 24; k++) { const m = (hi + lo) / 2; if (inWin(m)) lo = m; else hi = m; }
-    const p = skinAtHeight(S, head, th, (hi + lo) / 2, 0);
+    const edgeH = (hi + lo) / 2;
+    const depth = n.tipHeights ? edgeH - n.tipHeights[i] : (n.depths?.[i] ?? n.depth) * az;
+    if (!(depth > 0)) continue;
+    const p = skinAtHeight(S, head, th, edgeH, 0);
     const a = halfW, b = depth, N = Math.hypot(a, b), hh = (a * b) / N;
     const beta = Math.atan2(a, b) / DEG, L = Math.max(ay, ax) * 0.8, tall = 4 * Math.max(a, b);
     const slab = (ang: number): Node => sdf.box([2 * hh, L, tall]).rotate([0, ang, 0]);
     teeth.push(slab(beta).intersect(slab(-beta)).rotate([0, 0, th]).rotate(S.headEuler).translate(p));
   }
   return teeth.length ? sdf.union(...teeth) : null;
+}
+
+/** Distance from the head centre to the REAL skin (`head`) along any unit
+ *  direction, as a fast lookup: the skin is ray-marched once on a lat-long grid
+ *  in the head frame (θ round headUp, φ elevation) and bilinearly interpolated.
+ *  Drives the radial window projection, so the cut's outline on the actual
+ *  (cheeked, headScale'd) face is exactly the window's. */
+function skinRadiusTable(S: ScalpFrame, head: Node): (ux: number, uy: number, uz: number) => number {
+  const NT = 96, NP = 48;
+  const tab = new Float64Array((NT + 1) * (NP + 1));
+  for (let j = 0; j <= NP; j++) {
+    const ph = -Math.PI / 2 + (Math.PI * j) / NP;
+    for (let i = 0; i <= NT; i++) {
+      const th = -Math.PI + (2 * Math.PI * i) / NT;
+      const d = add3(add3(scale3(S.right, Math.cos(ph) * Math.sin(th)), scale3(S.f, Math.cos(ph) * Math.cos(th))), scale3(S.u, Math.sin(ph)));
+      tab[j * (NT + 1) + i] = S.surfT(head, d);
+    }
+  }
+  const { right, f, u } = S;
+  return (ux, uy, uz) => {
+    const x = ux * right[0] + uy * right[1] + uz * right[2];
+    const y = ux * f[0] + uy * f[1] + uz * f[2];
+    const z = ux * u[0] + uy * u[1] + uz * u[2];
+    const ti = ((Math.atan2(x, y) + Math.PI) / (2 * Math.PI)) * NT;
+    const pj = ((Math.asin(z < -1 ? -1 : z > 1 ? 1 : z) + Math.PI / 2) / Math.PI) * NP;
+    const i0 = Math.min(NT - 1, Math.max(0, Math.floor(ti))), j0 = Math.min(NP - 1, Math.max(0, Math.floor(pj)));
+    const a = ti - i0, b = pj - j0;
+    const k = j0 * (NT + 1) + i0;
+    return (tab[k] * (1 - a) + tab[k + 1] * a) * (1 - b) + (tab[k + NT + 1] * (1 - a) + tab[k + NT + 2] * a) * b;
+  };
 }
 
 /** The anime cap: a THIN offset of the real head (so the temples hug the skull —
@@ -4412,6 +4658,18 @@ function animeCap(sdf: SdfApi, S: ScalpFrame, head: Node, o: AnimeCapOpts): { ca
       const teeth = windowTeeth(sdf, S, head, winW, zTop, o.window.notches);
       if (teeth) winW = winW.subtract(teeth);
     }
+    // RADIAL window walls (#1055 temple sliver). The window ellipsoid meets the
+    // skull at a GRAZING angle at the temples and arch corners (both surfaces
+    // face the same way there), so the cap thinned to a long knife-edge wedge
+    // that the march aliased into a sawtooth lip — against the skin, and worst
+    // where it crossed proud painted brows. Projecting the cutter radially onto
+    // the skull ellipsoid makes every wall run along the ray from the head
+    // centre (≈ perpendicular to the skull): the hair ends in a clean, full-
+    // thickness step. The window outline ON the skull is unchanged.
+    // Culled to the window's own box (+ the cap shell, + a wide 0.6·headZ margin
+    // so thick crown/puff masses still see the exact cut): only the cap near the
+    // face needs it, so the back of the head skips the projection entirely.
+    if (sdf.__radialProject) winW = cullNode(sdf, sdf.__radialProject(winW, S.c, skinRadiusTable(S, head), o.thickness * 1.5 + az * 0.05), az * 0.6);
     cap = cap.subtract(winW);
   }
   return { cap, uncut };
@@ -4538,7 +4796,7 @@ function buildAnimeHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: nu
 
 // --- Shag hair (shaggy layered vinyl-toy mop) -------------------------------
 
-const SHAG_ONLY_FIELDS = ['layers', 'raggedness', 'crown', 'flare', 'tipWidth'];
+const SHAG_ONLY_FIELDS = ['layers', 'raggedness', 'crown', 'flare', 'tipWidth', 'notched', 'crownSize', 'backWidth'];
 const SHAG_CROWNS = ['spiky', 'tousled'] as const;
 
 /** `F.hair(rig, { style: 'shag' })`: a shaggy, LAYERED vinyl-toy mop (the
@@ -4552,8 +4810,15 @@ const SHAG_CROWNS = ['spiky', 'tousled'] as const;
  *     hem (`layers`, `raggedness`, `length`);
  *   - mop mass above the ears (`flare`) — side puffs + side-layer locks pushed
  *     out, the toy-hair width at temple height a thin cap can't give;
- *   - `crown: 'spiky'` (default — 5 sharp spikes fanning back + 2 flicking up
- *     at the sides; `spike` scales their lift) or 'tousled' (7 small random locks).
+ *   - `crown: 'spiky'` (default — 7 big needle-pointed spikes round the back
+ *     and sides of the crown, arching up so they break the dome's silhouette;
+ *     `spike` scales their lift, `crownSize` their size) or 'tousled' (7 small
+ *     random locks);
+ *   - a NOTCHED hairline (`notched`, default on): the cap's window edge carries
+ *     one crisp pointed tooth under each fringe lock, so the fringe reads as
+ *     separate locks with V-gaps, not one ragged edge;
+ *   - `backWidth` scales how far the side/back layers stand off the skull
+ *     (the silhouette width seen from behind).
  *  Side/back tails taper to a `tipWidth` floor (× root width) so they stay
  *  chunky, not stringy. All placement is surface-marched onto the real head
  *  (`on: head`), so it follows headScale / faceShape; same seed ⇒ same hair.
@@ -4570,6 +4835,10 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
   const chunk = num(o.chunk, 1, 'hair.chunk', 0.4, 2.5);
   const flare = num(o.flare, 1, 'hair.flare', 0, 3);
   const tipFrac = num(o.tipWidth, 0.4, 'hair.tipWidth', 0, 0.8);
+  if (o.notched !== undefined && typeof o.notched !== 'boolean') throw new ValidationError('hair.notched must be a boolean. See /ai/figure.md');
+  const notched = o.notched !== false;
+  const crownSize = num(o.crownSize, 1, 'hair.crownSize', 0.3, 2.5);
+  const backWidth = num(o.backWidth, 1, 'hair.backWidth', 0.3, 1.6);
   const head = hairHead(sdf, rig, o.on);
   const rand = mulberry32(seed);
   const jit = (amt: number): number => (rand() * 2 - 1) * amt;
@@ -4579,46 +4848,75 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
   const tv = t * volume;
   const capT = tv * 1.07;
   const winTop = browUp / az + 0.39;
+
+  // Fringe layout first (the notched window hangs a tooth under each lock): an
+  // uneven, messy row across the forehead — irregular spacing, lengths, leans
+  // and widths. Rooted inside the cap above the window top, passing over the
+  // hairline, to points above the brows (`fringe` 1; lower stops higher).
+  const nF = Math.max(3, Math.round(9 * density));
+  const midH = (winTop + 0.006) * az, rootH = (winTop + 0.24) * az;
+  const fr = Array.from({ length: nF }, (_, i) => {
+    const th = (nF > 1 ? -60 + (120 * i) / (nF - 1) : 0) + jit(5 * rag);
+    const lean = jit(10 * rag);
+    const tipH = Math.min(browUp + az * (0.205 + 0.32 * (1 - fringe) + jit(0.137 * rag)) - (Math.abs(th) > 50 ? az * 0.02 : 0), midH - az * 0.08);
+    const w = u * (0.176 + jit(0.026 * rag)) * wMulOf(chunk, volume);
+    return { th, lean, tipH, w, rm: rand(), rt: rand() };
+  });
+  // Keep neighbouring tips apart (≥ 0.55 of the even spacing): two jittered
+  // locks landing on one spot merged into a single blob (and a double tooth).
+  const minGap = nF > 1 ? (120 / (nF - 1)) * 0.55 : 0;
+  for (let i = 1; i < nF; i++) {
+    const prev = fr[i - 1].th + fr[i - 1].lean, cur = fr[i].th + fr[i].lean;
+    if (cur < prev + minGap) fr[i].lean += prev + minGap - cur;
+  }
   const { cap } = animeCap(sdf, S, head, {
     front: -0.02, back: -1.02 - 0.12 * (lenMul - 1),
-    window: { width: 1.2, top: winTop, tilt: 28 }, thickness: capT, crown: 3 * volume,
+    window: {
+      width: 1.2, top: winTop, tilt: 28,
+      // Notched hairline: a crisp pointed tooth of cap under each fringe lock,
+      // hanging to that lock's own tip — the V-gaps between teeth separate the
+      // locks (a smooth-blended fringe alone reads as one ragged edge).
+      ...(notched ? { notches: { count: nF, depth: 0.15, span: 60, azimuths: fr.map((f) => f.th + f.lean), tipHeights: fr.map((f) => f.tipH - az * 0.01) } } : {}),
+    },
+    thickness: capT, crown: 3 * volume,
   });
-  const wMul = chunk * Math.sqrt(volume);
+  const wMul = wMulOf(chunk, volume);
   const tipFloor = Math.max(u * 0.022, 0.15);
+  // Each lock is bounding-box CULLED (#1055 build time): ~50 locks × 9 rotated
+  // ellipsoids made every sample of the hair region evaluate ~450 primitives;
+  // culled, a sample far from a lock pays one box distance for it instead. The
+  // margin is several times the largest blend `k` the locks are welded with, so
+  // the blends and the meshed surface see the exact field (identical mesh).
+  const cullM = u * 0.25;
   // Ribbons lie tangent to the head (⊥ the ray from the head centre), like F.hair.tuft.
   const outward = (p: Vec3): Vec3 => norm3(sub3(p, c));
   const ribbon = (a: Vec3, m: Vec3, b: Vec3, w: number, tip?: number, flat = 3.1): Node =>
-    ribbonLock(sdf, a, m, b, { width: w, thickness: w / flat, tipFloor, outward, tipWidth: tip === undefined ? undefined : w * tip });
+    cullNode(sdf, ribbonLock(sdf, a, m, b, { width: w, thickness: w / flat, tipFloor, outward, tipWidth: tip === undefined ? undefined : w * tip }), cullM);
   /** Skin point at azimuth θ (deg), elevation φ (deg), `off` outside the skin. */
   const onS = (th: number, ph: number, off: number): Vec3 => S.on(head, th, ph * DEG, off);
   const atH = (th: number, h: number, off: number): Vec3 => skinAtHeight(S, head, th, h, off);
   /** Mop-mass push-out for locks over the upper sides: peaks at the temples
    *  (|sin θ| → 1) around 30° elevation, fades over the crown, face and nape. */
   const flareOut = (th: number, ph: number): number =>
-    u * 0.18 * flare * Math.abs(Math.sin(th * DEG)) ** 1.5 * clamp(1 - Math.abs(ph - 34) / 30, 0, 1);
+    u * 0.18 * flare * backWidth * Math.abs(Math.sin(th * DEG)) ** 1.5 * clamp(1 - Math.abs(ph - 34) / 30, 0, 1);
 
   const fringeLocks: Node[] = [];
   const locks: Node[] = [];
-
-  // Fringe: an uneven, messy row across the forehead — irregular spacing,
-  // lengths, leans and widths. Rooted inside the cap above the window top,
-  // passing over the hairline, to points above the brows (`fringe` 1; lower
-  // stops higher).
-  const nF = Math.max(3, Math.round(9 * density));
-  const midH = (winTop + 0.006) * az, rootH = (winTop + 0.24) * az;
-  for (let i = 0; i < nF; i++) {
-    const th = (nF > 1 ? -60 + (120 * i) / (nF - 1) : 0) + jit(5 * rag);
-    const lean = jit(10 * rag);
-    const tipH = Math.min(browUp + az * (0.205 + 0.32 * (1 - fringe) + jit(0.137 * rag)) - (Math.abs(th) > 50 ? az * 0.02 : 0), midH - az * 0.08);
-    const w = u * (0.176 + jit(0.026 * rag)) * wMul;
+  // Fringe ribbons. Notched: each lies ON its cap tooth (tip at the tooth's
+  // surface, so the lock and the tooth read as one crisp point). Plain: the tip
+  // settles just proud of the skin. Either way the tip never lies parallel to,
+  // and just above, the skin where proud painted brows sit (#1055: that near-
+  // coincident pair aliased into a sawtooth lip along the brow).
+  for (const f of fr) {
     fringeLocks.push(ribbon(
-      atH(th * 0.8, rootH, -u * 0.044),
-      atH(th + lean * 0.4, midH, u * (0.106 + 0.035 * rand())),
-      atH(th + lean, tipH, u * (0.049 + 0.022 * rand())), w));
+      atH(f.th * 0.8, rootH, -u * 0.044),
+      atH(f.th + f.lean * 0.4, midH, u * (0.106 + 0.035 * f.rm)),
+      atH(f.th + f.lean, f.tipH, notched ? capT * 0.75 : u * (0.049 + 0.022 * f.rt)), f.w));
   }
 
   // Layers round the sides + back: each roots lower and hangs lower than the
-  // last, fanning OUT to a jittered, ragged hem. `length` drops the hem.
+  // last, fanning OUT to a jittered, ragged hem. `length` drops the hem;
+  // `backWidth` scales their stand-off from the skull.
   const drop = 14 * (lenMul - 1);
   const layer = (rootPh: number, midPh: number, tipPh: number, step: number, th0: number, th1: number, w0: number, out: number): void => {
     const st = step / density;
@@ -4627,8 +4925,8 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
       const rp = rootPh + jit(4 * rag), mp = midPh + jit(5 * rag);
       locks.push(ribbon(
         onS(th, rp, -u * 0.066),
-        onS(th + lean * 0.4, mp, u * (0.124 + 0.035 * rand()) + flareOut(th, mp)),
-        onS(tt, tp, out + u * 0.11 * rag * rand() + flareOut(tt, tp)),
+        onS(th + lean * 0.4, mp, (u * (0.124 + 0.035 * rand())) * backWidth + flareOut(th, mp)),
+        onS(tt, tp, (out + u * 0.11 * rag * rand()) * backWidth + flareOut(tt, tp)),
         u * w0 * (0.9 + 0.3 * rand()) * wMul, tipFrac));
     }
   };
@@ -4642,17 +4940,26 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
   if (layers >= 3) layer(24, -6, -40, 18, 104, 256, 0.221, u * 0.13);   // outer-most nape layer (back only)
   // A lock off each upper side sweeping back over the temple.
   for (const s of [1, -1]) {
-    locks.push(ribbon(onS(s * 50, 62, -u * 0.066), onS(s * 80, 56, u * 0.177 + flareOut(80, 56)), onS(s * 100, 44, u * 0.353 + flareOut(100, 44)), u * 0.194 * wMul, tipFrac));
+    locks.push(ribbon(onS(s * 50, 62, -u * 0.066), onS(s * 80, 56, u * 0.177 * backWidth + flareOut(80, 56)), onS(s * 100, 44, u * 0.353 * backWidth + flareOut(100, 44)), u * 0.194 * wMul, tipFrac));
   }
 
   if (crown === 'spiky') {
-    // 5 sharp spikes fanning back from the crown + 2 flicking up and out at the sides.
-    [-70, -35, 0, 35, 70].forEach((dth, i) => {
-      const lift = u * (0.287 + 0.133 * (i % 2) + jit(0.027)) * spike;
-      locks.push(ribbon(onS(180 + dth * 0.25, 78, -u * 0.066), onS(180 + dth * 0.6, 66, u * 0.159 * Math.max(spike, 0.3)), onS(180 + dth, 56, lift), u * 0.23 * wMul, undefined, 2.5));
-    });
-    for (const s of [1, -1]) {
-      locks.push(ribbon(onS(s * 40, 70, -u * 0.066), onS(s * 70, 66, u * 0.177 * Math.max(spike, 0.3)), onS(s * 100, 60, u * 0.45 * spike + flareOut(100, 60)), u * 0.247 * wMul, undefined, 2.5));
+    // 7 spikes spread over the back and sides of the crown (none over the
+    // fringe), alternating two root rows, each pushing OUT of the dome along
+    // its own surface normal to a needle tip — so they break the head's
+    // silhouette from the front, back and sides (a spiky top, not a dome).
+    // Thick (flat 2.0) roots; `crownSize` scales width + reach, `spike` lift.
+    const cs = crownSize;
+    const K = 7;
+    for (let i = 0; i < K; i++) {
+      const th = 180 + (i - (K - 1) / 2) * (300 / (K - 1)) + jit(6 * rag);
+      const el = (i % 2 ? 50 : 64) + jit(4 * rag);
+      const lift = u * (0.42 + 0.12 * (i % 2) + jit(0.05)) * spike * cs;
+      locks.push(ribbon(
+        onS(th, el - 10, -u * 0.07),
+        onS(th + jit(4 * rag), el - 2, u * 0.2 * Math.max(spike, 0.3) * cs),
+        onS(th + jit(8 * rag), el + 4, lift * backWidth ** (Math.abs(Math.sin(th * DEG)) * 0.5)),
+        u * 0.19 * cs * wMul, undefined, 2.0));
     }
   } else {
     // Tousled: small locks poking up at random over the crown.
@@ -4667,7 +4974,7 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
   if (flare > 0) {
     for (const s of [1, -1]) {
       const puff = sdf.ellipsoid(u * (0.15 + 0.06 * flare), ay * 0.594, az * 0.43 * (0.92 + 0.08 * flare));
-      out = out.smoothUnion(S.local(puff, s * ax * (0.87 + 0.08 * flare), -ay * 0.149, az * 0.332), capT);
+      out = out.smoothUnion(S.local(puff, s * ax * (0.87 + 0.08 * flare * backWidth), -ay * 0.149, az * 0.332), capT);
     }
   }
   // Layers + crown melt into the cap with a small blend. The fringe goes on
@@ -4677,6 +4984,9 @@ function buildShagHair(sdf: SdfApi, rig: Rig, o: Record<string, unknown>, t: num
   out = out.smoothUnion(sdf.union(...locks), u * 0.053);
   return out.smoothUnion(sdf.union(...fringeLocks), u * 0.03);
 }
+
+/** Shag lock-width multiplier (`chunk` × √volume). */
+function wMulOf(chunk: number, volume: number): number { return chunk * Math.sqrt(volume); }
 
 /** `F.hair.cap(rig, { on, thickness, crown, hairlinePlane, window })` — the
  *  'anime' cap on its own, for hand-built hairdos: a thin offset of the real
@@ -5763,6 +6073,19 @@ export interface FigureNamespace {
    *  carve the arms so it terminates where limbs cross it. `opts`: `{ surface,
    *  height, thickness, clearance, drop, occlude, rig }`. Give it its own `.label`. */
   band(frame: RingFrame, opts?: object): Node;
+  /** An unlabelled trim REGION — a disc slab perpendicular to a limb bone
+   *  (`bone: 'upperArm'|'lowerArm'|'upperLeg'|'lowerLeg'` [+ 'L'|'R']) or a body
+   *  ring (`ring: 'neck'|'waist'`): `{ bone | ring, at, width | from, to,
+   *  radius, stripes, offset }`. Split a garment with `F.trim(garment, zone)`
+   *  for collar / cuff / sock-band trim with its own label. */
+  trimZone(rig: Rig, opts?: object): Node;
+  /** Split `node` by a trim zone: `{ rest: node − zone, band: node ∩ zone }`. */
+  trim(node: Node, zone: Node): { rest: Node; band: Node };
+  /** Conformal lettering / logo standing `depth` proud of a garment: `shape` is
+   *  text (needs `size`), a CrossSection, or `[[x, y], …][]` contours; `opts`:
+   *  `{ at, dir, up, size, depth, label, font, spacing, mirror }`. Self-labelled
+   *  (default `'emboss'`) — hard-union it at the top level. */
+  emboss(shape: string | object, on: Node, opts?: object): Node;
   /** Invariant check: estimate how much two SDF solids OVERLAP, by sampling both
    *  fields over their bbox intersection (no mesh needed). Returns `{ overlaps,
    *  sharedVolume, point, samples }`. Assert a worn accessory is clear of a limb —
@@ -5841,6 +6164,9 @@ export interface FigureNamespace {
     ears(rig: Rig, opts?: object): Node;
     brows(rig: Rig, opts?: object): Node;
     assemble(head: Node, rig: Rig, opts?: object): Node;
+    /** World Y of the front of `face` (builder front = −Y) at world x / z, or
+     *  null — the face depth for seating custom features. */
+    surfaceY(face: Node, x: number, z: number): number | null;
   };
   clothing: {
     pants(rig: Rig, opts?: object): Node;
@@ -6173,6 +6499,201 @@ function surfacePoint(surface: unknown, point: unknown, dir: unknown, opts?: unk
   const origin = sub3(p, scale3(d, reach));
   const t = marchToSurface(s, origin, d, reach * 2);
   return t === null ? null : add3(origin, scale3(d, t));
+}
+
+// --- Trim zones + conformal lettering (#1055) ------------------------------
+
+const TRIM_BONES: Record<string, [string, string, 'arm' | 'leg', 'upper' | 'lower']> = {
+  upperArm: ['upperArm', 'lowerArm', 'arm', 'upper'],
+  lowerArm: ['lowerArm', 'wrist', 'arm', 'lower'],
+  upperLeg: ['upperLeg', 'lowerLeg', 'leg', 'upper'],
+  lowerLeg: ['lowerLeg', 'foot', 'leg', 'lower'],
+};
+
+/** `F.trimZone(rig, { bone | ring, at | from/to, width, radius, stripes, offset })`
+ *  — an unlabelled REGION for garment trim: a disc-shaped slab perpendicular to a
+ *  limb bone (`bone: 'upperArm' | 'lowerArm' | 'upperLeg' | 'lowerLeg'`, both
+ *  sides, or with an `L`/`R` suffix for one) or to a body ring (`ring: 'neck' |
+ *  'waist'`). Along a bone, `at` (0..1 root→tip) + `width` place one band, or
+ *  `from`/`to` (fractions) span it; `stripes: n` splits the span into n bands
+ *  with equal gaps (banded socks). On a ring, `offset` moves it along the body
+ *  axis and `width` is its height. `radius` is the disc radius (default ≈ 2.4×
+ *  the limb / 1.6× the ring radius) — keep it small enough not to reach a
+ *  neighbouring limb. Split a garment with `F.trim(garment, zone)`. */
+function buildTrimZone(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'trimZone(opts)');
+  assertNoUnknownKeys(o, ['bone', 'ring', 'at', 'from', 'to', 'width', 'radius', 'stripes', 'offset'], 'trimZone(opts)');
+  if ((o.bone === undefined) === (o.ring === undefined)) throw new ValidationError('trimZone: give exactly one of bone (a limb) or ring (\'neck\' | \'waist\'). See /ai/figure.md');
+  const stripes = num(o.stripes, 1, 'trimZone.stripes', 1, 12);
+  if (!Number.isInteger(stripes)) throw new ValidationError(`trimZone.stripes must be an integer 1..12. Got ${stripes}. See /ai/figure.md`);
+  /** A disc slab: centre c, unit axis d, half-height h, radius r. */
+  const disc = (c: Vec3, d: Vec3, h: number, r: number): Node => {
+    const a = Math.abs(d[2]) < 0.9 ? cross3([0, 0, 1], d) : cross3([1, 0, 0], d);
+    const ex = norm3(a), ey = cross3(d, ex);
+    return sdf.cylinder(r, 2 * h).rotate(eulerFromBasis(ex, ey, d)).translate(c);
+  };
+  /** Bands over the span [s0, s1] (world units along d from p0), split into stripes. */
+  const bands = (p0: Vec3, d: Vec3, s0: number, s1: number, r: number): Node[] => {
+    const out: Node[] = [];
+    const n = 2 * stripes - 1, seg = (s1 - s0) / n;
+    for (let k = 0; k < stripes; k++) {
+      const a = s0 + 2 * k * seg, b = a + seg;
+      out.push(disc(add3(p0, scale3(d, (a + b) / 2)), d, seg / 2, r));
+    }
+    return out;
+  };
+  if (o.ring !== undefined) {
+    const name = assertEnum(o.ring, ['neck', 'waist'] as const, 'trimZone.ring');
+    if (o.at !== undefined || o.from !== undefined || o.to !== undefined) throw new ValidationError('trimZone: at / from / to are for a bone; a ring uses offset + width. See /ai/figure.md');
+    const f = rig.ring[name];
+    const reach = Math.max(f.rx, f.ry);
+    const width = num(o.width, reach * 0.6, 'trimZone.width', 1e-3);
+    const radius = num(o.radius, reach * 1.6, 'trimZone.radius', 1e-3);
+    const c = add3(f.center, scale3(f.axis, num(o.offset, 0, 'trimZone.offset')));
+    return sdf.union(...bands(c, f.axis, -width / 2, width / 2, radius));
+  }
+  if (o.offset !== undefined) throw new ValidationError('trimZone: offset is for a ring. See /ai/figure.md');
+  const raw = String(o.bone);
+  const m = /^(upperArm|lowerArm|upperLeg|lowerLeg)([LR])?$/.exec(raw);
+  if (!m) throw new ValidationError(`trimZone.bone must be one of upperArm, lowerArm, upperLeg, lowerLeg (optionally suffixed L or R). Got ${JSON.stringify(o.bone)}. See /ai/figure.md`);
+  const [rootJ, tipJ, limb, seg] = TRIM_BONES[m[1]];
+  const sides = m[2] ? [m[2]] : ['L', 'R'];
+  const limbR = rig.r[limb === 'arm' ? (seg === 'upper' ? 'upperArm' : 'lowerArm') : (seg === 'upper' ? 'upperLeg' : 'lowerLeg')];
+  const radius = num(o.radius, limbR * 2.4, 'trimZone.radius', 1e-3);
+  if (o.at !== undefined && (o.from !== undefined || o.to !== undefined)) throw new ValidationError('trimZone: give at (+ width) or from/to, not both. See /ai/figure.md');
+  const parts: Node[] = [];
+  for (const s of sides) {
+    const a = rig.joints[rootJ + s] as Vec3, b = rig.joints[tipJ + s] as Vec3;
+    const L = len3(sub3(b, a));
+    const d = norm3(sub3(b, a));
+    let s0: number, s1: number;
+    if (o.from !== undefined || o.to !== undefined) {
+      s0 = num(o.from, 0, 'trimZone.from', -0.5, 1.5) * L;
+      s1 = num(o.to, 1, 'trimZone.to', -0.5, 1.5) * L;
+      if (!(s1 > s0)) throw new ValidationError('trimZone: to must be greater than from. See /ai/figure.md');
+      if (o.width !== undefined) throw new ValidationError('trimZone: width goes with at (from/to set the span). See /ai/figure.md');
+    } else {
+      const at = num(o.at, 0.5, 'trimZone.at', -0.5, 1.5) * L;
+      const w = num(o.width, limbR * 0.8, 'trimZone.width', 1e-3);
+      s0 = at - w / 2; s1 = at + w / 2;
+    }
+    parts.push(...bands(a, d, s0, s1, radius));
+  }
+  return sdf.union(...parts);
+}
+
+/** `F.trim(garment, zone)` → `{ rest, band }`: split a garment by a trim zone
+ *  into the part outside it and the part inside — label each (`'socks'` /
+ *  `'sockband'`, `'jersey'` / `'trim'`) and hard-union both. */
+function splitTrim(node: unknown, zone: unknown): { rest: Node; band: Node } {
+  const n = node as Node, z = zone as Node;
+  if (!n || typeof n.evaluate !== 'function') throw new ValidationError('trim(node): must be an SDF node (the garment). See /ai/figure.md');
+  if (!z || typeof z.evaluate !== 'function') throw new ValidationError('trim(zone): must be an SDF node (F.trimZone(...)). See /ai/figure.md');
+  return { rest: n.subtract(z), band: n.intersect(z) };
+}
+
+/** Resolve emboss lettering to closed 2D contours: a string (laid out in
+ *  Liberation Sans), a CrossSection (anything with `toPolygons()`), or raw
+ *  `[[x, y], …][]` contours. */
+function embossContours(shape: unknown, size: number | undefined, font: FontVariant, spacing: number): Array<Array<[number, number]>> {
+  let cs: Array<Array<[number, number]>>;
+  if (typeof shape === 'string') {
+    if (shape.length === 0) throw new ValidationError('emboss(text): the text is empty. See /ai/figure.md');
+    if (size === undefined) throw new ValidationError('emboss(text): pass size (the lettering height, world units). See /ai/figure.md');
+    try {
+      cs = textToContours(shape, { size: 10, font, spacing });
+    } catch (e) {
+      throw new ValidationError(`emboss(text): ${(e as Error).message}`);
+    }
+  } else if (shape && typeof (shape as { toPolygons?: unknown }).toPolygons === 'function') {
+    cs = (shape as { toPolygons(): Array<Array<[number, number]>> }).toPolygons();
+  } else if (Array.isArray(shape)) {
+    cs = shape as Array<Array<[number, number]>>;
+  } else {
+    throw new ValidationError('emboss(shape) must be a string, a CrossSection, or an array of [x, y] contours. See /ai/figure.md');
+  }
+  cs = cs.filter((c) => Array.isArray(c) && c.length >= 3).map((c) => c.map((p) => [Number(p[0]), Number(p[1])] as [number, number]));
+  if (cs.length === 0) throw new ValidationError('emboss(shape): no closed contours (need ≥ 3 points each). See /ai/figure.md');
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of cs) for (const [x, y] of c) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  // Centre on the origin; `size` (if given) = the lettering's overall HEIGHT.
+  const k = size === undefined ? 1 : size / Math.max(y1 - y0, 1e-9);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  return cs.map((c) => c.map(([x, y]) => [(x - cx) * k, (y - cy) * k] as [number, number]));
+}
+
+/** `F.emboss(shape, on, { at, dir, up, size, depth, label, font, spacing, mirror })`
+ *  — lettering / a logo standing proud of a garment, CONFORMAL to it: the 2D
+ *  shape (text, a CrossSection or contours) is projected along the surface
+ *  normal at `at` and cut from `on` grown outward by `depth`, so every letter
+ *  follows the cloth's curvature and sits `depth` proud of it. `up` (default
+ *  world +Z) sets which way the lettering reads; `dir` overrides the
+ *  projection direction (default: the surface normal). Hard-union the
+ *  self-labelled result at the top level. */
+function buildEmboss(sdf: SdfApi, shape: unknown, on: unknown, opts?: unknown): Node {
+  const body = on as Node;
+  if (!body || typeof body.evaluate !== 'function' || typeof body.bounds !== 'function') throw new ValidationError('emboss(shape, on): `on` must be the SDF node to letter (the garment). See /ai/figure.md');
+  const o = obj(opts, 'emboss(opts)');
+  assertNoUnknownKeys(o, ['at', 'dir', 'up', 'size', 'depth', 'label', 'font', 'spacing', 'mirror'], 'emboss(opts)');
+  if (!sdf.__polygonPrism) throw new ValidationError('emboss: this SDF API has no polygon support.');
+  const at = asPoint3(o.at, 'emboss.at');
+  const size = o.size === undefined ? undefined : num(o.size, 1, 'emboss.size', 1e-3);
+  const depth = num(o.depth, Math.max((size ?? 5) * 0.08, 0.2), 'emboss.depth', 1e-3);
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError('emboss.label must be a string');
+  const label = (o.label as string | undefined) ?? 'emboss';
+  const font = o.font === undefined ? 'bold' : assertEnum(o.font, ['regular', 'bold', 'italic', 'bold-italic'] as const, 'emboss.font');
+  const spacing = num(o.spacing, 1, 'emboss.spacing', 0.3, 3);
+  if (o.mirror !== undefined && typeof o.mirror !== 'boolean') throw new ValidationError('emboss.mirror must be a boolean');
+  let contours = embossContours(shape, size, font, spacing);
+  if (o.mirror === true) contours = contours.map((c) => c.map(([x, y]) => [-x, y] as [number, number]).reverse());
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of contours) for (const [x, y] of c) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const ext = Math.max(x1 - x0, y1 - y0);
+  // Seat on the real surface: the outward normal at `at`, then the crossing.
+  const h = Math.max(ext * 0.02, 1e-3);
+  let n: Vec3 = o.dir === undefined ? sdfNormal(body, at, h) : scale3(norm3(assertNumberTuple(o.dir, 3, 'emboss.dir') as Vec3), -1);
+  const P = surfacePoint(body, at, n, { reach: Math.max(ext * 2, len3(sub3(body.bounds().max, body.bounds().min)) * 0.25) });
+  if (!P) throw new ValidationError('emboss: `at` is not near the `on` surface (no surface crossing along the normal). Put `at` on/near the garment where the lettering goes. See /ai/figure.md');
+  if (o.dir === undefined) n = sdfNormal(body, P, h);
+  const up0 = o.up === undefined ? [0, 0, 1] as Vec3 : norm3(assertNumberTuple(o.up, 3, 'emboss.up') as Vec3);
+  let up = sub3(up0, scale3(n, dot3(up0, n)));
+  if (len3(up) < 1e-6) up = Math.abs(n[0]) < 0.9 ? cross3(n, [1, 0, 0]) : cross3(n, [0, 1, 0]);
+  up = norm3(up);
+  const right = norm3(cross3(up, n));
+  // The prism spans from well inside the cloth (deep enough for its curvature
+  // across the lettering) to past the grown surface.
+  const inner = Math.max(ext * 0.5, depth * 4), outer = depth * 2;
+  const half = (inner + outer) / 2;
+  const centre = add3(P, scale3(n, (outer - inner) / 2));
+  const prism = sdf.__polygonPrism(contours, half).rotate(eulerFromBasis(right, up, n)).translate(centre);
+  const region = cullNode(sdf, prism, depth * 2 + ext * 0.05);
+  return body.round(depth).intersect(region).label(label);
+}
+
+/** `F.face.surfaceY(face, x, z)` — the world Y of the FRONT of `face` (the
+ *  builder's front is −Y, before `F.place`) at world x / z: the first surface
+ *  crossing marching back from in front. Null where the line misses it. Use it
+ *  to seat custom face features (bead eyes, decals, a mask) on the real face. */
+function faceSurfaceY(face: unknown, x: unknown, z: unknown): number | null {
+  const n = face as Node;
+  if (!n || typeof n.evaluate !== 'function' || typeof n.bounds !== 'function') throw new ValidationError('face.surfaceY(face): must be an SDF node (the face/head you built). See /ai/figure.md');
+  const X = assertNumber(x, 'face.surfaceY(x)') as number, Z = assertNumber(z, 'face.surfaceY(z)') as number;
+  const b = n.bounds();
+  const y0 = b.min[1] - 1, span = b.max[1] - b.min[1] + 2;
+  // Inward march (+Y) from in front: find the first outside→inside crossing.
+  const N = 96;
+  let prev = n.evaluate(X, y0, Z);
+  for (let i = 1; i <= N; i++) {
+    const y = y0 + (span * i) / N;
+    const d = n.evaluate(X, y, Z);
+    if (prev >= 0 && d < 0) {
+      let lo = y - span / N, hi = y;
+      for (let k = 0; k < 30; k++) { const m = (lo + hi) / 2; if (n.evaluate(X, m, Z) >= 0) lo = m; else hi = m; }
+      return (lo + hi) / 2;
+    }
+    prev = d;
+  }
+  return null;
 }
 
 function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
@@ -6604,6 +7125,9 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
     ring: (frame, opts) => ringBand(sdf, frame, opts),
     band: (frame, opts) => buildBand(sdf, frame, opts),
+    trimZone: (rig, opts) => buildTrimZone(sdf, assertRig(rig, 'trimZone(rig)'), opts),
+    trim: (node, zone) => splitTrim(node, zone),
+    emboss: (shape, on, opts) => buildEmboss(sdf, shape, on, opts),
     sharedSolid: (a, b, opts) => sharedSolid(a, b, opts),
     ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
     strap: (a, b, opts) => strap(sdf, a, b, opts),
@@ -6622,6 +7146,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       ears: (rig, opts) => buildEars(sdf, assertRig(rig, 'face.ears(rig)'), opts),
       brows: (rig, opts) => buildBrows(sdf, assertRig(rig, 'face.brows(rig)'), opts),
       assemble: (head, rig, opts) => assembleFace(sdf, head as Node, assertRig(rig, 'face.assemble(rig)'), opts),
+      surfaceY: (face, x, z) => faceSurfaceY(face, x, z),
     },
     clothing: {
       pants: (rig, opts) => buildPants(sdf, assertRig(rig, 'clothing.pants(rig)'), opts),
@@ -6639,4 +7164,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { placeFigure, mulberry32, surfacePoint, buildHead, buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ribbonLock, ribbonWidthAt, ribbonThickAt, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };
+export const __figureTestables__ = { buildTrimZone, splitTrim, buildEmboss, faceSurfaceY, placeFigure, mulberry32, surfacePoint, buildHead, buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ribbonLock, ribbonWidthAt, ribbonThickAt, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };
