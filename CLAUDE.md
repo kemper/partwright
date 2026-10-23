@@ -171,7 +171,10 @@ count-balanced**: `playwright.config.ts` narrows `testMatch` to the spec files
 seconds in `tests/e2e-timings.json`; unknown/new files get the median weight).
 Playwright's own `--shard` splits by test *count*, which left one shard twice
 as slow as another. Reproduce one CI shard locally with
-`E2E_SHARD=3/8 npx playwright test`. Stale timings only cost balance, never
+`E2E_SHARD=3/8 npx playwright test`. To run specs from several checkouts at once (parallel agent
+worktrees), give each its own dev server with `E2E_PORT=5181 npx playwright test …`;
+the default port 5173 is reused across checkouts, so a second worktree would
+otherwise test the first one's code. Stale timings only cost balance, never
 coverage — refresh them occasionally from a green staging-gate run's
 `e2e-report-*` artifacts: `node scripts/e2e-timings.mjs <reports…>`. Unsharded, `testMatch` is pinned to
 `**/*.spec.ts` so the unit tier's `.test.ts` files stay out of the Playwright run.
