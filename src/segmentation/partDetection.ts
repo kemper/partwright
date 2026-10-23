@@ -205,6 +205,7 @@ export function createPartDetection(host: PartDetectionHost) {
     const hadDraft = draft !== null;
     draft = null;
     ghost = null;
+    centroidCache = null;
     gen++;
     cutState = null;
     overlayLabels = null;

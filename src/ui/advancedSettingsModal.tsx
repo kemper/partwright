@@ -1188,7 +1188,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           label="Auto-absorb specks below"
           unit="of surface"
           hint="Detection folds tiny stray regions into their neighbour."
-          tooltip="After detection (and after each pin re-grow), regions smaller than this fraction of the model's surface join the neighbouring part they border most — unless a placed pin or a Fix-brush stroke holds them. 0 turns it off. 0.002 = 0.2%."
+          tooltip="After detection (and after each pin re-grow), regions smaller than this fraction of the model's surface join the neighbouring part they border most — only when nothing claims them: no pin, no Fix-brush stroke, and a part nobody named, coloured or locked. 0 turns it off. 0.002 = 0.2%."
           defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoAbsorbSpeckFrac}
           value={c.segmentation.autoAbsorbSpeckFrac}
           min={0} max={0.05} step={0.0005}

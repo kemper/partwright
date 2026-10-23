@@ -84,7 +84,7 @@ export function getShortcutDocs(): ShortcutDoc[] {
     {
       keys: 'M · R · Enter',
       description:
-        'Detect parts panel: M merges the selected parts; R renames the part under the cursor (with one part selected, just type its name); Enter accepts the parts. S solos the selection, hold H to hide pins, Esc clears the selection.',
+        'Detect parts panel: M merges the selected parts; R renames the part under the cursor (with one part selected, just type its name — names starting with V, P, B, S, H, M or R go through R, since those letters stay shortcuts); Enter accepts the parts. S solos the selection, hold H to hide pins, Esc clears the selection.',
     },
   ];
 }

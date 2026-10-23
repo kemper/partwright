@@ -372,17 +372,46 @@ describe('part draft edits', () => {
     expect(() => r.edit([{ op: 'brush', to: 'right', triangles: [1e9] }])).toThrow(/triangle index/);
   });
 
-  it('auto-absorb folds unpinned specks after detection, but keeps pinned ones', () => {
-    // A seed between the two big parts with a tiny catchment would be a speck
-    // without its pin; with autoAbsorbFrac, unpinned stray regions vanish.
+  it('auto-absorb never folds hand fixes or pinned parts', () => {
     const r = new SegmentationRunner(groove(21), { autoAbsorbFrac: 0.05 });
     r.detect({ algorithm: 'crease-watershed', seeds: seeds3 });
-    let s = r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'right', radius: 0.05 }]);
+    const s = r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'right', radius: 0.05 }]);
     expect(s.quality.islandCount).toBe(1); // hand fixes are never absorbed
-    s = r.edit([{ op: 'rerun' }]);
-    expect(s.quality.islandCount).toBe(0);
     const tiny = r.edit([{ op: 'addSeed', seed: { label: 'tiny', point: [0.5, 0.5, 0] } }]);
     expect(tiny.parts.some((p) => p.name === 'tiny')).toBe(true); // its own pin holds it
+  });
+
+  describe('auto-absorb only takes unclaimed specks', () => {
+    // A groove plus a small square bump: auto patches give two big halves and
+    // two small patches (≈2.9% and ≈1.5% of the surface).
+    const bumpy = () => heightfield(61, (x, y) => 0.25 * Math.abs(x - 0.5) + Math.max(0, 0.06 - Math.max(Math.abs(x - 0.2), Math.abs(y - 0.2))) * 3);
+    const AUTO = { algorithm: 'auto-merge', params: { patchSizePct: 6, mergeBelowDeg: 8, minPatchPct: 0 } };
+    const smallest = (s: { parts: { name: string; areaFrac: number }[] }) => [...s.parts].sort((a, b) => a.areaFrac - b.areaFrac)[0];
+
+    it('folds a placeholder patch below the threshold at detection', () => {
+      const plain = new SegmentationRunner(bumpy()).detect(AUTO);
+      const absorbed = new SegmentationRunner(bumpy(), { autoAbsorbFrac: 0.02 }).detect(AUTO);
+      expect(absorbed.parts.length).toBe(plain.parts.length - 1);
+    });
+
+    it('keeps a renamed patch when a pin re-grows nearby (and after seedsFromParts)', () => {
+      const r = new SegmentationRunner(bumpy());
+      const s = r.detect(AUTO);
+      const eye = smallest(s);
+      expect(eye.areaFrac).toBeLessThan(0.02);
+      r.edit([{ op: 'rename', id: eye.name, name: 'eye' }]);
+      r.draft!.autoAbsorbFrac = 0.02;
+      const after = r.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.1, 0.8, 0.1] } }]);
+      expect(after.parts.some((p) => p.name === 'eye')).toBe(true);
+      // A placeholder patch with only automatic pins is kept too.
+      const r2 = new SegmentationRunner(bumpy());
+      const s2 = r2.detect(AUTO);
+      const tiny = smallest(s2).name;
+      r2.edit([{ op: 'seedsFromParts' }]);
+      r2.draft!.autoAbsorbFrac = 0.02;
+      const after2 = r2.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.1, 0.8, 0.1] } }]);
+      expect(after2.parts.some((p) => p.name === tiny)).toBe(true);
+    });
   });
 
   it('addSeed re-runs the detector and keeps colours by name', () => {
