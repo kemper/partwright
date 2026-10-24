@@ -16,14 +16,43 @@ import type { ObjectPartsSummary } from './meshPieces';
 import { wrapWithPieceFilter, type PieceBox } from './objectPartCode';
 import { insertRemovalLine, removePartCall } from '../editor/removalCode';
 
+/** What a rewritten object's run must produce — checked on the dry-runs
+ *  before anything is committed, so a rewrite that runs but moves the wrong
+ *  geometry (e.g. nested labels) is refused instead of reported as moved. */
+export interface MoveExpectation {
+  /** Labels that must have triangles. */
+  hasParts: string[];
+  /** Labels that must have none. */
+  lacksParts: string[];
+  /** The exact piece count, when the move is by piece. */
+  pieces?: number;
+}
+
 export interface ObjectPartsMovePlan {
   /** The original object's code once the selection has moved out. */
   dropCode: string;
-  /** One entry per new object, in selection order: its code and a short name
-   *  for what it holds (the part names, or `piece N`). */
-  objects: { code: string; name: string }[];
+  drop: MoveExpectation;
+  /** One entry per new object, in selection order: its code, a short name
+   *  for what it holds (the part names, or `piece N`) and what it must hold. */
+  objects: { code: string; name: string; expect: MoveExpectation }[];
   /** Which way the code was rewritten (see the header). */
   via: 'pieces' | 'parts';
+}
+
+/** Whether a dry-run result meets an expectation; the reason when not. */
+export function checkMoveExpectation(
+  e: MoveExpectation,
+  result: { labels: ReadonlyMap<string, { size: number }> | null; pieces: number | undefined },
+): string | null {
+  const count = (n: string) => result.labels?.get(n)?.size ?? 0;
+  const missing = e.hasParts.find(n => count(n) === 0);
+  if (missing !== undefined) return `part "${missing}" would end up empty`;
+  const kept = e.lacksParts.find(n => count(n) > 0);
+  if (kept !== undefined) return `part "${kept}" would not move`;
+  if (e.pieces !== undefined && result.pieces !== undefined && result.pieces !== e.pieces) {
+    return `expected ${e.pieces} piece${e.pieces === 1 ? '' : 's'}, got ${result.pieces}`;
+  }
+  return null;
 }
 
 /** A short name for a list of things: up to three in full, else the first two
@@ -56,7 +85,7 @@ export function planObjectPartsMove(
     if (indices.length >= summary.pieces.length) return { error: 'that’s every piece — nothing would be left in the original object.' };
     const groups = opts.separate ? indices.map(i => [i]) : [indices];
     const name = (g: number[]) => shortListName(g.map(i => summary.pieces[i].part ?? `piece ${i + 1}`));
-    return piecePlan(code, indices, groups.map(g => ({ pieces: g, name: name(g) })), opts.boxOf);
+    return piecePlan(code, summary.pieces.length, indices, groups.map(g => ({ pieces: g, name: name(g), parts: [] })), opts.boxOf);
   }
 
   const names = unique.map(k => k.slice(5));
@@ -73,11 +102,11 @@ export function planObjectPartsMove(
   const touched = [...new Set(names.flatMap(touchedBy))].sort((a, b) => a - b);
   const whole = touched.every(i => summary.pieces[i].triangles.every(t => selected.has(t)));
   if (whole && summary.pieces.length > 1 && touched.length < summary.pieces.length) {
-    const groups = opts.separate ? names.map(n => ({ pieces: touchedBy(n), name: n })) : [{ pieces: touched, name: shortListName(names) }];
+    const groups = opts.separate ? names.map(n => ({ pieces: touchedBy(n), name: n, parts: [n] })) : [{ pieces: touched, name: shortListName(names), parts: names }];
     // Split needs each part on pieces of its own; two selected parts fused
     // into one piece fall through to removal lines below.
     const shared = opts.separate && new Set(groups.flatMap(g => g.pieces)).size !== groups.reduce((s, g) => s + g.pieces.length, 0);
-    if (!shared) return piecePlan(code, touched, groups, opts.boxOf);
+    if (!shared) return piecePlan(code, summary.pieces.length, touched, groups, opts.boxOf, names);
   }
 
   if (summary.unlabeled.length > 0) {
@@ -86,29 +115,36 @@ export function planObjectPartsMove(
   if (names.length >= live.length) return { error: 'that’s every part — nothing would be left in the original object.' };
   const removing = (c: string, drop: readonly string[]) => drop.reduce((acc, n) => insertRemovalLine(acc, removePartCall(n)), c);
   const groups = opts.separate ? names.map(n => [n]) : [names];
+  const all = live.map(p => p.name);
   return {
     dropCode: removing(code, names),
-    objects: groups.map(g => ({ code: removing(code, live.map(p => p.name).filter(n => !g.includes(n))), name: shortListName(g) })),
+    drop: { hasParts: all.filter(n => !names.includes(n)), lacksParts: names },
+    objects: groups.map(g => {
+      const others = all.filter(n => !g.includes(n));
+      return { code: removing(code, others), name: shortListName(g), expect: { hasParts: g, lacksParts: others } };
+    }),
     via: 'parts',
   };
 }
 
 function piecePlan(
   code: string,
+  pieceCount: number,
   dropIndices: readonly number[],
-  groups: { pieces: number[]; name: string }[],
+  groups: { pieces: number[]; name: string; parts: string[] }[],
   boxOf: (pieceIndex: number) => PieceBox | null,
+  movedParts: string[] = [],
 ): ObjectPartsMovePlan | { error: string } {
   const boxes = (indices: readonly number[]) => indices.map(boxOf);
   const drop = boxes(dropIndices);
   if (drop.some(b => !b)) return { error: 'a selected piece has no geometry.' };
   const dropCode = wrapWithPieceFilter(code, 'drop', drop as PieceBox[]);
   if (!dropCode) return { error: 'the code has no top-level `return` to filter.' };
-  const objects: { code: string; name: string }[] = [];
+  const objects: ObjectPartsMovePlan['objects'] = [];
   for (const g of groups) {
     const keep = wrapWithPieceFilter(code, 'keep', boxes(g.pieces) as PieceBox[]);
     if (!keep) return { error: 'the code has no top-level `return` to filter.' };
-    objects.push({ code: keep, name: g.name });
+    objects.push({ code: keep, name: g.name, expect: { hasParts: g.parts, lacksParts: [], pieces: g.pieces.length } });
   }
-  return { dropCode, objects, via: 'pieces' };
+  return { dropCode, drop: { hasParts: [], lacksParts: movedParts, pieces: pieceCount - dropIndices.length }, objects, via: 'pieces' };
 }

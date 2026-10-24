@@ -186,7 +186,12 @@ return api.label(block(0), 'a', { color: '#ef4444' })
     // Shift-clicking a selected row takes it out again.
     await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ key: 'part:a' });
-    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
+    // The touch path: "Select more", then a plain click adds.
+    await drawer.locator('[data-part-action="select-more"]').click();
+    await rail.locator('[data-object-part="part:b"]').click();
+    await expect(drawer.locator('[data-selection-count]')).toHaveText('2 parts selected');
+    // A colour fill on a moved part goes with it.
+    await pw(page, 'setObjectPartColor', 'a', '#ffff00');
 
     await drawer.locator('[data-part-action="split-selection"]').click();
     await page.getByRole('button', { name: 'Split', exact: true }).click();
@@ -197,8 +202,11 @@ return api.label(block(0), 'a', { color: '#ef4444' })
     await page.mouse.move(1200, 1000);
     await page.waitForTimeout(500);
     await page.screenshot({ path: 'test-results/part-multiselect-split.png' });
+    await pw(page, 'changeObject', 'Object 1 · a');
+    await expect.poll(async () => (await pw<{ parts?: { name: string; color?: string }[] }>(page, 'listObjectParts')).parts?.[0]?.color).toBe('#ffff00');
     await pw(page, 'changeObject', 'Object 1');
     await expect.poll(async () => (await pw<{ parts?: { name: string }[] }>(page, 'listObjectParts')).parts?.map(p => p.name).join(',')).toBe('c');
+    expect((await pw<{ unmatchedPaint: unknown[] }>(page, 'listObjectParts')).unmatchedPaint).toHaveLength(0);
   });
 
   test('extractObjectParts moves a fused part with removal lines', async ({ page }) => {
@@ -214,5 +222,11 @@ return api.label(block(0), 'a', { color: '#ef4444' })
     expect(await pw<string>(page, 'getCode')).toContain(`api.removePart("handle");`);
     // Mixed or emptying selections are refused.
     expect(await pw(page, 'extractObjectParts', ['body', { piece: 0 }])).toHaveProperty('error');
+    // Several parts delete in one run and one version.
+    const before = (await pw<unknown[]>(page, 'listVersions')).length;
+    const del = await pw<{ ok?: boolean; removed?: string[] }>(page, 'deleteObjectPart', ['coaster', 'inside']);
+    expect(del.removed).toHaveLength(2);
+    expect((await pw<unknown[]>(page, 'listVersions')).length).toBe(before + 1);
+    expect((await pw<{ parts: { name: string }[] }>(page, 'listObjectParts')).parts.map(p => p.name)).toEqual(['body']);
   });
 });

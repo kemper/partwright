@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planObjectPartsMove, shortListName } from '../../src/geometry/objectPartMove';
+import { planObjectPartsMove, shortListName, checkMoveExpectation } from '../../src/geometry/objectPartMove';
 import { parsePieceFilter, type PieceBox } from '../../src/geometry/objectPartCode';
 import type { ObjectPartsSummary } from '../../src/geometry/meshPieces';
 import { extendPartSelection, describePartKeys, partSelectionChatContext, splitPartSelectionContext } from '../../src/ui/partSelection';
@@ -39,6 +39,16 @@ describe('planObjectPartsMove — pieces', () => {
     const p = plan(s, ['piece:0', 'piece:1'], true);
     if ('error' in p) throw new Error(p.error);
     expect(p.objects.map(o => parsePieceFilter(o.code)?.boxes)).toEqual([[box(0)], [box(1)]]);
+  });
+  it('moving a piece out of a keep-filtered object narrows its keep list (no duplicates)', () => {
+    const first = plan(s, ['piece:0', 'piece:2']);
+    if ('error' in first) throw new Error(first.error);
+    // The new object keeps pieces 0 and 2; now it has 2 pieces of its own.
+    const again = planObjectPartsMove(first.objects[0].code, summary({}, 2), ['piece:0'], { separate: false, boxOf: i => [box(0), box(2)][i] });
+    if ('error' in again) throw new Error(again.error);
+    expect(parsePieceFilter(again.objects[0].code)).toMatchObject({ mode: 'keep', boxes: [box(0)] });
+    expect(again.drop.pieces).toBe(1);
+    expect(again.objects[0].expect.pieces).toBe(1);
   });
   it('refuses to move every piece, mixes, and the unlabeled remainder', () => {
     expect(plan(s, ['piece:0', 'piece:1', 'piece:2'])).toHaveProperty('error');
@@ -92,6 +102,22 @@ describe('planObjectPartsMove — parts', () => {
     expect(plan(summary({ a: range(0, 4), b: range(4, 3) }, 1, range(7, 3)), ['part:a'])).toHaveProperty('error');
     expect(plan(summary({ a: range(0, 4), b: range(4, 6) }, 1), ['part:a', 'part:b'])).toHaveProperty('error');
     expect(plan(summary({ a: range(0, 4) }, 1), ['part:zzz'])).toHaveProperty('error');
+  });
+});
+
+describe('checkMoveExpectation', () => {
+  const labels = new Map([['a', new Set([1, 2])], ['b', new Set<number>()]]);
+  it('passes when parts and pieces match, and names what is wrong otherwise', () => {
+    expect(checkMoveExpectation({ hasParts: ['a'], lacksParts: ['b'], pieces: 2 }, { labels, pieces: 2 })).toBeNull();
+    expect(checkMoveExpectation({ hasParts: ['b'], lacksParts: [] }, { labels, pieces: 1 })).toContain('"b"');
+    expect(checkMoveExpectation({ hasParts: [], lacksParts: ['a'] }, { labels, pieces: 1 })).toContain('"a"');
+    expect(checkMoveExpectation({ hasParts: [], lacksParts: [], pieces: 3 }, { labels: null, pieces: 2 })).toContain('3 pieces');
+  });
+  it('records what each side of a fused-parts move must hold', () => {
+    const p = plan(summary({ a: range(0, 4), b: range(4, 3), c: range(7, 3) }, 1), ['part:a']);
+    if ('error' in p) throw new Error(p.error);
+    expect(p.drop).toEqual({ hasParts: ['b', 'c'], lacksParts: ['a'] });
+    expect(p.objects[0].expect).toEqual({ hasParts: ['a'], lacksParts: ['b', 'c'] });
   });
 });
 

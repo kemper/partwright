@@ -122,6 +122,11 @@ function rowIconBtn(glyph: string, title: string): HTMLButtonElement {
   return b;
 }
 
+/** "Select more" (the touch path to a multi-selection — no Shift key on a
+ *  phone): while on, tapping a row adds it to / takes it out of the
+ *  selection. Turns itself off when the selection is cleared. */
+let extendTaps = false;
+
 const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
 
 /** One action button in a drawer's grid. */
@@ -139,6 +144,21 @@ function drawerButton(grid: HTMLElement, action: string, text: string, title: st
   return b;
 }
 
+/** The "Select more" toggle (see extendTaps). Updated in place — toggling it
+ *  doesn't change the selection, so nothing rebuilds the drawer. */
+function selectMoreButton(grid: HTMLElement): HTMLButtonElement {
+  const label = () => (extendTaps ? '☑ Adding' : '☐ Select more');
+  const b = drawerButton(grid, 'select-more', label(), 'Click (or tap) other rows to add them to the selection — the same as Shift-click', () => {
+    extendTaps = !extendTaps;
+    b.textContent = label();
+    b.setAttribute('aria-pressed', String(extendTaps));
+    b.classList.toggle('!bg-amber-400/20', extendTaps);
+    b.classList.toggle('!text-amber-100', extendTaps);
+    b.classList.toggle('!border-amber-400/40', extendTaps);
+  }, { pressed: extendTaps });
+  return b;
+}
+
 /** Build the `#object-parts` section. Rebuilt wholesale on every mesh update
  *  and selection change (see refreshObjectParts in partList.ts). */
 export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
@@ -149,6 +169,7 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
   const view = a.getView();
   const selectedKeys = a.getSelectedKeys();
   const multi = selectedKeys.length > 1;
+  if (selectedKeys.length === 0) extendTaps = false;
   const isolated = a.getIsolatedKey();
   // The multi-selection drawer sits under the last selected row in list order.
   let lastSelectedRow: string | null = null;
@@ -232,7 +253,7 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     b.appendChild(c);
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (e.shiftKey || e.ctrlKey || e.metaKey) a.select(key, { extend: true });
+      if (e.shiftKey || e.ctrlKey || e.metaKey || extendTaps) a.select(key, { extend: true });
       else a.select(on && !multi ? null : key);
     });
     row.appendChild(b);
@@ -382,6 +403,7 @@ function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, 
       ? `Move "${name}" into its own new object (the original's version history keeps the code as it is now)`
       : 'Moving a part to another object rewrites the code, which needs a JavaScript (manifold-js) object', () => { void a.moveSelection([key], false); }, { disabled: !view.codeActions || view.parts.length < 2 });
     if (a.canArrange(name)) btn('arrange', '⧉ Arrange', `Move, resize or align "${name}" in arrange mode`, () => a.arrange(name));
+    if (view.parts.length > 1) selectMoreButton(grid);
   } else if (key.startsWith('piece:')) {
     const index = Number(key.slice(6));
     isolateBtn();
@@ -390,6 +412,7 @@ function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, 
     btn('extract-piece', '⤴ Extract', noCode ? why : 'Move this piece into its own new object (both objects’ code gets a piece filter; version history keeps the original)', () => { void a.extractPiece(index); }, { disabled: noCode || view.pieces.length < 2 });
     btn('export-piece', '⤓ STL', 'Download just this piece as an STL', () => a.exportPiece(index));
     btn('edit-with-ai', '✦ Ask AI', 'Ask the AI about this piece', () => a.editWithAI([key]));
+    selectMoreButton(grid);
   } else {
     isolateBtn();
     btn('edit-with-ai', '✦ Ask AI', 'Ask the AI to label or change the unlabeled geometry', () => a.editWithAI([key]));
@@ -457,11 +480,12 @@ function buildMultiDrawer(a: ObjectPartsActions, keys: string[], view: ObjectPar
   const blocked = keys.map(k => a.getDelete(k)).find(d => !d.show || d.reason);
   btn('delete-selection', '✕ Delete', blocked?.reason ?? `Delete these ${noun} — adds removal lines to the top of the code (recoverable)`, () => { void a.deleteMany(keys); }, { disabled: !!blocked });
   btn('edit-with-ai', '✦ Ask AI', `Ask the AI about these ${noun}`, () => a.editWithAI(keys));
+  selectMoreButton(grid);
   drawer.appendChild(grid);
 
   const hint = document.createElement('div');
   hint.className = 'px-0.5 text-[10px] text-zinc-600 leading-snug';
-  hint.textContent = `Shift-click to add or remove ${noun}.`;
+  hint.textContent = `Shift-click (or turn on Select more) to add or remove ${noun}.`;
   drawer.appendChild(hint);
   return drawer;
 }

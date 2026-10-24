@@ -115,13 +115,15 @@ const FILTER_MARK = '// Partwright piece filter';
 
 /** Wrap the object's code so the result keeps (`keep`) or drops (`drop`) the
  *  pieces matching `boxes`. The original code runs untouched inside a function;
- *  a second filter of the same mode appends to the existing list instead of
- *  wrapping twice. Returns null when the code has no top-level `return`. */
+ *  a second filter of the same mode edits the existing list instead of
+ *  wrapping twice — a drop adds to the dropped pieces, a keep NARROWS to the
+ *  new pieces (they're always some of what the object already keeps). Returns
+ *  null when the code has no top-level `return`. */
 export function wrapWithPieceFilter(code: string, mode: 'keep' | 'drop', boxes: PieceBox[]): string | null {
   const round = (b: PieceBox) => b.map(v => Math.round(v * 1e4) / 1e4);
   const existing = parsePieceFilter(code);
   if (existing && existing.mode === mode) {
-    const all = [...existing.boxes, ...boxes].map(round);
+    const all = (mode === 'drop' ? [...existing.boxes, ...boxes] : boxes).map(round);
     return code.replace(existing.specLine, specLine(mode, all));
   }
   if (lastTopLevelReturn(code) < 0) return null;

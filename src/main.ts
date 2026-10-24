@@ -73,7 +73,7 @@ import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPar
 import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
 import { summarizeObjectParts, triangleSetStats, extractSubMesh, type ObjectPartsSummary, type TriangleSetStats } from './geometry/meshPieces';
 import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, parsePieceFilter, type PieceBox } from './geometry/objectPartCode';
-import { planObjectPartsMove } from './geometry/objectPartMove';
+import { planObjectPartsMove, checkMoveExpectation } from './geometry/objectPartMove';
 import { getSelectedPartKey, getSelectedPartKeys, getSelectedPartName, setSelectedPartKeys, onPartSelectionChange, describePartKey, describePartKeys, extendPartSelection, partSelectionSignature } from './ui/partSelection';
 import type { PartInfo } from './ui/objectPartsPanel';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive, showIsolation, clearIsolation, isIsolationActive } from './renderer/triangleHighlight';
@@ -7018,6 +7018,18 @@ async function main() {
     { ok: true; restored: string; object: { id: string; name: string }; version?: { id: string; index: number; label: string }; saveWarning?: string; note?: string }
     | { error: string }
   > {
+    const r = await restoreObjectPartsOrPieces([call], objectId);
+    if ('error' in r) return r;
+    const { restored, ...rest } = r;
+    return { ...rest, restored: restored[0] };
+  }
+
+  /** restoreObjectPartOrPiece for several removal lines of one object at once
+   *  (the Undo of a multi-selection delete): one run, one saved version. */
+  async function restoreObjectPartsOrPieces(calls: string[], objectId?: string): Promise<
+    { ok: true; restored: string[]; object: { id: string; name: string }; version?: { id: string; index: number; label: string }; saveWarning?: string; note?: string }
+    | { error: string }
+  > {
     if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
     if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
     if (objectId && getState().currentPart?.id !== objectId) {
@@ -7027,11 +7039,17 @@ async function main() {
     const obj = getState().currentPart;
     if (!obj) return { error: 'No object is open.' };
     const previousCode = getValue();
-    const entry = findRemovalLines(previousCode).find(r => r.call === call);
-    if (!entry) return { error: `"${obj.name}" has no ${call} line in its code — it may already be restored.` };
-    const what = removalTitle(entry);
+    const lines = findRemovalLines(previousCode);
+    const entries: RemovalLine[] = [];
+    for (const call of calls) {
+      const entry = lines.find(r => r.call === call);
+      if (!entry) return { error: `"${obj.name}" has no ${call} line in its code — it may already be restored.` };
+      entries.push(entry);
+    }
+    const titles = entries.map(removalTitle);
+    const what = titles.join(', ');
     const piecesBefore = currentObjectPartsSummary()?.pieces.length ?? 0;
-    const nextCode = removeRemovalLine(previousCode, call);
+    const nextCode = calls.reduce((code, call) => removeRemovalLine(code, call), previousCode);
     setValue(nextCode);
     if (!(await runCodeSync(nextCode))) {
       setValue(previousCode);
@@ -7044,20 +7062,27 @@ async function main() {
       return { error: `Restoring ${what} broke the run: ${geo.error ?? 'run error'}. The code was restored.` };
     }
     const after = currentObjectPartsSummary();
-    const back = entry.kind === 'part'
-      ? !!after?.parts.some(p => p.name === entry.name && p.triangles.size > 0)
-      : (after?.pieces.length ?? 0) > piecesBefore;
+    // Pieces only record a point, so they're checked as a group: as many new
+    // pieces as piece lines restored.
+    const pieceEntries = entries.filter(x => x.kind !== 'part');
+    const piecesShort = (after?.pieces.length ?? 0) - piecesBefore < pieceEntries.length;
+    const missing = entries.filter(x => (x.kind === 'part'
+      ? !after?.parts.some(p => p.name === x.name && p.triangles.size > 0)
+      : piecesShort));
     const saved = await saveCurrentVersion(`restore ${what}`);
     refreshRecoverable();
+    const single = entries.length === 1 ? entries[0] : null;
     return {
       ok: true,
-      restored: what,
+      restored: titles,
       object: { id: obj.id, name: obj.name },
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
-      ...(back ? {} : { note: entry.kind === 'part'
-        ? `Nothing came back — no api.label(…, ${JSON.stringify(entry.name)}) in the code produces geometry any more. The no-op removal line was dropped.`
-        : 'Nothing came back — no piece touches that point any more. The no-op removal line was dropped.' }),
+      ...(missing.length === 0 ? {} : { note: single
+        ? (single.kind === 'part'
+          ? `Nothing came back — no api.label(…, ${JSON.stringify(single.name)}) in the code produces geometry any more. The no-op removal line was dropped.`
+          : 'Nothing came back — no piece touches that point any more. The no-op removal line was dropped.')
+        : `Some of these didn't come back (${missing.map(removalTitle).join(', ')}) — their removal lines were no-ops and were dropped.` }),
     };
   }
 
@@ -7521,12 +7546,9 @@ async function main() {
           action: {
             label: 'Undo',
             run: () => {
-              void (async () => {
-                for (const call of r.calls) {
-                  const u = await restoreObjectPartOrPiece(call, objectId);
-                  if ('error' in u) { showToast(u.error, { variant: 'warn' }); return; }
-                }
-              })();
+              void restoreObjectPartsOrPieces(r.calls, objectId).then((u) => {
+                if ('error' in u) showToast(u.error, { variant: 'warn' });
+              });
             },
           },
         });
@@ -10632,6 +10654,7 @@ async function main() {
       geometryData: stats,
       meshData: result.mesh,
       manifold,
+      labelMap: result.labelMap ?? null,
     };
   }
 
@@ -11501,10 +11524,12 @@ async function main() {
   /** Move a selection of parts — or pieces — of the open object into one new
    *  object (or, with `separate`, one new object each): the Objects list's
    *  "Move to new object" / "Split into objects", extractObjectParts and
-   *  extractObjectPiece. Every rewrite is dry-run first, so a failure changes
-   *  nothing; then the original is saved without the selection and each new
-   *  object is created with its share. manifold-js only. The new (last) object
-   *  is left open. */
+   *  extractObjectPiece. Every rewrite is dry-run and checked against what it
+   *  must contain first, so a refused move changes nothing. Then each new
+   *  object is created with its share (and the colour fills of the parts it
+   *  takes), and the original is saved without the selection last — so a
+   *  failure part-way never leaves the selection only in the original's
+   *  history. manifold-js only. The (last) new object is left open. */
   async function moveObjectSelection(keys: string[], separate: boolean, fn: string): Promise<
     { ok: true; objects: { id: string; name: string }[]; original: { id: string; name: string }; via: 'pieces' | 'parts' } | { error: string }
   > {
@@ -11517,26 +11542,60 @@ async function main() {
     if (!original) return { error: `${fn}: no object is open.` };
     const summary = currentObjectPartsSummary();
     if (!summary) return { error: 'No geometry loaded — run code first.' };
-    const plan = planObjectPartsMove(getValue(), summary, keys, { separate, boxOf: pieceBoxFor });
+    const unique = [...new Set(keys)];
+    const plan = planObjectPartsMove(getValue(), summary, unique, { separate, boxOf: pieceBoxFor });
     if ('error' in plan) return { error: `${fn}: ${plan.error}` };
-    // Every rewrite must run before anything is committed.
-    for (const code of [plan.dropCode, ...plan.objects.map(o => o.code)]) {
-      const pre = await preflightRewrite(code, fn);
-      if (pre) return pre;
+    // Every rewrite must run AND hold what it should before anything is committed.
+    for (const { code, expect } of [{ code: plan.dropCode, expect: plan.drop }, ...plan.objects]) {
+      const iso = await executeIsolated(code);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      try { (iso.manifold as any)?.delete?.(); } catch { /* ignore */ }
+      const gd = iso.geometryData as { status?: string; error?: string; componentCount?: number };
+      if (gd.status === 'error') return { error: `${fn}: the rewritten code doesn't run, so nothing was changed — ${gd.error ?? 'unknown error'}` };
+      const why = checkMoveExpectation(expect, { labels: iso.labelMap ?? null, pieces: gd.componentCount });
+      if (why) return { error: `${fn}: the rewritten code doesn't separate them cleanly (${why}), so nothing was changed. Split them in the code by hand, or ask the AI.` };
     }
-    const what = describePartKeys(keys);
-    const dropped = await partwrightAPI.runAndSave(plan.dropCode, separate && plan.objects.length > 1 ? `Split ${what} into objects` : `Move ${what} to a new object`);
-    const dropFailed = saveFailed(dropped);
-    if (dropFailed) return { error: `${fn}: ${dropFailed}` };
+
+    // Colour fills (the rail swatch) of parts that move wholly into an object
+    // go with them, instead of staying behind as unmatched paint.
+    const objectKeys = separate ? unique.map(k => [k]) : [unique];
+    const fillsFor = objectKeys.map((ks) => {
+      const tris = new Set<number>();
+      for (const k of ks) for (const t of partKeyBaseTriangles(k) ?? []) tris.add(t);
+      const out: { label: string; hex: string }[] = [];
+      for (const r of getRegions()) {
+        if (r.descriptor.kind !== 'byLabel') continue;
+        const own = summary.parts.find(p => p.name === (r.descriptor as { label: string }).label)?.triangles;
+        if (own && own.size > 0 && [...own].every(t => tris.has(t))) out.push({ label: r.descriptor.label, hex: rgbToHexStr(r.color) });
+      }
+      return out;
+    });
+
+    const what = describePartKeys(unique);
+    const done: string[] = [];
+    const failed = (msg: string) => ({ error: `${fn}: ${msg}${done.length ? ` Already done: ${done.join('; ')}.` : ''}` });
     const objects: { id: string; name: string }[] = [];
-    for (const o of plan.objects) {
+    for (const [i, o] of plan.objects.entries()) {
       const created = await partwrightAPI.createObject(`${original.name} · ${o.name}`) as Record<string, unknown>;
-      if (created.error) return { error: `${fn}: ${String(created.error)}` };
+      if (created.error) return failed(String(created.error));
       const kept = await partwrightAPI.runAndSave(o.code, `${o.name} from ${original.name}`);
       const keepFailed = saveFailed(kept);
-      if (keepFailed) return { error: `${fn}: the new object's code failed — ${keepFailed}` };
+      if (keepFailed) return failed(`the new object "${String(created.name)}" didn't save — ${keepFailed}.`);
+      let recoloured = 0;
+      for (const f of fillsFor[i]) if (!('error' in partwrightAPI.setObjectPartColor(f.label, f.hex))) recoloured++;
+      if (recoloured > 0) await saveCurrentVersion(`colours from ${original.name}`);
       objects.push({ id: String(created.id), name: String(created.name) });
+      done.push(`created "${String(created.name)}"`);
     }
+    const back = await partwrightAPI.changeObject({ id: original.id }) as Record<string, unknown>;
+    if (back.error) return failed(`couldn't reopen "${original.name}" to remove the selection — ${String(back.error)}`);
+    // Reopening reloaded the original's paint (new region ids) — match by label.
+    const movedFills = new Set(fillsFor.flat().map(f => f.label));
+    for (const r of getRegions().filter(x => x.descriptor.kind === 'byLabel' && movedFills.has(x.descriptor.label))) removeRegion(r.id);
+    const dropped = await partwrightAPI.runAndSave(plan.dropCode, separate && plan.objects.length > 1 ? `Split ${what} into objects` : `Move ${what} to a new object`);
+    const dropFailed = saveFailed(dropped);
+    if (dropFailed) return failed(`"${original.name}" didn't save without them — ${dropFailed}.`);
+    await partwrightAPI.changeObject({ id: objects[objects.length - 1].id });
     return { ok: true, objects, original: { id: original.id, name: original.name }, via: plan.via };
   }
 
@@ -14385,6 +14444,10 @@ async function main() {
         else return { error: 'setObjectPartHidden(target, hidden): pass a part name or { piece: index } from listObjectParts() (or an array of them).' };
       }
       if (keys.length === 0) return { error: 'setObjectPartHidden(target, hidden): the list is empty.' };
+      // Check every target before hiding any, so a bad one changes nothing.
+      const pieceCount = currentObjectPartsSummary()?.pieces.length ?? 0;
+      const bad = keys.find(k => !partKeyBaseTriangles(k) || (k.startsWith('piece:') && pieceCount < 2));
+      if (keys.length > 1 && bad) return { error: `Unknown part or piece "${bad}".` };
       let r: string[] | string = [];
       for (const key of keys) {
         r = setObjectPartHidden(key, hidden);
@@ -14406,6 +14469,7 @@ async function main() {
           else if (one && typeof one === 'object' && Number.isInteger(one.piece) && (one.piece as number) >= 0) list.push({ piece: one.piece as number });
           else return { error: 'deleteObjectPart([targets]): each entry must be a part name or { piece: index } from listObjectParts().' };
         }
+        if (list.some(x => 'part' in x) && list.some(x => 'piece' in x)) return { error: 'deleteObjectPart([targets]): pass parts or pieces, not a mix of both.' };
         return deleteObjectPartsOrPieces(list);
       }
       if (typeof target === 'string' && target.length > 0) return deleteObjectPartOrPiece({ part: target });

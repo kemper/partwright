@@ -59,3 +59,40 @@ and documented in ai.md.
 **Lost-label noise.** An object with a piece filter on it no longer lists the
 labels the filter dropped as "lost". This was already a wart on single-piece
 Extract, and Move/Split made it very visible.
+
+## Assistant
+
+## Review follow-ups
+
+A review agent went over the first commit. These are the fixes and the
+reasoning behind them:
+
+- **Keep filters narrow (blocking bug).** Before this fix, a keep filter
+  applied to code that already had one merged the old and new piece lists.
+  Moving pieces out of an object that was itself made by Move therefore
+  duplicated geometry. A keep is now always a subset of what the object
+  already keeps, so the new list simply replaces the old one. Drop filters
+  still merge.
+- **Verify before committing.** The planner now records what each object must
+  contain: the parts that must have triangles, the parts that must have none,
+  and the piece count. `moveObjectSelection` checks every dry-run against
+  that, using `executeIsolated`, which now also returns `labelMap`. A rewrite
+  that runs but moves the wrong geometry (for example with nested labels) is
+  refused before anything changes.
+- **Order of commits.** The new objects are created first and the original is
+  saved without the selection last. If a step fails part-way, the selection
+  therefore still exists in the original, and the error lists what was already
+  done. The last new object is still left open, as Extract did before.
+- **Colours move with their parts.** `byLabel` fills (the swatch colour) of
+  parts that move entirely into a new object are re-applied there and removed
+  from the original. Without this they stayed behind as unmatched paint.
+- **Undo after a multi-delete** uses the new `restoreObjectPartsOrPieces`: one
+  run and one version, matching the batch delete.
+- **Touch.** A "Select more" toggle in the drawers makes plain taps extend the
+  selection, because phones and tablets have no Shift key.
+- **API.** A list passed to `setObjectPartHidden` is validated in full before
+  anything is hidden, and `deleteObjectPart` refuses a list that mixes parts
+  and pieces.
+- **Left as is:** a piece-filtered object still hides every "lost" label. The
+  labels a filter drops can't be told apart from genuinely lost ones, because
+  both have zero triangles.
