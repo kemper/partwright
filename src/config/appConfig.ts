@@ -409,6 +409,10 @@ export interface AppConfig {
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Default number of entries `partwright.getDiagnosticLog()` (and the AI
+     *  `getDiagnosticLog` tool) returns when the caller passes no `limit`.
+     *  Newest first; the log itself keeps up to 200 entries. */
+    diagnosticLogApiLimit: number;
     /** Whether the "Did you know?" rolling hints strip shows at the top of the
      *  editor. Users can turn it off permanently here; the strip's ✕ only hides
      *  it for the current tab/session. */
@@ -657,6 +661,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    diagnosticLogApiLimit: 30,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
