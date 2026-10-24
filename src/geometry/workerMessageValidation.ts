@@ -32,10 +32,6 @@ const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'enhance_result',
 ]);
 
-/** Paint-op descriptor kinds the Worker's `api.paint.*` recorder emits. Anything
- *  else (e.g. a crafted `imagePaint`/`brushStroke` with huge payloads) is refused. */
-const PAINT_OP_KINDS: ReadonlySet<string> = new Set(['box', 'slab', 'cylinder', 'byLabel']);
-
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_DATA_DEPTH = 32;
 
@@ -170,7 +166,11 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
     for (const op of paintOps) {
       if (!isPlainObject(op) || typeof op.name !== 'string' || !isRgb(op.color)) fail('paintOps entries need a string name and [r, g, b] color');
       const d = op.descriptor;
-      if (!isPlainObject(d) || typeof d.kind !== 'string' || !PAINT_OP_KINDS.has(d.kind)) fail('paintOps descriptor kind is not one api.paint.* emits');
+      // Shape check only — the descriptor kinds are owned by the api.paint.*
+      // recorder (box/slab/cylinder/byLabel/pattern/…) and grow with it, so an
+      // allow-list here would silently drop new paint ops. The payload is
+      // already plain data (optPlainArray above).
+      if (!isPlainObject(d) || typeof d.kind !== 'string') fail('paintOps entries need a descriptor with a string kind');
     }
   }
   const surfaceOps = optPlainArray(msg.surfaceOps, 'surfaceOps');

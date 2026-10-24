@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { checkEngineWorkerMessage, checkMeshData, isPlainData } from '../../src/geometry/workerMessageValidation';
 
 function mesh(numVert = 3, numTri = 1) {
@@ -49,7 +50,10 @@ describe('checkEngineWorkerMessage', () => {
     expect(checkEngineWorkerMessage({
       type: 'execute_result', callId: 'exec-1', mesh: mesh(), error: null, diagnostics: [],
       labelMapEntries: [['body', [0]]], labelColorEntries: [['body', [1, 0, 0]]],
-      paintOps: [{ name: 'p', color: [0, 1, 0], descriptor: { kind: 'box', center: [0, 0, 0], size: [1, 1, 1], quaternion: [0, 0, 0, 1] } }],
+      paintOps: [
+        { name: 'p', color: [0, 1, 0], descriptor: { kind: 'box', center: [0, 0, 0], size: [1, 1, 1], quaternion: [0, 0, 0, 1] } },
+        { name: 'coat', color: [0.5, 0.4, 0.3], descriptor: { kind: 'pattern', pattern: 'spots', colors: [[1, 1, 1], [0, 0, 0]] } },
+      ],
       surfaceOps: [{ id: 'fuzzy', params: { amplitude: 0.2 } }], materialSpec: { preset: 'brass' },
       lostLabels: null, paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W' }],
       renderOnly: false, workerMs: 12, engineHeapBytes: 1024,
@@ -74,7 +78,7 @@ describe('checkEngineWorkerMessage', () => {
       { type: 'execute_result', callId: 'exec-3', mesh: { ...mesh(), triVerts: new Uint32Array([0, 1, 99]) } },
       { type: 'execute_result', callId: 'exec-3', mesh: null, error: { html: '<img>' } },
       { type: 'execute_result', callId: 'exec-3', mesh: mesh(), labelMapEntries: [['x', [5]]] },
-      { type: 'execute_result', callId: 'exec-3', mesh: null, paintOps: [{ name: 'p', color: [0, 0, 0], descriptor: { kind: 'imagePaint', entries: [] } }] },
+      { type: 'execute_result', callId: 'exec-3', mesh: null, paintOps: [{ name: 'p', color: [0, 0, 0], descriptor: { entries: [] } }] },
       { type: 'execute_result', callId: 'exec-3', mesh: null, materialSpec: JSON.parse('{"__proto__": {"x": 1}}') },
       { type: 'execute_result', callId: 'exec-3', mesh: null, paramsSchema: [{ key: 1 }] },
       { type: 'execute_result', callId: 'exec-3', mesh: null, sdfLabelCounts: { a: 'NaN' } },
@@ -90,5 +94,25 @@ describe('checkEngineWorkerMessage', () => {
     }
     const missing = checkEngineWorkerMessage({ type: 'execute_result', mesh: null });
     expect(missing.ok).toBe(false);
+  });
+});
+
+describe('api.paint.* recorder parity', () => {
+  // Drift guard for #1109: every descriptor kind the manifold-js recorder can
+  // emit must survive Worker→main validation (a kind allow-list here once
+  // rejected `pattern`, breaking api.paint.pattern in-app).
+  it('accepts every descriptor kind engines/manifoldJs.ts records', () => {
+    const src = readFileSync(new URL('../../src/geometry/engines/manifoldJs.ts', import.meta.url), 'utf8');
+    const recorder = src.slice(src.indexOf('const paintOps'));
+    const kinds = new Set([...recorder.matchAll(/kind:\s*'([A-Za-z]+)'/g)].map(m => m[1]));
+    expect(kinds.size).toBeGreaterThanOrEqual(5);
+    for (const k of ['box', 'slab', 'cylinder', 'byLabel', 'pattern']) expect(kinds).toContain(k);
+    for (const kind of kinds) {
+      const r = checkEngineWorkerMessage({
+        type: 'execute_result', callId: 'exec-k', mesh: null, error: null,
+        paintOps: [{ name: `paint·${kind}`, color: [1, 0, 0], descriptor: { kind, scope: { label: 'body' } } }],
+      });
+      expect(r.ok, kind).toBe(true);
+    }
   });
 });
