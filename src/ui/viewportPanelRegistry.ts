@@ -50,6 +50,14 @@ export function openViewportPanel(panel: ViewportPanel, opts?: { silent?: boolea
   if (!reopening && !opts?.silent && silentDepth === 0) for (const fn of openListeners) fn();
 }
 
+/** Fire the "a tool panel opened" listeners unconditionally — even when the
+ *  panel was already open (a re-open skips them in openViewportPanel). Used by
+ *  the tool registry on the phone layout, where an AI/API open must step the
+ *  full-screen chat aside so the tool it just staged is actually visible. */
+export function notifyPanelOpen(): void {
+  for (const fn of openListeners) fn();
+}
+
 /** Call when a panel hides itself (× button, Escape, or forced close). */
 export function closeViewportPanel(panel: ViewportPanel): void {
   if (active === panel) active = null;

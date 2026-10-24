@@ -75,6 +75,9 @@ let openModal: HTMLDivElement | null = null;
 let currentSurfaceClose: (() => void) | null = null;
 /** The open panel's field values (what `getUiState().toolState` reports). */
 let currentSurfaceState: (() => Record<string, unknown>) | null = null;
+/** Re-run the open panel's preview — used when a closed panel's in-flight
+ *  preview lands after a newer panel took over the viewport. */
+let currentSurfaceRepreview: (() => void) | null = null;
 
 /** A tab's prefillable control — the same keys as its `api.surface` options. */
 type FieldCtl =
@@ -1262,16 +1265,29 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
   // --- Live preview (debounced) ---
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
+  /** Set by close() — async work that lands later must not touch the viewport. */
+  let panelClosed = false;
   async function runPreview() {
     // If the model's in-code textures are parked (the user cancelled a compute
     // — the "Re-apply" pill state), apply them first so the preview shows the
     // modifier ON TOP of the textured model, not on the untextured base.
     try { await api.ensureSurfaceTexturesApplied(); } catch { /* preview on whatever is live */ }
+    if (panelClosed) return;
     // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
     // the rest resolve immediately. Either way we await the result.
     // In apply-as-code mode, fold in the label/point scope (empty otherwise) so a
     // scoped preview shows the same patch Apply will write — not the whole model.
     const r = await api.previewSurfaceModifier(active, { ...currentOpts(), ...scopeOpts() }, preserveColor);
+    if (panelClosed) {
+      // Closed (or replaced) mid-preview: the swapped-in mesh is stale. Hand
+      // the viewport back — to a newer surface panel's own preview, or to the
+      // real model when no panel is open.
+      if (!(r as { error?: string }).error) {
+        if (currentSurfaceRepreview) currentSurfaceRepreview();
+        else api.clearSurfacePreview();
+      }
+      return;
+    }
     if ((r as { error?: string }).error) {
       status.textContent = `Preview error: ${(r as { error: string }).error}`;
     } else {
@@ -1301,8 +1317,6 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
 
   // Rebuild the engrave ink mask from the text/image inputs, then preview. Async
   // (font fetch / image decode); reused for every preview/apply until inputs change.
-  /** Set by close() — async work that lands later must not touch the viewport. */
-  let panelClosed = false;
   async function rebuildEngraveMask(spec: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }) {
     engraveBuilding = true;
     engraveMask = null;
@@ -1486,6 +1500,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     openModal = null;
     currentSurfaceClose = null;
     currentSurfaceState = null;
+    currentSurfaceRepreview = null;
     closeViewportPanel(surfaceRegistryEntry);
     document.removeEventListener('keydown', onSurfaceEscape);
   };
@@ -1642,11 +1657,16 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     scrollBody.prepend(note);
   }
 
-  // Replace any open surface panel only now, so a rejected prefill leaves it be.
-  if (openModal) { openModal.remove(); openModal = null; currentSurfaceClose = null; }
+  // Replace any open surface panel only now, so a rejected prefill leaves it
+  // be — and tear it down properly (its preview, outline, pickers and async
+  // stamp work), not just detach its DOM.
+  currentSurfaceClose?.();
   container.append(panel);
   setInitialPanelPosition(panel);
   currentSurfaceClose = close;
+  // Drop whatever stale mesh is showing, then preview this panel's settings
+  // (a blocked region-mode preview simply leaves the real model up).
+  currentSurfaceRepreview = () => { api.clearSurfacePreview(); previewDirty = false; reapplySelectionOverlay(); schedulePreview(); };
   currentSurfaceState = () => {
     const out: Record<string, unknown> = {
       tab: active,

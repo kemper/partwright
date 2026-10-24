@@ -3656,6 +3656,9 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         } catch (e) {
           return { error: `openTool: prefillJson is not valid JSON (${e instanceof Error ? e.message : String(e)})` };
         }
+        if (prefill === null || typeof prefill !== 'object' || Array.isArray(prefill)) {
+          return { error: `openTool: prefillJson must encode a JSON object like {"tab":"knit"} (got ${prefill === null ? 'null' : Array.isArray(prefill) ? 'an array' : typeof prefill})` };
+        }
       }
       return api.openTool(input.id, prefill, { ...(input.note !== undefined ? { note: input.note } : {}), source: 'ai' });
     }

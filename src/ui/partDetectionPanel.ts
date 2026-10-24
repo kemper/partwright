@@ -316,10 +316,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     body.appendChild(banner);
   }
   let noteEl: HTMLElement | null = null;
+  /** Show (or, with no note, clear) the AI note — right under the context
+   *  line when there is one, else at the top. */
   const setNote = (note: string | undefined, source: ToolOpenContext['source']): void => {
-    if (!note) return;
+    if (!note) { noteEl?.remove(); noteEl = null; return; }
     const fresh = createToolNote(note, source);
-    if (noteEl) noteEl.replaceWith(fresh); else body.insertBefore(fresh, contextBanner?.nextSibling ?? body.firstChild);
+    if (noteEl) noteEl.replaceWith(fresh);
+    else if (contextBanner) contextBanner.after(fresh);
+    else body.prepend(fresh);
     noteEl = fresh;
   };
   setNote(opts?.note, opts?.source);
@@ -1985,8 +1989,16 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
    *  actually changes. */
   function stagePrefill(detector: string | null, params: Record<string, unknown> | null): void {
     if (!detector && !params) return;
-    if (detector) algoSelect.value = detector;
-    buildParams(params ?? undefined);
+    if (detector && detector !== algoSelect.value) {
+      // The method-change bookkeeping onMethodChanged does — minus touching
+      // the draft: drop a hovered preset preview and the carried denoise.
+      void ctl.showPresetPreview(null);
+      carriedEdgeLengths = null;
+      algoSelect.value = detector;
+    }
+    buildParams(params ?? undefined); // also re-renders the preset strip
+    const d = ctl.getPartDraft();
+    needPinsHint.classList.toggle('hidden', isDraft(d) || detectorOf(algoSelect.value).seeds !== 'required' || ctl.getSeeds().length > 0);
     startCollapsed = false; // show the staged method + params
     syncStart();
     if (!isDraft(ctl.getPartDraft())) setTool(detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
