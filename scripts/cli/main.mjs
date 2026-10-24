@@ -135,6 +135,8 @@ async function cmdCall(argv) {
   const args = a._[1] ? JSON.parse(a._[1]) : [];
   const r = await rpc(method, args);
   if (!r.ok) { console.log(json(r)); process.exit(1); }
+  // Value-returning API methods report failure as { error } (ai.md#argument-validation).
+  if (typeof r.result?.error === 'string') { console.log(json({ ok: false, error: r.result.error })); process.exit(1); }
   if (a.out && typeof r.result === 'string' && r.result.startsWith('data:image')) {
     writeDataUrl(r.result, resolve(a.out));
     console.log(json({ ok: true, out: resolve(a.out) }));
@@ -150,11 +152,11 @@ async function cmdRender(argv) {
     const code = readFileSync(resolve(a.code), 'utf8');
     await rpc('setActiveLanguage', ['manifold-js']);
     const run = await rpc('runAndSave', [code, 'render']);
-    if (!run.ok || run.result?.geometry?.status === 'error') { console.log(json({ ok: false, error: run.result?.geometry?.error || run.error })); process.exit(1); }
+    if (!run.ok || typeof run.result?.error === 'string' || run.result?.geometry?.status === 'error') { console.log(json({ ok: false, error: run.result?.error || run.result?.geometry?.error || run.error })); process.exit(1); }
   }
   const opts = { views: a.views || 'all', size: Number(a.size) || 420 };
   const r = await rpc('renderViews', [opts]);
-  if (!r.ok || typeof r.result !== 'string') { console.log(json({ ok: false, error: r.error || 'no image (is a model loaded?)' })); process.exit(1); }
+  if (!r.ok || typeof r.result !== 'string') { console.log(json({ ok: false, error: r.error || (typeof r.result?.error === 'string' ? r.result.error : 'no image (is a model loaded?)') })); process.exit(1); }
   writeDataUrl(r.result, out);
   console.log(json({ ok: true, out }));
 }
@@ -176,6 +178,7 @@ async function cmdBake(argv) {
     await pw.createSession(name);
     if (thumbCamera && pw.setThumbnailCamera) await pw.setThumbnailCamera(thumbCamera);
     const run = await pw.runAndSave(model, 'shape');
+    if (run && typeof run.error === 'string') return { error: 'model error: ' + run.error };
     if (run && run.geometry && run.geometry.status === 'error') return { error: 'model error: ' + run.geometry.error };
     const paintResults = [];
     for (const p of paints) paintResults.push(await pw.paintByLabel(p));
@@ -232,7 +235,8 @@ async function cmdIterate(argv) {
   await rpc('setActiveLanguage', [a.lang || 'manifold-js']);
   const runRes = await rpc('run', [code]);
   if (!runRes.ok) { console.log(json(runRes)); process.exit(1); }
-  if (runRes.result?.status === 'error') { console.log(json({ ok: false, error: runRes.result.error, stats: runRes.result })); process.exit(1); }
+  // A bad argument comes back as { error } (no status); a model failure as { status: 'error', error }.
+  if (typeof runRes.result?.error === 'string' || runRes.result?.status === 'error') { console.log(json({ ok: false, error: runRes.result.error, stats: runRes.result })); process.exit(1); }
   if (Object.keys(a.params).length) await rpc('setParams', [a.params]); // re-runs with overrides
   const stats = (await rpc('getGeometryData', [])).result;
   const img = await rpc('renderViews', [{ views: a.views || 'all', size: Number(a.size) || 420 }]);

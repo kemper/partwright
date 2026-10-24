@@ -5,6 +5,7 @@
 import { openPartwrightDB } from '../storage/db';
 import { requestPersistentStorage } from '../storage/persist';
 import type { ChatMessage, KeyRecord, Provider } from './types';
+import { registerKnownSecret } from '../diagnostics/logQuery';
 
 const KEYS_STORE = 'aiKeys';
 const CHATS_STORE = 'aiChats';
@@ -35,10 +36,25 @@ export async function getKey(provider: Provider): Promise<KeyRecord | null> {
   const txn = db.transaction(KEYS_STORE, 'readonly');
   const record = await reqToPromise(txn.objectStore(KEYS_STORE).get(provider)) as KeyRecord | undefined;
   await txComplete(txn);
+  // Every key the app holds is redacted from agent-facing diagnostics.
+  if (record) registerKnownSecret(record.apiKey);
   return record ?? null;
 }
 
+/** Register every saved provider key (all providers, incl. custom) with the
+ *  diagnostic-log redactor — called before `partwright.getDiagnosticLog`
+ *  returns, so a key that leaked into a log line (even one written in a
+ *  previous page load and restored from sessionStorage) is replaced. */
+export async function registerSavedKeysForRedaction(): Promise<void> {
+  const db = await openPartwrightDB();
+  const txn = db.transaction(KEYS_STORE, 'readonly');
+  const all = await reqToPromise(txn.objectStore(KEYS_STORE).getAll()) as KeyRecord[];
+  await txComplete(txn);
+  for (const r of all) registerKnownSecret(r?.apiKey);
+}
+
 export async function putKey(record: KeyRecord): Promise<void> {
+  registerKnownSecret(record.apiKey);
   const db = await openPartwrightDB();
   const txn = db.transaction(KEYS_STORE, 'readwrite');
   txn.objectStore(KEYS_STORE).put(record);

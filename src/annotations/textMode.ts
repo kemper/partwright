@@ -117,7 +117,7 @@ export function forceDeactivate(opts: DeactivateOpts = {}): void {
 }
 
 // Let sibling tools deactivate text mode without importing this module.
-registerExclusiveMode('text', forceDeactivate);
+registerExclusiveMode('text', forceDeactivate, isActive);
 
 function cancelInProgress(): void {
   removeInput();

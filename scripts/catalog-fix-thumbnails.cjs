@@ -83,7 +83,7 @@ async function main() {
       await new Promise(r => setTimeout(r, 600)); // let color regions rehydrate
       const code = payload.versions[payload.versions.length - 1].code;
       const geo = await window.partwright.run(code);
-      if (!geo || geo.status === 'error') return { error: 'run: ' + (geo && geo.error) };
+      if (!geo || geo.error || geo.status === 'error') return { error: 'run: ' + (geo && geo.error) };
       await new Promise(r => setTimeout(r, 400)); // let paint re-apply + render settle
       const fresh = window.partwright.getGeometryData();
       const thumb = window.partwright.renderView(view);
