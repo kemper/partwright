@@ -85,6 +85,26 @@ const r = await partwright.export3MFObjectsData(undefined, 'assembly', { bambu: 
 // -> { filename, mimeType, base64: "...", sizeBytes, objects: 3 }
 ```
 
+## 3MF filament colours
+
+Every distinct colour in a 3MF becomes its **own filament** in Bambu Studio / OrcaSlicer — so a figure painted "black" five times with five slightly different blacks opens with five black filaments. In the app, both 3MF exports open a **Filament colors** step that pre-merges near-identical shades (tolerance slider, default from Advanced Settings → UI → *Export colour merging*), caps the count (**Max filaments**, e.g. 4 for one AMS), and lets the user re-assign or recolour each filament. It is **export-only**: the session's paint is never changed.
+
+The console twins take the same choices as options on `export3MF`, `export3MFData`, `export3MFObjects` and `export3MFObjectsData` (no option = every colour exported as-is, the historical behaviour):
+
+- `mergeColors: number` — merge colours within this perceptual distance (CIE76 ΔE) of a more-used colour. ~2 is barely visible; **10** merges shades that look the same on the model.
+- `maxColors: number` — after merging, fold the least-used colours into their nearest kept colour until at most this many remain.
+- `colorMap: { "#from": "#to" }` — explicit recolours/merges, applied after the auto-merge.
+
+Merge targets are always colours the model already uses (never a blend). Unpainted faces on a painted model export as the default blue `#4a9eff` (`unpainted: true` in the listing) — map it with `colorMap` if that matters.
+
+```js
+partwright.listExportColors({ mergeColors: 10 })
+// -> { colors: [{ hex: "#1f1712", triangles: 179313, share: 0.378, names: ["hair"] }, …],
+//      merges: { "#1b1b1b": "#1f1712", "#f2f2ef": "#f7f7f4", … }, filaments: 5 }
+await partwright.export3MFData('figure', { mergeColors: 10, maxColors: 4 })
+await partwright.export3MFObjects(undefined, 'figure', { mergeColors: 10, colorMap: { '#1f1712': '#111111' } })
+```
+
 ## Multi-object OBJ / STL / GLB
 
 The same object-bake pipeline backs OBJ, STL, and GLB. Each takes `(objectIds?, filename?)` (default: every object) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, objects }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-object session (the single button auto-routes to the object picker when the session has more than one object). Each format bundles objects the way its file format does best:

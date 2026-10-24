@@ -1351,6 +1351,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Export colour merging"
+          unit="ΔE"
+          hint="Default tolerance of the 3MF export's Filament colors step."
+          tooltip="Every distinct painted colour becomes its own filament in Bambu Studio / OrcaSlicer. The 3MF export opens a Filament colors step that merges near-identical shades (closer than this perceptual colour difference) into one filament. ~2 is barely noticeable; 10 merges colours that look the same on the model; 0 keeps every shade. You can always adjust it in the dialog."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.exportColorMergeTolerance}
+          value={c.ui.exportColorMergeTolerance}
+          min={0} max={30} integer
+          onChange={v => set('ui', 'exportColorMergeTolerance', v)}
+        />
+        <Field
           label="Undo toast duration"
           unit="ms"
           hint="How long a toast with an Undo button (after deleting) stays on screen."
