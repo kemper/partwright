@@ -21,6 +21,7 @@ import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
 import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
+import { createEngineWorker, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 
 export interface PoolBuildRequest {
   code: string;
@@ -56,7 +57,8 @@ interface Job {
 }
 
 interface PoolWorker {
-  worker: Worker;
+  /** A real Worker, or the engine-sandbox façade over one. */
+  worker: EngineWorkerHandle;
   /** True once the worker has booted its WASM and posted `ready`. */
   ready: boolean;
   /** callId → its in-flight job, so a result routes back to the right promise. */
@@ -97,7 +99,7 @@ function targetPoolSize(): number {
 }
 
 function spawnWorker(): PoolWorker {
-  const worker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  const worker = createEngineWorker(() => new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' }));
   const pw: PoolWorker = { worker, ready: false, inflight: new Map(), busy: false };
   worker.onmessage = (e: MessageEvent) => handleMessage(pw, e.data);
   worker.onerror = () => {

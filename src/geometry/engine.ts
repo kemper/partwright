@@ -18,6 +18,7 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
+import { createEngineWorker, prewarmEngineSandbox, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -44,6 +45,9 @@ export function setActiveLanguage(lang: Language): void {
  * is always eager-loaded since OpenSCAD needs it for the round-trip).
  * Also boots the geometry Worker so it's warm before first code execution. */
 export async function initEngine(lang: Language = DEFAULT_LANGUAGE): Promise<void> {
+  // With the engine sandbox on, start loading its iframe now so it overlaps
+  // the main-thread WASM init below (no-op when the sandbox is off).
+  prewarmEngineSandbox();
   // Always make sure manifold-js is ready (exports + slicing + ofMesh rely on it).
   await manifoldJsEngine.init();
   if (lang !== 'manifold-js') {
@@ -90,7 +94,8 @@ export function executeCode(source: string, lang?: Language, paramOverrides?: Re
 
 // ── Geometry Worker client ──────────────────────────────────────────────────
 
-let engineWorker: Worker | null = null;
+// A real Worker, or the engine-sandbox façade over one (src/sandbox/sandboxHost.ts).
+let engineWorker: EngineWorkerHandle | null = null;
 let workerReadyResolve: (() => void) | null = null;
 let workerReadyReject: ((e: Error) => void) | null = null;
 // Mutable so it can be replaced when the Worker is restarted after a crash.
@@ -271,7 +276,8 @@ function initEngineWorker(): void {
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
-  engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  performance.mark('partwright:engine-worker-start');
+  engineWorker = createEngineWorker(() => new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' }));
   markWorkerStarted('geometry');
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
@@ -299,6 +305,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
   if (msg.type === 'ready') {
+    // Ready signal for tooling/benchmarks (scripts/bench-engine-sandbox.mjs).
+    performance.mark('partwright:engine-worker-ready');
     workerReadyResolve?.();
     workerReadyResolve = null;
     return;

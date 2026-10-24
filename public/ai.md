@@ -367,6 +367,9 @@ await partwright.simplifyModel({mode?: 'simplify'|'enhance', targetTris? | targe
 partwright.getAppConfig()                // Advanced Settings: {section: {key: {value, default, min?, max?, integer?, modified?}}}
 partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
 await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
+partwright.getWorkerHealth()             // Worker health panel: per-worker liveness/restarts + recent geometry runs (durationMs main-thread round trip vs workerMs compute) -> {workers, runs}
+partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested, active, state, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, fallbackReason, sandboxOrigin, modes}
+partwright.setEngineSandboxMode('off'|'opaque'|'origin')  // Run model code in a hidden cross-origin iframe (no access to app storage/keys, network blocked). This browser; RELOAD to apply -> {mode, previous, note}
 
 // Isolated execution -- test code without changing editor/viewport state
 await partwright.runIsolated(code, view?)  // -> {geometryData, thumbnail}. Default thumbnail is 4-iso composite; pass `view` ({elevation, azimuth, ortho, size}) for a single-angle preview.

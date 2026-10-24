@@ -4,7 +4,7 @@
 // Changes persist to localStorage and take effect immediately (renderer
 // settings marked "reload" need a page refresh to rebuild Three.js objects).
 
-import { signal, computed, type Signal } from '@preact/signals';
+import { signal, computed, useSignal, type Signal } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 import { mountPreactModal } from './preact/mount';
 import {
@@ -15,6 +15,16 @@ import {
   type AppConfig,
 } from '../config/appConfig';
 import { showUninstallModal } from './uninstallModal';
+import {
+  ENGINE_SANDBOX_MODES,
+  configuredSandboxOrigin,
+  defaultEngineSandboxMode,
+  getEngineSandboxMode,
+  isEngineSandboxMode,
+  setEngineSandboxMode,
+  type EngineSandboxMode,
+} from '../sandbox/engineSandboxSetting';
+import { getEngineSandboxStatus } from '../sandbox/sandboxHost';
 import { registerTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -155,6 +165,56 @@ function Section({ title, children }: SectionProps) {
         {title}
       </div>
       {children}
+    </div>
+  );
+}
+
+// ─── engine sandbox (per-browser setting, not part of AppConfig) ─────────────
+
+const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
+  off: 'Off — run model code in a plain Worker (default)',
+  opaque: 'Opaque origin — sandboxed iframe on this site',
+  origin: 'Separate origin — iframe on the configured sandbox host',
+};
+
+function SandboxModeField() {
+  const mode = useSignal<EngineSandboxMode>(getEngineSandboxMode());
+  const origin = configuredSandboxOrigin();
+  const status = getEngineSandboxStatus();
+  const def = defaultEngineSandboxMode();
+  return (
+    <div class="flex flex-col gap-1 rounded" data-setting="security.engineSandbox">
+      <div class="flex items-center gap-2">
+        <label class="text-xs font-medium text-zinc-300 flex-1" for="engine-sandbox-mode">Engine sandbox</label>
+        {mode.value !== def && (
+          <span class="text-[9px] text-amber-400 border border-amber-400/30 rounded px-1 py-px uppercase tracking-wide">
+            modified
+          </span>
+        )}
+      </div>
+      <select
+        id="engine-sandbox-mode"
+        class="px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 focus:border-blue-500 focus:outline-none"
+        value={mode.value}
+        onChange={e => {
+          const v = (e.currentTarget as HTMLSelectElement).value;
+          if (!isEngineSandboxMode(v)) return;
+          mode.value = v;
+          setEngineSandboxMode(v);
+        }}
+      >
+        {ENGINE_SANDBOX_MODES.map(m => (
+          <option value={m} disabled={m === 'origin' && !origin}>
+            {SANDBOX_MODE_LABELS[m]}{m === 'origin' && !origin ? ' (not configured in this build)' : ''}
+          </option>
+        ))}
+      </select>
+      <p class="text-[10px] text-zinc-500 leading-snug">
+        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a different origin, so it
+        can't read this site's saved sessions or AI keys, and its network access is blocked. Reload to apply.
+        Currently: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}{status.state === 'fallback' ? ` (fell back: ${status.fallbackReason})` : ''}</span>.
+        Not reset by "Reset to defaults".
+      </p>
     </div>
   );
 }
@@ -1393,6 +1453,20 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.segmentation.mobileSheetHeightFrac}
           min={0.25} max={0.9} step={0.05}
           onChange={v => set('segmentation', 'mobileSheetHeightFrac', v)}
+        />
+      </Section>
+
+      <Section title="Security — engine sandbox (reload to apply)">
+        <SandboxModeField />
+        <Field cfgKey="renderer.engineSandboxBootTimeoutMs"
+          label="Sandbox start timeout"
+          unit="ms"
+          hint="How long the sandbox may take to start before falling back to an unsandboxed Worker."
+          tooltip="With the engine sandbox on, the geometry Worker lives in a hidden cross-origin iframe. If that frame or its Worker doesn't load and report cross-origin isolation within this time, Partwright falls back to the plain Worker for the rest of the tab and shows a warning."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.engineSandboxBootTimeoutMs}
+          value={c.renderer.engineSandboxBootTimeoutMs}
+          min={2_000} max={120_000} integer
+          onChange={v => set('renderer', 'engineSandboxBootTimeoutMs', v)}
         />
       </Section>
 

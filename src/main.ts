@@ -363,6 +363,18 @@ import {
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
+import { getEngineSandboxStatus } from './sandbox/sandboxHost';
+import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
+import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
+
+/** True while the engine sandbox is in effect (requested and not fallen back):
+ *  model code must then only run in the sandboxed Worker, never on the main
+ *  thread (see docs/engine-sandbox.md). */
+function engineSandboxActive(): boolean {
+  return getEngineSandboxStatus().active !== 'off';
+}
+
+type ReferenceGeometryResult = { success: boolean; error?: string; boundingBox?: unknown; volume?: number };
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -13020,7 +13032,11 @@ async function main() {
       const frames: ParamSweepFrame[] = [];
       for (let i = 0; i < steps; i++) {
         const value = from + (to - from) * (i / (steps - 1));
-        const r = executeCode(code, undefined, { [param]: value });
+        // With the engine sandbox on, model code must never run on the main
+        // thread — evaluate each frame in the (sandboxed) geometry Worker.
+        const r = engineSandboxActive()
+          ? await executeCodeAsync(code, 'manifold-js', { [param]: value })
+          : executeCode(code, undefined, { [param]: value });
         if (r.error || !r.mesh) {
           return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
         }
@@ -17225,6 +17241,38 @@ async function main() {
       };
     },
 
+    /** Engine sandbox (Advanced Settings → Security; docs/engine-sandbox.md):
+     *  the requested mode, the mode actually in effect (a sandbox that can't
+     *  start falls back to 'off'), and whether the sandbox frame / Worker
+     *  reported cross-origin isolation. -> { requested, active, state,
+     *  frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin,
+     *  fallbackReason, sandboxOrigin, modes } */
+    getEngineSandboxStatus() {
+      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
+    },
+
+    /** Choose the engine-sandbox mode for this browser ('off' | 'opaque' |
+     *  'origin'). Persists; takes effect on the next page reload (the
+     *  geometry Worker is created at boot). Deliberately NOT an in-app AI
+     *  tool: a prompt-injected session must not be able to switch it off.
+     *  -> { mode, previous, note } or { error } */
+    setEngineSandboxMode(mode: string) {
+      if (!isEngineSandboxMode(mode)) return { error: `setEngineSandboxMode(mode): mode must be one of ${ENGINE_SANDBOX_MODES.join(', ')}` };
+      if (mode === 'origin' && !configuredSandboxOrigin()) return { error: "setEngineSandboxMode('origin'): this build has no VITE_SANDBOX_ORIGIN configured" };
+      const previous = getEngineSandboxMode();
+      setEngineSandboxMode(mode);
+      return { mode, previous, note: 'Reload the page to apply.' };
+    },
+
+    /** Worker health (the Diagnostics → Workers panel): each worker's
+     *  liveness / in-flight / restart counts plus the recent geometry-run
+     *  history with main-thread wall time (durationMs) and Worker-side compute
+     *  time (workerMs) — the gap is queue + transfer cost.
+     *  -> { workers: [...], runs: [...] } */
+    getWorkerHealth() {
+      return { workers: getWorkerHealth(), runs: getWorkerRuns() };
+    },
+
     /** Read the Diagnostic Log (the toolbar ⚠ panel): errors, warnings and
      *  routine activity from every subsystem, newest first. Filter by `level`
      *  ('error' | 'warn' | 'info', or a list) and/or `source` ('engine', 'ai',
@@ -17501,7 +17549,7 @@ async function main() {
     // === Phase 3: Reference/Phantom Geometry ===
 
     /** Set translucent reference geometry for fitment checking. Code is executed in isolation (always manifold-js). */
-    setReferenceGeometry(code: string, options?: PhantomOptions): { success: boolean; error?: string; boundingBox?: unknown; volume?: number } {
+    setReferenceGeometry(code: string, options?: PhantomOptions): ReferenceGeometryResult | Promise<ReferenceGeometryResult> {
       const check = guard(() => {
         assertString(code, 'setReferenceGeometry(code)', { allowEmpty: false });
         if (options !== undefined) {
@@ -17518,6 +17566,25 @@ async function main() {
       }
       if (isSharedPreview()) {
         return { success: false, error: SHARED_PREVIEW_REFUSAL };
+      }
+      if (engineSandboxActive()) {
+        // Engine sandbox on: never evaluate model code on the main thread. Run
+        // it in the (sandboxed) Worker and measure the returned mesh here.
+        return (async (): Promise<ReferenceGeometryResult> => {
+          const r = await executeCodeAsync(code, 'manifold-js');
+          if (r.error) return { success: false, error: r.error };
+          if (!r.mesh) return { success: false, error: 'Code did not produce geometry' };
+          setPhantom(r.mesh, options);
+          let volume = 0;
+          let bb = null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let m: any = null;
+          try { m = getModule()?.Manifold.ofMesh(r.mesh) ?? null; } catch { /* not manifold — no stats */ }
+          try { if (m) volume = m.volume(); } catch { /* ignore */ }
+          try { if (m) bb = getBoundingBox(m); } catch { /* ignore */ }
+          try { m?.delete?.(); } catch { /* ignore */ }
+          return { success: true, boundingBox: bb, volume };
+        })();
       }
       const result = executeCode(code, 'manifold-js');
       if (result.error) {
@@ -20748,6 +20815,9 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
+        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, fallback reason -> {requested, active, state, ...}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
         'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },

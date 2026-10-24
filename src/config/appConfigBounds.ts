@@ -72,6 +72,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     gridDivisions: { min: 2, max: 200, integer: true },
     isolateGhostOpacity: { min: 0, max: 0.9 },
     assemblyPoolSize: { min: 1, max: 16, integer: true },
+    engineSandboxBootTimeoutMs: { min: 2_000, max: 120_000, integer: true },
     exportPoolSize: { min: 1, max: 16, integer: true },
     assemblyGridGutter: { min: 0, max: 2 },
     ambientLightIntensity: { min: 0, max: 3 },

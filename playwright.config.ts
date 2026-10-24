@@ -53,6 +53,18 @@ if (shard) {
 // E2E_PORT lets several checkouts (e.g. parallel agent worktrees) run specs at
 // once without reusing each other's dev server on the default port.
 const port = Number(process.env.E2E_PORT || 5173);
+// Engine-sandbox 'origin' mode (tests/engine-sandbox.spec.ts) needs the frame
+// served from a DIFFERENT origin: a second dev server of this same checkout on
+// another port. The app server is told about it via VITE_SANDBOX_ORIGIN; with
+// the sandbox off (the default) that variable is inert.
+const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1);
+const devCommand = (p: number) => (p === 5173 ? 'npm run dev' : `npm run dev -- --port ${p} --strictPort`);
+const devEnv = {
+  VITE_SANDBOX_ORIGIN: `http://localhost:${sandboxPort}`,
+  // Opaque-mode frames load modules cross-origin (Origin: null); the dev
+  // server only answers those with CORS when this opt-in is set (vite.config.ts).
+  PARTWRIGHT_SANDBOX_DEV_CORS: '1',
+};
 
 export default defineConfig({
   testDir: './tests',
@@ -94,10 +106,22 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: port === 5173 ? 'npm run dev' : `npm run dev -- --port ${port} --strictPort`,
-    url: `http://localhost:${port}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  webServer: [
+    {
+      command: devCommand(port),
+      url: `http://localhost:${port}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      env: devEnv,
+    },
+    {
+      // Sandbox origin for engine-sandbox 'origin' mode — only that spec's
+      // frames ever load from it.
+      command: `npm run dev -- --port ${sandboxPort} --strictPort`,
+      url: `http://localhost:${sandboxPort}/sandbox.html`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      env: devEnv,
+    },
+  ],
 });

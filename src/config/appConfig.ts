@@ -250,6 +250,10 @@ export interface AppConfig {
      *  memory for export speed; clamped at runtime to both (hardwareConcurrency −
      *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
     exportPoolSize: number;
+    /** How long (ms) the engine sandbox (Advanced Settings → Security) may take
+     *  to load its frame and report a cross-origin-isolated Worker before the
+     *  app gives up and falls back to an unsandboxed Worker (with a toast). */
+    engineSandboxBootTimeoutMs: number;
     /** Spacing between Assembly-grid cells as a fraction of the largest part's
      *  footprint (0.25 ⇒ a quarter-cell gutter). */
     assemblyGridGutter: number;
@@ -625,6 +629,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
     exportPoolSize: 8,
+    engineSandboxBootTimeoutMs: 20_000,
     assemblyGridGutter: 0.18,
   },
   import: {
