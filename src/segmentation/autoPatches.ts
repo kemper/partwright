@@ -18,7 +18,7 @@
 // patches; hair + face stayed merged (the sideburn has no groove).
 
 import { absorbSmallRegions, adjacencyFromPairs } from '../geometry/triSetOps';
-import { featureOptionsKey } from './features';
+import { featureOptionsKey, maskKey } from './features';
 import { growFromSeeds } from './growth';
 import type { DetectorResult, MeshFeatures, PartDetector } from './types';
 
@@ -30,19 +30,6 @@ interface Oversegmentation {
   borderA: Int32Array;
   borderB: Int32Array;
   borderStrength: Float32Array;
-}
-
-/** Cheap content hash of an allow mask (so the cache can't serve a patch
- *  layout computed for a different focus/lock area). */
-function maskKey(allow: Uint8Array | undefined): string {
-  if (!allow) return 'all';
-  let h = 2166136261, n = 0;
-  for (let t = 0; t < allow.length; t++) {
-    if (!allow[t]) continue;
-    n++;
-    h = Math.imul(h ^ t, 16777619);
-  }
-  return `${n}:${(h >>> 0).toString(36)}`;
 }
 
 function oversegment(f: MeshFeatures, cell: number, allow: Uint8Array | undefined): Oversegmentation {

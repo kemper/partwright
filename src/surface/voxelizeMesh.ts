@@ -24,7 +24,8 @@ export interface VoxelizeOptions {
 }
 
 const DEFAULT_COLOR = 0x4a9eff; // the app's default unpainted blue
-const MAX_RESOLUTION = 200;
+/** Hard ceiling on voxels along the longest axis (cost guard). */
+export const MAX_RESOLUTION = 200;
 
 /** Read a triangle's color (0xRRGGBB) from a triColors buffer, or the default. */
 function triColor(triColors: Uint8Array | undefined, t: number): number {

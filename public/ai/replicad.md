@@ -57,19 +57,20 @@ them before writing BREP code or you'll burn iterations on silent failures.
    centroid coverage test catches them. Pass `coverageMode:"fully_inside"`
    or use `paintConnected` from a probed seed.
 
-9. **Labels propagate through `circularPattern` and individual
-   `fuse`/`cut` ops, but get SCRAMBLED by `BREP.fuseAll` on
-   many-feature composites.** Three subagents independently hit this:
-   `paintByLabel({label:'dial'})` returned 804 triangles at the back
-   plate's lower-left quadrant instead of the dial; `'spindle'`
-   painted at the wrong z range; `'lip'` covered most of the model.
-   The root cause is in the spatial-signature resolver
-   (`buildLabelMapFromShape` in `brepRuntime.ts`) — bbox-containment +
-   smallest-volume tiebreak collides when many labeled features stack
-   inside one larger feature's bbox.
+9. **Labels follow the triangles through the whole pipeline — but a face
+   OCCT rebuilds is labelled by geometry, which can misjudge stacked
+   features.** Labels used to come back scrambled (paint landing on the
+   wrong part of the model) because they indexed the BREP tessellation
+   while the viewport showed the Manifold-canonicalized mesh; they now ride
+   into the mesh as provenance runs (#1061), in BREP sessions and through
+   `BREP.toManifold` + later booleans in JS sessions alike. A face a boolean
+   rebuilt (no OCCT history) is labelled by an area-weighted vote: each of
+   its triangles goes to the smallest source bbox containing it. When many
+   labelled features stack inside one larger feature's bbox, that vote can
+   still pick the wrong one.
 
-   **Workaround**: for multi-feature BREP composites, default to
-   coordinate-based selectors:
+   **If a label paints the wrong region** on a multi-feature composite,
+   use coordinate-based selectors:
    - `partwright.paintInCylinder({center, rMin, rMax, zMin, zMax, color})`
      for rings / shells / coffee inside a mug / hour-marker rings.
    - `partwright.paintSlab({normal:[0,0,1], offset, thickness, color})`
@@ -221,6 +222,7 @@ const list = BREP.listEdges(shape, filter?);
 // Note: BREP.label takes NO color argument (unlike manifold-js api.label).
 // Replicad models always render gray until you call paintByLabel after runAndSave.
 BREP.label(shape, 'name');                      // wrap a shape with a label
+api.removePart('name');                         // at the TOP of the code: a later BREP.label(…, 'name') returns an empty shape (the object list's part ✕ writes this)
 
 // Self-coloring — pass an optional { color } (hex '#rrggbb' / '#rgb', or an
 // [r,g,b] array in 0..1), exactly like the manifold-js `api.label` 3rd arg.

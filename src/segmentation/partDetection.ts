@@ -24,16 +24,19 @@ import {
   ValidationError, assertArray, assertBoolean, assertEnum, assertNumber, assertNumberTuple,
   assertObject, assertNoUnknownKeys, assertString,
 } from '../validation/apiValidation';
-import { MAX_EDGE_SMOOTHING, hexToRgb, UNASSIGNED_COLOR, type DraftSummary, type PartEditOp } from './draft';
+import { MAX_EDGE_SMOOTHING, acceptColors, hexToRgb, isHexColor, UNASSIGNED_COLOR, type BrushMode, type DraftSummary, type PartEditOp } from './draft';
 import { medianEdgeLength, toSegMesh } from './features';
+import { LABEL_PRESETS } from './labelPresets';
 import { AbortedError } from './growth';
-import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts, renderPartsThumbnail } from './partsRender';
+import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, partFrame, renderNumberedParts, renderPartsThumbnail, resolvePartsView, type PartsFrame, type PartsViewSpec, type PartsRenderView } from './partsRender';
 import { autoProposeDetectors, describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
 import {
   adoptPartsAsync, detectPartsAsync, discardPartsDraft, edgeCutAsync, editPartsAsync, previewPartsAsync, type SegCallControl,
 } from './segmentationClient';
 import { buildCutMesh, cutPointProps, type EdgeCut } from './smoothEdges';
-import type { FeatureOptions, SegMesh, SegSeed } from './types';
+import type { FeatureOptions, ParamValues, SegMesh, SegSeed } from './types';
+import { compareCaptions, type CaptionConfig } from './compareCaptions';
+import { seedLandings } from './seedPreview';
 
 export interface PartDetectionHost {
   getImports(): ImportedMesh[];
@@ -59,9 +62,24 @@ export interface PartDetectionHost {
 export type PartDetectionEvent = 'draft' | 'busy' | 'seeds' | 'presets' | 'view';
 
 const EDIT_OPS = [
-  'merge', 'rename', 'setColor', 'delete', 'reassign', 'split', 'absorbSmall', 'smoothBoundaries',
+  'merge', 'rename', 'setColor', 'delete', 'reassign', 'brush', 'split', 'absorbSmall', 'smoothBoundaries',
   'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo',
 ] as const;
+
+const BRUSH_MODES = ['triangles', 'patches'] as const satisfies readonly BrushMode[];
+
+/** A brush stroke in progress, previewed on the overlay before it lands
+ *  (the panel's Select-tool brush). */
+export interface BrushGhost {
+  points: [number, number, number][];
+  radius: number;
+  mode: BrushMode;
+  /** `#rrggbb` the brushed area previews in (the target part's colour). */
+  color: string;
+  /** Triangles of the shown overlay mesh the stroke passed over (a dab
+   *  smaller than the triangle it lands on still takes that triangle). */
+  faces?: number[];
+}
 
 /** How the overlay draws parts: everything, or only a solo set (the rest
  *  greyed out). */
@@ -155,6 +173,10 @@ export function createPartDetection(host: PartDetectionHost) {
   let soloNames = new Set<string>();
   let keepPresetsOnce = false;
   let presetRun: { stop: boolean } | null = null;
+  /** Brush preview: the brushed overlay triangles (marked incrementally as
+   *  the stroke grows) recoloured toward the target part. */
+  let ghost: { g: BrushGhost; mesh: MeshData | null; labels: Int32Array; hit: Uint8Array; done: number; touched: Set<number> } | null = null;
+  let centroidCache: { mesh: MeshData; c: Float32Array } | null = null;
 
   function importAt(index: number): ImportedMesh {
     const imports = host.getImports();
@@ -184,6 +206,8 @@ export function createPartDetection(host: PartDetectionHost) {
   function clearDraftState(): void {
     const hadDraft = draft !== null;
     draft = null;
+    ghost = null;
+    centroidCache = null;
     gen++;
     cutState = null;
     overlayLabels = null;
@@ -217,13 +241,17 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function sameSeeds(a: SegSeed[], b: SegSeed[]): boolean {
-    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.point.every((v, k) => v === b[i].point[k]));
+    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.color === b[i].color && x.maxRadius === b[i].maxRadius && x.point.every((v, k) => v === b[i].point[k]));
   }
 
+  /** Copy a seed. A working (pre-detection) pin keeps its colour so the
+   *  first detection can apply it; the draft's own pins never carry one. */
   function copySeed(x: SegSeed): SegSeed {
     const out: SegSeed = { label: x.label, point: [x.point[0], x.point[1], x.point[2]] };
     if (typeof x.triangle === 'number') out.triangle = x.triangle;
     if (x.auto) out.auto = true;
+    if (x.color) out.color = x.color;
+    if (x.maxRadius !== undefined) out.maxRadius = x.maxRadius;
     return out;
   }
 
@@ -238,6 +266,7 @@ export function createPartDetection(host: PartDetectionHost) {
     const keepCut = !!cutState && cutState.gen === gen && !!prev && prev.meshKey === next.meshKey
       && prev.summary.edgeSmoothing === next.summary.edgeSmoothing && sameArray(prev.triPart, next.triPart);
     draft = next;
+    ghost = null;
     gen++;
     if (keepCut) cutState!.gen = gen;
     else cutState = null;
@@ -357,7 +386,55 @@ export function createPartDetection(host: PartDetectionHost) {
     if (!draft || !overlayVisible) return;
     if (previewIndex !== null || !overlayLabels) { refreshOverlay(); return; }
     const colors = colorsFromLabels(overlayLabels.labels, partPalette(draft, true));
+    if (ghost) paintGhost(colors);
     if (!host.recolorOverlay?.(colors)) refreshOverlay();
+  }
+
+  /** Triangle centroids of the mesh the overlay shows (cached per mesh). */
+  function centroidsOf(mesh: MeshData): Float32Array {
+    if (centroidCache?.mesh === mesh) return centroidCache.c;
+    const c = new Float32Array(mesh.numTri * 3);
+    const vp = mesh.vertProperties, tv = mesh.triVerts, np = mesh.numProp;
+    for (let t = 0; t < mesh.numTri; t++) {
+      for (let k = 0; k < 3; k++) {
+        const v = tv[t * 3 + k] * np;
+        c[t * 3] += vp[v] / 3; c[t * 3 + 1] += vp[v + 1] / 3; c[t * 3 + 2] += vp[v + 2] / 3;
+      }
+    }
+    centroidCache = { mesh, c };
+    return c;
+  }
+
+  /** Mark the overlay triangles the ghost's new points cover, then tint
+   *  them (or, in patches mode, every part they touch) in `colors`. */
+  function paintGhost(colors: Uint8Array): void {
+    if (!ghost) return;
+    const { g, labels, hit } = ghost;
+    const mesh = ghost.mesh ?? host.getDisplayedMesh();
+    if (!mesh || mesh.numTri !== labels.length) return;
+    const c = centroidsOf(mesh);
+    const r2 = g.radius * g.radius;
+    for (const f of g.faces ?? []) {
+      if (f < 0 || f >= labels.length || hit[f]) continue;
+      hit[f] = 1;
+      if (labels[f] >= 0) ghost.touched.add(labels[f]);
+    }
+    for (; ghost.done < g.points.length; ghost.done++) {
+      const p = g.points[ghost.done];
+      for (let t = 0; t < labels.length; t++) {
+        if (hit[t]) continue;
+        const dx = c[t * 3] - p[0], dy = c[t * 3 + 1] - p[1], dz = c[t * 3 + 2] - p[2];
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
+        hit[t] = 1;
+        if (labels[t] >= 0) ghost.touched.add(labels[t]);
+      }
+    }
+    const tint = mixRgb(hexToRgb(g.color), WHITE, 0.2);
+    const patches = g.mode === 'patches';
+    for (let t = 0; t < labels.length; t++) {
+      if (!(hit[t] || (patches && ghost.touched.has(labels[t])))) continue;
+      colors[t * 3] = tint[0]; colors[t * 3 + 1] = tint[1]; colors[t * 3 + 2] = tint[2];
+    }
   }
 
   function displayedPartsAndColors(d: DraftState, styled = false): { mesh: MeshData; triPart: Int32Array; triColors: Uint8Array } | null {
@@ -535,13 +612,19 @@ export function createPartDetection(host: PartDetectionHost) {
     if (raw === undefined) return undefined;
     return assertArray(raw, where).map((s, i) => {
       const o = assertObject(s, `${where}[${i}]`)!;
-      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto'], `${where}[${i}]`);
+      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto', 'color', 'maxRadius'], `${where}[${i}]`);
       const label = assertString(o.label, `${where}[${i}].label`)!;
       const point = assertNumberTuple(o.point, 3, `${where}[${i}].point`) as [number, number, number];
       const triangle = assertNumber(o.triangle, `${where}[${i}].triangle`, { optional: true, integer: true, min: 0 });
       const auto = assertBoolean(o.auto, `${where}[${i}].auto`, { optional: true });
+      const color = assertString(o.color, `${where}[${i}].color`, { optional: true });
+      if (color !== undefined && !isHexColor(color)) throw new ValidationError(`${where}[${i}].color must be "#rrggbb", got ${JSON.stringify(color)}`);
+      const maxRadius = assertNumber(o.maxRadius, `${where}[${i}].maxRadius`, { optional: true, min: 0 });
+      if (maxRadius !== undefined && !(maxRadius > 0)) throw new ValidationError(`${where}[${i}].maxRadius must be > 0 (geodesic distance in model units); omit it for no cap.`);
       const out: SegSeed = triangle === undefined ? { label, point } : { label, point, triangle };
+      if (maxRadius !== undefined) out.maxRadius = maxRadius;
       if (auto) out.auto = true;
+      if (color !== undefined) out.color = color.toLowerCase();
       return out;
     });
   }
@@ -603,6 +686,23 @@ export function createPartDetection(host: PartDetectionHost) {
         const base = { op, point: assertNumberTuple(x.point, 3, `${where}.point`) as [number, number, number], to: parseRef(x.to, `${where}.to`) };
         return radius === undefined ? base : { ...base, radius };
       }
+      case 'brush': {
+        keys('to', 'points', 'triangles', 'radius', 'mode');
+        const to = parseRef(x.to, `${where}.to`);
+        const points = x.points === undefined ? undefined
+          : assertArray(x.points, `${where}.points`).map((p, j) => assertNumberTuple(p, 3, `${where}.points[${j}]`) as [number, number, number]);
+        const triangles = x.triangles === undefined ? undefined
+          : assertArray(x.triangles, `${where}.triangles`).map((t, j) => assertNumber(t, `${where}.triangles[${j}]`, { integer: true, min: 0 })!);
+        const radius = assertNumber(x.radius, `${where}.radius`, { optional: true, min: 0 });
+        const mode = x.mode === undefined ? undefined : assertEnum(x.mode, BRUSH_MODES, `${where}.mode`);
+        if (!points?.length && !triangles?.length) throw new ValidationError(`${where}: brush needs points (with a radius) or triangles`);
+        if (points?.length && !(radius !== undefined && radius > 0)) throw new ValidationError(`${where}.radius must be > 0 when points are given`);
+        return {
+          op, to,
+          ...(points ? { points } : {}), ...(triangles ? { triangles } : {}),
+          ...(radius !== undefined ? { radius } : {}), ...(mode ? { mode } : {}),
+        };
+      }
       case 'split':
         keys('id', 'seeds');
         return { op, id: parseRef(x.id, `${where}.id`), seeds: parseSeeds(x.seeds, `${where}.seeds`) ?? [] };
@@ -648,9 +748,11 @@ export function createPartDetection(host: PartDetectionHost) {
       case 'reorder':
         keys('id', 'position');
         return { op, id: parseRef(x.id, `${where}.id`), position: assertNumber(x.position, `${where}.position`, { integer: true, min: 1 })! };
-      case 'clear':
-        keys();
-        return { op };
+      case 'clear': {
+        keys('algorithm');
+        if (x.algorithm === undefined) return { op };
+        return { op, algorithm: assertEnum(x.algorithm, detectorIds(), `${where}.algorithm`) };
+      }
       case 'seedsFromParts': {
         keys('minRegionFrac');
         const minRegionFrac = assertNumber(x.minRegionFrac, `${where}.minRegionFrac`, { optional: true, min: 0, max: 1 })
@@ -680,6 +782,97 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   // -------------------------------------------------------------------- API
+
+  /** acceptParts with a retry count: the smooth-edge cut is async, and a draft
+   *  change landing meanwhile re-indexes the parts it was cut for. */
+  async function acceptPartsAttempt(opts: unknown, attempt: number): Promise<Record<string, unknown>> {
+    try {
+      const o = opts === undefined ? {} : assertObject(opts, 'acceptParts(options)')!;
+      assertNoUnknownKeys(o, ['label', 'smoothEdges', 'applyColors'], 'acceptParts(options)');
+      const label = assertString(o.label, 'acceptParts(options).label', { optional: true }) ?? 'Detected parts';
+      const applyColors = assertBoolean(o.applyColors, 'acceptParts(options).applyColors', { optional: true }) ?? true;
+      const d = currentDraft();
+      const smooth = (assertBoolean(o.smoothEdges, 'acceptParts(options).smoothEdges', { optional: true }) ?? true) && d.summary.edgeSmoothing > 0;
+      if (host.getLanguage() !== 'manifold-js') {
+        throw new ValidationError('acceptParts needs a JavaScript (manifold-js) session — imports load through api.importWithParts there.');
+      }
+      const code = host.getCode();
+      if (/api\.renderMesh\(\s*api\.imports\[/.test(code)) {
+        throw new ValidationError('This import is render-only (not manifold), so it cannot carry labels yet. Repair it to a manifold first.');
+      }
+      const s = d.summary;
+      const imports = host.getImports();
+      const m = imports[d.importIndex];
+      const source: NonNullable<ImportedMeshParts['source']> = {
+        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => ({
+          label: x.label, point: x.point,
+          ...(x.auto ? { auto: true } : {}),
+          ...(x.color ? { color: x.color } : {}),
+          ...(x.maxRadius !== undefined ? { maxRadius: x.maxRadius } : {}),
+        })),
+      };
+      let parts: ImportedMeshParts = {
+        names: s.parts.map((p) => p.name),
+        // Each part keeps the colour it shows (explicit, else overlay).
+        colors: acceptColors(s.parts, applyColors),
+        triPart: d.triPart.slice(),
+        source,
+      };
+      let nextImport: ImportedMesh = { ...m, parts };
+      let remeshed: { fromTris: number; toTris: number } | null = null;
+      if (smooth) {
+        // Smooth edges: re-mesh the import along the cut, so the part
+        // boundaries the overlay showed are real triangle edges.
+        const genAtStart = gen;
+        const cut = await withBusy('Cutting smooth edges…', false, () => edgeCutAsync(d.meshKey));
+        // The names/colours above index the draft as it was; an edit that
+        // landed meanwhile (the AI and the user both active) re-indexes it.
+        if (gen !== genAtStart) {
+          // Background draft work (a detection or preset run finishing)
+          // landed during the cut. Start over on the new draft rather than
+          // handing the caller a retry; give up only if it keeps moving.
+          if (attempt < 2) return acceptPartsAttempt(opts, attempt + 1);
+          throw new ValidationError('The parts kept changing while accepting — wait for detection to finish, then accept again.');
+        }
+        if (cut) {
+          const built = buildCutMesh({ vertProperties: m.vertProperties, triVerts: m.triVerts, numProp: m.numProp }, cut, parts.names, parts.colors);
+          if (cut.splitTris.length > 0) {
+            parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
+            nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
+            remeshed = { fromTris: m.numTri, toTris: built.numTri };
+          } else {
+            // Nothing split, but smoothing can still relabel whole sliver
+            // triangles — save what the overlay showed, on the same mesh.
+            parts = { names: built.names, colors: built.colors, triPart: built.triPart, source };
+            nextImport = { ...m, parts };
+          }
+        }
+      }
+      if (!normalizeImportParts(parts, nextImport.triVerts.length / 3)) {
+        throw new ValidationError('The draft parts are inconsistent (duplicate or empty names?) — fix them with editParts before accepting.');
+      }
+      const nextImports = imports.map((x, i) => (i === d.importIndex ? nextImport : x));
+      const hadPaint = remeshed !== null && (host.modelHasPaint?.() ?? false);
+      const rewrite = rewriteImportsWithParts(code, d.importIndex);
+      const usesHelper = rewrite.changed || new RegExp(`api\\.importWithParts\\(\\s*${d.importIndex}\\s*\\)`).test(code);
+      const result = await host.commit(rewrite.code, nextImports, label);
+      if ('error' in result) return result;
+      await discardPartsDraft();
+      clearDraftState();
+      const notes: string[] = [];
+      if (!usesHelper) notes.push(`The code does not load import ${d.importIndex} via Manifold.ofMesh(api.imports[${d.importIndex}]), so it was left unchanged. Call api.importWithParts(${d.importIndex}) in your code to get the parts as labels.`);
+      if (hadPaint) notes.push('The import was re-meshed along the smooth part edges — check any brush paint on it; painted edges can shift slightly.');
+      return {
+        ok: true,
+        parts: parts.names.map((name, i) => ({ name, color: parts.colors[i] ?? null, triCount: countPart(parts.triPart, i) })),
+        ...(remeshed ? { smoothEdges: remeshed } : {}),
+        ...result,
+        ...(notes.length ? { note: notes.join(' ') } : {}),
+      };
+    } catch (e) {
+      return err(e);
+    }
+  }
 
   const api = {
     subscribe(fn: (ev: PartDetectionEvent) => void): () => void {
@@ -746,6 +939,9 @@ export function createPartDetection(host: PartDetectionHost) {
           normalSmoothEdgeLengths: 'The same denoise radius as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.',
         },
         editOps: [...EDIT_OPS],
+        /** The panel's label chips: part names with default colours, for
+         *  seeds like {label, point, color}. */
+        labelPresets: LABEL_PRESETS.map((p) => ({ id: p.id, title: p.title, labels: p.chips.map((c) => ({ ...c })) })),
       };
     },
 
@@ -874,20 +1070,42 @@ export function createPartDetection(host: PartDetectionHost) {
     renderParts(opts?: unknown) {
       try {
         const o = opts === undefined ? {} : assertObject(opts, 'renderParts(options)')!;
-        assertNoUnknownKeys(o, ['views', 'size', 'numbered'], 'renderParts(options)');
-        const views = o.views === undefined ? DEFAULT_PARTS_VIEWS
-          : assertArray(o.views, 'renderParts(options).views').map((v, i) => assertEnum(v, Object.keys(PARTS_RENDER_VIEWS), `views[${i}]`));
+        assertNoUnknownKeys(o, ['views', 'size', 'numbered', 'azimuth', 'elevation', 'focus'], 'renderParts(options)');
+        if (o.views !== undefined && (o.azimuth !== undefined || o.elevation !== undefined)) {
+          throw new ValidationError('renderParts(options): pass either views or azimuth/elevation, not both.');
+        }
+        let views: PartsViewSpec[];
+        if (o.azimuth !== undefined || o.elevation !== undefined) {
+          views = [customView({ azimuth: o.azimuth, elevation: o.elevation }, 'renderParts(options)')];
+        } else if (o.views === undefined) {
+          views = DEFAULT_PARTS_VIEWS;
+        } else {
+          views = assertArray(o.views, 'renderParts(options).views').map((v, i) => (typeof v === 'string'
+            ? assertEnum(v, Object.keys(PARTS_RENDER_VIEWS), `renderParts(options).views[${i}]`)
+            : customView(v, `renderParts(options).views[${i}]`)));
+        }
         if (views.length === 0 || views.length > 8) throw new ValidationError('renderParts(options).views: 1–8 views');
         const size = assertNumber(o.size, 'renderParts(options).size', { optional: true, integer: true, min: 128, max: 1600 }) ?? 480;
         const numbered = assertBoolean(o.numbered, 'renderParts(options).numbered', { optional: true }) ?? true;
         const d = currentDraft();
         const shown = displayedPartsAndColors(d);
         if (!shown) throw new ValidationError('Nothing is rendered — run the model first.');
+        let frame: PartsFrame | undefined;
+        let focused: string | undefined;
+        if (o.focus !== undefined) {
+          const [nm] = resolveNames([o.focus], 'renderParts(options).focus');
+          const idx = d.summary.parts.findIndex((p) => p.name === nm);
+          frame = partFrame(shown.mesh, shown.triPart, idx, getConfig().segmentation.focusPadding) ?? undefined;
+          if (!frame) throw new ValidationError(`renderParts(options).focus: part "${nm}" has no visible triangles to frame.`);
+          focused = nm;
+        }
         const legend = d.summary.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor }));
-        const r = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views, size, numbered });
+        const r = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views, size, numbered, frame });
         const hidden = d.summary.parts.filter((p) => !r.visibleIn[p.id]).map((p) => p.id);
         return {
           image: r.dataUrl,
+          views: views.map((v) => { const rv = resolvePartsView(v); return { label: rv.label, azimuth: rv.azimuth, elevation: rv.elevation }; }),
+          ...(focused ? { focus: focused } : {}),
           legend: d.summary.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor, visibleIn: r.visibleIn[p.id] ?? [] })),
           ...(hidden.length ? { hiddenParts: hidden } : {}),
         };
@@ -915,7 +1133,8 @@ export function createPartDetection(host: PartDetectionHost) {
         await dropOrphanedWorkerDraft();
         const displayed = host.getDisplayedMesh();
         const results: Record<string, unknown>[] = [];
-        const tiles: HTMLCanvasElement[] = [];
+        const images: (string | null)[] = [];
+        const captionCfgs: CaptionConfig[] = [];
         for (const [i, c] of parsed.entries()) {
           const m = importAt(c.importIndex);
           const meshKey = importMeshKey(m);
@@ -924,16 +1143,23 @@ export function createPartDetection(host: PartDetectionHost) {
           }, ctl));
           const s = r.summary!;
           results.push({ index: i + 1, detector: s.detectorId, params: s.params, partCount: s.parts.length, quality: s.quality, parts: s.parts.slice(0, 20).map((p) => `${p.id}:${p.name}`) });
+          captionCfgs.push({ detectorId: s.detectorId, params: s.params, featureOptions: c.featureOptions ?? s.featureOptions });
+          let image: string | null = null;
           if (displayed) {
             const tmp: DraftState = { importIndex: c.importIndex, meshKey, summary: s, triPart: r.triPart! };
             const shown = displayedPartsAndColors(tmp);
             if (shown) {
               const legend = s.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor }));
-              const img = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views: [view], size, numbered: true });
-              tiles.push(await loadCanvas(img.dataUrl, `${i + 1}. ${s.detectorId}`));
+              image = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views: [view], size, numbered: true }).dataUrl;
             }
           }
+          images.push(image);
         }
+        // Captions name the detector AND what differs between the tiles, so
+        // two variants of one detector are distinguishable.
+        const captions = compareCaptions(captionCfgs, detectorDefaults);
+        results.forEach((r, i) => { r.caption = captions[i]; });
+        const tiles = await Promise.all(images.flatMap((img, i) => (img ? [loadCanvas(img, captions[i])] : [])));
         return { results, ...(tiles.length ? { image: contactSheet(tiles) } : {}), ...(draftDiscarded ? { draftDiscarded: true } : {}) };
       } catch (e) {
         if (e instanceof AbortedError) return { error: 'Comparison cancelled.' };
@@ -1068,79 +1294,7 @@ export function createPartDetection(host: PartDetectionHost) {
     refreshOverlay,
 
     async acceptParts(opts?: unknown) {
-      try {
-        const o = opts === undefined ? {} : assertObject(opts, 'acceptParts(options)')!;
-        assertNoUnknownKeys(o, ['label', 'smoothEdges'], 'acceptParts(options)');
-        const label = assertString(o.label, 'acceptParts(options).label', { optional: true }) ?? 'Detected parts';
-        const d = currentDraft();
-        const smooth = (assertBoolean(o.smoothEdges, 'acceptParts(options).smoothEdges', { optional: true }) ?? true) && d.summary.edgeSmoothing > 0;
-        if (host.getLanguage() !== 'manifold-js') {
-          throw new ValidationError('acceptParts needs a JavaScript (manifold-js) session — imports load through api.importWithParts there.');
-        }
-        const code = host.getCode();
-        if (/api\.renderMesh\(\s*api\.imports\[/.test(code)) {
-          throw new ValidationError('This import is render-only (not manifold), so it cannot carry labels yet. Repair it to a manifold first.');
-        }
-        const s = d.summary;
-        const imports = host.getImports();
-        const m = imports[d.importIndex];
-        const source: NonNullable<ImportedMeshParts['source']> = {
-          detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
-        };
-        let parts: ImportedMeshParts = {
-          names: s.parts.map((p) => p.name),
-          colors: s.parts.map((p) => p.color),
-          triPart: d.triPart.slice(),
-          source,
-        };
-        let nextImport: ImportedMesh = { ...m, parts };
-        let remeshed: { fromTris: number; toTris: number } | null = null;
-        if (smooth) {
-          // Smooth edges: re-mesh the import along the cut, so the part
-          // boundaries the overlay showed are real triangle edges.
-          const genAtStart = gen;
-          const cut = await withBusy('Cutting smooth edges…', false, () => edgeCutAsync(d.meshKey));
-          // The names/colours above index the draft as it was; an edit that
-          // landed meanwhile (the AI and the user both active) re-indexes it.
-          if (gen !== genAtStart) throw new ValidationError('The parts changed while accepting — accept again.');
-          if (cut) {
-            const built = buildCutMesh({ vertProperties: m.vertProperties, triVerts: m.triVerts, numProp: m.numProp }, cut, parts.names, parts.colors);
-            if (cut.splitTris.length > 0) {
-              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source: { ...source, edgeSmoothing: s.edgeSmoothing } };
-              nextImport = { ...m, vertProperties: built.vertProperties, triVerts: built.triVerts, numVert: built.numVert, numTri: built.numTri, parts };
-              remeshed = { fromTris: m.numTri, toTris: built.numTri };
-            } else {
-              // Nothing split, but smoothing can still relabel whole sliver
-              // triangles — save what the overlay showed, on the same mesh.
-              parts = { names: built.names, colors: built.colors, triPart: built.triPart, source };
-              nextImport = { ...m, parts };
-            }
-          }
-        }
-        if (!normalizeImportParts(parts, nextImport.triVerts.length / 3)) {
-          throw new ValidationError('The draft parts are inconsistent (duplicate or empty names?) — fix them with editParts before accepting.');
-        }
-        const nextImports = imports.map((x, i) => (i === d.importIndex ? nextImport : x));
-        const hadPaint = remeshed !== null && (host.modelHasPaint?.() ?? false);
-        const rewrite = rewriteImportsWithParts(code, d.importIndex);
-        const usesHelper = rewrite.changed || new RegExp(`api\\.importWithParts\\(\\s*${d.importIndex}\\s*\\)`).test(code);
-        const result = await host.commit(rewrite.code, nextImports, label);
-        if ('error' in result) return result;
-        await discardPartsDraft();
-        clearDraftState();
-        const notes: string[] = [];
-        if (!usesHelper) notes.push(`The code does not load import ${d.importIndex} via Manifold.ofMesh(api.imports[${d.importIndex}]), so it was left unchanged. Call api.importWithParts(${d.importIndex}) in your code to get the parts as labels.`);
-        if (hadPaint) notes.push('The import was re-meshed along the smooth part edges — check any brush paint on it; painted edges can shift slightly.');
-        return {
-          ok: true,
-          parts: parts.names.map((name, i) => ({ name, color: parts.colors[i] ?? null, triCount: countPart(parts.triPart, i) })),
-          ...(remeshed ? { smoothEdges: remeshed } : {}),
-          ...result,
-          ...(notes.length ? { note: notes.join(' ') } : {}),
-        };
-      } catch (e) {
-        return err(e);
-      }
+      return acceptPartsAttempt(opts, 0);
     },
 
     async discardParts() {
@@ -1205,6 +1359,26 @@ export function createPartDetection(host: PartDetectionHost) {
       applyView();
     },
     getHoveredPart(): string | null { return hovered; },
+    /** Preview a brush stroke on the overlay (the panel's Select-tool brush):
+     *  the covered triangles — or, in `patches` mode, every part they touch —
+     *  show in the target colour until the stroke lands. Pass the growing
+     *  stroke on each move; null clears it. Not an edit: nothing changes
+     *  until editParts({op:'brush'}). */
+    setBrushGhost(g: BrushGhost | null): void {
+      if (!g) {
+        if (!ghost) return;
+        ghost = null;
+        applyView();
+        return;
+      }
+      if (!draft || !overlayLabels || previewIndex !== null) return;
+      const restart = !ghost || ghost.labels !== overlayLabels.labels || ghost.g.mode !== g.mode || ghost.g.radius !== g.radius
+        || g.points.length < ghost.done;
+      if (restart) {
+        ghost = { g, mesh: overlayLabels.mesh, labels: overlayLabels.labels, hit: new Uint8Array(overlayLabels.labels.length), done: 0, touched: new Set() };
+      } else ghost!.g = g;
+      applyView();
+    },
     /** The draft part nearest a world point (e.g. from probePixel). */
     partAt(point: unknown) {
       try {
@@ -1224,6 +1398,52 @@ export function createPartDetection(host: PartDetectionHost) {
         const L = best >= 0 ? d.triPart[best] : -1;
         const part = L >= 0 ? d.summary.parts[L] : undefined;
         return part ? { id: part.id, name: part.name } : { id: null, name: null };
+      } catch (e) {
+        return err(e);
+      }
+    },
+    /** Check seeds BEFORE detecting: where each one lands on the import
+     *  (nearest triangle, closest surface point, distance off the surface)
+     *  and, with a draft, which part that triangle is in now. A seed farther
+     *  than `segmentation.seedMissEdgeLengths` median edges from the surface
+     *  is a `miss` — detection would still snap it somewhere, usually not
+     *  where you meant. Seeds default to the working pins. */
+    previewSeeds(list?: unknown, opts?: unknown) {
+      try {
+        const o = opts === undefined ? {} : assertObject(opts, 'previewSeeds(seeds, options)')!;
+        assertNoUnknownKeys(o, ['importIndex'], 'previewSeeds(seeds, options)');
+        const importIndex = assertNumber(o.importIndex, 'previewSeeds(seeds, options).importIndex', { optional: true, integer: true, min: 0 }) ?? draft?.importIndex ?? 0;
+        const run = list === undefined || list === null ? seeds.map(copySeed) : parseSeeds(list, 'previewSeeds(seeds)')!;
+        if (run.length === 0) throw new ValidationError('previewSeeds: no seeds — pass [{ label, point }] (or place pins first).');
+        const m = importAt(importIndex);
+        const seg = segMeshOf(m);
+        const edge = medianEdgeLength(seg) || 1e-6;
+        const missDist = getConfig().segmentation.seedMissEdgeLengths * edge;
+        const landings = seedLandings(seg.positions, seg.triVerts, run.map((sd) => sd.point));
+        const d = draft && draft.importIndex === importIndex && draft.meshKey === importMeshKey(m) ? draft : null;
+        const r3 = (v: number) => Math.round(v * 1e4) / 1e4;
+        const out = run.map((sd, i) => {
+          const l = landings[i];
+          const L = d && l.triangle >= 0 ? d.triPart[l.triangle] : -1;
+          const part = L >= 0 ? d!.summary.parts[L] : undefined;
+          const miss = l.triangle < 0 || l.distance > missDist;
+          return {
+            index: i, label: sd.label, triangle: l.triangle,
+            point: l.point.map(r3), distance: r3(l.distance), normal: l.normal.map(r3),
+            onSurface: !miss,
+            ...(miss ? { miss: true } : {}),
+            ...(d ? { part: part ? { id: part.id, name: part.name } : null } : {}),
+            ...(sd.maxRadius !== undefined ? { maxRadius: sd.maxRadius } : {}),
+          };
+        });
+        const misses = out.filter((x) => x.miss).length;
+        return {
+          seeds: out,
+          misses,
+          medianEdgeLength: r3(edge),
+          missDistance: r3(missDist),
+          ...(misses ? { hint: 'A miss lies off the surface; re-pick it with probePixel (its point is ON the mesh) or use the returned `point` (the nearest surface point).' } : {}),
+        };
       } catch (e) {
         return err(e);
       }
@@ -1253,17 +1473,50 @@ function splitIndexOf(cut: EdgeCut, triCount: number): Int32Array {
   return idx;
 }
 
+/** A custom camera angle `{ azimuth, elevation }` (degrees; elevation −90..90). */
+function customView(raw: unknown, where: string): PartsRenderView {
+  const o = assertObject(raw, where)!;
+  assertNoUnknownKeys(o, ['azimuth', 'elevation'], where);
+  const azimuth = assertNumber(o.azimuth, `${where}.azimuth`, { optional: true }) ?? 0;
+  const elevation = assertNumber(o.elevation, `${where}.elevation`, { optional: true, min: -90, max: 90 }) ?? 5;
+  return { label: `az ${azimuth}° el ${elevation}°`, azimuth, elevation };
+}
+
+/** Default param values of a detector (for caption diffs). */
+function detectorDefaults(id: string): ParamValues {
+  const out: ParamValues = {};
+  for (const p of getDetector(id)?.params ?? []) out[p.key] = p.default;
+  return out;
+}
+
+/** Word-wrap `text` to lines no wider than `maxW` px in the context's font. */
+function wrapCaption(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (line && ctx.measureText(next).width > maxW) { lines.push(line); line = w; } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 4);
+}
+
 function loadCanvas(dataUrl: string, caption: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height + 22;
+      const probe = c.getContext('2d')!;
+      probe.font = 'bold 13px sans-serif';
+      const lines = wrapCaption(probe, caption, img.width - 16);
+      const head = 8 + lines.length * 16;
+      c.width = img.width; c.height = img.height + head;
       const ctx = c.getContext('2d')!;
       ctx.fillStyle = '#1e1e1e'; ctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(img, 0, 22);
+      ctx.drawImage(img, 0, head);
       ctx.fillStyle = '#fff'; ctx.font = 'bold 13px sans-serif';
-      ctx.fillText(caption, 8, 16);
+      lines.forEach((ln, i) => ctx.fillText(ln, 8, 16 + i * 16));
       resolve(c);
     };
     img.onerror = () => reject(new Error('compare: failed to compose tile'));

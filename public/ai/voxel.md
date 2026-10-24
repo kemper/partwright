@@ -78,6 +78,7 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
 | `v.sdf(node, opts?)` | Rasterize an `api.sdf.*` expression into the grid — gyroids, TPMS lattices, smooth blends, twists → colored voxels. See [SDF → voxel](#sdf--voxel-vsdf). |
 | `v.keepLargest(count?)` | Keep only the largest face-connected component(s), deleting smaller islands (`count` default 1). The cheap printability fix for a fragmented grid — e.g. an SDF lattice that sheds stray specks. |
+| `api.removePiece([x, y, z])` | Delete the face-connected piece touching that point (mesh coordinates — voxel `(x,y,z)` spans `[x, x+1]`) from the returned grid. What the object list's piece ✕ writes at the top of the code. |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
 | `v.forEach((x,y,z,color) => …)` | Iterate occupied voxels. |

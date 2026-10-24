@@ -13,7 +13,7 @@ import type { SavedPartsPayload, SegMesh } from './types';
 
 
 export type SegWorkerRequest =
-  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number; defaultEdgeSmoothing: number; anchorMinRegionFrac: number }
+  | { type: 'load'; callId: number; meshKey: string; mesh: SegMesh; undoDepth: number; defaultEdgeSmoothing: number; anchorMinRegionFrac: number; autoAbsorbFrac: number }
   | { type: 'detect'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'preview'; callId: number; req: Omit<DetectRequest, 'signal' | 'progress'> }
   | { type: 'edit'; callId: number; ops: PartEditOp[]; stroke?: string }
@@ -43,7 +43,7 @@ self.onmessage = (e: MessageEvent<SegWorkerRequest>) => {
   try {
     switch (msg.type) {
       case 'load':
-        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth, defaultEdgeSmoothing: msg.defaultEdgeSmoothing, anchorMinRegionFrac: msg.anchorMinRegionFrac });
+        runner = new SegmentationRunner(msg.mesh, { undoDepth: msg.undoDepth, defaultEdgeSmoothing: msg.defaultEdgeSmoothing, anchorMinRegionFrac: msg.anchorMinRegionFrac, autoAbsorbFrac: msg.autoAbsorbFrac });
         reply({ type: 'result', callId: msg.callId, summary: null, triPart: null });
         return;
       case 'detect': {

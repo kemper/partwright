@@ -285,7 +285,7 @@ async function cmdSegment(argv) {
   };
   if (!a.json) {
     const png = a.png || join(dirname(resolve(file)), `${basename(file).replace(/\.[^.]+$/, '')}.parts.png`);
-    await composePng(out.positions, out.triVerts, out.triColors, out.bbox, Number(a.size) || 512, views).toFile(png);
+    await composePng(out.positions, out.triVerts, out.triColors, out.bbox, Number(a.size) || 512, views ?? undefined).toFile(png);
     result.png = png;
   }
   console.log(json(result));

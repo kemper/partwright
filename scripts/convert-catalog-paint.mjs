@@ -35,7 +35,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // (src/storage/versionRewrite.ts) shared with the app — loaded via vite SSR
 // because it's TypeScript. Hand-rolling that sync is how this script's first
 // pass missed `codeHash` (every migrated entry loaded flagged stale).
-const viteServer = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+const viteServer = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
 const { rewriteVersionCode } = await viteServer.ssrLoadModule('/src/storage/versionRewrite.ts');
 const WRITE = process.argv.includes('--write');
 const onlyIdx = process.argv.indexOf('--only');
