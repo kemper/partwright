@@ -9,7 +9,7 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS, declinedToolMessage } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
@@ -78,7 +78,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
           type: 'tool_result',
           callId,
           result: {
-            content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+            content: declinedToolMessage(name),
             isError: true,
           },
         });

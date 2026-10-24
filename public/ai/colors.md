@@ -823,6 +823,8 @@ const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice
 partwright.paintByLabel({ label: 'body', color: [r, g, b] });
 ```
 
+In the in-app chat, the read-only **`getPalette`** tool returns `{ active: <getPalette()>, palettes: <listPalettes()> }` in one call.
+
 Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
 
 ```js

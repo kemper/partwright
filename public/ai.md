@@ -388,7 +388,7 @@ await partwright.listVersions()          // -> [{id, index, label, timestamp, st
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
 await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
-await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
+await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab. The chat tool takes 1-based indices {a, b} and returns a compact `codeDiff` line diff instead of both sources (includeCode: true for both)
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
@@ -1119,6 +1119,8 @@ const r = partwright.query({
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats
 ```
+
+> **In-app chat `query` tool** takes four more keys in the same call — `containment` (pieces hidden inside other pieces), `pointsInside: [[x,y,z], …]`, `componentBounds`, `zProfile` (+ `zProfileSamples`) — fanned out to `checkContainment()` / `pointInside()` / `componentBounds()` / `analyzeProfile()`. Console callers use those methods directly.
 
 ### Batch session creation
 

@@ -22,6 +22,11 @@ them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer whic
 being pointed at from the 3D points/anchors, and confirm your interpretation before making
 changes.
 
+**In-app chat:** the read-only **`listAnnotations`** tool returns strokes, text labels and the
+count in one call — `{count, strokes: [{id, color, width, pointCount, bbox, centroid, points,
+camera}], texts: [...]}` — with each stroke downsampled to `maxPointsPerStroke` points (default
+16; 0 drops points but keeps bbox/centroid).
+
 ```js
 partwright.listAnnotations()
 // -> [{id, color: [r,g,b], width: 4, pointCount: 24, points: [[x,y,z], ...]}]

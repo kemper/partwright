@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, declinedToolMessage, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -737,7 +737,7 @@ async function executeAllWithRetry(
       if (!allowed) {
         const declined: PersistedToolResult = {
           toolUseId: tc.id,
-          content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+          content: declinedToolMessage(tc.name),
           isError: true,
         };
         results.push(declined);
