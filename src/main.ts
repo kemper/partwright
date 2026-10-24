@@ -39,7 +39,7 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
@@ -74,8 +74,11 @@ import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPartsView } from './ui/partList';
 import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
-import { summarizeObjectParts, type ObjectPartsSummary } from './geometry/meshPieces';
-import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive } from './renderer/triangleHighlight';
+import { summarizeObjectParts, triangleSetStats, extractSubMesh, type ObjectPartsSummary, type TriangleSetStats } from './geometry/meshPieces';
+import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, wrapWithPieceFilter, type PieceBox } from './geometry/objectPartCode';
+import { getSelectedPartKey, getSelectedPartName, setSelectedPartKey, onPartSelectionChange, describePartKey } from './ui/partSelection';
+import type { PartInfo } from './ui/objectPartsPanel';
+import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive, showIsolation, clearIsolation, isIsolationActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
 import { openPartsOverview } from './ui/partsOverview';
@@ -132,6 +135,8 @@ import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
+import { parse3MF, weldMesh, type ThreeMFParseResult } from './import/parsers/threemf';
+import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
@@ -173,6 +178,7 @@ import {
   isPaletteConstrained, setPaletteConstrained,
   addFilament, updateFilament, removeFilament,
   listPalettes, createPalette, setActivePalette, getActivePaletteId, getActivePaletteName,
+  getPaletteSlots,
 } from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
@@ -196,7 +202,7 @@ import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour
 import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
-import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, setPatternPaintEntry, getPaintToolState } from './color/paintUI';
+import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, onPaintOpenChange, setPatternPaintEntry, getPaintToolState } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
@@ -207,6 +213,7 @@ import { analyzePrintability, type PrintabilityReport } from './geometry/printab
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
+import { pickFace } from './color/facePicker';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -229,11 +236,12 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, canRedoRegion, canUndoClear, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, canRedoRegion, canUndoClear, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
+import { getPaintScope, setPaintScope, onPaintScopeChange } from './color/paintScope';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
@@ -699,12 +707,31 @@ const partMeshCache = new Map<string, PartMeshCacheEntry>();
 // calls listObjectParts) and memoized on the mesh + label-map identity, which
 // every run / version load / texture pass replaces.
 let objectPartsCache: { mesh: MeshData; labels: Map<string, Set<number>> | null; summary: ObjectPartsSummary } | null = null;
-/** Which part/piece is tinted in the viewport: `part:<name>` | `piece:<n>` |
- *  `unlabeled`, or null. Cleared implicitly when a mesh update sweeps the tint. */
-let objectPartHighlightKey: string | null = null;
+
+// === Part selection, scope and editing (#1003) ===
+// The rail selection itself lives in the leaf ui/partSelection.ts (paint, the
+// AI panel and the rail all read it). What's here is the main-side glue: the
+// selection's viewport visual (tint, or isolation), its validity across runs /
+// object switches, unmatched-paint detection and rename suggestions.
+
+/** The mesh the viewport last displayed (with colours) — the tint/isolate
+ *  overlays draw from it so they line up with what's on screen. */
+let lastDisplayedMesh: MeshData | null = null;
+/** The selection key currently isolated (others ghosted), or null. */
+let isolatedPartKey: string | null = null;
+/** Where the current selection was made: a part stays valid while its label
+ *  exists on the same object; a piece / unlabeled selection only for the very
+ *  mesh it was made on (piece numbering can shift on any run). */
+let selectionContext: { objectId: string | null; mesh: MeshData | null } = { objectId: null, mesh: null };
+/** Unmatched paint regions the user chose to "Keep" (dormant) this session. */
+const keptUnmatchedRegionIds = new Set<number>();
+/** "Looks like a rename" hints (a painted part vanished as another appeared in
+ *  about the same place), recomputed whenever the label map changes. */
+let renameSuggestions: { from: string; to: string }[] = [];
+let prevLabelBoxes: { objectId: string | null; boxes: Map<string, TriangleSetStats> } | null = null;
 // Parts/pieces hidden in the viewport (the object list's eye toggle), per object
 // id, as `part:<name>` / `piece:<n>` keys. Per-tab view state like the
-// highlight: not saved, not exported, never sent to other tabs.
+// selection: not saved, not exported, never sent to other tabs.
 const hiddenObjectParts = new Map<string, Set<string>>();
 
 /** The mesh the parts/pieces summary is computed against: the mesh the label
@@ -723,6 +750,47 @@ function currentObjectPartsSummary(): ObjectPartsSummary | null {
   return summary;
 }
 
+/** A selection key's triangles on the LABEL mesh, or null when unknown. */
+function partKeyBaseTriangles(key: string): Set<number> | null {
+  const summary = currentObjectPartsSummary();
+  if (!summary) return null;
+  if (key.startsWith('part:')) {
+    const p = summary.parts.find(x => x.name === key.slice(5));
+    return p && p.triangles.size > 0 ? p.triangles : null;
+  }
+  if (key.startsWith('piece:')) {
+    const p = summary.pieces[Number(key.slice(6))];
+    return p ? new Set(p.triangles) : null;
+  }
+  if (key === 'unlabeled') return summary.unlabeled.length > 0 ? new Set(summary.unlabeled) : null;
+  return null;
+}
+
+// Selection-key triangle sets mapped onto a re-tessellated mesh, cached per
+// topology (triVerts identity) — see labelTrianglesOnMesh for parts.
+let keyOnMeshCache = new WeakMap<Uint32Array, Map<string, Set<number>>>();
+let keyOnMeshCacheSummary: ObjectPartsSummary | null = null;
+
+/** A selection key's triangles on `mesh` (any working/displayed mesh). */
+function partKeyTrianglesOn(key: string, mesh: MeshData): Set<number> {
+  if (key.startsWith('part:')) return labelTrianglesOnMesh(key.slice(5), mesh);
+  const base = objectPartsMesh();
+  const baseSet = partKeyBaseTriangles(key);
+  if (!base || !baseSet) return new Set<number>();
+  if (mesh.triVerts === base.triVerts) return baseSet;
+  const summary = currentObjectPartsSummary();
+  if (summary !== keyOnMeshCacheSummary) { keyOnMeshCache = new WeakMap(); keyOnMeshCacheSummary = summary; }
+  let perKey = keyOnMeshCache.get(mesh.triVerts);
+  if (!perKey) { perKey = new Map(); keyOnMeshCache.set(mesh.triVerts, perKey); }
+  let out = perKey.get(key);
+  if (!out) {
+    out = new Set<number>();
+    for (let t = 0; t < mesh.numTri; t++) if (baseSet.has(baseTriangleOf(mesh, base, t))) out.add(t);
+    perKey.set(key, out);
+  }
+  return out;
+}
+
 /** The colour a triangle set is actually drawn in (model colours + paint), as
  *  `#rrggbb` — the most common colour among a sample of its triangles. Null
  *  when the object is unpainted (the swatch then shows the neutral model). */
@@ -733,6 +801,7 @@ function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>):
   for (const t of tris) {
     const o = t * 3;
     if (o + 2 >= triColors.length) continue;
+    if (!isPainted(triColors, t)) continue;
     const key = (triColors[o] << 16) | (triColors[o + 1] << 8) | triColors[o + 2];
     counts.set(key, (counts.get(key) ?? 0) + 1);
     if (++n >= 256) break;
@@ -741,6 +810,95 @@ function dominantTriColor(triColors: Uint8Array | null, tris: Iterable<number>):
   let bestCount = 0;
   for (const [k, c] of counts) if (c > bestCount) { best = k; bestCount = c; }
   return best < 0 ? null : `#${best.toString(16).padStart(6, '0')}`;
+}
+
+const rgbToHexStr = (c: readonly number[]) => `#${c.map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('')}`;
+
+/** Paint regions tied to a part (`byLabel`, or any region with a part scope)
+ *  whose label no longer exists in the current code. Only
+ *  reported once a run has produced a label map to compare against. */
+function unmatchedPaintRegions(): { regionId: number; name: string; label: string; color: string; kept: boolean }[] {
+  if (!currentLabelMesh) return [];
+  const out: { regionId: number; name: string; label: string; color: string; kept: boolean }[] = [];
+  for (const r of getRegions()) {
+    const label = descriptorPartLabel(r.descriptor);
+    if (!label) continue;
+    // Only labels GONE from the code. A label that's still declared but paints
+    // nothing (closed-lid eyes, a buried feature, a SCAD-lost label) is the
+    // model's business, not orphaned paint.
+    if (currentLabelMap?.has(label) || currentLostLabels?.includes(label)) continue;
+    out.push({ regionId: r.id, name: r.name, label, color: rgbToHexStr(r.color), kept: keptUnmatchedRegionIds.has(r.id) });
+  }
+  return out;
+}
+
+/** Geometric (not part-keyed) paint regions that resolve to no triangles on
+ *  the current geometry — e.g. a slab or box the model moved out of. */
+function emptyPaintRegions(): { regionId: number; name: string }[] {
+  if (!currentLabelMesh || asyncReconcileInFlight || !currentMeshData) return [];
+  return getRegions()
+    .filter(r => !descriptorPartLabel(r.descriptor) && r.triangles.size === 0)
+    .map(r => ({ regionId: r.id, name: r.name }));
+}
+
+/** `unmatchedPaint` for runAndSave / saveVersion results — like
+ *  `lostLabels`, so agents notice paint that a code change orphaned. */
+function unmatchedPaintReport(): { regionId: number; name: string; label: string; hint?: string }[] | undefined {
+  const list = unmatchedPaintRegions().filter(u => !u.kept);
+  if (list.length === 0) return undefined;
+  const hints = new Map(renameSuggestions.map(s => [s.from, s.to] as const));
+  return list.map(u => ({
+    regionId: u.regionId, name: u.name, label: u.label,
+    ...(hints.has(u.label) ? { hint: `looks renamed to "${hints.get(u.label)}" — reassignPaint(${u.regionId}, "${hints.get(u.label)}")` } : {}),
+  }));
+}
+
+/** Recompute the per-label boxes and the rename suggestions — called whenever a
+ *  run or version load installs a new label map. */
+function noteLabelMapChanged(): void {
+  const objectId = getCurrentPart()?.id ?? null;
+  const boxes = new Map<string, TriangleSetStats>();
+  if (currentLabelMesh && currentLabelMap) {
+    for (const [name, tris] of currentLabelMap) {
+      if (tris.size === 0) continue;
+      const st = triangleSetStats(currentLabelMesh, tris);
+      if (st) boxes.set(name, st);
+    }
+  }
+  const prev = prevLabelBoxes;
+  if (prev && prev.objectId === objectId) {
+    const vanished = [...prev.boxes.keys()].filter(n => !boxes.has(n));
+    const appeared = [...boxes.keys()].filter(n => !prev.boxes.has(n));
+    // Keep earlier hints that still apply (from still gone, to still present).
+    const next = renameSuggestions.filter(s => !boxes.has(s.from) && boxes.has(s.to));
+    for (const from of vanished) {
+      if (next.some(s => s.from === from)) continue;
+      const a = prev.boxes.get(from)!;
+      const matches = appeared.filter(n => boxesMostlyOverlap(a, boxes.get(n)!));
+      if (matches.length === 1) next.push({ from, to: matches[0] });
+    }
+    renameSuggestions = next;
+  } else {
+    renameSuggestions = [];
+  }
+  prevLabelBoxes = { objectId, boxes };
+}
+
+/** True when two boxes share at least half of the smaller one's volume. */
+function boxesMostlyOverlap(a: TriangleSetStats, b: TriangleSetStats): boolean {
+  let diag = 0;
+  for (let k = 0; k < 3; k++) diag = Math.max(diag, a.max[k] - a.min[k], b.max[k] - b.min[k]);
+  const pad = Math.max(diag * 1e-3, 1e-6);
+  let inter = 1, va = 1, vb = 1;
+  for (let k = 0; k < 3; k++) {
+    const lo = Math.max(a.min[k], b.min[k]) - pad;
+    const hi = Math.min(a.max[k], b.max[k]) + pad;
+    if (hi <= lo) return false;
+    inter *= hi - lo;
+    va *= a.max[k] - a.min[k] + 2 * pad;
+    vb *= b.max[k] - b.min[k] + 2 * pad;
+  }
+  return inter >= 0.5 * Math.min(va, vb);
 }
 
 /** Decode an image source (data URL or same-origin URL) to RGBA pixels. */
@@ -786,25 +944,38 @@ function currentObjectPartsView(): ObjectPartsView | null {
   // Swatch colours come from the drawn per-triangle colours when they index
   // the same mesh as the labels; after a re-tessellation (paint refine,
   // simplify, texture) fall back to the code-declared label colour.
-  const sameMesh = mesh === currentMeshData;
-  const triColors = sameMesh ? (currentMeshData?.triColors ?? buildTriColors(mesh.numTri)) : null;
-  const declared = sameMesh ? null : new Map(getModelRegions().map(r => [r.name, r.color] as const));
-  const toHex = (c: readonly number[]) => `#${c.map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('')}`;
+  const shown = lastDisplayedMesh ?? currentMeshData;
+  const sameMesh = !!shown && shown.triVerts === mesh.triVerts;
+  const triColors = sameMesh ? (shown?.triColors ?? buildTriColors(mesh.numTri)) : null;
+  const modelRegions = getModelRegions();
+  const declared = new Map(modelRegions.map(r => [r.name, r.color] as const));
+  const codeColored = new Set(modelRegions.map(r => descriptorPartLabel(r.descriptor)).filter((n): n is string => !!n));
+  const painted = new Map<string, ColorRegion>();
+  for (const r of getRegions()) if (r.descriptor.kind === 'byLabel') painted.set(r.descriptor.label, r);
   // A label that resolved to zero triangles (fully swallowed by a union, or a
   // cutter that never touched the solid) is listed as lost, not as a part —
   // alongside the labels the engine already reports as lost.
   const lost = new Set(currentLostLabels ?? []);
   for (const p of summary.parts) if (p.triangles.size === 0) lost.add(p.name);
   const hidden = hiddenKeysForCurrentObject();
+  const unmatched = unmatchedPaintRegions();
+  const unmatchedLabels = new Set(unmatched.map(u => u.label));
   return {
     parts: summary.parts.filter(p => p.triangles.size > 0).map(p => {
-      const decl = declared?.get(p.name);
-      const color = triColors ? dominantTriColor(triColors, p.triangles) : decl ? toHex(decl) : null;
-      return { name: p.name, triangleCount: p.triangles.size, ...(color ? { color } : {}), ...(hidden.has(`part:${p.name}`) ? { hidden: true } : {}) };
+      const fill = painted.get(p.name);
+      const decl = declared.get(p.name);
+      const color = triColors ? dominantTriColor(triColors, p.triangles)
+        : fill ? rgbToHexStr(fill.color) : decl ? rgbToHexStr(decl) : null;
+      const colorSource = fill ? 'painted' as const : codeColored.has(p.name) ? 'code' as const : undefined;
+      return { name: p.name, triangleCount: p.triangles.size, ...(color ? { color } : {}), ...(colorSource ? { colorSource } : {}), ...(hidden.has(`part:${p.name}`) ? { hidden: true } : {}) };
     }),
     lostParts: [...lost],
     unlabeledTriangleCount: summary.unlabeled.length,
     pieces: summary.pieces.map(p => ({ index: p.index, triangleCount: p.triangles.length, ...(p.part ? { part: p.part } : {}), ...(hidden.has(`piece:${p.index}`) ? { hidden: true } : {}) })),
+    unmatchedPaint: unmatched,
+    emptyPaint: emptyPaintRegions(),
+    renameSuggestions: renameSuggestions.filter(s => unmatchedLabels.has(s.from)),
+    codeActions: getActiveLanguage() === 'manifold-js',
   };
 }
 
@@ -852,45 +1023,182 @@ function setObjectPartHidden(key: string, hide: boolean): string[] | string {
   let keys = hiddenObjectParts.get(obj.id);
   if (!keys) { keys = new Set(); hiddenObjectParts.set(obj.id, keys); }
   if (hide) keys.add(key); else keys.delete(key);
-  if (hide && objectPartHighlightKey === key) setObjectPartHighlight(null);
+  if (hide && getSelectedPartKey() === key) selectObjectPart(null);
   reapplyHiddenObjectParts();
   refreshObjectParts();
   return [...keys];
 }
 
-/** Tint one part (`part:<name>`), piece (`piece:<n>`), or the unlabeled
- *  remainder (`unlabeled`) in the viewport; null clears. Returns the number of
- *  triangles tinted, or an error string for an unknown key. */
-function setObjectPartHighlight(key: string | null): number | string {
-  if (key === null) {
+/** Draw the selection: the isolation (others ghosted) when isolating, else the
+ *  tint — except while painting, where the tint would hide the strokes. */
+function refreshPartSelectionVisual(): void {
+  const key = getSelectedPartKey();
+  const mesh = lastDisplayedMesh ?? currentMeshData;
+  if (key && isolatedPartKey === key && mesh) {
     clearTriangleHighlight();
-    objectPartHighlightKey = null;
+    if (!isIsolationActive()) showIsolation(mesh, partKeyTrianglesOn(key, mesh));
+    return;
+  }
+  if (isIsolationActive()) clearIsolation();
+  if (key && mesh && !isPaintOpen()) {
+    if (!isTriangleHighlightActive()) showTriangleHighlight(mesh, partKeyTrianglesOn(key, mesh));
+  } else {
+    clearTriangleHighlight();
+  }
+}
+
+/** Select a part (`part:<name>`), piece (`piece:<n>`) or the unlabeled
+ *  remainder (`unlabeled`) of the open object; null clears. Returns the
+ *  selection's triangle count, or an error string for an unknown key. */
+function selectObjectPart(key: string | null): number | string {
+  if (key === null) {
+    isolatedPartKey = null;
+    setSelectedPartKey(null);
+    refreshPartSelectionVisual();
     refreshObjectParts();
     return 0;
   }
-  const summary = currentObjectPartsSummary();
-  const mesh = objectPartsMesh();
-  if (!summary || !mesh) return 'No geometry loaded — run code first.';
-  let tris: Iterable<number> | null = null;
-  if (key.startsWith('part:')) {
-    tris = summary.parts.find(p => p.name === key.slice(5))?.triangles ?? null;
-  } else if (key.startsWith('piece:')) {
-    tris = summary.pieces[Number(key.slice(6))]?.triangles ?? null;
-  } else if (key === 'unlabeled') {
-    tris = summary.unlabeled.length > 0 ? summary.unlabeled : null;
-  }
+  if (!objectPartsMesh()) return 'No geometry loaded — run code first.';
+  const tris = partKeyBaseTriangles(key);
   if (!tris) return `Unknown part or piece "${key}".`;
-  // Drawn from the label mesh's own triangles — the same surface as the
-  // displayed mesh even when that one was re-tessellated since the run.
-  const count = showTriangleHighlight(mesh, tris);
-  objectPartHighlightKey = count > 0 ? key : null;
+  selectionContext = { objectId: getCurrentPart()?.id ?? null, mesh: objectPartsMesh() };
+  if (isolatedPartKey && isolatedPartKey !== key) isolatedPartKey = key; // isolation follows the selection
+  // Redraw from scratch: the previous selection's overlay may still be up.
+  clearTriangleHighlight();
+  clearIsolation();
+  setSelectedPartKey(key);
+  refreshPartSelectionVisual();
   refreshObjectParts();
-  return count;
+  return tris.size;
 }
 
-function getObjectPartHighlightKey(): string | null {
-  if (objectPartHighlightKey && !isTriangleHighlightActive()) objectPartHighlightKey = null;
-  return objectPartHighlightKey;
+/** Isolate (ghost everything else) a selection key — selecting it too — or
+ *  null to show the whole object again. */
+function isolateObjectPart(key: string | null): number | string {
+  if (key === null) {
+    isolatedPartKey = null;
+    clearIsolation();
+    refreshPartSelectionVisual();
+    refreshObjectParts();
+    return 0;
+  }
+  if (getSelectedPartKey() !== key) {
+    const r = selectObjectPart(key);
+    if (typeof r === 'string') return r;
+  }
+  isolatedPartKey = key;
+  clearTriangleHighlight();
+  clearIsolation();
+  refreshPartSelectionVisual();
+  refreshObjectParts();
+  return partKeyBaseTriangles(key)?.size ?? 0;
+}
+
+/** After every viewport mesh update: drop a selection that no longer applies
+ *  (its part vanished, the object changed, or a piece's mesh was replaced),
+ *  then redraw its visual, which the update swept. */
+function syncPartSelectionAfterMeshUpdate(mesh: MeshData): void {
+  lastDisplayedMesh = mesh;
+  const key = getSelectedPartKey();
+  if (key) {
+    let valid = (getCurrentPart()?.id ?? null) === selectionContext.objectId;
+    if (valid && key.startsWith('part:')) valid = (currentLabelMap?.get(key.slice(5))?.size ?? 0) > 0;
+    else if (valid) valid = objectPartsMesh() === selectionContext.mesh;
+    if (!valid) {
+      isolatedPartKey = null;
+      setSelectedPartKey(null);
+    }
+  }
+  refreshPartSelectionVisual();
+}
+
+/** Info for the selected part / piece: size, area and the pieces it touches.
+ *  Memoized per summary (the rail redraws it on every mesh update). */
+let partInfoCache: { summary: ObjectPartsSummary; key: string; info: PartInfo | null } | null = null;
+function objectPartInfo(key: string): PartInfo | null {
+  const summary = currentObjectPartsSummary();
+  if (summary && partInfoCache && partInfoCache.summary === summary && partInfoCache.key === key) return partInfoCache.info;
+  const info = computeObjectPartInfo(key);
+  if (summary) partInfoCache = { summary, key, info };
+  return info;
+}
+
+function computeObjectPartInfo(key: string): PartInfo | null {
+  const base = objectPartsMesh();
+  const tris = partKeyBaseTriangles(key);
+  const summary = currentObjectPartsSummary();
+  if (!base || !tris || !summary) return null;
+  const st = triangleSetStats(base, tris);
+  if (!st) return null;
+  const pieceOf = new Map<number, number>();
+  for (const p of summary.pieces) for (const t of p.triangles) pieceOf.set(t, p.index);
+  const pieces = new Set<number>();
+  for (const t of tris) { const p = pieceOf.get(t); if (p !== undefined) pieces.add(p + 1); }
+  return {
+    size: [st.max[0] - st.min[0], st.max[1] - st.min[1], st.max[2] - st.min[2]],
+    area: st.area,
+    triangleCount: tris.size,
+    pieces: [...pieces].sort((a, b) => a - b),
+  };
+}
+
+/** A piece's bounding-box identity for the code piece filters. */
+function pieceBoxFor(index: number): PieceBox | null {
+  const base = objectPartsMesh();
+  const piece = currentObjectPartsSummary()?.pieces[index];
+  if (!base || !piece) return null;
+  const st = triangleSetStats(base, piece.triangles);
+  if (!st) return null;
+  return [
+    (st.min[0] + st.max[0]) / 2, (st.min[1] + st.max[1]) / 2, (st.min[2] + st.max[2]) / 2,
+    st.max[0] - st.min[0], st.max[1] - st.min[1], st.max[2] - st.min[2],
+  ];
+}
+
+/** Parse an API part target (name | { part } | { piece } | { unlabeled } |
+ *  null) into a selection key, or an error object. */
+function objectPartTargetKey(target: unknown, fn: string): string | null | { error: string } {
+  if (target === null || target === undefined) return null;
+  if (typeof target === 'string' && target.length > 0) return `part:${target}`;
+  if (target && typeof target === 'object') {
+    const o = target as { part?: unknown; piece?: unknown; unlabeled?: unknown };
+    if (typeof o.part === 'string' && o.part.length > 0) return `part:${o.part}`;
+    if (Number.isInteger(o.piece) && (o.piece as number) >= 0) return `piece:${o.piece}`;
+    if (o.unlabeled === true) return 'unlabeled';
+  }
+  return { error: `${fn}(target): pass a part name, { part: name }, { piece: index }, { unlabeled: true }, or null.` };
+}
+
+/** Shared checks for the code piece filters (extract / delete a piece). */
+function pieceFilterPrep(index: number, fn: string): { code: string; box: PieceBox; part?: string } | { error: string } {
+  if (getActiveLanguage() !== 'manifold-js') {
+    return { error: `${fn}: splitting pieces rewrites the code, which needs a JavaScript (manifold-js) object. Export the piece instead (exportObjectPiece).` };
+  }
+  const summary = currentObjectPartsSummary();
+  const piece = Number.isInteger(index) ? summary?.pieces[index] : undefined;
+  if (!summary || !piece) return { error: `${fn}: no piece ${index} — see listObjectParts().pieces.` };
+  if (summary.pieces.length < 2) return { error: `${fn}: this object is a single piece.` };
+  const box = pieceBoxFor(index);
+  if (!box) return { error: `${fn}: piece ${index} has no geometry.` };
+  return { code: getValue(), box, ...(piece.part ? { part: piece.part } : {}) };
+}
+
+let arrangeNamesCache: { code: string; names: string[] } | null = null;
+
+/** Toast an `{ error }` result from a rail action; true when it succeeded. */
+function railResult(r: unknown): boolean {
+  if (r && typeof r === 'object' && 'error' in r && typeof (r as { error: unknown }).error === 'string') {
+    showToast((r as { error: string }).error, { variant: 'warn' });
+    return false;
+  }
+  return true;
+}
+
+/** Open the code pane (set once the layout exists) and select a range in it. */
+let expandCodePane: (() => void) | null = null;
+function revealCodeRange(from: number, to: number): void {
+  expandCodePane?.();
+  revealRange(from, to);
 }
 
 // #geometry-data element — always-updated machine-readable state
@@ -1431,33 +1739,100 @@ function partTrianglesOnMesh(label: string, mesh: MeshData): Set<number> | null 
 
 setPartScopeResolver((label) => (currentMeshData ? partTrianglesOnMesh(label, currentMeshData) : null));
 
-/** Resolve a descriptor and clip it to its `withinPart` scope, if any. */
+/** Resolve a descriptor and clip it to its `withinPart` scope, if any.
+ *  `ctx` resolves against ANOTHER object's labels and colours (baking it for
+ *  a multi-object export); the default is the live object. */
 function resolveDescriptorTriangles(
   descriptor: RegionDescriptor,
   mesh: MeshData,
   adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
   selfRegionId?: number,
+  ctx?: ResolveContext,
 ): ResolveResult {
-  const r = resolveDescriptorTrianglesUnscoped(descriptor, mesh, adjacency, parentToChildren, selfRegionId);
-  if (!descriptor.withinPart) return r;
-  return intersectWithScope(partTrianglesOnMesh(descriptor.withinPart, mesh) ?? new Set<number>(), r.triangles, r.perTriColors);
+  const r = resolveDescriptorTrianglesRaw(descriptor, mesh, adjacency, parentToChildren, selfRegionId, ctx);
+  const label = descriptor.kind === 'byLabel' ? null : descriptor.withinPart;
+  if (!label) return r;
+  const part = ctx ? labelTrianglesOnMesh(label, mesh, ctx) : (partTrianglesOnMesh(label, mesh) ?? new Set<number>());
+  return intersectWithScope(part, r.triangles, r.perTriColors);
 }
 
-/** Resolve a single region descriptor to a triangle set on `mesh`. Shared by
- *  rehydration (loading a saved version) and the live rebuild after a smooth
- *  brush stroke changes the working mesh. Returns perTriColors for imagePaint
- *  descriptors (per-triangle color map rebuilt from stored entries). */
-function resolveDescriptorTrianglesUnscoped(
+/** The live composite colours beneath region `selfId`: the code-colour
+ *  underlay plus the user regions painted before it (all of them when the
+ *  region is new / unknown). */
+function liveColorsBelowRegion(numTri: number, selfId?: number): Uint8Array | null {
+  const self = selfId !== undefined ? getRegions().find(r => r.id === selfId) : undefined;
+  const below = self ? getRegions().filter(r => r.order < self.order) : [...getRegions()];
+  return composeTriColors(numTri, [[...getModelRegions()], below], { baseColors: currentMeshData?.numTri === numTri ? currentMeshData.triColors : undefined });
+}
+
+// Per-mesh "which label owns each triangle" table, so a part scope can be
+// applied to ANY working mesh — the run mesh the label map indexes, or a
+// refined/re-tessellated one (each triangle maps back to the run-mesh
+// triangle under its centroid). Rebuilt when the label map changes.
+let labelOwnerCache: { labels: Map<string, Set<number>> | null; byMesh: WeakMap<Uint32Array, Map<string, Set<number>>> } = { labels: null, byMesh: new WeakMap() };
+
+/** What a descriptor resolves against: the label map + the mesh it indexes,
+ *  and (for colour-keyed kinds) the colours drawn beneath a region. */
+interface ResolveContext {
+  labels: Map<string, Set<number>> | null;
+  labelMesh: MeshData | null;
+  /** Composite colours beneath region `selfId` (all layers when unknown). */
+  colorsBelow?: (numTri: number, selfId?: number) => Uint8Array | null;
+}
+
+/** The triangles of label `name` on `mesh` (empty when the label is unknown). */
+function labelTrianglesOnMesh(name: string, mesh: MeshData, ctx?: ResolveContext): Set<number> {
+  const labels = ctx ? ctx.labels : currentLabelMap;
+  const base = ctx ? ctx.labelMesh : currentLabelMesh;
+  const ids = labels?.get(name);
+  if (!labels || !ids || !base) return new Set<number>();
+  // Same topology (e.g. the coloured copy of the run mesh the viewport shows).
+  if (mesh === base || mesh.triVerts === base.triVerts) return ids;
+  if (labelOwnerCache.labels !== labels) labelOwnerCache = { labels, byMesh: new WeakMap() };
+  let perLabel = labelOwnerCache.byMesh.get(mesh.triVerts);
+  if (!perLabel) {
+    perLabel = new Map();
+    labelOwnerCache.byMesh.set(mesh.triVerts, perLabel);
+  }
+  let out = perLabel.get(name);
+  if (!out) {
+    out = new Set<number>();
+    for (let t = 0; t < mesh.numTri; t++) if (ids.has(baseTriangleOf(mesh, base, t))) out.add(t);
+    perLabel.set(name, out);
+  }
+  return out;
+}
+
+function resolveDescriptorTrianglesRaw(
   descriptor: RegionDescriptor,
   mesh: MeshData,
   adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
-  /** Id of the region being resolved, when known. Used by `colorFlood` to read
-   *  the surface color *beneath* itself (excluding its own stamp). */
   selfRegionId?: number,
+  ctx?: ResolveContext,
 ): ResolveResult {
+  const labelMap = ctx ? ctx.labels : currentLabelMap;
   switch (descriptor.kind) {
+    case 'colorMatch': {
+      // Every triangle drawn in the source colour by the layers BENEATH this
+      // region — so it keeps following the colour it replaced, and a later
+      // replace stacked on top can't make it unravel on the next reconcile.
+      // Typically scoped to a part.
+      const triColors = (ctx?.colorsBelow ?? liveColorsBelowRegion)(mesh.numTri, selfRegionId);
+      const [sr, sg, sb] = descriptor.seedColor;
+      const maxDistSq = descriptor.colorTolerance * descriptor.colorTolerance * 3;
+      const out = new Set<number>();
+      for (let t = 0; t < mesh.numTri; t++) {
+        if (!triColors || !isPainted(triColors, t)) {
+          if (descriptor.unpainted) out.add(t);
+          continue;
+        }
+        const dr = triColors[t * 3] / 255 - sr, dg = triColors[t * 3 + 1] / 255 - sg, db = triColors[t * 3 + 2] / 255 - sb;
+        if (dr * dr + dg * dg + db * db <= maxDistSq) out.add(t);
+      }
+      return { triangles: out };
+    }
     case 'coplanar': {
       if (!adjacency) return { triangles: new Set<number>() };
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
@@ -1473,7 +1848,7 @@ function resolveDescriptorTrianglesUnscoped(
       if (nearest.triIndex < 0) return { triangles: new Set<number>() };
       // Read colors with this region excluded, and anchor on the stored matched
       // color, so the flood follows the *source* color this fill sits on top of.
-      const triColors = buildTriColors(mesh.numTri, false, selfRegionId);
+      const triColors = ctx?.colorsBelow ? ctx.colorsBelow(mesh.numTri, selfRegionId) : buildTriColors(mesh.numTri, false, selfRegionId);
       const anchor: [number, number, number] = [
         Math.round(seedColor[0] * 255), Math.round(seedColor[1] * 255), Math.round(seedColor[2] * 255),
       ];
@@ -1502,7 +1877,10 @@ function resolveDescriptorTrianglesUnscoped(
       // every run, so we re-resolve by name from the labelMap the engine just
       // built (it indexes the base mesh, hence the remap). Missing label →
       // empty set → region drops silently.
-      const ids = currentLabelMap?.get(descriptor.label);
+      // With no subdivision map the target may still be a re-tessellated
+      // mesh (paint refine, texture), so map by topology, not raw ids.
+      if (!parentToChildren) return { triangles: new Set(labelTrianglesOnMesh(descriptor.label, mesh, ctx)) };
+      const ids = labelMap?.get(descriptor.label);
       return { triangles: ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>() };
     }
     case 'connectedFromSeed': {
@@ -1557,6 +1935,10 @@ function resolveDescriptorTrianglesUnscoped(
       const ctx = patternContextFor(descriptor, paintBaseMesh ?? mesh);
       return { triangles: scope, perTriColors: computePatternColors(mesh, scope, descriptor, ctx) };
     }
+    default:
+      // A descriptor kind from a newer build: paint nothing rather than fail
+      // the whole restore (it's kept, and saved back verbatim).
+      return { triangles: new Set<number>() };
   }
 }
 
@@ -1882,6 +2264,13 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
       report.carried.push(region.name);
     } else {
       report.dropped.push(region.name);
+      // Paint keyed to a part (byLabel / scope.label) is KEPT, dormant, when
+      // that part is missing — it's reported as unmatched paint in the Objects
+      // list (reassign / keep / delete) and paints again if the label returns,
+      // instead of being silently lost on the next save.
+      if (descriptorPartLabel(region.descriptor)) {
+        addRegion(region.name, region.color, region.source, region.descriptor, new Set<number>(), region.visible !== false, region.slotId);
+      }
     }
   }
   suspendReconcile = false;
@@ -2026,7 +2415,7 @@ function rebuildPaintedGeometry(): void {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
   }
-  reresolveModelRegions(mesh, adjacency, parentToChildren);
+  reresolveModelRegions(mesh, adjacency, parentToChildren, true);
   paintedColorRefresh();
   syncLockState();
   markMeshRefineState();
@@ -2046,9 +2435,19 @@ function adjacencyIfNeeded(mesh: MeshData): AdjacencyGraph | null {
   return getRegions().some(r => floods(r.descriptor)) || getModelRegions().some(r => floods(r.descriptor)) ? buildAdjacency(mesh) : null;
 }
 
-function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
+function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null, mapIsFromBase = false): void {
   for (const region of getModelRegions()) {
     const d = region.descriptor;
+    // A full rebuild's map runs from the pristine BASE mesh (the one the label
+    // map indexes), not from the current refined mesh — so carrying the
+    // region's current (refined-space) set through it scrambles the underlay
+    // (the code colours vanished after a second smooth paint + undo). Re-resolve
+    // from the descriptor instead: byLabel remaps the base label set correctly.
+    if (mapIsFromBase) {
+      const { triangles } = resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id);
+      setModelRegionTriangles(region.id, triangles);
+      continue;
+    }
     // Across an *incremental* subdivision (parentToChildren present), explicit and
     // byLabel model regions must carry their current triangle set forward via the
     // parent→children map — exactly like the paint regions above. Re-resolving a
@@ -2450,10 +2849,16 @@ async function appendStrokeRefineAsync(
       for (const t of region.triangles) if (splitParents.has(t)) return true;
       return false;
     };
+    // A part-scoped stroke that landed entirely outside its part paints
+    // nothing — drop it (once this job settles) rather than leave an empty
+    // region in the list.
+    let emptyScopedStroke: { id: number; label: string } | null = null;
     for (const region of getRegions()) {
       const d = region.descriptor;
       if (d === descriptor) {
         setRegionTriangles(region.id, newTris ? new Set(newTris) : new Set<number>());
+        const landed = getRegions().find(r => r.id === region.id)?.triangles.size ?? 0;
+        if (landed === 0 && d.withinPart) emptyScopedStroke = { id: region.id, label: d.withinPart };
       } else if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
         setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren), remapPerTriColors(region.perTriColors, parentToChildren));
       } else {
@@ -2466,6 +2871,13 @@ async function appendStrokeRefineAsync(
     paintedColorRefresh();
     syncLockState();
     markMeshRefineState();
+    if (emptyScopedStroke) {
+      const { id, label } = emptyScopedStroke;
+      queueMicrotask(() => {
+        removeRegion(id);
+        showToast(`That's outside "${label}" — nothing painted. Clear the part selection to paint the rest of the object.`, { variant: 'neutral' });
+      });
+    }
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -2701,9 +3113,11 @@ async function saveCurrentVersion(label?: string): Promise<
       }
     }
     const colorRegions = colorRegionStats();
+    const unmatchedPaint = unmatchedPaintReport();
     return {
       id: version.id, index: version.index, label: version.label,
       ...(colorRegions.length > 0 ? { colorRegions } : {}),
+      ...(unmatchedPaint ? { unmatchedPaint } : {}),
     };
   }
   return {
@@ -3202,10 +3616,19 @@ async function main() {
   // mesh import's own regions) onto the just-run mesh and repaint. Shared by the
   // mesh-placement helpers so relief's colours survive into whatever
   // part/session the import-target modal sends them to.
-  function seedImportRegions(seedRegions: SeedRegion[] | undefined): void {
+  //
+  // A function seeder is evaluated against the mesh the import wrapper just
+  // produced — for imports whose colours are keyed to their SOURCE triangle
+  // order (3MF), which Manifold.ofMesh reorders, so ids can only be resolved
+  // after the run.
+  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData) => SeedRegion[]);
+  function seedImportRegions(seedInput: SeedRegionsInput | undefined): void {
+    const seedRegions = typeof seedInput === 'function'
+      ? (currentMeshData ? seedInput(currentMeshData) : [])
+      : seedInput;
     if (!seedRegions || seedRegions.length === 0) return;
     for (const seed of seedRegions) {
-      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
+      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
     }
     if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
   }
@@ -3217,7 +3640,7 @@ async function main() {
   // so the imports survive a reload and so future saveVersion calls (which
   // carry forward `importedMeshes` from the prior version) have something to
   // build on.
-  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegion[] } = { manifold: true }): Promise<{ sessionId: string }> {
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
     // Fresh session: drop the previous model's paint before running the import
@@ -3734,7 +4157,7 @@ async function main() {
     const source = classifyImportSource(file.name);
     if (!source) {
       showToast(
-        `Unsupported file type: ${file.name}. Supported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`,
+        `Unsupported file type: ${file.name}. Supported: .partwright.json, .js, .scad, .stl, .3mf, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`,
         { variant: 'warn', source: 'import' },
       );
       return false;
@@ -3782,6 +4205,9 @@ async function main() {
         if (parsed) {
           committed = await placeImportedMesh(parsed, file.name);
         }
+      } else if (source === '3MF') {
+        const parsed = await parse3MFFile(file);
+        if (parsed) committed = await place3MFImport(parsed, file.name);
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
@@ -3960,7 +4386,7 @@ async function main() {
     if (!source) {
       clearTimeout(timer);
       controller.abort();
-      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .step / .stp, .svg, .vox, or an image.');
+      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .3mf, .step / .stp, .svg, .vox, or an image.');
     }
 
     // Stream the body with a hard byte cap as a backstop for servers that omit
@@ -4319,16 +4745,7 @@ async function main() {
     const probe = parseSTL(bytes);
     if (!probe || probe.numTri === 0) return null;
 
-    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
-    // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
-    // is either way too tight or way too loose.
-    const bbox = bboxFromMesh(probe);
-    const diag = bbox
-      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
-      : 0;
-    const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
-
-    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, scaleTolerance];
+    const tolerances = weldToleranceLadder(probe);
     let bestMesh = probe;
     let maxTried = 0;
     let manifoldError: string | null = null;
@@ -4351,6 +4768,18 @@ async function main() {
     };
   }
 
+  /** Weld tolerances to try, loosest last: the configured STL tolerance, two
+   *  fixed steps, then a scale-aware fallback — 5 ppm of the bounding-box
+   *  diagonal catches imports in unusual units (μm or m) where 1e-3 absolute is
+   *  either way too tight or way too loose. Shared by the STL and 3MF paths. */
+  function weldToleranceLadder(mesh: MeshData): number[] {
+    const bbox = bboxFromMesh(mesh);
+    const diag = bbox
+      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+      : 0;
+    return [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, Math.max(diag * 5e-6, 1e-6)];
+  }
+
   async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const parsed = parseSTLBytes(bytes, file.name);
@@ -4359,11 +4788,16 @@ async function main() {
       return null;
     }
     if (parsed.isManifold) return { mesh: parsed.mesh, isManifold: true };
+    if (!(await confirmRenderOnlyImport(file.name, parsed))) return null;
+    return { mesh: parsed.mesh, isManifold: false };
+  }
 
-    // All tolerances failed. Offer render-only fallback — most users importing
-    // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
-    const accepted = await confirmDialog(
-      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+  /** All weld tolerances failed. Offer the render-only fallback — most users
+   *  importing a Baby Yoda / Eiffel Tower scan just want to look at it, not
+   *  boolean-op it. Shared by the STL and 3MF file paths. */
+  async function confirmRenderOnlyImport(filename: string, parsed: Extract<ParsedSTLProbe, { isManifold: false }>): Promise<boolean> {
+    return confirmDialog(
+      `${filename} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
       `${parsed.triCount.toLocaleString()} triangles · ${parsed.vertCount.toLocaleString()} vertices · tried weld tolerances up to ${parsed.maxTried.toExponential(1)} · ${parsed.manifoldError}`,
@@ -4373,9 +4807,159 @@ async function main() {
         cancelLabel: 'Cancel',
       }
     );
-    if (!accepted) return null;
+  }
 
-    return { mesh: parsed.mesh, isManifold: false };
+  /** A parsed 3MF: the (possibly welded) mesh probe, the parse result (palette,
+   *  per-triangle colours, object summary) and the source mesh in the SAME
+   *  triangle order as `result.triColor` — the colour seeder maps from it. */
+  interface Parsed3MF {
+    probe: ParsedSTLProbe;
+    result: ThreeMFParseResult;
+    source: MeshData;
+  }
+
+  /** Non-interactive 3MF parse: unzip + parse, then the same manifold probe as
+   *  STL (raw indexed mesh first, then the weld-tolerance ladder — welding keeps
+   *  triangle order, so colours stay aligned). Throws on an unreadable package. */
+  async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
+    const cfg = getConfig().import;
+    const result = await parse3MF(bytes, {
+      maxTriangles: cfg.threeMfMaxTriangles,
+      maxEntryBytes: cfg.threeMfMaxEntryMB * 1048576,
+    });
+    const raw = result.mesh;
+    const first = tryConstructManifold(raw);
+    if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: true }, result, source: raw };
+    const tolerances = weldToleranceLadder(raw);
+    let manifoldError: string | null = first.error;
+    let maxTried = 0;
+    for (const tol of tolerances) {
+      const welded = weldMesh(raw, tol);
+      const trial = tryConstructManifold(welded);
+      if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, '3mf'), isManifold: true }, result, source: welded };
+      manifoldError = trial.error;
+      if (tol > maxTried) maxTried = tol;
+    }
+    return {
+      probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: false, manifoldError, maxTried, triCount: raw.numTri, vertCount: raw.numVert },
+      result,
+      source: raw,
+    };
+  }
+
+  /** Interactive 3MF parse for the file picker / drop / re-import paths: toasts
+   *  on an unreadable file and asks before falling back to render-only. */
+  async function parse3MFFile(file: File): Promise<{ parsed: ParsedSTL; p3: Parsed3MF } | null> {
+    let p3: Parsed3MF;
+    try {
+      p3 = await parse3MFBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    } catch (e) {
+      showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
+      return null;
+    }
+    if (p3.probe.isManifold) return { parsed: { mesh: p3.probe.mesh, isManifold: true }, p3 };
+    if (!(await confirmRenderOnlyImport(file.name, p3.probe))) return null;
+    return { parsed: { mesh: p3.probe.mesh, isManifold: false }, p3 };
+  }
+
+  /** Bind a 3MF's palette to the user's palette collection and return the slot
+   *  id for each palette entry. Reuses an existing palette with the same name
+   *  and identical colours (re-importing the same file doesn't pile up
+   *  duplicates); otherwise creates one. Either way it becomes the ACTIVE
+   *  palette, so the imported colours read as on-palette filament slots and
+   *  export maps them back onto the same AMS/MMU slots. Very large material
+   *  palettes (per-vertex-coloured scans) aren't a filament set — skipped. */
+  function adopt3MFPalette(name: string, palette: ThreeMFParseResult['palette']): string[] | null {
+    if (palette.length === 0 || palette.length > 32) return null;
+    for (const p of listPalettes()) {
+      if (p.name !== name) continue;
+      const slots = getPaletteSlots(p.id);
+      if (slots && slots.length === palette.length && slots.every((s, i) => s.hex.toLowerCase() === palette[i].hex)) {
+        setActivePalette(p.id);
+        return slots.map(s => s.id);
+      }
+    }
+    createPalette(name, palette.map((entry, i) => ({ id: `3mf-${i}`, name: entry.name, hex: entry.hex, td: 1 })));
+    return listFilaments().map(s => s.id);
+  }
+
+  interface ThreeMFColorInfo { paletteName: string | null; coloredTriangles: number; colors: number; skippedColors: number }
+
+  /** Colour seeder for a 3MF import. Manifold.ofMesh reorders triangles, so the
+   *  source's per-triangle colours can only be keyed AFTER the import wrapper
+   *  runs: each output triangle maps to its nearest source triangle by centroid
+   *  and takes that triangle's palette entry, grouped into one region per
+   *  colour. Only exact centroid matches are coloured, so geometry composed in
+   *  from the current object keeps its own look. The palette is adopted lazily
+   *  here — i.e. only once the user actually placed the import (a cancelled
+   *  target modal never creates a palette). */
+  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData) => SeedRegion[]; info: ThreeMFColorInfo } | undefined {
+    const { result, source } = p3;
+    if (result.colorSource === 'none' || result.palette.length === 0) return undefined;
+    // A per-triangle-coloured scan can carry thousands of distinct colours;
+    // each would become its own paint region. Past the cap keep the mesh only.
+    if (result.palette.length > getConfig().import.threeMfMaxColors) {
+      return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: result.palette.length } };
+    }
+    const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0 };
+    const seed = (out: MeshData): SeedRegion[] => {
+      const slotIds = adoptPalette ? adopt3MFPalette(paletteName, result.palette) : null;
+      if (slotIds) info.paletteName = paletteName;
+      const bbox = bboxFromMesh(source);
+      const diag = bbox
+        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+        : 1;
+      const eps2 = (Math.max(diag, 1e-3) * 1e-5) ** 2;
+      const nearest = nearestTriangleMap(source, out);
+      const sv = source.vertProperties, st = source.triVerts, sp = source.numProp;
+      const ov = out.vertProperties, ot = out.triVerts, op = out.numProp;
+      const groups = new Map<number, number[]>();
+      for (let t = 0; t < out.numTri; t++) {
+        const o = nearest[t];
+        if (o < 0) continue;
+        const colorIdx = result.triColor[o];
+        if (colorIdx < 0) continue;
+        let d2 = 0;
+        for (let k = 0; k < 3; k++) {
+          const sc = (sv[st[o * 3] * sp + k] + sv[st[o * 3 + 1] * sp + k] + sv[st[o * 3 + 2] * sp + k]) / 3;
+          const oc = (ov[ot[t * 3] * op + k] + ov[ot[t * 3 + 1] * op + k] + ov[ot[t * 3 + 2] * op + k]) / 3;
+          d2 += (sc - oc) ** 2;
+        }
+        if (d2 > eps2) continue;
+        let ids = groups.get(colorIdx);
+        if (!ids) { ids = []; groups.set(colorIdx, ids); }
+        ids.push(t);
+      }
+      const regions: SeedRegion[] = [];
+      for (const [idx, ids] of [...groups].sort((a, b) => a[0] - b[0])) {
+        const entry = result.palette[idx];
+        regions.push({ name: entry.name, color: hexToRgb(entry.hex), triangleIds: ids, slotId: slotIds?.[idx] });
+        info.coloredTriangles += ids.length;
+      }
+      info.colors = regions.length;
+      return regions;
+    };
+    return { seed, info };
+  }
+
+  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined): string {
+    const parts = [`Imported ${filename}: ${result.mesh.numTri.toLocaleString()} triangles`];
+    if (info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
+    let msg = parts.join(', ');
+    if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
+    if (info && info.skippedColors > 0) msg += `. Its ${info.skippedColors.toLocaleString()} colours exceed the ${getConfig().import.threeMfMaxColors}-colour import limit, so it came in uncoloured`;
+    if (result.skippedParts > 0) msg += `. Skipped ${result.skippedParts} modifier/support part${result.skippedParts === 1 ? '' : 's'}`;
+    return msg + '.';
+  }
+
+  /** Place a parsed 3MF through the shared mesh-import target flow, colouring it
+   *  from the file's filament / material assignments. */
+  async function place3MFImport({ parsed, p3 }: { parsed: ParsedSTL; p3: Parsed3MF }, filename: string): Promise<boolean> {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, true);
+    const placed = await placeImportedMesh(parsed, filename, seeder?.seed);
+    if (placed) showToast(describe3MFImport(filename, p3.result, seeder?.info), { variant: 'success', source: 'import' });
+    return placed;
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -4466,7 +5050,7 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -4571,6 +5155,14 @@ async function main() {
 
     // Layer B — code-declared colours (the model-colour underlay).
     const modelLayer: ColorRegion[] = [];
+    const manualLayer: ColorRegion[] = [];
+    // Resolve against THIS object's labels and colours, not the live editor's
+    // (its labels belong to whichever object is open).
+    const bakeCtx = {
+      labels: result.labelMap ?? null,
+      labelMesh: mesh,
+      colorsBelow: (n: number) => composeTriColors(n, [modelLayer, manualLayer]),
+    };
     if (result.labelColors && result.labelMap) {
       for (const [labelName, color] of result.labelColors) {
         const tris = result.labelMap.get(labelName);
@@ -4581,17 +5173,17 @@ async function main() {
       for (const op of result.paintOps) {
         const d = op.descriptor as RegionDescriptor;
         if (needsAdjacency(d)) ensureAdjacency();
-        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, bakeCtx);
         if (triangles.size > 0) modelLayer.push(mkRegion(op.color, triangles, perTriColors));
       }
     }
 
-    // Layer A — the part's saved manual paint regions.
-    const manualLayer: ColorRegion[] = [];
+    // Layer A — the part's saved manual paint regions (in paint order, so a
+    // colour-keyed region sees exactly the layers painted beneath it).
     for (const region of versionColorRegions(version)) {
       const d = region.descriptor;
       if (needsAdjacency(d)) ensureAdjacency();
-      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, undefined, bakeCtx);
       if (triangles.size > 0) {
         manualLayer.push({
           id: ++order, name: region.name, color: region.color, source: region.source,
@@ -4678,7 +5270,7 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
    *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
     await applyImportWrapper([mesh], manifold, seedRegions);
@@ -4819,7 +5411,7 @@ async function main() {
   }
 
   /** Compose the imported mesh with the current part's existing geometry. */
-  async function composeMeshIntoCurrentPart(mesh: ImportedMesh): Promise<boolean> {
+  async function composeMeshIntoCurrentPart(mesh: ImportedMesh, seedRegions?: SeedRegionsInput): Promise<boolean> {
     const cur = getState().currentPart;
     if (!cur) return false;
     const baked = await bakePartComponents(cur.id, cur.name);
@@ -4827,15 +5419,15 @@ async function main() {
       showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
-    await applyImportWrapper([...baked, mesh], true);
+    await applyImportWrapper([...baked, mesh], true, seedRegions);
     return true;
   }
 
   /** Decide where a freshly-parsed STL mesh lands. With no session open it
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
-  async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
-    const placed = await placeImportedMeshInner(parsed, filename);
+  async function placeImportedMesh(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
+    const placed = await placeImportedMeshInner(parsed, filename, seedRegions);
     // Post-import ask. Interactive path only (importMeshData / console imports
     // stay prompt-free for agents); render-only meshes skip it — they can't
     // carry parts or convert (their slices don't close).
@@ -4898,7 +5490,7 @@ async function main() {
     });
   }
 
-  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string): Promise<boolean> {
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -4913,7 +5505,7 @@ async function main() {
     // a fresh session named after the file. The target modal only exists to
     // protect real work, and a fresh/expendable editor has none to protect.
     if (!state.session || currentPartIsExpendable()) {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
       return true;
     }
 
@@ -4933,17 +5525,17 @@ async function main() {
     if (!target) return false;
 
     if (target === 'new-session') {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
       return true;
     }
     if (target === 'new-part') {
       await preserveCurrentEditsIfNeeded();
-      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
+      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
       return true;
     }
     // current-part: compose the imported mesh into the existing real work.
     await preserveCurrentEditsIfNeeded();
-    return composeMeshIntoCurrentPart(parsed.mesh);
+    return composeMeshIntoCurrentPart(parsed.mesh, seedRegions);
   }
 
   /** Place an imported code file (JS / SCAD) into the session, showing a target
@@ -5116,6 +5708,12 @@ async function main() {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
         const parsed = await parseSTLFile(file);
         if (parsed) await placeImportedMesh(parsed, entry.filename);
+        return;
+      }
+      if (entry.source === '3MF') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        const parsed = await parse3MFFile(file);
+        if (parsed) await place3MFImport(parsed, entry.filename);
         return;
       }
       // Image / SVG re-imports reopen the same importer that produced them,
@@ -5296,6 +5894,7 @@ async function main() {
       colorOverBudget,
       colorDropped,
       surfaceStale: pendingSurface !== null,
+      unmatchedPaint: unmatchedPaintRegions().filter(u => !keptUnmatchedRegionIds.has(u.regionId)).map(u => `${u.name} → ${u.label}`),
       printabilityChecks,
     };
   }
@@ -6621,6 +7220,9 @@ async function main() {
     // already exist — start it directly without re-navigating.
     onStartTour: () => { resetTour(); startTour(); },
   });
+  // "Go to code" needs the full editor: the pane may be hidden or showing the
+  // compact code map, neither of which can show a selected range.
+  expandCodePane = () => { if (getCodeView() !== 'full') setCodeView('full'); else expandEditor(); };
 
   // Printability indicator pill — shown in the viewport overlay when the model
   // has standing structural issues that would prevent 3D printing (e.g.
@@ -6759,36 +7361,90 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await setPartGroup(partIds, group);
     },
-    getObjectParts: () => currentObjectPartsView(),
-    onSetObjectPartHidden: (key: string, hide: boolean) => {
-      const r = setObjectPartHidden(key, hide);
-      if (typeof r === 'string') showToast(r, { variant: 'warn' });
-    },
-    getObjectPartDelete: (key: string) => (isReadOnlyViewer() || isSharedPreview()
-      ? { show: false }
-      : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
-    onDeleteObjectPart: async (key: string) => {
-      setObjectPartHighlight(null);
-      const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
-      const objectId = getState().currentPart?.id;
-      const r = await deleteObjectPartOrPiece(target);
-      if ('error' in r) showToast(r.error, { variant: 'warn' });
-      else {
-        showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
-          variant: 'success',
-          action: {
-            label: 'Undo',
-            run: () => {
-              void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
-                if ('error' in u) showToast(u.error, { variant: 'warn' });
-              });
+    // The open object's parts/pieces section. Each action goes through the
+    // same window.partwright method an agent would call (UI ↔ API parity);
+    // failures surface as a toast.
+    objectParts: {
+      getView: () => currentObjectPartsView(),
+      getSelectedKey: () => getSelectedPartKey(),
+      getIsolatedKey: () => isolatedPartKey,
+      select: (key) => { selectObjectPart(key); },
+      isolate: (key) => { isolateObjectPart(key); },
+      info: (key) => objectPartInfo(key),
+      setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
+      resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
+      goToCode: (name) => { railResult(partwrightAPI.goToObjectPart(name)); },
+      renamePart: async (name, next) => {
+        if (isReadOnlyViewer()) return;
+        if (railResult(await partwrightAPI.renameObjectPart(name, next))) showToast(`Renamed part "${name}" → "${next}"`, { variant: 'success' });
+      },
+      bakePartColor: async (name) => {
+        if (isReadOnlyViewer()) return;
+        if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
+      },
+      editWithAI: (key) => {
+        if (getSelectedPartKey() !== key) selectObjectPart(key);
+        prefillAiInput(`Change ${describePartKey(key)}: `);
+      },
+      canArrange: (name) => {
+        // Parsed from the code; cached per code string (the drawer redraws on
+        // every mesh update).
+        const code = getValue();
+        if (arrangeNamesCache?.code !== code) {
+          let names: string[] = [];
+          try { names = apiListParts().map(p => p.name); } catch { /* unparseable code → nothing arrangeable */ }
+          arrangeNamesCache = { code, names };
+        }
+        return arrangeNamesCache.names.includes(name);
+      },
+      arrange: (name) => {
+        const r = apiEnterArrange();
+        if (!r.ok) { showToast(r.reason ?? 'Arrange mode isn’t available for this object.', { variant: 'warn' }); return; }
+        apiSetSelection([name]);
+      },
+      extractPiece: async (index) => {
+        if (isReadOnlyViewer()) return;
+        if (!(await confirmDialog(`Move piece ${index + 1} into its own new object? Both objects get a piece filter around their code — the original's version history keeps the unfiltered code.`, { title: 'Extract piece', confirmLabel: 'Extract' }))) return;
+        const r = await partwrightAPI.extractObjectPiece(index);
+        if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
+      },
+      exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
+      setHidden: (key, hide) => {
+        const r = setObjectPartHidden(key, hide);
+        if (typeof r === 'string') showToast(r, { variant: 'warn' });
+      },
+      getDelete: (key) => (isReadOnlyViewer() || isSharedPreview()
+        ? { show: false }
+        : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
+      deletePart: async (key) => {
+        if (getSelectedPartKey() === key) selectObjectPart(null);
+        const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+        const objectId = getState().currentPart?.id;
+        const r = await deleteObjectPartOrPiece(target);
+        if ('error' in r) showToast(r.error, { variant: 'warn' });
+        else {
+          showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
+            variant: 'success',
+            action: {
+              label: 'Undo',
+              run: () => {
+                void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
+                  if ('error' in u) showToast(u.error, { variant: 'warn' });
+                });
+              },
             },
-          },
-        });
-      }
+          });
+        }
+      },
+      reassignPaint: (regionId, label) => { railResult(partwrightAPI.reassignPaint(regionId, label)); },
+      keepPaint: (regionId) => { railResult(partwrightAPI.keepUnmatchedPaint(regionId)); },
+      deletePaint: (regionId) => { removeRegion(regionId); refreshObjectParts(); },
+      acceptRename: (from, to) => {
+        for (const r of getRegions().filter(x => descriptorPartLabel(x.descriptor) === from)) partwrightAPI.reassignPaint(r.id, to);
+        renameSuggestions = renameSuggestions.filter(s => s.from !== from);
+        refreshObjectParts();
+      },
     },
-    getHighlightKey: () => getObjectPartHighlightKey(),
-    onHighlight: (key: string | null) => { setObjectPartHighlight(key); },
     onReorderParts: async (layout) => {
       if (isReadOnlyViewer()) return;
       await reorderParts(layout);
@@ -7333,6 +7989,7 @@ async function main() {
       currentLabelMesh = currentMeshData;
       currentLostLabels = cachedEntry.lostLabels;
       setPaintLabels(currentLabelMap);
+      noteLabelMapChanged();
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
       // Show the geometry; colours (model underlay + any user paint) are applied
@@ -8323,7 +8980,7 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
+  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); syncPartSelectionAfterMeshUpdate(mesh); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -9445,6 +10102,79 @@ async function main() {
     const cm = currentMeshData, base = paintBaseMesh;
     if (!cm || !base || cm === base) return t;
     return baseTriangleOf(cm, base, t);
+  });
+
+  // One part scope (#1003, #1025): selecting a part in the rail sets the Paint
+  // panel's "Paint within" to it (and clearing the selection clears a scope the
+  // selection set); picking a part in "Paint within" selects it in the rail.
+  // Every paint tool reads that one scope (color/paintScope.ts) and stamps it
+  // as `withinPart`. Both setters no-op on an unchanged value, so the two
+  // listeners can't ping-pong.
+  let scopeSetBySelection: string | null = null;
+  onPartSelectionChange(() => {
+    const name = getSelectedPartName();
+    if (name) setPaintScope(name);
+    else if (scopeSetBySelection && getPaintScope() === scopeSetBySelection) setPaintScope(null);
+    scopeSetBySelection = name;
+  });
+  onPaintScopeChange(() => {
+    const scope = getPaintScope();
+    if (scope === getSelectedPartName()) return;
+    if (scope && (currentLabelMap?.get(scope)?.size ?? 0) > 0) selectObjectPart(`part:${scope}`);
+    else if (!scope && getSelectedPartName()) selectObjectPart(null);
+  });
+  // The paint panel resolves descriptors (Replace-within-a-part) against the
+  // working mesh through this.
+  setCurrentMeshResolver((d) => {
+    const mesh = currentMeshData;
+    if (!mesh) return new Set<number>();
+    const needsAdjacency = d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood';
+    return resolveDescriptorTriangles(d, mesh, needsAdjacency ? buildAdjacency(mesh) : null, null).triangles;
+  });
+  // The tint hides while painting (the strokes are the feedback) and returns
+  // when the panel closes; any selection change (rail, chips, API) redraws.
+  onPaintOpenChange(() => refreshPartSelectionVisual());
+  // A selection belongs to one object: switching or closing the object (or the
+  // session) clears it right away — not only at the next mesh update, which a
+  // failed or empty run never delivers. Otherwise the stale part would keep
+  // scoping paint and prefixing chat messages.
+  onStateChange((state) => {
+    if (!getSelectedPartKey()) return;
+    if ((state.currentPart?.id ?? null) !== selectionContext.objectId) selectObjectPart(null);
+  });
+  onPartSelectionChange(() => {
+    if (!getSelectedPartKey()) isolatedPartKey = null;
+    refreshPartSelectionVisual();
+    refreshObjectParts();
+  });
+  // Double-click the model to select the part under the cursor (or the piece,
+  // when that geometry isn't labelled); double-click empty space to clear.
+  // Skipped while a click-driven tool owns the viewport.
+  getCanvas().addEventListener('dblclick', (e) => {
+    // Click-driven tools own the viewport while they're on.
+    if (isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()) return;
+    const hit = pickFace(e);
+    if (!hit) {
+      if (getSelectedPartKey()) selectObjectPart(null);
+      return;
+    }
+    const shown = lastDisplayedMesh ?? currentMeshData;
+    const base = objectPartsMesh();
+    const summary = currentObjectPartsSummary();
+    if (!shown || !base || !summary) return;
+    const baseTri = shown.triVerts === base.triVerts ? hit.triangleIndex : baseTriangleOf(shown, base, hit.triangleIndex);
+    // The most specific (smallest) part containing the triangle.
+    let key: string | null = null;
+    let best = Infinity;
+    for (const p of summary.parts) {
+      if (p.triangles.size > 0 && p.triangles.size < best && p.triangles.has(baseTri)) { best = p.triangles.size; key = `part:${p.name}`; }
+    }
+    if (!key && summary.pieces.length > 1) {
+      const piece = summary.pieces.find(p => p.triangles.includes(baseTri));
+      if (piece) key = `piece:${piece.index}`;
+    }
+    if (!key) return;
+    selectObjectPart(getSelectedPartKey() === key ? null : key);
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
@@ -10639,6 +11369,28 @@ async function main() {
     // previews as a no-op, mirroring Apply rather than texturing the whole model).
     rest.selectedTriangles = rs ? selectTrianglesNearSeeds(currentMeshData, rs.seeds, rs.radius) : new Set<number>();
     return rest;
+  }
+
+  /** Dry-run code the part/piece actions are about to commit (rename, bake,
+   *  piece filters) so a rewrite that doesn't run changes NOTHING — instead of
+   *  saving a broken version and reporting success. Returns { error } or null. */
+  async function preflightRewrite(code: string, fn: string): Promise<{ error: string } | null> {
+    const iso = await executeIsolated(code);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    try { (iso.manifold as any)?.delete?.(); } catch { /* ignore */ }
+    const gd = iso.geometryData as { status?: string; error?: string; componentCount?: number };
+    if (gd.status === 'error') return { error: `${fn}: the rewritten code doesn't run, so nothing was changed — ${gd.error ?? 'unknown error'}` };
+    return null;
+  }
+
+  /** A runAndSave result that didn't produce a good saved version. */
+  function saveFailed(res: unknown): string | null {
+    const r = res as { error?: string; passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } | null } | null;
+    if (!r) return 'no result';
+    if (typeof r.error === 'string') return r.error;
+    if (r.passed === false) return r.failures?.join('; ') ?? 'assertions failed';
+    if (r.geometry?.status === 'error') return r.geometry.error ?? 'the code failed to run';
+    return null;
   }
 
   // Part detection (#1025): one controller drives the panel AND the console /
@@ -11916,9 +12668,18 @@ async function main() {
       return { sessionId: result.sessionId };
     },
 
-    /** Import an STL mesh (binary or ASCII) from base64-encoded bytes as a new
-     *  session — the programmatic equivalent of the Import → choose-file flow for
-     *  STL (which an agent can't reach: there's no file picker). The mesh is
+    /** Import an STL mesh (binary or ASCII) or a 3MF package from base64-encoded
+     *  bytes as a new session. 3MF (detected by a `.3mf` filename or ZIP magic)
+     *  also carries its colours: Bambu/Orca/Prusa filament assignments + MMU
+     *  painting, or plain-3MF base materials / colour groups, land as paint
+     *  regions, and the file's filament palette becomes the active palette
+     *  (`opts.adoptPalette: false` to skip that); the return adds `format`,
+     *  `flavor`, `colorSource`, `palette`, `colorRegions`, `activePalette`, and
+     *  `objects`.
+     *
+     *  STL is imported as a new session — the programmatic equivalent of the
+     *  Import → choose-file flow (which an agent can't reach: there's no file
+     *  picker). The mesh is
      *  welded across a tolerance ladder; when it forms a clean manifold it's
      *  imported as an editable manifold-js model, otherwise it lands render-only
      *  (display + export only — no booleans/paint/slicing), reflected by
@@ -11926,12 +12687,13 @@ async function main() {
      *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
      *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
      *  vertexCount }` or `{ error }`. */
-    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string; adoptPalette?: boolean } = {}) {
       const check = guard(() => {
         assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
         assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
         assertObject(opts, 'importMeshData(opts)', { optional: true });
         assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
+        if (opts?.adoptPalette !== undefined) assertBoolean(opts.adoptPalette, 'importMeshData(opts.adoptPalette)');
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       let bytes: Uint8Array;
@@ -11942,6 +12704,31 @@ async function main() {
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       } catch {
         return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      }
+      if (/\.3mf$/i.test(filename) || looksLikeZip(bytes)) {
+        let p3: Parsed3MF;
+        try {
+          p3 = await parse3MFBytes(bytes, filename);
+        } catch (e) {
+          return { error: `Could not parse "${filename}" as a 3MF file: ${(e as Error).message}` };
+        }
+        const base = filename.replace(/\.[^.]+$/, '');
+        const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, opts?.adoptPalette !== false);
+        const { sessionId } = await importMeshPayload(p3.probe.mesh, opts?.sessionName ?? base, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
+        return {
+          sessionId,
+          isManifold: p3.probe.isManifold,
+          triangleCount: p3.probe.mesh.numTri,
+          vertexCount: p3.probe.mesh.numVert,
+          format: '3mf',
+          flavor: p3.result.flavor,
+          colorSource: p3.result.colorSource,
+          palette: p3.result.palette.map(e => ({ name: e.name, hex: e.hex })),
+          colorRegions: seeder?.info.colors ?? 0,
+          colorsSkipped: seeder?.info.skippedColors ?? 0,
+          activePalette: seeder?.info.paletteName ?? null,
+          objects: p3.result.objects,
+        };
       }
       const parsed = parseSTLBytes(bytes, filename);
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
@@ -13434,7 +14221,8 @@ async function main() {
       const obj = getCurrentPart();
       const view = currentObjectPartsView();
       if (!obj || !view) return { error: 'No geometry loaded — run code first.' };
-      return { object: { id: obj.id, name: obj.name }, ...view };
+      const { codeActions: _codeActions, ...rest } = view;
+      return { object: { id: obj.id, name: obj.name }, ...rest, selected: getSelectedPartKey() };
     },
 
     /** Hide (or, with `hidden: false`, show) one part (by label name) or piece
@@ -13497,19 +14285,240 @@ async function main() {
     },
 
     /** Tint one part (by label name) or piece (`{ piece: index }`, from
-     *  listObjectParts) of the current object in the viewport — the same as
-     *  clicking it in the object list. `{ unlabeled: true }` tints the geometry
-     *  no part covers; `null` clears. The tint is visual only and disappears on
-     *  the next run. -> { ok, triangles } or { error } */
+     *  listObjectParts) of the current object in the viewport so the user sees
+     *  which one you mean. Visual only and transient (gone on the next mesh
+     *  update) — it does NOT change the user's selection or paint scope; use
+     *  selectObjectPart for that. `{ unlabeled: true }` tints the geometry no
+     *  part covers; `null` clears. -> { ok, triangles } or { error } */
     highlightObjectPart(target: string | { piece?: number; unlabeled?: boolean } | null) {
-      let key: string | null;
-      if (target === null || target === undefined) key = null;
-      else if (typeof target === 'string' && target.length > 0) key = `part:${target}`;
-      else if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) key = `piece:${target.piece}`;
-      else if (target && typeof target === 'object' && target.unlabeled === true) key = 'unlabeled';
-      else return { error: 'highlightObjectPart(target): pass a part name, { piece: index }, { unlabeled: true }, or null.' };
-      const r = setObjectPartHighlight(key);
+      const key = objectPartTargetKey(target, 'highlightObjectPart');
+      if (typeof key === 'object' && key !== null) return key;
+      clearTriangleHighlight();
+      if (key === null) { refreshPartSelectionVisual(); return { ok: true, triangles: 0 }; }
+      const mesh = lastDisplayedMesh ?? currentMeshData;
+      if (!mesh || !objectPartsMesh()) return { error: 'No geometry loaded — run code first.' };
+      if (!partKeyBaseTriangles(key)) return { error: `Unknown part or piece "${key}".` };
+      return { ok: true, triangles: showTriangleHighlight(mesh, partKeyTrianglesOn(key, mesh)) };
+    },
+
+    /** Select a part / piece of the current object, exactly like clicking it
+     *  in the Objects list: it's tinted in the viewport, the interactive paint
+     *  tools (brush, bucket, slab, shape, replace, image stamp) confine
+     *  themselves to a selected PART, and the AI chat gets it as context.
+     *  Pass a part name, `{ part }`, `{ piece: index }`, `{ unlabeled: true }`
+     *  or null to clear. -> { ok, selected, triangles } or { error } */
+    selectObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null) {
+      const key = objectPartTargetKey(target, 'selectObjectPart');
+      if (typeof key === 'object' && key !== null) return key;
+      const r = selectObjectPart(key);
+      return typeof r === 'string' ? { error: r } : { ok: true, selected: getSelectedPartKey(), triangles: r };
+    },
+
+    /** The current Objects-list selection -> { key, part?, piece?, description } | null. */
+    getSelectedObjectPart() {
+      const key = getSelectedPartKey();
+      if (!key) return null;
+      return {
+        key,
+        ...(key.startsWith('part:') ? { part: key.slice(5) } : {}),
+        ...(key.startsWith('piece:') ? { piece: Number(key.slice(6)) } : {}),
+        description: describePartKey(key),
+        isolated: isolatedPartKey === key,
+      };
+    },
+
+    /** Isolate a part / piece (same targets as selectObjectPart): everything
+     *  else is drawn as a translucent ghost. A fused part shares its solid with
+     *  its neighbours, so it can be ghosted, not hidden. null shows all again.
+     *  Visual only. -> { ok, triangles } or { error } */
+    isolateObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null) {
+      const key = objectPartTargetKey(target, 'isolateObjectPart');
+      if (typeof key === 'object' && key !== null) return key;
+      const r = isolateObjectPart(key);
       return typeof r === 'string' ? { error: r } : { ok: true, triangles: r };
+    },
+
+    /** Size, surface area, triangle count and the pieces (1-based) a part or
+     *  piece touches -> { size:[x,y,z], area, triangleCount, pieces } or { error } */
+    getObjectPartInfo(target: string | { part?: string; piece?: number; unlabeled?: boolean }) {
+      const key = objectPartTargetKey(target, 'getObjectPartInfo');
+      if (key === null) return { error: 'getObjectPartInfo(target): pass a part name, { piece }, or { unlabeled: true }.' };
+      if (typeof key === 'object') return key;
+      return objectPartInfo(key) ?? { error: `Unknown part or piece "${key}" — see listObjectParts().` };
+    },
+
+    /** Fill a whole part with one colour (the rail swatch): recolours the
+     *  part's existing fill region, or adds a `byLabel` one. In-memory like any
+     *  paint — save to persist. `color` is '#rrggbb' or [r,g,b] in 0..1.
+     *  -> { id, name, triangles } or { error } */
+    setObjectPartColor(name: string, color: string | [number, number, number]) {
+      const check = guard(() => assertString(name, 'setObjectPartColor(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const rgb = typeof color === 'string' ? (/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(color.trim()) ? hexToRgb(color) : null)
+        : Array.isArray(color) && color.length === 3 && color.every(c => typeof c === 'number' && c >= 0 && c <= 1) ? [color[0], color[1], color[2]] as [number, number, number] : null;
+      if (!rgb) return { error: "setObjectPartColor(color): pass '#rrggbb' or [r,g,b] with components in 0..1." };
+      const mesh = currentMeshData;
+      if (!mesh) return { error: 'No geometry loaded — run code first.' };
+      const tris = labelTrianglesOnMesh(name, mesh);
+      if (tris.size === 0) return { error: `No part "${name}" with visible geometry — see listObjectParts().` };
+      const existing = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === name);
+      if (existing) {
+        updateRegionColor(existing.id, rgb);
+        return { id: existing.id, name: existing.name, triangles: existing.triangles.size };
+      }
+      const region = addRegion(name, rgb, 'paintbrush', { kind: 'byLabel', label: name }, new Set(tris));
+      return { id: region.id, name: region.name, triangles: region.triangles.size };
+    },
+
+    /** Remove the paint that fills part `name` (its `byLabel` regions), so it
+     *  goes back to the colour the code gives it. Strokes merely scoped to the
+     *  part stay. -> { ok, removed } */
+    resetObjectPartColor(name: string) {
+      const check = guard(() => assertString(name, 'resetObjectPartColor(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const ids = getRegions().filter(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === name).map(r => r.id);
+      for (const id of ids) removeRegion(id);
+      return { ok: true, removed: ids.length };
+    },
+
+    /** Reveal where part `name` is labelled in the code (opens the code pane
+     *  and selects its name literal). -> { ok, line } or { error } */
+    goToObjectPart(name: string) {
+      const check = guard(() => assertString(name, 'goToObjectPart(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const src = findLabelSource(getValue(), name);
+      if (!src) return { error: `Couldn't find "${name}" as a string in the code — it may be built dynamically (e.g. in a loop).` };
+      revealCodeRange(src.from, src.to);
+      return { ok: true, line: src.line };
+    },
+
+    /** Rename part `from` → `to` everywhere: every string literal naming it in
+     *  the code (its api.label / SCAD label / BREP.label call, api.paint.label,
+     *  surface-texture label scopes), plus the paint regions keyed to it — then
+     *  run and save. -> runAndSave's result + { renamed: { from, to, occurrences } } or { error } */
+    async renameObjectPart(from: string, to: string) {
+      const check = guard(() => {
+        assertString(from, 'renameObjectPart(from)', { allowEmpty: false });
+        assertString(to, 'renameObjectPart(to)', { allowEmpty: false });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (from === to) return { error: 'renameObjectPart: the new name is the same as the old one.' };
+      if ((currentLabelMap?.get(to)?.size ?? 0) > 0) return { error: `renameObjectPart: there's already a part named "${to}".` };
+      const { code, count } = renameLabelInCode(getValue(), from, to);
+      if (count === 0) return { error: `renameObjectPart: couldn't find "${from}" as a label string in the code — it may be built dynamically. Rename it in the code by hand.` };
+      const pre = await preflightRewrite(code, 'renameObjectPart');
+      if (pre) return pre;
+      // Re-key the paint that belongs to the part, so it follows the rename.
+      for (const r of getRegions()) {
+        const d = r.descriptor;
+        if (descriptorPartLabel(d) !== from) continue;
+        const next: RegionDescriptor = d.kind === 'byLabel' ? { ...d, label: to } : { ...d, withinPart: to };
+        setRegionDescriptor(r.id, next, r.triangles, r.perTriColors);
+      }
+      const wasSelected = getSelectedPartKey() === `part:${from}`;
+      const res = await partwrightAPI.runAndSave(code, `Rename part ${from} → ${to}`) as Record<string, unknown>;
+      const failed = saveFailed(res);
+      if (failed) return { ...res, error: `renameObjectPart: ${failed}` };
+      if (wasSelected && (currentLabelMap?.get(to)?.size ?? 0) > 0) selectObjectPart(`part:${to}`);
+      return { ...res, renamed: { from, to, occurrences: count } };
+    },
+
+    /** Write part `name`'s current drawn colour into the code as
+     *  `api.paint.label(name, '#rrggbb')` (manifold-js objects), replacing the
+     *  paint region that filled it — so the colour is part of the model, not an
+     *  overlay. Runs and saves. -> runAndSave's result + { baked: { name, color } } or { error } */
+    async bakeObjectPartColor(name: string) {
+      const check = guard(() => assertString(name, 'bakeObjectPartColor(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'bakeObjectPartColor: only JavaScript (manifold-js) objects can carry api.paint.label — paint stays an overlay for SCAD / BREP / voxel objects.' };
+      const part = currentObjectPartsView()?.parts.find(p => p.name === name);
+      if (!part) return { error: `No part "${name}" — see listObjectParts().` };
+      if (!part.color) return { error: `Part "${name}" has no colour to bake — colour it first (setObjectPartColor).` };
+      const code = upsertPaintLabelInCode(getValue(), name, part.color);
+      if (!code) return { error: 'bakeObjectPartColor: the code has no top-level `return` to put api.paint.label before.' };
+      const pre = await preflightRewrite(code, 'bakeObjectPartColor');
+      if (pre) return pre;
+      // The fill now lives in the code — drop the overlay (only once the
+      // rewrite is known to run) so the saved version doesn't carry both.
+      for (const r of getRegions().filter(x => x.descriptor.kind === 'byLabel' && x.descriptor.label === name)) removeRegion(r.id);
+      const res = await partwrightAPI.runAndSave(code, `Bake ${name} colour into code`) as Record<string, unknown>;
+      const failed = saveFailed(res);
+      if (failed) return { ...res, error: `bakeObjectPartColor: ${failed}` };
+      return { ...res, baked: { name, color: part.color } };
+    },
+
+    /** Move piece `index` (from listObjectParts().pieces) into its own new
+     *  object. Both objects get a piece filter wrapped around their code (the
+     *  piece is matched by bounding box, so small edits keep tracking it); the
+     *  original's version history keeps the unfiltered code. manifold-js only.
+     *  -> { ok, object: { id, name }, original: { id, name } } or { error } */
+    async extractObjectPiece(index: number) {
+      const prep = pieceFilterPrep(index, 'extractObjectPiece');
+      if ('error' in prep) return prep;
+      const original = getCurrentPart();
+      if (!original) return { error: 'extractObjectPiece: no object is open.' };
+      const keepCode = wrapWithPieceFilter(prep.code, 'keep', [prep.box]);
+      const dropCode = wrapWithPieceFilter(prep.code, 'drop', [prep.box]);
+      if (!keepCode || !dropCode) return { error: 'extractObjectPiece: the code has no top-level `return` to filter.' };
+      const label = prep.part ? `${original.name} · ${prep.part}` : `${original.name} · piece ${index + 1}`;
+      // Both rewrites must run before anything is committed.
+      const preKeep = await preflightRewrite(keepCode, 'extractObjectPiece');
+      if (preKeep) return preKeep;
+      const preDrop = await preflightRewrite(dropCode, 'extractObjectPiece');
+      if (preDrop) return preDrop;
+      const dropped = await partwrightAPI.runAndSave(dropCode, `Extract piece ${index + 1} to a new object`);
+      const dropFailed = saveFailed(dropped);
+      if (dropFailed) return { error: `extractObjectPiece: ${dropFailed}` };
+      const created = await partwrightAPI.createObject(label) as Record<string, unknown>;
+      if (created.error) return created;
+      const kept = await partwrightAPI.runAndSave(keepCode, `Piece ${index + 1} of ${original.name}`);
+      const keepFailed = saveFailed(kept);
+      if (keepFailed) return { error: `extractObjectPiece: the new object's code failed — ${keepFailed}` };
+      return { ok: true, object: { id: created.id, name: created.name }, original: { id: original.id, name: original.name } };
+    },
+
+    /** Download one piece of the current object as an STL. -> { filename } or { error } */
+    exportObjectPiece(index: number, filename?: string) {
+      const check = guard(() => assertString(filename, 'exportObjectPiece(filename)', { optional: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const base = objectPartsMesh();
+      const piece = currentObjectPartsSummary()?.pieces[index];
+      if (!Number.isInteger(index) || !base || !piece) return { error: `exportObjectPiece: no piece ${index} — see listObjectParts().pieces.` };
+      const obj = getCurrentPart();
+      const name = filename ?? `${obj?.name ?? 'object'}-piece-${index + 1}`;
+      return { filename: exportSTL(extractSubMesh(base, piece.triangles), name) };
+    },
+
+    /** Re-point a paint region at another part — for UNMATCHED paint whose
+     *  part the code renamed or removed (see listObjectParts().unmatchedPaint).
+     *  -> { ok, triangles } or { error } */
+    reassignPaint(regionId: number, label: string) {
+      const check = guard(() => assertString(label, 'reassignPaint(label)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const region = getRegions().find(r => r.id === regionId);
+      if (!region) return { error: `reassignPaint: no paint region ${regionId} — see listRegions().` };
+      if ((currentLabelMap?.get(label)?.size ?? 0) === 0) return { error: `reassignPaint: no part "${label}" — see listObjectParts().` };
+      const d = region.descriptor;
+      const next: RegionDescriptor = d.kind === 'byLabel' ? { ...d, label } : { ...d, withinPart: label };
+      const mesh = currentMeshData;
+      if (!mesh) return { error: 'No geometry loaded — run code first.' };
+      const needsAdjacency = next.kind === 'coplanar' || next.kind === 'connectedFromSeed' || next.kind === 'colorFlood';
+      const { triangles, perTriColors } = resolveDescriptorTriangles(next, mesh, needsAdjacency ? buildAdjacency(mesh) : null, null, region.id);
+      setRegionDescriptor(region.id, next, triangles, perTriColors);
+      keptUnmatchedRegionIds.delete(region.id);
+      refreshObjectParts();
+      return { ok: true, triangles: triangles.size };
+    },
+
+    /** Acknowledge unmatched paint as intentionally dormant ("Keep"): it stays
+     *  saved, stops being flagged this session, and paints again by itself if
+     *  its part comes back. -> { ok } */
+    keepUnmatchedPaint(regionId: number) {
+      if (!getRegions().some(r => r.id === regionId)) return { error: `keepUnmatchedPaint: no paint region ${regionId}.` };
+      keptUnmatchedRegionIds.add(regionId);
+      refreshObjectParts();
+      return { ok: true };
     },
 
     /** Commit the current state, routing between `runAndSave` and
@@ -13772,6 +14781,7 @@ async function main() {
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(lostLabels ? { lostLabels } : {}),
         ...(colorRegions.length > 0 ? { colorRegions } : {}),
+        ...(unmatchedPaintReport() ? { unmatchedPaint: unmatchedPaintReport() } : {}),
       };
     },
 
@@ -16212,7 +17222,32 @@ async function main() {
      *  editing the color argument in the code and re-running; when nothing
      *  matched but code-declared colors exist, the result carries a `hint`
      *  saying so. */
-    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
+    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number; withinPart?: string }) {
+      // Within one part: recolouring whole regions would leak outside it, so
+      // add a part-scoped colour-match region (the paint panel's "Replace in
+      // <part>") — every face of the part drawn in `from`, re-matched by colour.
+      if (opts && typeof opts === 'object' && opts.withinPart !== undefined) {
+        const scopeErr = validateWithinPart(opts.withinPart, 'replaceColor');
+        if (scopeErr) return { error: scopeErr };
+        const label = opts.withinPart;
+        const { withinPart: _withinPart, ...rest } = opts;
+        const check = guard(() => {
+          const from = assertNumberTuple(rest.from, 3, 'replaceColor(opts.from)');
+          from.forEach((n, i) => assertNumber(n, `replaceColor(opts.from[${i}])`, { min: 0, max: 1 }));
+          const to = assertNumberTuple(rest.to, 3, 'replaceColor(opts.to)');
+          to.forEach((n, i) => assertNumber(n, `replaceColor(opts.to[${i}])`, { min: 0, max: 1 }));
+          if (rest.tolerance !== undefined) assertNumber(rest.tolerance, 'replaceColor(opts.tolerance)', { min: 0 });
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+        const mesh = currentMeshData;
+        if (!mesh) return { error: 'No geometry loaded — run code first.' };
+        const descriptor: RegionDescriptor = { kind: 'colorMatch', seedColor: [...rest.from] as [number, number, number], colorTolerance: rest.tolerance ?? 0.02, withinPart: label };
+        const { triangles } = resolveDescriptorTriangles(descriptor, mesh, null, null);
+        if (triangles.size === 0) return { replaced: 0, hint: `No faces of "${label}" are drawn in that colour.` };
+        const region = addRegion(`Replace in ${label}`, [...rest.to] as [number, number, number], 'face-pick', descriptor, triangles);
+        scheduleColorRefresh();
+        return { replaced: region.triangles.size, id: region.id, withinPart: label };
+      }
       const check = guard(() => {
         assertObject(opts, 'replaceColor(opts)');
         const from = assertNumberTuple(opts?.from, 3, 'replaceColor(opts.from)');
@@ -16441,6 +17476,16 @@ async function main() {
       scheduleColorRefresh();
       syncLockState();
       return { removed: true, id };
+    },
+
+    /** Rename a paint region (the paint panel's double-click rename).
+     *  -> { ok, id, name } or { error } */
+    renameRegion(id: number, name: string) {
+      const check = guard(() => assertString(name, 'renameRegion(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!getRegions().some(r => r.id === id)) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
+      updateRegionName(id, name);
+      return { ok: true, id, name };
     },
 
     /** Toggle whether a single region is rendered in the viewport. Hidden
@@ -17940,8 +18985,22 @@ async function main() {
         'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
         'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
         'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the removal line (api.removePart/api.removePiece, or remove_part/remove_piece in OpenSCAD), re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
-        'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
-        'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
+        'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}', docs: '/ai.md#objects-parts-and-pieces' },
+        'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece} | {unlabeled: true} | null) -- Transient visual tint of a part/piece (does not change the selection) -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
+        'selectObjectPart': { signature: 'selectObjectPart(name | {part} | {piece: index} | {unlabeled: true} | null) -- Select a part/piece like clicking it in the object list: tinted, scopes the interactive paint tools, AI chat context -> {ok, selected, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'getSelectedObjectPart': { signature: 'getSelectedObjectPart() -- The object-list selection -> {key, part?, piece?, description, isolated} | null', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'isolateObjectPart': { signature: 'isolateObjectPart(name | {part} | {piece} | {unlabeled: true} | null) -- Ghost everything else (visual only); null shows all -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'getObjectPartInfo': { signature: 'getObjectPartInfo(name | {piece} | {unlabeled: true}) -- Size, area, triangle count, pieces touched -> {size, area, triangleCount, pieces}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'setObjectPartColor': { signature: "setObjectPartColor(name, '#rrggbb' | [r,g,b]) -- Fill a whole part (recolours its fill in place, else adds a byLabel region) -> {id, name, triangles}", docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'resetObjectPartColor': { signature: 'resetObjectPartColor(name) -- Remove the paint filling a part (back to its code colour) -> {ok, removed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'goToObjectPart': { signature: 'goToObjectPart(name) -- Reveal the part\'s label in the code editor -> {ok, line}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'renameObjectPart': { signature: 'await renameObjectPart(from, to) -- Rename a part in code literals + its paint, then runAndSave -> {...runAndSave, renamed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'bakeObjectPartColor': { signature: "await bakeObjectPartColor(name) -- Write the part's colour into code as api.paint.label (manifold-js), drop its paint fill, runAndSave -> {...runAndSave, baked}", docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'extractObjectPiece': { signature: 'await extractObjectPiece(index) -- Move a piece into a new object (piece filters on both; manifold-js) -> {ok, object, original}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'exportObjectPiece': { signature: 'exportObjectPiece(index, filename?) -- Download one piece as STL -> {filename}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'reassignPaint': { signature: 'reassignPaint(regionId, partName) -- Re-point (unmatched) paint at another part -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'keepUnmatchedPaint': { signature: 'keepUnmatchedPaint(regionId) -- Mark unmatched paint as intentionally dormant this session -> {ok}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'renameRegion': { signature: 'renameRegion(id, name) -- Rename a paint region (as double-clicking it in the paint panel) -> {ok, id, name}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         // Deprecated pre-rename aliases ("parts" are now "objects")
         'listParts':       { signature: 'listParts() -- DEPRECATED alias of listObjects()', docs: '/ai.md#console-api--windowpartwright' },
         'showPartsOverview': { signature: 'showPartsOverview() -- DEPRECATED alias of showObjectsOverview()', docs: '/ai.md#console-api--windowpartwright' },
@@ -18070,7 +19129,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
-        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, adoptPalette?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried) as a new session -> {sessionId, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
@@ -18097,7 +19156,7 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
-        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?, withinPart?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
         'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
         'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
         'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
@@ -19473,6 +20532,7 @@ async function main() {
       currentLabelMesh = currentMeshData;
       currentLostLabels = result.lostLabels ?? null;
       setPaintLabels(currentLabelMap);
+      noteLabelMapChanged();
 
       // Model-declared colors (api.label(shape, name, { color })) become a
       // derived underlay: resolve each labelled name's triangles from the fresh
