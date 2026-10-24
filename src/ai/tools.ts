@@ -1632,6 +1632,18 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'extractObjectParts',
+    description: 'Move SEVERAL parts — or several pieces — of the current object out of it, like Shift-selecting them in the object list and choosing "Move to new object" (one new object holding them all) or, with separate: true, "Split" (one new object each). Pass parts (api.label names) OR pieces (0-based indices from listObjectParts), not both. Whole separate solids move with piece filters around the code; parts fused to other geometry move with api.removePart lines (the original drops them; each new object drops every other part — note that removing a part used as a cutter fills its cut). Refuses objects with unlabeled geometry fused to the parts, and moves that would empty the original. JavaScript/manifold-js objects only. Runs and saves every object; the last new object is left open.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part (api.label) names from listObjectParts.' },
+        pieces: { type: 'array', items: { type: 'integer', minimum: 0 }, description: '0-based piece indices from listObjectParts.' },
+        separate: { type: 'boolean', description: 'true = one new object per part/piece ("Split"); default false = all into one new object.' },
+      },
+    },
+  },
+  {
     name: 'reassignPaint',
     description: 'Re-point a paint region at another part. Use it on UNMATCHED paint (listObjectParts().unmatchedPaint, or runAndSave/saveVersion\'s unmatchedPaint): paint whose part the code renamed or removed, which otherwise paints nothing. A `hint` there suggests the likely new name.',
     input_schema: {
@@ -2486,7 +2498,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   // #1085 PR5: per-object repair, paint and section tools.
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
-  'extractObjectPiece', 'reassignPaint',
+  'extractObjectPiece', 'extractObjectParts', 'reassignPaint',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -2765,7 +2777,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3828,6 +3840,13 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.bakeObjectPartColor(input.part);
     case 'extractObjectPiece':
       return api.extractObjectPiece(input.piece);
+    case 'extractObjectParts': {
+      const parts = Array.isArray(input.parts) ? input.parts : [];
+      const pieces = Array.isArray(input.pieces) ? input.pieces : [];
+      if ((parts.length > 0) === (pieces.length > 0)) return { error: 'extractObjectParts: pass a non-empty parts list OR a non-empty pieces list.' };
+      const targets = parts.length > 0 ? parts : pieces.map((piece: unknown) => ({ piece }));
+      return api.extractObjectParts(targets, input.separate === undefined ? {} : { separate: input.separate });
+    }
     case 'reassignPaint':
       return api.reassignPaint(input.regionId, input.part);
     case 'setObjectPartHidden': {

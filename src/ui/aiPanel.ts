@@ -48,7 +48,7 @@ import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
-import { getSelectedPartKey, setSelectedPartKey, onPartSelectionChange, describePartKey, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
+import { getSelectedPartKeys, setSelectedPartKey, onPartSelectionChange, describePartKeys, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
 
 interface PanelState {
   open: boolean;
@@ -2916,16 +2916,16 @@ function captureChatImageAsAttachment(img: ImageSource): void {
 
 function renderPartContext(): void {
   if (!partContextEl) return;
-  const key = getSelectedPartKey();
+  const keys = getSelectedPartKeys();
   partContextEl.replaceChildren();
-  partContextEl.classList.toggle('hidden', !key);
-  if (!key) return;
+  partContextEl.classList.toggle('hidden', keys.length === 0);
+  if (keys.length === 0) return;
   const chip = document.createElement('span');
   chip.className = 'inline-flex items-center gap-1 max-w-full rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-100';
   chip.title = 'Selected in the Objects list — sent with your message as context';
   const t = document.createElement('span');
   t.className = 'truncate';
-  t.textContent = `◎ ${describePartKey(key)}`;
+  t.textContent = `◎ ${describePartKeys(keys)}`;
   chip.appendChild(t);
   const rm = document.createElement('button');
   rm.type = 'button';
@@ -3407,8 +3407,8 @@ async function sendMessage(): Promise<void> {
   const blocks: ChatBlock[] = [];
   // The Objects-list selection is chat context: "make it red" means the part
   // the user has selected.
-  const partKey = getSelectedPartKey();
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKey ? `${partSelectionChatContext(partKey)}\n\n${capturedText}` : capturedText });
+  const partKeys = getSelectedPartKeys();
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
