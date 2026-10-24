@@ -13,6 +13,7 @@ import { putMessages } from './db';
 import { loadSettings, providerLabel } from './settings';
 import { buildReviewSystemPrompt } from './reviewPrompt';
 import { captureIsoViews } from './images';
+import type { UserConversation } from './autoReview';
 import { getConfig } from '../config/appConfig';
 import type {
   ChatBlock,
@@ -38,6 +39,9 @@ export interface ReviewContext {
   /** Images the user attached (a photo, a sketch) that the result should
    *  match. Sent after the snapshot. */
   references?: ImageSource[];
+  /** The user's own messages in this chat, oldest first (see
+   *  userConversation in autoReview.ts) — never the agent's replies. */
+  conversation?: UserConversation;
 }
 
 export interface ReviewRequest {
@@ -110,7 +114,7 @@ export async function runReview(
       durationMs: Math.round(performance.now() - t0),
       status: 'error',
       errorMessage: err instanceof Error ? err.message : String(err),
-      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
+      requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}, userMessages=${req.context.conversation?.messages.length ?? 0}`,
     });
     throw err;
   }
@@ -122,7 +126,7 @@ export async function runReview(
     outputTokens: usage.outputTokens,
     cachedTokens: usage.cacheReadInputTokens,
     textPreview: text.slice(0, 200),
-    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}`,
+    requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}, userMessages=${req.context.conversation?.messages.length ?? 0}`,
   });
 
   // null = the reviewer model has no known pricing (the modal asked the
@@ -175,6 +179,17 @@ export function formatReviewPrompt(ctx: ReviewContext): string {
   if (ctx.notes.length > 0) {
     lines.push('=== Session notes (oldest first) ===');
     for (const n of ctx.notes) lines.push(`- ${n}`);
+    lines.push('');
+  }
+  if (ctx.conversation && ctx.conversation.messages.length > 0) {
+    lines.push("=== The user's messages in this chat (oldest first) ===");
+    lines.push("Their own words — every requirement and correction counts, and a later message overrides an earlier one. The agent's replies are deliberately left out: judge the model itself, not the agent's account of it.");
+    const { messages, omitted } = ctx.conversation;
+    if (omitted > 0) lines.push(`(${omitted} earlier message${omitted === 1 ? '' : 's'} left out to fit the review budget.)`);
+    messages.forEach((m, i) => {
+      lines.push('');
+      lines.push(`[${i + 1}] ${m}`);
+    });
     lines.push('');
   }
   if (ctx.snapshot) {

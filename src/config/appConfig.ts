@@ -111,6 +111,10 @@ export interface AppConfig {
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
     reviewReferenceImages: number;
+    /** Max characters of the user's own chat messages sent to a review
+     *  (automatic or 👁), newest kept first. The agent's replies are never
+     *  sent. 0 = none (the automatic review still gets the latest request). */
+    reviewConversationMaxChars: number;
     /** Max characters of a manual (👁) review copied into the
      *  `[REVIEW from …]` session note the agent reads via getSessionContext.
      *  The review itself is always kept in full in the chat transcript. */
@@ -546,6 +550,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
     reviewReferenceImages: 4,
+    reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,

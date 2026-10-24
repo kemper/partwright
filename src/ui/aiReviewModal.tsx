@@ -1,6 +1,7 @@
 // Review modal: pick a DIFFERENT provider/model than the one currently
 // driving the chat, optionally type a focus prompt, and fire a one-shot
-// review of the current session state. Defaults to the first connected
+// review of the current session state — plus, like the automatic review,
+// the user's reference images and their own chat messages (each optional). Defaults to the first connected
 // provider that isn't the active one so the most common flow ("Claude
 // is driving — get a second opinion from GPT/Gemini") is one click away.
 
@@ -17,7 +18,10 @@ import { showAiLocalModal } from './aiLocalModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { mountPreactModal } from './preact/mount';
 import { isModelLoaded, resolveLocalModel } from '../ai/local';
-import type { ChatMessage, Provider } from '../ai/types';
+import { carriedAttachments } from '../ai/compactionAttachments';
+import { userConversation, type UserConversation } from '../ai/autoReview';
+import { getConfig } from '../config/appConfig';
+import type { ChatMessage, ImageSource, Provider } from '../ai/types';
 
 export interface ReviewModalCallbacks {
   /** Provider currently driving the chat — used to pre-pick a DIFFERENT
@@ -26,6 +30,9 @@ export interface ReviewModalCallbacks {
   /** Active sessionId, so the persisted review block lands in the right
    *  transcript. */
   sessionId: string;
+  /** The chat so far — the source of the user's reference images and their
+   *  own messages (the agent's replies are never sent). */
+  history: ChatMessage[];
   /** Called once a review completes successfully. The chat panel uses
    *  this to refresh its in-memory history and re-render. */
   onReviewPosted: (msg: ChatMessage) => void;
@@ -44,7 +51,16 @@ interface ReviewState {
   noKeyForProvider: Provider | null;
   running: boolean;
   availability: Record<Provider, boolean>;
+  /** Images the user attached in this chat (newest N per config). */
+  references: ImageSource[];
+  /** The user's own messages, oldest first. */
+  conversation: UserConversation;
+  includeReferences: boolean;
+  includeConversation: boolean;
 }
+
+/** Rough token cost of one attached image, for the cost preview. */
+const IMAGE_TOKENS_ESTIMATE = 1500;
 
 function modelOptionsFor(p: Provider): { id: string; label: string }[] {
   switch (p) {
@@ -139,8 +155,9 @@ function ReviewerPicker(props: { state: Signal<ReviewState> }) {
   );
 }
 
-function ContextPreview(props: { context: ReviewContext | null; contextError: string | null }) {
-  const { context, contextError } = props;
+function ContextPreview(props: { state: Signal<ReviewState> }) {
+  const { state } = props;
+  const { context, contextError, references, conversation, includeReferences, includeConversation } = state.value;
   if (contextError) {
     return <p class="text-amber-400">Couldn't gather context: {contextError}</p>;
   }
@@ -156,6 +173,26 @@ function ContextPreview(props: { context: ReviewContext | null; contextError: st
       </span>
     </div>
   );
+  // Optional extras: a checkbox instead of the dot; disabled when there's
+  // nothing to send.
+  const Toggle = (p: { label: string; detail: string; checked: boolean; empty: boolean; testId: string; onToggle: (on: boolean) => void }) => (
+    <label class={`flex items-start gap-2 ${p.empty ? 'cursor-default' : 'cursor-pointer'}`}>
+      <input
+        type="checkbox"
+        class="mt-0.5 accent-blue-500"
+        data-testid={p.testId}
+        checked={p.checked && !p.empty}
+        disabled={p.empty}
+        onChange={e => p.onToggle((e.currentTarget as HTMLInputElement).checked)}
+      />
+      <span>
+        <span class={p.empty ? 'text-zinc-500' : 'text-zinc-100'}>{p.label}</span>{' '}
+        <span class="text-zinc-500">{p.detail}</span>
+      </span>
+    </label>
+  );
+  const { messages, omitted } = conversation;
+  const conversationChars = messages.reduce((n, m) => n + m.length, 0);
   return (
     <>
       <Item label="Current code" detail={`${context.language} · ${context.code.length} chars`} />
@@ -164,7 +201,25 @@ function ContextPreview(props: { context: ReviewContext | null; contextError: st
         detail={context.geometryStats === '(no current geometry)' ? '(none — code not run)' : 'volume / surfaceArea / triangle count / bounding box'}
       />
       <Item label="Session notes" detail={`${context.notes.length} note(s)`} />
-      <Item label="Snapshot" detail={context.snapshot ? '4-iso composite PNG (~1500 tokens)' : '— no rendered geometry yet'} />
+      <Item label="Snapshot" detail={context.snapshot ? `4-iso composite PNG (~${IMAGE_TOKENS_ESTIMATE} tokens)` : '— no rendered geometry yet'} />
+      <Toggle
+        label="Your reference images"
+        detail={references.length > 0 ? `${references.length} image(s) you attached in this chat (~${IMAGE_TOKENS_ESTIMATE} tokens each)` : '— none attached in this chat'}
+        checked={includeReferences}
+        empty={references.length === 0}
+        testId="review-include-references"
+        onToggle={on => { state.value = { ...state.value, includeReferences: on }; }}
+      />
+      <Toggle
+        label="Your messages"
+        detail={messages.length > 0
+          ? `${messages.length} message(s) you wrote${omitted > 0 ? ` (${omitted} older left out)` : ''} · ${conversationChars} chars · the agent's replies aren't sent`
+          : '— nothing written in this chat yet'}
+        checked={includeConversation}
+        empty={messages.length === 0}
+        testId="review-include-conversation"
+        onToggle={on => { state.value = { ...state.value, includeConversation: on }; }}
+      />
     </>
   );
 }
@@ -185,7 +240,8 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
     return () => { cancelled = true; };
   }, []);
 
-  const { context, contextError, focus, provider, model, runError, noKeyForProvider, availability } = state.value;
+  const { focus, provider, model, runError, noKeyForProvider, availability } = state.value;
+  const { context, references, conversation, includeReferences, includeConversation } = state.value;
 
   // Cost preview. Reacts to provider/model/focus; the system prompt is the
   // (possibly user-edited) review rubric + output contract.
@@ -194,8 +250,10 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
     const codeChars = context?.code.length ?? 1500;
     const notesChars = context?.notes.join('\n').length ?? 0;
     const focusChars = focus.length;
+    const conversationChars = includeConversation ? conversation.messages.reduce((n, m) => n + m.length, 0) : 0;
     const promptChars = buildReviewSystemPrompt(loadSettings().reviewPromptOverride).length;
-    const tokens = Math.round((codeChars + notesChars + focusChars + promptChars) / 4) + (context?.snapshot ? 1500 : 0);
+    const images = (context?.snapshot ? 1 : 0) + (includeReferences ? references.length : 0);
+    const tokens = Math.round((codeChars + notesChars + focusChars + conversationChars + promptChars) / 4) + images * IMAGE_TOKENS_ESTIMATE;
     const est = estimateTurnCostUsd(provider, model, 0, tokens, 400);
     costText = (provider === 'local' || provider === 'custom')
       ? 'Self-hosted model: free at the API level.'
@@ -207,7 +265,7 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
   return (
     <>
       <p class="text-xs text-zinc-400 leading-snug">
-        Send the current code, geometry stats, session notes, and a 4-iso render to another model for review. Pick a different provider than the one driving the chat for a fresh perspective.
+        Send the current code, geometry stats, session notes, a 4-iso render, and — optionally — your reference images and your own messages to another model for review. Pick a different provider than the one driving the chat for a fresh perspective.
       </p>
       <ReviewerPicker state={state} />
       <label class="flex flex-col gap-1">
@@ -222,7 +280,7 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
       </label>
       <div class="text-xs uppercase tracking-wider text-zinc-500 font-semibold">Reviewer will see</div>
       <div class="flex flex-col gap-2 text-xs text-zinc-300">
-        <ContextPreview context={context} contextError={contextError} />
+        <ContextPreview state={state} />
       </div>
       {runError && <div class="text-xs text-red-400">{runError}</div>}
       {noKeyForProvider && (
@@ -268,7 +326,7 @@ function ReviewFooter(props: {
   const { state, cb, close } = props;
 
   async function runIt() {
-    const { provider, model, focus, context, availability } = state.value;
+    const { provider, model, focus, context, availability, references, conversation, includeReferences, includeConversation } = state.value;
     if (!model) {
       const msg = provider === 'local' ? 'Pick a local model first (above).' : 'Pick a model from the dropdown.';
       state.value = { ...state.value, runError: msg };
@@ -285,7 +343,12 @@ function ReviewFooter(props: {
       const result = await runReview({
         provider,
         model,
-        context: { ...context, focus: focus.trim() || undefined },
+        context: {
+          ...context,
+          focus: focus.trim() || undefined,
+          references: includeReferences ? references : undefined,
+          conversation: includeConversation && conversation.messages.length > 0 ? conversation : undefined,
+        },
         sessionId: cb.sessionId,
       });
       cb.onReviewPosted(result.message);
@@ -342,6 +405,10 @@ export async function showAiReviewModal(cb: ReviewModalCallbacks): Promise<void>
     noKeyForProvider: null,
     running: false,
     availability,
+    references: carriedAttachments(cb.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+    conversation: userConversation(cb.history, getConfig().ai.reviewConversationMaxChars),
+    includeReferences: true,
+    includeConversation: settings.autoReview.includeConversation,
   });
 
   mountPreactModal(

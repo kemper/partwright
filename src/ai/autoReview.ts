@@ -12,6 +12,7 @@
 import type { AutoReviewSettings } from './settings';
 import type { ChatBlock, ChatMessage, ChatToggles, Provider, TurnOutcomeReason } from './types';
 import { activeModel } from './types';
+import { CARRIED_ATTACHMENTS_NOTE } from './compactionAttachments';
 
 export type ReviewVerdict = 'pass' | 'minor' | 'rework';
 
@@ -106,6 +107,59 @@ export function latestUserRequest(history: ChatMessage[]): string {
     if (text && !text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) return text;
   }
   return '';
+}
+
+/** Marks the compaction summary in `userConversation` — it's the agent's
+ *  digest of earlier turns, not the user's words, so the reviewer is told. */
+export const EARLIER_SUMMARY_PREFIX = '[Summary of earlier messages, written by the agent when the chat was compacted]';
+
+/** What `userConversation` hands the reviewer. */
+export interface UserConversation {
+  /** The user's messages, oldest first. */
+  messages: string[];
+  /** Older messages left out to fit the budget. */
+  omitted: number;
+}
+
+/** The user's own messages in this chat, oldest first, for the reviewer —
+ *  every requirement and correction, without the agent's replies (which
+ *  would anchor the reviewer on the agent's own account of its work).
+ *  Skips tool-result carriers, image-only turns, the compaction
+ *  attachment note, auto-continue nudges and review follow-ups. A
+ *  compaction summary stands in for the deleted early turns, marked as
+ *  such. Keeps the newest messages within `maxChars` (0 = none) and counts
+ *  the older ones that don't fit. */
+export function userConversation(history: ChatMessage[], maxChars: number): UserConversation {
+  if (maxChars <= 0) return { messages: [], omitted: 0 };
+  const entries: string[] = [];
+  for (const m of history) {
+    if (m.role === 'assistant') {
+      if (!m.compacted) continue;
+      const text = requestText(m.blocks);
+      if (text) entries.push(`${EARLIER_SUMMARY_PREFIX} ${text}`);
+      continue;
+    }
+    if (m.autoResumeNudge) continue;
+    const text = requestText(m.blocks);
+    if (!text || text === CARRIED_ATTACHMENTS_NOTE || text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) continue;
+    entries.push(text);
+  }
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const room = maxChars - used;
+    if (room <= 0) break;
+    const e = entries[i];
+    if (e.length > room) {
+      // Only the newest message is ever cut (head kept); an older one that
+      // doesn't fit is left out whole.
+      if (kept.length === 0) { kept.unshift(`${e.slice(0, room)}…`); used = maxChars; }
+      break;
+    }
+    kept.unshift(e);
+    used += e.length;
+  }
+  return { messages: kept, omitted: entries.length - kept.length };
 }
 
 /** The follow-up user turn that asks the agent to act on a review. The review

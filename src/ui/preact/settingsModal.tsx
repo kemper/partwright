@@ -1044,7 +1044,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
     <Section label="Automatic review">
       <div
         class="text-[11px] text-zinc-400 leading-snug"
-        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your messages, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
       />
       <div class="flex flex-wrap gap-1">
         <Pill active={!enabled} label="Off" onClick={() => setEnabled(false)} />
@@ -1090,6 +1090,14 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
           ))}
         </div>
         <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The $ cap stops further rounds; the iteration cap applies to each round.</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">What it reads of the chat</span>
+        <div class="flex flex-wrap gap-1">
+          <Pill active={!review.includeConversation} label="Latest request" onClick={() => update({ includeConversation: false })} />
+          <Pill active={review.includeConversation} label="All your messages" onClick={() => update({ includeConversation: true })} />
+        </div>
+        <span class="text-[10px] text-zinc-500">“All your messages” sends everything you wrote in this chat — every requirement and correction — but never the agent’s replies, so the review stays independent. Also the default for the 👁 Review button. Budget: Advanced Settings → “Your messages sent to reviews”.</span>
       </div>
       <div class="flex flex-col gap-1">
         <span class="text-xs text-zinc-400">Review prompt</span>

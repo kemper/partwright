@@ -9,10 +9,13 @@ import {
   resolveReviewer,
   shouldActOnReview,
   shouldAutoReview,
+  userConversation,
+  EARLIER_SUMMARY_PREFIX,
 } from '../../src/ai/autoReview';
+import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
-const ON = { provider: 'same' as const, model: '', fixRounds: 1 };
+const ON = { provider: 'same' as const, model: '', fixRounds: 1, includeConversation: true };
 
 describe('parseReviewVerdict', () => {
   it.each([
@@ -103,5 +106,40 @@ describe('latestUserRequest / buildFixPrompt / requestText', () => {
   });
   it('requestText joins text blocks and ignores images', () => {
     expect(requestText([{ type: 'text', text: ' a ' }, { type: 'image', source: { data: 'x', mediaType: 'image/png' } }, { type: 'text', text: 'b' }])).toBe('a \nb');
+  });
+});
+
+describe('userConversation', () => {
+  const msg = (role: 'user' | 'assistant', text: string, seq: number, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id: String(seq), sessionId: 's', role, blocks: text ? [{ type: 'text', text }] : [], createdAt: seq, seq, ...extra,
+  });
+  const img = { type: 'image' as const, source: { data: 'x', mediaType: 'image/png' as const } };
+
+  it("keeps only the user's own words, oldest first", () => {
+    const history = [
+      msg('user', CARRIED_ATTACHMENTS_NOTE, 0, { blocks: [{ type: 'text', text: CARRIED_ATTACHMENTS_NOTE }, img] }),
+      msg('assistant', 'The user wanted a bracket with two holes.', 1, { compacted: true }),
+      msg('user', 'Make it 40 wide', 2),
+      msg('assistant', 'Done — I made it 40 wide.', 3),
+      msg('user', '', 4, { blocks: [img] }),
+      msg('user', 'Keep going', 5, { autoResumeNudge: true }),
+      msg('user', buildFixPrompt('X / y'), 6),
+      msg('user', 'Ears bigger please', 7),
+    ];
+    expect(userConversation(history, 10_000)).toEqual({
+      messages: [`${EARLIER_SUMMARY_PREFIX} The user wanted a bracket with two holes.`, 'Make it 40 wide', 'Ears bigger please'],
+      omitted: 0,
+    });
+  });
+
+  it('keeps the newest messages within the budget and counts the rest', () => {
+    const history = [msg('user', 'a'.repeat(50), 1), msg('user', 'b'.repeat(50), 2), msg('user', 'c'.repeat(50), 3)];
+    expect(userConversation(history, 120)).toEqual({ messages: ['b'.repeat(50), 'c'.repeat(50)], omitted: 1 });
+    expect(userConversation(history, 0)).toEqual({ messages: [], omitted: 0 });
+  });
+
+  it('cuts only the newest message when it alone overflows', () => {
+    const history = [msg('user', 'old', 1), msg('user', 'x'.repeat(30), 2)];
+    expect(userConversation(history, 10)).toEqual({ messages: [`${'x'.repeat(10)}…`], omitted: 1 });
   });
 });

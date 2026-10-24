@@ -23,7 +23,7 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
+import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { isModelChangingTool } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -2663,6 +2663,7 @@ async function launchReview(): Promise<void> {
   showAiReviewModal({
     activeProvider,
     sessionId: state.sessionId,
+    history: state.history,
     onReviewPosted: (msg) => {
       state.history.push(msg);
       renderTranscript();
@@ -3973,15 +3974,21 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
   try {
     const context = await gatherReviewContext();
     if (controller.signal.aborted || state.sessionId !== reviewSession || !writeOwner) return null;
+    // The user's own messages (never the agent's replies), so the review
+    // grades against every requirement and correction, not just the last ask.
+    const conversation = cfg.includeConversation ? userConversation(state.history, getConfig().ai.reviewConversationMaxChars) : undefined;
     const result = await runReview({
       provider: reviewer.provider,
       model: reviewer.model,
       context: {
         ...context,
-        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        focus: conversation && conversation.messages.length > 0
+          ? "Grade the result against the user's requests in their messages below; the latest message is the task just finished."
+          : request ? `Grade the result against the user's request: ${request}` : undefined,
         // The images the user attached anywhere in this conversation (incl.
         // ones compaction carried forward), not the agent's own renders.
         references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+        conversation,
       },
       sessionId: reviewSession,
       // The review is in the transcript — a session note per automatic
