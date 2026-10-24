@@ -96,6 +96,14 @@ rebuild. A `@character v1` header (or a spec object with `version: 1`) migrates
 with defaults that regenerate its original code — including `place: false`
 (the legacy builder frame: −Y front, soles at z = 0).
 
+To start from something other than the default, `partwright.listCharacterPresets()`
+returns the panel's starting characters (`{id, label, description, spec}` —
+child, elder, chibi, Funko toy, athlete, elf, mannequin, …) and
+`partwright.randomCharacter({ seed?, save? })` rolls a random but coherent one
+(an age archetype and a body-plan style drive proportions; the seed is
+returned, so the same seed re-creates the same character). In-app AI tools of the same names: `listCharacterPresets`
+(pass `id` for one preset's spec) and `randomCharacter` (commits a version).
+
 Reach for the **hand-written recipe below** when you need anything the spec
 doesn't cover (props other than a ball, accessories, logos, garments other
 than top / pants / socks / shoes, multi-figure scenes).
