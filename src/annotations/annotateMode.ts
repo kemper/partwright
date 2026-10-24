@@ -137,7 +137,7 @@ export function forceDeactivate(opts: DeactivateOpts = {}): void {
 }
 
 // Let sibling tools deactivate pen mode without importing this module.
-registerExclusiveMode('pen', forceDeactivate);
+registerExclusiveMode('pen', forceDeactivate, isActive);
 
 function cancelInProgress(): void {
   drawing = false;

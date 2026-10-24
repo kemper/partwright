@@ -16,6 +16,7 @@ import { showToast } from './toast';
 import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
+import { registerTool, openTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 import {
   type CharacterSpec,
   type Proportions,
@@ -31,7 +32,7 @@ import {
   LOCK_HAIR_STYLES,
   BUILDS, SEXES, FACE_SHAPES, LID_STYLES, NOSE_TYPES, LIP_SHAPES, BROW_SHAPES,
   HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES, PANTS_RISES, PRINT_FONTS,
-  PRINT_DEFAULT, isPrintableText,
+  PRINT_DEFAULT, isPrintableText, normalizeSpec, validateSpec,
 } from '../figure/characterSpec';
 
 /** The slice of the console API the panel drives. */
@@ -44,6 +45,16 @@ export interface CharacterCreatorApi {
 }
 
 let openClose: (() => void) | null = null;
+let currentSpec: (() => CharacterSpec) | null = null;
+
+interface CharacterOpenOpts {
+  /** A Character Creator spec (same shape as `buildCharacter`, partial specs
+   *  merge onto the default) to show in the controls — UNBUILT: the editor is
+   *  untouched until the user edits, presses Preview, or saves. */
+  spec?: unknown;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
 
 // ---- small DOM helpers (vanilla, matching paramsPanel's idiom) -------------
 
@@ -234,7 +245,18 @@ const EXPRESSIONS: [string, string][] = [
   ['neutral', 'Neutral'], ['slightFrown', 'Slight frown'], ['frown', 'Frown'], ['deepFrown', 'Deep frown'],
 ];
 
-export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
+export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: CharacterOpenOpts): ToolOpenResult {
+  // Validate a handed-in spec before touching any open panel.
+  let initialSpec: CharacterSpec | null = null;
+  if (openOpts?.spec !== undefined) {
+    if (!openOpts.spec || typeof openOpts.spec !== 'object' || Array.isArray(openOpts.spec)) {
+      return { error: 'spec must be a Character Creator spec object (see /ai/figure.md)' };
+    }
+    const normalized = normalizeSpec(openOpts.spec);
+    const problems = validateSpec(normalized);
+    if (problems.length > 0) return { error: `spec: ${problems.join('; ')}` };
+    initialSpec = normalized;
+  }
   if (openClose) { openClose(); openClose = null; }
 
   // Live-preview debounce state — declared before the shell so onClose can
@@ -251,14 +273,16 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   const shell = createToolPanelShell({
     title: 'Character Creator',
     width: 'w-[20rem]',
-    onClose: () => { closed = true; window.clearTimeout(timer); },
+    onClose: () => { closed = true; window.clearTimeout(timer); if (openClose === shell.close) { openClose = null; currentSpec = null; } },
   });
   openClose = shell.close;
 
   // Restore the spec from the current code if it was made here; otherwise start
   // from the default (and remember whether it's safe to auto-preview on open).
+  // A handed-in spec (AI / API) wins, shown unbuilt.
   const existing = decodeSpecComment(api.getCode());
-  let spec: CharacterSpec = existing ? existing : cloneSpec(DEFAULT_SPEC);
+  let spec: CharacterSpec = initialSpec ?? (existing ? existing : cloneSpec(DEFAULT_SPEC));
+  currentSpec = () => spec;
   const currentCodeEmpty = api.getCode().trim() === '';
 
   // Generating overwrites the editor buffer. When the panel opens over
@@ -297,6 +321,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   const onEdit = (mutate: (s: CharacterSpec) => void): void => { mutate(spec); preview(); };
 
   const body = shell.body;
+  if (openOpts?.note) body.appendChild(createToolNote(openOpts.note, openOpts.source));
 
   // --- Quick presets ---
   const presetWrap = el('div', 'flex flex-wrap gap-1');
@@ -621,22 +646,44 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
       if (previewAfterSave && !closed) { previewAfterSave = false; preview({ immediate: true }); }
     }
   });
+  // A handed-in spec opens unbuilt: offer an explicit Preview beside Save.
+  if (initialSpec) {
+    const previewBtn = el('button', BUTTON_SMALL_SECONDARY);
+    previewBtn.textContent = 'Preview';
+    previewBtn.title = 'Build this character in the viewport (does not save)';
+    previewBtn.addEventListener('click', () => preview({ immediate: true }));
+    shell.footer.appendChild(previewBtn);
+  }
   shell.footer.appendChild(saveBtn);
 
   // Auto-preview on open only when it can't clobber unsaved work: an existing
-  // character (already on screen — just refresh) or an empty editor.
-  if (existing || currentCodeEmpty) preview();
+  // character (already on screen — just refresh) or an empty editor. Never for
+  // a handed-in spec — the user decides when to build it.
+  if (!initialSpec && (existing || currentCodeEmpty)) preview();
+  return { applied: initialSpec ? { spec: cloneSpec(initialSpec) } : {}, ignored: [] };
 }
 
 /** Wire the Character Creator into the command palette and the Tools menu. */
 export function initCharacterCreatorUI(api: CharacterCreatorApi): void {
+  registerTool({
+    id: 'character-creator',
+    title: 'Character Creator',
+    hint: 'Figure',
+    prefillSchema: {
+      spec: { type: 'object', description: 'Character Creator spec (same shape as buildCharacter; partial specs merge onto the default). Shown unbuilt.' },
+    },
+    open: (prefill, ctx) => openCharacterCreatorPanel(api, { spec: prefill?.spec, note: ctx.note, source: ctx.source }),
+    getState: () => (currentSpec ? { spec: cloneSpec(currentSpec()) } : null),
+    isOpen: () => openClose !== null,
+    close: () => openClose?.(),
+  });
   registerCommands([
     {
       id: 'character-creator',
       title: 'Character Creator',
       hint: 'Figure',
       keywords: 'character creator figure person human body pose face hair clothing avatar mannequin doll people sdf',
-      run: () => openCharacterCreatorPanel(api),
+      run: () => { void openTool('character-creator'); },
     },
   ]);
 

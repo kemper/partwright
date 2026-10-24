@@ -45,6 +45,7 @@ import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewport
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
+import { registerTool, setToolNote, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 const PRESET_COLORS: [number, number, number][] = [
   [0.95, 0.20, 0.45], // hot pink (default)
@@ -83,6 +84,14 @@ let fontRow: HTMLElement | null = null;
 let restoreViewBtn: HTMLButtonElement | null = null;
 let redoBtn: HTMLButtonElement | null = null;
 let selectionInfo: HTMLElement | null = null;
+/** Panel content (the AI note lands at its top). */
+let annotateContentEl: HTMLElement | null = null;
+/** The active draw colour (pen + text share it). */
+let currentColor: [number, number, number] = [0.95, 0.20, 0.45];
+/** Programmatic UI sync hooks set by createPickerPanel (openTool prefill). */
+let syncColorUI: ((c: [number, number, number]) => void) | null = null;
+let syncWidthUI: (() => void) | null = null;
+let syncFontUI: (() => void) | null = null;
 
 const inactiveBtnClass = TOOL_TOGGLE_IDLE;
 const activeBtnClass = TOOL_TOGGLE_ACTIVE;
@@ -113,6 +122,25 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   const overlayHost = controlsContainer.parentElement ?? controlsContainer;
   overlayHost.appendChild(pickerPanel);
 
+  registerTool({
+    id: 'tool-annotate',
+    title: 'Annotate (draw / text)',
+    hint: 'Tools',
+    prefillSchema: {
+      mode: { type: 'enum', values: ['pen', 'text', 'select'], description: 'Sub-mode to start in (default pen).' },
+      color: { type: 'color', description: 'Draw colour for strokes + text ([r,g,b] 0..1 or "#rrggbb").' },
+      width: { type: 'number', min: 0.5, max: 64, description: 'Pen line width in px (presets 2 / 4 / 7 / 12).' },
+      fontSize: { type: 'number', min: 4, max: 256, description: 'Text size in px (presets 16 / 22 / 32 / 48).' },
+    },
+    open: (prefill, ctx) => openAnnotateWithPrefill(prefill, ctx),
+    getState: () => (isAnyActive() ? {
+      mode: isPenActive() ? 'pen' : isTextActive() ? 'text' : 'select',
+      color: currentColor, width: getPenWidth(), fontSize: getTextFontSize(),
+    } : null),
+    isOpen: isAnyActive,
+    close: closeAnnotatePanel,
+  });
+
   onStrokesChange(updateCountBadge);
   onRedoChange(updateRedoButton);
   onPenActiveChange(updatePanelState);
@@ -125,11 +153,31 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   updateRedoButton();
 }
 
+/** Open Annotate (if closed) in the requested sub-mode with the prefill's
+ *  colour / width / font size staged — the user draws. */
+function openAnnotateWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const mode = (pre.mode as 'pen' | 'text' | 'select' | undefined) ?? (isAnyActive() ? undefined : 'pen');
+  if (mode === 'pen') selectPenSubMode();
+  else if (mode === 'text') selectTextSubMode();
+  else if (mode === 'select') selectSelectSubMode();
+  setToolNote(annotateContentEl, ctx.note, ctx.source);
+  if (pre.color !== undefined) {
+    const c = pre.color as [number, number, number];
+    setPenColor(c); setTextColor(c); currentColor = c;
+    syncColorUI?.(c);
+  }
+  if (pre.width !== undefined) { setPenWidth(pre.width as number); syncWidthUI?.(); }
+  if (pre.fontSize !== undefined) { setTextFontSize(pre.fontSize as number); syncFontUI?.(); }
+  return { applied: pre, ignored: [] };
+}
+
 function isAnyActive(): boolean {
   return isPenActive() || isTextActive() || isSelectActive();
 }
 
 function toggleAnnotateMode(): void {
+  setToolNote(annotateContentEl, null);
   if (isAnyActive()) {
     deactivatePen();
     deactivateText();
@@ -181,6 +229,7 @@ function updatePanelState(): void {
   } else {
     pickerPanel?.classList.add('hidden');
     if (wasOpen) {
+      setToolNote(annotateContentEl, null);
       closeViewportPanel(annotateRegistryEntry);
       document.removeEventListener('keydown', onAnnotateEscape);
     }
@@ -242,6 +291,7 @@ function createPickerPanel(): HTMLElement {
   const content = document.createElement('div');
   content.className = 'p-2.5';
   panel.appendChild(content);
+  annotateContentEl = content;
 
   // Info banner — explains the purpose of annotations to the user.
   const info = document.createElement('div');
@@ -293,6 +343,7 @@ function createPickerPanel(): HTMLElement {
     swatch.addEventListener('click', () => {
       setPenColor(color);
       setTextColor(color);
+      currentColor = color;
       markActiveSwatch(grid, swatch);
       custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
     });
@@ -316,11 +367,20 @@ function createPickerPanel(): HTMLElement {
       const b = parseInt(hex.slice(5, 7), 16) / 255;
       setPenColor([r, g, b]);
       setTextColor([r, g, b]);
+      currentColor = [r, g, b];
       for (const child of Array.from(grid.children)) {
         (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
       }
     },
   });
+  syncColorUI = (c) => {
+    custom.setHex(rgbToHex(c));
+    const i = PRESET_COLORS.findIndex(p => p.every((v, k) => Math.abs(v - c[k]) < 1e-3));
+    for (const child of Array.from(grid.children)) {
+      (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
+    }
+    if (i >= 0) (grid.children[i] as HTMLElement).classList.add('border-white/80', 'ring-1', 'ring-white/30');
+  };
   const colorInput = custom.el;
   const customLabel = document.createElement('span');
   customLabel.className = 'text-[10px] text-zinc-500';
@@ -360,8 +420,12 @@ function createPickerPanel(): HTMLElement {
     widthBtns.appendChild(btn);
   }
   widthRow.appendChild(widthBtns);
-  const initialWidthIdx = PRESET_WIDTHS.findIndex(w => w.value === getPenWidth());
-  if (initialWidthIdx >= 0) markActiveSizeButton(widthButtonRefs, widthButtonRefs[initialWidthIdx]);
+  syncWidthUI = () => {
+    const i = PRESET_WIDTHS.findIndex(w => w.value === getPenWidth());
+    if (i >= 0) markActiveSizeButton(widthButtonRefs, widthButtonRefs[i]);
+    else for (const b of widthButtonRefs) { b.classList.remove('bg-zinc-500/60', 'ring-1', 'ring-white/30'); b.classList.add('bg-zinc-700/60'); }
+  };
+  syncWidthUI();
   content.appendChild(widthRow);
 
   // Font size row (Text mode)
@@ -387,8 +451,12 @@ function createPickerPanel(): HTMLElement {
     fontBtns.appendChild(btn);
   }
   fontRow.appendChild(fontBtns);
-  const initialFontIdx = PRESET_FONT_SIZES.findIndex(f => f.value === getTextFontSize());
-  if (initialFontIdx >= 0) markActiveSizeButton(fontButtonRefs, fontButtonRefs[initialFontIdx]);
+  syncFontUI = () => {
+    const i = PRESET_FONT_SIZES.findIndex(f => f.value === getTextFontSize());
+    if (i >= 0) markActiveSizeButton(fontButtonRefs, fontButtonRefs[i]);
+    else for (const b of fontButtonRefs) { b.classList.remove('bg-zinc-500/60', 'ring-1', 'ring-white/30'); b.classList.add('bg-zinc-700/60'); }
+  };
+  syncFontUI();
   content.appendChild(fontRow);
 
   // Selection info row (Select mode)

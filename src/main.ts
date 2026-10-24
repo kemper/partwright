@@ -45,7 +45,10 @@ import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
-import { registerCommands } from './ui/commandPalette';
+import { registerCommands, listCommands, runCommandById } from './ui/commandPalette';
+import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, type ToolSpec } from './ui/toolRegistry';
+import { getActiveMode } from './ui/modeExclusion';
+import { getOpenModalTitle } from './ui/modalShell';
 import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
@@ -54,7 +57,7 @@ import { confirmDialog, promptDialog } from './ui/dialogs';
 import { showSaveAllModal, type UnsavedPartRow } from './ui/saveAllModal';
 import { updateAppHistory } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
-import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
+import { onViewportPanelOpen, getActiveViewportPanel } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -187,12 +190,12 @@ import { capPolylinePoints, partBoundaryLoops, resamplePolyline } from './color/
 import { validPaintRefine, type PersistedPaintRefine } from './color/paintRefinePersist';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
-import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
+import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState, showPoints as showMeasurePoints } from './ui/measureTool';
 import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour';
 import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
-import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, setPatternPaintEntry } from './color/paintUI';
+import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, setPatternPaintEntry, getPaintToolState } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
@@ -215,6 +218,7 @@ import {
   loadFromSerialized as loadAnnotations,
   removeLastAnnotation,
   removeAnnotationById,
+  canRedoStroke,
   type SerializedAnnotation,
 } from './annotations/annotations';
 import {
@@ -224,7 +228,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, canRedoRegion, canUndoClear, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
@@ -7049,23 +7053,26 @@ async function main() {
     { id: 'publish-model', title: 'Publish to a print site…', hint: 'Share', keywords: 'printables makerworld bambu thingiverse thangs upload publish release post', run: () => { void actionPublish(); }, enabled: () => currentMeshData !== null && !isSharedPreview() },
     // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
     // palette is the flat, searchable index of everything (keeps grouping cheap
-    // for discoverability). Each fires the existing overlay button by id; click()
-    // works even while the button sits inside a collapsed popover.
-    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => document.getElementById('measure-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => document.getElementById('clip-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => document.getElementById('paint-toggle')?.click(), enabled: viewportToolEnabled },
+    // for discoverability). Registered tools open through the tool registry —
+    // the same opener the Tools button and partwright.openTool use; the rest
+    // still fire their overlay button by id (click() works inside a collapsed
+    // popover).
+    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => { void openRegisteredTool('tool-measure'); }, enabled: viewportToolEnabled },
+    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => { void openRegisteredTool('tool-cross-section'); }, enabled: viewportToolEnabled },
+    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => { void openRegisteredTool('tool-paint'); }, enabled: viewportToolEnabled },
     { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => document.getElementById('palette-manager-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => document.getElementById('image-paint-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => document.getElementById('annotate-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => document.getElementById('simplify-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => { void openRegisteredTool('tool-annotate'); }, enabled: viewportToolEnabled },
+    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => { void openRegisteredTool('tool-quality'); }, enabled: viewportToolEnabled },
     { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
     // These tools moved behind the Tools/Inspect popovers after the view-menu
-    // refactor, so the palette is their only keyboard/search entry point. Each
-    // fires the existing overlay toggle by id (click() works even collapsed).
-    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
+    // refactor, so the palette is their only keyboard/search entry point.
+    // Registered tools open through the tool registry (as above); Voxel Studio
+    // still fires its overlay toggle by id (click() works even collapsed).
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => { void openRegisteredTool('tool-surface'); }, enabled: viewportToolEnabled },
+    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => { void openRegisteredTool('tool-resize'); }, enabled: viewportToolEnabled },
+    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => { void openRegisteredTool('tool-place'); }, enabled: viewportToolEnabled },
+    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => { void openRegisteredTool('tool-print'); }, enabled: viewportToolEnabled },
     { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
@@ -9385,6 +9392,14 @@ async function main() {
     onCancelRender: () => { cancelCurrentExecution(); },
   });
   initMeasureToggle(clipControls);
+  // Prefill-less tools: registered so palette / API / getUiState see them
+  // (their prefill support is follow-up work).
+  const toggleTool = (id: string, title: string, hint: string, toggleId: string, isOpen: () => boolean, close: () => void): ToolSpec => ({
+    id, title, hint, isOpen, close,
+    open: () => { if (!isOpen()) document.getElementById(toggleId)?.click(); },
+  });
+  registerTool(toggleTool('tool-print', 'Print tools / check printability', 'Inspect', 'print-tools-toggle', isPrintToolsOpen, closePrintToolsMenu));
+  registerTool(toggleTool('tool-cross-section', 'Cross section', 'Inspect', 'clip-toggle', () => getClipState().enabled, () => { if (getClipState().enabled) { setClipping(false); syncClipUI(); } }));
   initOrbitLockToggle(clipControls);
   initResetViewButton(clipControls);
 
@@ -17687,6 +17702,131 @@ async function main() {
       return getAnnotateWidth();
     },
 
+    // === UI control — open a tool for the user, read what's on screen ===
+
+    /** Every UI action an agent can drive: registered TOOLS (open with a
+     *  prefill via openTool) merged with the run-only palette COMMANDS (via
+     *  runUiCommand). `open` = the tool is open right now. */
+    listUiCommands(): Array<{ id: string; title: string; hint: string | null; kind: 'tool' | 'command'; enabled: boolean; open: boolean; prefill: Record<string, unknown> | null }> {
+      const cmds = listCommands();
+      const byId = new Map(cmds.map(c => [c.id, c]));
+      const isOpen = (t: ToolSpec) => { try { return t.isOpen(); } catch { return false; } };
+      const out: Array<{ id: string; title: string; hint: string | null; kind: 'tool' | 'command'; enabled: boolean; open: boolean; prefill: Record<string, unknown> | null }> = [];
+      for (const t of listTools()) {
+        const c = byId.get(t.id);
+        out.push({ id: t.id, title: c?.title ?? t.title, hint: c?.hint ?? t.hint ?? null, kind: 'tool', enabled: c ? c.enabled : true, open: isOpen(t), prefill: t.prefillSchema ?? null });
+      }
+      for (const c of cmds) {
+        if (!getTool(c.id)) out.push({ id: c.id, title: c.title, hint: c.hint ?? null, kind: 'command', enabled: c.enabled, open: false, prefill: null });
+      }
+      return out;
+    },
+
+    /** Open a tool panel FOR THE USER with its fields pre-set, and leave it open
+     *  — it never applies the operation; the user tweaks and clicks Apply.
+     *  `prefill` keys are per tool (listUiCommands().prefill, /ai/ui-control.md);
+     *  unknown keys and out-of-range values are rejected. `note` shows in the
+     *  panel as "Suggested by AI: …". Doesn't step the AI panel aside.
+     *  Returns `{ ok, id, applied, ignored }` or `{ error }`. */
+    async openTool(id: string, prefill?: Record<string, unknown>, opts?: { note?: string; source?: 'ai' | 'api' }) {
+      const checked = guard(() => {
+        assertString(id, 'openTool(id)');
+        assertObject(prefill, 'openTool(prefill)', { optional: true });
+        assertObject(opts, 'openTool(opts)', { optional: true });
+        if (opts) {
+          assertNoUnknownKeys(opts as Record<string, unknown>, ['note', 'source'], 'openTool(opts)');
+          assertString(opts.note, 'openTool(opts.note)', { optional: true });
+          if (opts.note !== undefined && opts.note.length > 500) throw new ValidationError('openTool(opts.note) must be at most 500 characters');
+          if (opts.source !== undefined) assertEnum(opts.source, ['ai', 'api'] as const, 'openTool(opts.source)');
+        }
+        return true;
+      });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      const gate = listCommands().find(c => c.id === id);
+      if (gate && !gate.enabled) return { error: `openTool("${id}"): not available right now — it needs the editor open with a model on screen (or the matching session language).` };
+      return openRegisteredTool(id, prefill, { note: opts?.note, source: opts?.source ?? 'api' });
+    },
+
+    /** Run a UI command by id (see listUiCommands) — a registered tool opens
+     *  with no prefill; anything else runs its palette action (e.g.
+     *  'export-3mf-bambu', 'place-drop-floor', 'tab-notes'). → `{ ok }` / `{ error }`. */
+    async runUiCommand(id: string) {
+      const checked = guard(() => { assertString(id, 'runUiCommand(id)'); return true; });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      const gate = listCommands().find(c => c.id === id);
+      if (gate && !gate.enabled) return { error: `runUiCommand("${id}"): not available right now.` };
+      if (getTool(id)) {
+        const r = await openRegisteredTool(id, undefined, { source: 'api' });
+        return 'error' in r ? r : { ok: true, id };
+      }
+      if (!gate) return { error: `runUiCommand: unknown command "${id}". Call listUiCommands() for the ids.` };
+      return runCommandById(id) ? { ok: true, id } : { error: `runUiCommand("${id}"): not available right now.` };
+    },
+
+    /** Close a tool (by id) or, with no id, whichever tool is open.
+     *  → `{ ok, closed: id | null }` / `{ error }`. */
+    closeTool(id?: string) {
+      const checked = guard(() => { assertString(id, 'closeTool(id)', { optional: true }); return true; });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      const t = id !== undefined ? getTool(id) : getOpenTool();
+      if (id !== undefined && !t) return { error: `closeTool: unknown tool "${id}". Known tools: ${listTools().map(x => x.id).join(', ')}` };
+      if (!t) {
+        // Nothing registered is open — still close any other docked panel.
+        const other = getActiveViewportPanel();
+        if (other) { other.close(); return { ok: true, closed: 'other' }; }
+        return { ok: true, closed: null };
+      }
+      let wasOpen = false;
+      try { wasOpen = t.isOpen(); } catch { /* treat as closed */ }
+      if (wasOpen) t.close?.();
+      return { ok: true, closed: wasOpen ? t.id : null };
+    },
+
+    /** What the user is looking at: the open tool and its current field values
+     *  (what they've tweaked since you opened it), the active exclusive mode
+     *  (paint / pen / text / select / imagePaint / voxelStudio), an open modal's
+     *  title, the tab / code view / camera, selections, and any stale
+     *  in-code surface textures ("Re-apply" pending). */
+    getUiState() {
+      const isOpen = (t: ToolSpec) => { try { return t.isOpen(); } catch { return false; } };
+      const tool = getOpenTool();
+      let toolState: Record<string, unknown> | null = null;
+      try { toolState = tool?.getState?.() ?? null; } catch { toolState = null; }
+      const view = partwrightAPI.getViewState();
+      return {
+        activeTool: tool?.id ?? (getActiveViewportPanel() ? 'other' : null),
+        openTools: listTools().filter(isOpen).map(t => t.id),
+        mode: getActiveMode(),
+        openModal: getOpenModalTitle(),
+        toolState,
+        tab: view.tab,
+        codeView: view.codeView,
+        camera: view.camera,
+        selection: { arrange: apiGetSelection(), parts: partDetection.getPartSelection().parts },
+        surfacePending: pendingSurface ? { ops: pendingSurface.ops.map(o => o.id) } : null,
+      };
+    },
+
+    /** Every paint setting the Paint panel holds — tool, colour / slot,
+     *  withinPart, bucket / brush / slab / box settings, region count — whether
+     *  or not the panel is open. */
+    getPaintState() {
+      return getPaintToolState();
+    },
+
+    /** Which undo stacks have something to undo / redo right now:
+     *  paint (undoLastPaint / redoLastPaint, + undoClear after a Clear),
+     *  arrange (undo / redo), annotations (undoAnnotation / stroke redo),
+     *  voxel (Voxel Studio undo / redo). */
+    getUndoState() {
+      return {
+        paint: { undo: getRegions().length > 0, redo: canRedoRegion(), undoClear: canUndoClear() },
+        arrange: { undo: apiCanUndo(), redo: apiCanRedo() },
+        annotations: { undo: getAnnotationCount() > 0, redo: canRedoStroke() },
+        voxel: { undo: voxelPaint.canUndo(), redo: voxelPaint.canRedo() },
+      };
+    },
+
     /** Self-documenting help -- returns structured object and logs readable summary */
     help(method?: string): Record<string, unknown> {
       assertString(method, 'help(method)', { optional: true, allowEmpty: false });
@@ -18004,6 +18144,14 @@ async function main() {
         'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai/annotations.md' },
         'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai/annotations.md' },
         'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle the annotation was made from', docs: '/ai/annotations.md' },
+        // UI control -- open a tool for the user (AI hand-off)
+        'listUiCommands':  { signature: 'listUiCommands() -- Every drivable UI action: tools (openable with a prefill; prefill = their documented keys) + run-only palette commands -> [{id, title, hint, kind, enabled, open, prefill}]', docs: '/ai/ui-control.md' },
+        'openTool':        { signature: "await openTool(id, prefill?, {note?}) -- Open a tool panel FOR THE USER with fields pre-set (e.g. openTool('tool-surface', {tab:'knit', mode:'whole', stitchWidth:3}, {note:'tweak and Apply'})). Never applies; unknown keys / out-of-range values rejected -> {ok, applied, ignored} | {error}", docs: '/ai/ui-control.md' },
+        'runUiCommand':    { signature: "await runUiCommand(id) -- Run a palette command by id (a tool opens unprefilled) -> {ok} | {error}", docs: '/ai/ui-control.md' },
+        'closeTool':       { signature: 'closeTool(id?) -- Close a tool by id, or whichever is open -> {ok, closed}', docs: '/ai/ui-control.md' },
+        'getUiState':      { signature: 'getUiState() -- What is on screen: {activeTool, openTools, mode, openModal, toolState (the open tool\'s current values), tab, codeView, camera, selection, surfacePending}', docs: '/ai/ui-control.md' },
+        'getPaintState':   { signature: 'getPaintState() -- Paint panel settings: {active, tool, color, slot, withinPart, bucket, brush, slab, box, regions, visible}', docs: '/ai/ui-control.md' },
+        'getUndoState':    { signature: 'getUndoState() -- Undo/redo availability: {paint:{undo, redo, undoClear}, arrange, annotations, voxel}', docs: '/ai/ui-control.md' },
       };
 
       if (method) {
@@ -19476,6 +19624,40 @@ async function main() {
     }
 
     closeMeasureIfActive = close;
+
+    const openMeasure = (): void => {
+      if (getMeasureState().active) return;
+      closeSimplifyMenu();
+      closePrintToolsMenu();
+      activateMeasure();
+      setMeasureLock(true);
+      measureBtn.className = activeClass;
+    };
+    registerTool({
+      id: 'tool-measure',
+      title: 'Measure distance',
+      hint: 'Inspect',
+      prefillSchema: {
+        points: { type: 'object', description: 'Pre-place a measurement: {from:[x,y,z], to:[x,y,z]} (world units).', fields: {
+          from: { type: 'vec3' }, to: { type: 'vec3' },
+        } },
+      },
+      open: (prefill, ctx) => {
+        const pts = prefill?.points as { from?: [number, number, number]; to?: [number, number, number] } | undefined;
+        if (pts && (!pts.from || !pts.to)) return { error: 'points needs both from and to' };
+        openMeasure();
+        // Measure has no panel, so an AI note is a toast.
+        if (ctx.note) showToast(`Suggested by AI: ${ctx.note}`, { variant: 'neutral', source: 'ai' });
+        if (pts?.from && pts.to) return { applied: { points: pts, distance: showMeasurePoints(pts.from, pts.to) }, ignored: [] };
+        return { applied: {}, ignored: [] };
+      },
+      getState: () => {
+        const s = getMeasureState();
+        return s.active ? { points: s.point1 && s.point2 ? { from: s.point1, to: s.point2 } : null, distance: s.distance } : null;
+      },
+      isOpen: () => getMeasureState().active,
+      close: () => { close(); },
+    });
 
     measureBtn.addEventListener('click', () => {
       if (getMeasureState().active) {

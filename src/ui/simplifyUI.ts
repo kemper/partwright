@@ -38,6 +38,7 @@ import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
 import { getConfig } from '../config/appConfig';
 import type { Language } from '../geometry/engine';
 import { createSliderEntry, type SliderEntry } from './sliderEntry';
+import { registerTool, setToolNote, checkRange, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -198,6 +199,78 @@ let applyAbort: AbortController | null = null;
 let prevWireframeVisible: boolean | null = null;
 /** Whether color preservation is currently requested. */
 let preserveColor = true;
+/** The panel's padded content area (the AI note lands at its top). */
+let contentEl: HTMLElement | null = null;
+
+/** Open the panel (if closed) and stage an (already schema-validated) prefill:
+ *  curvature quality is previewed live (reverts on close unless applied, like a
+ *  radio click); the simplify/enhance target is staged for the user's Apply. */
+function openWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  if (!isSimplifyOpen()) openPanel();
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (!p) return { applied: {}, ignored: [] };
+  const applied: Record<string, unknown> = {};
+  const ignored: string[] = [];
+  const errors: string[] = [];
+  if (p.curvatureQuality !== undefined) {
+    const radio = qualityRadios.find(r => r.value === p.curvatureQuality);
+    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+    applied.curvatureQuality = p.curvatureQuality;
+  }
+  const meshKeys = ['mode', 'knob', 'targetTris', 'length', 'amount', 'preserveColor'] as const;
+  if (!info) {
+    for (const k of meshKeys) if (p[k] !== undefined) ignored.push(k); // no model to simplify
+    return { applied, ignored };
+  }
+  if (p.mode !== undefined || p.knob !== undefined) {
+    if (p.mode !== undefined) { mode = p.mode as SimplifyMode; applied.mode = mode; }
+    if (p.knob !== undefined) { knobMode = p.knob as KnobMode; applied.knob = knobMode; }
+    syncModeUI();
+  }
+  if (p.targetTris !== undefined) {
+    if (knobMode !== 'count') errors.push("targetTris needs knob 'count'");
+    else if (countEntry) {
+      const base = info.baseTriangles;
+      const lo = mode === 'simplify' ? Math.max(4, Math.min(base, Math.round(base * 0.02) || 4)) : base;
+      const hi = mode === 'simplify' ? base : Infinity;
+      if (checkRange('targetTris', p.targetTris as number, lo, hi, errors)) { countEntry.set(p.targetTris as number); applied.targetTris = countEntry.get(); }
+    }
+  }
+  if (p.length !== undefined) {
+    if (knobMode === 'count') errors.push("length needs knob 'edge' or 'size'");
+    else if (lengthEntry && checkRange('length', p.length as number, Number.MIN_VALUE, Infinity, errors)) { lengthEntry.set(p.length as number); applied.length = lengthEntry.get(); }
+  }
+  if (p.amount !== undefined) {
+    if (knobMode !== 'size') errors.push("amount needs knob 'size'");
+    else if (amountSlider) {
+      amountSlider.value = String(p.amount);
+      if (amountValueEl) amountValueEl.textContent = String(amountVal());
+      applied.amount = amountVal();
+    }
+  }
+  if (p.preserveColor !== undefined) {
+    if (info.hasColor && colorCheckbox) { colorCheckbox.checked = p.preserveColor as boolean; preserveColor = colorCheckbox.checked; applied.preserveColor = preserveColor; }
+    else ignored.push('preserveColor');
+  }
+  updateApplyEnabled();
+  if (errors.length) return { error: errors.join('; ') };
+  return { applied, ignored };
+}
+
+function simplifyState(): Record<string, unknown> {
+  const q = loadQualitySettings();
+  return {
+    curvatureQuality: q.quality,
+    mode,
+    knob: knobMode,
+    targetTris: knobMode === 'count' ? currentTarget() : null,
+    length: knobMode === 'count' ? null : lengthVal(),
+    amount: knobMode === 'size' ? amountVal() : null,
+    preserveColor,
+    baseTriangles: info?.baseTriangles ?? null,
+    pending: qualityPending() || meshPending(),
+  };
+}
 
 export function initSimplifyUI(
   controlsContainer: HTMLElement,
@@ -208,6 +281,24 @@ export function initSimplifyUI(
   isScadLang = opts.initialLang === 'scad';
   onCancelRender = opts.onCancelRender ?? null;
   initQualityLogic(opts.initialLang);
+  registerTool({
+    id: 'tool-quality',
+    title: 'Quality: simplify / enhance',
+    hint: 'Tools',
+    prefillSchema: {
+      curvatureQuality: { type: 'enum', values: QUALITY_OPTIONS.map(o => o.id), description: 'Curvature quality preset — previewed live, kept only on Apply.' },
+      mode: { type: 'enum', values: ['simplify', 'enhance'], description: 'Reduce or increase triangle count.' },
+      knob: { type: 'enum', values: ['count', 'edge', 'size'], description: 'How the target is expressed.' },
+      targetTris: { type: 'number', integer: true, min: 4, description: "Target triangle count (knob 'count'; simplify ≤ base, enhance ≥ base)." },
+      length: { type: 'number', description: "Edge length / tolerance / size threshold in mesh units (knob 'edge' or 'size')." },
+      amount: { type: 'number', integer: true, min: 1, max: 6, description: "Strength / detail levels (knob 'size')." },
+      preserveColor: { type: 'boolean', description: 'Keep paint (painted models only).' },
+    },
+    open: (prefill, ctx) => openWithPrefill(prefill, ctx),
+    getState: () => (isSimplifyOpen() ? simplifyState() : null),
+    isOpen: isSimplifyOpen,
+    close: () => { if (isSimplifyOpen()) closePanel(); },
+  });
 
   simplifyBtn = document.createElement('button');
   simplifyBtn.id = 'simplify-toggle';
@@ -298,6 +389,7 @@ function toggle(): void {
     closePanel();
   } else {
     openPanel();
+    setToolNote(contentEl, null);
   }
 }
 
@@ -478,6 +570,7 @@ function meshPending(): boolean {
 }
 
 function closePanel(): void {
+  setToolNote(contentEl, null);
   revertQualityPreview();
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onSimplifyEscape);
@@ -713,6 +806,7 @@ function buildPanel(): HTMLElement {
   const c = document.createElement('div');
   c.className = 'p-2.5';
   p.appendChild(c);
+  contentEl = c;
 
   // --- Curvature quality section ---
   const qualitySection = document.createElement('div');
