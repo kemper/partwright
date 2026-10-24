@@ -205,6 +205,7 @@ The pattern:
    ```
 
 4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+   **Don't edit files (or let parallel agents/bakes write `public/`, `.claude/worktrees/`) while a spec runs** — Vite full-reloads the shared dev server and the run dies with "Execution context was destroyed". Playwright also wipes `test-results/` each run, so copy screenshots you intend to send elsewhere (e.g. the scratchpad) first.
 5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
 6. **Attach the same proof to the PR** when the change is visual — chat is ephemeral and the reviewer may never see it. See the next section.
 
@@ -575,12 +576,9 @@ The only exceptions are values that are truly structural constants (array indice
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
 
-### Editing `src/main.ts` — NUL-byte zones
+### Editing `src/main.ts` — scope traps
 
-`src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
-
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
-- **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
+`src/main.ts` is huge and has two scopes: module scope, and a giant init/setup function whose local helpers (`selectPart`, tool-close helpers, …) are invisible outside it. Two sessions lost a rewrite to this: a helper written at module scope couldn't reach setup-local ones, and a `let` declared inside the init function sat in the TDZ when an earlier line called a hoisted function that assigns it. State needed by both sides goes in a module-scope `let` assigned during setup (see `applyAssemblyChrome`). (The old NUL-byte warning is gone: the file has no NUL bytes, so plain `grep`/`Edit` work.)
 
 If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
 
