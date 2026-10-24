@@ -71,7 +71,7 @@ test.describe('editor hints ticker', () => {
 
     // Pin the toolbar middle to a chosen width and report whether the badge and
     // the hint text share a row (single) or the text sits below it (two-row).
-    const rowsAtWidth = async (px: number): Promise<'single' | 'two'> => {
+    const rowsAtWidth = async (px: number): Promise<'single' | 'two' | 'pending'> => {
       await page.evaluate((w) => {
         const host = document.getElementById('editor-hints-host')!;
         host.style.flex = `0 0 ${w}px`;
@@ -79,7 +79,10 @@ test.describe('editor hints ticker', () => {
       }, px);
       const badge = await strip.locator('span', { hasText: 'Did you know?' }).first().boundingBox();
       const text = await page.locator('#editor-hints-text').boundingBox();
-      if (!badge || !text) throw new Error('missing badge/text box');
+      // The badge is display:none until the ResizeObserver relayout catches up
+      // with the new width — report 'pending' so expect.poll retries instead of
+      // a throw aborting the poll on the first sample.
+      if (!badge || !text) return 'pending';
       // Same row ⟺ their vertical centers roughly coincide.
       return Math.abs((badge.y + badge.height / 2) - (text.y + text.height / 2)) < 6 ? 'single' : 'two';
     };
