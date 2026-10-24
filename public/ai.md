@@ -303,6 +303,7 @@ await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer ex
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
+partwright.listExportColors({mergeColors?, maxColors?})  // colours (= slicer filaments) a 3MF carries + the merge those options apply. See /ai/file-io.md#3mf-filament-colours
 partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
 // Animation videos (record the live viewport -> .webm download; tab must stay visible). See /ai/deform.md.
 await partwright.exportTurntable({seconds?, revolutions?})        // camera orbits the model -> {ok, filename}
@@ -312,7 +313,7 @@ await partwright.exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
-await partwright.export3MFData()
+await partwright.export3MFData(filename?, {mergeColors?, maxColors?, colorMap?})  // 3MF options also on export3MF / export3MFObjects*
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 // Multi-object: bundle several of the session's objects into one file (default: all objects). See /ai/file-io.md.
 await partwright.export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one object per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
