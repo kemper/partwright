@@ -146,7 +146,8 @@ partwright.paintByLabels([
 // -> { results: [...], failed: [] }
 // Reach for paintByLabel({label, color}) only when painting a single
 // feature. listLabels() returns what's available; check it if a paint
-// call reports "no label X".
+// call reports "no label X". getLabelNames() is the cheap form: just the
+// names (string[]), no triangle counts / bboxes.
 ```
 
 `api.labeledUnion([{name, shape}, ...])` is sugar that labels each
@@ -539,6 +540,8 @@ The painted edge is **clipped to the exact outline** (the mesh is cut along the 
 **The brush is a *surface* tool, not a 3D ball.** `surface: 'slab'` (the `paintStroke` default) keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). `surface: 'geodesic'` instead flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — pass it explicitly when a stroke runs along a thin or hollow wall. Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
 
 **Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
+
+**Driving the interactive brush from a script or test.** `paintStroke` / `paintAirbrush` return a populated region synchronously, so they never need to wait. Pointer events on the canvas commit through the async listener path instead, so the mesh updates one worker round-trip later: `await partwright.waitForPaint()` (resolves once no paint subdivision job is in flight) before reading mesh or region state after a synthetic drag.
 
 **Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
 

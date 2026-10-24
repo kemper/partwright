@@ -25,6 +25,11 @@ const vox = await partwright.exportVOXData()
 const ses = await partwright.exportSessionData()
 // -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }
 
+// Lower level: just the ExportedSession object, with include* toggles. Defaults to
+// the current session; thumbnails are OFF by default (annotations, notes and colour
+// regions ON). Returns null when there is no such session, { error } on bad args.
+const raw = await partwright.exportSession(undefined, { includeThumbnails: true, includeNotes: false })
+
 // Editor source as text
 const src = await partwright.exportCodeData()
 // -> { filename, mimeType: "text/plain", language: "manifold-js", text, sizeBytes }
@@ -110,6 +115,11 @@ Like 3MF, each object's **latest version** is re-baked with its colours (code-de
 // Import a parsed .partwright.json (object or string) as a new active session
 const r = await partwright.importSessionData(parsedJson)
 // -> { sessionId } or { error }
+
+// Same, from an already-parsed object (e.g. exportSession() output): validates the
+// shape, regenerates thumbnails and opens the session
+await partwright.importSession(exported)
+// -> { id, name, warning? } or { error }
 
 // Import raw source as a new session
 await partwright.importCodeData(code, 'manifold-js')           // optional sessionName arg
