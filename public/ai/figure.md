@@ -16,6 +16,10 @@ figures fail:
 Target aesthetic: a **stylized figurine** (art-toy / smooth posable mannequin).
 It is not a photoreal-human generator — lean into the clean, simplified look.
 
+> **Not a human?** A creature, monster, mascot or toy animal (big eyes, horns,
+> bat ears, claws, a tail) doesn't fit this rig — use the creature kit,
+> `api.sdf.creature` (`readDoc("creature")`), which has a full worked example.
+
 > Coordinate convention (same as ai.md): **front = −Y**, **Z up**, figure's
 > **left = +X**, right = −X. Sides are suffixed `L` / `R`.
 

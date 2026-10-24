@@ -6515,7 +6515,7 @@ function marchToSurface(surface: unknown, origin: Vec3, dir: Vec3, maxDist: numb
  *  hand-rolled `evaluate` loops — e.g. a bead eye on the actual cheek-bulged
  *  face: `F.surfacePoint(face, rig.face.eyeL, rig.dir.headForward)`. `reach`
  *  defaults to half the node's bounding-box diagonal. */
-function surfacePoint(surface: unknown, point: unknown, dir: unknown, opts?: unknown): Vec3 | null {
+export function surfacePoint(surface: unknown, point: unknown, dir: unknown, opts?: unknown): Vec3 | null {
   const s = surface as Node;
   if (!s || typeof s.evaluate !== 'function' || typeof s.bounds !== 'function') {
     throw new ValidationError('surfacePoint(surface) must be an SDF node. See /ai/figure.md');

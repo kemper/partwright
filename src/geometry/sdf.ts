@@ -33,6 +33,7 @@ import {
 import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
 import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
 import { createFigureNamespace, type FigureNamespace, type SdfApi } from './sdfFigure';
+import { createCreatureNamespace, type CreatureNamespace, type CreatureSdfApi } from './sdfCreature';
 import { refineMeshNearRegions, sphereIntersectsBox, type DetailRegion } from './sdfRefine';
 import { compileSdfEval } from './sdfCompile';
 
@@ -2351,6 +2352,10 @@ export interface SdfNamespace {
    *  arms, legs, head, face, hair, clothing) that snap to named landmarks.
    *  See /ai/figure.md. The default medium for people/characters/creatures. */
   figure: FigureNamespace;
+  /** Creature feature kit — socketed eyes, cupped ears, clawed feet, hands,
+   *  surface-seated creases and a one-call build for hand-built creatures and
+   *  mascots the humanoid rig doesn't cover. See /ai/creature.md. */
+  creature: CreatureNamespace;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
@@ -2433,10 +2438,12 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     // Placeholder; replaced below once `namespace` exists (figure builds its
     // parts from these bound namespace methods).
     figure: undefined as unknown as FigureNamespace,
+    creature: undefined as unknown as CreatureNamespace,
   };
   // The figure layer composes parts from the public namespace, so every node
   // it returns is already engine-bound. SdfNamespace is structurally a SdfApi.
   namespace.figure = createFigureNamespace(namespace as unknown as SdfApi);
+  namespace.creature = createCreatureNamespace(namespace as unknown as CreatureSdfApi);
   return namespace;
 }
 

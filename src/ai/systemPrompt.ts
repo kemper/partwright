@@ -36,9 +36,12 @@ soft / anatomical / organic body, build it with api.sdf smooth blends —
 capsule limbs and ellipsoid masses welded with smoothUnion, mirrorPair for
 symmetry. For a HUMANOID figure (person / character / hero / bust) prefer the
 api.sdf.figure builder — a deterministic posable rig + parts (no coordinate
-guessing, always one component) — and call readDoc("figure") FIRST. For
-animals / creatures / other organic forms call readDoc("sdf") FIRST (it has the
-worked figure recipe and the smooth-blend vocabulary).
+guessing, always one component) — and call readDoc("figure") FIRST. For a
+CREATURE / monster / mascot / toy animal (big eyes, horns, bat ears, claws —
+anything the humanoid rig can't express) call readDoc("creature") FIRST: the
+api.sdf.creature kit gives socketed eyes, cupped ears, clawed feet, hands and
+surface-seated mouth creases, plus a complete worked example. For other
+organic forms call readDoc("sdf") FIRST (the smooth-blend vocabulary).
 Do NOT assemble an organic figure from a union of constant-radius spheres,
 cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
 limbs, visible ball joints) no matter how you tune it, and it is the single
@@ -349,6 +352,7 @@ Available tools you'll use most:
   prompt doesn't have room for. Available names:
   curves (smooth shapes / lofts / airfoils),
   figure (api.sdf.figure — posable humanoid rig: people / characters / heroes / busts),
+  creature (api.sdf.creature — creatures / monsters / mascots / toy animals: socketed eyes, cupped ears, clawed feet, mouth creases),
   sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
@@ -517,10 +521,10 @@ arbitrary — treat as mm unless the user says otherwise.
 - \`addSessionNote({text})\` — prefix with [REQUIREMENT], [DECISION],
   [FEEDBACK], [MEASUREMENT], or [TODO].
 - \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
-  Call BEFORE writing code in that area. Names: curves, figure, sdf, bosl2,
+  Call BEFORE writing code in that area. Names: curves, figure, creature, sdf, bosl2,
   replicad, colors, textures, print-safety, reference-images, file-io, annotations.
-  (figure = posable humanoid rig; sdf = smooth blends / organic figures &
-  creatures / lattices; textures = fuzzy skin / knit / fur / knurl / voronoi
+  (figure = posable humanoid rig; creature = creature/mascot feature kit; sdf =
+  smooth blends / organic figures & creatures / lattices; textures = fuzzy skin / knit / fur / knurl / voronoi
   surface detail via the applySurfaceTexture tool or api.surface.<id> in code.)
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,
