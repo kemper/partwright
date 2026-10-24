@@ -8,7 +8,7 @@ import {
   validatePrefill, parsePrefillColor, checkRange, type PrefillSchema,
 } from '../../src/ui/toolRegistry';
 import { openViewportPanel, closeViewportPanel, onViewportPanelOpen } from '../../src/ui/viewportPanelRegistry';
-import { buildToolList } from '../../src/ai/tools';
+import { buildToolList, executeTool } from '../../src/ai/tools';
 import { loadSettings, setToggles } from '../../src/ai/settings';
 
 const SCHEMA: PrefillSchema = {
@@ -158,7 +158,15 @@ describe('registry + openTool', () => {
     expect(getOpenTool()?.id).toBe('test-overlay');
     panelOn = true;
     expect(getOpenTool()?.id).toBe('test-docked');
-    measureOn = false; panelOn = false;
+    // An unregistered docked panel (e.g. Customize) is the focus: no registered
+    // tool is reported (getUiState says 'other'), not the overlay beside it.
+    panelOn = false;
+    const customize = { close: () => closeViewportPanel(customize) };
+    openViewportPanel(customize, { silent: true });
+    expect(getOpenTool()).toBeNull();
+    customize.close();
+    expect(getOpenTool()?.id).toBe('test-overlay');
+    measureOn = false;
   });
 });
 
@@ -179,6 +187,29 @@ describe('AI tool gating for the UI hand-off tools', () => {
     const id = def.input_schema.properties.id as { enum?: string[] };
     expect(id.enum).toContain('test-g');
     expect(def.description).toContain('test-g — G tool: size');
+  });
+});
+
+describe('openTool AI tool: prefillJson fallback', () => {
+  test('parses an object, rejects null / arrays / scalars / bad JSON without calling the API', async () => {
+    const openToolApi = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('window', { partwright: { openTool: openToolApi } });
+    try {
+      const ok = await executeTool('openTool', { id: 'tool-surface', prefillJson: '{"tab":"knit"}' });
+      expect(ok.isError).toBe(false);
+      expect(openToolApi).toHaveBeenLastCalledWith('tool-surface', { tab: 'knit' }, { source: 'ai' });
+      // An explicit non-empty prefill wins over prefillJson.
+      await executeTool('openTool', { id: 'tool-surface', prefill: { tab: 'fur' }, prefillJson: '{"tab":"knit"}' });
+      expect(openToolApi).toHaveBeenLastCalledWith('tool-surface', { tab: 'fur' }, { source: 'ai' });
+      openToolApi.mockClear();
+      for (const bad of ['null', '[1,2]', '5', '"knit"', '{nope']) {
+        const r = await executeTool('openTool', { id: 'tool-surface', prefillJson: bad });
+        expect(r.content).toMatch(/prefillJson/);
+      }
+      expect(openToolApi).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

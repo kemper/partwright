@@ -295,4 +295,53 @@ test.describe('AI opens a tool for the user', () => {
     const s = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getUiState());
     expect(s.toolState).toMatchObject({ detector: 'crease-watershed', params: { creaseWeight: 3 } });
   });
+
+  test('phone: re-opening an ALREADY-open tool still steps the chat aside', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await setup(page, SPHERE);
+    // Surface already open, then the user brings the chat up over it.
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool('tool-surface', { tab: 'fuzzy' }))).ok).toBe(true);
+    await openAiPanel(page);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    // The AI re-opens the same tool with new values: the chat steps aside.
+    const r = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool(
+      'tool-surface', { tab: 'knit', mode: 'whole' }, { note: 'Switched to knit.' }));
+    expect(r.ok).toBe(true);
+    await expect(page.locator('#ai-panel')).toBeHidden();
+    await expect(page.getByText('Switched to knit.')).toBeVisible();
+
+    // Same for a persistent panel that's already open (Quality).
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool('tool-quality'))).ok).toBe(true);
+    await openAiPanel(page);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool('tool-quality', { mode: 'simplify' }, { note: 'Simplify it.' }))).ok).toBe(true);
+    await expect(page.locator('#ai-panel')).toBeHidden();
+  });
+
+  test('surface: re-opening while an engrave stamp is rasterizing tears the old panel down', async ({ page }) => {
+    await setup(page, SPHERE);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      // Fire both opens back to back: the first panel's stamp is still in flight
+      // when the second replaces it.
+      const first = pw.openTool('tool-surface', { tab: 'engrave', text: 'AB', font: 'bold' });
+      const second = pw.openTool('tool-surface', { tab: 'engrave', text: 'CD', font: 'italic', raised: true });
+      return { first: await first, second: await second };
+    });
+    expect(out.first.ok).toBe(true);
+    expect(out.second.ok).toBe(true);
+    // One panel, and it is the second one; its stamp previews (the dead panel's
+    // late rasterization doesn't overwrite it).
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(1);
+    await expect(page.getByText('Previewing — Apply to save a version.')).toBeVisible({ timeout: 60_000 });
+    await page.waitForTimeout(1500); // let any late work from the first panel land
+    const s = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getUiState());
+    expect(s.toolState).toMatchObject({ tab: 'engrave', text: 'CD', font: 'italic', raised: true });
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(1);
+    await expect(page.getByText(/Stamp error/)).toHaveCount(0);
+    // Closing leaves the real model up (no stale preview mesh).
+    const closed = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.closeTool());
+    expect(closed).toEqual({ ok: true, closed: 'tool-surface' });
+    await expect(page.getByText('1,152 tris')).toBeVisible();
+  });
 });
