@@ -224,6 +224,23 @@ between configs of the same detector, the keys whose values differ; for a detect
 appears once, what it changed from its defaults (feature options included), e.g.
 `2. crease-watershed · creaseWeight=4 growth=summed`.
 
+## Editing the parts after accepting them
+
+Accepted parts are ordinary labels, so the shaping ops can target them by name.
+Edit the import in code on top of `api.importWithParts(0)`; the import itself is
+never modified:
+
+```js
+let m = api.importWithParts(0);
+m = api.sculpt.transform(m, { select: { label: 'head' }, scale: 1.2, blend: 3 });   // bigger head, eased into the neck
+m = api.sculpt.transform(m, { select: { label: 'ball' }, translate: [4, 0, 0] });     // nudge the ball forward
+m = api.twist(m, { select: { label: 'arm' }, degrees: 30, axis: 'x', blend: 2 });
+return m;
+```
+
+Labels survive these ops, so the part colours and `paintByLabel` keep working.
+The full selector syntax is in [/ai/deform.md](/ai/deform.md#selecting-part-of-a-shape).
+
 ## Notes
 
 - **Detection runs on the import's own mesh** (`importIndex`, default 0), in a background Worker. On a 460k-triangle scan, the first run analyses the surface in about 1 s; re-runs and edits take a fraction of that. Nothing is saved until `acceptParts`.
