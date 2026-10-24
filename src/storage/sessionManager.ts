@@ -210,8 +210,15 @@ import { isQuotaError } from './quota';
  *           `acceptParts` and turned into real labels by
  *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
  *           still imports). Additive; older readers ignore the field.
+ *  - `1.21` — colour-region descriptors gain a `colorMatch` kind (the Paint
+ *           panel's Replace within a part: every triangle of the region's
+ *           `withinPart` drawn in `seedColor`, re-matched by colour on every
+ *           reconcile). It lives inside the opaque descriptor, so serialize /
+ *           import carry it verbatim. Pre-1.21 builds don't know the kind; this
+ *           build resolves any unknown kind to an empty region instead of
+ *           failing, so a later kind degrades the same way.
  */
-export const SCHEMA_VERSION = '1.20';
+export const SCHEMA_VERSION = '1.21';
 
 const CURRENT_MAJOR = 1;
 
