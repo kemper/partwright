@@ -174,7 +174,9 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '') + (opts.hidden ? ' opacity-50' : '');
     label.textContent = name;
     b.appendChild(label);
-    if (opts.badge) {
+    // Only "painted" earns a badge: code colour is the default, and the narrow
+    // rail needs the room for the part name.
+    if (opts.badge === 'painted') {
       const badge = document.createElement('span');
       badge.className = 'shrink-0 text-[9px] uppercase tracking-wide ' + (opts.badge === 'painted' ? 'text-emerald-400/80' : 'text-zinc-500');
       badge.dataset.colorSource = opts.badge;
