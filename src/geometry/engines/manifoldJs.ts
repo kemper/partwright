@@ -24,6 +24,7 @@ import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '.
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
+import { assertModelCodeRealm } from '../workerLockdown';
 import { withoutPiecesAt } from '../removePieces';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -256,6 +257,7 @@ export const manifoldJsEngine: Engine = {
   },
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    assertModelCodeRealm('manifold-js model code');
     if (!manifoldModule) {
       return { mesh: null, manifold: null, error: 'Engine not initialized' };
     }

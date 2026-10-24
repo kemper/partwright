@@ -122,6 +122,12 @@ export interface MeshResult {
    *  makes that visible). Only set by the voxel engine, when a labelled sdf
    *  fill ran. */
   sdfLabelCounts?: Record<string, number>;
+  /** The voxel engine's grid as transferable data (`VoxelGridTransfer` from
+   *  voxel/grid — kept `unknown` here so this low-level type doesn't depend on
+   *  the voxel layer). The main thread rebuilds it with
+   *  `VoxelGrid.fromTransfer` for VOX/greedy export and Voxel Studio, instead of
+   *  re-running model code itself. Only set by the voxel engine. */
+  voxelGrid?: unknown;
 }
 
 export interface CrossSectionResult {

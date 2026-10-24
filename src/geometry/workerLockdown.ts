@@ -264,3 +264,19 @@ export function fetchAppAsset(url: string): Promise<Response> {
   if (path === null) return Promise.reject(new TypeError('fetchAppAsset: only same-origin app assets can be loaded from the geometry sandbox'));
   return boundFetch(path);
 }
+
+// ── Main-thread evaluation guard ────────────────────────────────────────────
+
+/**
+ * Throw when called in a document (main-thread) realm. Every engine entry
+ * point that evaluates model code calls this first, so model code can only
+ * ever run in the locked-down engine Worker (or in Node, for the headless
+ * `model:preview` / segmentation CLIs, which run the user's own local files).
+ * The main thread must go through the Worker (`executeCodeAsync`,
+ * `runVoxelGridInWorker`) instead. (#1090)
+ */
+export function assertModelCodeRealm(what: string): void {
+  if (typeof (globalThis as { document?: unknown }).document !== 'undefined') {
+    throw new Error(`${what} must run in the sandboxed engine Worker, never on the main thread`);
+  }
+}

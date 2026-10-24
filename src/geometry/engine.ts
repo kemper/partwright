@@ -19,6 +19,7 @@ import {
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { VoxelGrid } from './voxel/grid';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -65,29 +66,9 @@ function pickLang(lang?: Language): Language {
   return activeLanguage;
 }
 
-/** Synchronous execution — works for manifold-js only, stays on the main
- *  thread. Use for cases that need the live Manifold object immediately
- *  (e.g. phantom/reference geometry that inspects volume/bbox inline).
- *  For all other code execution use executeCodeAsync(). */
-export function executeCode(source: string, lang?: Language, paramOverrides?: Record<string, unknown>): MeshResult {
-  const l = pickLang(lang);
-  if (l === 'scad' || l === 'replicad') {
-    return {
-      mesh: null,
-      manifold: null,
-      error: `${l === 'scad' ? 'OpenSCAD' : 'BREP/replicad'} requires async execution — use executeCodeAsync() instead.`,
-    };
-  }
-  const engine = engines[l];
-  if (!engine.isReady()) {
-    return {
-      mesh: null,
-      manifold: null,
-      error: `${engine.id} engine not initialized yet — try again after loading completes.`,
-    };
-  }
-  return engine.run(source, paramOverrides);
-}
+// NB: there is deliberately no synchronous, main-thread `executeCode`. Model
+// code only ever runs in the sandboxed engine Worker (#1090) — use
+// executeCodeAsync(). The engine `run()` entry points throw in a document realm.
 
 // ── Geometry Worker client ──────────────────────────────────────────────────
 
@@ -103,6 +84,7 @@ let callIdCounter = 0;
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
+const pendingVoxelGrids  = new Map<string, { resolve: (r: { ok: true; grid: VoxelGrid } | { ok: false; error: string }) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
@@ -126,6 +108,7 @@ function geometryInFlight(): number {
     pendingExecutions.size +
     pendingValidations.size +
     pendingDetections.size +
+    pendingVoxelGrids.size +
     pendingStepExports.size +
     pendingStepBrepImports.size +
     pendingStepMeshImports.size +
@@ -188,6 +171,7 @@ function rejectAllPending(err: Error): void {
   }
   for (const p of pendingValidations.values()) p.reject(err);
   for (const p of pendingDetections.values()) p.reject(err);
+  for (const p of pendingVoxelGrids.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
   for (const p of pendingStepBrepImports.values()) p.reject(err);
   for (const p of pendingStepMeshImports.values()) p.reject(err);
@@ -198,6 +182,7 @@ function rejectAllPending(err: Error): void {
   pendingExecutions.clear();
   pendingValidations.clear();
   pendingDetections.clear();
+  pendingVoxelGrids.clear();
   pendingStepExports.clear();
   pendingStepBrepImports.clear();
   pendingStepMeshImports.clear();
@@ -267,8 +252,48 @@ function recycleEngineWorker(reason: string): void {
   console.debug('[EngineWorker]', reason);
 }
 
+// ── Cross-session isolation ─────────────────────────────────────────────────
+// Model code shares the Worker realm with every later run in the same Worker,
+// so code from one session could patch built-ins or listen to `message` to
+// observe — or forge results for — another session's runs. The app tags the
+// active trust domain (the open session, plus an epoch bumped on merge
+// imports) via setEngineTrustDomain; before any request is posted, a Worker
+// that has run model code for a DIFFERENT domain is terminated and a fresh one
+// boots. Lazy: switching sessions costs nothing until the next request, and a
+// Worker that never ran model code is reused.
+let trustDomain: string | null = null;
+let workerDomain: string | null = null;
+
+/** Set the trust domain for subsequent engine requests (main.ts: session id +
+ *  merge-import epoch). */
+export function setEngineTrustDomain(domain: string | null): void {
+  trustDomain = domain;
+}
+
+function isolateEngineWorker(): void {
+  rejectAllPending(new Error('Execution cancelled — geometry worker recycled to isolate sessions'));
+  workerReadyReject?.(new Error('Execution cancelled — geometry worker recycled to isolate sessions'));
+  workerReadyReject = null;
+  engineWorker?.terminate();
+  engineWorker = null;
+  workerDomain = null;
+  markWorkerRestarted('geometry', 'session isolation');
+  errorLog.capture({ level: 'info', source: 'engine', message: 'Geometry worker recycled to isolate sessions' });
+}
+
+/** Get a Worker that is safe for the current trust domain (recycling one that
+ *  ran another domain's model code), booting it if needed. `runsModelCode`
+ *  marks the Worker as belonging to the current domain from now on. */
+function claimEngineWorker(runsModelCode: boolean): void {
+  if (engineWorker && workerDomain !== null && workerDomain !== trustDomain) isolateEngineWorker();
+  initEngineWorker();
+  if (runsModelCode) workerDomain = trustDomain;
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
+  // A brand-new Worker has run nobody's model code yet.
+  workerDomain = null;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
@@ -408,6 +433,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       voxelRes: msg.voxelRes as number | undefined,
       voxelResMixed: msg.voxelResMixed as boolean | undefined,
       sdfLabelCounts: msg.sdfLabelCounts as Record<string, number> | undefined,
+      voxelGrid: msg.voxelGrid ?? undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
@@ -425,6 +451,26 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     if (!pending) return;
     pendingValidations.delete(callId);
     pending.resolve(msg.result as ValidateResult);
+    return;
+  }
+
+  if (msg.type === 'voxel_grid_result') {
+    const callId = msg.callId as string;
+    const pending = pendingVoxelGrids.get(callId);
+    if (!pending) return;
+    pendingVoxelGrids.delete(callId);
+    if (typeof msg.error === 'string' || !msg.grid) {
+      pending.resolve({ ok: false, error: (msg.error as string | null) ?? 'No voxel grid produced.' });
+      return;
+    }
+    try {
+      pending.resolve({ ok: true, grid: VoxelGrid.fromTransfer(msg.grid) });
+    } catch (e) {
+      // Malformed grid data from the (untrusted) Worker — fail and recycle.
+      const reason = e instanceof Error ? e.message : String(e);
+      pending.resolve({ ok: false, error: `Geometry worker sent a malformed voxel grid (${reason})` });
+      recycleEngineWorker(`Geometry worker sent a malformed voxel grid (${reason})`);
+    }
     return;
   }
 
@@ -570,6 +616,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingValidations.delete(callId ?? '');
       pendingDetections.get(callId)?.reject(err);
       pendingDetections.delete(callId ?? '');
+      pendingVoxelGrids.get(callId)?.reject(err);
+      pendingVoxelGrids.delete(callId ?? '');
       pendingStepExports.get(callId)?.reject(err);
       pendingStepExports.delete(callId ?? '');
       pendingStepBrepImports.get(callId)?.reject(err);
@@ -610,7 +658,7 @@ export async function executeCodeAsync(
   const l = pickLang(lang);
 
   // Ensure the Worker is booted.
-  initEngineWorker();
+  claimEngineWorker(true);
   await workerReady;
 
   const callId = `exec-${++callIdCounter}`;
@@ -646,6 +694,24 @@ export async function executeCodeAsync(
   });
 }
 
+/** Evaluate voxel model code in the sandboxed engine Worker and return the
+ *  resulting grid, rebuilt on this thread from validated DATA. Used by Voxel
+ *  Studio when no up-to-date grid from the last render is cached. Never
+ *  rejects for model errors (`{ ok: false, error }`); rejects only when the
+ *  Worker is torn down mid-request. */
+export async function runVoxelGridInWorker(
+  code: string,
+  params?: Record<string, unknown>,
+): Promise<{ ok: true; grid: VoxelGrid } | { ok: false; error: string }> {
+  claimEngineWorker(true);
+  await workerReady;
+  const callId = `voxgrid-${++callIdCounter}`;
+  return new Promise((resolve, reject) => {
+    pendingVoxelGrids.set(callId, { resolve, reject });
+    engineWorker!.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
+  });
+}
+
 /** Ensure the specified engine is initialized. Async; use to pre-warm SCAD. */
 export async function ensureEngineReady(lang: Language): Promise<void> {
   if (!engines[lang].isReady()) {
@@ -676,7 +742,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
   const l = pickLang(lang);
   if (l === 'scad') {
     // Route SCAD through the Worker so its Emscripten init doesn't block.
-    initEngineWorker();
+    claimEngineWorker(false);
     await workerReady;
     const callId = `val-${++callIdCounter}`;
     const timeoutMs = getWorkerOpTimeoutMs('scad');
@@ -707,7 +773,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
  *  resolves to `null`, which the caller reads as "couldn't determine" and falls
  *  back to its static regex candidates — distinct from an empty result. */
 export async function detectScadIncludesAsync(source: string): Promise<string[] | null> {
-  initEngineWorker();
+  claimEngineWorker(false);
   try {
     await workerReady;
   } catch {
@@ -737,7 +803,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
  *  message rather than treating it as a hard error. Any *real* failure
  *  (worker dead, OCCT threw) rejects. */
 export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `step-${++callIdCounter}`;
   return new Promise<Blob | null>((resolve, reject) => {
@@ -760,7 +826,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
  *  doesn't hold the parsed shape itself. Resolves with the filename so the
  *  caller can echo it in confirmation UI. */
 export async function importSTEPToBrep(blob: Blob, filename: string): Promise<string> {
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `stepin-brep-${++callIdCounter}`;
   const bytes = await blob.arrayBuffer();
@@ -783,7 +849,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
  *  discarded — this path is for users who want the import as mesh (paint,
  *  mesh-only ops). */
 export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `stepin-mesh-${++callIdCounter}`;
   const bytes = await blob.arrayBuffer();
@@ -804,7 +870,7 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
 /** Drop any pending BREP imports. Called when the user opens a different
  *  session or clears them explicitly. */
 export async function clearBrepImports(): Promise<void> {
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `clearbrepin-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
@@ -826,7 +892,7 @@ export async function clearBrepImports(): Promise<void> {
  *  switching the active language away from replicad, so a later exportSTEP
  *  can't return a stale shape that belongs to a different session. */
 export async function clearBrepShape(): Promise<void> {
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `clearbrepshape-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
@@ -879,7 +945,7 @@ export async function simplifyInWorker(
   directTolerance?: number,
 ): Promise<SimplifyWorkerResult | null> {
   if (signal?.aborted) throw new SimplifyAbortError();
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `simplify-${++callIdCounter}`;
 
@@ -967,7 +1033,7 @@ export async function enhanceInWorker(
   directEdgeLength?: number,
 ): Promise<EnhanceWorkerResult | null> {
   if (signal?.aborted) throw new EnhanceAbortError();
-  initEngineWorker();
+  claimEngineWorker(false);
   await workerReady;
   const callId = `enhance-${++callIdCounter}`;
 

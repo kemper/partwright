@@ -168,6 +168,15 @@ function normalizeLockBox(val: unknown): { min: Vec3; max: Vec3 } {
   };
 }
 
+/** Wire form of a {@link VoxelGrid} for crossing a Worker boundary. */
+export interface VoxelGridTransfer {
+  /** Packed voxel keys (see `packKey`) — up to ~8.6e9, so Float64. */
+  keys: Float64Array;
+  /** `0xRRGGBB` per key. */
+  colors: Uint32Array;
+  surfacing: Surfacing;
+}
+
 /** A mutable sparse voxel grid. Builder methods chain (`return this`). */
 export class VoxelGrid {
   /** @internal Brand so the engine can recognize a returned grid even across
@@ -851,6 +860,58 @@ export class VoxelGrid {
     const out = new VoxelGrid();
     out.cells = new Map(this.cells);
     out._surfacing = { ...this._surfacing };
+    return out;
+  }
+
+  /** Flatten to transferable typed arrays (cells + surfacing) so the grid can
+   *  cross a Worker boundary zero-copy. The sandboxed engine Worker builds
+   *  grids from model code; the main thread only ever rebuilds them from this
+   *  DATA via {@link VoxelGrid.fromTransfer} — it never re-runs model code. */
+  toTransfer(): VoxelGridTransfer {
+    const keys = new Float64Array(this.cells.size);
+    const colors = new Uint32Array(this.cells.size);
+    let i = 0;
+    for (const [k, c] of this.cells) { keys[i] = k; colors[i] = c; i++; }
+    const s = this._surfacing;
+    const surfacing: Surfacing = { ...s, ...(s.lockBox ? { lockBox: { min: [...s.lockBox.min] as Vec3, max: [...s.lockBox.max] as Vec3 } } : {}) };
+    return { keys, colors, surfacing };
+  }
+
+  /** Rebuild a grid from {@link VoxelGrid.toTransfer} data received from the
+   *  (untrusted) engine Worker. Validates every key, colour and surfacing knob
+   *  — the surfacing goes back through `smooth()`'s own argument validation —
+   *  and throws a ValidationError on anything malformed. */
+  static fromTransfer(t: unknown): VoxelGrid {
+    if (t === null || typeof t !== 'object') throw new ValidationError('voxel grid transfer: expected an object');
+    const { keys, colors, surfacing } = t as Partial<VoxelGridTransfer>;
+    if (!(keys instanceof Float64Array) || !(colors instanceof Uint32Array) || keys.length !== colors.length) {
+      throw new ValidationError('voxel grid transfer: keys/colors must be a Float64Array and Uint32Array of equal length');
+    }
+    const out = new VoxelGrid();
+    const maxKey = DIM * DIM * DIM;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const c = colors[i];
+      if (!Number.isInteger(k) || k < 0 || k >= maxKey) throw new ValidationError('voxel grid transfer: voxel key out of range');
+      if (c > 0xffffff) throw new ValidationError('voxel grid transfer: colour out of range');
+      out.cells.set(k, c);
+    }
+    if (surfacing === null || typeof surfacing !== 'object') throw new ValidationError('voxel grid transfer: missing surfacing');
+    const s = surfacing as Surfacing;
+    if (s.mode === 'smooth') {
+      const opts: Record<string, unknown> = { iterations: s.iterations, detail: s.detail };
+      if (s.strength !== undefined) opts.strength = s.strength;
+      if (s.algorithm !== undefined) opts.algorithm = s.algorithm;
+      if (s.flatBottom !== undefined) opts.flatBottom = s.flatBottom;
+      if (s.baseLayers !== undefined) opts.baseLayers = s.baseLayers;
+      if (s.lockBox !== undefined) {
+        if (s.lockBox === null || typeof s.lockBox !== 'object') throw new ValidationError('voxel grid transfer: bad lockBox');
+        opts.lockBox = [s.lockBox.min, s.lockBox.max];
+      }
+      out.smooth(opts as Parameters<VoxelGrid['smooth']>[0]);
+    } else if (s.mode !== 'blocks') {
+      throw new ValidationError('voxel grid transfer: unknown surfacing mode');
+    }
     return out;
   }
 

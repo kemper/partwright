@@ -9,6 +9,7 @@
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'detect_includes',   callId, code }
+//   { type: 'voxel_grid',        callId, code, params? }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
@@ -24,6 +25,7 @@
 //   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
+//   { type: 'voxel_grid_result',       callId, grid, error }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
@@ -41,7 +43,8 @@
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
-import { voxelEngine } from './engines/voxel';
+import { voxelEngine, runVoxelGrid } from './engines/voxel';
+import type { VoxelGridTransfer } from './voxel/grid';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
@@ -337,10 +340,13 @@ self.onmessage = async (event: MessageEvent) => {
         // Voxel meshes carry per-triangle colors; transfer them too (the
         // manifold-js path leaves triColors undefined).
         if (mesh.triColors)     transfer.push(mesh.triColors.buffer);
+        // Voxel runs also return the grid itself as typed arrays.
+        const vg = result.voxelGrid as VoxelGridTransfer | undefined;
+        if (vg) transfer.push(vg.keys.buffer, vg.colors.buffer);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
@@ -590,6 +596,27 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg.type === 'enhance_cancel') {
     const { callId } = msg as unknown as { callId: string };
     if (enhanceCancelFlags.has(callId)) enhanceCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── voxel_grid ──────────────────────────────────────────────────────────
+  // Evaluate voxel model code and return the grid itself (typed arrays) — for
+  // Voxel Studio activation when the main thread has no up-to-date grid from
+  // the last render. The main thread never evaluates model code (#1090).
+  if (msg.type === 'voxel_grid') {
+    const { callId, code, params } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null };
+    try {
+      const r = runVoxelGrid(code, params ?? undefined);
+      if (!r.ok) {
+        self.postMessage({ type: 'voxel_grid_result', callId, grid: null, error: r.error });
+      } else {
+        const grid = r.grid.toTransfer();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (self as any).postMessage({ type: 'voxel_grid_result', callId, grid, error: null }, [grid.keys.buffer, grid.colors.buffer]);
+      }
+    } catch (err) {
+      self.postMessage({ type: 'voxel_grid_result', callId, grid: null, error: err instanceof Error ? err.message : String(err) });
+    }
     return;
   }
 

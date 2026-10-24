@@ -21,6 +21,7 @@ const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'execute_result',
   'validate_result',
   'detect_includes_result',
+  'voxel_grid_result',
   'exportSTEP_result',
   'importSTEPToBrep_result',
   'importSTEPToMesh_result',
@@ -124,6 +125,18 @@ export function checkMeshData(m: unknown): string | null {
   return null;
 }
 
+/** Shape check for a VoxelGridTransfer (`VoxelGrid.fromTransfer` re-validates
+ *  every key, colour and surfacing knob when the grid is rebuilt). */
+function checkVoxelGridField(v: unknown, field: string): void {
+  if (v === undefined || v === null) return;
+  if (!isPlainObject(v)) fail(`${field} must be a plain object`);
+  const { keys, colors, surfacing } = v;
+  if (!(keys instanceof Float64Array) || !(colors instanceof Uint32Array) || keys.length !== colors.length) {
+    fail(`${field} needs equal-length Float64Array keys and Uint32Array colors`);
+  }
+  if (!isPlainObject(surfacing) || typeof surfacing.mode !== 'string' || !isPlainData(surfacing)) fail(`${field}.surfacing must be a plain object`);
+}
+
 function checkMeshField(v: unknown, field: string, nullable: boolean): number | null {
   if (v === null || v === undefined) {
     if (!nullable) fail(`${field} is required`);
@@ -197,6 +210,7 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   optFinite(msg.voxelPieceCount, 'voxelPieceCount');
   optFinite(msg.voxelRes, 'voxelRes');
   optBool(msg.voxelResMixed, 'voxelResMixed');
+  checkVoxelGridField(msg.voxelGrid, 'voxelGrid');
   const counts = msg.sdfLabelCounts;
   if (counts !== undefined && counts !== null) {
     if (!isPlainObject(counts) || !isPlainData(counts)) fail('sdfLabelCounts must be a plain object');
@@ -255,6 +269,10 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
         if (!Array.isArray(r) || !r.every(s => typeof s === 'string')) fail('result must be a string array');
         break;
       }
+      case 'voxel_grid_result':
+        optString(data.error, 'error');
+        checkVoxelGridField(data.grid, 'grid');
+        break;
       case 'exportSTEP_result':
         optString(data.error, 'error');
         if (data.blob !== null && data.blob !== undefined && !(data.blob instanceof Blob)) fail('blob must be a Blob');

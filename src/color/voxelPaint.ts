@@ -19,7 +19,7 @@ import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { normalizeColor, type VoxelGrid, type Surfacing, type Vec3 } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance, meshGrid } from '../geometry/voxel/mesher';
-import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
+import { voxelPaintRunFromGrid, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
 import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
@@ -298,13 +298,15 @@ export function endStroke(): void {
   cbStateChange?.();
 }
 
-/** Activate the studio on the given code. Runs the code locally to obtain the
- *  grid + provenance, attaches a click handler, and pushes the meshed grid
- *  through `onMeshUpdate`. Returns null on success or an error string. */
-export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOverrides?: Record<string, unknown>): string | null {
+/** Activate the studio on a grid the engine Worker built from the model code
+ *  (the main thread never evaluates model code — #1090). Derives the block
+ *  mesh + provenance, attaches a click handler, and pushes the meshed grid
+ *  through `onMeshUpdate`. Takes ownership of `grid` (it is edited in place).
+ *  Returns null on success or an error string. */
+export function activate(grid: VoxelGrid, callbacks: VoxelPaintCallbacks): string | null {
   if (active) deactivate();
-  const r = runVoxelForPaint(code, paramOverrides);
-  if (!r.ok) return r.error;
+  if (grid.size === 0) return 'The voxel grid is empty.';
+  const r = { data: voxelPaintRunFromGrid(grid) };
   // A smooth grid is editable: per-voxel picking runs on the hard-faced
   // provenance mesh (gridToMeshWithProvenance ignores surfacing), so the studio
   // preview shows blocks while editing. The grid keeps its surfacing setting —

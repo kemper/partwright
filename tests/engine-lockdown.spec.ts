@@ -191,4 +191,86 @@ test.describe('Engine sandbox lockdown', () => {
     expect(out.step.ok).toBe(true);
     expect(out.step.sizeBytes).toBeGreaterThan(100);
   });
+
+  test('no main-thread path evaluates model code: engine entry points refuse, exports/studio/reference use the Worker', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const w = window as unknown as { __mainThreadRan?: boolean };
+      // Direct calls into the engines from the page realm throw.
+      const voxelMod = await import('/src/geometry/engines/voxel.ts');
+      const mjsMod = await import('/src/geometry/engines/manifoldJs.ts');
+      const engineMod = await import('/src/geometry/engine.ts');
+      const refusals: string[] = [];
+      for (const f of [
+        () => voxelMod.voxelEngine.run('return api.voxels().set(0,0,0,"#fff");'),
+        () => voxelMod.runVoxelGrid('return api.voxels().set(0,0,0,"#fff");'),
+        () => mjsMod.manifoldJsEngine.run('return api.Manifold.cube(1);'),
+      ]) {
+        try { f(); refusals.push('RAN'); } catch (e) { refusals.push(String(e)); }
+      }
+      // Model code that marks the page if it ever runs where a document exists.
+      const MARK = 'if (typeof document !== "undefined") globalThis.__mainThreadRan = true;';
+      await pw.setActiveLanguage('voxel');
+      const voxelRun = await pw.run(`${MARK} return api.voxels().fillBox([0,0,0],[2,2,2],'#3366ff');`);
+      const vox = pw.exportVOX('lockdown.vox');
+      const voxData = await pw.exportVOXData('lockdown.vox');
+      const stl = pw.exportSTL ? await pw.exportSTL('lockdown.stl') : null;
+      const studio = pw.activateVoxelPaint();
+      pw.deactivateVoxelPaint();
+      await pw.setActiveLanguage('manifold-js');
+      const ghost = await pw.setReferenceGeometry(`${MARK} return api.Manifold.cube([2, 2, 30], true);`);
+      return {
+        refusals,
+        hasExecuteCode: 'executeCode' in engineMod,
+        voxelRunError: voxelRun.error ?? null,
+        vox, voxDataBytes: voxData.sizeBytes ?? null, stl,
+        studio,
+        ghost,
+        mainThreadRan: w.__mainThreadRan === true,
+      };
+    });
+    for (const r of out.refusals) expect(r).toMatch(/engine Worker, never on the main thread/);
+    expect(out.hasExecuteCode).toBe(false);
+    expect(out.voxelRunError).toBeFalsy();
+    expect(out.vox, JSON.stringify(out)).toMatchObject({ ok: true });
+    expect(out.voxDataBytes).toBeGreaterThan(0);
+    expect(out.studio.error).toBeFalsy();
+    expect(out.studio.voxelCount).toBe(27);
+    expect(out.ghost.success).toBe(true);
+    expect(out.ghost.volume).toBeCloseTo(120, 0);
+    expect(out.mainThreadRan).toBe(false);
+  });
+
+  test('a new session gets a fresh worker realm (no cross-session observation)', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const run = (code: string) => pw.run(code);
+      // Session A: leave state behind in the realm (a global + a message spy).
+      await pw.createSession('isolation-A');
+      await run(`
+        globalThis.__planted = 'session-A';
+        self.addEventListener('message', (e) => { (globalThis.__spied ||= []).push(String(e.data && e.data.code).slice(0, 40)); });
+        return api.Manifold.cube(1);
+      `);
+      const sameSession = await run('throw new Error("PROBE:" + JSON.stringify({ planted: globalThis.__planted ?? null }));');
+      // Session B: the next request must land in a brand-new Worker.
+      await pw.createSession('isolation-B');
+      const t0 = performance.now();
+      const firstInB = await run('throw new Error("PROBE:" + JSON.stringify({ planted: globalThis.__planted ?? null, spied: globalThis.__spied ?? null }));');
+      const firstRunMs = performance.now() - t0;
+      const t1 = performance.now();
+      await run('return api.Manifold.cube(1);');
+      const warmRunMs = performance.now() - t1;
+      return { sameSession: sameSession.error, firstInB: firstInB.error, firstRunMs, warmRunMs };
+    });
+    const parse = (s: string) => JSON.parse(/PROBE:(\{.*\})/.exec(s)![1]);
+    // Within one session the realm persists (it is NOT a per-run sandbox)…
+    expect(parse(out.sameSession).planted).toBe('session-A');
+    // …but session B never sees session A's realm.
+    expect(parse(out.firstInB)).toEqual({ planted: null, spied: null });
+    // Report the isolation cost (fresh Worker + manifold-3d init) in the log.
+    console.log(`[isolation] first run in new session: ${Math.round(out.firstRunMs)} ms (warm run ${Math.round(out.warmRunMs)} ms)`);
+  });
 });

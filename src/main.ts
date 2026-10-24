@@ -23,7 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCodeAsync, runVoxelGridInWorker, setEngineTrustDomain, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
@@ -41,7 +41,7 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
@@ -154,8 +154,7 @@ import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
-import { runVoxelForPaint } from './geometry/engines/voxel';
-import type { VoxelGrid } from './geometry/voxel/grid';
+import { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
@@ -561,6 +560,45 @@ function refreshParamsPanelUI(silentReveal: boolean): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** The voxel grid behind the last successful voxel render, as transferable
+ *  data from the engine Worker, tagged with the code + Customizer values that
+ *  produced it. VOX / greedy-mesh export and Voxel Studio rebuild the grid from
+ *  this DATA (VoxelGrid.fromTransfer) — the main thread never re-runs model
+ *  code itself (#1090). */
+let lastVoxelRun: { code: string; paramsKey: string; grid: unknown } | null = null;
+
+/** Engine trust domain for a session (#1090): the session id plus an epoch
+ *  bumped when a file's objects are merged into the open session. */
+let sessionTrustEpoch = 0;
+function sessionTrustDomain(sessionId: string | null): string {
+  return `${sessionId ?? '(none)'}#${sessionTrustEpoch}`;
+}
+function bumpSessionTrustEpoch(): void { sessionTrustEpoch++; }
+
+/** Stable key for Customizer values, so a cached voxel grid is only reused for
+ *  the exact parameter set it was rendered with. */
+function voxelParamsKey(values: Record<string, unknown> | undefined): string {
+  const v = values ?? {};
+  return JSON.stringify(Object.keys(v).sort().map(k => [k, v[k]]));
+}
+
+/** A fresh, editable VoxelGrid rebuilt from the last voxel render's data when
+ *  it was produced by `code` with the current Customizer values; null
+ *  otherwise (stale, not a voxel run, or malformed data). */
+function voxelGridFromLastRun(code: string): VoxelGrid | null {
+  const run = lastVoxelRun;
+  if (!run || run.paramsKey !== voxelParamsKey(currentParamValues)) return null;
+  // The run's source may be the raw string a caller passed (partwright.run)
+  // while the editor holds its auto-formatted form.
+  if (run.code !== code && formatAsEditorWould(run.code) !== code) return null;
+  try {
+    return VoxelGrid.fromTransfer(run.grid);
+  } catch (e) {
+    errorLog.capture({ level: 'warn', source: 'engine', message: `Discarded a malformed voxel grid from the engine worker: ${e instanceof Error ? e.message : String(e)}` });
+    lastVoxelRun = null;
+    return null;
+  }
+}
 /** Session id whose geometry the viewport last framed. Lets the render paths
  *  tell a *re-render within the active session* (version switch or re-run —
  *  preserve the user's current interactive camera angle) apart from the first
@@ -4339,6 +4377,12 @@ async function main() {
       // backfill the rest of the new parts' thumbnails offscreen.
       const result = await importSessionPartsIntoActive(data);
       if (result && result.addedParts.length > 0) {
+        // The merged objects' code comes from a file: start a new engine trust
+        // epoch so it boots in a fresh Worker rather than one that has been
+        // running this session's earlier code (#1090). From here on it IS part
+        // of this session, sharing its realm like any other object.
+        bumpSessionTrustEpoch();
+        setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
         // Navigate to the first newly-added part so it appears selected with a
         // single progressive render (fast preview → full). We do NOT route
         // through selectPart here: its cancelCurrentExecution + saveVersion-based
@@ -6903,16 +6947,16 @@ async function main() {
     if (!(await confirmExportOrProceed('3MF'))) return;
     await export3MFMultiPartFlow(true);
   };
-  // The integer VoxelGrid behind a voxel session. The engine meshes in the
-  // Worker, so the grid isn't on the main thread after a normal run — re-run the
-  // current code locally to recover it (the same trick voxel paint uses), or use
-  // the live painted grid when paint is active so unbaked edits are exported.
+  // The integer VoxelGrid behind a voxel session: the live painted grid when
+  // Voxel Studio is active (so unbaked edits are exported), else the grid the
+  // engine Worker returned with the last render of the CURRENT code. Never
+  // re-runs model code on the main thread (#1090) — if the code changed since
+  // the last render, there's no grid until it runs again.
   const getCurrentVoxelGrid = (): VoxelGrid | null => {
     if (getActiveLanguage() !== 'voxel') return null;
     const painted = voxelPaint.getGrid();
     if (painted) return painted;
-    const r = runVoxelForPaint(getValue());
-    return r.ok ? r.data.grid : null;
+    return voxelGridFromLastRun(getValue());
   };
   /** Mesh for a triangle-mesh file export (STL / OBJ / 3MF). Voxel sessions get
    *  a greedy-meshed copy straight from the grid — coplanar same-color faces are
@@ -10623,11 +10667,26 @@ async function main() {
   initVoxelPaintUI(clipControls, {
     activate: async () => {
       const code = getValue();
-      const err = voxelPaint.activate(code, {
-        onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
-        onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-        onStateChange: () => { syncVoxelPaintUI(); },
-      }, currentParamValues);
+      // The grid comes from the engine Worker — the cached one from the last
+      // render when it matches the editor, else a fresh Worker evaluation.
+      let grid = voxelGridFromLastRun(code);
+      let err: string | null = null;
+      if (!grid) {
+        try {
+          const r = await runVoxelGridInWorker(code, currentParamValues);
+          if (r.ok) grid = r.grid; else err = r.error;
+        } catch (e) {
+          err = e instanceof Error ? e.message : String(e);
+        }
+      }
+      if (grid && getValue() !== code) { grid = null; err = 'the code changed while the studio was opening — try again'; }
+      if (grid) {
+        err = voxelPaint.activate(grid, {
+          onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
+          onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+          onStateChange: () => { syncVoxelPaintUI(); },
+        });
+      }
       if (err) showToast(`Voxel Studio: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
@@ -10928,12 +10987,21 @@ async function main() {
   // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
   // exportSTEP serializing a previous session's shape).
   let lastBrepSessionId: string | null = getState().session?.id ?? null;
+  // Cross-session isolation (#1090): each session is its own engine trust
+  // domain, so code from one session never shares a Worker realm with another
+  // session's runs (see setEngineTrustDomain in engine.ts — the Worker is
+  // recycled lazily, on the next request after a switch).
+  setEngineTrustDomain(sessionTrustDomain(lastBrepSessionId));
 
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     const sid = state.session?.id ?? null;
     if (sid !== lastBrepSessionId) {
       lastBrepSessionId = sid;
+      setEngineTrustDomain(sessionTrustDomain(sid));
+      // The parallel build pool is disposable; don't let its realms outlive
+      // the session whose parts they built.
+      disposeEnginePool();
       void clearBrepImports().catch(() => {});
       void clearBrepShape().catch(() => {});
     }
@@ -13262,8 +13330,9 @@ async function main() {
     exportGLBPartsData(partIds?: string[], filename?: string) { return partwrightAPI.exportGLBObjectsData(partIds, filename); },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
-     *  sessions only (the integer grid is re-derived from the current code, or
-     *  the live painted grid when paint is active). Returns
+     *  sessions only (the integer grid the engine Worker returned with the last
+     *  render of the current code, or the live painted grid when paint is
+     *  active — run the model first after editing). Returns
      *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
      *  format's 256-per-axis limit). */
     exportVOX(filename?: string) {
@@ -17622,7 +17691,7 @@ async function main() {
     // === Phase 3: Reference/Phantom Geometry ===
 
     /** Set translucent reference geometry for fitment checking. Code is executed in isolation (always manifold-js). */
-    setReferenceGeometry(code: string, options?: PhantomOptions): { success: boolean; error?: string; boundingBox?: unknown; volume?: number } {
+    async setReferenceGeometry(code: string, options?: PhantomOptions): Promise<{ success: boolean; error?: string; boundingBox?: unknown; volume?: number }> {
       const check = guard(() => {
         assertString(code, 'setReferenceGeometry(code)', { allowEmpty: false });
         if (options !== undefined) {
@@ -17640,7 +17709,14 @@ async function main() {
       if (isSharedPreview()) {
         return { success: false, error: SHARED_PREVIEW_REFUSAL };
       }
-      const result = executeCode(code, 'manifold-js');
+      // Built in the sandboxed engine Worker (#1090) — the code is caller- or
+      // AI-supplied and must never run on the main thread.
+      let result: MeshResult;
+      try {
+        result = await executeCodeAsync(code, 'manifold-js');
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
       if (result.error) {
         return { success: false, error: result.error };
       }
@@ -17650,13 +17726,16 @@ async function main() {
 
       setPhantom(result.mesh, options);
 
+      // The Worker returns mesh data only; rebuild a Manifold from it (pure
+      // data, no model code) for the volume + bounding box.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const m = result.manifold as any;
+      let m: any = null;
       let volume = 0;
       let bb = null;
+      try { m = getModule().Manifold.ofMesh(result.mesh); } catch { /* render-only / non-manifold */ }
       try { volume = m.volume(); } catch { /* ignore */ }
       try { bb = getBoundingBox(m); } catch { /* ignore */ }
-      try { m.delete?.(); } catch { /* ignore */ }
+      try { m?.delete?.(); } catch { /* ignore */ }
 
       return { success: true, boundingBox: bb, volume };
     },
@@ -19939,8 +20018,9 @@ async function main() {
     },
 
     /** Voxel paint mode — only valid in `voxel` language sessions. Activates a
-     *  per-voxel click-to-color edit loop: the current code is re-run locally
-     *  to capture the grid + per-triangle voxel provenance, the editor is
+     *  per-voxel click-to-color edit loop: the grid from the last render of the
+     *  current code (built in the sandboxed engine Worker — run the model first
+     *  after editing) is captured with per-triangle voxel provenance, the editor is
      *  locked (read-only) so auto-run can't clobber edits, and clicks on the
      *  3D model set or erase voxels in the live grid. Call
      *  `bakeVoxelsToCode()` to commit; `deactivateVoxelPaint()` to cancel.
@@ -19949,12 +20029,15 @@ async function main() {
       if (getActiveLanguage() !== 'voxel') {
         return { error: 'activateVoxelPaint is only available in voxel sessions — call setActiveLanguage("voxel") first.' };
       }
-      const code = getValue();
-      const err = voxelPaint.activate(code, {
+      // Synchronous by contract, so it uses the grid the engine Worker returned
+      // with the last render (the main thread never evaluates model code).
+      const grid = voxelGridFromLastRun(getValue());
+      if (!grid) return { error: 'activateVoxelPaint: no up-to-date voxel grid — run the model first (partwright.run(getCode())), then activate.' };
+      const err = voxelPaint.activate(grid, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
         onStateChange: () => { syncVoxelPaintUI(); },
-      }, currentParamValues);
+      });
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
       return { voxelCount: voxelPaint.voxelCount() };
@@ -21026,7 +21109,7 @@ async function main() {
         'evalAgainstImport': { signature: 'await evalAgainstImport(index?, {samples?}) -- Chamfer/hausdorff report of the current model vs imported mesh index (how faithful is the remake?)', docs: '/ai/reconstruction.md' },
         'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
         'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
-        'activateVoxelPaint': { signature: 'activateVoxelPaint() -- Enter Voxel Studio (voxel sessions only): re-runs the code to capture the grid and locks the editor -> {voxelCount} or {error}', docs: '/ai/voxel.md#voxel-studio' },
+        'activateVoxelPaint': { signature: 'activateVoxelPaint() -- Enter Voxel Studio (voxel sessions only): captures the grid from the last render of the current code (run first after editing) and locks the editor -> {voxelCount} or {error}', docs: '/ai/voxel.md#voxel-studio' },
         'deactivateVoxelPaint': { signature: 'deactivateVoxelPaint() -- Leave Voxel Studio WITHOUT committing; unlocks the editor and re-renders from the code -> {ok: true} or {error}', docs: '/ai/voxel.md#voxel-studio' },
         'paintVoxelFace': { signature: 'paintVoxelFace({faceIndex, color?, erase?}) -- Set (or erase) the voxel under a mesh triangle -> {changed, voxelCount} or {error}', docs: '/ai/voxel.md#programmatic--ai-equivalent' },
         'setVoxelTool': { signature: "setVoxelTool('view'|'paint'|'add'|'remove'|'bucket'|'level'|'boxAdd'|'boxRemove') -- Active Voxel Studio tool -> {tool} or {error}", docs: '/ai/voxel.md#programmatic--ai-equivalent' },
@@ -22320,6 +22403,9 @@ async function main() {
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
       currentMeshData = result.mesh;
+      lastVoxelRun = result.voxelGrid
+        ? { code: src, paramsKey: voxelParamsKey(currentParamValues), grid: result.voxelGrid }
+        : null;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from
       // this base + its stroke descriptors right after.
