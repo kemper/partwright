@@ -570,7 +570,26 @@ export function setRegionTriangles(
   }
 }
 
-export function clearRegions(): void {
+/** Remove every region. A user-facing Clear (the paint panel's button,
+ *  `partwright.clearColors`) records a snapshot so "Undo clear" can restore
+ *  it. Internal resets — loading another version/object, rehydrating saved
+ *  paint, simplify's colour carry — pass `{ snapshot: false }`: they record
+ *  nothing AND discard any pending snapshot, so undo-clear can never
+ *  resurrect a different model's paint. */
+export function clearRegions(opts: { snapshot?: boolean } = {}): void {
+  if (opts.snapshot === false) {
+    const hadSnapshot = clearSnapshot !== null;
+    clearSnapshot = null;
+    clearSnapshotPartial = false;
+    if (regions.length > 0) {
+      regions = [];
+      nextOrder = 1;
+      clearRedoStack();
+      notify();
+    }
+    if (hadSnapshot) notifyClearSnapshot();
+    return;
+  }
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
   clearSnapshotPartial = false;

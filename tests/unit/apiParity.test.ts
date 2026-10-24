@@ -43,9 +43,10 @@ function extractApiMembers(src: string): Set<string> {
   const apiStart = src.indexOf('const partwrightAPI = {');
   if (apiStart === -1) throw new Error('Could not find partwrightAPI in main.ts');
 
-  // Scan the WHOLE object (it's ~300 KB and we stop at the `help(` member
-  // anyway); an earlier 80 KB window silently scanned only the first third.
-  const chunk = src.slice(apiStart, apiStart + 400_000);
+  // Scan the WHOLE object — no fixed window: we stop at the `help(` member
+  // anyway. Earlier 80 KB and 400 KB windows each silently stopped short once
+  // the object outgrew them.
+  const chunk = src.slice(apiStart);
   const lines = chunk.split('\n');
   const members = new Set<string>();
 

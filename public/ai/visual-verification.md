@@ -50,6 +50,23 @@ if (s && !s.error) { /* s.svg = visual rendering of the cross-section profile at
    - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` — the back and left
      faces are invisible to every other preset.
 
+## Showing the user a view — `setCamera` / `frameObjectPart`
+
+`renderView` / `renderViews` render OFFSCREEN for your own checks and never move the user's
+view. To point the user at something in the live viewport, move their camera:
+
+```js
+partwright.setCamera({ azimuth: 180, elevation: -30 })   // look at the back, from below
+partwright.setCamera({ distance: 40, target: [0, 0, 10] })
+partwright.frameObjectPart('handle')                     // aim at a labelled part (or {piece: 1})
+partwright.highlightObjectPart('handle')                 // …and tint it
+partwright.setEdgesVisible(true)                         // the viewport "Edges" overlay
+```
+
+`setCamera` uses the `getViewState().camera` convention: azimuth 0 = front (−Y), 90 = right
+(+X), 180 = back; elevation 0 = horizon, 90 = top-down, negative = from below. Omitted fields keep
+their current value. `frameObjectPart` keeps the current viewing direction.
+
 ## Edge overlay (`edges`)
 
 Both `renderView` and `renderViews` take an `edges` option controlling what is drawn

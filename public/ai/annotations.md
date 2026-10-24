@@ -37,6 +37,13 @@ partwright.listTextAnnotations()
 partwright.addTextAnnotation({ anchor: [4, -5, 3], text: "round this corner" })
 // -> {id: "..."}
 
+partwright.addStrokeAnnotation({ points: [[0, -6, 2], [3, -6, 4], [6, -6, 2]], color: [1, 0, 0] })
+// -> {id, pointCount} -- a freehand stroke through world points (width: px, optional)
+partwright.redoAnnotation()             // re-add the last undone stroke -> {redone, remaining, canRedo}
+
+partwright.setAnnotateMode('pen')       // open Annotate for the user: 'pen' | 'text' | 'select' | null (close)
+partwright.getAnnotateMode()            // -> 'pen' | 'text' | 'select' | null
+
 partwright.getAnnotationCount()         // total: strokes + text
 partwright.undoAnnotation()             // removes the most recent annotation of either kind
 partwright.removeAnnotation("<id>")     // remove a specific one
