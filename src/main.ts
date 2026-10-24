@@ -4936,10 +4936,10 @@ async function main() {
     return { seed, info };
   }
 
-  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined, objectCount = 1): string {
+  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined, objectCount = 1, triangleCount = result.mesh.numTri): string {
     const parts = objectCount > 1
       ? [`Imported ${objectCount} objects from ${filename}`]
-      : [`Imported ${filename}: ${result.mesh.numTri.toLocaleString()} triangles`];
+      : [`Imported ${filename}: ${triangleCount.toLocaleString()} triangles`];
     if (objectCount <= 1 && info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
     let msg = parts.join(', ');
     if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
@@ -5033,35 +5033,52 @@ async function main() {
   /** Cut the planned groups of a 3MF out as objects ready to place: each one
    *  recentred on its own XY origin, manifold-probed, and coloured from the
    *  file's filament / material assignments. */
-  function build3MFObjectEntries(
+  async function build3MFObjectEntries(
     result: ThreeMFParseResult,
     filename: string,
     groups: ReturnType<typeof planImportSplit>,
     items: ImportSplitItem[],
     adoptPalette: boolean,
-  ): { entries: ImportObjectEntry[]; infos: (ThreeMFColorInfo | undefined)[] } {
+  ): Promise<{ entries: ImportObjectEntry[]; infos: (ThreeMFColorInfo | undefined)[] } | null> {
     const base = filename.replace(/\.[^.]+$/, '');
     const paletteName = `${result.title || base} (3MF)`;
     const entries: ImportObjectEntry[] = [];
     const infos: (ThreeMFColorInfo | undefined)[] = [];
-    for (const g of groups) {
-      const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
-      const p3: Parsed3MF = { ...probeIndexedMesh(sub.mesh, filename, '3mf'), result, triColor: sub.triColor! };
-      const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
-      entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
-      infos.push(seeder?.info);
+    // Cutting out + manifold-probing each object is synchronous WASM work; on a
+    // big project that's seconds, so show progress and yield between objects.
+    let cancelled = false;
+    const progressId = groups.length > 1
+      ? startProgress({ title: 'Preparing objects', message: `Object 1 of ${groups.length}`, onCancel: () => { cancelled = true; } })
+      : null;
+    try {
+      for (let i = 0; i < groups.length; i++) {
+        if (progressId !== null) {
+          updateProgress(progressId, i / groups.length, `Object ${i + 1} of ${groups.length}: ${groups[i].name}`);
+          await new Promise(r => setTimeout(r, 0));
+          if (cancelled) return null;
+        }
+        const g = groups[i];
+        const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
+        const p3: Parsed3MF = { ...probeIndexedMesh(sub.mesh, filename, '3mf'), result, triColor: sub.triColor! };
+        const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
+        entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
+        infos.push(seeder?.info);
+      }
+    } finally {
+      if (progressId !== null) endProgress(progressId);
     }
     return { entries, infos };
   }
 
-  /** Merge the per-object colour notes of a split import for its toast. */
+  /** Merge the per-object colour notes of a split import (`colors` = paint
+   *  regions created across all objects). */
   function mergeColorInfos(infos: (ThreeMFColorInfo | undefined)[]): ThreeMFColorInfo | undefined {
     const known = infos.filter((i): i is ThreeMFColorInfo => !!i);
     if (known.length === 0) return undefined;
     return {
       paletteName: known.find(i => i.paletteName)?.paletteName ?? null,
       coloredTriangles: known.reduce((s, i) => s + i.coloredTriangles, 0),
-      colors: Math.max(...known.map(i => i.colors)),
+      colors: known.reduce((s, i) => s + i.colors, 0),
       skippedColors: Math.max(...known.map(i => i.skippedColors)),
     };
   }
@@ -5088,11 +5105,14 @@ async function main() {
     if (!choice) return false;
     const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
     if (groups.length === 0) return false;
-    const { entries, infos } = build3MFObjectEntries(result, filename, groups, items, true);
+    const built = await build3MFObjectEntries(result, filename, groups, items, true);
+    if (!built) return false;
+    const { entries, infos } = built;
     if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
     const ids = await placeImportedObjects(entries, protect ? choice.destination : 'new-session', base);
     if (ids.length > 0) {
-      showToast(describe3MFImport(filename, result, mergeColorInfos(infos), ids.length), { variant: 'success', source: 'import' });
+      const info = ids.length === 1 ? infos[0] : mergeColorInfos(infos);
+      showToast(describe3MFImport(filename, result, info, ids.length, entries[0].probe.mesh.numTri), { variant: 'success', source: 'import' });
     }
     return ids.length > 0;
   }
@@ -5228,6 +5248,8 @@ async function main() {
     const code = getValue().trim();
     const isWrapper = [true, false].some(manifold => generateImportCode([imp], { manifold }).trim() === code);
     if (!isWrapper) return { error: 'splitImportIntoObjects: the object’s code was edited since the import — use extractObjectPiece(index) instead.' };
+    // The split re-imports each piece bare, so paint wouldn't follow it.
+    if (hasColorRegions()) return { error: 'splitImportIntoObjects: the object is painted and splitting would drop its colours — use extractObjectPiece(index) instead.' };
     const items = importPieceItems(imp, imp.filename.replace(/\.[^.]+$/, '') || cur.name);
     if (!items) return { error: 'splitImportIntoObjects: the mesh is a single piece.' };
     const max = getConfig().import.maxSplitObjects;
@@ -5758,20 +5780,26 @@ async function main() {
     const fused = isFusedPiecesDraft(r.proposedBy ?? '', r.parts ?? [], cfg.fusedPieceMinTris);
     // Separate solids can also become separate objects (one per piece) — the
     // same split a multi-object 3MF import offers.
-    const canSplit = imports.length === 1 && count <= getConfig().import.maxSplitObjects;
+    // Count what the split will actually make (it welds by position, so it can
+    // see fewer solids than the detector).
+    const splitCount = imports.length === 1 && !hasColorRegions() ? computeMeshPieces(imports[0]).count : 0;
+    const canSplit = splitCount >= 2 && splitCount <= getConfig().import.maxSplitObjects;
     openPartDetectionPanel(ctl, {
       context: fused
         ? `Imported ${filename}: found ${count} separate parts, and the largest is one fused solid, so its regions (hair, face…) aren't split yet. Label them with the chips below, or Accept to keep the ${count} parts as they are.`
         : `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
       secondaryActions: [
         ...(canSplit ? [{
-          label: `Split into ${count} objects`,
+          label: `Split into ${splitCount} objects`,
           run: () => {
             void (async () => {
-              await ctl.discardParts();
               const res = await splitImportIntoObjects();
-              if ('error' in res) showToast(res.error.replace(/^splitImportIntoObjects: /, ''), { variant: 'warn', source: 'import' });
-              else showToast(`Split ${filename} into ${res.objects.length} objects.`, { variant: 'success', source: 'import' });
+              if ('error' in res) {
+                showToast(res.error.replace(/^splitImportIntoObjects: /, ''), { variant: 'warn', source: 'import' });
+                return;
+              }
+              await ctl.discardParts();
+              showToast(`Split ${filename} into ${res.objects.length} objects.`, { variant: 'success', source: 'import' });
             })();
           },
         }] : []),
@@ -12997,7 +13025,9 @@ async function main() {
           const items = threeMFItems(result);
           const groups = planImportSplit(items, split, { selected: opts?.objects, plates: result.plates, baseName: sessionName });
           if (groups.length > maxObjects) return { error: `importMeshData: splitting makes ${groups.length} objects, over the ${maxObjects}-object limit (Advanced settings → Import).` };
-          const { entries, infos } = build3MFObjectEntries(result, filename, groups, items, opts?.adoptPalette !== false);
+          const built = await build3MFObjectEntries(result, filename, groups, items, opts?.adoptPalette !== false);
+          if (!built) return { error: 'importMeshData: cancelled.' };
+          const { entries, infos } = built;
           const ids = await placeImportedObjects(entries, 'new-session', sessionName);
           const info = mergeColorInfos(infos);
           return {
@@ -13007,6 +13037,7 @@ async function main() {
             flavor: result.flavor,
             colorSource: result.colorSource,
             palette: result.palette.map(e => ({ name: e.name, hex: e.hex })),
+            colorRegions: info?.colors ?? 0,
             colorsSkipped: info?.skippedColors ?? 0,
             activePalette: info?.paletteName ?? null,
             objects: result.objects,
@@ -13095,7 +13126,7 @@ async function main() {
       const parsed = parseSTLBytes(bytes, filename);
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
       const base = filename.replace(/\.[^.]+$/, '');
-      const items = importPieceItems(parsed.mesh, base) ?? [];
+      const items = importPieceItems(parsed.mesh, base) ?? [{ name: base, triangles: triangleRange(0, parsed.mesh.numTri) }];
       return {
         format: 'stl',
         triangleCount: parsed.mesh.numTri,

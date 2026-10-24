@@ -157,7 +157,7 @@ await partwright.inspectMeshData(base64, 'kit.3mf')
 //      objects: [{ index, name, triangleCount, plate? }],
 //      plates: [{ id, name, objectCount }], palette, splitModes: ['none', 'object', 'plate'] }
 await partwright.inspectMeshData(base64, 'blocks.stl')
-// -> { format: 'stl', triangleCount, isManifold, pieces: [{ index, name, triangleCount }], splitModes }
+// -> { format: 'stl', triangleCount, isManifold, pieces: [{ index, name, triangleCount }], splitModes }  (one piece for a single solid)
 
 // One object per 3MF object, threaded under its plate in the object list:
 await partwright.importMeshData(base64, 'kit.3mf', { split: 'object' })
@@ -178,8 +178,9 @@ without `split` imports just those objects as one. Splits are capped by
 To split an object that's already imported — a single, unedited mesh import —
 call `await partwright.splitImportIntoObjects()` (-> `{ objects: [{ id, name }] }`):
 the largest piece becomes the object's next version (its history keeps the whole
-mesh) and the others become new objects. For any other object, move pieces out
-one at a time with `extractObjectPiece(index)`.
+mesh) and the others become new objects. It refuses a painted object (the
+pieces would come in uncoloured). For any other object, move pieces out one at
+a time with `extractObjectPiece(index)`.
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.
