@@ -122,7 +122,7 @@ function rowIconBtn(glyph: string, title: string): HTMLButtonElement {
   return b;
 }
 
-/** "Select more" (the touch path to a multi-selection — no Shift key on a
+/** "☐ Add" (the touch path to a multi-selection — no Shift key on a
  *  phone): while on, tapping a row adds it to / takes it out of the
  *  selection. Turns itself off when the selection is cleared. */
 let extendTaps = false;
@@ -144,10 +144,10 @@ function drawerButton(grid: HTMLElement, action: string, text: string, title: st
   return b;
 }
 
-/** The "Select more" toggle (see extendTaps). Updated in place — toggling it
+/** The "☐ Add" toggle (see extendTaps). Updated in place — toggling it
  *  doesn't change the selection, so nothing rebuilds the drawer. */
 function selectMoreButton(grid: HTMLElement): HTMLButtonElement {
-  const label = () => (extendTaps ? '☑ Adding' : '☐ Select more');
+  const label = () => (extendTaps ? '☑ Adding' : '☐ Add');
   const b = drawerButton(grid, 'select-more', label(), 'Click (or tap) other rows to add them to the selection — the same as Shift-click', () => {
     extendTaps = !extendTaps;
     b.textContent = label();
@@ -485,7 +485,7 @@ function buildMultiDrawer(a: ObjectPartsActions, keys: string[], view: ObjectPar
 
   const hint = document.createElement('div');
   hint.className = 'px-0.5 text-[10px] text-zinc-600 leading-snug';
-  hint.textContent = `Shift-click (or turn on Select more) to add or remove ${noun}.`;
+  hint.textContent = `Shift-click (or turn on ☐ Add) to add or remove ${noun}.`;
   drawer.appendChild(hint);
   return drawer;
 }

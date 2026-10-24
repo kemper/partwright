@@ -91,7 +91,7 @@ reasoning behind them:
   from the original. Without this they stayed behind as unmatched paint.
 - **Undo after a multi-delete** uses the new `restoreObjectPartsOrPieces`: one
   run and one version, matching the batch delete.
-- **Touch.** A "Select more" toggle in the drawers makes plain taps extend the
+- **Touch.** A "Select more" toggle in the drawers (labelled ☐ Add in the UI) makes plain taps extend the
   selection, because phones and tablets have no Shift key.
 - **API.** A list passed to `setObjectPartHidden` is validated in full before
   anything is hidden, and `deleteObjectPart` refuses a list that mixes parts
