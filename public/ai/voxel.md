@@ -540,6 +540,8 @@ await partwright.importImageAsVoxels(imageUrl, {
 // -> { sessionId, voxelCount }  (or { error })
 ```
 
+**In-app chat:** the **`importImageAsVoxels`** tool takes the same options flat, plus the image as `imageRef` (1-based index from `getReferenceImages` — the user's attached image) or `src` (an http(s) or `data:image/` URL only). It opens the result in a NEW session, so the user confirms each call.
+
 - `maxSize` — longest side after downsampling (default 64).
 - `mode` — `'billboard'` (default) or `'heightmap'`.
 - `depth` — billboard extrusion thickness in voxels (default 1).
@@ -599,7 +601,7 @@ the settings you used.
 - **No booleans / fillets / history.** Voxel modeling is direct: place and
   remove cubes. For CSG, fillets, or parametric edits, use manifold-js or BREP.
 - **Coordinate range is −1024…1023 per axis.** Out-of-range coordinates throw.
-- **Catalog thumbnail faces iso azimuth ≈45° (the +X,−Y corner) by default.** The
+- **Catalog thumbnail faces iso azimuth 45°, elevation 35° (the +X,−Y corner) by default.** The
   catalog 3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are
   the −Y and +X faces. By default, build characters and faced models with their
   front on the −Y/+X corner; a face authored on flat +Y shows the *back* of the

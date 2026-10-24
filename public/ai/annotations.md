@@ -22,6 +22,11 @@ them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer whic
 being pointed at from the 3D points/anchors, and confirm your interpretation before making
 changes.
 
+**In-app chat:** the read-only **`listAnnotations`** tool returns strokes, text labels and the
+count in one call — `{count, strokes: [{id, color, width, pointCount, bbox, centroid, points,
+camera}], texts: [...]}` — with each stroke downsampled to `maxPointsPerStroke` points (default
+16; 0 drops points but keeps bbox/centroid).
+
 ```js
 partwright.listAnnotations()
 // -> [{id, color: [r,g,b], width: 4, pointCount: 24, points: [[x,y,z], ...]}]
@@ -31,6 +36,13 @@ partwright.listTextAnnotations()
 
 partwright.addTextAnnotation({ anchor: [4, -5, 3], text: "round this corner" })
 // -> {id: "..."}
+
+partwright.addStrokeAnnotation({ points: [[0, -6, 2], [3, -6, 4], [6, -6, 2]], color: [1, 0, 0] })
+// -> {id, pointCount} -- a freehand stroke through world points (width: px, optional)
+partwright.redoAnnotation()             // re-add the last undone stroke -> {redone, remaining, canRedo}
+
+partwright.setAnnotateMode('pen')       // open Annotate for the user: 'pen' | 'text' | 'select' | null (close)
+partwright.getAnnotateMode()            // -> 'pen' | 'text' | 'select' | null
 
 partwright.getAnnotationCount()         // total: strokes + text
 partwright.undoAnnotation()             // removes the most recent annotation of either kind

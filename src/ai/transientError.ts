@@ -37,3 +37,14 @@ export function isTransientError(err: unknown): boolean {
   const msg = (typeof e?.message === 'string' ? e.message : '').toLowerCase();
   return /failed to fetch|networkerror|network error|connection|econnreset|socket|timeout|timed out|temporarily|overloaded|interrupted|terminated|premature|stream/.test(msg);
 }
+
+/** Whether a failed TOOL result is worth auto-retrying as-is. A tool error is
+ *  usually deterministic — a validation `{ error }`, "no geometry loaded", a
+ *  bad id — and re-running it only burns the retry budget, so the chat loop
+ *  re-runs a retry-safe tool only when its failure reads as transient: a
+ *  timeout / network-style message (same phrasing test as provider errors), a
+ *  run superseded by a concurrent one, or the API still booting. */
+export function isTransientToolFailure(content: string): boolean {
+  if (/superseded by a concurrent|is not ready/i.test(content)) return true;
+  return isTransientError({ message: content });
+}

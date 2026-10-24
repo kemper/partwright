@@ -67,8 +67,15 @@ import { showToast } from './toast';
 import { createToolPanelShell } from './toolPanel';
 import { setInitialPanelPosition } from './viewportPanelDrag';
 import { createSliderEntry, formatEntry } from './sliderEntry';
+import { registerTool, openTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { detectorIds, getDetector, resolveParams } from '../segmentation/registry';
 
 let closeOpen: (() => void) | null = null;
+/** The open panel's method + param values (for getUiState().toolState). */
+let currentPartsState: (() => Record<string, unknown>) | null = null;
+/** Stage a (validated) method + params + note on the OPEN panel without
+ *  rebuilding it — so an import-time proposal and its context line survive. */
+let applyPartsPrefillInPlace: ((detector: string | null, params: Record<string, unknown> | null, note?: string, source?: ToolOpenContext['source']) => void) | null = null;
 /** Which label-chip set the panel shows, and the user's custom chips — kept
  *  for this tab (not persisted) so reopening the panel keeps them. */
 let chipSetId: LabelPresetId = 'figure';
@@ -134,13 +141,48 @@ export interface PartDetectionPanelOpts {
   /** An alternative next step offered beside the context line (the import
    *  flow's "Convert to code instead"). Closes the panel before running. */
   secondaryAction?: { label: string; run: () => void };
+  /** Stage a method + params (AI / API `openTool('detect-parts', …)`). */
+  prefill?: { detector?: string; params?: Record<string, unknown> };
+  /** An AI/API suggestion shown at the top ("Suggested by AI: …"). */
+  note?: string;
+  source?: ToolOpenContext['source'];
 }
 
-export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetectionPanelOpts): void {
+export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetectionPanelOpts): ToolOpenResult {
+  // Validate a prefill before touching the open panel.
+  const pre = opts?.prefill;
+  let preDetector: string | null = null;
+  let preParams: Record<string, unknown> | null = null;
+  if (pre) {
+    // With only params, resolve them against the method the panel will show:
+    // the open panel's, else the current draft's, else the panel default.
+    const known = ctl.listPartDetectors().detectors;
+    const draft = ctl.getPartDraft();
+    const fallback = known.some((x) => x.id === 'auto-merge') ? 'auto-merge' : known[0]?.id;
+    const id = pre.detector
+      ?? (closeOpen ? currentPartsState?.().detector as string | undefined : undefined)
+      ?? (isDraft(draft) ? draft.detector : undefined)
+      ?? fallback ?? '';
+    const d = getDetector(id);
+    if (!d || !known.some((x) => x.id === id)) return { error: `unknown detector "${id}"` };
+    try { preParams = pre.params ? resolveParams(d, pre.params) : null; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    preDetector = id;
+  }
+  const prefillOutcome = (): ToolOpenResult => {
+    const applied: Record<string, unknown> = {};
+    if (pre?.detector) applied.detector = preDetector;
+    if (pre?.params) applied.params = pre.params;
+    return { applied, ignored: [] };
+  };
   // Re-opening with a new context (a fresh import) replaces the open panel so
-  // the context line is never stale; a plain re-open keeps it as is.
+  // the context line is never stale. A prefill / note lands IN PLACE on the
+  // open panel (its draft, proposal and context line stay); a plain re-open
+  // keeps it as is.
   if (closeOpen) {
-    if (!opts?.context) return;
+    if (!opts?.context) {
+      if (pre || opts?.note) applyPartsPrefillInPlace?.(pre ? preDetector : null, preParams, opts?.note, opts?.source);
+      return prefillOutcome();
+    }
     closeOpen();
   }
   const info = ctl.listPartDetectors();
@@ -217,6 +259,8 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       markers.dispose();
       unsubscribe();
       closeOpen = null;
+      currentPartsState = null;
+      applyPartsPrefillInPlace = null;
       // Dismissing an import-time proposal the user never touched means "no
       // thanks" — don't leave its colours on the model with no panel open.
       // An edited draft stays (reopen from Tools → Parts).
@@ -271,6 +315,18 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
     body.appendChild(banner);
   }
+  let noteEl: HTMLElement | null = null;
+  /** Show (or, with no note, clear) the AI note — right under the context
+   *  line when there is one, else at the top. */
+  const setNote = (note: string | undefined, source: ToolOpenContext['source']): void => {
+    if (!note) { noteEl?.remove(); noteEl = null; return; }
+    const fresh = createToolNote(note, source);
+    if (noteEl) noteEl.replaceWith(fresh);
+    else if (contextBanner) contextBanner.after(fresh);
+    else body.prepend(fresh);
+    noteEl = fresh;
+  };
+  setNote(opts?.note, opts?.source);
 
   function step(n: number, label: string): HTMLElement {
     const h = el('div', STEP);
@@ -1901,6 +1957,11 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
 
   algoSelect.addEventListener('change', () => { void onMethodChanged(); });
   buildParams();
+  currentPartsState = () => {
+    const params: Record<string, unknown> = {};
+    for (const [k, io] of paramInputs) params[k] = io.get();
+    return { detector: algoSelect.value, params, tool, live };
+  };
   setTool(isDraft(ctl.getPartDraft()) ? 'select' : detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
   // A Separate-pieces proposal of 1–2 pieces on a fused figure: open ready
   // to label it — the first chip is armed, so the first click on the model
@@ -1921,6 +1982,30 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   requestAnimationFrame(fitToWindow);
   // Opened mid-run (e.g. during the import-time pass): show it and its Cancel now.
   syncBusy();
+
+  /** Stage a validated method + params (Detect stays a click). Runs after
+   *  renderDraft(), which has synced the controls to the current draft and
+   *  recorded it — so syncControls won't overwrite the prefill until the draft
+   *  actually changes. */
+  function stagePrefill(detector: string | null, params: Record<string, unknown> | null): void {
+    if (!detector && !params) return;
+    if (detector && detector !== algoSelect.value) {
+      // The method-change bookkeeping onMethodChanged does — minus touching
+      // the draft: drop a hovered preset preview and the carried denoise.
+      void ctl.showPresetPreview(null);
+      carriedEdgeLengths = null;
+      algoSelect.value = detector;
+    }
+    buildParams(params ?? undefined); // also re-renders the preset strip
+    const d = ctl.getPartDraft();
+    needPinsHint.classList.toggle('hidden', isDraft(d) || detectorOf(algoSelect.value).seeds !== 'required' || ctl.getSeeds().length > 0);
+    startCollapsed = false; // show the staged method + params
+    syncStart();
+    if (!isDraft(ctl.getPartDraft())) setTool(detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
+  }
+  applyPartsPrefillInPlace = (detector, params, note, source) => { stagePrefill(detector, params); setNote(note, source); };
+  stagePrefill(pre ? preDetector : null, preParams);
+  return prefillOutcome();
 }
 
 /** Wire Part Detection into the command palette, the viewport Tools menu,
@@ -1928,13 +2013,26 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
 export function initPartDetectionUI(ctl: PartDetectionApi): void {
   ctl.setPanelOpener(() => openPartDetectionPanel(ctl));
   setDetectPartsEntry(() => openPartDetectionPanel(ctl));
+  registerTool({
+    id: 'detect-parts',
+    title: 'Detect parts…',
+    hint: 'Paint',
+    prefillSchema: {
+      detector: { type: 'enum', values: detectorIds(), description: 'Detection method id (see listPartDetectors).' },
+      params: { type: 'object', description: "That detector's params (validated against its ParamSpecs, e.g. {targetParts: 6})." },
+    },
+    open: (prefill, ctx) => openPartDetectionPanel(ctl, { prefill: prefill as PartDetectionPanelOpts['prefill'], note: ctx.note, source: ctx.source }),
+    getState: () => currentPartsState?.() ?? null,
+    isOpen: () => closeOpen !== null,
+    close: () => closeOpen?.(),
+  });
   registerCommands([
     {
       id: 'detect-parts',
       title: 'Detect parts…',
       hint: 'Paint',
       keywords: 'detect parts segment segmentation split regions imported stl figure hair face label colorize auto paint seeds pins presets merge',
-      run: () => openPartDetectionPanel(ctl),
+      run: () => { void openTool('detect-parts'); },
     },
   ]);
 

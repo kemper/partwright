@@ -2,6 +2,8 @@
 
 The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` methods trigger a browser download — the file goes to the user's Downloads folder, which an AI agent can't observe. Likewise, `Import` opens an OS file picker that an agent can't dismiss. Use the `*Data()` methods below instead: they return file contents over the API and skip the picker entirely.
 
+**In-app chat:** the assistant downloads through ONE tool, **`exportModel({format, objects?, filename?})`** — `format` `'stl' | 'obj' | 'glb' | '3mf'` (the current object, or several bundled with `objects`), `'3mf-objects'` (the Bambu Studio / OrcaSlicer plate project; default every object), `'step'` (BREP sessions) or `'vox'` (voxel sessions). It saves a file to the user's computer, so the user confirms each call; the prompt names the format and the objects. It returns `{ ok, format, filename?, parts? }` or `{ error }`.
+
 ## Export — return bytes over the API
 ```js
 // 3D model formats — binary blobs come back as base64
@@ -24,6 +26,11 @@ const vox = await partwright.exportVOXData()
 // Session JSON — returns the parsed object directly, no decoding needed
 const ses = await partwright.exportSessionData()
 // -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }
+
+// Lower level: just the ExportedSession object, with include* toggles. Defaults to
+// the current session; thumbnails are OFF by default (annotations, notes and colour
+// regions ON). Returns null when there is no such session, { error } on bad args.
+const raw = await partwright.exportSession(undefined, { includeThumbnails: true, includeNotes: false })
 
 // Editor source as text
 const src = await partwright.exportCodeData()
@@ -111,6 +118,11 @@ Like 3MF, each object's **latest version** is re-baked with its colours (code-de
 const r = await partwright.importSessionData(parsedJson)
 // -> { sessionId } or { error }
 
+// Same, from an already-parsed object (e.g. exportSession() output): validates the
+// shape, regenerates thumbnails and opens the session
+await partwright.importSession(exported)
+// -> { id, name, warning? } or { error }
+
 // Import raw source as a new session
 await partwright.importCodeData(code, 'manifold-js')           // optional sessionName arg
 await partwright.importCodeData(scadCode, 'scad', 'my-shape')
@@ -120,7 +132,7 @@ await partwright.importCodeData(scadCode, 'scad', 'my-shape')
 // click. `base64` may be a bare base64 string or a `data:` URL; it round-trips
 // with exportSTLData().base64.
 const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: 'imported part' })
-// -> { sessionId, isManifold, triangleCount, vertexCount } or { error }
+// -> { sessionId, target, object, isManifold, triangleCount, vertexCount } or { error }
 // isManifold:false = welded render-only (displays + exports, but no booleans /
 // paint / cross-sections) — typical for sculpted or scanned models.
 
@@ -139,7 +151,37 @@ const tmf = await partwright.importMeshData(base64, 'model.3mf')
 // -> { sessionId, isManifold, triangleCount, vertexCount, format: '3mf',
 //      flavor: 'bambu'|'prusa'|'generic', colorSource: 'filaments'|'materials'|'none',
 //      palette: [{ name, hex }], colorRegions, activePalette, objects: [{ name, triangleCount }] }
+
+// MagicaVoxel .vox and STEP from base64 bytes, the same way:
+await partwright.importVoxData(base64, 'castle.vox')                    // -> {…, voxelCount}
+await partwright.importStepData(base64, 'bracket.step')                 // exact BREP object (STEP export kept)
+await partwright.importStepData(base64, 'bracket.step', { mode: 'mesh' }) // tessellated mesh import
+
+// From a URL — the Import → From URL… dialog, headless:
+await partwright.importFromUrl('https://example.com/part.stl', { target: 'new-object' })
+await partwright.importFromUrl('https://…/#share=…')   // share link: decoded locally, new session
+// -> { kind: 'remote'|'share', source?, filename?, sessionId, target?, object? } or { error }
 ```
+
+**Where an import lands — `target`.** Every byte/URL import takes `opts.target`, the
+API twin of the import-target dialog:
+
+| `target` | Result |
+|---|---|
+| `'new-session'` (default) | a fresh session named after the file (`sessionName` overrides) |
+| `'new-object'` | a new object in the current session; it becomes current |
+| `'current-object'` | combined into the current object: a mesh / voxel import is composed with its geometry (a blank starter object is replaced instead). A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
+
+Targets other than `'new-session'` need an open session. Unsaved work on the current
+object is saved as a version first, exactly as in the dialog.
+
+`importFromUrl` fetches in the browser (CORS and the page CSP apply; 25 MB cap,
+`import.remoteFetchTimeoutMs` timeout) and routes by type: `.partwright.json` → a new
+session; `.stl` / `.step` / `.vox` → as above (`stepMode: 'mesh'` tessellates STEP);
+`.js` / `.scad` → code. Share links, session files and `.js` / `.scad` run model code when
+imported, so `geometryOnly: true` refuses them (the in-app assistant always passes it and asks
+the user to use Import → From URL…, which previews first — a code-bearing URL is refused before the user is even asked to confirm). Images and SVGs need a converter — use `importImageAsRelief({src})`,
+`importImageAsVoxels(url)` or `importSvgAsRelief({svgText})`.
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.

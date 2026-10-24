@@ -17,13 +17,13 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
-import { isTransientError } from './transientError';
+import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
@@ -138,6 +138,10 @@ export interface RunTurnInput {
    *  tool dispatch round-trips back to the main thread where
    *  window.partwright lives, while the loop itself stays in the Worker. */
   executeToolFn?: (name: string, input: Record<string, unknown>) => Promise<import('./tools').ToolExecResult>;
+  /** The UI tool catalogue for openTool's id enum (buildUiToolCatalog). The
+   *  agent Worker has no tool registry, so the Worker client snapshots it on
+   *  the main thread and passes it here; omitted = read the live registry. */
+  uiTools?: import('./tools').UiToolCatalogEntry[];
 }
 
 export interface RunTurnCallbacks {
@@ -195,8 +199,10 @@ export interface RunTurnCallbacks {
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
   /** Called before executing a tool that requires explicit user permission
-   *  (import tools). Return true to allow, false to decline. If absent, all
-   *  tools execute without a prompt. */
+   *  (CONFIRM_REQUIRED_TOOLS: imports, deleteVersion). Return true to allow,
+   *  false to decline. If absent, a confirm-required tool is declined when this
+   *  loop runs the real executeTool; with a custom executeToolFn (the agent
+   *  Worker's main-thread proxy) the confirmation is left to that layer. */
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
@@ -226,7 +232,7 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
-  const tools = buildToolList(toggles);
+  const tools = buildToolList(toggles, input.uiTools);
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -732,14 +738,30 @@ async function executeAllWithRetry(
       onEachResult?.(aborted, i);
       continue;
     }
-    if (CONFIRM_REQUIRED_TOOLS.has(tc.name) && callbacks.confirmTool) {
-      const allowed = await callbacks.confirmTool(tc.name, tc.input);
-      if (!allowed) {
-        const declined: PersistedToolResult = {
-          toolUseId: tc.id,
-          content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
-          isError: true,
-        };
+    if (CONFIRM_REQUIRED_TOOLS.has(tc.name)) {
+      // Confirmation is enforced by whichever layer runs the REAL executeTool.
+      // Inside the agent Worker, executeToolFn proxies to the main thread and
+      // agentWorkerClient shows the prompt there, so the Worker's loop (which
+      // can't hold a UI callback) delegates. Running the real executeTool here
+      // with no prompt to show fails CLOSED.
+      let content: string | null = null;
+      // A call that would be refused anyway (e.g. a code-bearing importFromUrl)
+      // returns its refusal without bothering the user with a prompt.
+      const refused = preConfirmToolResult(tc.name, tc.input);
+      if (refused) {
+        content = refused.content;
+      } else if (callbacks.confirmTool) {
+        let allowed = false;
+        try { allowed = await callbacks.confirmTool(tc.name, tc.input); } catch { allowed = false; }
+        // Stop pressed while the prompt was up: an Allow click that raced the
+        // abort must not still run the tool.
+        if (signal?.aborted) content = '[aborted by user]';
+        else if (!allowed) content = declinedToolMessage(tc.name);
+      } else if (!executeToolFn) {
+        content = CONFIRM_UNAVAILABLE_MESSAGE;
+      }
+      if (content !== null) {
+        const declined: PersistedToolResult = { toolUseId: tc.id, content, isError: true };
         results.push(declined);
         callbacks.onToolResult?.(tc.id, tc.name, declined);
         onEachResult?.(declined, i);
@@ -751,9 +773,11 @@ async function executeAllWithRetry(
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
     // succeeded before erroring would double-apply it; the retry budget is for
-    // transient read/render/run failures, not state changes.
+    // transient read/render/run failures, not state changes — and a
+    // deterministic failure (a validation { error }, a bad id) would just fail
+    // again, so only a transient-looking one is re-run.
     const retryable = RETRY_SAFE_TOOLS.has(tc.name);
-    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
+    while (result.isError && retryable && isTransientToolFailure(result.content) && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }
