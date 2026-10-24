@@ -71,7 +71,7 @@ Facts to respect:
 - **A hard edge (no `blend`) moves whole triangles at the seam.** Triangles straddling the boundary stretch. Big scales or rotations of a part fused into the body read better with a `blend` of a few units.
 - **The fade weights the motion, not the position.** In the blend zone `sculpt.transform` and `twist` turn by a fraction of the angle (and scale or move by a fraction), so the surface follows the arc instead of pinching inward. `bend` and `taper` fade by position.
 - **Only `sculpt.transform` refines for `blend`.** It refines to about `blend / 3` edges so the fade has vertices, over the whole shape, and errors before building a mesh over the ~3M-triangle budget. Keep `blend` reasonable on huge imports, or pass `segmentLength`. The brushes and deforms refine by their own radius or span as before.
-- **Labels carry through.** The ops warp vertices without remeshing, so every `api.label` part keeps its faces, and `paintByLabel` / `withinPart` still work afterwards. This is unlike `round` / `smoothWeld`.
+- **Labels carry through.** The ops warp vertices without remeshing, so every `api.label` part keeps its faces, and `paintByLabel` / `withinPart` still work afterwards. `round` / `smoothWeld` remesh, so they need `keepLabels: true` for the same result (below).
 - **Imports:** after `acceptParts`, an imported mesh's detected parts are labels (`api.importWithParts(0)`), so `select: { label: 'hair' }` works on STL figurines too. That's the way to "make the head bigger" on an upload.
 
 ## Deforms (warp-based)
@@ -143,10 +143,26 @@ respect: features thinner than `2·radius` are smoothed **away** — and in
 practice a flat face starts visibly bulging into a pill well before that limit,
 so on a shape with one thin dimension keep the radius under ~1/4 of the
 thinnest extent (a 5-unit-thick shell wants radius ≲ 1.2, not 1.8); the output
-is a remeshed surface (labels/paint regions on the input do NOT carry through —
-round first, label/paint after); accuracy is ~the lattice voxel, and a radius
+is a remeshed surface, so the input's `api.label` parts are dropped **unless you
+pass `keepLabels: true`** (below); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
+
+**`keepLabels: true` keeps the parts.** Each remeshed triangle takes the part of
+the input surface nearest to it, so `byLabel` / part colours, `paintByLabel`,
+`withinPart` and selectors still work on the result. This is how to fillet a
+labelled model, or a detected import (`api.importWithParts`), without losing its
+parts. It adds a nearest-surface pass over the output, roughly half the remesh's
+own time on a large model, so it's off by default. An input with no labels is
+returned exactly as it would be without the option:
+
+```js
+m = api.round(api.importWithParts(0), { radius: 1.2, keepLabels: true });
+```
+
+Part boundaries land at triangle resolution: in a fillet that blends two parts,
+the edge falls where the two input surfaces meet. It's off by default, so
+existing models render exactly as before.
 
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces
@@ -164,7 +180,9 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
-caveats as `round` (remeshed output, labels don't carry through).
+caveats as `round` (remeshed output). Pass `keepLabels: true` to keep each
+input's `api.label` parts on the welded surface (e.g. weld a labelled head onto
+a body and still paint them separately).
 
 ## Sculpt — declarative brush nudges
 

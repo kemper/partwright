@@ -121,8 +121,8 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
-| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
-| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
+| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius, keepLabels?})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
+| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius, keepLabels?})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
 | Text / relief wrapped around a cylinder (mug, ring, vase) | `api.wrapAround(flatShape, {radius})` -> `/ai/deform.md` | (not available) | (mesh-only) |
 | Bend / twist / taper an existing mesh | `api.bend/twist/taper(shape, {…})` -> `/ai/deform.md` | `linear_extrude(twist=, scale=)` at build time | (mesh-only) |
 | Strip / rail following a 3D path | `api.alongCurve(shape, points)` -> `/ai/deform.md` (or `Curves.sweep` to build from a profile) | BOSL2 `path_sweep()` | (use manifold-js) |

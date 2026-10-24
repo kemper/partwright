@@ -169,4 +169,43 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     // An unknown part is a loud, actionable error — not a silent no-op.
     expect(out.badError).toContain('no part "nope"');
   });
+
+  test('keepLabels carries api.label parts through round / smoothWeld (#1093)', async () => {
+    const out = await page.evaluate(async () => {
+      const api = (window as unknown as { partwright: {
+        createSession: (n?: string) => Promise<unknown>;
+        run: (code: string) => Promise<unknown>;
+        getGeometryData: () => Promise<{ isManifold?: boolean; componentCount?: number } | null>;
+        listObjectParts: () => { parts?: { name: string; triangleCount: number }[] };
+      } }).partwright;
+      await api.createSession('keep-labels');
+      const tris = async (code: string) => {
+        const r = await api.run(code) as { error?: string } | undefined;
+        const geo = await api.getGeometryData();
+        const parts = Object.fromEntries((api.listObjectParts().parts ?? []).map(p => [p.name, p.triangleCount]));
+        return { error: (r && r.error) || null, manifold: geo?.isManifold, components: geo?.componentCount, parts };
+      };
+      const head = [
+        'const { Manifold } = api;',
+        "const body = api.label(Manifold.cylinder(30, 10, 10, 48), 'body');",
+        "const head = api.label(Manifold.sphere(9, 48).translate([0, 0, 36]), 'head');",
+      ].join('\n');
+      return {
+        weldKeep: await tris(head + "\nreturn api.smoothWeld(body, head, { radius: 3, keepLabels: true });"),
+        weldDrop: await tris(head + "\nreturn api.smoothWeld(body, head, { radius: 3 });"),
+        roundKeep: await tris(head + "\nreturn api.round(body.add(head), { radius: 1.5, keepLabels: true });"),
+      };
+    });
+
+    expect(out.weldKeep.error).toBeNull();
+    expect(out.weldKeep.manifold).toBe(true);
+    expect(out.weldKeep.components).toBe(1);
+    expect(out.weldKeep.parts.body).toBeGreaterThan(0);
+    expect(out.weldKeep.parts.head).toBeGreaterThan(0);
+    // Off by default: existing models keep their old (label-dropping) result.
+    expect(out.weldDrop.parts.head ?? 0).toBe(0);
+    expect(out.roundKeep.error).toBeNull();
+    expect(out.roundKeep.parts.body).toBeGreaterThan(0);
+    expect(out.roundKeep.parts.head).toBeGreaterThan(0);
+  });
 });
