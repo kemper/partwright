@@ -16,6 +16,7 @@ import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCal
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
+import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
 import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
@@ -395,7 +396,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // which makes the provider omit the Authorization header.
         if (!toggles.customBaseUrl.trim()) throw new Error('Custom endpoint URL is required. Open AI Settings → Custom to set it.');
         if (!toggles.customModel.trim()) throw new Error('A model id is required for the custom endpoint. Open AI Settings → Custom to set or fetch one.');
-        const customKey = apiKey ?? (await getApiKey('custom')) ?? '';
+        const customKey = apiKey ?? await resolveCustomApiKey(toggles.customBaseUrl);
         result = await streamTurnCustom({
           apiKey: customKey,
           baseUrl: toggles.customBaseUrl,

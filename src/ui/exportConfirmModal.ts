@@ -235,7 +235,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
       const { used, capacity } = info.colorOverBudget;
       block.innerHTML =
         `<strong>More colours than slots.</strong> This model uses <strong>${used}</strong> filament colours but your palette capacity is <strong>${capacity}</strong>. ` +
-        'Your printer may not have enough filament slots. Adjust capacity in the palette manager (🧵 Palette).';
+        'Your printer may not have enough filament slots. You can merge colours in the Filament colors step of the export, or adjust capacity in the palette manager (🧵 Palette).';
       shell.body.appendChild(block);
     }
 

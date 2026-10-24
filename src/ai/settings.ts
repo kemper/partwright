@@ -6,6 +6,7 @@ import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPE
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
+import { CLI_PROXY_DEFAULT_BASE_URL } from './cliProxy';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
 
@@ -125,12 +126,16 @@ export interface AutoReviewSettings {
   /** How many times the agent may act on a non-passing review before the
    *  loop stops (0 = just post the review). */
   fixRounds: number;
+  /** Send the user's earlier messages in this chat (not the agent's replies)
+   *  with the review, so it grades against every requirement and correction
+   *  — not just the latest message. Also the 👁 Review modal's default. */
+  includeConversation: boolean;
 }
 
 /** Upper bound for AutoReviewSettings.fixRounds. */
 export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
 
-const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1 };
+const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1, includeConversation: true };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
 const SETTINGS_REV = 1;
@@ -138,11 +143,10 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 /** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
  *  CLIProxyAPI's default localhost port (:8317) — the subscription bridge the
- *  Custom tab's onboarding card walks the user through — so the endpoint is
- *  pre-filled and the common case (driving Partwright from a Claude/Codex
- *  plan via the bridge) needs no typing. The single source of truth for this
- *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
-export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
+ *  Custom tab walks the user through — so the common case (driving Partwright
+ *  from a Claude/Codex plan via the bridge) needs no typing. Single source of
+ *  truth: cliProxy.ts. */
+const DEFAULT_CUSTOM_BASE_URL = CLI_PROXY_DEFAULT_BASE_URL;
 
 const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
@@ -706,6 +710,7 @@ function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): Auto
     provider: r.provider && AUTO_REVIEW_PROVIDERS.includes(r.provider) ? r.provider : DEFAULT_AUTO_REVIEW.provider,
     model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
     fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
+    includeConversation: typeof r.includeConversation === 'boolean' ? r.includeConversation : DEFAULT_AUTO_REVIEW.includeConversation,
   };
 }
 

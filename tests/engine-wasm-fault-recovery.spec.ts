@@ -62,4 +62,42 @@ test.describe('engine WASM fault recovery', () => {
     // 4) Recovery: the same baseline model runs again on the fresh module.
     expect((await run(cube)).status).toBe('ok');
   });
+
+  // A run that grows the heap past the high-memory threshold must warn (so the
+  // agent backs off before the next step up faults) and reset the idle Worker
+  // (WASM memory never shrinks, so the next run would otherwise start near the
+  // ceiling). A real multi-GB run is too slow and host-dependent for CI, so the
+  // threshold is dropped to 0% — any measured heap counts as high — which
+  // drives the identical warning + reset path with an ordinary cube.
+  test('a high-memory run warns and resets the idle Worker', async ({ page }) => {
+    const resetLogs: string[] = [];
+    page.on('console', (m) => {
+      const t = m.text();
+      if (/Resetting geometry Worker after a high-memory run/i.test(t)) resetLogs.push(t);
+    });
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('partwright-tour-completed', '1');
+        localStorage.setItem('partwright-app-config-v1', JSON.stringify({ geometry: { engineHeapHighPct: 0 } }));
+      } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const runLive = (code: string) =>
+      page.evaluate(async (c) => {
+        const pw = (window as any).partwright; // eslint-disable-line @typescript-eslint/no-explicit-any
+        const geo = await pw.run(c);
+        return { status: geo.status as string, warnings: (pw.getGeometryData().warnings ?? []) as string[] };
+      }, code);
+
+    const cube = 'return api.Manifold.cube([10,10,10], true);';
+    const first = await runLive(cube);
+    expect(first.status).toBe('ok');
+    expect(first.warnings.some((w) => /High geometry-kernel memory/.test(w))).toBe(true);
+    await expect.poll(() => resetLogs.length, { timeout: 5000 }).toBeGreaterThan(0);
+
+    // The next run boots the fresh Worker and still works.
+    expect((await runLive('return api.Manifold.sphere(5);')).status).toBe('ok');
+  });
 });

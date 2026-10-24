@@ -390,13 +390,22 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ai', 'compactionKeepImages', v)}
         />
         <Field cfgKey="ai.reviewReferenceImages"
-          label="Reference images sent to the automatic review"
-          hint="How many of your attached images the automatic end-of-task review sees next to the renders."
-          tooltip="The automatic review grades the finished model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
+          label="Reference images sent to reviews"
+          hint="How many of your attached images a review (automatic or 👁) sees next to the renders."
+          tooltip="A review grades the model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
           defaultValue={APP_CONFIG_DEFAULTS.ai.reviewReferenceImages}
           value={c.ai.reviewReferenceImages}
           min={0} max={12} integer
           onChange={v => set('ai', 'reviewReferenceImages', v)}
+        />
+        <Field cfgKey="ai.reviewConversationMaxChars"
+          label="Your messages sent to reviews (chars)"
+          hint="How much of what you wrote in this chat a review sees, newest first. The agent's replies are never sent."
+          tooltip="So the reviewer grades against every requirement and correction you gave — not only your latest message — your own chat messages are sent with the review (when 'Your messages' is on). Older messages beyond this budget are left out. After a compaction, the agent's summary of the deleted early turns is sent too (labelled as the agent's) when it fits. Set 0 to send none."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewConversationMaxChars}
+          value={c.ai.reviewConversationMaxChars}
+          min={0} max={100000} integer
+          onChange={v => set('ai', 'reviewConversationMaxChars', v)}
         />
         <Field cfgKey="ai.reviewNoteMaxChars"
           label="Review note length (chars)"
@@ -1224,6 +1233,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2} max={100} step={1}
           onChange={v => set('geometry', 'aspectRatioWarn', v)}
         />
+        <Field
+          label="High engine-memory threshold"
+          unit="% of 4 GB"
+          hint="Warns and resets the geometry engine above this heap use."
+          tooltip="The geometry kernel runs in WebAssembly, whose heap is capped at about 4 GB and never shrinks. When a run grows it past this share of the ceiling, the geometry warnings (shown to you and to the AI agent) flag the model as memory-heavy before it fails with 'memory access out of bounds', and the engine is restarted once it is idle so the next run starts on a fresh heap. Set 100 to turn both off."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.engineHeapHighPct}
+          value={c.geometry.engineHeapHighPct}
+          min={10} max={100} integer
+          onChange={v => set('geometry', 'engineHeapHighPct', v)}
+        />
       </Section>
 
       <Section title="Part detection">
@@ -1527,6 +1546,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.toastDurationMs}
           min={500} max={15_000} integer
           onChange={v => set('ui', 'toastDurationMs', v)}
+        />
+        <Field cfgKey="ui.exportColorMergeTolerance"
+          label="Export colour merging"
+          unit="ΔE"
+          hint="Default tolerance of the 3MF export's Filament colors step."
+          tooltip="Every distinct painted colour becomes its own filament in Bambu Studio / OrcaSlicer. The 3MF export opens a Filament colors step that merges near-identical shades (closer than this perceptual colour difference) into one filament. ~2 is barely noticeable; 10 merges colours that look the same on the model; 0 keeps every shade. You can always adjust it in the dialog."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.exportColorMergeTolerance}
+          value={c.ui.exportColorMergeTolerance}
+          min={0} max={30} integer
+          onChange={v => set('ui', 'exportColorMergeTolerance', v)}
         />
         <Field cfgKey="ui.undoToastDurationMs"
           label="Undo toast duration"

@@ -111,6 +111,10 @@ export interface AppConfig {
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
     reviewReferenceImages: number;
+    /** Max characters of the user's own chat messages sent to a review
+     *  (automatic or 👁), newest kept first. The agent's replies are never
+     *  sent. 0 = none (the automatic review still gets the latest request). */
+    reviewConversationMaxChars: number;
     /** Max characters of a manual (👁) review copied into the
      *  `[REVIEW from …]` session note the agent reads via getSessionContext.
      *  The review itself is always kept in full in the chat transcript. */
@@ -368,6 +372,10 @@ export interface AppConfig {
     deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
+    /** 3MF export "Filament colors" step: the merge tolerance (CIE76 ΔE) it opens
+     *  with — painted colours closer than this to a more-used colour are merged
+     *  into one filament. 0 = keep every distinct shade. */
+    exportColorMergeTolerance: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
     /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
@@ -474,6 +482,13 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+    /** Share of the ~4 GB WebAssembly heap ceiling (percent) at which a
+     *  manifold-js run counts as memory-heavy. Past it the geometry warnings
+     *  flag the model before it reaches "memory access out of bounds", and the
+     *  geometry Worker is reset once idle so the next run starts on a fresh,
+     *  unfragmented heap (WASM memory never shrinks on its own). 100 disables
+     *  both the warning and the reset. */
+    engineHeapHighPct: number;
   };
   segmentation: {
     /** Part detection: after an interactive STL import, try the automatic
@@ -586,6 +601,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
     reviewReferenceImages: 4,
+    reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
@@ -671,6 +687,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     undoToastDurationMs: 8000,
     deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
+    exportColorMergeTolerance: 10,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
@@ -704,6 +721,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+    engineHeapHighPct: 50,
   },
   segmentation: {
     autoDetectOnImport: true,
