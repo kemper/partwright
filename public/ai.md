@@ -272,6 +272,7 @@ partwright.setCodeView('mini'|'full'|'hidden') // Code pane: compact code map (d
 partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
+partwright.formatCode()              // Reformat the editor code (no run, no save) -> {changed, code}
 partwright.isAutoRunEnabled()        // Whether auto-run is active
 
 // Assembly view (all objects in a grid) -- see #assembly-view
@@ -329,7 +330,10 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
-await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
+await partwright.importMeshData(base64, filename, {sessionName?, target?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) -> {sessionId, target, object, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing). target: 'new-session' (default) | 'new-object' | 'current-object' -- see /ai/file-io.md
+await partwright.importVoxData(base64, filename, {sessionName?, target?})  // MagicaVoxel .vox bytes -> voxel code -> {sessionId, target, object, voxelCount}
+await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', sessionName?, target?})  // STEP bytes: exact BREP object (default) or tessellated mesh
+await partwright.importFromUrl(url, {target?, sessionName?, stepMode?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
@@ -379,7 +383,7 @@ partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
 partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
 partwright.paintNear({point, radius, color, name?})                // sphere selector (curved surfaces)
-partwright.listRegions() / clearColors() / undoLastPaint() / redoLastPaint()
+partwright.listRegions() / clearColors({kind?: 'all'|'image'}?) / undoClearColors() / undoLastPaint() / redoLastPaint()
 
 // Annotations — see readDoc("annotations")
 partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotations()

@@ -135,4 +135,167 @@ test.describe('Core API parity', () => {
     expect(probe!.message).toContain('[REDACTED]');
     expect(await pw(page, (p) => p.getDiagnosticLog({ level: 'fatal' }))).toHaveProperty('error');
   });
+
+  test('importMeshData / importVoxData / importStepData honour the import target', async ({ page }) => {
+    await boot(page, 'import-parity');
+    const stl = await pw(page, async (p) => {
+      await p.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10]);', 'cube');
+      return ((await p.exportSTLData()) as { base64: string }).base64;
+    }) as string;
+
+    const asObject = await page.evaluate(async (b64) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      return p.importMeshData(b64, 'cube.stl', { target: 'new-object' });
+    }, stl) as { target: string; object: { name: string }; isManifold: boolean };
+    expect(asObject.target).toBe('new-object');
+    expect(asObject.object.name).toBe('cube');
+    expect(asObject.isManifold).toBe(true);
+    expect(await pw(page, (p) => (p.listObjects() as unknown[]).length)).toBe(2);
+
+    const sessionBefore = await pw(page, (p) => (p.getSessionState() as { session: { id: string } }).session.id);
+    const composed = await page.evaluate(async (b64) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      return p.importMeshData(b64, 'cube2.stl', { target: 'current-object' });
+    }, stl) as { target: string; sessionId: string };
+    expect(composed.target).toBe('current-object');
+    expect(composed.sessionId).toBe(sessionBefore);
+    expect(await pw(page, (p) => (p.getGeometryData() as { componentCount: number }).componentCount)).toBeGreaterThanOrEqual(1);
+    expect(await pw(page, (p) => (p.listObjects() as unknown[]).length)).toBe(2);
+
+    expect(await page.evaluate(async (b64) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      return p.importMeshData(b64, 'cube.stl', { target: 'elsewhere' });
+    }, stl)).toHaveProperty('error');
+    expect(await pw(page, (p) => p.importMeshData('@@not-base64@@', 'x.stl'))).toHaveProperty('error');
+
+    // VOX round trip: a voxel object exported and re-imported as a new object.
+    const vox = await pw(page, async (p) => {
+      await p.createObject('voxels');
+      await p.setActiveLanguage('voxel');
+      await p.runAndSave("const v = api.voxels(); v.fillBox([0, 0, 0], [2, 2, 2], '#ff0000'); return v;", 'vox');
+      return ((await p.exportVOXData()) as { base64: string }).base64;
+    }) as string;
+    const voxImport = await page.evaluate(async (b64) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      return p.importVoxData(b64, 'cubes.vox', { target: 'new-object' });
+    }, vox) as { voxelCount: number; target: string };
+    expect(voxImport.target).toBe('new-object');
+    expect(voxImport.voxelCount).toBe(27);
+    expect(await pw(page, (p) => p.getActiveLanguage())).toBe('voxel');
+
+    // BREP can't be composed into an existing object — refused before parsing.
+    expect(await pw(page, (p) => p.importStepData('AAAA', 'part.step', { target: 'current-object' }))).toHaveProperty('error');
+    expect(await pw(page, (p) => p.importStepData('AAAA', 'part.step', { mode: 'wire' }))).toHaveProperty('error');
+  });
+
+  test('importStepData imports a STEP file as BREP or as a mesh', async ({ page }) => {
+    await boot(page, 'step-parity');
+    await pw(page, async (p) => {
+      await p.setActiveLanguage('replicad');
+      await p.runAndSave('const { BREP } = api; return BREP.box([10, 10, 10]);', 'box');
+    });
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      pw(page, (p) => p.exportSTEP('box.step')),
+    ]);
+    const bytes = await (await download.createReadStream()).toArray();
+    const b64 = Buffer.concat(bytes as Buffer[]).toString('base64');
+
+    const brep = await page.evaluate(async (data) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      const r = await p.importStepData(data, 'box.step', { target: 'new-object' });
+      return { r, lang: p.getActiveLanguage(), tris: (p.getGeometryData() as { triangleCount: number }).triangleCount };
+    }, b64) as { r: { target: string; mode: string; object: { name: string } }; lang: string; tris: number };
+    expect(brep.r).toMatchObject({ target: 'new-object', mode: 'brep' });
+    expect(brep.r.object.name).toBe('box');
+    expect(brep.lang).toBe('replicad');
+    expect(brep.tris).toBeGreaterThan(0);
+
+    const mesh = await page.evaluate(async (data) => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      const r = await p.importStepData(data, 'box.step', { mode: 'mesh', target: 'new-object' });
+      return { r, lang: p.getActiveLanguage(), objects: (p.listObjects() as unknown[]).length };
+    }, b64) as { r: { mode: string }; lang: string; objects: number };
+    expect(mesh.r.mode).toBe('mesh');
+    expect(mesh.lang).toBe('manifold-js');
+    expect(mesh.objects).toBe(3);
+  });
+
+  test('importFromUrl fetches remote files and decodes share links', async ({ page }) => {
+    await boot(page, 'url-parity');
+    const stl = await pw(page, async (p) => {
+      await p.runAndSave('const { Manifold } = api; return Manifold.cube([6, 6, 6]);', 'cube');
+      return ((await p.exportSTLData()) as { base64: string }).base64;
+    }) as string;
+    const cors = { 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
+    await page.route('https://parity.example.test/**', async (route) => {
+      const u = route.request().url();
+      if (u.endsWith('.stl')) await route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'model/stl' }, body: Buffer.from(stl, 'base64') });
+      else await route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'image/png' }, body: Buffer.from([0x89, 0x50, 0x4e, 0x47]) });
+    });
+
+    const r = await pw(page, (p) => p.importFromUrl('https://parity.example.test/models/widget.stl', { target: 'new-object' })) as { kind: string; source: string; target: string; object: { name: string } };
+    expect(r).toMatchObject({ kind: 'remote', source: 'STL', target: 'new-object' });
+    expect(r.object.name).toBe('widget');
+    expect(await pw(page, (p) => (p.listObjects() as unknown[]).length)).toBe(2);
+
+    const img = await pw(page, (p) => p.importFromUrl('https://parity.example.test/photo.png')) as { error: string };
+    expect(img.error).toMatch(/importImageAsRelief/);
+    expect(await pw(page, (p) => p.importFromUrl('file:///etc/passwd'))).toHaveProperty('error');
+
+    const shared = await pw(page, async (p) => {
+      const before = (p.getSessionState() as { session: { id: string } }).session.id;
+      const { url } = await p.getShareLink() as { url: string };
+      const res = await p.importFromUrl(url) as { kind: string; sessionId: string };
+      return { before, res };
+    }) as { before: string; res: { kind: string; sessionId: string } };
+    expect(shared.res.kind).toBe('share');
+    expect(shared.res.sessionId).not.toBe(shared.before);
+  });
+
+  test('undoClearColors, annotation strokes/redo/mode and formatCode', async ({ page }) => {
+    await boot(page, 'misc-parity');
+    const paint = await pw(page, async (p) => {
+      await p.run('const { Manifold } = api; return Manifold.cube([10, 10, 10]);');
+      await p.paintInBox({ box: { min: [-1, -1, 9], max: [11, 11, 11] }, color: [1, 0, 0] });
+      const before = (p.listRegions() as unknown[]).length;
+      await p.clearColors();
+      const cleared = (p.listRegions() as unknown[]).length;
+      const undo = await p.undoClearColors();
+      const again = await p.undoClearColors();
+      return { before, cleared, undo, again, after: (p.listRegions() as unknown[]).length };
+    }) as { before: number; cleared: number; undo: { restored: boolean }; again: { error?: string }; after: number };
+    expect(paint.before).toBe(1);
+    expect(paint.cleared).toBe(0);
+    expect(paint.undo.restored).toBe(true);
+    expect(paint.after).toBe(1);
+    expect(paint.again.error).toBeTruthy();
+    expect(await pw(page, (p) => p.clearColors({ kind: 'image' }))).toMatchObject({ cleared: true, kind: 'image' });
+    expect(await pw(page, (p) => (p.listRegions() as unknown[]).length)).toBe(1);
+    expect(await pw(page, (p) => p.clearColors({ kind: 'stamps' }))).toHaveProperty('error');
+
+    const stroke = await pw(page, (p) => p.addStrokeAnnotation({ points: [[0, -6, 2], [5, -6, 6], [10, -6, 2]], color: [0, 0, 1], width: 6 })) as { id: string; pointCount: number };
+    expect(stroke.pointCount).toBe(3);
+    const strokes = await pw(page, (p) => p.listAnnotations()) as { id: string; width: number }[];
+    expect(strokes).toHaveLength(1);
+    expect(strokes[0]).toMatchObject({ id: stroke.id, width: 6 });
+    expect(await pw(page, (p) => p.addStrokeAnnotation({ points: [[0, 0, 0]] }))).toHaveProperty('error');
+    await pw(page, (p) => p.undoAnnotation());
+    expect(await pw(page, (p) => p.redoAnnotation())).toMatchObject({ redone: true, remaining: 1 });
+    expect(await pw(page, (p) => p.redoAnnotation())).toMatchObject({ redone: false });
+
+    expect(await pw(page, (p) => p.setAnnotateMode('text'))).toEqual({ mode: 'text' });
+    await expect(page.locator('#annotate-picker-panel')).toBeVisible();
+    expect(await pw(page, (p) => p.getAnnotateMode())).toBe('text');
+    expect(await pw(page, (p) => p.setAnnotateMode(null))).toEqual({ mode: null });
+    await expect(page.locator('#annotate-picker-panel')).toBeHidden();
+    expect(await pw(page, (p) => p.setAnnotateMode('eraser'))).toHaveProperty('error');
+
+    const fmt = await pw(page, (p) => {
+      p.setCode('const { Manifold } = api;\nreturn Manifold.cube([1,1,1]);');
+      return p.formatCode();
+    }) as { changed: boolean; code: string };
+    expect(typeof fmt.changed).toBe('boolean');
+    expect(fmt.code).toContain('Manifold.cube([1, 1, 1])');
+  });
 });

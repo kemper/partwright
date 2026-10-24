@@ -507,6 +507,26 @@ export function forceDeactivate(): void {
   if (isPenActive()) deactivatePen();
 }
 
+export type AnnotateSubMode = 'pen' | 'text' | 'select';
+
+/** The active annotate sub-mode, or null when Annotate is closed. */
+export function getAnnotateSubMode(): AnnotateSubMode | null {
+  if (isPenActive()) return 'pen';
+  if (isTextActive()) return 'text';
+  if (isSelectActive()) return 'select';
+  return null;
+}
+
+/** Open Annotate in a sub-mode (the panel's Pen / Text / Select tabs), or
+ *  close it with null — the same transitions the toolbar button and tabs make,
+ *  so the panel, plane outline and exclusive-mode handoff all follow. */
+export function setAnnotateSubMode(mode: AnnotateSubMode | null): void {
+  if (mode === null) { closeAnnotatePanel(); return; }
+  if (mode === 'pen') selectPenSubMode();
+  else if (mode === 'text') selectTextSubMode();
+  else selectSelectSubMode();
+}
+
 /** Returns true if any annotate sub-mode (pen/text/select) is active. */
 export function isAnnotateOpen(): boolean {
   return isAnyActive();

@@ -19,6 +19,8 @@ partwright.removeRegion(id) // delete one region by id (older mistake)
 partwright.hideRegion(id)   // toggle a region off in the viewport without deleting it; exports still include it
 partwright.showRegion(id)   // re-show a previously hidden region
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
+partwright.clearColors({ kind: 'image' })  // remove only image stamps (the Image Paint panel's Clear)
+partwright.undoClearColors()  // bring back what the last clear removed (until the next paint) -> {restored, regions}
 ```
 
 **Per-region visibility vs. delete.** `setRegionVisibility(id, false)` (or `hideRegion(id)`) toggles a region off in the *viewport* — the painted triangles render unpainted while the region is hidden, but the region itself stays in `listRegions()` and the `visible` flag is persisted across save/load. This is the right tool for "I want to see what the model looks like without this region" or "compare paint vs. no-paint." GLB / 3MF exports always include hidden regions — visibility is a viewer-state flag, not an export filter. Use `removeRegion(id)` when you actually want to delete a region permanently.

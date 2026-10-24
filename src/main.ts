@@ -121,6 +121,7 @@ import {
   filenameFromUrl,
   classifyRemoteResource,
   ensureExtensionForSource,
+  parseImportUrlInput,
   MAX_REMOTE_BYTES,
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
@@ -205,7 +206,7 @@ import { analyzePrintability, type PrintabilityReport } from './geometry/printab
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
-import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
+import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu, setAnnotateSubMode, getAnnotateSubMode } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
   getStrokes as getAnnotationStrokes,
@@ -217,16 +218,18 @@ import {
   loadFromSerialized as loadAnnotations,
   removeLastAnnotation,
   removeAnnotationById,
+  redoLastStroke,
+  canRedoStroke,
   type SerializedAnnotation,
 } from './annotations/annotations';
 import {
   setAnnotationsVisible as setAnnotationsVisibleOverlay,
   isAnnotationsVisible as isAnnotationsVisibleOverlay,
 } from './annotations/annotationOverlay';
-import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
+import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth, addStrokeFromPoints } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, canUndoClear, undoClear, clearRegionsBySource, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
@@ -2759,6 +2762,20 @@ function parseVersionTarget(
   return { kind: 'id', value: id };
 }
 
+/** Decode an API base64 payload (bare base64 or a `data:` URL; whitespace is
+ *  ignored) to bytes, or null when it isn't valid base64. */
+function decodeBase64Bytes(base64: string): Uint8Array | null {
+  try {
+    const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
+    const binary = atob(raw);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve a part-target arg — a part id string, or { id } / { name } — to a
  *  Part in the active session. Returns { error } (with guidance) on a miss. */
 function resolvePartTarget(target: unknown, caller: string): Part | { error: string } {
@@ -3844,6 +3861,12 @@ async function main() {
    *  import. Throws a human-readable message on any failure (the modal surfaces
    *  it inline). */
   async function importFromShareHash(hash: string): Promise<void> {
+    await importValidatedSession(await decodeShareHashPayload(hash), 'shared link');
+  }
+
+  /** Decode + validate a share hash into a session payload (no network).
+   *  Throws a human-readable message on any failure. */
+  async function decodeShareHashPayload(hash: string): Promise<ExportedSession> {
     let payload: ExportedSession;
     try {
       const parsed = await decodeShare(hash);
@@ -3856,7 +3879,7 @@ async function main() {
       }
       throw new Error('That share link is invalid or corrupted.');
     }
-    await importValidatedSession(payload, 'shared link');
+    return payload;
   }
 
   /** Show the destination chooser (new session vs merge, the latter only when a
@@ -3922,6 +3945,20 @@ async function main() {
    *  itself routes JSON → the session-import path). Never evals fetched content.
    *  Throws a human-readable message on any failure. */
   async function importFromRemoteUrl(url: string): Promise<void> {
+    const file = await fetchRemoteImportFile(url);
+    const ok = await handleImportFile(file);
+    if (!ok) {
+      // handleImportFile surfaces its own alert on hard failure; a soft "false"
+      // (e.g. user cancelled a sub-modal) shouldn't be reported as an error.
+      throw new Error('Import was cancelled or the file could not be read.');
+    }
+  }
+
+  /** The fetch half of importFromRemoteUrl (shared with
+   *  `partwright.importFromUrl`): timeout + redirect-scheme check + size cap +
+   *  type classification, wrapped in a File named so handleImportFile routes
+   *  it. Throws a human-readable message on any failure. */
+  async function fetchRemoteImportFile(url: string): Promise<File> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
     let res: Response;
@@ -3990,13 +4027,7 @@ async function main() {
     clearTimeout(timer);
 
     const safeName = ensureExtensionForSource(filename, source);
-    const file = new File([bytes], safeName, { type: contentType ?? '' });
-    const ok = await handleImportFile(file);
-    if (!ok) {
-      // handleImportFile surfaces its own alert on hard failure; a soft "false"
-      // (e.g. user cancelled a sub-modal) shouldn't be reported as an error.
-      throw new Error('Import was cancelled or the file could not be read.');
-    }
+    return new File([bytes], safeName, { type: contentType ?? '' });
   }
 
   /** Read a fetch Response body into a Uint8Array, aborting once the streamed
@@ -4209,40 +4240,11 @@ async function main() {
     const target = await showStepImportTargetModal({ filename: file.name, hasActiveSessionWithWork: hasWork });
     if (target === null) return false;
 
-    const baseName = file.name.replace(/\.(step|stp)$/i, '');
     if (target === 'brep') {
-      // The canonical "return the import" starter so the user can iterate
-      // immediately.
-      const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
-      // Push this file's shape into the worker's pending-imports list. Drop any
-      // previously-imported BREP shapes first — otherwise the list accumulates
-      // and the seeded `return api.imports[0]` would render the *first* file.
-      // (Belt-and-suspenders with the session-change clear when a new session
-      // is created; the sole guard when importing into the active session.)
-      const pushBrepShape = async (): Promise<boolean> => {
-        try {
-          await clearBrepImports();
-          await importSTEPToBrep(file, file.name);
-          return true;
-        } catch (e) {
-          showToast(`Failed to parse STEP file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
-          return false;
-        }
-      };
-
-      // No session open (or the user picks "new session"): open a fresh BREP
-      // session named after the file. Switch the editor to the BREP language
-      // FIRST so the session-change listener's clearBrepImports/clearBrepShape
-      // fires (and is enqueued on the worker) before we push this file's shape —
-      // otherwise it would wipe the just-imported shape. switchLanguage resets
-      // the editor to a stub starter; we overwrite that below.
       const openInNewSession = async (): Promise<boolean> => {
-        if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-        await createSession(baseName, 'replicad');
-        if (!(await pushBrepShape())) return false;
-        setValue(starter);
-        runCode(starter);
-        return true;
+        const err = await openStepBrepInNewSession(file, { awaitRun: false });
+        if (err) showToast(err, { variant: 'warn', source: 'import' });
+        return !err;
       };
 
       // No session, or the only part is an expendable starter: open a fresh BREP
@@ -4263,55 +4265,208 @@ async function main() {
       if (!choice) return false;
       if (choice === 'new-session') return openInNewSession();
 
-      // new-part: add a BREP part to the current session, seed the starter, run
-      // it, and save v1 tagged `replicad`. preserveCurrentEditsIfNeeded first so
-      // the current part's unsaved work isn't lost. Parse the STEP shape BEFORE
-      // creating the part — a parse failure must not leave a freshly-created
-      // empty part orphaned as the current part.
-      await preserveCurrentEditsIfNeeded();
-      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-      if (!(await pushBrepShape())) return false;
-      const part = await createPart(baseName);
-      if (!part) return false;
-      // Wipe the outgoing part's paint state (color regions, model-color
-      // underlay, annotations) BEFORE running/saving the new part — otherwise
-      // the leftover regions are re-resolved onto the imported mesh and
-      // serialized into the new part's version, so it "inherits" the previous
-      // part's colors. (The mesh path does this via applyImportWrapper; the
-      // voxel path via applyCodeToCurrentPart — this hand-written BREP branch
-      // was the one path that missed it.)
-      cancelVoxelPaintIfActive();
-      dropPaintState();
-      setValue(starter);
-      await runCodeSync(starter);
-      const thumbnail = await captureThumbnail();
-      await saveVersion(starter, getGeometryDataObj(), thumbnail, 'imported', undefined, { force: true });
-      return true;
+      const err = await addStepBrepAsNewPart(file);
+      if (err) showToast(err, { variant: 'warn', source: 'import' });
+      return !err;
     }
 
     // manifold-js path: parse + tessellate via the worker, then drop the
     // mesh through the same path that STL imports use.
+    const parsed = await tessellateStepFile(file);
+    if (typeof parsed === 'string') {
+      showToast(parsed, { variant: 'warn', source: 'import' });
+      return false;
+    }
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    return placeImportedMesh(parsed, file.name);
+  }
+
+  /** The canonical "return the import" starter for a BREP STEP import, so the
+   *  user can iterate immediately. */
+  function stepBrepStarter(filename: string): string {
+    return `// Imported from ${filename}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
+  }
+
+  /** Push a STEP file's shape into the worker's pending-imports list. Drop any
+   *  previously-imported BREP shapes first — otherwise the list accumulates
+   *  and the seeded `return api.imports[0]` would render the *first* file.
+   *  (Belt-and-suspenders with the session-change clear when a new session
+   *  is created; the sole guard when importing into the active session.)
+   *  Returns an error message, or null on success. */
+  async function pushStepBrepShape(file: File): Promise<string | null> {
+    try {
+      await clearBrepImports();
+      await importSTEPToBrep(file, file.name);
+      return null;
+    } catch (e) {
+      return `Failed to parse STEP file: ${(e as Error).message}`;
+    }
+  }
+
+  /** Open a fresh BREP session named after a STEP file. Switch the editor to
+   *  the BREP language FIRST so the session-change listener's
+   *  clearBrepImports/clearBrepShape fires (and is enqueued on the worker)
+   *  before we push this file's shape — otherwise it would wipe the
+   *  just-imported shape. switchLanguage resets the editor to a stub starter;
+   *  we overwrite that below. The UI fires the run (`awaitRun: false`); the
+   *  API awaits it. Returns an error message, or null. */
+  async function openStepBrepInNewSession(file: File, opts: { awaitRun: boolean; sessionName?: string }): Promise<string | null> {
+    const starter = stepBrepStarter(file.name);
+    if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+    await createSession(opts.sessionName ?? file.name.replace(/\.(step|stp)$/i, ''), 'replicad');
+    const err = await pushStepBrepShape(file);
+    if (err) return err;
+    setValue(starter);
+    if (opts.awaitRun) await runCodeSync(starter);
+    else runCode(starter);
+    return null;
+  }
+
+  /** Add a STEP file as a new BREP part of the current session: seed the
+   *  starter, run it, and save v1 tagged `replicad`. preserveCurrentEditsIfNeeded
+   *  first so the current part's unsaved work isn't lost. Parse the STEP shape
+   *  BEFORE creating the part — a parse failure must not leave a
+   *  freshly-created empty part orphaned as the current part. Returns an error
+   *  message, or null. */
+  async function addStepBrepAsNewPart(file: File): Promise<string | null> {
+    const starter = stepBrepStarter(file.name);
+    await preserveCurrentEditsIfNeeded();
+    if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+    const err = await pushStepBrepShape(file);
+    if (err) return err;
+    const part = await createPart(file.name.replace(/\.(step|stp)$/i, ''));
+    if (!part) return 'Could not create a new object (no active session).';
+    // Wipe the outgoing part's paint state (color regions, model-color
+    // underlay, annotations) BEFORE running/saving the new part — otherwise
+    // the leftover regions are re-resolved onto the imported mesh and
+    // serialized into the new part's version, so it "inherits" the previous
+    // part's colors. (The mesh path does this via applyImportWrapper; the
+    // voxel path via applyCodeToCurrentPart — this hand-written BREP branch
+    // was the one path that missed it.)
+    cancelVoxelPaintIfActive();
+    dropPaintState();
+    setValue(starter);
+    await runCodeSync(starter);
+    const thumbnail = await captureThumbnail();
+    await saveVersion(starter, getGeometryDataObj(), thumbnail, 'imported', undefined, { force: true });
+    return null;
+  }
+
+  /** Parse + tessellate a STEP file via the worker into an import-ready mesh.
+   *  Mirrors the STL flow: try to construct a Manifold from the tessellation
+   *  so boolean / paint downstream tools work; fall back to render-only if the
+   *  OCCT mesh isn't watertight. Returns the parsed mesh or an error message. */
+  async function tessellateStepFile(file: File): Promise<ParsedSTL | string> {
     let mesh: MeshData;
     try {
       mesh = await importSTEPToMesh(file);
     } catch (e) {
-      showToast(`Failed to parse STEP file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
-      return false;
+      return `Failed to parse STEP file: ${(e as Error).message}`;
     }
-    if (!mesh || mesh.numTri === 0) {
-      showToast(`STEP file produced no geometry: ${file.name}`, { variant: 'warn', source: 'import' });
-      return false;
-    }
-    // Mirror STL flow: try to construct a Manifold from the tessellation so
-    // boolean / paint downstream tools work; fall back to render-only if
-    // the OCCT mesh isn't watertight.
+    if (!mesh || mesh.numTri === 0) return `STEP file produced no geometry: ${file.name}`;
     const trial = tryConstructManifold(mesh);
-    const parsed: ParsedSTL = {
-      mesh: toImportedMesh(file.name, mesh, 'step'),
-      isManifold: trial.ok,
-    };
-    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-    return placeImportedMesh(parsed, file.name);
+    return { mesh: toImportedMesh(file.name, mesh, 'step'), isManifold: trial.ok };
+  }
+
+  // === Headless import placement (window.partwright import* methods) ===
+  // The API twin of the import-target modal: the caller names the target
+  // instead of picking it in a dialog.
+  //   'new-session'    — a fresh session (the default; the original API behaviour)
+  //   'new-object'     — a new object in the current session (becomes current)
+  //   'current-object' — combine into the current object (a mesh is composed
+  //                      with its geometry); a blank starter object is replaced
+  type ApiImportTarget = 'new-session' | 'new-object' | 'current-object';
+  const API_IMPORT_TARGETS = ['new-session', 'new-object', 'current-object'] as const;
+  type ApiImportResult = { target: ApiImportTarget; sessionId: string; object: { id: string; name: string } | null };
+
+  function apiImportResult(target: ApiImportTarget): ApiImportResult {
+    const s = getState();
+    return { target, sessionId: s.session?.id ?? '', object: s.currentPart ? { id: s.currentPart.id, name: s.currentPart.name } : null };
+  }
+
+  function apiImportSessionCheck(target: ApiImportTarget, caller: string): { error: string } | null {
+    if (isReadOnlyViewer() || isSharedPreview()) return { error: `${caller}: importing is disabled in the read-only viewer.` };
+    if (target !== 'new-session' && !getState().session) {
+      return { error: `${caller}: target '${target}' needs an open session — call createSession() first, or use target 'new-session'.` };
+    }
+    return null;
+  }
+
+  /** Place a parsed mesh at an explicit API target. */
+  async function placeMeshAtApiTarget(parsed: ParsedSTL, filename: string, target: ApiImportTarget, sessionName: string, caller: string): Promise<ApiImportResult | { error: string }> {
+    const blocked = apiImportSessionCheck(target, caller);
+    if (blocked) return blocked;
+    if (target === 'new-session') {
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+    } else if (target === 'new-object') {
+      await preserveCurrentEditsIfNeeded();
+      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
+    } else if (currentPartIsExpendable()) {
+      await applyImportWrapper([parsed.mesh], parsed.isManifold);
+    } else {
+      if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
+      await preserveCurrentEditsIfNeeded();
+      if (!(await composeMeshIntoCurrentPart(parsed.mesh))) return { error: `${caller}: couldn't read the current object's geometry to combine.` };
+    }
+    return apiImportResult(target);
+  }
+
+  /** Place generated import code (a voxel grid) at an explicit API target. */
+  async function placeCodeAtApiTarget(code: string, language: Language, name: string, target: ApiImportTarget, caller: string): Promise<ApiImportResult | { error: string }> {
+    const blocked = apiImportSessionCheck(target, caller);
+    if (blocked) return blocked;
+    if (target === 'new-session') {
+      await importCodePayload(code, language, name);
+    } else if (target === 'new-object') {
+      await preserveCurrentEditsIfNeeded();
+      await seedNewPartWithCode(code, name, language);
+    } else if (currentPartIsExpendable()) {
+      await applyCodeToCurrentPart(code, language);
+    } else {
+      await preserveCurrentEditsIfNeeded();
+      const baked = await bakeCodeComponent(code, language, name);
+      if (!baked) return { error: `${caller}: couldn't read the imported geometry to combine.` };
+      const cur = getState().currentPart;
+      const curBaked = cur ? await bakePartComponents(cur.id, cur.name) : null;
+      if (!curBaked) return { error: `${caller}: couldn't read the current object's geometry to combine.` };
+      await applyImportWrapper([...curBaked, ...baked], true);
+    }
+    return apiImportResult(target);
+  }
+
+  /** Import a STEP file at an explicit API target: `'brep'` keeps the exact
+   *  BREP shape (new session or new object only — a BREP shape can't be
+   *  combined into an existing object), `'mesh'` tessellates it. */
+  async function importStepAtApiTarget(file: File, mode: 'brep' | 'mesh', target: ApiImportTarget, sessionName: string, caller: string): Promise<ApiImportResult | { error: string }> {
+    const blocked = apiImportSessionCheck(target, caller);
+    if (blocked) return blocked;
+    if (mode === 'mesh') {
+      const parsed = await tessellateStepFile(file);
+      if (typeof parsed === 'string') return { error: `${caller}: ${parsed}` };
+      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+      return placeMeshAtApiTarget(parsed, file.name, target, sessionName, caller);
+    }
+    if (target === 'current-object') return { error: `${caller}: a BREP shape can't be combined into an existing object — use target 'new-object' or 'new-session', or mode 'mesh'.` };
+    const err = target === 'new-session'
+      ? await openStepBrepInNewSession(file, { awaitRun: true, sessionName })
+      : await addStepBrepAsNewPart(file);
+    if (err) return { error: `${caller}: ${err}` };
+    return apiImportResult(target);
+  }
+
+  /** Validate the shared `{ target?, sessionName? }` import options. */
+  function parseApiImportOpts(opts: unknown, caller: string, extraKeys: readonly string[] = []): { target: ApiImportTarget; sessionName?: string; o: Record<string, unknown> } | { error: string } {
+    const r = guard(() => {
+      const o = assertObject(opts ?? {}, `${caller}(opts)`)!;
+      assertNoUnknownKeys(o, ['target', 'sessionName', ...extraKeys], `${caller}(opts)`);
+      if (o.target !== undefined) assertEnum(o.target, API_IMPORT_TARGETS, `${caller}(opts).target`);
+      assertString(o.sessionName, `${caller}(opts).sessionName`, { optional: true, allowEmpty: false });
+      return o;
+    });
+    // assertNoUnknownKeys rejects an `error` key, so 'error' here is guard's.
+    if ('error' in r) return { error: String(r.error) };
+    const o = r;
+    return { target: (o.target as ApiImportTarget | undefined) ?? 'new-session', sessionName: o.sessionName as string | undefined, o };
   }
 
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
@@ -11968,31 +12123,28 @@ async function main() {
      *  (display + export only — no booleans/paint/slicing), reflected by
      *  `isManifold: false` in the return. `base64` may be a bare base64 string or
      *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
-     *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
+     *  the new session's name. `opts.target` picks where it lands, like the
+     *  import-target dialog: 'new-session' (default), 'new-object' (a new
+     *  object in the current session) or 'current-object' (composed with the
+     *  current object's geometry; a blank starter object is replaced).
+     *  Returns `{ sessionId, target, object, isManifold, triangleCount,
      *  vertexCount }` or `{ error }`. */
-    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string; target?: 'new-session' | 'new-object' | 'current-object' } = {}) {
       const check = guard(() => {
         assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
         assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
-        assertObject(opts, 'importMeshData(opts)', { optional: true });
-        assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      let bytes: Uint8Array;
-      try {
-        const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
-        const binary = atob(raw);
-        bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      } catch {
-        return { error: 'importMeshData(base64): not valid base64-encoded data.' };
-      }
+      const po = parseApiImportOpts(opts, 'importMeshData');
+      if ('error' in po) return po;
+      const bytes = decodeBase64Bytes(base64);
+      if (!bytes) return { error: 'importMeshData(base64): not valid base64-encoded data.' };
       const parsed = parseSTLBytes(bytes, filename);
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
-      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
-      const { sessionId } = await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      const placed = await placeMeshAtApiTarget(parsed, filename, po.target, po.sessionName ?? filename.replace(/\.[^.]+$/, ''), 'importMeshData');
+      if ('error' in placed) return placed;
       return {
-        sessionId,
+        ...placed,
         isManifold: parsed.isManifold,
         triangleCount: parsed.mesh.numTri,
         vertexCount: parsed.mesh.numVert,
@@ -15293,6 +15445,200 @@ async function main() {
       });
     },
 
+    /** Import a MagicaVoxel `.vox` file from base64 bytes (bare or `data:`
+     *  URL) as voxel code — the Import → .vox flow. `opts.target`:
+     *  'new-session' (default), 'new-object', or 'current-object' (baked and
+     *  composed with the current object's mesh; a blank starter is replaced).
+     *  -> { sessionId, target, object, voxelCount } or { error } */
+    async importVoxData(base64: string, filename: string, opts: { sessionName?: string; target?: 'new-session' | 'new-object' | 'current-object' } = {}) {
+      const check = guard(() => {
+        assertString(base64, 'importVoxData(base64)', { allowEmpty: false });
+        assertString(filename, 'importVoxData(filename)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const po = parseApiImportOpts(opts, 'importVoxData');
+      if ('error' in po) return po;
+      const bytes = decodeBase64Bytes(base64);
+      if (!bytes) return { error: 'importVoxData(base64): not valid base64-encoded data.' };
+      let grid;
+      try {
+        grid = parseVox(bytes);
+      } catch (e) {
+        return { error: `importVoxData: could not read "${filename}" as a .vox file — ${(e as Error).message}` };
+      }
+      if (grid.size === 0) return { error: `importVoxData: "${filename}" contained no voxels.` };
+      const code = generateVoxelImportCode(grid, filename);
+      const placed = await placeCodeAtApiTarget(code, 'voxel', po.sessionName ?? filename.replace(/\.vox$/i, ''), po.target, 'importVoxData');
+      if ('error' in placed) return placed;
+      return { ...placed, voxelCount: grid.size };
+    },
+
+    /** Import a STEP (.step/.stp) file from base64 bytes. `opts.mode`:
+     *  'brep' (default — the exact BREP shape in a replicad object, STEP
+     *  export kept) or 'mesh' (tessellated into a manifold-js mesh import).
+     *  `opts.target` as importMeshData; a BREP shape can't go to
+     *  'current-object'. -> { sessionId, target, object, mode } or { error } */
+    async importStepData(base64: string, filename: string, opts: { mode?: 'brep' | 'mesh'; sessionName?: string; target?: 'new-session' | 'new-object' | 'current-object' } = {}) {
+      const check = guard(() => {
+        assertString(base64, 'importStepData(base64)', { allowEmpty: false });
+        assertString(filename, 'importStepData(filename)', { allowEmpty: false });
+        if (opts && typeof opts === 'object' && opts.mode !== undefined) assertEnum(opts.mode, ['brep', 'mesh'] as const, 'importStepData(opts).mode');
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const po = parseApiImportOpts(opts, 'importStepData', ['mode']);
+      if ('error' in po) return po;
+      const bytes = decodeBase64Bytes(base64);
+      if (!bytes) return { error: 'importStepData(base64): not valid base64-encoded data.' };
+      const name = /\.(step|stp)$/i.test(filename) ? filename : `${filename}.step`;
+      const mode = opts?.mode ?? 'brep';
+      const placed = await importStepAtApiTarget(new File([bytes], name), mode, po.target, po.sessionName ?? name.replace(/\.(step|stp)$/i, ''), 'importStepData');
+      if ('error' in placed) return placed;
+      return { ...placed, mode };
+    },
+
+    /** Import from a URL — the Import → From URL… dialog, headless. A
+     *  Partwright share link (or raw `#share=…`) is decoded locally (no
+     *  network) into a new session. An http(s) URL is fetched in the browser
+     *  (same CORS/CSP rules, 25 MB cap, import.remoteFetchTimeoutMs timeout)
+     *  and routed by type: .partwright.json → new session; .stl / .step / .vox
+     *  → `opts.target` as importMeshData (STEP as BREP unless `stepMode:
+     *  'mesh'`); .js / .scad → new session, new object, or (current-object)
+     *  replaces the current object's code. Images and SVGs need their own
+     *  converters: use importImageAsRelief / importImageAsVoxels /
+     *  importSvgAsRelief with the URL. -> { kind, source?, sessionId, target?, object? } or { error } */
+    async importFromUrl(url: string, opts: { target?: 'new-session' | 'new-object' | 'current-object'; sessionName?: string; stepMode?: 'brep' | 'mesh' } = {}): Promise<Record<string, unknown>> {
+      const check = guard(() => {
+        assertString(url, 'importFromUrl(url)', { allowEmpty: false });
+        if (opts && typeof opts === 'object' && opts.stepMode !== undefined) assertEnum(opts.stepMode, ['brep', 'mesh'] as const, 'importFromUrl(opts).stepMode');
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const po = parseApiImportOpts(opts, 'importFromUrl', ['stepMode']);
+      if ('error' in po) return po;
+      if (isReadOnlyViewer() || isSharedPreview()) return { error: 'importFromUrl: importing is disabled in the read-only viewer.' };
+      const parsed = parseImportUrlInput(url);
+      if (parsed.kind === 'invalid') return { error: `importFromUrl: ${parsed.reason}` };
+      if (parsed.kind === 'share') {
+        if (po.target !== 'new-session') return { error: "importFromUrl: a share link always imports as a new session — omit target or use 'new-session'." };
+        try {
+          const payload = await decodeShareHashPayload(parsed.hash);
+          const { sessionId } = await importSessionPayload(payload);
+          return { kind: 'share', sessionId };
+        } catch (e) {
+          return { error: `importFromUrl: ${(e as Error).message}` };
+        }
+      }
+      let file: File;
+      try {
+        file = await fetchRemoteImportFile(parsed.url);
+      } catch (e) {
+        return { error: `importFromUrl: ${(e as Error).message}` };
+      }
+      const source = classifyImportSource(file.name);
+      const name = po.sessionName ?? file.name.replace(/\.[^.]+$/, '');
+      const remote = { kind: 'remote' as const, source, filename: file.name };
+      if (source === 'JSON') {
+        if (po.target !== 'new-session') return { error: "importFromUrl: a session file always imports as a new session — omit target or use 'new-session'." };
+        const r = await partwrightAPI.importSessionData(await file.text());
+        return 'error' in r ? { error: `importFromUrl: ${r.error}` } : { ...remote, ...r };
+      }
+      let placed: ApiImportResult | { error: string };
+      if (source === 'STL') {
+        const mesh = parseSTLBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+        if (!mesh) return { error: `importFromUrl: could not parse "${file.name}" as an STL file.` };
+        placed = await placeMeshAtApiTarget(mesh, file.name, po.target, name, 'importFromUrl');
+      } else if (source === 'STEP') {
+        placed = await importStepAtApiTarget(file, opts?.stepMode ?? 'brep', po.target, name, 'importFromUrl');
+      } else if (source === 'VOX') {
+        let grid;
+        try { grid = parseVox(new Uint8Array(await file.arrayBuffer())); } catch (e) { return { error: `importFromUrl: could not read "${file.name}" as a .vox file — ${(e as Error).message}` }; }
+        if (grid.size === 0) return { error: `importFromUrl: "${file.name}" contained no voxels.` };
+        placed = await placeCodeAtApiTarget(generateVoxelImportCode(grid, file.name), 'voxel', name, po.target, 'importFromUrl');
+      } else if (source === 'JS' || source === 'SCAD') {
+        const code = await file.text();
+        const lang: Language = source === 'SCAD' ? 'scad' : 'manifold-js';
+        const blocked = apiImportSessionCheck(po.target, 'importFromUrl');
+        if (blocked) return blocked;
+        if (po.target === 'new-session') await importCodePayload(code, lang, name);
+        else if (po.target === 'new-object') { await preserveCurrentEditsIfNeeded(); await seedNewPartWithCode(code, name, lang); }
+        else { await preserveCurrentEditsIfNeeded(); await applyCodeToCurrentPart(code, lang); }
+        placed = apiImportResult(po.target);
+      } else {
+        return { error: `importFromUrl: "${file.name}" is an ${source === 'SVG' ? 'SVG' : 'image'} — convert it with ${source === 'SVG' ? 'importSvgAsRelief({svgText})' : 'importImageAsRelief({src: url}) or importImageAsVoxels(url)'} instead.` };
+      }
+      if ('error' in placed) return placed;
+      return { ...remote, ...placed };
+    },
+
+    /** Undo the last Clear (all colors, or the image-stamp clear) — the paint
+     *  panel's "Undo clear". Only possible until the next paint.
+     *  -> { restored: true, regions } or { error } */
+    undoClearColors() {
+      if (!canUndoClear()) return { error: 'undoClearColors: nothing to restore — there was no Clear since the last paint.' };
+      withSyncReconcile(() => undoClear());
+      scheduleColorRefresh();
+      syncLockState();
+      return { restored: true, regions: getRegions().length };
+    },
+
+    /** Add a freehand stroke annotation through world-space `points`
+     *  ([[x,y,z], …], at least 2) — the Annotate pen, headless. `color` RGB
+     *  0..1 and `width` px default to the pen's current values. The stroke
+     *  records the current camera so restoreAnnotationView() can return to it.
+     *  -> { id, pointCount } or { error } */
+    addStrokeAnnotation(opts: { points: [number, number, number][]; color?: [number, number, number]; width?: number }) {
+      const check = guard(() => {
+        const o = assertObject(opts, 'addStrokeAnnotation(opts)')!;
+        assertNoUnknownKeys(o, ['points', 'color', 'width'], 'addStrokeAnnotation(opts)');
+        const pts = assertArray(o.points, 'addStrokeAnnotation(opts).points');
+        if (pts.length < 2) throw new ValidationError('addStrokeAnnotation(opts).points needs at least 2 [x, y, z] points. See /ai.md#argument-validation');
+        pts.forEach((p, i) => assertNumberTuple(p, 3, `addStrokeAnnotation(opts).points[${i}]`));
+        if (o.color !== undefined) {
+          const c = assertNumberTuple(o.color, 3, 'addStrokeAnnotation(opts).color');
+          c.forEach((n, i) => assertNumber(n, `addStrokeAnnotation(opts).color[${i}]`, { min: 0, max: 1 }));
+        }
+        assertNumber(o.width, 'addStrokeAnnotation(opts).width', { optional: true, min: 0.5, max: 64 });
+        return o;
+      });
+      if ('error' in check) return check;
+      const stroke = addStrokeFromPoints({ points: opts.points, color: opts.color, width: opts.width });
+      return { id: stroke.id, pointCount: stroke.points.length };
+    },
+
+    /** Re-add the most recently undone freehand stroke (the Annotate panel's
+     *  "Redo stroke"; undoAnnotation / the panel's Undo feed it).
+     *  -> { redone, remaining } */
+    redoAnnotation() {
+      const redone = redoLastStroke() !== null;
+      return { redone, remaining: getAnnotationCount(), canRedo: canRedoStroke() };
+    },
+
+    /** Open Annotate in a sub-mode — 'pen' (draw), 'text' (click to pin a
+     *  label) or 'select' (pick/move/delete) — or close it with null. The user
+     *  then draws; this only arms the tool. -> { mode } */
+    setAnnotateMode(mode: 'pen' | 'text' | 'select' | null) {
+      if (mode !== null) {
+        const check = guard(() => assertEnum(mode, ['pen', 'text', 'select'] as const, 'setAnnotateMode(mode)'));
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      }
+      setAnnotateSubMode(mode);
+      return { mode: getAnnotateSubMode() };
+    },
+
+    /** The active Annotate sub-mode ('pen' | 'text' | 'select'), or null. */
+    getAnnotateMode() {
+      return getAnnotateSubMode();
+    },
+
+    /** Reformat the editor code (Format code, ⇧⌥F) — the same formatter
+     *  auto-format applies. Does not run or save. -> { changed, code } */
+    formatCode() {
+      const before = getValue();
+      formatCode();
+      const after = getValue();
+      return { changed: after !== before, code: after };
+    },
+
+
     /** Switch the desktop code pane: 'mini' (compact code map, the default),
      *  'full' (the editor) or 'hidden'. Remembered across reloads like the UI
      *  toggles. */
@@ -16560,16 +16906,28 @@ async function main() {
         : { passed: false, failures, region: { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid } };
     },
 
-    /** Clear all color regions */
-    clearColors() {
+    /** Clear all color regions — or, with `{ kind: 'image' }`, only the
+     *  image-stamp regions (the Image Paint panel's Clear). Undo with
+     *  undoClearColors() until the next paint. */
+    clearColors(opts?: { kind?: 'all' | 'image' }) {
+      const check = guard(() => {
+        const o = assertObject(opts, 'clearColors(opts)', { optional: true });
+        if (o) {
+          assertNoUnknownKeys(o, ['kind'], 'clearColors(opts)');
+          if (o.kind !== undefined) assertEnum(o.kind, ['all', 'image'] as const, 'clearColors(opts).kind');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       // Drop regions inside withSyncReconcile so the mesh reverts to its
       // pristine base before this call returns — otherwise the async listener
       // would unrefine on the next tick and the immediate getMesh() reads
       // stale state.
-      withSyncReconcile(() => clearRegions());
+      if (opts?.kind === 'image') withSyncReconcile(() => clearRegionsBySource('imagePaint'));
+      else withSyncReconcile(() => clearRegions());
       scheduleColorRefresh();
       syncLockState();
-      return { cleared: true };
+      return { cleared: true, ...(opts?.kind === 'image' ? { kind: 'image' as const } : {}) };
     },
 
     /** Recolor every paint region whose color matches `from` (within
@@ -18286,6 +18644,15 @@ async function main() {
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first, secrets redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
+        'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
+        'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },
+        'importFromUrl':       { signature: 'await importFromUrl(url, {target?, sessionName?, stepMode?}) -- Import a share link (local decode) or an http(s) .partwright.json/.stl/.step/.vox/.js/.scad file -> {kind, source?, sessionId, target?, object?}', docs: '/ai/file-io.md' },
+        'undoClearColors':     { signature: 'undoClearColors() -- Restore the regions removed by the last clearColors (until the next paint) -> {restored, regions}', docs: '/ai/colors.md' },
+        'addStrokeAnnotation': { signature: 'addStrokeAnnotation({points: [[x,y,z], ...], color?, width?}) -- Add a freehand stroke annotation through world points -> {id, pointCount}', docs: '/ai/annotations.md' },
+        'redoAnnotation':      { signature: 'redoAnnotation() -- Re-add the most recently undone stroke -> {redone, remaining, canRedo}', docs: '/ai/annotations.md' },
+        'setAnnotateMode':     { signature: 'setAnnotateMode("pen"|"text"|"select"|null) -- Open Annotate in a sub-mode for the user (null closes) -> {mode}', docs: '/ai/annotations.md' },
+        'getAnnotateMode':     { signature: 'getAnnotateMode() -- Active Annotate sub-mode or null', docs: '/ai/annotations.md' },
+        'formatCode':          { signature: 'formatCode() -- Reformat the editor code (no run, no save) -> {changed, code}', docs: '/ai.md#console-api--windowpartwright' },
         'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#viewport-controls' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
@@ -18324,7 +18691,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
-        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, target?: "new-session"|"new-object"|"current-object"}) -- Import STL bytes (binary/ASCII); default a new session -> {sessionId, target, object, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
@@ -18350,7 +18717,7 @@ async function main() {
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai/colors.md' },
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
-        'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
+        'clearColors':     { signature: 'clearColors({kind?: "all"|"image"}?) -- Remove ALL color regions, or only image stamps (undoClearColors restores; undoLastPaint reverses just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
         'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
         'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },

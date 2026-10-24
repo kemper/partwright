@@ -3497,6 +3497,8 @@ function showToolConfirmation(toolName: string, input: Record<string, unknown> =
       ? 'import an SVG as a 3D relief tile'
       : toolName === 'setAppConfig'
       ? `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`
+      : toolName === 'importFromUrl'
+      ? `import from ${String(input.url).slice(0, 200)}`
       : `run "${toolName}"`;
 
     const overlay = document.createElement('div');
