@@ -3489,12 +3489,14 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
 /** Show a blocking overlay asking the user to allow or decline an AI-initiated
  *  import. Resolves true (allow) or false (decline). */
-function showToolConfirmation(toolName: string): Promise<boolean> {
+function showToolConfirmation(toolName: string, input: Record<string, unknown> = {}): Promise<boolean> {
   return new Promise(resolve => {
     const label = toolName === 'importImageAsRelief'
       ? 'import an image as a 3D relief'
       : toolName === 'importSvgAsRelief'
       ? 'import an SVG as a 3D relief tile'
+      : toolName === 'setAppConfig'
+      ? `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`
       : `run "${toolName}"`;
 
     const overlay = document.createElement('div');
@@ -3683,7 +3685,7 @@ async function runTurnWithStallRetry(
         renderTranscript();
         renderCostMeter();
       },
-      confirmTool: (toolName) => showToolConfirmation(toolName),
+      confirmTool: (toolName, input) => showToolConfirmation(toolName, input),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

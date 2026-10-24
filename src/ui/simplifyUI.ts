@@ -32,7 +32,7 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { viewportToolsMount } from './popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
-import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
+import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, saveQualitySettingsSilent, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
 import { getConfig } from '../config/appConfig';
@@ -252,6 +252,26 @@ export function notifyQualityLangChanged(lang: Language): void {
   committedQuality = { ...loadQualitySettings() };
   updateApplyEnabled();
   if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
+}
+
+/** Commit a curvature quality from outside the panel (the
+ *  `partwright.setCurvatureQuality` API) and re-baseline the panel's
+ *  commit/preview state so closing an open panel doesn't revert it. By default
+ *  it applies like Apply does (the quality listener re-runs the model);
+ *  `silent` skips that re-run for a caller that runs the model itself and
+ *  awaits the result. */
+export function commitCurvatureQuality(next: QualitySettings, opts: { silent?: boolean } = {}): void {
+  if (opts.silent) saveQualitySettingsSilent({ ...next });
+  else saveQualityForLang({ ...next });
+  committedQuality = { ...loadQualitySettings() };
+  syncQualityRadios();
+  updateApplyEnabled();
+}
+
+/** Whether a Quality-panel simplify/enhance is mid-flight (the API refuses to
+ *  start a second one on the same baseline). */
+export function isSimplifyApplying(): boolean {
+  return applying;
 }
 
 /** Call when a code run starts (true) or ends (false) so the Stop button

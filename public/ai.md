@@ -264,6 +264,10 @@ partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
 partwright.isOrbitLocked()           // Whether camera orbit is locked
 partwright.resetView()               // Reset camera to the default framing of the current model
+partwright.setCamera({azimuth?, elevation?, distance?, target?}) // Orbit the LIVE camera (what the user sees) -- same convention as getViewState().camera: az 0=front(-Y) 90=right, el 0=horizon 90=top <0=below; omitted fields keep current -> {camera}. renderView() is for YOUR offscreen checks; setCamera is for showing the user
+partwright.frameObjectPart(name | {piece} | {unlabeled:true}) // Aim the live camera at one part/piece of the current object, keeping the view direction -> {ok, triangles, bbox, camera}
+partwright.setEdgesVisible(on?)      // Show/hide the mesh-edges (wireframe) overlay -- the viewport "Edges" button (omit to toggle) -> boolean
+partwright.areEdgesVisible()         // Whether the mesh-edges overlay is showing
 partwright.setCodeView('mini'|'full'|'hidden') // Code pane: compact code map (default), full editor, or hidden; getViewState().codeView reads it
 partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
@@ -330,6 +334,14 @@ partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
 partwright.clearRecentExports()
+
+// Mesh quality, app settings, diagnostics -- see /ai/iteration-workflow.md#mesh-quality--curvature-simplify-enhance
+partwright.getCurvatureQuality()         // Quality panel curvature (default circle segments for this tab) -> {quality, segments, customSegments, language, presets, defaultSegments}
+await partwright.setCurvatureQuality({quality?: 'low'|'medium'|'high'|'highest'|'ultra'|'custom', segments?})  // set + re-run -> {quality, segments, geometry}
+await partwright.simplifyModel({mode?: 'simplify'|'enhance', targetTris? | targetEdge?, amount?, preserveColor?})  // Quality panel Simplify/Enhance on the MESH; saves a version (a baked mesh, not code) -> {ok, mode, before, after, version, message, warnings?}
+partwright.getAppConfig()                // Advanced Settings: {section: {key: {value, default, min?, max?, integer?, modified?}}}
+partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
+partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
 
 // Isolated execution -- test code without changing editor/viewport state
 await partwright.runIsolated(code, view?)  // -> {geometryData, thumbnail}. Default thumbnail is 4-iso composite; pass `view` ({elevation, azimuth, ortho, size}) for a single-angle preview.
@@ -419,6 +431,8 @@ await partwright.listDeleted()           // What can be undeleted: {objects:[{id
 await partwright.restoreObject(id|name)  // Undelete an object with all its versions -> {restored, droppedBlank?}
 await partwright.purgeDeletedObjects(ids|names?)  // Permanently delete binned objects (no arg empties the bin) -> {purged}
 partwright.showRecoverDeleted()          // Open the Recover deleted modal for the user
+await partwright.mergeObjects([a, b, ...], {mode?: 'new'|'replace'})  // Combine 2+ objects into ONE new object (the rail's Merge; becomes current). 'new' (default) keeps the originals, 'replace' moves them to Recover deleted. Render-only objects are skipped -> {merged:{id,name}, mode, replaced, skipped, warnings?}
+await partwright.reorderObjects([nameOrId | {id|name, group?}, ...])  // Reorder the object list (first = top), optionally regrouping; unlisted objects keep their order at the end -> {order}
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops + labelPresets (the panel's label chips: names + default colours)
 await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z], color?:'#rrggbb'}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}

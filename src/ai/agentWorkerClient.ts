@@ -78,7 +78,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
           type: 'tool_result',
           callId,
           result: {
-            content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+            content: '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]',
             isError: true,
           },
         });

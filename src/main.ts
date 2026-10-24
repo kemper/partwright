@@ -25,13 +25,15 @@ import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
-import { onQualitySettingsChange } from './geometry/qualitySettings';
+import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
+import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
+import { queryDiagnosticLog, LOG_LEVELS, LOG_SOURCES } from './diagnostics/logQuery';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, getDisplayedMesh, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick, recolorMesh } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, getDisplayedMesh, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, setMaterialOverride, resetView, onOrbitEnd, setOnAssemblyPartClick, recolorMesh, setCameraOrbit, frameBounds } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -127,7 +129,7 @@ import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imag
 import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
-import { showMergePartsModal } from './ui/mergePartsModal';
+import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
@@ -197,7 +199,7 @@ import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImag
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
-import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
+import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, commitCurvatureQuality, isSimplifyApplying, type SimplifyHandlers, type MeshOpOutcome } from './ui/simplifyUI';
 import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
 import { analyzePrintability, type PrintabilityReport } from './geometry/printability';
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
@@ -306,6 +308,7 @@ import {
   restoreDeletedObjects,
   purgeDeletedObjects,
   reorderParts,
+  type PartLayoutEntry,
   setPartGroup,
   partSaveState,
   currentPartIsDirty,
@@ -866,14 +869,7 @@ function setObjectPartHighlight(key: string | null): number | string {
   const summary = currentObjectPartsSummary();
   const mesh = objectPartsMesh();
   if (!summary || !mesh) return 'No geometry loaded — run code first.';
-  let tris: Iterable<number> | null = null;
-  if (key.startsWith('part:')) {
-    tris = summary.parts.find(p => p.name === key.slice(5))?.triangles ?? null;
-  } else if (key.startsWith('piece:')) {
-    tris = summary.pieces[Number(key.slice(6))]?.triangles ?? null;
-  } else if (key === 'unlabeled') {
-    tris = summary.unlabeled.length > 0 ? summary.unlabeled : null;
-  }
+  const tris = objectPartKeyTriangles(summary, key);
   if (!tris) return `Unknown part or piece "${key}".`;
   // Drawn from the label mesh's own triangles — the same surface as the
   // displayed mesh even when that one was re-tessellated since the run.
@@ -881,6 +877,29 @@ function setObjectPartHighlight(key: string | null): number | string {
   objectPartHighlightKey = count > 0 ? key : null;
   refreshObjectParts();
   return count;
+}
+
+/** The label-mesh triangles of `part:<name>` / `piece:<n>` / `unlabeled`, or
+ *  null when the key names nothing in the current object. */
+function objectPartKeyTriangles(summary: ObjectPartsSummary, key: string): Iterable<number> | null {
+  if (key.startsWith('part:')) return summary.parts.find(p => p.name === key.slice(5))?.triangles ?? null;
+  if (key.startsWith('piece:')) return summary.pieces[Number(key.slice(6))]?.triangles ?? null;
+  if (key === 'unlabeled') return summary.unlabeled.length > 0 ? summary.unlabeled : null;
+  return null;
+}
+
+/** Parse an API part target — a part name, `{ piece: index }`, `{ unlabeled:
+ *  true }`, or null — into a `part:` / `piece:` / `unlabeled` key (null =
+ *  none). Shared by highlightObjectPart and frameObjectPart. */
+function objectPartKeyFromTarget(target: unknown, caller: string): string | null | { error: string } {
+  if (target === null || target === undefined) return null;
+  if (typeof target === 'string' && target.length > 0) return `part:${target}`;
+  if (target && typeof target === 'object') {
+    const t = target as { piece?: unknown; unlabeled?: unknown };
+    if (Number.isInteger(t.piece) && (t.piece as number) >= 0) return `piece:${t.piece}`;
+    if (t.unlabeled === true) return 'unlabeled';
+  }
+  return { error: `${caller}(target): pass a part name, { piece: index }, { unlabeled: true }, or null.` };
 }
 
 function getObjectPartHighlightKey(): string | null {
@@ -5027,8 +5046,9 @@ async function main() {
   }
 
   /** Build a new part holding the composed geometry of `components`. Probes the
-   *  combine first so a failure surfaces as a toast instead of a broken part. */
-  async function createCombinedPart(components: ImportedMesh[], name: string): Promise<boolean> {
+   *  combine first so a failure is reported instead of leaving a broken part.
+   *  Returns the new part, or a human-readable error. */
+  async function createCombinedPart(components: ImportedMesh[], name: string): Promise<Part | string> {
     // The compose wrapper is manifold-js; merging while a SCAD/BREP/voxel part
     // is active would probe + run + save it through the wrong engine. Switch
     // first so the probe, runCodeSync, and the saved version are all manifold-js.
@@ -5039,11 +5059,10 @@ async function main() {
     const probe = await executeCodeAsync(code);
     if (probe.error || !probe.mesh) {
       setActiveImports(saved);
-      showToast(`Couldn’t combine objects: ${probe.error ?? 'no geometry produced'}`, { variant: 'warn' });
-      return false;
+      return `Couldn’t combine objects: ${probe.error ?? 'no geometry produced'}`;
     }
     const part = await createPart(name);
-    if (!part) { setActiveImports(saved); return false; }
+    if (!part) { setActiveImports(saved); return 'Couldn’t create the combined object (no active session).'; }
     setActiveImports(components);
     setValue(code);
     await runCodeSync(code);
@@ -5053,7 +5072,55 @@ async function main() {
       force: true,
       importedMeshes: components,
     });
-    return true;
+    return part;
+  }
+
+  /** The merge itself, shared by the rail's Merge flow (after its modal) and
+   *  `partwright.mergeObjects`: bake each object's latest version to geometry,
+   *  compose them into a NEW object (which becomes current), and — for
+   *  `'replace'` — move the originals to Recover deleted. Objects whose code
+   *  produces no usable geometry (render-only) are skipped. A SCAD/BREP source
+   *  is baked to a mesh in the combined object (the originals keep theirs). */
+  async function mergeObjectsCore(ids: string[], mode: MergeMode): Promise<
+    | { part: Part; replaced: { id: string; name: string }[]; skipped: string[]; warnings: string[]; permanent?: boolean }
+    | { error: string }
+  > {
+    if (isReadOnlyViewer()) return { error: 'Merging is disabled in the read-only viewer.' };
+    if (!getState().session) return { error: 'No active session.' };
+    await preserveCurrentEditsIfNeeded();
+    const parts = getState().parts.filter(p => ids.includes(p.id));
+    if (parts.length < 2) return { error: 'Select at least two objects to merge.' };
+
+    const components: ImportedMesh[] = [];
+    const skipped: string[] = [];
+    const warnings = new Set<string>();
+    for (const p of parts) {
+      const baked = await bakePartComponents(p.id, p.name);
+      if (baked) components.push(...baked);
+      else skipped.push(p.name);
+      const latest = await getLatestVersion(p.id);
+      const w = latest ? engineBakeWarning(effectiveVersionLanguage(latest, getState().session), 'manifold-js') : null;
+      if (w) warnings.add(w);
+    }
+    if (components.length < 2) {
+      return { error: 'Couldn’t merge — at least two objects need usable geometry (render-only objects can’t be combined).' };
+    }
+
+    const made = await createCombinedPart(components, mergedPartName(parts.map(p => p.name)));
+    if (typeof made === 'string') return { error: made };
+
+    let replaced: { id: string; name: string }[] = [];
+    let permanent = false;
+    if (mode === 'replace') {
+      // The combined part is brand-new (not in `ids`), so it survives the delete.
+      const r = await deleteParts(ids);
+      if (r) {
+        replaced = parts.filter(p => r.deletedIds.includes(p.id)).map(p => ({ id: p.id, name: p.name }));
+        permanent = !!r.permanent;
+      }
+      refreshRecoverable();
+    }
+    return { part: made, replaced, skipped, warnings: [...warnings], ...(permanent ? { permanent: true } : {}) };
   }
 
   /** Combine the multi-selected parts into one. Each part's latest version is
@@ -5075,23 +5142,8 @@ async function main() {
     const choice = await showMergePartsModal({ partNames: parts.map(p => p.name) });
     if (!choice) return;
 
-    const components: ImportedMesh[] = [];
-    for (const p of parts) {
-      const baked = await bakePartComponents(p.id, p.name);
-      if (baked) components.push(...baked);
-    }
-    if (components.length < 2) {
-      showToast('Couldn’t merge — at least two objects need usable geometry (render-only objects can’t be combined).', { variant: 'warn' });
-      return;
-    }
-
-    const ok = await createCombinedPart(components, mergedPartName(parts.map(p => p.name)));
-    if (!ok) return;
-
-    if (choice.mode === 'replace') {
-      // The combined part is brand-new (not in `ids`), so it survives the delete.
-      await deleteParts(ids);
-    }
+    const r = await mergeObjectsCore(ids, choice.mode);
+    if ('error' in r) showToast(r.error, { variant: 'warn' });
   }
 
 
@@ -8857,6 +8909,24 @@ async function main() {
       applyLiveGeometry(result.mesh);
     }
     return { triangleCount: result.triangleCount };
+  }
+
+  // True while partwright.simplifyModel is mid-op (the panel has its own flag).
+  let simplifyApiBusy = false;
+
+  /** The live curvature-quality setting, for getCurvatureQuality and the
+   *  setCurvatureQuality result. */
+  function curvatureQualityState() {
+    const s = loadQualitySettings();
+    const lang = getActiveLanguage();
+    return {
+      quality: s.quality,
+      segments: s.quality === 'custom' ? clampCustomSegments(s.customSegments) : QUALITY_SEGMENTS[s.quality],
+      customSegments: s.customSegments,
+      language: lang,
+      presets: { ...QUALITY_SEGMENTS },
+      defaultSegments: lang === 'scad' ? getConfig().ui.scadDefaultQuality : getConfig().ui.defaultQuality,
+    };
   }
 
   const simplifyHandlers: SimplifyHandlers = {
@@ -13476,12 +13546,8 @@ async function main() {
      *  no part covers; `null` clears. The tint is visual only and disappears on
      *  the next run. -> { ok, triangles } or { error } */
     highlightObjectPart(target: string | { piece?: number; unlabeled?: boolean } | null) {
-      let key: string | null;
-      if (target === null || target === undefined) key = null;
-      else if (typeof target === 'string' && target.length > 0) key = `part:${target}`;
-      else if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) key = `piece:${target.piece}`;
-      else if (target && typeof target === 'object' && target.unlabeled === true) key = 'unlabeled';
-      else return { error: 'highlightObjectPart(target): pass a part name, { piece: index }, { unlabeled: true }, or null.' };
+      const key = objectPartKeyFromTarget(target, 'highlightObjectPart');
+      if (key && typeof key === 'object') return key;
       const r = setObjectPartHighlight(key);
       return typeof r === 'string' ? { error: r } : { ok: true, triangles: r };
     },
@@ -14869,6 +14935,362 @@ async function main() {
     /** Get current view state — active tab, camera angle, zoom */
     getViewState(): { tab: string; codeView: 'hidden' | 'mini' | 'full'; camera: { azimuth: number; elevation: number; distance: number; target: [number, number, number] } } {
       return { tab: getTabFromURL(), codeView: getCodeView(), camera: getCameraState() };
+    },
+
+    // === Core-operation parity (#1085): UI capabilities agents could not reach ===
+
+    /** Orbit the LIVE viewport camera (what the user sees) to an angle, in the
+     *  same convention getViewState().camera reports: azimuth 0 = front (−Y),
+     *  90 = right (+X), 180 = back; elevation 0 = horizon, +90 = top-down,
+     *  negative = from below. `distance` / `target` default to the current ones;
+     *  any omitted angle keeps its current value. -> { camera } or { error } */
+    setCamera(opts: { azimuth?: number; elevation?: number; distance?: number; target?: [number, number, number] }) {
+      const check = guard(() => {
+        const o = assertObject(opts, 'setCamera(opts)')!;
+        assertNoUnknownKeys(o, ['azimuth', 'elevation', 'distance', 'target'], 'setCamera(opts)');
+        assertNumber(o.azimuth, 'setCamera(opts).azimuth', { optional: true });
+        assertNumber(o.elevation, 'setCamera(opts).elevation', { optional: true, min: -90, max: 90 });
+        assertNumber(o.distance, 'setCamera(opts).distance', { optional: true, min: 0 });
+        if (o.target !== undefined) assertNumberTuple(o.target, 3, 'setCamera(opts).target');
+        return o;
+      });
+      if ('error' in check) return check;
+      if (opts.distance === 0) return { error: 'setCamera(opts).distance must be > 0.' };
+      const cur = getCameraState();
+      setCameraOrbit({
+        azimuth: opts.azimuth ?? cur.azimuth,
+        elevation: opts.elevation ?? cur.elevation,
+        ...(opts.distance !== undefined ? { distance: opts.distance } : {}),
+        ...(opts.target !== undefined ? { target: opts.target } : {}),
+      });
+      return { camera: getCameraState() };
+    },
+
+    /** Point the live camera at one part (label name), piece (`{ piece: i }`)
+     *  or the unlabeled remainder (`{ unlabeled: true }`) of the current
+     *  object, keeping the current viewing direction — the "show me the
+     *  handle" counterpart of highlightObjectPart (which only tints).
+     *  -> { ok, triangles, bbox, camera } or { error } */
+    frameObjectPart(target: string | { piece?: number; unlabeled?: boolean }) {
+      const key = objectPartKeyFromTarget(target, 'frameObjectPart');
+      if (key === null) return { error: 'frameObjectPart(target): pass a part name, { piece: index } or { unlabeled: true } (use resetView() to frame the whole model).' };
+      if (typeof key === 'object') return key;
+      const summary = currentObjectPartsSummary();
+      const mesh = objectPartsMesh();
+      if (!summary || !mesh) return { error: 'frameObjectPart: no geometry loaded — run code first.' };
+      const tris = objectPartKeyTriangles(summary, key);
+      if (!tris) return { error: `frameObjectPart: unknown part or piece "${key}". Call listObjectParts() for the current object's parts and pieces.` };
+      const stats = regionTriangleStats(new Set(tris), mesh);
+      if (!stats.bbox) return { error: `frameObjectPart: "${key}" has no triangles.` };
+      frameBounds(stats.bbox.min, stats.bbox.max);
+      return { ok: true, triangles: new Set(tris).size, bbox: stats.bbox, camera: getCameraState() };
+    },
+
+    /** Show or hide the mesh-edges (wireframe) overlay — the viewport "Edges"
+     *  button. Omit to toggle. -> boolean (the new state) */
+    setEdgesVisible(visible?: boolean): boolean {
+      assertBoolean(visible, 'setEdgesVisible(visible)', { optional: true });
+      setWireframeVisible(visible ?? !isWireframeVisible());
+      return isWireframeVisible();
+    },
+
+    /** Whether the mesh-edges (wireframe) overlay is showing. */
+    areEdgesVisible(): boolean {
+      return isWireframeVisible();
+    },
+
+    /** The Quality panel's curvature setting: the default circular-segment
+     *  count primitives use when the code doesn't pass its own. Per tab and per
+     *  engine family (SCAD keeps its own), reset on reload to the Advanced
+     *  Settings default. -> { quality, segments, customSegments, language, presets, defaultSegments } */
+    getCurvatureQuality() {
+      return curvatureQualityState();
+    },
+
+    /** Set the curvature quality (like picking a preset in the Quality panel
+     *  and pressing Apply) and re-run the model at the new segment count.
+     *  Pass a preset `quality` ('low' 16 | 'medium' 32 | 'high' 64 |
+     *  'highest' 128 | 'ultra' 1024) or an explicit `segments` count
+     *  (3..4096; a preset's count selects that preset, anything else is
+     *  'custom'). -> { quality, segments, geometry } or { error } */
+    async setCurvatureQuality(settings: { quality?: QualityLevel; segments?: number }): Promise<Record<string, unknown>> {
+      const check = guard(() => {
+        const o = assertObject(settings, 'setCurvatureQuality(settings)')!;
+        assertNoUnknownKeys(o, ['quality', 'segments'], 'setCurvatureQuality(settings)');
+        if (o.quality !== undefined) assertEnum(o.quality, ['low', 'medium', 'high', 'highest', 'ultra', 'custom'] as const, 'setCurvatureQuality(settings).quality');
+        assertNumber(o.segments, 'setCurvatureQuality(settings).segments', { optional: true, integer: true, min: MIN_CUSTOM_SEGMENTS, max: MAX_CUSTOM_SEGMENTS });
+        return o;
+      });
+      if ('error' in check) return check;
+      const { quality, segments } = settings;
+      if (quality === undefined && segments === undefined) return { error: 'setCurvatureQuality(settings): pass quality and/or segments.' };
+      const current = loadQualitySettings();
+      let next: QualitySettings;
+      if (quality !== undefined && quality !== 'custom') {
+        if (segments !== undefined && segments !== QUALITY_SEGMENTS[quality]) {
+          return { error: `setCurvatureQuality: preset "${quality}" is ${QUALITY_SEGMENTS[quality]} segments; pass quality:'custom' (or segments alone) for ${segments}.` };
+        }
+        next = { quality, customSegments: current.customSegments };
+      } else if (quality === 'custom') {
+        next = { quality: 'custom', customSegments: segments ?? current.customSegments };
+      } else {
+        const preset = segmentsToPreset(segments as number);
+        next = { quality: preset, customSegments: preset === 'custom' ? (segments as number) : current.customSegments };
+      }
+      commitCurvatureQuality(next, { silent: true });
+      const applied = await runCodeSync(getValue(), { preserveCamera: true });
+      const now = curvatureQualityState();
+      const geo = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
+      return {
+        quality: now.quality,
+        segments: now.segments,
+        ...(applied ? { geometry: { triangleCount: geo.triangleCount, isManifold: geo.isManifold, componentCount: geo.componentCount } } : { note: 'The re-run was superseded by another run; the new quality applies to it.' }),
+      };
+    },
+
+    /** Simplify (fewer triangles) or enhance (more triangles) the current
+     *  model's MESH — the Quality panel's Simplify / Enhance — and save the
+     *  result as a new version (the original is saved first when the editor
+     *  has unsaved work, exactly like the panel's Apply). The result is a baked
+     *  mesh (an import wrapper), not parametric code.
+     *  Pick ONE target: `targetTris` (a triangle count, binary-searched) or
+     *  `targetEdge` (simplify: a feature-size tolerance in model units;
+     *  enhance: a target edge length). `amount` (1..6, with targetEdge — the
+     *  panel's "Size" knob) strengthens it: simplify multiplies the tolerance,
+     *  enhance halves the edge length per step. `preserveColor` (default true)
+     *  carries paint through the topology change. Enhance refuses a result
+     *  over renderer.enhanceMaxTriangles.
+     *  -> { ok, mode, before, after, version, message, warnings? } or { error } */
+    async simplifyModel(opts: { mode?: 'simplify' | 'enhance'; targetTris?: number; targetEdge?: number; amount?: number; preserveColor?: boolean } = {}) {
+      const check = guard(() => {
+        const o = assertObject(opts ?? {}, 'simplifyModel(opts)')!;
+        assertNoUnknownKeys(o, ['mode', 'targetTris', 'targetEdge', 'amount', 'preserveColor'], 'simplifyModel(opts)');
+        if (o.mode !== undefined) assertEnum(o.mode, ['simplify', 'enhance'] as const, 'simplifyModel(opts).mode');
+        assertNumber(o.targetTris, 'simplifyModel(opts).targetTris', { optional: true, integer: true, min: 4 });
+        assertNumber(o.targetEdge, 'simplifyModel(opts).targetEdge', { optional: true, min: 0 });
+        assertNumber(o.amount, 'simplifyModel(opts).amount', { optional: true, integer: true, min: 1, max: 6 });
+        assertBoolean(o.preserveColor, 'simplifyModel(opts).preserveColor', { optional: true });
+        return o;
+      });
+      if ('error' in check) return check;
+      const o = opts ?? {};
+      if ((o.targetTris === undefined) === (o.targetEdge === undefined)) {
+        return { error: 'simplifyModel(opts): pass exactly one of targetTris (a triangle count) or targetEdge (a length in model units).' };
+      }
+      if (o.targetEdge !== undefined && !(o.targetEdge > 0)) return { error: 'simplifyModel(opts).targetEdge must be > 0.' };
+      if (o.amount !== undefined && o.targetEdge === undefined) return { error: 'simplifyModel(opts).amount only applies with targetEdge.' };
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+      if (simplifyApiBusy || isSimplifyApplying()) return { error: 'simplifyModel: a simplify/enhance is already running — wait for it to finish.' };
+      if (!getState().session) return { error: 'simplifyModel: no active session (the result is saved as a version). Call createSession() first.' };
+      const opened = simplifyHandlers.open(false);
+      if (!opened.ok) return { error: `simplifyModel: ${opened.reason}` };
+      const base = opened.info.baseTriangles;
+      const mode = o.mode ?? 'simplify';
+      const preserve = (o.preserveColor ?? true) && opened.info.hasColor;
+      let kind: 'count' | 'simplifyTol' | 'enhanceLen';
+      let value: number;
+      if (o.targetTris !== undefined) {
+        if (mode === 'simplify' && o.targetTris >= base) return { error: `simplifyModel: the model has ${base} triangles — targetTris must be below that to simplify (mode:'enhance' adds triangles).` };
+        if (mode === 'enhance' && o.targetTris <= base) return { error: `simplifyModel: the model has ${base} triangles — targetTris must be above that to enhance.` };
+        kind = 'count';
+        value = o.targetTris;
+      } else {
+        const amount = o.amount ?? 1;
+        kind = mode === 'simplify' ? 'simplifyTol' : 'enhanceLen';
+        value = mode === 'simplify' ? (o.targetEdge as number) * amount : (o.targetEdge as number) / Math.pow(2, amount - 1);
+      }
+      const warnings: string[] = [];
+      if (mode === 'enhance') {
+        const { enhanceWarnTriangles: warn, enhanceMaxTriangles: max } = getConfig().renderer;
+        const projected = kind === 'count' ? value : simplifyHandlers.estimateRefine(value);
+        if (projected >= max) return { error: `simplifyModel: that would produce ~${Math.round(projected).toLocaleString()} triangles, over the ${max.toLocaleString()} limit (renderer.enhanceMaxTriangles). Use a larger targetEdge or a lower targetTris.` };
+        if (projected >= warn) warnings.push(`Heavy result: ~${Math.round(projected).toLocaleString()} triangles (over renderer.enhanceWarnTriangles) — the viewport may be slow.`);
+      }
+      const bake = engineBakeWarning(getActiveLanguage(), 'manifold-js');
+      if (bake) warnings.push(bake);
+      simplifyApiBusy = true;
+      const abort = new AbortController();
+      const progressId = startProgress({
+        title: mode === 'simplify' ? 'Simplifying mesh' : 'Enhancing mesh',
+        message: mode === 'simplify' ? 'Simplifying mesh…' : 'Enhancing mesh…',
+        onCancel: () => abort.abort(),
+      });
+      const onProgress = (f: number) => { updateProgress(progressId, f, `${mode === 'simplify' ? 'Simplifying' : 'Enhancing'}… ${Math.round(Math.max(0, Math.min(1, f)) * 100)}%`); };
+      try {
+        let r: MeshOpOutcome;
+        try {
+          if (kind === 'count') {
+            r = mode === 'simplify'
+              ? await simplifyHandlers.apply(value, preserve, onProgress, abort.signal)
+              : await simplifyHandlers.enhance(value, preserve, onProgress, abort.signal);
+          } else if (kind === 'simplifyTol') {
+            r = await simplifyHandlers.simplifyByTolerance(value, preserve, onProgress, abort.signal);
+          } else {
+            r = await simplifyHandlers.enhanceByEdgeLength(value, preserve, onProgress, abort.signal);
+          }
+        } catch (e) {
+          const err = e as Error;
+          return { error: err?.name === 'AbortError' ? 'simplifyModel: cancelled.' : `simplifyModel: ${mode} failed — ${err.message}` };
+        }
+        if (r && 'exceeded' in r) {
+          return { error: `simplifyModel: that produced ~${r.triangleCount.toLocaleString()} triangles, over the ${getConfig().renderer.enhanceMaxTriangles.toLocaleString()} limit — not applied. Use a larger targetEdge.` };
+        }
+        if (!r || r.triangleCount === base) {
+          return { error: mode === 'simplify'
+            ? 'simplifyModel: nothing to simplify at that setting — no detail was below the tolerance. Try a larger targetEdge or a lower targetTris.'
+            : 'simplifyModel: nothing to enhance at that setting — no edge was longer than that. Try a smaller targetEdge or a higher targetTris.' };
+        }
+        const saved = await simplifyHandlers.save();
+        if (!saved.ok) return { error: `simplifyModel: ${saved.message}` };
+        const v = getState().currentVersion;
+        return {
+          ok: true,
+          mode,
+          before: base,
+          after: r.triangleCount,
+          version: v ? { index: v.index, label: v.label } : null,
+          message: saved.message,
+          ...(warnings.length ? { warnings } : {}),
+        };
+      } finally {
+        simplifyApiBusy = false;
+        endProgress(progressId);
+        refreshSimplifyIfOpen();
+      }
+    },
+
+    /** Combine two or more objects into ONE new object (which becomes
+     *  current) — the object list's multi-select Merge. Each object's latest
+     *  version is baked to geometry and composed as separate components.
+     *  `mode: 'new'` (default) keeps the originals; `'replace'` moves them to
+     *  Recover deleted (restoreObject brings them back). Render-only objects
+     *  are skipped. `targets` are object names, ids, 0-based indexes, or
+     *  { id } / { name }. -> { merged, mode, replaced, skipped, warnings? } or { error } */
+    async mergeObjects(targets: unknown, opts?: { mode?: 'new' | 'replace' }) {
+      if (!getState().session) return { error: 'mergeObjects: no active session. Call createSession() or openSession(id) first.' };
+      const check = guard(() => {
+        assertArray(targets, 'mergeObjects(targets)');
+        const o = assertObject(opts, 'mergeObjects(opts)', { optional: true });
+        if (o) {
+          assertNoUnknownKeys(o, ['mode'], 'mergeObjects(opts)');
+          if (o.mode !== undefined) assertEnum(o.mode, ['new', 'replace'] as const, 'mergeObjects(opts).mode');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const ids: string[] = [];
+      for (const t of targets as unknown[]) {
+        const part = resolvePartTarget(t, 'mergeObjects');
+        if ('error' in part) return part;
+        if (!ids.includes(part.id)) ids.push(part.id);
+      }
+      if (ids.length < 2) return { error: 'mergeObjects(targets): pass at least two different objects.' };
+      const mode = opts?.mode ?? 'new';
+      const r = await mergeObjectsCore(ids, mode);
+      if ('error' in r) return { error: `mergeObjects: ${r.error}` };
+      return {
+        merged: { id: r.part.id, name: r.part.name },
+        mode,
+        replaced: r.replaced,
+        skipped: r.skipped,
+        ...(r.warnings.length ? { warnings: r.warnings } : {}),
+        ...(r.permanent ? { permanent: true, note: 'Browser storage was too full to keep the originals in Recover deleted, so they were deleted permanently.' } : {}),
+      };
+    },
+
+    /** Reorder the object list (the drag-to-reorder in the rail), first =
+     *  top. Each entry is an object name, id, 0-based index (into the CURRENT
+     *  order), { id } / { name } — or { id|name, group } to also move it into
+     *  a group (null/'' = ungrouped). Objects you leave out keep their relative
+     *  order at the end. -> { order: listObjects() } or { error } */
+    async reorderObjects(order: unknown): Promise<Record<string, unknown>> {
+      if (!getState().session) return { error: 'reorderObjects: no active session. Call createSession() or openSession(id) first.' };
+      if (isReadOnlyViewer()) return { error: 'reorderObjects: disabled in the read-only viewer.' };
+      const check = guard(() => assertArray(order, 'reorderObjects(order)'));
+      if (!Array.isArray(check)) return check;
+      const layout: PartLayoutEntry[] = [];
+      const seen = new Set<string>();
+      for (const [i, entry] of (order as unknown[]).entries()) {
+        let target: unknown = entry;
+        let group: string | null | undefined;
+        let hasGroup = false;
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          const e = entry as Record<string, unknown>;
+          const bad = Object.keys(e).filter(k => !['id', 'name', 'group'].includes(k));
+          if (bad.length) return { error: `reorderObjects(order[${i}]).${bad[0]} is not a recognized field. Allowed: id, name, group.` };
+          if ('group' in e) {
+            hasGroup = true;
+            if (e.group !== null && typeof e.group !== 'string') return { error: `reorderObjects(order[${i}]).group must be a string or null.` };
+            group = e.group as string | null;
+          }
+          target = e.id !== undefined ? { id: e.id } : { name: e.name };
+        }
+        const part = resolvePartTarget(target, 'reorderObjects');
+        if ('error' in part) return part;
+        if (seen.has(part.id)) return { error: `reorderObjects: "${part.name}" is listed more than once.` };
+        seen.add(part.id);
+        layout.push(hasGroup ? { id: part.id, group: group ?? null } : part.id);
+      }
+      await reorderParts(layout);
+      return { order: partwrightAPI.listObjects() };
+    },
+
+    /** The Advanced Settings (⚙) values agents may read and change, as
+     *  { section: { key: { value, default, min?, max?, integer?, modified? } } }.
+     *  Sections: ai, renderer, import, geometry, segmentation, ui. Only keys
+     *  with an Advanced Settings field are listed (and settable). */
+    getAppConfig() {
+      return describeAppConfig(getConfig());
+    },
+
+    /** Change one Advanced Settings value, validated exactly like the field:
+     *  same type as the default, within its min/max, integer where the field
+     *  is. Persists (this browser) and applies immediately, except renderer
+     *  settings the dialog marks "(reload)". -> { section, key, value, previous } or { error } */
+    setAppConfig(section: string, key: string, value: number | boolean) {
+      const v = validateAppConfigValue(section, key, value, 'setAppConfig');
+      if (!v.ok) return { error: v.error };
+      const cfg = getConfig();
+      const previous = (cfg[v.section] as unknown as Record<string, number | boolean>)[v.key];
+      saveAppConfig(withConfigValue(cfg, v.section, v.key, v.value));
+      return {
+        section: v.section,
+        key: v.key,
+        value: v.value,
+        previous,
+        ...(v.section === 'renderer' ? { note: 'Most rendering settings take effect after a page reload.' } : {}),
+        ...(v.section === 'ui' && (v.key === 'defaultQuality' || v.key === 'scadDefaultQuality') ? { note: 'This is the default for new tabs; use setCurvatureQuality() to change the current model now.' } : {}),
+      };
+    },
+
+    /** Read the Diagnostic Log (the toolbar ⚠ panel): errors, warnings and
+     *  routine activity from every subsystem, newest first. Filter by `level`
+     *  ('error' | 'warn' | 'info', or a list) and/or `source` ('engine', 'ai',
+     *  'import', 'export', 'storage', 'network', 'reconstruct', 'app',
+     *  'character', 'assembly', 'parts', 'uncaught', or a list); `limit`
+     *  1..200 (default ui.diagnosticLogApiLimit). Anything that looks like a
+     *  secret (API keys, Authorization headers, key-bearing URL params) is
+     *  redacted. -> { entries: [{ id, time, level, source, message, detail? }], matched, total } */
+    getDiagnosticLog(opts: { level?: string | string[]; source?: string | string[]; limit?: number } = {}) {
+      const check = guard(() => {
+        const o = assertObject(opts ?? {}, 'getDiagnosticLog(opts)')!;
+        assertNoUnknownKeys(o, ['level', 'source', 'limit'], 'getDiagnosticLog(opts)');
+        for (const [field, allowed] of [['level', LOG_LEVELS], ['source', LOG_SOURCES]] as const) {
+          const val = o[field];
+          if (val === undefined) continue;
+          const list = Array.isArray(val) ? val : [val];
+          list.forEach((x, i) => assertEnum(x, allowed as readonly string[], `getDiagnosticLog(opts).${field}${Array.isArray(val) ? `[${i}]` : ''}`));
+        }
+        assertNumber(o.limit, 'getDiagnosticLog(opts).limit', { optional: true, integer: true, min: 1, max: 200 });
+        return o;
+      });
+      if ('error' in check) return check;
+      const o = opts ?? {};
+      return queryDiagnosticLog(errorLog.getEntries(), {
+        level: o.level as never,
+        source: o.source as never,
+        limit: o.limit ?? getConfig().ui.diagnosticLogApiLimit,
+      });
     },
 
     /** Switch the desktop code pane: 'mini' (compact code map, the default),
@@ -17851,6 +18273,19 @@ async function main() {
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
         'getViewState':    { signature: 'getViewState() -- Current tab, code-pane mode, and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        // Core-operation parity (#1085)
+        'setCamera':           { signature: 'setCamera({azimuth?, elevation?, distance?, target?}) -- Orbit the LIVE viewport camera (getViewState().camera convention: az 0=front/-Y, 90=right; el 0=horizon, 90=top, <0=below) -> {camera}', docs: '/ai.md#viewport-controls' },
+        'frameObjectPart':     { signature: 'frameObjectPart(name | {piece: i} | {unlabeled: true}) -- Aim the live camera at one part/piece of the current object (keeps the view direction) -> {ok, triangles, bbox, camera}', docs: '/ai.md#viewport-controls' },
+        'setEdgesVisible':     { signature: 'setEdgesVisible(on?) -- Show/hide the mesh-edges (wireframe) overlay (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
+        'areEdgesVisible':     { signature: 'areEdgesVisible() -- Whether the mesh-edges overlay is showing', docs: '/ai.md#viewport-controls' },
+        'getCurvatureQuality': { signature: 'getCurvatureQuality() -- Quality panel curvature: default circular segments for this tab -> {quality, segments, customSegments, language, presets, defaultSegments}', docs: '/ai.md#console-api--windowpartwright' },
+        'setCurvatureQuality': { signature: 'await setCurvatureQuality({quality? | segments?}) -- Set the curvature preset (low|medium|high|highest|ultra|custom) or segment count (3..4096) and re-run -> {quality, segments, geometry}', docs: '/ai.md#console-api--windowpartwright' },
+        'simplifyModel':       { signature: 'await simplifyModel({mode?: "simplify"|"enhance", targetTris? | targetEdge?, amount? (1..6), preserveColor?}) -- Quality panel Simplify/Enhance on the mesh; saves a version (baked mesh) -> {ok, mode, before, after, version}', docs: '/ai.md#console-api--windowpartwright' },
+        'mergeObjects':        { signature: 'await mergeObjects([a, b, ...], {mode?: "new"|"replace"}) -- Combine objects into one new object; "replace" moves the originals to Recover deleted -> {merged, mode, replaced, skipped}', docs: '/ai.md#objects-parts-and-pieces' },
+        'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
+        'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
+        'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
+        'getDiagnosticLog':    { signature: 'getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first, secrets redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#viewport-controls' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },

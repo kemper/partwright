@@ -22,6 +22,7 @@ import { getRenderBudget } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 import { specJsonSchema } from '../figure/characterSpec';
+import { AI_WRITABLE_CONFIG_KEYS } from '../config/appConfigBounds';
 
 export interface ToolDefinition {
   name: string;
@@ -1401,6 +1402,114 @@ const ALL_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  // --- Core-operation parity (#1085): UI capabilities the agent could not reach ---
+  {
+    name: 'setCamera',
+    description: "Orbit the user's LIVE viewport camera to an angle — use it to SHOW the user something (\"look at the underside\"), not to inspect (renderView/renderViews render offscreen without moving their view). Same convention as getViewState().camera: azimuth 0 = front (-Y), 90 = right (+X), 180 = back, 270 = left; elevation 0 = horizon, 90 = straight down from above, negative = from below. Omitted fields keep their current value. Returns { camera }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        azimuth: { type: 'number', description: 'Degrees around Z. 0 = front, 90 = right.' },
+        elevation: { type: 'number', minimum: -90, maximum: 90, description: 'Degrees above (+) or below (-) the horizon.' },
+        distance: { type: 'number', minimum: 0, description: 'Camera distance from the target, in model units. Default: current.' },
+        target: { type: 'array', items: { type: 'number' }, description: 'Orbit target [x, y, z]. Default: current.' },
+      },
+    },
+  },
+  {
+    name: 'frameObjectPart',
+    description: "Point the user's live camera at one part (api.label name) or piece (0-based index) of the current object, keeping the current viewing direction — \"here is the handle\". Pair with highlightObjectPart to also tint it. Pass exactly one of part / piece / unlabeled. Returns { ok, triangles, bbox, camera }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        unlabeled: { type: 'boolean', description: 'true = frame the geometry no part covers.' },
+      },
+    },
+  },
+  {
+    name: 'getCurvatureQuality',
+    description: 'Read the curvature quality (the Quality panel): the default circular-segment count primitives use when the code does not pass its own. Returns { quality, segments, customSegments, language, presets, defaultSegments }.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setCurvatureQuality',
+    description: "Set the curvature quality like the Quality panel and re-run the model at the new segment count. Pass a preset quality ('low' 16, 'medium' 32, 'high' 64, 'highest' 128, 'ultra' 1024) or an explicit segments count (3..4096). Prefer per-call segment arguments in the code for one feature; use this when the whole model looks faceted (or is too heavy). Not saved in versions — it is a per-tab setting. Returns { quality, segments, geometry }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        quality: { type: 'string', enum: ['low', 'medium', 'high', 'highest', 'ultra', 'custom'] },
+        segments: { type: 'integer', minimum: 3, maximum: 4096, description: 'Explicit segment count (implies custom unless it matches a preset).' },
+      },
+    },
+  },
+  {
+    name: 'simplifyModel',
+    description: "Reduce (simplify) or increase (enhance) the current model's triangle count — the Quality panel's Simplify / Enhance — and SAVE the result as a new version. The result is a baked mesh (an import wrapper), not parametric code: do it as a finishing step, and only when asked or when the mesh is too heavy (simplify) / too coarse for a texture or paint (enhance). Pass exactly ONE target: targetTris (a triangle count) or targetEdge (simplify: the feature-size tolerance in model units; enhance: the target edge length). amount (1..6, only with targetEdge) strengthens the op. preserveColor (default true) carries paint across. Returns { ok, mode, before, after, version, message, warnings? }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['simplify', 'enhance'], description: "Default 'simplify'." },
+        targetTris: { type: 'integer', minimum: 4, description: 'Target triangle count.' },
+        targetEdge: { type: 'number', minimum: 0, description: 'Tolerance (simplify) or edge length (enhance) in model units.' },
+        amount: { type: 'integer', minimum: 1, maximum: 6, description: 'Strength multiplier for targetEdge. Default 1.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint through the topology change. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'mergeObjects',
+    description: "Combine two or more OBJECTS (from listObjects) into one NEW object, composed as separate components — the object list's multi-select Merge. The new object becomes current. mode 'new' (default) keeps the originals; 'replace' moves them to Recover deleted (restoreObject brings them back). SCAD/BREP sources are baked to a mesh in the combined object. Returns { merged, mode, replaced, skipped }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        objects: { type: 'array', items: { type: 'string' }, description: 'Object names or ids to merge (at least two).' },
+        mode: { type: 'string', enum: ['new', 'replace'] },
+      },
+      required: ['objects'],
+    },
+  },
+  {
+    name: 'reorderObjects',
+    description: 'Reorder the object list (first = top), like dragging rows in the rail. Objects you leave out keep their relative order at the end. Display order only — no geometry or versions change. Returns { order }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        order: { type: 'array', items: { type: 'string' }, description: 'Object names or ids, in the new order.' },
+      },
+      required: ['order'],
+    },
+  },
+  {
+    name: 'getAppConfig',
+    description: "Read the user's Advanced Settings (⚙): { section: { key: { value, default, min?, max?, integer?, modified? } } } for sections ai, renderer, import, geometry, segmentation, ui. Use it to explain a limit you hit (e.g. renderer.enhanceMaxTriangles, import.voxelDefaultMaxSize) before suggesting a change.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setAppConfig',
+    description: "Change ONE of the user's Advanced Settings that affects modeling/import results. Persistent for this browser, so the user is asked to confirm. Only these settings are allowed: " + AI_WRITABLE_CONFIG_KEYS.join(', ') + ". Validated like the settings field (min/max from getAppConfig). ui.defaultQuality / ui.scadDefaultQuality are defaults for NEW tabs — use setCurvatureQuality for the current model. Returns { section, key, value, previous }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        setting: { type: 'string', enum: [...AI_WRITABLE_CONFIG_KEYS], description: '"section.key" of the setting to change.' },
+        value: { type: 'number', description: 'New value (within the min/max getAppConfig reports).' },
+      },
+      required: ['setting', 'value'],
+    },
+  },
+  {
+    name: 'getDiagnosticLog',
+    description: "Read the app's Diagnostic Log (the toolbar ⚠ panel): errors, warnings and routine activity from every subsystem, newest first, with secrets redacted. Use it to answer \"why did that fail?\" — engine errors, import/export failures, uncaught exceptions — instead of guessing. Filter by level and/or source.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        level: { type: 'string', enum: ['error', 'warn', 'info'], description: 'Only this level.' },
+        source: { type: 'string', enum: ['engine', 'ai', 'import', 'export', 'storage', 'network', 'reconstruct', 'app', 'character', 'assembly', 'parts', 'uncaught'], description: 'Only this subsystem.' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Max entries (default: the user setting ui.diagnosticLogApiLimit).' },
+      },
+    },
+  },
   {
     name: 'assertPaint',
     description: 'Verify a painted region matches expected geometry. Returns {passed, failures?}. Use after painting to catch regressions when the mesh changes. `region` is the region id (integer) or name (string) from listRegions().',
@@ -1903,6 +2012,8 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
   'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
+  // Not frameObjectPart: its `part` arg would be eaten as the legacy object key.
+  'simplifyModel',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -1992,6 +2103,12 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  // Core-operation parity (#1085)
+  'reorderObjects',
+  'getCurvatureQuality',
+  'getAppConfig',
+  'setAppConfig',
+  'getDiagnosticLog',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -1999,6 +2116,8 @@ const ALWAYS_AVAILABLE = new Set([
 export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importImageAsRelief',
   'importSvgAsRelief',
+  // Persists a user preference across sessions — the user okays it.
+  'setAppConfig',
 ]);
 
 /** Pure-read tools the model may call during plan mode to ground its plan in
@@ -2020,6 +2139,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -2045,16 +2165,17 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   // Visual-only view state; re-applying it is idempotent.
-  'highlightObjectPart', 'setObjectPartHidden',
+  'highlightObjectPart', 'setObjectPartHidden', 'setCamera', 'frameObjectPart',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated', 'renderParts',
   // Run-without-commit (re-running the same code reproduces the same state)
   'runCode', 'runAndAssert', 'runAndExplain',
 ]);
 
-const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter']);
+const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'simplifyModel', 'mergeObjects']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2082,6 +2203,12 @@ const AUTORESUME_GATED = new Set(['finish']);
 /** Gated by the Session-notes scope toggle. When off, the budget keeps the
  *  model from spending a tool round-trip writing notes the chat already holds. */
 const NOTES_GATED = new Set(['addSessionNote']);
+/** View-only tools that move what the user SEES (camera) without changing the
+ *  model or session: always offered outside plan mode (they are not in
+ *  PLAN_MODE_TOOLS) and not model-changing for auto-review. (#1085 PR4 also
+ *  introduces a UI_GATED set for openTool/getUiState — the two are the same
+ *  set; merge them when both land.) */
+const UI_GATED = new Set(['setCamera', 'frameObjectPart']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
@@ -2113,6 +2240,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (PARTS_GATED.has(t.name)) return toggles.scope.paintFaces;
     if (PARTS_VIEW_GATED.has(t.name)) return toggles.scope.paintFaces && toggles.vision.views;
     if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
+    if (UI_GATED.has(t.name)) return true;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
@@ -2822,6 +2950,37 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (input.unlabeled === true) return api.highlightObjectPart({ unlabeled: true });
       return { error: 'highlightObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
     }
+    // --- Core-operation parity (#1085) ---
+    case 'setCamera':
+      return api.setCamera(input);
+    case 'frameObjectPart': {
+      if (typeof input.part === 'string') return api.frameObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.frameObjectPart({ piece: input.piece });
+      if (input.unlabeled === true) return api.frameObjectPart({ unlabeled: true });
+      return { error: 'frameObjectPart: pass one of part, piece, or unlabeled:true.' };
+    }
+    case 'getCurvatureQuality':
+      return api.getCurvatureQuality();
+    case 'setCurvatureQuality':
+      return api.setCurvatureQuality(input);
+    case 'simplifyModel':
+      return api.simplifyModel(input);
+    case 'mergeObjects':
+      return api.mergeObjects(input.objects, input.mode === undefined ? undefined : { mode: input.mode });
+    case 'reorderObjects':
+      return api.reorderObjects(input.order);
+    case 'getAppConfig':
+      return api.getAppConfig();
+    case 'setAppConfig': {
+      const setting = typeof input.setting === 'string' ? input.setting : '';
+      if (!AI_WRITABLE_CONFIG_KEYS.includes(setting)) {
+        return { error: `setAppConfig: "${setting}" is not one of the settings the assistant may change (${AI_WRITABLE_CONFIG_KEYS.join(', ')}).` };
+      }
+      const dot = setting.indexOf('.');
+      return api.setAppConfig(setting.slice(0, dot), setting.slice(dot + 1), input.value);
+    }
+    case 'getDiagnosticLog':
+      return api.getDiagnosticLog(input);
     case 'setObjectPartHidden': {
       const hidden = input.hidden === undefined ? true : input.hidden === true;
       if (typeof input.part === 'string') return api.setObjectPartHidden(input.part, hidden);
