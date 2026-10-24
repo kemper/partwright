@@ -206,8 +206,10 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 
 **Conventions:**
 
-- **Methods that return a value** (e.g. `runAndSave`, `loadVersion`, `navigateVersion`, `query`, `importSession`, `exportSession`, `setReferenceGeometry`, `measureAt`, `measurePoints`, `probeRay`, notes/session CRUD incl. `renameSession` / `deleteSession`) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`. Check `'error' in result` before using the value.
-- **Void setters** (`setCode`, `setClipZ`, `toggleClip`, `setImages`, `setView`, `setUnits`, `measureMode`, `setActiveLanguage`) **throw** a `ValidationError`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
+- **Most methods that return a value** (e.g. `runAndSave`, `loadVersion`, `navigateVersion`, `query`, `importSession`, `exportSession`, `exportSTEP`, `setReferenceGeometry`, `sliceAtZVisual`, `measureAt`, `measurePoints`, `probeRay`, notes/session CRUD incl. `renameSession` / `deleteSession`) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`. Check `result?.error` before using the value. Don't use `'error' in result`: it throws a TypeError when the success value is a number or `null`, as it is for `measurePoints`, `measureAt`, `probeRay`, `analyzeProfile` and `exportSession`.
+- **Number-returning methods** (`measurePoints`, `measureBetween`): check `typeof r === 'number'` before comparing. `{error} < 0.4` is silently `false`, not an exception.
+- **Known exceptions that still throw on bad arguments** even though they return a value: `run`, `createSession`, `saveVersion`, `probePixel` and the `export*Data` methods. Wrap them in try/catch.
+- **Setters** throw a `ValidationError`. That covers void setters (`setCode`, `setImages`, `setView`, `setUnits`, `measureMode`, `setActiveLanguage`) and the state-returning `setClipZ` / `toggleClip`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
 - **No coercion.** `setClipZ("5")` throws -- strings are not auto-converted to numbers. Pass the right type.
 - **Unknown object keys are rejected.** `runAndAssert(code, { widthToDeep: [1,2] })` errors on the typo; it does not silently ignore it. Allowed keys are listed on each assertion/options interface.
 - **Empty strings are rejected** by default for required string params (names, IDs, note text, code). Optional strings can be omitted but, if provided, must still be non-empty unless noted otherwise.
@@ -353,17 +355,17 @@ await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, 
 await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?, bg?, bgTolerance?, bgMode?, mask?, exclude?, merge?, ignore?, bands?, fit?, pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, …}]})  // TEXT-ONLY likeness score vs a reference photo (attachment id/label or data URL) -> {silhouetteIoU, aspect, bands[] (+ left/right edge offsets), outline[], regions[], worst[], warnings[]}; views[] scores several angles at once (mean silhouetteIoU). Use instead of renders for routine likeness passes — see /ai/reference-images.md#photo-match
 await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 135°, el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
-partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
+partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
 partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
 partwright.checkContainment()            // -> [ContainmentWarning] for components fully inside another (invisible geometry); [] = none, null = no geometry
-partwright.analyzeProfile(sampleCount?)  // Z-profile feature summary of the current model. See /ai/visual-verification.md#stat-based-verification
+partwright.analyzeProfile(sampleCount?)  // Z-profile feature summary of the current model -> ZProfile, null or {error}. See /ai/visual-verification.md#stat-based-verification
 await partwright.analyzeProfileIsolated(code, sampleCount?) // Same for code run in isolation -> {profile, stats} or {error}
 partwright.measureAt([x,y])              // Ray down Z at XY -> {hits, thickness, topZ, bottomZ}, null (no geometry) or {error}
 partwright.probeRay(origin, direction, {allHits?}) // Any ray -> {hits:[...]} nearest first (front faces only unless allHits), null or {error}
-partwright.measurePoints([x,y,z], [x,y,z]) // Distance -> number or {error} (measureBetween is an alias)
+partwright.measurePoints([x,y,z], [x,y,z]) // Distance -> number or {error} (measureBetween is an alias). Check typeof r === 'number' before comparing
 partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-click measure tool for the user (locks orbit) / -> {active, point1, point2, distance}
 // Printing -- see /ai/printing.md
 partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)

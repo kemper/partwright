@@ -37,7 +37,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
-import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -11686,7 +11686,8 @@ async function main() {
      *  `{ ok: true, filename, sizeBytes }` on success, or
      *  `{ ok: false, error }` when no BREP shape is available. */
     async exportSTEP(filename?: string) {
-      assertString(filename, 'exportSTEP(filename)', { optional: true });
+      const check = guard(() => assertString(filename, 'exportSTEP(filename)', { optional: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return { ok: false as const, error: check.error };
       try {
         // The retained shape is cleared on session/language change; guard the
         // active language too so a stale shape can never be served outside a
@@ -12684,8 +12685,9 @@ async function main() {
     },
 
     /** Render a cross-section at Z height as an SVG string for visual verification */
-    sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null {
-      assertNumber(z, 'sliceAtZVisual(z)');
+    sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null | { error: string } {
+      const check = guard(() => assertNumber(z, 'sliceAtZVisual(z)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentManifold) return null;
       const s = sliceAtZ(currentManifold, z);
       if (!s) return null;
@@ -13129,6 +13131,7 @@ async function main() {
     async deleteSession(id: string) {
       const check = guard(() => assertString(id, 'deleteSession(id)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!(await dbGetSession(id))) return { error: `deleteSession: no session with id "${id}". Call listSessions() for valid ids.` };
       await deleteSession(id);
       return { success: true };
     },
@@ -17731,7 +17734,7 @@ async function main() {
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
         'getParams': { signature: 'getParams() -- Customizer schema the current model declared via api.params({...}) plus resolved values -> {schema, values} ({schema: [], values: {}} when none)', docs: '/ai.md#customizer-parameters-apiparams' },
-        'setParams': { signature: 'await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params} or {error} when the model declares no params', docs: '/ai.md#customizer-parameters-apiparams' },
+        'setParams': { signature: "await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params}; {error} when the model declares no params; {status: 'error', error: 'Run was superseded...'} when a concurrent run won (retry)", docs: '/ai.md#customizer-parameters-apiparams' },
         'getActiveLanguage': { signature: "getActiveLanguage() -- Active engine -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'", docs: '/ai.md#switching-engines' },
         'setActiveLanguage': { signature: "await setActiveLanguage(lang) -- Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the current buffer as a per-language draft and restores the target's draft. Versions keep their own language. Throws on a bad lang", docs: '/ai.md#switching-engines' },
         'isRunning': { signature: 'isRunning() -- Whether geometry code is executing right now -> boolean', docs: '/ai.md#console-api--windowpartwright' },
@@ -17761,7 +17764,7 @@ async function main() {
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
         'closeSession': { signature: 'await closeSession() -- Close the current session (an empty one is discarded); the next open re-frames the camera', docs: '/ai.md#console-api--windowpartwright' },
         'renameSession': { signature: 'await renameSession(newName, id?) -- Rename the current session (or the given id) -> {success: true} or {error}', docs: '/ai.md#console-api--windowpartwright' },
-        'deleteSession': { signature: 'await deleteSession(id) -- Permanently delete a session and all its objects/versions (closes it if open; irreversible) -> {success: true} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteSession': { signature: 'await deleteSession(id) -- Permanently delete a session and all its objects/versions (closes it if open; irreversible) -> {success: true} or {error} (bad or unknown id)', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionState': { signature: 'getSessionState() -- Lightweight snapshot -> {session: {id, name} | null, currentPart, parts: [{id, name, order, isCurrent}], currentVersion: {index, label} | null, versionCount} (parts = objects)', docs: '/ai.md#resuming-a-session' },
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'clearAllSessions': { signature: 'await clearAllSessions() -- Delete EVERY session and version from IndexedDB (irreversible)', docs: '/ai.md#console-api--windowpartwright' },
@@ -17838,7 +17841,7 @@ async function main() {
         'clearImages':     { signature: 'clearImages() -- Remove the image attachments (non-image attachments preserved)', docs: '/ai/reference-images.md#attachments' },
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
-        'sliceAtZVisual': { signature: 'sliceAtZVisual(z) -- Cross-section at height z as an SVG string -> {svg, area, contours} or null when no geometry (contours > 1 = hollow / multi-piece)', docs: '/ai/visual-verification.md' },
+        'sliceAtZVisual': { signature: 'sliceAtZVisual(z) -- Cross-section at height z as an SVG string -> {svg, area, contours}, null when no geometry, or {error} (contours > 1 = hollow / multi-piece)', docs: '/ai/visual-verification.md' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'renderSection':   { signature: 'renderSection({axis?, offset?, size?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'componentBounds': { signature: 'componentBounds() -- Per-connected-component info: [{index, volume, triangleCount, bbox}], largest first. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
@@ -17857,8 +17860,8 @@ async function main() {
         'analyzeProfileIsolated': { signature: 'await analyzeProfileIsolated(code, sampleCount?) -- Z-profile of code run in isolation (no editor/viewport change) -> {profile, stats} (profile null when the run fails) or {error}', docs: '/ai/visual-verification.md#stat-based-verification' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probeRay': { signature: 'probeRay(origin, direction, {allHits?}) -- Cast a ray -> {hits: [...]} nearest first (front faces only by default; allHits adds back faces for thickness), null when no geometry, or {error}', docs: '/ai.md#console-api--windowpartwright' },
-        'measurePoints': { signature: 'measurePoints([x,y,z], [x,y,z]) -- Euclidean distance between two points -> number or {error}', docs: '/ai.md#console-api--windowpartwright' },
-        'measureBetween': { signature: 'measureBetween([x,y,z], [x,y,z]) -- Alias of measurePoints -> number or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'measurePoints': { signature: 'measurePoints([x,y,z], [x,y,z]) -- Euclidean distance between two points -> number or {error}. Check typeof r === "number" before comparing ({error} < 0.4 is silently false)', docs: '/ai.md#console-api--windowpartwright' },
+        'measureBetween': { signature: 'measureBetween([x,y,z], [x,y,z]) -- Alias of measurePoints -> number or {error}. Check typeof r === "number" before comparing', docs: '/ai.md#console-api--windowpartwright' },
         'measureMode': { signature: 'measureMode(enabled?) -- Turn the interactive two-click measure tool on/off (omit to toggle); locks orbit while on. Throws on a non-boolean', docs: '/ai.md#console-api--windowpartwright' },
         'getMeasurement': { signature: 'getMeasurement() -- Interactive measure state -> {active, point1, point2, distance} (points/distance null until clicked)', docs: '/ai.md#console-api--windowpartwright' },
         'setUnits': { signature: "setUnits('mm'|'cm'|'in'|'unitless') -- Declare the unit system (export metadata only; no scaling). Throws on a bad unit", docs: '/ai.md#console-api--windowpartwright' },

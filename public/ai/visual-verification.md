@@ -38,8 +38,8 @@ partwright.renderView({ elevation: 30, azimuth: 315 })            // isometric (
 4. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
 
 ```js
-const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
-// svg = visual rendering of the cross-section profile at z=10
+const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}, null (no geometry) or {error}
+if (s && !s.error) { /* s.svg = visual rendering of the cross-section profile at z=10 */ }
 ```
 
 5. **Feature-specific checks:**
@@ -96,7 +96,7 @@ Text-only checks for round / turned / stacked parts, cheaper than a render:
 ```js
 partwright.analyzeProfile(sampleCount?)              // current model: features at each Z height (radii, areas, positions) -> ZProfile, null, or {error}
 await partwright.analyzeProfileIsolated(code, sampleCount?) // same for code run in isolation (editor/viewport untouched) -> {profile, stats} or {error}
-partwright.sliceAtZVisual(z)                         // cross-section at z as an SVG string -> {svg, area, contours} (contours > 1 = hollow / multi-piece), null if no geometry
+partwright.sliceAtZVisual(z)                         // cross-section at z as an SVG string -> {svg, area, contours} (contours > 1 = hollow / multi-piece), null if no geometry, or {error}
 ```
 
-Use `analyzeProfileIsolated` to compare a candidate against the committed model before saving; `profile` is `null` (with the run's error in `stats`) when the code fails.
+All three return `{ error }` on bad arguments, and the first and last return `null` with no geometry. Check `r?.error`, not `'error' in r`: that throws on `null`. Use `analyzeProfileIsolated` to compare a candidate against the committed model before saving; `profile` is `null` (with the run's error in `stats`) when the code fails.
