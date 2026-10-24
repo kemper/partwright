@@ -38,8 +38,8 @@ partwright.renderView({ elevation: 30, azimuth: 315 })            // isometric (
 4. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
 
 ```js
-const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
-// svg = visual rendering of the cross-section profile at z=10
+const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}, null (no geometry) or {error}
+if (s && !s.error) { /* s.svg = visual rendering of the cross-section profile at z=10 */ }
 ```
 
 5. **Feature-specific checks:**
@@ -49,6 +49,23 @@ const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
    - Made something hollow? Slice at mid-height — should show wall ring, not solid fill.
    - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` — the back and left
      faces are invisible to every other preset.
+
+## Showing the user a view — `setCamera` / `frameObjectPart`
+
+`renderView` / `renderViews` render OFFSCREEN for your own checks and never move the user's
+view. To point the user at something in the live viewport, move their camera:
+
+```js
+partwright.setCamera({ azimuth: 180, elevation: -30 })   // look at the back, from below
+partwright.setCamera({ distance: 40, target: [0, 0, 10] })
+partwright.frameObjectPart('handle')                     // aim at a labelled part (or {piece: 1})
+partwright.highlightObjectPart('handle')                 // …and tint it
+partwright.setEdgesVisible(true)                         // the viewport "Edges" overlay
+```
+
+`setCamera` uses the `getViewState().camera` convention: azimuth 0 = front (−Y), 90 = right
+(+X), 180 = back; elevation 0 = horizon, 90 = top-down, negative = from below. Omitted fields keep
+their current value. `frameObjectPart` keeps the current viewing direction.
 
 ## Edge overlay (`edges`)
 
@@ -87,3 +104,16 @@ Check these after every run — `getGeometryData()` returns them all:
 5. `crossSections` quartiles (z25/z50/z75) — expected profile at each height
 6. `partwright.validate(code)` — quick syntax check without running
 7. `partwright.runAndAssert(code, assertions)` — structured validation with explicit bounds
+8. `partwright.checkContainment()` — components sitting fully inside another (invisible, wasted geometry that still adds volume and print time). `[]` = clean, `null` = no geometry yet.
+
+### Profile and slice probes
+
+Text-only checks for round / turned / stacked parts, cheaper than a render:
+
+```js
+partwright.analyzeProfile(sampleCount?)              // current model: features at each Z height (radii, areas, positions) -> ZProfile, null, or {error}
+await partwright.analyzeProfileIsolated(code, sampleCount?) // same for code run in isolation (editor/viewport untouched) -> {profile, stats} or {error}
+partwright.sliceAtZVisual(z)                         // cross-section at z as an SVG string -> {svg, area, contours} (contours > 1 = hollow / multi-piece), null if no geometry, or {error}
+```
+
+All three return `{ error }` on bad arguments, and the first and last return `null` with no geometry. Check `r?.error`, not `'error' in r`: that throws on `null`. Use `analyzeProfileIsolated` to compare a candidate against the committed model before saving; `profile` is `null` (with the run's error in `stats`) when the code fails.

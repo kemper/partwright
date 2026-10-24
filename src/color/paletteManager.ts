@@ -44,8 +44,55 @@ import {
 } from './regions';
 import { getSlotId, setSlot } from './paintMode';
 import { openPhotoColorPicker } from './photoColorPicker';
+import { registerTool, createToolNote, createSuggestionRow, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 let open = false;
+
+/** Suggested palette changes from an `openTool('tool-palette', …)` prefill.
+ *  The manager saves on every edit, so a prefill never writes them directly —
+ *  it shows them in a "Suggested" row the user confirms with one click. */
+interface PaletteSuggestion { paletteId?: string; paletteName?: string; capacity?: number; constrained?: boolean }
+/** Show a suggestion (+ note) in the OPEN manager; set while one is showing. */
+let showSuggestionInOpen: ((s: PaletteSuggestion, note: string | undefined, source: ToolOpenContext['source']) => void) | null = null;
+
+const PALETTE_PREFILL_SCHEMA: PrefillSchema = {
+  palette: { type: 'string', description: 'Palette to switch to, by name or id (listPalettes). Suggested — the user confirms.' },
+  capacity: { type: 'number', integer: true, min: 1, max: 64, description: 'Printer filament slots (e.g. 4 for one AMS). Suggested — the user confirms.' },
+  constrained: { type: 'boolean', description: 'Constrain painting to the palette. Suggested — the user confirms.' },
+};
+
+/** Register `tool-palette` (called once from paint UI init). */
+export function registerPaletteTool(): void {
+  registerTool({
+    id: 'tool-palette',
+    title: 'Manage filament palette',
+    hint: 'Tools',
+    prefillSchema: PALETTE_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openPaletteWithPrefill(prefill, ctx),
+    getState: () => (open ? { palette: getActivePaletteName(), capacity: getPaletteCapacity(), constrained: isPaletteConstrained() } : null),
+    isOpen: () => open,
+    close: () => closeOpenManager?.(),
+  });
+}
+
+let closeOpenManager: (() => void) | null = null;
+
+function openPaletteWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const s: PaletteSuggestion = {};
+  if (typeof pre.palette === 'string') {
+    const pals = listPalettes();
+    const want = pre.palette as string;
+    const hit = pals.find(x => x.id === want) ?? pals.find(x => x.name.toLowerCase() === want.toLowerCase());
+    if (!hit) return { error: `palette "${want}" not found (palettes: ${pals.map(x => `"${x.name}"`).join(', ')})` };
+    if (!hit.active) { s.paletteId = hit.id; s.paletteName = hit.name; }
+  }
+  if (typeof pre.capacity === 'number' && pre.capacity !== getPaletteCapacity()) s.capacity = pre.capacity;
+  if (typeof pre.constrained === 'boolean' && pre.constrained !== isPaletteConstrained()) s.constrained = pre.constrained;
+  if (!open) openPaletteManager();
+  showSuggestionInOpen?.(s, ctx.note, ctx.source);
+  return { applied: pre, ignored: [] };
+}
 
 /** Open the palette manager — a docked, draggable tool panel (like Paint).
  *  Idempotent — a second call is a no-op while one is showing. */
@@ -55,8 +102,41 @@ export function openPaletteManager(): void {
   const shell = createToolPanelShell({
     title: '🎨 Filament palette',
     width: 'w-[22rem]',
-    onClose: () => { open = false; },
+    onClose: () => { open = false; showSuggestionInOpen = null; closeOpenManager = null; },
   });
+  closeOpenManager = () => shell.close();
+
+  // AI note + suggested-changes row (openTool prefill). Hidden until used.
+  const suggestHost = document.createElement('div');
+  suggestHost.className = 'flex flex-col gap-2 mb-2 empty:hidden empty:mb-0';
+  shell.body.appendChild(suggestHost);
+  showSuggestionInOpen = (s, note, source) => {
+    suggestHost.replaceChildren();
+    if (note) suggestHost.appendChild(createToolNote(note, source));
+    const parts: string[] = [];
+    if (s.paletteName) parts.push(`switch to “${s.paletteName}”`);
+    if (s.capacity !== undefined) parts.push(`${s.capacity} printer slot${s.capacity === 1 ? '' : 's'}`);
+    if (s.constrained !== undefined) parts.push(s.constrained ? 'constrain painting to the palette' : 'stop constraining to the palette');
+    if (parts.length === 0) return;
+    const row = createSuggestionRow({
+      text: `Suggested: ${parts.join(' · ')}`,
+      dismissLabel: 'Dismiss',
+      onDismiss: () => row.remove(),
+      primaryLabel: 'Apply',
+      onPrimary: () => {
+        if (s.paletteId) setActivePalette(s.paletteId);
+        if (s.capacity !== undefined) setPaletteCapacity(s.capacity);
+        if (s.constrained !== undefined) setPaletteConstrained(s.constrained);
+        capInput.value = String(getPaletteCapacity());
+        constrainBox.checked = isPaletteConstrained();
+        refreshAll();
+        notifyToolApplied('tool-palette'); // before the row goes: getState reads the live values
+        row.remove();
+      },
+    });
+    row.dataset.paletteSuggestion = '';
+    suggestHost.appendChild(row);
+  };
 
   const intro = document.createElement('p');
   intro.className = 'text-xs text-zinc-400 leading-snug';

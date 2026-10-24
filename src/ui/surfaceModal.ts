@@ -25,10 +25,12 @@ import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
 import { listFilaments } from '../color/palette';
 import { createColorSwatch } from './colorPickerModal';
+import { getSelectedPartName } from './partSelection';
 import { createSliderEntry, formatEntry, stepDecimals } from './sliderEntry';
 import { MAX_FIELD_RESOLUTION } from '../surface/sdfModifier';
 import { SMOOTH_MAX_ITERATIONS } from '../surface/smoothSurface';
 import { MAX_RESOLUTION as VOXELIZE_MAX_RESOLUTION } from '../surface/voxelizeMesh';
+import { registerTool, createToolNote, checkRange, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -72,6 +74,71 @@ const BTN_BASE =
 
 let openModal: HTMLDivElement | null = null;
 let currentSurfaceClose: (() => void) | null = null;
+/** The open panel's field values (what `getUiState().toolState` reports). */
+let currentSurfaceState: (() => Record<string, unknown>) | null = null;
+/** Re-run the open panel's preview — used when a closed panel's in-flight
+ *  preview lands after a newer panel took over the viewport. */
+let currentSurfaceRepreview: (() => void) | null = null;
+
+/** A tab's prefillable control — the same keys as its `api.surface` options. */
+type FieldCtl =
+  | { kind: 'number'; get(): number; set(v: number): void; min: number; max: number }
+  | { kind: 'boolean'; get(): boolean; set(v: boolean): void }
+  | { kind: 'enum'; get(): string; set(v: string): void; values: string[] }
+  | { kind: 'string'; get(): string; set(v: string): void };
+
+const SURFACE_TABS = ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'voronoiLamp', 'engrave', 'smooth', 'voxelize'] as const;
+
+const num = (description: string): PrefillSchema[string] => ({ type: 'number', description });
+const bool = (description: string): PrefillSchema[string] => ({ type: 'boolean', description });
+
+/** Prefill keys for `openTool('tool-surface', …)`. Op fields are the union over
+ *  every tab; the opener rejects a key the chosen tab doesn't have and checks
+ *  each number against that slider's (model-size-relative) range. */
+const SURFACE_PREFILL_SCHEMA: PrefillSchema = {
+  tab: { type: 'enum', values: SURFACE_TABS, description: 'Which modifier tab to open (default fuzzy).' },
+  mode: { type: 'enum', values: ['whole', 'region'], description: "'whole' = whole model (live preview; in a JS session Apply writes api.surface code), 'region' = the user picks faces (Apply bakes the patch). Default region." },
+  scope: { type: 'object', description: 'Whole-model code-path scope: {label} (an api.label region) or {point:[x,y,z], radius}. Implies mode whole.' },
+  preserveColor: bool('Keep paint on bake (only on a painted model).'),
+  quality: { type: 'number', min: 1, max: 5, integer: true, description: 'Mesh detail 1 Draft … 5 Ultra (texture tabs).' },
+  amplitude: num('Relief depth.'), scale: num('Fuzzy feature size.'), octaves: num('Noise octaves.'), seed: num('Random seed.'),
+  stitchWidth: num('Knit stitch width.'), stitchHeight: num('Knit stitch height.'), roundness: num('Knit roundness 0..1.'),
+  grainAngleDeg: num('Grain angle 0..180.'), variation: num('Stitch variation.'),
+  algorithm: { type: 'enum', values: ['bfs', 'lscm', 'harmonic'], description: 'Knit UV layout.' },
+  cableWidth: num('Cable width.'), cablePitch: num('Cable pitch.'), plyWidth: num('Cable ply width.'),
+  cellWidth: num('Waffle/knurl cell width.'), cellHeight: num('Waffle/knurl cell height.'), sharpness: num('Waffle/knurl sharpness.'),
+  rowOffset: num('Waffle row offset 0..1.'),
+  fiberSpacing: num('Fur fiber spacing.'), fiberLength: num('Fur fiber length.'),
+  threadSpacing: num('Woven thread spacing.'), threadWidth: num('Woven thread width fraction.'), underDepth: num('Woven under-thread depth 0..1.'),
+  style: { type: 'enum', values: ['diamond', 'straight', 'ribs'], description: 'Knurl pattern.' },
+  profile: { type: 'enum', values: ['round', 'pyramid'], description: 'Knurl profile.' },
+  cellSize: num('Voronoi cell size.'), wallWidth: num('Voronoi wall width fraction.'), jitter: num('Voronoi irregularity 0..1.'),
+  raised: bool('Voronoi: raised walls (false = engraved channels). Engrave: emboss instead of engrave.'),
+  wallThickness: num('Voronoi lamp wall thickness.'), strutWidth: num('Voronoi lamp strut width fraction.'),
+  resolution: num('Voronoi lamp / engrave field resolution, or voxelize resolution.'),
+  watertight: bool('Keep one connected piece (voronoi lamp / engrave).'),
+  output: { type: 'enum', values: ['mesh', 'voxel'], description: 'Voronoi lamp output.' },
+  text: { type: 'string', maxLength: 200, description: 'Engrave text (rasterized on open).' },
+  font: { type: 'enum', values: ['bold', 'regular', 'italic', 'bold-italic'], description: 'Engrave font.' },
+  through: bool('Engrave: cut clean through (stencil).'),
+  size: num('Engrave text width.'), depth: num('Engrave depth / emboss height.'),
+  face: { type: 'enum', values: ['+x', '-x', '+y', '-y', '+z', '-z'], description: "Engrave placement face: '+z' top, '-z' bottom, '-y' front, '+y' back, '+x' right, '-x' left." },
+  posU: { type: 'number', min: 0, max: 1, description: 'Engrave position across the face (0..1 of the bbox).' },
+  posV: { type: 'number', min: 0, max: 1, description: 'Engrave position up the face (0..1 of the bbox).' },
+  rotationDeg: { type: 'number', min: -180, max: 180, description: 'Engrave in-plane rotation (degrees).' },
+  curve: { type: 'enum', values: ['none', 'u', 'v'], description: "Engrave wrap: 'v' around the vertical axis (mug), 'u' around the horizontal, 'none' flat." },
+  curveAngle: { type: 'number', min: 10, max: 360, description: 'Engrave wrap angle (degrees) when curve is set.' },
+  iterations: num('Smooth rounding strength.'), subdivide: bool('Smooth: subdivide first.'),
+  smooth: bool('Voxelize: smooth voxels.'),
+};
+
+interface SurfaceOpenOpts {
+  /** Values to pre-set (validated against SURFACE_PREFILL_SCHEMA by the tool
+   *  registry, then against the tab's live control ranges here). */
+  prefill?: Record<string, unknown>;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
 
 const surfaceRegistryEntry = { close(): void { currentSurfaceClose?.(); } };
 
@@ -108,7 +175,11 @@ function readoutSlider(label: string, min: number, max: number, value: number, s
   input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(value);
   input.addEventListener('input', () => { readout.textContent = fmt(input.valueAsNumber); onChange(); });
   wrap.append(head, input);
-  return { wrap, get: () => input.valueAsNumber };
+  return {
+    wrap, get: () => input.valueAsNumber,
+    set: (v: number) => { input.value = String(v); readout.textContent = fmt(input.valueAsNumber); },
+    kind: 'number' as const, min, max,
+  };
 }
 
 /** Typed-entry bound for open-ended quantities (sizes, depths, seeds, …): the
@@ -159,7 +230,10 @@ function slider(
   if (opts.unit) box.append(el('span', 'text-zinc-400', opts.unit));
   head.append(box);
   wrap.append(head, entry.range);
-  return { wrap, get: entry.get };
+  return {
+    wrap, get: entry.get, set: (v: number) => entry.set(v),
+    kind: 'number' as const, min: opts.hardMin ?? min, max: opts.hardMax ?? sliderMax,
+  };
 }
 
 /** A 0–100% position slider with quick-snap buttons at 0/25/50/75/100% — the
@@ -188,6 +262,8 @@ function sliderWithSnaps(label: string, value: number, onChange: () => void) {
 /** In-plane axis indices for a planar face normal axis (mirrors engraveStamp's
  *  PLANE_AXES so click-placement fractions line up with the field math). */
 const ENGRAVE_PLANE_AXES: Record<'x' | 'y' | 'z', [number, number]> = { z: [0, 1], y: [0, 2], x: [1, 2] };
+/** Axis-aligned faces an engrave prefill can name: '+z' = top, '-y' = front, …. */
+const ENGRAVE_FACES = ['+x', '-x', '+y', '-y', '+z', '-z'] as const;
 
 type Vec3 = [number, number, number];
 /** A committed engrave placement. `planar` snaps to an axis-aligned face (the
@@ -235,7 +311,7 @@ function checkbox(label: string, checked: boolean, onChange: () => void) {
   input.type = 'checkbox'; input.checked = checked;
   input.addEventListener('change', onChange);
   wrap.append(input, el('span', '', label));
-  return { wrap, get: () => input.checked };
+  return { wrap, get: () => input.checked, set: (v: boolean) => { input.checked = v; }, kind: 'boolean' as const };
 }
 
 /** A labeled <select> dropdown. `options` is [value, label] pairs. */
@@ -256,7 +332,10 @@ function dropdown<T extends string>(
   }
   sel.addEventListener('change', onChange);
   wrap.append(sel);
-  return { wrap, get: () => sel.value as T };
+  return {
+    wrap, get: () => sel.value as T, set: (v: string) => { sel.value = v; },
+    kind: 'enum' as const, values: options.map(o => o[0] as string),
+  };
 }
 
 /** Normalize any hex form to the `#rrggbb` a native colour input requires. */
@@ -325,8 +404,7 @@ function getViewportContainer(): HTMLElement {
   return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
 }
 
-export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): void {
-  if (openModal) { openModal.remove(); openModal = null; currentSurfaceClose = null; }
+export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', openOpts?: SurfaceOpenOpts): ToolOpenResult {
   const span = modelSpan(api);
   const painted = (() => { try { return api.modelHasColor(); } catch { return false; } })();
 
@@ -560,6 +638,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     updateScopeUI();
   }
 
+  /** Start the scope at the Objects-list selection (a part), else Whole. */
+  function setScopeFromPartSelection(): void {
+    const part = getSelectedPartName();
+    const names = part ? (() => { try { return api.getLabelNames(); } catch { return []; } })() : [];
+    if (part && names.includes(part)) {
+      setScopeMode('label');
+      scopeLabelSelect.value = part;
+      codeScope = { kind: 'label', label: part };
+      updateScopeUI();
+    } else {
+      setScopeMode('none');
+    }
+  }
+
   // Each scope change re-fires the (debounced) preview so the scoped patch shown
   // in the viewport tracks the picker — matching what Apply will write.
   scopeWholeBtn.addEventListener('click', () => { setScopeMode('none'); schedulePreview(); });
@@ -757,12 +849,15 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   clearAllBtn.addEventListener('click', clearRegion);
   const colorRow = el('div', 'mb-3');
+  /** Programmatic preserve-colour set (prefill); null when unpainted. */
+  let setPreserveColorUI: ((v: boolean) => void) | null = null;
   if (painted) {
     const colorBox = checkbox('Preserve colors (best-effort)', true, () => {
       preserveColor = colorBox.get();
       warn.classList.toggle('hidden', preserveColor);
       schedulePreview();
     });
+    setPreserveColorUI = (v: boolean) => { colorBox.set(v); preserveColor = v; warn.classList.toggle('hidden', v); };
     const warn = el('p', 'hidden text-[11px] text-amber-400/90 mt-1', '⚠ Colors will be cleared by this effect.');
     const note = el('p', 'text-[11px] text-zinc-500 mt-1', 'Voxelize keeps per-voxel color; fuzzy/smooth re-resolve painted regions (brush strokes may not survive re-tessellation).');
     colorRow.append(colorBox.wrap, warn, note);
@@ -777,9 +872,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   // Per-tab option getters → modifier options object for preview/apply.
   let currentOpts: () => Record<string, unknown> = () => ({});
+  // Per-tab prefillable controls keyed like the options (set by renderTab).
+  let tabFields: Record<string, FieldCtl> = {};
 
   function renderTab() {
     body.innerHTML = '';
+    tabFields = {};
     // Leaving any tab stops an in-progress engrave placement and drops stale
     // control refs (the DOM they point at is about to be discarded).
     engravePosX = engravePosY = null; engraveFaceReadout = null; engravePlaceBtn = null;
@@ -787,8 +885,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     engraveSizeGet = null; engraveIsPlanar = null;
     exitEngravePick();
     // Switching tabs resets the code-path scope (label sets differ per model,
-    // and a point patch is tab-agnostic but clearer to re-pick deliberately).
-    setScopeMode('none');
+    // and a point patch is tab-agnostic but clearer to re-pick deliberately) —
+    // to the part selected in the Objects list when there is one (#1003: the
+    // rail selection is the scope every tool starts from).
+    setScopeFromPartSelection();
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -798,6 +898,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
       currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: activeSelection() });
+      tabFields = { amplitude: amp, scale, octaves: oct, seed, quality: detail };
     } else if (active === 'knit') {
       const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.09, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -825,6 +926,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         algorithm: algo.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { stitchWidth: sw, stitchHeight: sh, amplitude: amp, roundness: round, grainAngleDeg: grain, variation, seed, algorithm: algo, quality: detail };
     } else if (active === 'cable') {
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const cp = slider('Cable pitch', span * 0.05, span * 0.6, span * 0.2, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -846,6 +948,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { cableWidth: cw, cablePitch: cp, plyWidth: pw, amplitude: amp, grainAngleDeg: grain, variation, seed, quality: detail };
     } else if (active === 'waffle') {
       const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const ch = slider('Cell height', span * 0.01, span * 0.3, span * 0.06, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -865,6 +968,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { cellWidth: cw, cellHeight: ch, amplitude: amp, sharpness: sharp, rowOffset: rowOff, grainAngleDeg: grain, quality: detail };
     } else if (active === 'fur') {
       const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const fl = slider('Fiber length', span * 0.01, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -884,6 +988,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { fiberSpacing: fs, fiberLength: fl, amplitude: amp, octaves: oct, grainAngleDeg: grain, seed, quality: detail };
     } else if (active === 'woven') {
       const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const tw = slider('Thread width (fraction)', 0.1, 0.9, 0.4, 0.05, schedulePreview);
@@ -901,6 +1006,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { threadSpacing: ts, threadWidth: tw, amplitude: amp, underDepth: ud, grainAngleDeg: grain, quality: detail };
     } else if (active === 'knurl') {
       const style = dropdown<'diamond' | 'straight' | 'ribs'>('Pattern', [
         ['diamond', 'Diamond (cross-hatch)'],
@@ -929,6 +1035,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { style, profile, cellWidth: cw, cellHeight: ch, amplitude: amp, sharpness: sharp, grainAngleDeg: grain, quality: detail };
     } else if (active === 'voronoi') {
       const cs = slider('Cell size', span * 0.03, span * 0.4, span * 0.12, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const ww = slider('Wall width (fraction)', 0.05, 0.6, 0.25, 0.01, schedulePreview, { hardMin: 0.02, hardMax: 0.95 });
@@ -950,6 +1057,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         quality: detail.get(),
         selectedTriangles: activeSelection(),
       });
+      tabFields = { cellSize: cs, wallWidth: ww, amplitude: amp, jitter: jit, grainAngleDeg: grain, seed, raised: { kind: 'boolean', get: () => !engrave.get(), set: (v: boolean) => engrave.set(!v) }, quality: detail };
     } else if (active === 'voronoiLamp') {
       const cs = slider('Cell size', span * 0.05, span * 0.5, span * 0.16, span * 0.005, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
       const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.05, span * 0.002, schedulePreview, { hardMax: NO_LIMIT, fractional: true });
@@ -977,6 +1085,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+      tabFields = { cellSize: cs, wallThickness: wt, strutWidth: sw, jitter: jit, grainAngleDeg: grain, seed, resolution: res, watertight: wtight, output: out };
     } else if (active === 'engrave') {
       // Text input + a small "Apply" button (and Enter) to rasterize the stamp —
       // typing no longer auto-renders on every keystroke (it was distracting).
@@ -1109,18 +1218,59 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         resolution: res.get(),
         watertight: wtight.get(),
       });
+      tabFields = {
+        text: { kind: 'string', get: () => textInput.value, set: (v: string) => { textInput.value = v; applyText(); } },
+        font,
+        through: { kind: 'boolean', get: () => modeSel.get() === 'through', set: (v: boolean) => {
+          if (v) modeSel.set('through'); else if (modeSel.get() === 'through') modeSel.set('engrave');
+          syncEngraveModeUI();
+        } },
+        raised: { kind: 'boolean', get: () => modeSel.get() === 'emboss', set: (v: boolean) => {
+          if (v) modeSel.set('emboss'); else if (modeSel.get() === 'emboss') modeSel.set('engrave');
+          syncEngraveModeUI();
+        } },
+        size: sizeS, depth, resolution: res, watertight: wtight,
+        // Placement (prefill / getUiState): stage a face + position like the
+        // sliders / a click would; the outline previews it, nothing is applied.
+        face: { kind: 'enum', values: [...ENGRAVE_FACES],
+          get: () => (engravePlace.mode === 'free' ? 'free' : `${engravePlace.side === 'max' ? '+' : '-'}${engravePlace.axis}`),
+          set: (v: string) => {
+            engravePlace.mode = 'planar';
+            engravePlace.axis = v[1] as 'x' | 'y' | 'z';
+            engravePlace.side = v[0] === '+' ? 'max' : 'min';
+            engravePlace.placed = true;
+            updateEngravePlacementUI(); refreshEngraveOutline();
+          } },
+        posU: { kind: 'number', min: 0, max: 1, get: () => engravePlace.posU, set: (v: number) => {
+          engravePlace.mode = 'planar'; engravePlace.posU = v; posX.set(v); updateEngravePlacementUI(); refreshEngraveOutline();
+        } },
+        posV: { kind: 'number', min: 0, max: 1, get: () => engravePlace.posV, set: (v: number) => {
+          engravePlace.mode = 'planar'; engravePlace.posV = v; posY.set(v); updateEngravePlacementUI(); refreshEngraveOutline();
+        } },
+        rotationDeg: { kind: 'number', min: -180, max: 180, get: () => engravePlace.rot, set: (v: number) => {
+          angle.set(v); engravePlace.rot = angle.get(); refreshEngraveOutline();
+        } },
+        curve: { kind: 'enum', values: ['none', 'u', 'v'], get: () => engravePlace.curveAxis, set: (v: string) => {
+          curveAxis.set(v as 'none' | 'u' | 'v'); engravePlace.curveAxis = v as 'none' | 'u' | 'v'; syncCurveUI();
+        } },
+        curveAngle: { kind: 'number', min: 10, max: 360, get: () => curveAngle.get(), set: (v: number) => {
+          curveAngle.set(v); engravePlace.curveAngle = curveAngle.get();
+        } },
+      };
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, schedulePreview, { hardMax: SMOOTH_MAX_ITERATIONS });
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
       body.append(iter.wrap, sub.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Taubin smoothing relaxes edges into a softer form without shrinking the model. Great for low-poly or blocky parts.'));
       currentOpts = () => ({ iterations: iter.get(), subdivide: sub.get(), selectedTriangles: activeSelection() });
+      tabFields = { iterations: iter, subdivide: sub };
     } else {
       const res = slider('Resolution (voxels)', 8, 128, 32, 1, schedulePreview, { hardMax: VOXELIZE_MAX_RESOLUTION });
       const sm = checkbox('Smooth voxels (rounded corners)', false, schedulePreview);
       body.append(res.wrap, sm.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Rasterizes the model into voxels. The result switches to the voxel engine, so you can paint, re-block, or .vox export it.'));
       currentOpts = () => ({ resolution: res.get(), smooth: sm.get() });
+      tabFields = { resolution: res, smooth: sm };
     }
     // Refresh Apply/Preview state — switching to a region-less tab must clear
     // the "pick a region first" block, and the Apply label + path hint depend
@@ -1132,16 +1282,29 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // --- Live preview (debounced) ---
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
+  /** Set by close() — async work that lands later must not touch the viewport. */
+  let panelClosed = false;
   async function runPreview() {
     // If the model's in-code textures are parked (the user cancelled a compute
     // — the "Re-apply" pill state), apply them first so the preview shows the
     // modifier ON TOP of the textured model, not on the untextured base.
     try { await api.ensureSurfaceTexturesApplied(); } catch { /* preview on whatever is live */ }
+    if (panelClosed) return;
     // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
     // the rest resolve immediately. Either way we await the result.
     // In apply-as-code mode, fold in the label/point scope (empty otherwise) so a
     // scoped preview shows the same patch Apply will write — not the whole model.
     const r = await api.previewSurfaceModifier(active, { ...currentOpts(), ...scopeOpts() }, preserveColor);
+    if (panelClosed) {
+      // Closed (or replaced) mid-preview: the swapped-in mesh is stale. Hand
+      // the viewport back — to a newer surface panel's own preview, or to the
+      // real model when no panel is open.
+      if (!(r as { error?: string }).error) {
+        if (currentSurfaceRepreview) currentSurfaceRepreview();
+        else api.clearSurfacePreview();
+      }
+      return;
+    }
     if ((r as { error?: string }).error) {
       status.textContent = `Preview error: ${(r as { error: string }).error}`;
     } else {
@@ -1186,6 +1349,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     } finally {
       engraveBuilding = false;
     }
+    // The panel may have closed (or never mounted — a rejected prefill) while
+    // the stamp rasterized: don't draw an outline or start a preview for it.
+    if (panelClosed) return;
     if (active === 'engrave') { refreshEngraveOutline(); schedulePreview(); }
   }
 
@@ -1337,6 +1503,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   scrollBody.append(footer);
 
   const close = () => {
+    panelClosed = true;
     exitSelectionMode();
     stopScopePick();
     exitEngravePick();
@@ -1345,8 +1512,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     clearPreviewIfDirty();
     dragHandle.destroy();
     panel.remove();
+    // An unmounted panel (a prefill that failed validation) owns none of this.
+    if (openModal !== panel) return;
     openModal = null;
     currentSurfaceClose = null;
+    currentSurfaceState = null;
+    currentSurfaceRepreview = null;
     closeViewportPanel(surfaceRegistryEntry);
     document.removeEventListener('keydown', onSurfaceEscape);
   };
@@ -1404,6 +1575,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         applyBtn.textContent = prev;
         return;
       }
+      notifyToolApplied('tool-surface'); // before close(): getState still reads the panel
       close();
     } catch (e) {
       status.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
@@ -1412,19 +1584,138 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     }
   });
 
+  /** Apply an (already schema-validated) prefill to the freshly rendered tab.
+   *  Two passes: validate EVERY key first (mode, scope, colour, each op field
+   *  against its live control range) and only then stage anything, so a
+   *  rejected prefill leaves no half-applied state. Engrave `text` is staged
+   *  last, so its rasterization uses the prefilled font. */
+  function applyPrefill(p: Record<string, unknown>): ToolOpenResult {
+    const errors: string[] = [];
+    const ignored: string[] = [];
+    const steps: Array<() => void> = []; // staging, run only if nothing failed
+    let textStep: (() => void) | null = null;
+    const applied: Record<string, unknown> = {};
+    if (p.tab !== undefined) applied.tab = active;
+    if (p.mode !== undefined) {
+      if (REGIONLESS_TABS.has(active)) ignored.push('mode');
+      else { steps.push(() => setRegionMode(p.mode as 'whole' | 'region')); applied.mode = p.mode; }
+    }
+    if (p.scope !== undefined) {
+      const s = p.scope as Record<string, unknown>;
+      const extra = Object.keys(s).filter(k => k !== 'label' && k !== 'point' && k !== 'radius');
+      const inCode = IN_CODE_IDS.has(active) && (() => { try { return api.getActiveLanguage() === 'manifold-js'; } catch { return false; } })();
+      if (extra.length) errors.push(`scope: unknown key(s) ${extra.join(', ')} (use {label} or {point, radius})`);
+      else if (!inCode) ignored.push('scope'); // scope only exists on the apply-as-code path
+      else if (typeof s.label === 'string') {
+        const label = s.label;
+        const names = (() => { try { return api.getLabelNames(); } catch { return []; } })();
+        if (!names.includes(label)) errors.push(`scope.label "${label}" is not a label in this model (labels: ${names.join(', ') || 'none'})`);
+        else {
+          steps.push(() => {
+            if (regionMode !== 'whole') setRegionMode('whole');
+            setScopeMode('label');
+            scopeLabelSelect.value = label;
+            codeScope = { kind: 'label', label };
+          });
+          applied.scope = { label };
+        }
+      } else if (Array.isArray(s.point) && s.point.length === 3 && s.point.every(n => typeof n === 'number' && Number.isFinite(n))) {
+        const point: [number, number, number] = [s.point[0], s.point[1], s.point[2]];
+        const radius = s.radius === undefined ? scopeRadius.get() : s.radius;
+        if (typeof radius !== 'number' || !(radius > 0)) errors.push('scope.radius must be a positive number');
+        else {
+          steps.push(() => {
+            if (regionMode !== 'whole') setRegionMode('whole');
+            setScopeMode('point');
+            scopeRadius.set(radius);
+            codeScope = { kind: 'point', point, radius };
+          });
+          applied.scope = { point, radius };
+        }
+      } else errors.push('scope must be {label: string} or {point: [x,y,z], radius?: number}');
+      steps.push(() => { updateScopeUI(); updateApplyBtn(); });
+    }
+    if (p.preserveColor !== undefined) {
+      const setUI = setPreserveColorUI;
+      if (setUI) { steps.push(() => setUI(p.preserveColor as boolean)); applied.preserveColor = p.preserveColor; }
+      else ignored.push('preserveColor');
+    }
+    const RESERVED = new Set(['tab', 'mode', 'scope', 'preserveColor']);
+    for (const [k, v] of Object.entries(p)) {
+      if (RESERVED.has(k)) continue;
+      const f = tabFields[k];
+      if (!f) { errors.push(`"${k}" is not a ${active} field (fields: ${Object.keys(tabFields).join(', ')})`); continue; }
+      if (f.kind === 'number') {
+        if (checkRange(k, v as number, f.min, f.max, errors)) steps.push(() => { f.set(v as number); applied[k] = f.get(); });
+      } else if (f.kind === 'boolean') { steps.push(() => f.set(v as boolean)); applied[k] = v; }
+      else if (f.kind === 'enum') {
+        if (!f.values.includes(v as string)) errors.push(`${k} must be one of ${f.values.join(', ')} on the ${active} tab`);
+        else { steps.push(() => f.set(v as string)); applied[k] = v; }
+      } else { textStep = () => f.set(String(v)); applied[k] = v; } // string (engrave text): last
+    }
+    if (errors.length) return { error: errors.join('; ') };
+    for (const step of steps) step();
+    textStep?.();
+    schedulePreview(); // setters don't fire onChange — refresh the preview once
+    return { applied, ignored };
+  }
+
   styleTabs();
   renderTab(); // kicks off the first preview
 
+  let outcome: ToolOpenResult = { applied: {}, ignored: [] };
+  if (openOpts?.prefill) {
+    outcome = applyPrefill(openOpts.prefill);
+    if ('error' in outcome) { close(); return outcome; }
+  }
+  if (openOpts?.note) {
+    const note = createToolNote(openOpts.note, openOpts.source);
+    note.classList.add('mb-3');
+    scrollBody.prepend(note);
+  }
+
+  // Replace any open surface panel only now, so a rejected prefill leaves it
+  // be — and tear it down properly (its preview, outline, pickers and async
+  // stamp work), not just detach its DOM.
+  currentSurfaceClose?.();
   container.append(panel);
   setInitialPanelPosition(panel);
   currentSurfaceClose = close;
+  // Drop whatever stale mesh is showing, then preview this panel's settings
+  // (a blocked region-mode preview simply leaves the real model up).
+  currentSurfaceRepreview = () => { api.clearSurfacePreview(); previewDirty = false; reapplySelectionOverlay(); schedulePreview(); };
+  currentSurfaceState = () => {
+    const out: Record<string, unknown> = {
+      tab: active,
+      mode: REGIONLESS_TABS.has(active) ? 'whole' : regionMode,
+      applies: applyWritesCode() ? 'code' : 'bake',
+      scope: codeScope.kind === 'label' ? { label: codeScope.label }
+        : codeScope.kind === 'point' ? { point: codeScope.point, radius: codeScope.radius } : null,
+      regionTriangles: regionSelection?.size ?? 0,
+      preserveColor,
+    };
+    for (const [k, f] of Object.entries(tabFields)) out[k] = f.get();
+    return out;
+  };
   openViewportPanel(surfaceRegistryEntry);
   document.addEventListener('keydown', onSurfaceEscape);
   openModal = panel;
+  return outcome;
 }
 
 /** Wire the surface modifiers into the viewport overlay and command palette. */
 export function initSurfaceUI(api: SurfaceApi): void {
+  // The shared opener for the palette, the Tools button and partwright.openTool.
+  registerTool({
+    id: 'tool-surface',
+    title: 'Surface textures',
+    hint: 'Tools',
+    prefillSchema: SURFACE_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openSurfaceModal(api, (prefill?.tab as Tab | undefined) ?? 'fuzzy', { prefill, note: ctx.note, source: ctx.source }),
+    getState: () => currentSurfaceState?.() ?? null,
+    isOpen: () => openModal !== null,
+    close: () => currentSurfaceClose?.(),
+  });
   // Command palette entries — one per modifier, opening the modal on that tab.
   registerCommands([
     { id: 'surface-fuzzy', title: 'Surface: Fuzzy skin', hint: 'Modifier', keywords: 'texture displacement rough print fuzzy', run: () => openSurfaceModal(api, 'fuzzy') },

@@ -205,6 +205,7 @@ The pattern:
    ```
 
 4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+   **Don't edit files (or let parallel agents/bakes write `public/`, `.claude/worktrees/`) while a spec runs** — Vite full-reloads the shared dev server and the run dies with "Execution context was destroyed". Playwright also wipes `test-results/` each run, so copy screenshots you intend to send elsewhere (e.g. the scratchpad) first.
 5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
 6. **Attach the same proof to the PR** when the change is visual — chat is ephemeral and the reviewer may never see it. See the next section.
 
@@ -361,7 +362,7 @@ See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format d
 
 #### Cross-provider review
 
-A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes via a single non-tool turn. The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
+A "👁" button in the panel header opens `src/ui/aiReviewModal.tsx`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes — plus (each a checkbox, on by default) the user's attached reference images and the user's **own** chat messages, never the agent's replies — only a compaction summary, labelled as agent-written, stands in for deleted early turns (`userConversation` in `src/ai/autoReview.ts`, budget `ai.reviewConversationMaxChars`) — via a single non-tool turn. The automatic end-of-task review sends the same extras (its "All your messages" setting). The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
 
 #### AI Call Log (per-provider diagnostics)
 
@@ -472,6 +473,7 @@ Each loader is idempotent and caches the resolved module. Vite splits each one i
 - **Object** — a row in the left-rail **Objects** list: its own code + version history (one 3MF object on export). The UI/API call it an object (`listObjects`, `createObject`, …); the **storage layer still calls it `Part`** (`parts` IndexedDB store, `Version.partId`, the exported `parts` array, `?part=` URL param, `src/ui/partList.ts`, `#btn-add-part`). Those persisted names are deliberately unchanged — don't rename them without a schema migration. The pre-rename `*Part*` console methods / AI tool names survive as deprecated aliases.
 - **Part** — a named region *inside* one object, declared with `api.label(shape, name)` (SCAD `label()`, `BREP.label`). Tracked by manifold-3d provenance, so it survives unions/cuts. Listed under the open object in the rail (`listObjectParts()`); arrange-mode inserts are auto-labelled. Arrange mode's `listArrangeParts`/`selectParts` and `labeledUnion(parts)` already use "part" in this sense — keep them.
 - **Piece** — a connected component (a physically separate solid; `componentCount`). `src/geometry/meshPieces.ts`.
+- **The rail selection is a scope, not a second editor** (#1003). The selected part lives in the leaf `src/ui/partSelection.ts`; existing tools read it rather than the rail growing its own editors. There is ONE paint scope: selecting a part sets the Paint panel's "Paint within" (`src/color/paintScope.ts`), and every interactive tool stamps it on the descriptor as `withinPart` (`withPaintScope`). Script/agent paint passes `withinPart` explicitly per call — a UI selection must never silently narrow an API call. Every add/resolve path clips a scoped region to its part (`clipToPart` in `regions.ts`, `resolveDescriptorTriangles` in `main.ts`). Paint keyed to a part whose label vanishes is kept and surfaced as *unmatched paint*, never dropped. Rail actions (`src/ui/objectPartsPanel.ts`) call the same `window.partwright` methods agents do.
 
 ## Development Guidelines
 
@@ -574,12 +576,9 @@ The only exceptions are values that are truly structural constants (array indice
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
 
-### Editing `src/main.ts` — NUL-byte zones
+### Editing `src/main.ts` — scope traps
 
-`src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
-
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
-- **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
+`src/main.ts` is huge and has two scopes: module scope, and a giant init/setup function whose local helpers (`selectPart`, tool-close helpers, …) are invisible outside it. Two sessions lost a rewrite to this: a helper written at module scope couldn't reach setup-local ones, and a `let` declared inside the init function sat in the TDZ when an earlier line called a hoisted function that assigns it. State needed by both sides goes in a module-scope `let` assigned during setup (see `applyAssemblyChrome`). (The old NUL-byte warning is gone: the file has no NUL bytes, so plain `grep`/`Edit` work.)
 
 If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
 

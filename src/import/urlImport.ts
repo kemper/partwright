@@ -112,6 +112,7 @@ export function classifyRemoteResource(
   if (!ct) return null;
   if (ct === 'application/json' || ct === 'text/json') return 'JSON';
   if (ct === 'model/stl' || ct === 'application/sla' || ct === 'application/vnd.ms-pki.stl') return 'STL';
+  if (ct === 'model/3mf' || ct === 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml') return '3MF';
   if (ct === 'model/step' || ct === 'application/step' || ct === 'application/p21') return 'STEP';
   if (ct === 'image/svg+xml') return 'SVG';
   if (ct.startsWith('image/')) return 'IMAGE';
@@ -125,9 +126,34 @@ export function classifyRemoteResource(
 export function ensureExtensionForSource(filename: string, source: ImportSource): string {
   if (classifyImportSource(filename) === source) return filename;
   const ext: Record<ImportSource, string> = {
-    JSON: '.json', JS: '.js', SCAD: '.scad', STL: '.stl',
+    JSON: '.json', JS: '.js', SCAD: '.scad', STL: '.stl', '3MF': '.3mf',
     STEP: '.step', SVG: '.svg', VOX: '.vox', IMAGE: '.png',
   };
   const base = filename && filename !== 'import' ? filename : 'import';
   return base + ext[source];
+}
+
+/** The code-bearing kind of a resolved import source, as a phrase for a
+ *  refusal ("a session file", "a JS file"), or null for geometry. */
+export function codeBearingSourceLabel(source: ImportSource | null): string | null {
+  if (source === 'JSON') return 'a session file';
+  if (source === 'JS' || source === 'SCAD') return `a ${source} file`;
+  return null;
+}
+
+/** What code-bearing thing an import URL points at — "a Partwright share link",
+ *  "a session file", "a JS file" — judged from the input alone (a share
+ *  fragment, or the path's extension), or null when it may be geometry. A
+ *  geometry-only import (the in-app AI's importFromUrl) refuses these before
+ *  fetching; a fetched Content-Type is checked again after download. */
+export function codeBearingImportKind(raw: string): string | null {
+  const parsed = parseImportUrlInput(raw);
+  if (parsed.kind === 'share') return 'a Partwright share link';
+  if (parsed.kind !== 'remote') return null;
+  return codeBearingSourceLabel(classifyRemoteResource(filenameFromUrl(parsed.url), null));
+}
+
+/** The refusal a geometry-only import returns for a code-bearing source. */
+export function geometryOnlyRefusalMessage(what: string): string {
+  return `importFromUrl: ${what} contains model code that runs when it is imported, so it can't be imported automatically. Ask the user to import it themselves with Import → From URL…, which shows a preview first. (Only geometry files — .stl, .step/.stp, .vox — can be imported here.)`;
 }

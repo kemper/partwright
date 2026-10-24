@@ -66,3 +66,17 @@ A `work-reviewer` pass found nothing blocking. Fixed:
   OpenCASCADE (seconds).
 - **Wording:** "resets once idle" instead of a promise it can't always keep.
   `ai.md` notes that isolated runs report `engineMemory` without warning.
+
+## Human
+
+Resolve conflicts and merge the PR.
+
+## Assistant (merge with main)
+
+The only conflict was the `engineMemory` import line in `main.ts`; I took
+main's expanded imports and added `engineHeapWarning`. Main also added
+`appConfigBounds.ts`, which validates `setAppConfig` writes against the
+Advanced Settings fields, so `engineHeapHighPct` got a bounds row (10–100,
+integer). I left it **out** of `AI_WRITABLE_CONFIG_KEYS`: the in-app AI should
+lighten a heavy model, not raise the threshold to silence its own memory
+warning. The console API can still set it.

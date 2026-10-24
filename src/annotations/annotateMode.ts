@@ -57,6 +57,11 @@ export function setColor(c: [number, number, number]): void {
   currentColor = [c[0], c[1], c[2]];
 }
 
+/** The active draw colour (pen strokes; text shares it via the panel). */
+export function getColor(): [number, number, number] {
+  return [currentColor[0], currentColor[1], currentColor[2]];
+}
+
 export function getWidth(): number {
   return currentWidth;
 }
@@ -137,7 +142,7 @@ export function forceDeactivate(opts: DeactivateOpts = {}): void {
 }
 
 // Let sibling tools deactivate pen mode without importing this module.
-registerExclusiveMode('pen', forceDeactivate);
+registerExclusiveMode('pen', forceDeactivate, isActive);
 
 function cancelInProgress(): void {
   drawing = false;
@@ -252,4 +257,35 @@ function onPointerCancel(_event: PointerEvent): void {
 
 function makeId(): string {
   return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Programmatic add — used by the console API (`addStrokeAnnotation`). Points
+ *  are world coords (the stroke is drawn exactly through them, not projected).
+ *  The camera/plane snapshot comes from the active annotate session, or from a
+ *  transient one taken at the current view — the same as
+ *  textMode.addTextAnnotationAtAnchor. */
+export function addStrokeFromPoints(opts: {
+  points: [number, number, number][];
+  color?: [number, number, number];
+  width?: number;
+}): StrokeAnnotation {
+  let session = getActiveSession();
+  let endTransient = false;
+  if (!session) {
+    session = startSession();
+    endTransient = true;
+  }
+  if (!session) throw new Error('Cannot create stroke annotation — no viewport state');
+  const stroke: StrokeAnnotation = {
+    type: 'stroke',
+    id: makeId(),
+    points: opts.points.map(p => new THREE.Vector3(p[0], p[1], p[2])),
+    color: opts.color ? [opts.color[0], opts.color[1], opts.color[2]] : ([...currentColor] as [number, number, number]),
+    width: opts.width ?? currentWidth,
+    camera: session.camera,
+    plane: session,
+  };
+  addStroke(stroke);
+  if (endTransient) endSession();
+  return stroke;
 }

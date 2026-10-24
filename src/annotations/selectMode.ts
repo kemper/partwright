@@ -126,7 +126,7 @@ export function forceDeactivate(): void {
 }
 
 // Let sibling tools deactivate select mode without importing this module.
-registerExclusiveMode('select', forceDeactivate);
+registerExclusiveMode('select', forceDeactivate, isActive);
 
 /** Restore the viewport camera to the angle from which the given annotation
  *  was originally drawn. Returns true if the annotation exists. */

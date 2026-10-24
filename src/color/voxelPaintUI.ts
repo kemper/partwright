@@ -12,6 +12,7 @@ import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { createColorSwatch } from '../ui/colorPickerModal';
 import { createSliderEntry, type SliderEntry } from '../ui/sliderEntry';
+import { registerTool, setToolNote, captureToolApplied, parsePrefillColor, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -44,10 +45,13 @@ let paintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let onActivate: (() => Promise<void> | void) | null = null;
 let onDeactivate: (() => Promise<void> | void) | null = null;
-let onUpdateCode: (() => Promise<void> | void) | null = null;
-let onSaveRaw: (() => Promise<void> | void) | null = null;
+let onUpdateCode: (() => Promise<boolean | void> | boolean | void) | null = null;
+let onSaveRaw: (() => Promise<boolean | void> | boolean | void) | null = null;
 let active = false;
 let currentColor = SWATCHES[0];
+// Panel body (AI note banner host) + the swatch-ring sync a prefill colour uses.
+let contentEl: HTMLElement | null = null;
+let syncColorRing: ((hex: string) => void) | null = null;
 
 // One-of-N viewport panel: opening Paint/Annotate/etc. closes the studio.
 const registryEntry = { close(): void { if (active) void doDeactivate(); } };
@@ -100,10 +104,12 @@ export interface VoxelPaintUICallbacks {
   activate: () => Promise<void> | void;
   /** Called to cancel editing without committing. */
   deactivate: () => Promise<void> | void;
-  /** Called to append the edits to the existing code as v.set/v.remove ops. */
-  updateCode: () => Promise<void> | void;
-  /** Called to replace the code with voxels.decode(...) of the full grid. */
-  saveRaw: () => Promise<void> | void;
+  /** Called to append the edits to the existing code as v.set/v.remove ops.
+   *  Resolves false when nothing was written (error / cancelled). */
+  updateCode: () => Promise<boolean | void> | boolean | void;
+  /** Called to replace the code with voxels.decode(...) of the full grid.
+   *  Resolves false when nothing was written (error / cancelled). */
+  saveRaw: () => Promise<boolean | void> | boolean | void;
 }
 
 /** Mount the Voxel Studio button into the viewport's controls container. */
@@ -134,6 +140,75 @@ export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: Voxe
   // Paint panel).
   const overlayHost = controlsContainer.parentElement ?? controlsContainer;
   overlayHost.appendChild(panel);
+
+  registerTool({
+    id: 'tool-voxel-paint',
+    title: 'Voxel Studio (edit voxels)',
+    hint: 'Tools',
+    prefillSchema: VOXEL_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openVoxelStudioWithPrefill(prefill, ctx),
+    getState: () => (active ? getVoxelStudioState() : null),
+    isOpen: () => active,
+    close: () => { if (active) void doDeactivate(); },
+  });
+}
+
+const AXIS_NAMES = ['x', 'y', 'z'] as const;
+
+/** Prefill keys for `openTool('tool-voxel-paint', …)` — tool, colour and brush
+ *  settings; nothing is edited until the user clicks the model. */
+const VOXEL_PREFILL_SCHEMA: PrefillSchema = {
+  tool: { type: 'enum', values: TOOLS.map(t => t.tool), description: 'Active studio tool.' },
+  color: { type: 'color', description: 'Voxel colour ([r,g,b] 0..1 or "#rrggbb").' },
+  brush: { type: 'object', description: 'Brush (as setVoxelBrush).', fields: {
+    radius: { type: 'number', integer: true, min: 0, max: voxelPaint.MAX_BRUSH_RADIUS, description: 'Brush radius in voxels (0 = one voxel).' },
+    shape: { type: 'enum', values: BRUSH_SHAPES.map(s => s.shape) },
+    spray: { type: 'boolean' },
+    sprayDensity: { type: 'number', min: 0.05, max: 1 },
+    block: { type: 'vec3', description: 'Add-tool block size [x,y,z] in voxels (1..32 each).' },
+    depth: { type: 'number', integer: true, min: 0, description: 'How deep an added block sinks into the face.' },
+  } },
+  levelAxis: { type: 'enum', values: AXIS_NAMES, description: 'Axis the level tool recolours.' },
+};
+
+function getVoxelStudioState(): Record<string, unknown> {
+  return {
+    tool: voxelPaint.getTool(),
+    color: currentColor,
+    brush: {
+      radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(),
+      sprayDensity: voxelPaint.getSprayDensity(), block: voxelPaint.getBlockSize(), depth: voxelPaint.getAddDepth(),
+    },
+    levelAxis: AXIS_NAMES[voxelPaint.getLevelAxis()],
+  };
+}
+
+const toHex = (c: [number, number, number]) => `#${c.map(n => Math.round(n * 255).toString(16).padStart(2, '0')).join('')}`;
+
+async function openVoxelStudioWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): Promise<ToolOpenResult> {
+  const pre = p ?? {};
+  const brush = (pre.brush ?? {}) as Record<string, unknown>;
+  const block = brush.block as [number, number, number] | undefined;
+  if (block && block.some(n => !Number.isInteger(n) || n < 1 || n > voxelPaint.MAX_BLOCK_SIZE)) {
+    return { error: `brush.block values must be integers 1..${voxelPaint.MAX_BLOCK_SIZE}` };
+  }
+  if (!active) await doActivate();
+  if (!active) return { error: 'Voxel Studio could not start (needs a voxel model on screen).' };
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (pre.tool !== undefined) voxelPaint.setTool(pre.tool as VoxelTool);
+  if (pre.color !== undefined) {
+    const c = parsePrefillColor(pre.color);
+    if (c) { currentColor = toHex(c); voxelPaint.setColor(currentColor); syncColorRing?.(currentColor); }
+  }
+  if (brush.radius !== undefined) voxelPaint.setBrushRadius(brush.radius as number);
+  if (brush.shape !== undefined) voxelPaint.setBrushShape(brush.shape as BrushShape);
+  if (brush.spray !== undefined) voxelPaint.setSpray(brush.spray as boolean);
+  if (brush.sprayDensity !== undefined) voxelPaint.setSprayDensity(brush.sprayDensity as number);
+  if (block) ([0, 1, 2] as const).forEach(a => voxelPaint.setBlockSize(a, block[a]));
+  if (brush.depth !== undefined) voxelPaint.setAddDepth(brush.depth as number);
+  if (pre.levelAxis !== undefined) voxelPaint.setLevelAxis(AXIS_NAMES.indexOf(pre.levelAxis as 'x' | 'y' | 'z') as 0 | 1 | 2);
+  refreshControls();
+  return { applied: pre, ignored: [] };
 }
 
 /** Toggle button visibility based on whether the active language is voxel. */
@@ -172,6 +247,7 @@ export function syncActiveState(): void {
     voxelPaint.setColor(currentColor);
     voxelPaint.setTool('view');
   } else if (exited) {
+    setToolNote(contentEl, null);
     document.removeEventListener('keydown', onStudioEscape);
     closeViewportPanel(registryEntry);
   }
@@ -302,6 +378,7 @@ function createPanel(): HTMLElement {
   // Scrollable content.
   const content = document.createElement('div');
   content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5 flex flex-col gap-2';
+  contentEl = content;
   content.appendChild(buildToolRow());
   editWarningEl = document.createElement('p');
   editWarningEl.className = 'hidden text-[10px] leading-tight rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-2 py-1';
@@ -356,8 +433,15 @@ function buildColorRow(): HTMLElement {
     if (voxelPaint.getTool() === 'remove' || voxelPaint.getTool() === 'boxRemove') voxelPaint.setTool('paint');
     refreshControls();
   };
+  const swatchBtns = new Map<string, HTMLButtonElement>();
+  syncColorRing = (hex) => {
+    if (activeSwatch) activeSwatch.classList.remove('ring-2', 'ring-white');
+    activeSwatch = swatchBtns.get(hex.toLowerCase()) ?? null;
+    activeSwatch?.classList.add('ring-2', 'ring-white');
+  };
   for (const hex of SWATCHES) {
     const sw = document.createElement('button');
+    swatchBtns.set(hex.toLowerCase(), sw);
     sw.type = 'button';
     sw.className = 'w-6 h-6 rounded border border-zinc-600/60 hover:border-zinc-300 transition-colors';
     sw.style.backgroundColor = hex;
@@ -706,7 +790,12 @@ function buildActions(): HTMLElement {
   updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white transition-colors';
   updateBtn.textContent = 'Update code';
   updateBtn.title = 'Keep your code and append these edits as v.set/v.remove statements, then save a version';
-  updateBtn.addEventListener('click', async () => { if (onUpdateCode) await onUpdateCode(); syncActiveState(); });
+  updateBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Update code');
+    const ok = onUpdateCode ? await onUpdateCode() : false;
+    if (ok !== false) note?.(); // only once the edits actually landed in the code
+    syncActiveState();
+  });
   actions.appendChild(updateBtn);
 
   // Secondary: replace the editor with the raw decoded grid (confirms first).
@@ -715,7 +804,12 @@ function buildActions(): HTMLElement {
   saveRawBtn.className = 'w-full px-2 py-1 rounded text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
   saveRawBtn.textContent = 'Save as raw voxel data';
   saveRawBtn.title = 'Replace the code with voxels.decode(...) of the whole grid (warns before overwriting)';
-  saveRawBtn.addEventListener('click', async () => { if (onSaveRaw) await onSaveRaw(); syncActiveState(); });
+  saveRawBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Save as raw voxel data');
+    const ok = onSaveRaw ? await onSaveRaw() : false;
+    if (ok !== false) note?.();
+    syncActiveState();
+  });
   actions.appendChild(saveRawBtn);
 
   return actions;

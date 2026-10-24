@@ -127,7 +127,21 @@ type RegionDescriptorKind =
       scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
       anchors?: [number, number, number][];
-      smooth?: boolean; maxEdge?: number };
+      smooth?: boolean; maxEdge?: number }
+  // Colour match (the Replace tool with a part selected): every triangle whose
+  // DRAWN colour (with this region excluded, like `colorFlood`) is within
+  // `colorTolerance` of `seedColor` — not just a connected patch. `unpainted`
+  // also matches triangles no layer colours (the neutral model shade the user
+  // picked as the source). Normally carries a `withinPart`, so a swap stays
+  // inside one part; re-resolved by colour on every reconcile.
+  | { kind: 'colorMatch'; seedColor: [number, number, number]; colorTolerance: number; unpainted?: boolean };
+
+/** The part a descriptor is confined to (`withinPart`), or null. `byLabel`
+ *  regions ARE the part, so they report their own label. */
+export function descriptorPartLabel(d: RegionDescriptor): string | null {
+  if (d.kind === 'byLabel') return d.label;
+  return d.withinPart ?? null;
+}
 
 export interface SerializedColorRegion {
   id: number;
@@ -280,6 +294,20 @@ export function getRegions(): readonly ColorRegion[] {
 
 export function hasRegions(): boolean {
   return regions.length > 0;
+}
+
+// Resolves a descriptor against the CURRENT working mesh (published by main.ts,
+// which owns the mesh, adjacency and label map). Lets the paint panel build
+// descriptor-driven regions (e.g. Replace-within-a-part) without importing main.
+let currentMeshResolver: ((d: RegionDescriptor) => Set<number>) | null = null;
+
+export function setCurrentMeshResolver(fn: ((d: RegionDescriptor) => Set<number>) | null): void {
+  currentMeshResolver = fn;
+}
+
+/** Resolve `d` on the current working mesh (empty when nothing is loaded). */
+export function resolveOnCurrentMesh(d: RegionDescriptor): Set<number> {
+  return currentMeshResolver?.(d) ?? new Set<number>();
 }
 
 /** Resolves a part (label) name to its triangle set on the CURRENT working
@@ -570,7 +598,45 @@ export function setRegionTriangles(
   }
 }
 
-export function clearRegions(): void {
+/** Re-point a region at a new descriptor (e.g. reassigning unmatched paint to
+ *  another part) with its freshly resolved triangles, keeping its id, colour,
+ *  order and slot. Notifies so the viewport recolours. */
+export function setRegionDescriptor(
+  id: number,
+  descriptor: RegionDescriptor,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): boolean {
+  const region = regions.find(r => r.id === id);
+  if (!region) return false;
+  region.descriptor = descriptor;
+  region.triangles = triangles;
+  region.perTriColors = perTriColors;
+  clearRedoStack();
+  notify();
+  return true;
+}
+
+/** Remove every region. A user-facing Clear (the paint panel's button,
+ *  `partwright.clearColors`) records a snapshot so "Undo clear" can restore
+ *  it. Internal resets — loading another version/object, rehydrating saved
+ *  paint, simplify's colour carry — pass `{ snapshot: false }`: they record
+ *  nothing AND discard any pending snapshot, so undo-clear can never
+ *  resurrect a different model's paint. */
+export function clearRegions(opts: { snapshot?: boolean } = {}): void {
+  if (opts.snapshot === false) {
+    const hadSnapshot = clearSnapshot !== null;
+    clearSnapshot = null;
+    clearSnapshotPartial = false;
+    if (regions.length > 0) {
+      regions = [];
+      nextOrder = 1;
+      clearRedoStack();
+      notify();
+    }
+    if (hadSnapshot) notifyClearSnapshot();
+    return;
+  }
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
   clearSnapshotPartial = false;
