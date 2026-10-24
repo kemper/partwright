@@ -144,6 +144,78 @@ export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32A
   return result;
 }
 
+/** For each query point, the index of the `refMesh` triangle whose SURFACE is
+ *  nearest (true point-to-triangle distance), or -1 when `refMesh` is empty.
+ *
+ *  Unlike {@link nearestTriangleMap} (centroid proximity), this isn't fooled by
+ *  long, thin triangles — e.g. a cylinder cap's fan, whose centroids sit far
+ *  from the rim — so a point on a fillet joins the surface it actually lies
+ *  closest to. Each triangle is indexed into every grid cell its bounding box
+ *  overlaps; the ring search stops once no unseen triangle can be closer. */
+export function nearestSurfaceTriangleMap(refMesh: MeshData, points: Float32Array | Float64Array): Int32Array {
+  const nq = Math.floor(points.length / 3);
+  const result = new Int32Array(nq).fill(-1);
+  if (refMesh.numTri === 0 || nq === 0) return result;
+  const { vertProperties: vp, triVerts: tv, numProp: np, numTri } = refMesh;
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < tv.length; i++) {
+    const o = tv[i] * np;
+    const x = vp[o], y = vp[o + 1], z = vp[o + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-6);
+  const n = Math.max(1, Math.round(Math.cbrt(numTri)));
+  const cell = span / n;
+  const ci = (v: number, lo: number) => Math.floor((v - lo) / cell);
+  const key = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
+  const buckets = new Map<string, number[]>();
+  for (let t = 0; t < numTri; t++) {
+    const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
+    const x0 = ci(Math.min(vp[a], vp[b], vp[c]), minX), x1 = ci(Math.max(vp[a], vp[b], vp[c]), minX);
+    const y0 = ci(Math.min(vp[a + 1], vp[b + 1], vp[c + 1]), minY), y1 = ci(Math.max(vp[a + 1], vp[b + 1], vp[c + 1]), minY);
+    const z0 = ci(Math.min(vp[a + 2], vp[b + 2], vp[c + 2]), minZ), z1 = ci(Math.max(vp[a + 2], vp[b + 2], vp[c + 2]), minZ);
+    for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) for (let iz = z0; iz <= z1; iz++) {
+      const k = key(ix, iy, iz);
+      let arr = buckets.get(k);
+      if (!arr) { arr = []; buckets.set(k, arr); }
+      arr.push(t);
+    }
+  }
+  const seen = new Int32Array(numTri).fill(-1);
+  const maxR = n * 2 + 4;
+  for (let q = 0; q < nq; q++) {
+    const px = points[q * 3], py = points[q * 3 + 1], pz = points[q * 3 + 2];
+    const bx = ci(px, minX), by = ci(py, minY), bz = ci(pz, minZ);
+    let best = -1, bestD = Infinity;
+    for (let r = 0; r <= maxR; r++) {
+      for (let ix = bx - r; ix <= bx + r; ix++) {
+        for (let iy = by - r; iy <= by + r; iy++) {
+          for (let iz = bz - r; iz <= bz + r; iz++) {
+            if (Math.max(Math.abs(ix - bx), Math.abs(iy - by), Math.abs(iz - bz)) !== r) continue;
+            const arr = buckets.get(key(ix, iy, iz));
+            if (!arr) continue;
+            for (const t of arr) {
+              if (seen[t] === q) continue;
+              seen[t] = q;
+              const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
+              const d = pointTriDist2(px, py, pz, vp[a], vp[a + 1], vp[a + 2], vp[b], vp[b + 1], vp[b + 2], vp[c], vp[c + 1], vp[c + 2]);
+              if (d < bestD) { bestD = d; best = t; }
+            }
+          }
+        }
+      }
+      // Every triangle within r·cell of the point overlaps a cell already
+      // searched (it's indexed into all cells its bbox touches), so nothing
+      // unseen can beat a best that close.
+      if (best >= 0 && Math.sqrt(bestD) <= r * cell) break;
+    }
+    result[q] = best;
+  }
+  return result;
+}
+
 /** Squared distance from point `p` to triangle `(a,b,c)` — the standard
  *  closest-point-on-triangle (Ericson, Real-Time Collision Detection). Pure. */
 function pointTriDist2(
