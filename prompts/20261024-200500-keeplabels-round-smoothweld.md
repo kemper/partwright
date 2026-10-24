@@ -31,3 +31,15 @@ attached exactly as `api.label` produces it, so `byLabel` paint, `withinPart`,
 selectors and `listObjectParts` work on the result with no special casing.
 Pure logic lives in `src/geometry/labelCarry.ts` (unit-tested); the sandbox op
 only does the WASM round-trip.
+
+**Review follow-up: BVH instead of a coarse grid.** The review measured
+`keepLabels` at +12.5 s on a 904k-triangle round. The cbrt-sized grid held
+dozens of triangles per cell and ring 0 could never stop. A flat median-split
+BVH, walked nearest-box-first and warm-started from the previous query's
+answer, cut that to +5 s with identical results (brute-force checked).
+
+**Carry only real labels.** Every Manifold carries a primitive originalID, so
+the "nothing to carry" exit never fired. The sandbox's run label ids
+(`activeLabelIds`, from the selector's run lookup) now gate it: an unlabelled
+input returns the remesh untouched at no extra cost, and plain primitive ids
+are no longer stamped onto the output.

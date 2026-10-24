@@ -33,8 +33,8 @@ function positionsMesh(mesh: RunMesh): MeshData {
 }
 
 /** The input meshes concatenated (positions only), with each triangle's
- *  originalID (-1 when its mesh carries no run info). */
-function combineSources(sources: RunMesh[]): { mesh: MeshData; ids: Int32Array; anyRuns: boolean } {
+ *  originalID (-1 when its mesh carries no run info, or `keep` rejects it). */
+function combineSources(sources: RunMesh[], keep: (id: number) => boolean): { mesh: MeshData; ids: Int32Array; anyRuns: boolean } {
   let nv = 0, nt = 0;
   for (const s of sources) { nv += s.vertProperties.length / s.numProp; nt += s.numTri; }
   const vp = new Float32Array(nv * 3);
@@ -46,8 +46,9 @@ function combineSources(sources: RunMesh[]): { mesh: MeshData; ids: Int32Array; 
     vp.set(p.vertProperties, vOff * 3);
     for (let i = 0; i < s.numTri * 3; i++) tv[tOff * 3 + i] = s.triVerts[i] + vOff;
     if (s.runIndex && s.runOriginalID) {
-      anyRuns = true;
       for (let r = 0; r < s.runOriginalID.length; r++) {
+        if (!keep(s.runOriginalID[r])) continue;
+        anyRuns = true;
         const t0 = Math.floor(s.runIndex[r] / 3), t1 = Math.min(s.numTri, Math.floor(s.runIndex[r + 1] / 3));
         for (let t = t0; t < t1; t++) ids[tOff + t] = s.runOriginalID[r];
       }
@@ -59,15 +60,18 @@ function combineSources(sources: RunMesh[]): { mesh: MeshData; ids: Int32Array; 
 }
 
 /** Re-sort `out`'s triangles into runs keyed by the originalID of each one's
- *  nearest source triangle. Returns the new triVerts + run tables, or null when
- *  no source carries provenance (nothing to carry). Triangles whose nearest
- *  source has no id keep `fallbackId` (the remeshed surface's own). */
+ *  nearest source triangle. Only ids `keep` accepts are carried (the sandbox
+ *  passes "is a label", so plain primitive ids aren't); triangles whose nearest
+ *  source id isn't carried keep `fallbackId` (the remeshed surface's own).
+ *  Returns the new triVerts + run tables, or null when no source has an id to
+ *  carry — the caller then keeps `out` as is. */
 export function carryRunsByNearest(
   sources: RunMesh[],
   out: RunMesh,
   fallbackId: number,
+  keep: (id: number) => boolean = () => true,
 ): { triVerts: Uint32Array; runIndex: Uint32Array; runOriginalID: Uint32Array } | null {
-  const src = combineSources(sources);
+  const src = combineSources(sources, keep);
   if (!src.anyRuns || out.numTri === 0) return null;
   const outPos = positionsMesh(out);
   const centroids = new Float64Array(out.numTri * 3);

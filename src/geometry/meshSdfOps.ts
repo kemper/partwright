@@ -26,6 +26,7 @@ import {
   type GridSpec,
 } from './meshSdf';
 import { carryRunsByNearest } from './labelCarry';
+import { activeLabelIds } from './selector';
 
 const DEFAULT_MAX_RES = 192;
 
@@ -111,9 +112,15 @@ export function createMeshSdfOps(module: any) {
    *  api.label parts survive the levelSet rebuild like they survive a boolean.
    *  The intermediate `out` is freed by the sandbox's allocation tracking. */
   function withCarriedLabels(out: any, inputs: any[]): any {
+    // Only labelled ids are worth the nearest-surface pass; an unlabelled
+    // input returns the remesh untouched.
+    const labelIds = activeLabelIds();
+    if (!labelIds || labelIds.size === 0) return out;
+    const sources = inputs.map(m => m.getMesh());
+    if (!sources.some(s => s.runOriginalID && Array.from(s.runOriginalID as Uint32Array).some(id => labelIds.has(id)))) return out;
     const mesh = out.getMesh();
     const fallback = mesh.runOriginalID && mesh.runOriginalID.length > 0 ? mesh.runOriginalID[0] : 0;
-    const carried = carryRunsByNearest(inputs.map(m => m.getMesh()), mesh, fallback);
+    const carried = carryRunsByNearest(sources, mesh, fallback, id => labelIds.has(id));
     if (!carried) return out;
     return Manifold.ofMesh({
       numProp: mesh.numProp,

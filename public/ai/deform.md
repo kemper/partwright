@@ -152,7 +152,9 @@ edge-picked fillets use BREP; for SDF trees use `.round()`.
 the input surface nearest to it, so `byLabel` / part colours, `paintByLabel`,
 `withinPart` and selectors still work on the result. This is how to fillet a
 labelled model, or a detected import (`api.importWithParts`), without losing its
-parts:
+parts. It adds a nearest-surface pass over the output, roughly half the remesh's
+own time on a large model, so it's off by default. An input with no labels is
+returned exactly as it would be without the option:
 
 ```js
 m = api.round(api.importWithParts(0), { radius: 1.2, keepLabels: true });

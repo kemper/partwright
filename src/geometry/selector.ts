@@ -394,6 +394,15 @@ export function setSelectorLabels(lookup: LabelLookup | null): void {
   activeLabels = lookup;
 }
 
+/** Every originalID that carries a label in the current run (null outside a
+ *  run). Lets remeshing ops tell real parts from plain primitive ids. */
+export function activeLabelIds(): Set<number> | null {
+  if (!activeLabels) return null;
+  const ids = new Set<number>();
+  for (const name of activeLabels.names()) for (const id of activeLabels.ids(name) ?? []) ids.add(id);
+  return ids;
+}
+
 export interface SelectionWeights {
   mesh: SelectorMesh;
   weights: Float32Array;
