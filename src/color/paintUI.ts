@@ -83,7 +83,10 @@ import {
   removeRegion,
   setRegionVisibility,
   updateRegionColor,
+  updateRegionName,
   addRegion,
+  resolveOnCurrentMesh,
+  type RegionDescriptor,
   replaceRegionColors,
   getDistinctRegionColors,
   getModelRegions,
@@ -93,6 +96,7 @@ import { getPaintScope, onPaintScopeChange, setPaintScope } from './paintScope';
 import { getActiveImports } from '../import/importedMesh';
 import { BUTTON_SMALL_SECONDARY } from '../ui/styleConstants';
 import { showToast } from '../ui/toast';
+import { promptDialog } from '../ui/dialogs';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
@@ -334,7 +338,22 @@ function onPaintEscape(e: KeyboardEvent): void {
   togglePaintMode();
 }
 
+// Fired after the paint panel opens or closes (the part-selection tint is
+// suppressed while painting, so the strokes stay readable).
+const paintOpenListeners: (() => void)[] = [];
+export function onPaintOpenChange(fn: () => void): void {
+  paintOpenListeners.push(fn);
+}
+function notifyPaintOpen(): void {
+  for (const fn of paintOpenListeners) fn();
+}
+
 function togglePaintMode(): void {
+  togglePaintModeInner();
+  notifyPaintOpen();
+}
+
+function togglePaintModeInner(): void {
   setToolNote(paintContentEl, null);
   if (isActive()) {
     deactivate();
@@ -935,6 +954,11 @@ function createReplaceControls(): HTMLElement {
   wrap.appendChild(actionRow);
 
   function syncSourceDisplay(): void {
+    const part = getPaintScope();
+    replaceBtn.textContent = part ? `Replace in ${part}` : 'Replace all';
+    replaceBtn.title = part
+      ? `Recolour the faces of "${part}" drawn in the source colour (the rest of the model is untouched)`
+      : 'Replace all regions of the source color with the active paint color';
     const src = getReplaceSourceColor();
     if (src) {
       sourceSwatch.style.backgroundColor = rgbToCSS(src);
@@ -970,11 +994,29 @@ function createReplaceControls(): HTMLElement {
   replaceBtn.addEventListener('click', () => {
     const src = getReplaceSourceColor();
     if (!src) return;
+    const part = getPaintScope();
+    if (part) {
+      // Within a part: recolouring whole regions would leak outside it, so add
+      // a colour-match region confined to the part instead — every triangle of
+      // the part drawn in the source colour (re-matched by colour on reruns).
+      // The eyedropper reports the neutral model shade for unpainted faces.
+      const unpainted = Math.abs(src[0] - 0x4a / 255) < 0.003 && Math.abs(src[1] - 0x9e / 255) < 0.003 && Math.abs(src[2] - 1) < 0.003;
+      const descriptor: RegionDescriptor = { kind: 'colorMatch', seedColor: [...src] as [number, number, number], colorTolerance: 0.02, ...(unpainted ? { unpainted: true } : {}), withinPart: part };
+      const tris = resolveOnCurrentMesh(descriptor);
+      if (tris.size === 0) {
+        showToast(`No faces of "${part}" are drawn in ${rgbToHex(src)}.`, { variant: 'warn' });
+        return;
+      }
+      addRegion(`Replace in ${part}`, [...getColor()] as [number, number, number], 'face-pick', descriptor, tris, true, getSlotId() ?? undefined);
+      setReplaceSourceColor(null);
+      return;
+    }
     const count = replaceRegionColors(src, getColor());
     if (count > 0) setReplaceSourceColor(null);
   });
 
   onReplaceSourceColorChange(syncSourceDisplay);
+  onPaintScopeChange(syncSourceDisplay);
   onRegionsChange(() => { syncSwatches(); syncSourceDisplay(); });
 
   syncSwatches();
@@ -2186,6 +2228,24 @@ function updateRegionList(container: HTMLElement): void {
     const label = document.createElement('span');
     label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;
     label.textContent = region.name;
+    label.dataset.action = 'rename-region';
+    // Part-scoped paint names its part, so it's clear the stroke stays inside it.
+    const scopeLabel = region.descriptor.kind === 'byLabel' ? null : region.descriptor.withinPart ?? null;
+    label.title = `${region.name}${scopeLabel ? ` — inside part "${scopeLabel}"` : ''} (double-click to rename)`;
+    if (scopeLabel) {
+      const tag = document.createElement('span');
+      tag.className = 'text-zinc-600';
+      tag.textContent = ` · ${scopeLabel}`;
+      label.appendChild(tag);
+    }
+    // Double-click to rename (previously only Relief Studio could).
+    label.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      void promptDialog('Rename paint region:', { title: 'Rename region', initialValue: region.name, confirmLabel: 'Rename' }).then((next) => {
+        const v = next?.trim();
+        if (v && v !== region.name) updateRegionName(region.id, v);
+      });
+    });
 
     const count = document.createElement('span');
     count.className = 'text-[10px] text-zinc-600 tabular-nums';
@@ -2244,6 +2304,7 @@ export function forceDeactivate(): void {
     closeViewportPanel(paintRegistryEntry);
     document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
+    notifyPaintOpen();
   }
 }
 

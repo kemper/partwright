@@ -340,7 +340,7 @@ partwright.exportCodeData()             // -> {filename, mimeType, language, tex
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
-await partwright.importMeshData(base64, filename, {sessionName?, target?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) -> {sessionId, target, object, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing). target: 'new-session' (default) | 'new-object' | 'current-object' -- see /ai/file-io.md
+await partwright.importMeshData(base64, filename, {sessionName?, target?, adoptPalette?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) -> {sessionId, target, object?, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing). target: 'new-session' (default) | 'new-object' | 'current-object' (STL only; 3MF is new-session) -- see /ai/file-io.md. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + its filament palette (adoptPalette:false keeps yours).
 await partwright.importVoxData(base64, filename, {sessionName?, target?})  // MagicaVoxel .vox bytes -> voxel code -> {sessionId, target, object, voxelCount}
 await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', sessionName?, target?})  // STEP bytes: exact BREP object (default) or tessellated mesh
 await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}; geometryOnly:true refuses code-bearing sources
@@ -485,11 +485,23 @@ partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?, maxR
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
 await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
-partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
-partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
+partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}
+partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Transient visual tint to show the user which one you mean (doesn't change the selection)
 partwright.setObjectPartHidden(name | {piece}, hidden = true)  // Hide/show a part/piece in the viewport only (code, versions, exports keep it) -> {ok, hidden}
 await partwright.deleteObjectPart(name | {piece})  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}
 await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo it: removes that line, re-runs, saves -> {ok, restored, object, version?, note?}
+// Editing parts from the Objects list -- see #editing-parts-from-the-objects-list
+partwright.selectObjectPart(name | {piece} | {unlabeled:true} | null)    // Select like clicking it in the rail (tint; scopes the user's paint tools) -> {ok, selected, triangles}
+partwright.getSelectedObjectPart()       // -> {key, part?, piece?, description, isolated} | null
+partwright.isolateObjectPart(name | {piece} | null)   // Ghost everything else (visual only)
+partwright.getObjectPartInfo(name | {piece})          // -> {size:[x,y,z], area, triangleCount, pieces}
+partwright.setObjectPartColor(name, '#rrggbb')        // Fill a whole part (recolours its fill in place) / resetObjectPartColor(name)
+partwright.goToObjectPart(name)          // Reveal the part's label literal in the code editor -> {ok, line}
+await partwright.renameObjectPart(from, to)   // Rename in every code literal + re-key its paint, then runAndSave
+await partwright.bakeObjectPartColor(name)    // Write its colour into code as api.paint.label (manifold-js), drop the overlay, runAndSave
+await partwright.extractObjectPiece(index)    // Move a piece into a new object (piece filters; manifold-js)
+partwright.exportObjectPiece(index, filename?)   // Download one piece as STL
+partwright.reassignPaint(regionId, partName)  // Fix UNMATCHED paint (part renamed/removed) / keepUnmatchedPaint(regionId)
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,
 // createPart, changePart, renamePart, setPartGroup, deletePart, saveAllParts,
 // showPartsOverview (each calls the *Object* method above).
@@ -525,7 +537,9 @@ partwright.getMeshSummary({tolerance?, ...}?)                             // gro
 partwright.getFeatureCentroids({maxGroups?, withinBox?}?)                 // lightweight planning
 partwright.listRegions() / listComponents() / listLabels()                // inventory
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
-partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
+partwright.removeRegion(id) / setRegionVisibility(id, visible) / renameRegion(id, name)  // per-region edits
+// Every committing paint call above (paintRegion/NearestRegion/Faces/Slab/InBox/InOrientedBox/Near/
+// InCylinder/Connected/Stroke/Airbrush/Component, paintImage, replaceColor) also takes `withinPart: '<part>'` to confine it to one PART.
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
 await partwright.paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) // project a raster image onto the surface as paint (logo/graphic/text/decal) -> {ok, name, triangles, avgColor}; use view (+ optional label) OR explicit at+normal (from probeRay); see /ai/colors.md
@@ -692,7 +706,7 @@ Three words, three different things — keep them straight, especially when a us
 - "Make a matching lid" (printed separately, versioned on its own) → `createObject('Lid')`.
 - **Label every meaningful feature you build** — it makes the parts list useful and lets the user say "make the handle thicker".
 
-`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, and the pieces, each named by the part covering most of it. `highlightObjectPart('handle')` tints a part in the viewport (the same as clicking it in the rail) so you can show the user which one you mean. Labels are surfaces, not volumes: hiding a part fused into a solid (below) hides its surface, leaving an opening into the solid.
+`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in and `colorSource` — `code` or `painted`), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, the pieces (each named by the part covering most of it), `unmatchedPaint` / `emptyPaint` / `renameSuggestions` (below) and the user's current `selected` key. `highlightObjectPart('handle')` briefly tints a part so you can show the user which one you mean; `selectObjectPart('handle')` selects it as if they clicked it in the rail (which also scopes *their* paint tools — use it sparingly). Labels are surfaces, not volumes: hiding a part fused into a solid (below) hides its surface, leaving an opening into the solid.
 
 **Hiding a part or piece** (the eye on its row in the rail, or `setObjectPartHidden('handle')` / `setObjectPartHidden({ piece: 1 }, false)`) is view-only: the triangles simply aren't drawn, so you can see inside or behind it. The code, saved versions, exports and `renderViews` are unchanged. A fused part leaves an opening where it was, since its surface is just gone from view. Hidden state is per tab and per object, survives re-runs, and resets piece hides when the pieces change. To take a part out of the model itself, delete it instead.
 
@@ -722,6 +736,19 @@ Per engine:
 - **Parts & pieces** — every removal line from the table above (`api.removePart` / `api.removePiece`, or OpenSCAD `remove_part` / `remove_piece`; written by `deleteObjectPart` or by hand) in the session's objects. `restoreObjectPart` removes the line, re-runs and saves a `restore …` version, opening the owning object first if needed. They never expire: they live in the code. If nothing comes back (you since deleted the label or moved the geometry) the line was already a no-op; it is dropped and the result carries a `note`.
 
 `listDeleted()` returns both lists; a piece is addressed by its `call` (`restoreObjectPart('api.removePiece([-70, 0, 3]);')`).
+
+### Editing parts from the Objects list
+<a id="editing-parts-from-the-objects-list"></a>
+
+The rail is a **selector, not a second editor**: selecting a part makes it the *scope* the existing tools act in.
+
+- **The user's selection is your context.** When a part is selected, their chat message arrives prefixed with `[Selected in the Objects list: part "handle" …]` — "make it red" / "thicken this" means that part. `getSelectedObjectPart()` reads it too.
+- **Paint scope.** Selecting a part also sets the Paint panel's **Paint within** to it, so the user's interactive paint tools (brush, spray, bucket, slab, shape, replace, image stamp) stay inside it. Your paint calls are **not** implicitly scoped — pass `withinPart: 'handle'` to any committing paint call: the selection is computed as usual, then clipped to the part, so `paintSlab({axis:'z', offset:40, thickness:5, color, withinPart:'handle'})` paints only the top of the handle. The scope is stored on the region, so it stays inside the part through code edits.
+- **Whole-part colour.** `setObjectPartColor(name, '#hex')` = the part's rail swatch (a `byLabel` fill, recoloured in place). `resetObjectPartColor(name)` removes it (back to the code colour). To make a colour part of the model rather than an overlay, `bakeObjectPartColor(name)` writes `api.paint.label(name, hex)` into the code (manifold-js).
+- **Rename.** `renameObjectPart(from, to)` rewrites every string literal naming the part (its `api.label` / SCAD `label` / `BREP.label`, `api.paint.label`, surface `label:` scopes) **and re-keys the paint tied to it**, then saves. Prefer it over hand-editing a label name.
+- **Unmatched paint.** Paint keyed to a part (`byLabel`, or any `withinPart`) whose label disappears from the code is never silently dropped: it stays saved but paints nothing, and is flagged — `runAndSave` / `saveVersion` return `unmatchedPaint: [{regionId, name, label, hint?}]`, and the rail shows **Unmatched paint (N)** with *Reassign to… / Keep / Delete*. When one label vanished as another appeared in the same place, `hint` / `renameSuggestions` names the likely successor — fix with `reassignPaint(regionId, newName)`. `emptyPaint` lists geometric regions (slab, box…) that now cover nothing.
+- **Pieces.** `extractObjectPiece(i)` moves a piece into a new object; `exportObjectPiece(i)` downloads it as STL; to drop a stray one use `deleteObjectPart({ piece: i })` (below). Extract wraps the object's code in a *piece filter* (`// Partwright piece filter …` — the original code runs untouched inside, and the piece is matched by bounding box, so small edits keep tracking it). manifold-js only; fixing the geometry that made a stray piece is still better when you can.
+- **Look.** `isolateObjectPart(name)` ghosts everything else; `getObjectPartInfo(name)` gives size, area and the pieces it touches; `goToObjectPart(name)` shows the user its label in the code.
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 

@@ -1389,7 +1389,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'highlightObjectPart',
-    description: 'Tint one part (by label name) or piece of the current object in the viewport so the user can see which one you mean — the same as clicking it in the object list. Visual only (no paint, no version); cleared on the next run. Pass exactly one of part / piece / unlabeled, or clear:true.',
+    description: 'Tint one part (by label name) or piece of the current object in the viewport so the user can see which one you mean. Visual only and transient: it does not change the user\'s selection or paint scope, and it disappears on the next mesh update. Pass exactly one of part / piece / unlabeled, or clear:true.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1420,6 +1420,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
         piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+
       },
     },
   },
@@ -1560,6 +1561,85 @@ const ALL_TOOLS: ToolDefinition[] = [
         stepMode: { type: 'string', enum: ['brep', 'mesh'] },
       },
       required: ['url'],
+    },
+  },
+  {
+    name: 'isolateObjectPart',
+    description: 'Ghost everything except one part / piece of the current object so the user can see it clearly in the viewport. Selects it as well. A fused part shares its solid with its neighbours, so it is ghosted, not hidden. Visual only. clear:true shows the whole object again.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        unlabeled: { type: 'boolean', description: 'true = isolate the geometry no part covers.' },
+        clear: { type: 'boolean', description: 'true = stop isolating.' },
+      },
+    },
+  },
+  {
+    name: 'getObjectPartInfo',
+    description: 'Size (bounding-box extents), surface area, triangle count and the pieces (1-based) one part or piece of the current object touches. Use it to measure a labelled feature without probing coordinates.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        unlabeled: { type: 'boolean', description: 'true = the geometry no part covers.' },
+      },
+    },
+  },
+  {
+    name: 'setObjectPartColor',
+    description: 'Fill a whole part with one colour — the swatch next to the part in the object list. Recolours the part\'s existing fill in place (no stacking), or adds a byLabel paint region. Paint is an overlay on the code (in-memory until saved); to make the colour part of the model itself use bakeObjectPartColor, or write api.label(shape, name, { color }) in code.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name.' },
+        color: { type: 'string', description: "Colour as '#rrggbb'." },
+      },
+      required: ['part', 'color'],
+    },
+  },
+  {
+    name: 'renameObjectPart',
+    description: 'Rename a part everywhere it is named by a string literal in the code (its api.label / SCAD label / BREP.label call, api.paint.label, surface-texture label scopes) AND re-key the paint regions tied to it, then run and save. Use this instead of hand-editing when the user renames a part, so their paint follows it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Current part name.' },
+        to: { type: 'string', description: 'New part name (must not already exist).' },
+      },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'bakeObjectPartColor',
+    description: "Write a part's current drawn colour into the code as api.paint.label(name, '#rrggbb') (JavaScript/manifold-js objects only) and drop the paint overlay that filled it — the colour then lives in the model and survives any code change. Runs and saves.",
+    input_schema: {
+      type: 'object',
+      properties: { part: { type: 'string', description: 'Part (api.label) name.' } },
+      required: ['part'],
+    },
+  },
+  {
+    name: 'extractObjectPiece',
+    description: 'Move one PIECE (physically separate solid, from listObjectParts().pieces) of the current object into its own new object. Both objects get a piece filter wrapped around their code (matched by bounding box); the original\'s version history keeps the unfiltered code. JavaScript/manifold-js objects only. Runs and saves both.',
+    input_schema: {
+      type: 'object',
+      properties: { piece: { type: 'integer', minimum: 0, description: '0-based piece index.' } },
+      required: ['piece'],
+    },
+  },
+  {
+    name: 'reassignPaint',
+    description: 'Re-point a paint region at another part. Use it on UNMATCHED paint (listObjectParts().unmatchedPaint, or runAndSave/saveVersion\'s unmatchedPaint): paint whose part the code renamed or removed, which otherwise paints nothing. A `hint` there suggests the likely new name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regionId: { type: 'integer', description: 'Paint region id (unmatchedPaint[].regionId / listRegions).' },
+        part: { type: 'string', description: 'Part (api.label) name to attach it to.' },
+      },
+      required: ['regionId', 'part'],
     },
   },
   {
@@ -2235,6 +2315,8 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'mirrorModel', 'diffVersions', 'renameVersion', 'deleteVersion',
   // Not frameObjectPart: its `part` arg would be eaten as the legacy object key.
   'simplifyModel',
+  'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
+  'extractObjectPiece', 'reassignPaint',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -2246,6 +2328,27 @@ const OBJECT_TARGET_PROP = {
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
     tool.input_schema.properties.object = OBJECT_TARGET_PROP;
+  }
+}
+
+/** Committing paint tools that take a PART scope (#1003): the region is
+ *  selected as usual, then clipped to one api.label part, and keeps that scope
+ *  across code edits (main.ts wraps the matching window.partwright methods). */
+export const PART_SCOPE_TOOLS = new Set<string>([
+  'paintRegion', 'paintNearestRegion', 'paintFaces', 'paintSlab', 'paintInBox', 'paintInOrientedBox',
+  'paintNear', 'paintInCylinder', 'paintConnected', 'paintStroke', 'paintComponent', 'paintImage',
+]);
+// (main.ts's PART_SCOPED_PAINT_METHODS is the window.partwright side — it also
+// covers API-only verbs like paintAirbrush; paintImage handles scope itself.)
+const PART_SCOPE_PROP = {
+  type: 'object',
+  description: 'Optional. Confine this paint to one PART of the object: { label: "<part name>" } (an api.label region from listObjectParts). The selection is computed as usual, then clipped to that part — e.g. paintSlab on the top 5 mm with scope {label:"handle"} paints only the handle\'s top. The scope persists, so the paint stays inside the part when the code changes. When the user has a part selected (their message starts with "[Selected in the Objects list: part …]"), scope your paint to it.',
+  properties: { label: { type: 'string', description: 'Part (api.label) name.' } },
+  required: ['label'],
+};
+for (const tool of ALL_TOOLS) {
+  if (PART_SCOPE_TOOLS.has(tool.name) && !('scope' in tool.input_schema.properties)) {
+    tool.input_schema.properties.scope = PART_SCOPE_PROP;
   }
 }
 
@@ -2316,6 +2419,8 @@ const ALWAYS_AVAILABLE = new Set([
   // Pure read of the built-in Character Creator presets.
   'listCharacterPresets',
   'setObjectPartHidden',
+  'isolateObjectPart',
+  'getObjectPartInfo',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -2422,7 +2527,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -2453,7 +2558,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -2462,7 +2567,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'getPalette', 'getUnits', 'listSessions',
   'getUiState',
   // Visual-only view state; re-applying it is idempotent.
-  'highlightObjectPart', 'setObjectPartHidden',
+  'highlightObjectPart', 'setObjectPartHidden', 'isolateObjectPart',
   // Metadata-only setter; re-applying the same unit is idempotent.
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   // Camera moves are idempotent view changes.
@@ -2475,7 +2580,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects']);
+const SAVE_GATED = new Set(['renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'simplifyModel', 'mergeObjects', 'mirrorModel', 'renameVersion', 'deleteVersion']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion']);
@@ -2485,7 +2590,7 @@ const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion',
  *  image-returning ones additionally need the Views vision toggle. */
 const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors']);
+const PAINT_GATED = new Set(['setObjectPartColor', 'reassignPaint', 'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -2813,9 +2918,12 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     // not whatever the user last clicked. Strip the keys first so the per-tool
     // APIs (which reject unknown keys) never see them.
     if (OBJECT_TARGETABLE_TOOLS.has(name)) {
-      const target = (input.object ?? input.part) as string | number | undefined;
+      // The legacy `part` key means the OBJECT target — except on the part
+      // tools, whose own `part` param names a part (an api.label region).
+      const ownsPart = !!ALL_TOOLS.find(tl => tl.name === name)?.input_schema.properties.part;
+      const target = (input.object ?? (ownsPart ? undefined : input.part)) as string | number | undefined;
       delete input.object;
-      delete input.part;
+      if (!ownsPart) delete input.part;
       if (target != null) {
         const focusErr = await focusTargetObject(api, target);
         if (focusErr) return { content: focusErr, isError: true };
@@ -3494,6 +3602,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       // would run remote model code without the Import dialog's preview).
       return api.importFromUrl(url, { ...opts, target: opts.target ?? aiDefaultImportTarget(api), geometryOnly: true });
     }
+    case 'isolateObjectPart': {
+      if (input.clear === true) return api.isolateObjectPart(null);
+      if (typeof input.part === 'string') return api.isolateObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.isolateObjectPart({ piece: input.piece });
+      if (input.unlabeled === true) return api.isolateObjectPart({ unlabeled: true });
+      return { error: 'isolateObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
+    }
+    case 'getObjectPartInfo': {
+      if (typeof input.part === 'string') return api.getObjectPartInfo(input.part);
+      if (typeof input.piece === 'number') return api.getObjectPartInfo({ piece: input.piece });
+      if (input.unlabeled === true) return api.getObjectPartInfo({ unlabeled: true });
+      return { error: 'getObjectPartInfo: pass one of part, piece, or unlabeled:true.' };
+    }
+    case 'setObjectPartColor':
+      return api.setObjectPartColor(input.part, input.color);
+    case 'renameObjectPart':
+      return api.renameObjectPart(input.from, input.to);
+    case 'bakeObjectPartColor':
+      return api.bakeObjectPartColor(input.part);
+    case 'extractObjectPiece':
+      return api.extractObjectPiece(input.piece);
+    case 'reassignPaint':
+      return api.reassignPaint(input.regionId, input.part);
     case 'setObjectPartHidden': {
       const hidden = input.hidden === undefined ? true : input.hidden === true;
       if (typeof input.part === 'string') return api.setObjectPartHidden(input.part, hidden);

@@ -25,6 +25,7 @@ import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
 import { listFilaments } from '../color/palette';
 import { createColorSwatch } from './colorPickerModal';
+import { getSelectedPartName } from './partSelection';
 import { createSliderEntry, formatEntry, stepDecimals } from './sliderEntry';
 import { MAX_FIELD_RESOLUTION } from '../surface/sdfModifier';
 import { SMOOTH_MAX_ITERATIONS } from '../surface/smoothSurface';
@@ -637,6 +638,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     updateScopeUI();
   }
 
+  /** Start the scope at the Objects-list selection (a part), else Whole. */
+  function setScopeFromPartSelection(): void {
+    const part = getSelectedPartName();
+    const names = part ? (() => { try { return api.getLabelNames(); } catch { return []; } })() : [];
+    if (part && names.includes(part)) {
+      setScopeMode('label');
+      scopeLabelSelect.value = part;
+      codeScope = { kind: 'label', label: part };
+      updateScopeUI();
+    } else {
+      setScopeMode('none');
+    }
+  }
+
   // Each scope change re-fires the (debounced) preview so the scoped patch shown
   // in the viewport tracks the picker — matching what Apply will write.
   scopeWholeBtn.addEventListener('click', () => { setScopeMode('none'); schedulePreview(); });
@@ -870,8 +885,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     engraveSizeGet = null; engraveIsPlanar = null;
     exitEngravePick();
     // Switching tabs resets the code-path scope (label sets differ per model,
-    // and a point patch is tab-agnostic but clearer to re-pick deliberately).
-    setScopeMode('none');
+    // and a point patch is tab-agnostic but clearer to re-pick deliberately) —
+    // to the part selected in the Objects list when there is one (#1003: the
+    // rail selection is the scope every tool starts from).
+    setScopeFromPartSelection();
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, schedulePreview, { hardMax: NO_LIMIT, fractional: true });

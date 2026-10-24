@@ -595,6 +595,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0.1} max={1} step={0.05}
           onChange={v => set('renderer', 'interactionRenderScale', v)}
         />
+        <Field cfgKey="renderer.isolateGhostOpacity"
+          label="Isolate ghost opacity"
+          hint="How visible the rest of the object stays when one part is isolated (0–1)."
+          tooltip="Isolating a part from the Objects list (◐ Isolate) draws that part solid and the rest of the object as a translucent ghost — a part fused into a solid can't be hidden on its own. This is the ghost's opacity: lower makes the rest fainter, higher keeps more context. Takes effect the next time you isolate."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.isolateGhostOpacity}
+          value={c.renderer.isolateGhostOpacity}
+          min={0} max={0.9} step={0.05}
+          onChange={v => set('renderer', 'isolateGhostOpacity', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -843,6 +852,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.stlWeldTolerance}
           min={1e-8} max={0.1} step={1e-6}
           onChange={v => set('import', 'stlWeldTolerance', v)}
+        />
+        <Field cfgKey="import.threeMfMaxTriangles"
+          label="3MF max triangles"
+          unit="tris"
+          hint="Largest mesh a 3MF import may expand to before it's refused."
+          tooltip="3MF files can reference the same object many times (instances and nested components), so a small file can describe an enormous mesh. Imports that would expand past this many triangles are rejected with an error instead of freezing the tab."
+          defaultValue={APP_CONFIG_DEFAULTS.import.threeMfMaxTriangles}
+          value={c.import.threeMfMaxTriangles}
+          min={10_000} max={200_000_000} integer
+          onChange={v => set('import', 'threeMfMaxTriangles', v)}
+        />
+        <Field cfgKey="import.threeMfMaxEntryMB"
+          label="3MF max part size"
+          unit="MB"
+          hint="Largest decompressed file allowed inside a 3MF package."
+          tooltip="A 3MF is a ZIP archive. This caps how large any single file inside it may decompress to, so a maliciously compressed archive (a zip bomb) can't exhaust memory. Real model files are rarely above a few hundred MB."
+          defaultValue={APP_CONFIG_DEFAULTS.import.threeMfMaxEntryMB}
+          value={c.import.threeMfMaxEntryMB}
+          min={16} max={8192} integer
+          onChange={v => set('import', 'threeMfMaxEntryMB', v)}
+        />
+        <Field cfgKey="import.threeMfMaxColors"
+          label="3MF max colours"
+          unit="colours"
+          hint="3MF files with more distinct colours import as mesh only."
+          tooltip="Slicer projects carry a handful of filament colours, but per-triangle-coloured scans can carry thousands. Each colour becomes a paint region, so beyond this many the import keeps the mesh and skips colour (with a notice) rather than creating thousands of regions."
+          defaultValue={APP_CONFIG_DEFAULTS.import.threeMfMaxColors}
+          value={c.import.threeMfMaxColors}
+          min={1} max={4096} integer
+          onChange={v => set('import', 'threeMfMaxColors', v)}
         />
         <Field cfgKey="import.voxelDefaultMaxSize"
           label="Voxel default max size"
