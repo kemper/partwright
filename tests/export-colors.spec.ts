@@ -56,7 +56,6 @@ test.describe('3MF filament colors', () => {
     await expect(modal.getByTestId('export-colors-summary')).toHaveText(/3 colours → 2 filaments/);
     await expect(modal.locator('[data-filament]')).toHaveCount(2);
     await expect(modal.getByText('body', { exact: true })).toBeVisible();
-    await page.screenshot({ path: 'test-results/export-colors-modal.png' });
 
     // "Keep all colours" restores one filament per colour.
     await modal.locator('[data-action="keep-all"]').click();

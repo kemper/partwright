@@ -181,13 +181,16 @@ export function normalizeColorRemap(remap: Record<string, string>): ColorRemap |
   return out;
 }
 
-/** Compose two remaps: apply `first`, then `second` to its result. */
+/** Compose an auto-merge (`first`) with explicit recolours (`second`). An
+ *  explicit entry for a source colour wins over where `first` sent it; otherwise
+ *  `second` applies to `first`'s result (so recolouring a kept colour carries
+ *  the colours merged into it). */
 export function composeColorRemaps(first: ColorRemap, second: ColorRemap): ColorRemap {
   const out: ColorRemap = {};
   const keys = new Set([...Object.keys(first), ...Object.keys(second)]);
   for (const k of keys) {
     const mid = first[k] ?? k;
-    const end = second[mid] ?? mid;
+    const end = second[k] ?? second[mid] ?? mid;
     if (end !== k) out[k] = end;
   }
   return out;

@@ -15,6 +15,7 @@ import {
   suggestColorMerges, normalizeHex,
   type ExportColor, type ColorRemap,
 } from '../export/exportColors';
+import { MAX_BAMBU_FILAMENTS } from '../export/threemfProject';
 
 export interface ExportColorsModalOptions {
   /** Distinct export colours, most-used first (collectExportColors). */
@@ -37,8 +38,6 @@ export interface ExportColorsChoice {
   filaments: number;
 }
 
-/** Most AMS setups top out at 16 slots (4 × AMS); the Bambu writer caps there too. */
-const MAX_FILAMENT_CAP = 16;
 
 interface State {
   tolerance: number;
@@ -109,6 +108,7 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
   const groups = groupsOf(colors, s);
   const { filaments } = resolve(colors, s);
   const maxTol = opts.maxTolerance ?? 30;
+  const fitTo = opts.slotCapacity !== undefined ? Math.min(opts.slotCapacity, MAX_BAMBU_FILAMENTS) : 0;
 
   const set = (patch: Partial<State>) => { state.value = { ...state.value, ...patch }; };
   const reMerge = (tolerance: number, maxColors: number) => {
@@ -141,7 +141,12 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
 
       <div class="flex flex-col gap-1.5">
         <div class="flex items-center justify-between gap-2">
-          <label for="export-colors-tolerance" class="text-xs text-zinc-300">Merge similar colours</label>
+          <label for="export-colors-tolerance" class="text-xs text-zinc-300">
+            Merge similar colours{' '}
+            <span class="text-zinc-500 tabular-nums" data-testid="export-colors-tolerance-value">
+              {s.tolerance === 0 ? '(off)' : `(ΔE ${s.tolerance})`}
+            </span>
+          </label>
           <span class="text-[11px] text-zinc-400 tabular-nums" data-testid="export-colors-summary">
             {colors.length} colours → <span class="text-zinc-100 font-medium">{filaments} filament{filaments === 1 ? '' : 's'}</span>
           </span>
@@ -172,7 +177,7 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
           onChange={e => reMerge(s.tolerance, Number((e.currentTarget as HTMLSelectElement).value))}
         >
           <option value="0">No limit</option>
-          {Array.from({ length: Math.min(MAX_FILAMENT_CAP, colors.length) }, (_, i) => i + 1).map(n => (
+          {Array.from({ length: Math.min(MAX_BAMBU_FILAMENTS, colors.length) }, (_, i) => i + 1).map(n => (
             <option key={n} value={String(n)}>{n}</option>
           ))}
         </select>
@@ -185,7 +190,7 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
         >Keep all colours</button>
       </div>
 
-      {opts.slotCapacity !== undefined && filaments > opts.slotCapacity && (
+      {opts.slotCapacity !== undefined && fitTo > 0 && filaments > opts.slotCapacity && (
         <div class="flex flex-wrap items-center gap-2 rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200" data-testid="export-colors-over-slots">
           <span class="flex-1 min-w-[12rem]">
             {filaments} filaments, but your palette has {opts.slotCapacity} printer slot{opts.slotCapacity === 1 ? '' : 's'}.
@@ -194,8 +199,8 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
             type="button"
             class={BUTTON_SMALL_SECONDARY}
             data-action="fit-slots"
-            onClick={() => reMerge(s.tolerance, Math.min(opts.slotCapacity!, MAX_FILAMENT_CAP))}
-          >Fit to {opts.slotCapacity}</button>
+            onClick={() => reMerge(s.tolerance, fitTo)}
+          >Fit to {fitTo}</button>
         </div>
       )}
 
@@ -233,7 +238,7 @@ function ColorsBody(props: { opts: ExportColorsModalOptions; state: Signal<State
       </div>
 
       <details class="text-xs" data-testid="export-colors-sources">
-        <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none">Fine-tune merges</summary>
+        <summary class="cursor-pointer text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 select-none py-2">Fine-tune merges</summary>
         <div class="flex flex-col gap-1 mt-2">
           {colors.map(c => {
             const current = s.assign[c.hex] ?? c.hex;

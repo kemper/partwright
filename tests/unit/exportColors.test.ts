@@ -122,6 +122,12 @@ describe('exportColors', () => {
       .toEqual({ '#000001': '#000003', '#000002': '#000003', '#000004': '#000005' });
   });
 
+  it('composeColorRemaps lets an explicit entry override where the auto-merge sent a colour', () => {
+    // #1b1b1b was auto-merged into #1f1712, but the caller recolours #1b1b1b itself.
+    expect(composeColorRemaps({ '#1b1b1b': '#1f1712' }, { '#1b1b1b': '#ff0000' }))
+      .toEqual({ '#1b1b1b': '#ff0000' });
+  });
+
   it('applyColorRemap rewrites the copy, keeps the source, and paints remapped defaults', () => {
     const src = mesh(['#0d0d0d', '#1f1712', null]);
     const before = Uint8Array.from(src.triColors!);

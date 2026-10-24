@@ -93,7 +93,7 @@ The console twins take the same choices as options on `export3MF`, `export3MFDat
 
 - `mergeColors: number` — merge colours within this perceptual distance (CIE76 ΔE) of a more-used colour. ~2 is barely visible; **10** merges shades that look the same on the model.
 - `maxColors: number` — after merging, fold the least-used colours into their nearest kept colour until at most this many remain.
-- `colorMap: { "#from": "#to" }` — explicit recolours/merges, applied after the auto-merge.
+- `colorMap: { "#from": "#to" }` — explicit recolours/merges keyed on the ORIGINAL colours (as `listExportColors` lists them). An entry for a colour overrides where the auto-merge sent it; an entry for a kept colour also carries every colour merged into it. Chains collapse (`a→b, b→c` sends both to `c`); a cycle (`a→b, b→a`) is rejected.
 
 Merge targets are always colours the model already uses (never a blend). Unpainted faces on a painted model export as the default blue `#4a9eff` (`unpainted: true` in the listing) — map it with `colorMap` if that matters.
 

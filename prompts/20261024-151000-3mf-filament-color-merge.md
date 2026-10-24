@@ -40,3 +40,16 @@ capping (capping by default would fold away small accents like a logo).
 `{ mergeColors, maxColors, colorMap }` (no option = historical behaviour), and
 `listExportColors()` exposes the palette + suggested merges. No in-app AI tool:
 exports download files and aren't driven from chat.
+
+## Assistant
+
+## Review follow-ups
+
+A `work-reviewer` pass found nothing blocking; fixed its should-fix items:
+an explicit `colorMap` entry now overrides where the auto-merge sent that
+source colour (agents key colorMap on the original colours `listExportColors`
+returns); `export3MFObjects` validates colour options before baking every
+object; filament names are shown in the multi-object flow only when the export
+is just the active object (region names describe the active object only); the
+tolerance slider gets a ΔE readout. Nits: cancel toast on the single-object
+path, shared `MAX_BAMBU_FILAMENTS` constant, "Fit to N" label clamped to it.

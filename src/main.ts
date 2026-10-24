@@ -5381,12 +5381,14 @@ async function main() {
    *  colours, let the user merge / recolour them (every distinct hex is its own
    *  filament in the slicer). Resolves to the export-only remap — `{}` when there
    *  is nothing to choose — or null when the user cancels the export. */
-  const chooseExportColors = async (meshes: MeshData[]): Promise<ColorRemap | null> => {
+  const chooseExportColors = async (meshes: MeshData[], withNames = true): Promise<ColorRemap | null> => {
     const colors = collectExportColors(meshes);
     if (colors.length < 2) return {};
     const choice = await showExportColorsModal({
       colors,
-      names: exportColorNames(),
+      // Region names describe the ACTIVE object only, so they'd mislabel colours
+      // baked from other objects.
+      ...(withNames ? { names: exportColorNames() } : {}),
       tolerance: getConfig().ui.exportColorMergeTolerance,
       slotCapacity: getPaletteCapacity(),
     });
@@ -5563,7 +5565,8 @@ async function main() {
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
       // Filament colours: merge near-identical shades before writing (export-only).
       progress.end();
-      const remap = await chooseExportColors(baked.map(b => b.mesh));
+      const onlyActive = baked.length === 1 && selectedIds.length === 1 && selectedIds[0] === activeId;
+      const remap = await chooseExportColors(baked.map(b => b.mesh), onlyActive);
       if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       const toWrite = baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
@@ -5765,6 +5768,9 @@ async function main() {
       if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
       bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
+    // Validate the colour options before baking (no meshes → no merge computed).
+    const colorOptsCheck = resolveApiColorRemap([], opts, 'export3MFObjects');
+    if ('error' in colorOptsCheck) return colorOptsCheck;
     const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
     const merge = resolveApiColorRemap(baked.map(b => b.mesh), opts, 'export3MFObjects');
@@ -5823,7 +5829,7 @@ async function main() {
     try {
       const mesh = fileExportMesh(true)!;
       const remap = await chooseExportColors([mesh]);
-      if (!remap) return;
+      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
     }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
