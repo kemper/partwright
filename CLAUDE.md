@@ -230,7 +230,7 @@ npm run pr:screenshots -- --refresh                                            #
 
 The script pushes the images to the shared, never-merged **`pr-assets`** branch (`<branch-folder>/<stamp>/…`, URL-safe names, via git plumbing, so your checkout, index and branch are untouched and screenshots never enter `main`'s history). The **workflow** then posts the newest upload as **one "Visual proof" comment** on the PR, authored by `github-actions[bot]` and updated in place on later uploads. It reads the comment back and **fails (red check) unless GitHub renders every image**. The workflow runs when the PR is opened or pushed to, so screenshots uploaded before the PR exists, or before your next push, are picked up automatically. To post right away:
 - **Locally**, the script dispatches the workflow itself.
-- **In a cloud session** it can't (gh may not dispatch workflows there), so it prints the GitHub MCP call to make: `actions_run_trigger` with `method: run_workflow`, `workflow_id: pr-visual-proof.yml`, `ref: main`, `inputs: {pr: "N", upload: "<stamp>"}`.
+- **In a cloud session** nothing can start a workflow: `gh` and the GitHub MCP `actions_run_trigger` tool both get a 403. So **upload before you open the PR or push**; the next push posts the comment. For a re-shoot with no code change to push, or a merged PR, the script prints the Actions → Run workflow inputs for the user to run.
 Use `--pr N` to target a PR explicitly, and `--branch <name>` to act for a branch you don't have checked out.
 
 - **Never write image links into a PR body or comment yourself.** In cloud sessions the GitHub proxy defangs image links in text a session posts, inconsistently: it wraps some URLs in backticks, so GitHub reads them as relative links back to the PR. That is what broke visual proof in mid-October 2026 PRs (kemper/partwright#1054, #1060, #1062, #1063). Comments the workflow posts don't go through that proxy. If the PR body should mention the screenshots, write a line like "Visual proof: see the comment below."
@@ -246,7 +246,8 @@ Use `--pr N` to target a PR explicitly, and `--branch <name>` to act for a branc
 
 - **The comment is the bot's, not a review.** When it, or the workflow's check, comes back as a PR activity event, it's an echo of your own upload: no action needed, unless the check is red.
 - **`pr-assets` is append-only.** Never merge, rebase or delete it; PR comments link to its commits.
-- **Two PRs from one branch** share a folder. Pick the upload explicitly with the dispatch input `upload: "<stamp>"`, which the script prints.
+- **Two PRs from one branch** share a folder; a push shows the folder's newest upload. To show a specific one, run the workflow by hand with the `upload: "<stamp>"` input, which the script prints.
+- **A branch reused for a new PR** (e.g. a cloud session restarting its branch from `main` after a merge) starts with the earlier PR's screenshots: the workflow posts the branch's newest upload on the new PR too. Upload fresh screenshots for the new PR, or, if it has no visual change, delete the bot's comment after your last push.
 
 Re-shoot when a later push changes the visuals; the proof must match the current head, and a re-upload updates the same comment. "The Visual proof comment shows the current shots and its check is green" is part of the mark-ready gate.
 

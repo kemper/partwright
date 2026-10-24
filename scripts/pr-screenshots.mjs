@@ -12,8 +12,9 @@
 // 2. The `Visual proof comment` workflow (.github/workflows/pr-visual-proof.yml)
 //    posts the newest upload as ONE PR comment and checks GitHub renders every
 //    image. It runs on the PR's next open/push, and this script dispatches it
-//    right away when `gh` is allowed to (locally; cloud sessions can't, so it
-//    prints the GitHub MCP call to make instead). The comment must come from
+//    right away when `gh` is allowed to (locally). Cloud sessions can't start
+//    workflows (gh and the GitHub MCP tool both get a 403), so there, upload
+//    before you open the PR or push. The comment must come from
 //    the workflow: cloud sessions' GitHub proxy defangs image links that a
 //    session posts itself.
 //
@@ -194,8 +195,9 @@ function dispatch(slug, pr, stamp) {
     return true;
   } catch (e) {
     console.log(`Couldn't start the workflow from here (${stderrOf(e).split('\n')[0]}).`);
-    console.log("It runs on the PR's next push. To post now, use the GitHub MCP tool:");
-    console.log(`  actions_run_trigger method=run_workflow owner=${slug.split('/')[0]} repo=${slug.split('/')[1]} workflow_id=${WORKFLOW} ref=main inputs=${JSON.stringify(inputs)}`);
+    console.log("The comment is posted on the PR's next push. With no push coming, ask someone with repo access to run it:");
+    console.log(`  Actions → "Visual proof comment" → Run workflow, inputs ${JSON.stringify(inputs)}`);
+    console.log(`  (or: gh workflow run ${WORKFLOW} --repo ${slug} ${Object.entries(inputs).map(([k, v]) => `-f ${k}=${v}`).join(' ')})`);
     return false;
   }
 }

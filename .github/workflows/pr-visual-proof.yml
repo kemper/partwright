@@ -13,8 +13,8 @@ name: Visual proof comment
 # Runs when a PR is opened, reopened or pushed to (picking up whatever was
 # uploaded before), and on demand: workflow_dispatch with the PR number and,
 # optionally, which upload to show. pr:screenshots dispatches it itself where
-# `gh` can; from a cloud session use the GitHub MCP tool `actions_run_trigger`
-# (method run_workflow, workflow_id pr-visual-proof.yml, ref main).
+# `gh` can (locally). Cloud sessions can't start workflows (403 from both gh
+# and the GitHub MCP tool), so they rely on the PR open/push triggers.
 # Rendering logic: scripts/lib/visualProof.mjs (unit-tested).
 
 on:
