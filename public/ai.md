@@ -206,8 +206,10 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 
 **Conventions:**
 
-- **Methods that return a value** (e.g. `runAndSave`, `loadVersion`, `query`, `importSession`, `setReferenceGeometry`, notes/session CRUD) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`.
-- **Void setters** (`setCode`, `setClipZ`, `setImages`, `setView`, `setUnits`, `measureAt`, `measureBetween`, `probeRay`, `measurePoints`, `renameSession`) **throw** a `ValidationError`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
+- **Most methods that return a value** (e.g. `runAndSave`, `loadVersion`, `navigateVersion`, `query`, `importSession`, `exportSession`, `exportSTEP`, `setReferenceGeometry`, `sliceAtZVisual`, `measureAt`, `measurePoints`, `probeRay`, notes/session CRUD incl. `renameSession` / `deleteSession`) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`. Check `result?.error` before using the value. Don't use `'error' in result`: it throws a TypeError when the success value is a number or `null`, as it is for `measurePoints`, `measureAt`, `probeRay`, `analyzeProfile` and `exportSession`.
+- **Number-returning methods** (`measurePoints`, `measureBetween`): check `typeof r === 'number'` before comparing. `{error} < 0.4` is silently `false`, not an exception.
+- **Known exceptions that still throw on bad arguments** even though they return a value: `run`, `createSession`, `saveVersion`, `probePixel` and the `export*Data` methods. Wrap them in try/catch.
+- **Setters** throw a `ValidationError`. That covers void setters (`setCode`, `setImages`, `setView`, `setUnits`, `measureMode`, `setActiveLanguage`) and the state-returning `setClipZ` / `toggleClip`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
 - **No coercion.** `setClipZ("5")` throws -- strings are not auto-converted to numbers. Pass the right type.
 - **Unknown object keys are rejected.** `runAndAssert(code, { widthToDeep: [1,2] })` errors on the typo; it does not silently ignore it. Allowed keys are listed on each assertion/options interface.
 - **Empty strings are rejected** by default for required string params (names, IDs, note text, code). Optional strings can be omitted but, if provided, must still be non-empty unless noted otherwise.
@@ -215,10 +217,10 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 **Examples of what gets rejected:**
 
 ```js
-partwright.navigateVersion('backward')            // ValidationError: direction must be one of: "prev" | "next"
+await partwright.navigateVersion('backward')      // returns { error: "... direction must be one of: \"prev\" | \"next\" ..." }
 partwright.setView('sketch')                      // ValidationError: tab must be one of: ...
-partwright.measureAt([5])                         // ValidationError: measureAt(xy) must have exactly 2 elements
-partwright.probeRay([0,0,0], [0, '1', 0])         // ValidationError: probeRay(direction)[1] must be a finite number
+partwright.measureAt([5])                         // returns { error: "measureAt(xy) must have exactly 2 elements ..." }
+partwright.probeRay([0,0,0], [0, '1', 0])         // returns { error: "probeRay(direction)[1] must be a finite number ..." }
 partwright.setImages([{ src: '' }])  // ValidationError: setImages(images)[0].src must be a non-empty string, got ""
 partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
 await partwright.runAndAssert(code, { minVolume: '1000' })  // returns { passed: false, failures: ["... .minVolume must be a finite number ..."] }
@@ -253,6 +255,9 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
+partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost from code run in isolation (manifold-js) -> {success, boundingBox?, volume?, error?}
+partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
+partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 
 // Viewport controls
 partwright.setGridVisible(on?)       // Show/hide grid plane (omit to toggle) -> boolean
@@ -304,6 +309,7 @@ partwright.exportSTL()         // Download STL ("                               
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
 partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
+await partwright.exportSTEP(filename?) // Download the last BREP shape as STEP (replicad-language sessions only) -> {ok, filename, sizeBytes} or {ok:false, error}. See /ai/replicad.md
 // Animation videos (record the live viewport -> .webm download; tab must stay visible). See /ai/deform.md.
 await partwright.exportTurntable({seconds?, revolutions?})        // camera orbits the model -> {ok, filename}
 await partwright.exportExplode({seconds?, spread?})               // components fly apart + reassemble (multi-component models)
@@ -322,10 +328,17 @@ await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named no
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) // -> the ExportedSession object itself (default: current; thumbnails off by default), null if none, or {error}
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
+await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
 await partwright.importMeshData(base64, filename, {sessionName?, adoptPalette?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + makes its filament palette active (adds palette, colorRegions, activePalette, objects). isManifold:false = render-only (no booleans/paint/slicing).
+// Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
+await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
+await partwright.importSvgAsRelief({svgText, options?, quantized?, preprocess?})  // each <path fill> = one crisp colour region -> {sessionId} or {error}
+partwright.getReliefSwapGuide()                         // single-nozzle filament-swap guide for the current relief, or {error}
+partwright.setReliefPreviewMode('flat'|'ams'|'single-nozzle') // relief optical preview (relief sessions only) -> {ok} or {error}
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
@@ -342,11 +355,22 @@ await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, 
 await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?, bg?, bgTolerance?, bgMode?, mask?, exclude?, merge?, ignore?, bands?, fit?, pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, …}]})  // TEXT-ONLY likeness score vs a reference photo (attachment id/label or data URL) -> {silhouetteIoU, aspect, bands[] (+ left/right edge offsets), outline[], regions[], worst[], warnings[]}; views[] scores several angles at once (mean silhouetteIoU). Use instead of renders for routine likeness passes — see /ai/reference-images.md#photo-match
 await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 135°, el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
-partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
+partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
 partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
+partwright.checkContainment()            // -> [ContainmentWarning] for components fully inside another (invisible geometry); [] = none, null = no geometry
+partwright.analyzeProfile(sampleCount?)  // Z-profile feature summary of the current model -> ZProfile, null or {error}. See /ai/visual-verification.md#stat-based-verification
+await partwright.analyzeProfileIsolated(code, sampleCount?) // Same for code run in isolation -> {profile, stats} or {error}
+partwright.measureAt([x,y])              // Ray down Z at XY -> {hits, thickness, topZ, bottomZ}, null (no geometry) or {error}
+partwright.probeRay(origin, direction, {allHits?}) // Any ray -> {hits:[...]} nearest first (front faces only unless allHits), null or {error}
+partwright.measurePoints([x,y,z], [x,y,z]) // Distance -> number or {error} (measureBetween is an alias). Check typeof r === 'number' before comparing
+partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-click measure tool for the user (locks orbit) / -> {active, point1, point2, distance}
+// Printing -- see /ai/printing.md
+partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
+partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
+partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -385,9 +409,11 @@ partwright.getCharacterSpec()                         // Read the spec from the 
 partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
 await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
+await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
+await partwright.navigateVersion('prev'|'next') // Step one version (switches to its language) -> {id, index, label}, null at either end, or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
 await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
 await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
@@ -399,6 +425,10 @@ partwright.getGalleryUrl()               // -> URL for gallery view (local brows
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
+partwright.getSessionState()             // -> {session:{id,name}|null, currentPart, parts:[{id,name,order,isCurrent}], currentVersion:{index,label}|null, versionCount} (lightweight; parts = objects)
+await partwright.renameSession(newName, id?) // Rename the current (or given) session -> {success} or {error}
+await partwright.closeSession()          // Close the current session (an empty one is discarded)
+await partwright.deleteSession(id)       // Permanently delete one session + all its versions (irreversible) -> {success} or {error}
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
 // Objects -- multiple independent objects within one session (the left-rail
@@ -501,6 +531,12 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
+partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab') / setBrushDepth(d) // UI brush surface mode + slab depth (0 = auto)
+partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
+partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
+await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
+// Voxel Studio (voxel sessions): activateVoxelPaint / setVoxelTool / setVoxelBrush / voxelStudioApply /
+// voxelStudioUndo / voxelStudioRedo / bakeVoxelsToCode / updateVoxelCode ... -- see /ai/voxel.md#programmatic--ai-equivalent
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}

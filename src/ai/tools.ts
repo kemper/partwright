@@ -2575,8 +2575,9 @@ async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unkn
 }
 
 async function executeSliceAtZVisual(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
-  const result = api.sliceAtZVisual(input.z as number) as { svg: string; area: number; contours: number } | null;
+  const result = api.sliceAtZVisual(input.z as number) as { svg: string; area: number; contours: number; error?: string } | null;
   if (!result) return { content: 'sliceAtZVisual: no geometry loaded — run code first.', isError: true };
+  if (result.error) return { content: result.error, isError: true };
   const contourDesc = result.contours === 1 ? 'solid' : result.contours > 1 ? 'hollow/multi-piece' : 'empty';
   const summary = `Cross-section at z=${input.z}: area=${result.area.toFixed(3)}, contours=${result.contours} (${contourDesc})`;
   try {
