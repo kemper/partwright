@@ -328,6 +328,14 @@ export function listPalettes(): PaletteSummary[] {
   return c.palettes.map(p => ({ id: p.id, name: p.name, active: p.id === c.activeId }));
 }
 
+/** A palette's slots by id (copies), without activating it — or null when no
+ *  palette has that id. Lets an importer reuse an existing identical palette
+ *  instead of piling up duplicates on every re-import. */
+export function getPaletteSlots(id: string): Filament[] | null {
+  const p = loadCollections().palettes.find(q => q.id === id);
+  return p ? p.slots.map(s => ({ ...s })) : null;
+}
+
 export function getActivePaletteId(): string { return loadCollections().activeId; }
 export function getActivePaletteName(): string { return activePalette().name; }
 

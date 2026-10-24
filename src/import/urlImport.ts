@@ -112,6 +112,7 @@ export function classifyRemoteResource(
   if (!ct) return null;
   if (ct === 'application/json' || ct === 'text/json') return 'JSON';
   if (ct === 'model/stl' || ct === 'application/sla' || ct === 'application/vnd.ms-pki.stl') return 'STL';
+  if (ct === 'model/3mf' || ct === 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml') return '3MF';
   if (ct === 'model/step' || ct === 'application/step' || ct === 'application/p21') return 'STEP';
   if (ct === 'image/svg+xml') return 'SVG';
   if (ct.startsWith('image/')) return 'IMAGE';
@@ -125,7 +126,7 @@ export function classifyRemoteResource(
 export function ensureExtensionForSource(filename: string, source: ImportSource): string {
   if (classifyImportSource(filename) === source) return filename;
   const ext: Record<ImportSource, string> = {
-    JSON: '.json', JS: '.js', SCAD: '.scad', STL: '.stl',
+    JSON: '.json', JS: '.js', SCAD: '.scad', STL: '.stl', '3MF': '.3mf',
     STEP: '.step', SVG: '.svg', VOX: '.vox', IMAGE: '.png',
   };
   const base = filename && filename !== 'import' ? filename : 'import';

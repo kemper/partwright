@@ -124,6 +124,22 @@ const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: '
 // isManifold:false = welded render-only (displays + exports, but no booleans /
 // paint / cross-sections) — typical for sculpted or scanned models.
 
+// The same call imports a .3mf package (detected by the filename or ZIP magic):
+// Bambu Studio / OrcaSlicer / PrusaSlicer projects and plain 3MF from any tool.
+// Build-item + component transforms are baked in, units converted to mm, the
+// model recentred on XY (z=0 stays the plate), modifier/support parts skipped.
+// Colours come in as paint regions: slicer filament assignments (per object /
+// part extruder + per-triangle MMU painting — triangles the slicer split between
+// filaments take the majority filament) or plain-3MF basematerials /
+// m:colorgroup. The file's filament palette becomes the ACTIVE palette (reused
+// if an identical one exists) with regions bound to its slots, so a re-export
+// maps back onto the same AMS/MMU slots. Pass { adoptPalette: false } to keep
+// the current palette. Round-trips with export3MFData().base64.
+const tmf = await partwright.importMeshData(base64, 'model.3mf')
+// -> { sessionId, isManifold, triangleCount, vertexCount, format: '3mf',
+//      flavor: 'bambu'|'prusa'|'generic', colorSource: 'filaments'|'materials'|'none',
+//      palette: [{ name, hex }], colorRegions, activePalette, objects: [{ name, triangleCount }] }
+
 // MagicaVoxel .vox and STEP from base64 bytes, the same way:
 await partwright.importVoxData(base64, 'castle.vox')                    // -> {…, voxelCount}
 await partwright.importStepData(base64, 'bracket.step')                 // exact BREP object (STEP export kept)
