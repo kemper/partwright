@@ -879,6 +879,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('import', 'threeMfMaxColors', v)}
         />
         <Field
+          label="Max objects per split import"
+          unit="objects"
+          hint="Most objects a 3MF or STL import may be split into."
+          tooltip="A multi-object 3MF can import one object per 3MF object or per plate, and a multi-piece STL can be split into one object per piece. Each becomes its own object with a saved version, so very large splits take a while; past this many the split option is unavailable and the file imports as one object."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxSplitObjects}
+          value={c.import.maxSplitObjects}
+          min={2} max={1000} integer
+          onChange={v => set('import', 'maxSplitObjects', v)}
+        />
+        <Field
           label="Voxel default max size"
           unit="voxels"
           hint="Default max voxel grid dimension for image → voxel imports."

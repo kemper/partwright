@@ -138,8 +138,48 @@ const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: '
 const tmf = await partwright.importMeshData(base64, 'model.3mf')
 // -> { sessionId, isManifold, triangleCount, vertexCount, format: '3mf',
 //      flavor: 'bambu'|'prusa'|'generic', colorSource: 'filaments'|'materials'|'none',
-//      palette: [{ name, hex }], colorRegions, activePalette, objects: [{ name, triangleCount }] }
+//      palette: [{ name, hex }], colorRegions, activePalette,
+//      objects: [{ name, triangleCount, firstTriangle, plate? }], plates: [{ id, name }] }
 ```
+
+### Multi-object files — one object per 3MF object, plate, or STL piece
+
+By default a file imports as ONE object. A 3MF often holds several objects
+(a Bambu/Orca project can spread them across several build plates), and an STL
+can hold several separate solids. `split` makes one object each instead — the
+console twin of the **Import 3MF** chooser the UI opens for a multi-object 3MF,
+and of the **Split into N objects** button offered after a multi-body STL import.
+
+```js
+// Look first (no import): the objects / plates / pieces a split works with.
+await partwright.inspectMeshData(base64, 'kit.3mf')
+// -> { format: '3mf', flavor, title?, triangleCount,
+//      objects: [{ index, name, triangleCount, plate? }],
+//      plates: [{ id, name, objectCount }], palette, splitModes: ['none', 'object', 'plate'] }
+await partwright.inspectMeshData(base64, 'blocks.stl')
+// -> { format: 'stl', triangleCount, isManifold, pieces: [{ index, name, triangleCount }], splitModes }
+
+// One object per 3MF object, threaded under its plate in the object list:
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'object' })
+// One object per build plate (each keeps its plate's layout):
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'plate' })
+// Only some objects (indices from inspectMeshData), as separate objects:
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'object', objects: [0, 2] })
+// One object per separate solid of an STL (largest first):
+await partwright.importMeshData(base64, 'blocks.stl', { split: 'piece' })
+// -> adds importedObjects: [{ id, name, group? }]; isManifold is true only when every object is.
+```
+
+Each object is recentred on its own XY origin (z = 0 stays the plate) and keeps
+its colours; the file's palette is adopted once for all of them. `objects`
+without `split` imports just those objects as one. Splits are capped by
+**Advanced settings → Import → Max objects per split import** (default 100).
+
+To split an object that's already imported — a single, unedited mesh import —
+call `await partwright.splitImportIntoObjects()` (-> `{ objects: [{ id, name }] }`):
+the largest piece becomes the object's next version (its history keeps the whole
+mesh) and the others become new objects. For any other object, move pieces out
+one at a time with `extractObjectPiece(index)`.
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.

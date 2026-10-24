@@ -71,7 +71,7 @@ import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPartsView } from './ui/partList';
 import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
-import { summarizeObjectParts, triangleSetStats, extractSubMesh, type ObjectPartsSummary, type TriangleSetStats } from './geometry/meshPieces';
+import { summarizeObjectParts, triangleSetStats, extractSubMesh, computeMeshPieces, type ObjectPartsSummary, type TriangleSetStats } from './geometry/meshPieces';
 import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, wrapWithPieceFilter, type PieceBox } from './geometry/objectPartCode';
 import { getSelectedPartKey, getSelectedPartName, setSelectedPartKey, onPartSelectionChange, describePartKey } from './ui/partSelection';
 import type { PartInfo } from './ui/objectPartsPanel';
@@ -125,6 +125,8 @@ import {
   MAX_REMOTE_BYTES,
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
+import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
+import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
 import { showScadCompanionModal } from './ui/scadCompanionModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
 import { showImageImportKindModal } from './ui/imageImportKindModal';
@@ -4202,8 +4204,7 @@ async function main() {
           committed = await placeImportedMesh(parsed, file.name);
         }
       } else if (source === '3MF') {
-        const parsed = await parse3MFFile(file);
-        if (parsed) committed = await place3MFImport(parsed, file.name);
+        committed = await import3MFFile(file);
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
@@ -4806,56 +4807,53 @@ async function main() {
   }
 
   /** A parsed 3MF: the (possibly welded) mesh probe, the parse result (palette,
-   *  per-triangle colours, object summary) and the source mesh in the SAME
-   *  triangle order as `result.triColor` — the colour seeder maps from it. */
+   *  object summary) and the source mesh with its per-triangle palette indices,
+   *  in the SAME triangle order — the colour seeder maps from them. For one
+   *  object of a split import, `source` / `triColor` are that object's own. */
   interface Parsed3MF {
     probe: ParsedSTLProbe;
     result: ThreeMFParseResult;
     source: MeshData;
+    triColor: Int32Array;
   }
 
-  /** Non-interactive 3MF parse: unzip + parse, then the same manifold probe as
-   *  STL (raw indexed mesh first, then the weld-tolerance ladder — welding keeps
-   *  triangle order, so colours stay aligned). Throws on an unreadable package. */
-  async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
+  /** Unzip + parse a 3MF under the import limits from the app config. Throws a
+   *  human-readable Error on an unreadable package. */
+  function read3MF(bytes: Uint8Array): Promise<ThreeMFParseResult> {
     const cfg = getConfig().import;
-    const result = await parse3MF(bytes, {
+    return parse3MF(bytes, {
       maxTriangles: cfg.threeMfMaxTriangles,
       maxEntryBytes: cfg.threeMfMaxEntryMB * 1048576,
     });
-    const raw = result.mesh;
+  }
+
+  /** The STL manifold probe for an already-indexed mesh (a 3MF, or one object
+   *  cut out of it): the raw mesh first, then the weld-tolerance ladder.
+   *  Welding keeps triangle order, so per-triangle colours stay aligned with
+   *  the returned `source`. */
+  function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): { probe: ParsedSTLProbe; source: MeshData } {
     const first = tryConstructManifold(raw);
-    if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: true }, result, source: raw };
-    const tolerances = weldToleranceLadder(raw);
+    if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, format), isManifold: true }, source: raw };
     let manifoldError: string | null = first.error;
     let maxTried = 0;
-    for (const tol of tolerances) {
+    for (const tol of weldToleranceLadder(raw)) {
       const welded = weldMesh(raw, tol);
       const trial = tryConstructManifold(welded);
-      if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, '3mf'), isManifold: true }, result, source: welded };
+      if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, format), isManifold: true }, source: welded };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
     }
     return {
-      probe: { mesh: toImportedMesh(filename, raw, '3mf'), isManifold: false, manifoldError, maxTried, triCount: raw.numTri, vertCount: raw.numVert },
-      result,
+      probe: { mesh: toImportedMesh(filename, raw, format), isManifold: false, manifoldError, maxTried, triCount: raw.numTri, vertCount: raw.numVert },
       source: raw,
     };
   }
 
-  /** Interactive 3MF parse for the file picker / drop / re-import paths: toasts
-   *  on an unreadable file and asks before falling back to render-only. */
-  async function parse3MFFile(file: File): Promise<{ parsed: ParsedSTL; p3: Parsed3MF } | null> {
-    let p3: Parsed3MF;
-    try {
-      p3 = await parse3MFBytes(new Uint8Array(await file.arrayBuffer()), file.name);
-    } catch (e) {
-      showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
-      return null;
-    }
-    if (p3.probe.isManifold) return { parsed: { mesh: p3.probe.mesh, isManifold: true }, p3 };
-    if (!(await confirmRenderOnlyImport(file.name, p3.probe))) return null;
-    return { parsed: { mesh: p3.probe.mesh, isManifold: false }, p3 };
+  /** Non-interactive 3MF parse + manifold probe of the whole (merged) model.
+   *  Throws on an unreadable package. */
+  async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
+    const result = await read3MF(bytes);
+    return { ...probeIndexedMesh(result.mesh, filename, '3mf'), result, triColor: result.triColor };
   }
 
   /** Bind a 3MF's palette to the user's palette collection and return the slot
@@ -4913,7 +4911,7 @@ async function main() {
       for (let t = 0; t < out.numTri; t++) {
         const o = nearest[t];
         if (o < 0) continue;
-        const colorIdx = result.triColor[o];
+        const colorIdx = p3.triColor[o];
         if (colorIdx < 0) continue;
         let d2 = 0;
         for (let k = 0; k < 3; k++) {
@@ -4938,9 +4936,11 @@ async function main() {
     return { seed, info };
   }
 
-  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined): string {
-    const parts = [`Imported ${filename}: ${result.mesh.numTri.toLocaleString()} triangles`];
-    if (info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
+  function describe3MFImport(filename: string, result: ThreeMFParseResult, info: ThreeMFColorInfo | undefined, objectCount = 1): string {
+    const parts = objectCount > 1
+      ? [`Imported ${objectCount} objects from ${filename}`]
+      : [`Imported ${filename}: ${result.mesh.numTri.toLocaleString()} triangles`];
+    if (objectCount <= 1 && info && info.colors > 0) parts.push(`${info.colors} colour${info.colors === 1 ? '' : 's'}`);
     let msg = parts.join(', ');
     if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
     if (info && info.skippedColors > 0) msg += `. Its ${info.skippedColors.toLocaleString()} colours exceed the ${getConfig().import.threeMfMaxColors}-colour import limit, so it came in uncoloured`;
@@ -4956,6 +4956,287 @@ async function main() {
     const placed = await placeImportedMesh(parsed, filename, seeder?.seed);
     if (placed) showToast(describe3MFImport(filename, p3.result, seeder?.info), { variant: 'success', source: 'import' });
     return placed;
+  }
+
+  /** Interactive 3MF import for the file picker / drop / re-import paths. A
+   *  file with one object imports as before (render-only ask, then the shared
+   *  import-target flow); a file with several objects opens the multi-object
+   *  chooser. Returns whether anything was imported. */
+  async function import3MFFile(file: File): Promise<boolean> {
+    let result: ThreeMFParseResult;
+    try {
+      result = await read3MF(new Uint8Array(await file.arrayBuffer()));
+    } catch (e) {
+      showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
+      return false;
+    }
+    if (result.objects.length >= 2) return importMultiObject3MF(result, file.name);
+    const p3: Parsed3MF = { ...probeIndexedMesh(result.mesh, file.name, '3mf'), result, triColor: result.triColor };
+    if (!p3.probe.isManifold && !(await confirmRenderOnlyImport(file.name, p3.probe))) return false;
+    return place3MFImport({ parsed: { mesh: p3.probe.mesh, isManifold: p3.probe.isManifold }, p3 }, file.name);
+  }
+
+  /** Bytes from an API base64 argument (bare base64 or a `data:` URL), or null. */
+  function decodeBase64Arg(base64: string): Uint8Array | null {
+    try {
+      const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
+      const binary = atob(raw);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The API's report of a split import's objects. */
+  function splitImportSummary(entries: ImportObjectEntry[], ids: string[]) {
+    const parts = getState().parts;
+    return {
+      importedObjects: ids.map(id => {
+        const p = parts.find(x => x.id === id);
+        return { id, name: p?.name ?? '', ...(p?.group ? { group: p.group } : {}) };
+      }),
+      isManifold: entries.every(e => e.probe.isManifold),
+      triangleCount: entries.reduce((s, e) => s + e.probe.mesh.numTri, 0),
+      vertexCount: entries.reduce((s, e) => s + e.probe.mesh.numVert, 0),
+    };
+  }
+
+  /** The build plates that hold at least one of the file's objects. */
+  function platesInUse(result: ThreeMFParseResult): number {
+    return new Set(result.objects.map(o => o.plate).filter(p => p !== undefined)).size;
+  }
+
+  /** The import items of a 3MF: one per build item, as its triangle run. */
+  function threeMFItems(result: ThreeMFParseResult): ImportSplitItem[] {
+    return result.objects.map(o => ({
+      name: o.name,
+      triangles: triangleRange(o.firstTriangle, o.triangleCount),
+      ...(o.plate !== undefined ? { plate: o.plate } : {}),
+    }));
+  }
+
+  /** One line about a 3MF for the multi-object chooser. */
+  function describe3MFSource(result: ThreeMFParseResult): string {
+    const kind = result.flavor === 'bambu'
+      ? (/orca/i.test(result.application ?? '') ? 'OrcaSlicer project' : 'Bambu Studio project')
+      : result.flavor === 'prusa' ? 'PrusaSlicer project' : '3MF model';
+    const bits = [kind];
+    const plates = platesInUse(result);
+    if (plates > 1) bits.push(`${plates} plates`);
+    bits.push(`${result.objects.length} objects`, `${result.mesh.numTri.toLocaleString()} triangles`);
+    if (result.colorSource !== 'none' && result.palette.length > 0) bits.push(`${result.palette.length} colour${result.palette.length === 1 ? '' : 's'}`);
+    return bits.join(' · ');
+  }
+
+  /** Cut the planned groups of a 3MF out as objects ready to place: each one
+   *  recentred on its own XY origin, manifold-probed, and coloured from the
+   *  file's filament / material assignments. */
+  function build3MFObjectEntries(
+    result: ThreeMFParseResult,
+    filename: string,
+    groups: ReturnType<typeof planImportSplit>,
+    items: ImportSplitItem[],
+    adoptPalette: boolean,
+  ): { entries: ImportObjectEntry[]; infos: (ThreeMFColorInfo | undefined)[] } {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const paletteName = `${result.title || base} (3MF)`;
+    const entries: ImportObjectEntry[] = [];
+    const infos: (ThreeMFColorInfo | undefined)[] = [];
+    for (const g of groups) {
+      const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
+      const p3: Parsed3MF = { ...probeIndexedMesh(sub.mesh, filename, '3mf'), result, triColor: sub.triColor! };
+      const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
+      entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
+      infos.push(seeder?.info);
+    }
+    return { entries, infos };
+  }
+
+  /** Merge the per-object colour notes of a split import for its toast. */
+  function mergeColorInfos(infos: (ThreeMFColorInfo | undefined)[]): ThreeMFColorInfo | undefined {
+    const known = infos.filter((i): i is ThreeMFColorInfo => !!i);
+    if (known.length === 0) return undefined;
+    return {
+      paletteName: known.find(i => i.paletteName)?.paletteName ?? null,
+      coloredTriangles: known.reduce((s, i) => s + i.coloredTriangles, 0),
+      colors: Math.max(...known.map(i => i.colors)),
+      skippedColors: Math.max(...known.map(i => i.skippedColors)),
+    };
+  }
+
+  /** A 3MF holding several objects (often across several Bambu/Orca build
+   *  plates): ask which objects to bring in and how to divide them — one
+   *  object per 3MF object (threaded under their plate), one per plate, or
+   *  everything as one — and, when the open session holds real work, where. */
+  async function importMultiObject3MF(result: ThreeMFParseResult, filename: string): Promise<boolean> {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const items = threeMFItems(result);
+    const state = getState();
+    const protect = !!state.session && !currentPartIsExpendable();
+    const choice = await showMeshImportModal({
+      filename,
+      summary: describe3MFSource(result),
+      items: result.objects.map(o => ({ name: o.name, triangleCount: o.triangleCount, ...(o.plate !== undefined ? { plate: o.plate } : {}) })),
+      plates: result.plates,
+      modes: platesInUse(result) > 1 ? ['object', 'plate', 'none'] : ['object', 'none'],
+      baseName: base,
+      maxObjects: getConfig().import.maxSplitObjects,
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart } } : {}),
+    });
+    if (!choice) return false;
+    const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
+    if (groups.length === 0) return false;
+    const { entries, infos } = build3MFObjectEntries(result, filename, groups, items, true);
+    if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
+    const ids = await placeImportedObjects(entries, protect ? choice.destination : 'new-session', base);
+    if (ids.length > 0) {
+      showToast(describe3MFImport(filename, result, mergeColorInfos(infos), ids.length), { variant: 'success', source: 'import' });
+    }
+    return ids.length > 0;
+  }
+
+  /** The render-only ask for a split import: one dialog for every object that
+   *  won't form a clean manifold (the classic single-mesh dialog for one). */
+  async function confirmRenderOnlyObjects(filename: string, entries: ImportObjectEntry[]): Promise<boolean> {
+    const bad = entries.filter(e => !e.probe.isManifold);
+    if (bad.length === 0) return true;
+    const only = entries[0].probe;
+    if (entries.length === 1 && !only.isManifold) return confirmRenderOnlyImport(filename, only);
+    const names = bad.slice(0, 5).map(e => `“${e.name}”`).join(', ') + (bad.length > 5 ? `, and ${bad.length - 5} more` : '');
+    return confirmDialog(
+      `${bad.length} of ${entries.length} object${entries.length === 1 ? '' : 's'} from ${filename} won't form a clean manifold: ${names}.\n\n` +
+      `They can still import as render-only: they display and export normally, but boolean operations, paint, and cross-sections won't work on them. The rest import as normal.`,
+      { title: 'Import as render-only?', confirmLabel: 'Import', cancelLabel: 'Cancel' },
+    );
+  }
+
+  /** One object of a split import. */
+  interface ImportObjectEntry {
+    name: string;
+    /** Object-list group (the 3MF plate it came from). */
+    group?: string;
+    /** The object's mesh and whether it forms a clean manifold. */
+    probe: ParsedSTLProbe;
+    seed?: SeedRegionsInput;
+  }
+
+  /** Create one object per entry — the placement core shared by the 3MF
+   *  multi-object import and the STL split into pieces.
+   *   - `new-session`: a fresh session named `sessionName`.
+   *   - `this-session`: new objects after the session's existing ones.
+   *   - `reuse-current`: the first entry becomes the current object's next
+   *     version (its history keeps what was there); the rest are new objects.
+   *   - `current-object`: one manifold entry composed into the current object
+   *     (anything else falls back to `this-session`).
+   *  Entries sharing a `group` are threaded under it in the object list, and
+   *  the first object is left open. Cancel on the progress modal stops after
+   *  the object being built. Returns the ids of the objects written. */
+  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<string[]> {
+    if (entries.length === 0) return [];
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    if (destination === 'current-object') {
+      const cur = getState().currentPart;
+      if (entries.length === 1 && entries[0].probe.isManifold && cur) {
+        await preserveCurrentEditsIfNeeded();
+        return (await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? [cur.id] : [];
+      }
+      if (entries.length === 1 && !entries[0].probe.isManifold) {
+        showToast('Render-only meshes can’t be combined into an existing object — added it as a new object instead.', { variant: 'neutral', source: 'import' });
+      }
+      destination = 'this-session';
+    }
+    const ids: (string | null)[] = [];
+    let cancelled = false;
+    const progressId = entries.length > 1
+      ? startProgress({ title: 'Importing objects', message: `Object 1 of ${entries.length}`, onCancel: () => { cancelled = true; } })
+      : null;
+    try {
+      for (let i = 0; i < entries.length && !cancelled; i++) {
+        const e = entries[i];
+        if (progressId !== null) updateProgress(progressId, i / entries.length, `Object ${i + 1} of ${entries.length}: ${e.name}`);
+        if (i === 0 && destination === 'new-session') {
+          await importMeshPayload(e.probe.mesh, sessionName, { manifold: e.probe.isManifold, seedRegions: e.seed });
+          const part = getState().currentPart;
+          if (part && part.name !== e.name) await renamePart(part.id, e.name);
+          ids.push(part?.id ?? null);
+          continue;
+        }
+        const cur = getState().currentPart;
+        if (i === 0 && destination === 'reuse-current' && cur) {
+          await preserveCurrentEditsIfNeeded();
+          await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed);
+          if (cur.name !== e.name) await renamePart(cur.id, e.name);
+          ids.push(cur.id);
+          continue;
+        }
+        if (i === 0) await preserveCurrentEditsIfNeeded();
+        const part = await createPart(e.name);
+        if (!part) { ids.push(null); continue; }
+        await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed);
+        ids.push(part.id);
+      }
+    } finally {
+      if (progressId !== null) endProgress(progressId);
+    }
+    const byGroup = new Map<string, string[]>();
+    entries.forEach((e, i) => {
+      const id = ids[i];
+      if (!e.group || !id) return;
+      if (!byGroup.has(e.group)) byGroup.set(e.group, []);
+      byGroup.get(e.group)!.push(id);
+    });
+    for (const [group, groupIds] of byGroup) await setPartGroup(groupIds, group);
+    const firstId = ids[0];
+    if (ids.length > 1 && firstId && getState().currentPart?.id !== firstId) {
+      const v = await changePart(firstId);
+      if (v) await loadVersionIntoEditor(v, { skipSurface: true, skipDraftSave: true });
+      // The camera is still framed on the last object built; frame this one.
+      resetView();
+    }
+    return ids.filter((id): id is string => !!id);
+  }
+
+  /** The pieces of an import mesh as split items ("<object> · piece N",
+   *  largest first), or null when it's a single solid. */
+  function importPieceItems(mesh: MeshData, objectName: string): ImportSplitItem[] | null {
+    const pieces = computeMeshPieces(mesh);
+    if (pieces.count < 2) return null;
+    return pieceItems(pieces.pieceOfTri, pieces.count).map((it, i) => ({ ...it, name: `${objectName} · piece ${i + 1}` }));
+  }
+
+  /** Cut planned piece groups out of an STL-style import as objects (each
+   *  recentred on its own XY origin and manifold-probed). */
+  function pieceObjectEntries(mesh: MeshData, filename: string, items: ImportSplitItem[], groups: ReturnType<typeof planImportSplit>): ImportObjectEntry[] {
+    return groups.map(g => {
+      const sub = extractTriangles(mesh, null, groupTriangles(items, g), { recenter: true });
+      return { name: g.name, probe: probeIndexedMesh(sub.mesh, filename, 'stl').probe };
+    });
+  }
+
+  /** Split the current object's mesh import into one object per piece (the
+   *  "Split into objects" step after a multi-body STL import): the largest
+   *  piece becomes the object's next version, the others new objects. Only
+   *  for an object that is a single, unedited mesh import. */
+  async function splitImportIntoObjects(): Promise<{ objects: { id: string; name: string }[] } | { error: string }> {
+    if (isReadOnlyViewer()) return { error: 'splitImportIntoObjects: this session is read-only.' };
+    const cur = getState().currentPart;
+    const imports = getActiveImports();
+    if (!cur || imports.length !== 1) return { error: 'splitImportIntoObjects: the open object must be a single imported mesh.' };
+    const imp = imports[0];
+    const code = getValue().trim();
+    const isWrapper = [true, false].some(manifold => generateImportCode([imp], { manifold }).trim() === code);
+    if (!isWrapper) return { error: 'splitImportIntoObjects: the object’s code was edited since the import — use extractObjectPiece(index) instead.' };
+    const items = importPieceItems(imp, imp.filename.replace(/\.[^.]+$/, '') || cur.name);
+    if (!items) return { error: 'splitImportIntoObjects: the mesh is a single piece.' };
+    const max = getConfig().import.maxSplitObjects;
+    if (items.length > max) return { error: `splitImportIntoObjects: ${items.length} pieces is over the ${max}-object limit (Advanced settings → Import → Max objects per split import).` };
+    const groups = planImportSplit(items, 'piece', { baseName: cur.name });
+    const entries = pieceObjectEntries(imp, imp.filename, items, groups);
+    const ids = await placeImportedObjects(entries, 'reuse-current', cur.name);
+    const parts = getState().parts;
+    return { objects: ids.map(id => ({ id, name: parts.find(p => p.id === id)?.name ?? '' })) };
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -5475,14 +5756,27 @@ async function main() {
     // next to a "one fused solid" warning (#1050). The panel opens with a
     // label chip armed in that case.
     const fused = isFusedPiecesDraft(r.proposedBy ?? '', r.parts ?? [], cfg.fusedPieceMinTris);
+    // Separate solids can also become separate objects (one per piece) — the
+    // same split a multi-object 3MF import offers.
+    const canSplit = imports.length === 1 && count <= getConfig().import.maxSplitObjects;
     openPartDetectionPanel(ctl, {
       context: fused
         ? `Imported ${filename}: found ${count} separate parts, and the largest is one fused solid, so its regions (hair, face…) aren't split yet. Label them with the chips below, or Accept to keep the ${count} parts as they are.`
         : `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
-      secondaryAction: {
-        label: 'Convert to code instead',
-        run: () => { void ctl.discardParts(); openConvert(false); },
-      },
+      secondaryActions: [
+        ...(canSplit ? [{
+          label: `Split into ${count} objects`,
+          run: () => {
+            void (async () => {
+              await ctl.discardParts();
+              const res = await splitImportIntoObjects();
+              if ('error' in res) showToast(res.error.replace(/^splitImportIntoObjects: /, ''), { variant: 'warn', source: 'import' });
+              else showToast(`Split ${filename} into ${res.objects.length} objects.`, { variant: 'success', source: 'import' });
+            })();
+          },
+        }] : []),
+        { label: 'Convert to code instead', run: () => { void ctl.discardParts(); openConvert(false); } },
+      ],
     });
   }
 
@@ -5707,9 +6001,7 @@ async function main() {
         return;
       }
       if (entry.source === '3MF') {
-        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
-        const parsed = await parse3MFFile(file);
-        if (parsed) await place3MFImport(parsed, entry.filename);
+        await import3MFFile(new File([entry.blob], entry.filename, { type: entry.blob.type }));
         return;
       }
       // Image / SVG re-imports reopen the same importer that produced them,
@@ -12661,26 +12953,66 @@ async function main() {
      *  `isManifold: false` in the return. `base64` may be a bare base64 string or
      *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
      *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
-     *  vertexCount }` or `{ error }`. */
-    async importMeshData(base64: string, filename: string, opts: { sessionName?: string; adoptPalette?: boolean } = {}) {
+     *  vertexCount }` or `{ error }`.
+     *
+     *  `opts.split` divides a multi-object file into several objects instead of
+     *  one: 3MF `'object'` (one per 3MF object, threaded under their build
+     *  plate) or `'plate'` (one per Bambu/Orca build plate); STL `'piece'` (one
+     *  per separate solid, largest first). `opts.objects` keeps only some —
+     *  indices into `inspectMeshData(...).objects` / `.pieces` (default all).
+     *  Either option adds `importedObjects: [{ id, name, group? }]` to the
+     *  return. Each object is recentred on its own XY origin. */
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string; adoptPalette?: boolean; split?: ImportSplitMode; objects?: number[] } = {}) {
       const check = guard(() => {
         assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
         assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
         assertObject(opts, 'importMeshData(opts)', { optional: true });
         assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
         if (opts?.adoptPalette !== undefined) assertBoolean(opts.adoptPalette, 'importMeshData(opts.adoptPalette)');
+        if (opts?.split !== undefined) assertEnum(opts.split, ['none', 'object', 'plate', 'piece'], 'importMeshData(opts.split)');
+        if (opts?.objects !== undefined) {
+          if (!Array.isArray(opts.objects) || opts.objects.length === 0) throw new Error('importMeshData(opts.objects) must be a non-empty array of object indices');
+          opts.objects.forEach((n, i) => assertNumber(n, `importMeshData(opts.objects[${i}])`, { min: 0, integer: true }));
+        }
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      let bytes: Uint8Array;
-      try {
-        const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
-        const binary = atob(raw);
-        bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      } catch {
-        return { error: 'importMeshData(base64): not valid base64-encoded data.' };
-      }
+      const bytes = decodeBase64Arg(base64);
+      if (!bytes) return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
+      const split = opts?.split ?? 'none';
+      const splitting = split !== 'none' || opts?.objects !== undefined;
+      const maxObjects = getConfig().import.maxSplitObjects;
+      const badIndex = (count: number) => opts?.objects?.find(i => i >= count);
       if (/\.3mf$/i.test(filename) || looksLikeZip(bytes)) {
+        if (split === 'piece') return { error: "importMeshData(opts.split): 'piece' is for STL — a 3MF splits by 'object' or 'plate'." };
+        if (splitting) {
+          let result: ThreeMFParseResult;
+          try {
+            result = await read3MF(bytes);
+          } catch (e) {
+            return { error: `Could not parse "${filename}" as a 3MF file: ${(e as Error).message}` };
+          }
+          const bad = badIndex(result.objects.length);
+          if (bad !== undefined) return { error: `importMeshData(opts.objects): no object ${bad} — the file has ${result.objects.length} (see inspectMeshData).` };
+          const items = threeMFItems(result);
+          const groups = planImportSplit(items, split, { selected: opts?.objects, plates: result.plates, baseName: sessionName });
+          if (groups.length > maxObjects) return { error: `importMeshData: splitting makes ${groups.length} objects, over the ${maxObjects}-object limit (Advanced settings → Import).` };
+          const { entries, infos } = build3MFObjectEntries(result, filename, groups, items, opts?.adoptPalette !== false);
+          const ids = await placeImportedObjects(entries, 'new-session', sessionName);
+          const info = mergeColorInfos(infos);
+          return {
+            sessionId: getState().session?.id ?? null,
+            ...splitImportSummary(entries, ids),
+            format: '3mf',
+            flavor: result.flavor,
+            colorSource: result.colorSource,
+            palette: result.palette.map(e => ({ name: e.name, hex: e.hex })),
+            colorsSkipped: info?.skippedColors ?? 0,
+            activePalette: info?.paletteName ?? null,
+            objects: result.objects,
+            plates: result.plates.map(p => ({ id: p.id, name: p.name })),
+          };
+        }
         let p3: Parsed3MF;
         try {
           p3 = await parse3MFBytes(bytes, filename);
@@ -12689,7 +13021,7 @@ async function main() {
         }
         const base = filename.replace(/\.[^.]+$/, '');
         const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, opts?.adoptPalette !== false);
-        const { sessionId } = await importMeshPayload(p3.probe.mesh, opts?.sessionName ?? base, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
+        const { sessionId } = await importMeshPayload(p3.probe.mesh, sessionName, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
         return {
           sessionId,
           isManifold: p3.probe.isManifold,
@@ -12703,11 +13035,22 @@ async function main() {
           colorsSkipped: seeder?.info.skippedColors ?? 0,
           activePalette: seeder?.info.paletteName ?? null,
           objects: p3.result.objects,
+          plates: p3.result.plates.map(p => ({ id: p.id, name: p.name })),
         };
       }
+      if (split === 'object' || split === 'plate') return { error: `importMeshData(opts.split): '${split}' is for 3MF — an STL splits by 'piece'.` };
       const parsed = parseSTLBytes(bytes, filename);
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
-      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
+      if (splitting) {
+        const items = importPieceItems(parsed.mesh, sessionName) ?? [{ name: sessionName, triangles: triangleRange(0, parsed.mesh.numTri) }];
+        const bad = badIndex(items.length);
+        if (bad !== undefined) return { error: `importMeshData(opts.objects): no piece ${bad} — the mesh has ${items.length} (see inspectMeshData).` };
+        const groups = planImportSplit(items, split, { selected: opts?.objects, baseName: sessionName });
+        if (groups.length > maxObjects) return { error: `importMeshData: splitting makes ${groups.length} objects, over the ${maxObjects}-object limit (Advanced settings → Import).` };
+        const entries = pieceObjectEntries(parsed.mesh, filename, items, groups);
+        const ids = await placeImportedObjects(entries, 'new-session', sessionName);
+        return { sessionId: getState().session?.id ?? null, ...splitImportSummary(entries, ids) };
+      }
       const { sessionId } = await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
       return {
         sessionId,
@@ -12715,6 +13058,60 @@ async function main() {
         triangleCount: parsed.mesh.numTri,
         vertexCount: parsed.mesh.numVert,
       };
+    },
+
+    /** Look inside STL or 3MF bytes WITHOUT importing: what `importMeshData`'s
+     *  `split` / `objects` options would work with. 3MF -> `{ format: '3mf',
+     *  flavor, title?, triangleCount, objects: [{ index, name, triangleCount,
+     *  plate? }], plates: [{ id, name, objectCount }], palette, splitModes }`;
+     *  STL -> `{ format: 'stl', triangleCount, isManifold, pieces: [{ index,
+     *  name, triangleCount }], splitModes }`. Or `{ error }`. */
+    async inspectMeshData(base64: string, filename: string) {
+      const check = guard(() => {
+        assertString(base64, 'inspectMeshData(base64)', { allowEmpty: false });
+        assertString(filename, 'inspectMeshData(filename)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const bytes = decodeBase64Arg(base64);
+      if (!bytes) return { error: 'inspectMeshData(base64): not valid base64-encoded data.' };
+      if (/\.3mf$/i.test(filename) || looksLikeZip(bytes)) {
+        let result: ThreeMFParseResult;
+        try {
+          result = await read3MF(bytes);
+        } catch (e) {
+          return { error: `Could not parse "${filename}" as a 3MF file: ${(e as Error).message}` };
+        }
+        return {
+          format: '3mf',
+          flavor: result.flavor,
+          ...(result.title ? { title: result.title } : {}),
+          triangleCount: result.mesh.numTri,
+          objects: result.objects.map((o, index) => ({ index, name: o.name, triangleCount: o.triangleCount, ...(o.plate !== undefined ? { plate: o.plate } : {}) })),
+          plates: result.plates.map(p => ({ id: p.id, name: p.name, objectCount: result.objects.filter(o => o.plate === p.id).length })),
+          palette: result.palette.map(e => ({ name: e.name, hex: e.hex })),
+          splitModes: ['none', ...(result.objects.length > 1 ? ['object'] : []), ...(platesInUse(result) > 1 ? ['plate'] : [])],
+        };
+      }
+      const parsed = parseSTLBytes(bytes, filename);
+      if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
+      const base = filename.replace(/\.[^.]+$/, '');
+      const items = importPieceItems(parsed.mesh, base) ?? [];
+      return {
+        format: 'stl',
+        triangleCount: parsed.mesh.numTri,
+        isManifold: parsed.isManifold,
+        pieces: items.map((it, index) => ({ index, name: it.name, triangleCount: it.triangles.length })),
+        splitModes: ['none', ...(items.length > 1 ? ['piece'] : [])],
+      };
+    },
+
+    /** Split the open object — a single, unedited mesh import (e.g. a
+     *  multi-body STL) — into one object per separate piece: the largest
+     *  becomes the object's next version (its history keeps the whole mesh),
+     *  the rest new objects, each recentred on its own XY origin.
+     *  -> { objects: [{ id, name }] } or { error } */
+    async splitImportIntoObjects() {
+      return splitImportIntoObjects();
     },
 
     /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
@@ -18978,7 +19375,9 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
-        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, adoptPalette?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried) as a new session -> {sessionId, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects} or {error}', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, adoptPalette?, split?, objects?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried) as a new session; split "object"|"plate" (3MF) / "piece" (STL) makes one object each -> {sessionId, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects, plates, (split:) importedObjects} or {error}', docs: '/ai/file-io.md' },
+        'inspectMeshData': { signature: 'await inspectMeshData(base64, filename) -- Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?}], plates, palette, splitModes} | STL {pieces, splitModes} or {error}', docs: '/ai/file-io.md' },
+        'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },

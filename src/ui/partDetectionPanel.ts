@@ -131,9 +131,10 @@ function isTyping(t: EventTarget | null): boolean {
 export interface PartDetectionPanelOpts {
   /** Context line shown at the top (e.g. what an import just proposed). */
   context?: string;
-  /** An alternative next step offered beside the context line (the import
-   *  flow's "Convert to code instead"). Closes the panel before running. */
-  secondaryAction?: { label: string; run: () => void };
+  /** Alternative next steps offered beside the context line (the import
+   *  flow's "Split into N objects" / "Convert to code instead"). Each closes
+   *  the panel before running. */
+  secondaryActions?: { label: string; run: () => void }[];
 }
 
 export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetectionPanelOpts): void {
@@ -263,11 +264,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     contextBanner = banner;
     banner.dataset.partsContext = '';
     banner.appendChild(el('div', 'text-[12px] text-zinc-200 leading-snug', opts.context));
-    if (opts.secondaryAction) {
-      const action = opts.secondaryAction;
-      const alt = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0 self-start`, action.label);
-      alt.addEventListener('click', () => { shell.close(); action.run(); });
-      banner.appendChild(alt);
+    if (opts.secondaryActions?.length) {
+      const row = el('div', 'flex flex-wrap gap-1.5');
+      for (const action of opts.secondaryActions) {
+        const alt = el('button', `${BUTTON_SMALL_SECONDARY} min-h-11 md:min-h-0`, action.label);
+        alt.addEventListener('click', () => { shell.close(); action.run(); });
+        row.appendChild(alt);
+      }
+      banner.appendChild(row);
     }
     body.appendChild(banner);
   }

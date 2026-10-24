@@ -325,7 +325,9 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
-await partwright.importMeshData(base64, filename, {sessionName?, adoptPalette?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + makes its filament palette active (adds palette, colorRegions, activePalette, objects). isManifold:false = render-only (no booleans/paint/slicing).
+await partwright.importMeshData(base64, filename, {sessionName?, adoptPalette?, split?, objects?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + makes its filament palette active (adds palette, colorRegions, activePalette, objects, plates). split: 'object' | 'plate' (3MF) or 'piece' (STL) makes one object each (adds importedObjects) — see /ai/file-io.md#multi-object-files--one-object-per-3mf-object-plate-or-stl-piece. isManifold:false = render-only (no booleans/paint/slicing).
+await partwright.inspectMeshData(base64, filename)  // Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?}], plates, palette, splitModes} | STL {pieces, splitModes}
+await partwright.splitImportIntoObjects()           // Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]}
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)

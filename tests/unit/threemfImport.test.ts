@@ -236,7 +236,9 @@ describe('parse3MF — slicer projects', () => {
     expect(r.colorSource).toBe('filaments');
     expect(r.palette.map(p => p.hex)).toEqual(['#ffffff', '#ff0000', '#00ff00']);
     expect(r.palette[0].name).toBe('F1 Bambu PLA Basic');
-    expect(r.objects).toEqual([{ name: 'Widget', triangleCount: 8 }]);
+    expect(r.objects).toEqual([{ name: 'Widget', triangleCount: 8, firstTriangle: 0 }]);
+    // A plate with no <model_instance> binds nothing.
+    expect(r.plates).toEqual([{ id: 1, name: 'Plate 1' }]);
     expect(r.skippedParts).toBe(1); // the modifier part
     expect(r.splitPaintedTriangles).toBe(1);
     // part 1: [paint 2, inherit obj 1, split→majority 1, inherit 1]; part 2: extruder 3.
@@ -286,6 +288,81 @@ describe('parse3MF — slicer projects', () => {
     const hexes = Array.from(r.triColor).map(i => r.palette[i].hex);
     expect(hexes.filter(h => h === '#ff0000')).toHaveLength(3);
     expect(hexes.filter(h => h === '#0000ff')).toHaveLength(1);
+  });
+});
+
+describe('parse3MF — objects and build plates', () => {
+  const box = (x: number) => tetraMesh().replace(/x="0"/g, `x="${x}"`).replace(/x="10"/g, `x="${x + 10}"`);
+  // Three objects; object 2 has two instances. Plate 1 holds object 1 + the
+  // first instance of 2, plate 2 ("Lids") the second instance and object 3.
+  const model = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model" name="Base">${box(0)}</object>
+    <object id="2" type="model" name="Peg">${box(20)}</object>
+    <object id="3" type="model" name="Lid">${box(40)}</object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+    <item objectid="2"/>
+    <item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 -300 0"/>
+    <item objectid="3" transform="1 0 0 0 1 0 0 0 1 0 -300 0"/>
+  </build>
+</model>`;
+  const settings = `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="2"><metadata key="name" value="Peg &amp; hole"/></object>
+  <plate>
+    <metadata key="plater_id" value="1"/><metadata key="plater_name" value=""/>
+    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
+    <model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/><metadata key="plater_name" value="Lids"/>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="1"/></model_instance>
+    <model_instance><metadata key="object_id" value="3"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <plate><metadata key="plater_id" value="3"/></plate>
+</config>`;
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+
+  it('reports each build item as a contiguous triangle run bound to its plate', async () => {
+    const zip = buildZip([
+      { name: '_rels/.rels', data: enc(RELS) },
+      { name: '3D/3dmodel.model', data: enc(model) },
+      { name: 'Metadata/model_settings.config', data: enc(settings) },
+      { name: 'Metadata/plate_1.png', data: png },
+    ]);
+    const r = await parse3MF(zip);
+    expect(r.objects).toEqual([
+      { name: 'Base', triangleCount: 4, firstTriangle: 0, plate: 1 },
+      { name: 'Peg & hole', triangleCount: 4, firstTriangle: 4, plate: 1 },
+      { name: 'Peg & hole', triangleCount: 4, firstTriangle: 8, plate: 2 },
+      { name: 'Lid', triangleCount: 4, firstTriangle: 12, plate: 2 },
+    ]);
+    expect(r.plates.map(p => ({ id: p.id, name: p.name }))).toEqual([
+      { id: 1, name: 'Plate 1' }, { id: 2, name: 'Lids' }, { id: 3, name: 'Plate 3' },
+    ]);
+    expect(Array.from(r.plates[0].thumbnail ?? [])).toEqual(Array.from(png));
+    expect(r.plates[1].thumbnail).toBeUndefined();
+    // The runs really are each object's geometry: object 4 (Lid) sits at x 40..50.
+    const xs: number[] = [];
+    for (let t = 12; t < 16; t++) for (let k = 0; k < 3; k++) xs.push(r.mesh.vertProperties[r.mesh.triVerts[t * 3 + k] * 3]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(10, 5);
+  });
+
+  it('binds a Partwright Bambu export’s parts to one plate each', async () => {
+    const tetra = (): MeshData => ({
+      vertProperties: new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 10]),
+      triVerts: new Uint32Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]),
+      numVert: 4, numTri: 4, numProp: 3,
+    });
+    const bytes = new Uint8Array(await build3MFProject([{ name: 'a', mesh: tetra() }, { name: 'b', mesh: tetra() }, { name: 'c', mesh: tetra() }], { bambu: true }).blob.arrayBuffer());
+    const r = await parse3MF(bytes);
+    expect(r.objects.map(o => o.name)).toEqual(['a', 'b', 'c']);
+    expect(r.objects.map(o => o.plate)).toEqual([1, 2, 3]);
+    expect(r.plates).toHaveLength(3);
   });
 });
 
