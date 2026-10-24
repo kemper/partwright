@@ -1992,6 +1992,9 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  // evalAgainstImport was missing from every gate, so buildToolList never
+  // offered it and /reconstruct could not verify its own remake. Pure read.
+  'evalAgainstImport',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -2020,6 +2023,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'evalAgainstImport',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -2045,6 +2049,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'evalAgainstImport',
   // Visual-only view state; re-applying it is idempotent.
   'highlightObjectPart', 'setObjectPartHidden',
   // Idempotent renders (produce a snapshot; no persistent mutation)
@@ -2082,6 +2087,10 @@ const AUTORESUME_GATED = new Set(['finish']);
 /** Gated by the Session-notes scope toggle. When off, the budget keeps the
  *  model from spending a tool round-trip writing notes the chat already holds. */
 const NOTES_GATED = new Set(['addSessionNote']);
+
+/** Every tool the model can ever be offered, in schema order. Exported for the
+ *  gating-invariant unit test (a tool in no gate is silently never offered). */
+export const ALL_TOOL_NAMES: readonly string[] = ALL_TOOLS.map(t => t.name);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
