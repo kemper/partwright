@@ -236,7 +236,11 @@ describe('parse3MF — slicer projects', () => {
     expect(r.colorSource).toBe('filaments');
     expect(r.palette.map(p => p.hex)).toEqual(['#ffffff', '#ff0000', '#00ff00']);
     expect(r.palette[0].name).toBe('F1 Bambu PLA Basic');
-    expect(r.objects).toEqual([{ name: 'Widget', triangleCount: 8, firstTriangle: 0 }]);
+    expect(r.objects).toEqual([{
+      name: 'Widget', triangleCount: 8, firstTriangle: 0,
+      // Bambu parts become named runs (unnamed part → "Part N"); the modifier is skipped.
+      parts: [{ name: 'body', firstTriangle: 0, triangleCount: 4 }, { name: 'Part 2', firstTriangle: 4, triangleCount: 4 }],
+    }]);
     // A plate with no <model_instance> binds nothing.
     expect(r.plates).toEqual([{ id: 1, name: 'Plate 1' }]);
     expect(r.skippedParts).toBe(1); // the modifier part
@@ -272,6 +276,11 @@ describe('parse3MF — slicer projects', () => {
     expect(r.flavor).toBe('prusa');
     expect(r.palette.map(p => p.hex)).toEqual(['#ff8000', '#0000ff']);
     expect(Array.from(r.triColor)).toEqual([0, 1, 1, 1]);
+    // Two volumes → two parts (the unnamed one gets a positional name).
+    expect(r.objects[0].parts).toEqual([
+      { name: 'Part 1', firstTriangle: 0, triangleCount: 2 },
+      { name: 'Part 2', firstTriangle: 2, triangleCount: 2 },
+    ]);
   });
 
   it('reads a Partwright Bambu project export back with its filament slots', async () => {
@@ -363,6 +372,31 @@ describe('parse3MF — objects and build plates', () => {
     expect(r.objects.map(o => o.name)).toEqual(['a', 'b', 'c']);
     expect(r.objects.map(o => o.plate)).toEqual([1, 2, 3]);
     expect(r.plates).toHaveLength(3);
+  });
+});
+
+describe('parse3MF — parts inside an object', () => {
+  it('names a plain 3MF object’s components as its parts, keeping same-named parts apart', async () => {
+    const model = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model" name="Wheel">${tetraMesh()}</object>
+    <object id="2" type="model" name="Axle">${tetraMesh()}</object>
+    <object id="9" type="model" name="Cart"><components>
+      <component objectid="1"/><component objectid="2" transform="1 0 0 0 1 0 0 0 1 20 0 0"/><component objectid="1" transform="1 0 0 0 1 0 0 0 1 40 0 0"/>
+    </components></object>
+    <object id="5" type="model" name="Solo">${tetraMesh()}</object>
+  </resources>
+  <build><item objectid="9"/><item objectid="5" transform="1 0 0 0 1 0 0 0 1 0 50 0"/></build>
+</model>`;
+    const r = await parse3MF(pkg({ '3D/3dmodel.model': model }));
+    expect(r.objects[0].parts).toEqual([
+      { name: 'Wheel', firstTriangle: 0, triangleCount: 4 },
+      { name: 'Axle', firstTriangle: 4, triangleCount: 4 },
+      { name: 'Wheel (2)', firstTriangle: 8, triangleCount: 4 },
+    ]);
+    // A single-mesh object has no parts.
+    expect(r.objects[1].parts).toBeUndefined();
   });
 });
 

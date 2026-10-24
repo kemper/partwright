@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, type ImportSplitItem } from '../../src/import/meshImportSplit';
+import { planImportSplit, extractTriangles, groupTriangles, groupPartLabels, triangleRange, pieceItems, type ImportSplitItem } from '../../src/import/meshImportSplit';
 import type { MeshData } from '../../src/geometry/types';
 
 const items: ImportSplitItem[] = [
@@ -82,5 +82,28 @@ describe('triangle helpers', () => {
     const r = pieceItems(pieceOfTri, 3);
     expect(r.map(p => p.name)).toEqual(['Piece 1', 'Piece 2', 'Piece 3']);
     expect(r.map(p => Array.from(p.triangles))).toEqual([[1, 2, 3], [0, 4], [5]]);
+  });
+});
+
+describe('groupPartLabels', () => {
+  const withParts: ImportSplitItem[] = [
+    { name: 'Cart', triangles: [0, 1, 2, 3], parts: [{ name: 'Body', firstTriangle: 0, triangleCount: 2 }, { name: 'Wheel', firstTriangle: 2, triangleCount: 2 }] },
+    { name: 'Lid', triangles: [4, 5] },
+    { name: 'Cart', triangles: [6, 7], parts: [{ name: 'Body', firstTriangle: 6, triangleCount: 1 }, { name: 'Wheel', firstTriangle: 7, triangleCount: 1 }] },
+  ];
+
+  it('one object: its own parts', () => {
+    expect(groupPartLabels(withParts, { name: 'x', items: [0] })).toEqual({ names: ['Body', 'Wheel'], triPart: new Int32Array([0, 0, 1, 1]) });
+  });
+
+  it('a single object without parts gets none', () => {
+    expect(groupPartLabels(withParts, { name: 'x', items: [1] })).toBeNull();
+  });
+
+  it('merged objects: each object a part, sub-parts qualified, names unique', () => {
+    expect(groupPartLabels(withParts, { name: 'x', items: [0, 1, 2] })).toEqual({
+      names: ['Cart · Body', 'Cart · Wheel', 'Lid', 'Cart · Body (2)', 'Cart · Wheel (2)'],
+      triPart: new Int32Array([0, 0, 1, 1, 2, 2, 3, 4]),
+    });
   });
 });

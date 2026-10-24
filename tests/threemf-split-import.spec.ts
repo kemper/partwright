@@ -198,5 +198,18 @@ test.describe('Multi-object mesh import', () => {
       importedObjects: [{ name: 'Base', group: 'Plate 1' }, { name: 'Lid', group: 'Lids' }],
     });
     expect(await objects(page)).toEqual([{ name: 'Base', group: 'Plate 1' }, { name: 'Lid', group: 'Lids' }]);
+
+    // One object per plate: the objects merged onto a plate become its parts.
+    const plate = await page.evaluate(async (data) => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.importMeshData(data, 'kit.3mf', { split: 'plate', adoptPalette: false });
+      await pw.changeObject('Plate 1');
+      return {
+        code: pw.getCode() as string,
+        parts: (pw.listObjectParts() as { parts: { name: string; triangleCount: number }[] }).parts.map(p => ({ name: p.name, triangles: p.triangleCount })),
+      };
+    }, b64);
+    expect(plate.code).toContain('api.importWithParts(0)');
+    expect(plate.parts).toEqual([{ name: 'Base', triangles: 12 }, { name: 'Peg', triangles: 12 }]);
   });
 });

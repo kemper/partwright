@@ -196,7 +196,7 @@ and of the **Split into N objects** button offered after a multi-body STL import
 // Look first (no import): the objects / plates / pieces a split works with.
 await partwright.inspectMeshData(base64, 'kit.3mf')
 // -> { format: '3mf', flavor, title?, triangleCount,
-//      objects: [{ index, name, triangleCount, plate? }],
+//      objects: [{ index, name, triangleCount, plate?, parts?: [name] }],
 //      plates: [{ id, name, objectCount }], palette, splitModes: ['none', 'object', 'plate'] }
 await partwright.inspectMeshData(base64, 'blocks.stl')
 // -> { format: 'stl', triangleCount, isManifold, pieces: [{ index, name, triangleCount }], splitModes }  (one piece for a single solid)
@@ -213,7 +213,17 @@ await partwright.importMeshData(base64, 'blocks.stl', { split: 'piece' })
 ```
 
 Each object is recentred on its own XY origin (z = 0 stays the plate) and keeps
-its colours; the file's palette is adopted once for all of them. `objects`
+its colours; the file's palette is adopted once for all of them.
+
+**Parts inside an object become labelled parts.** A Bambu/Orca object made of
+several parts (each `<part>` with its own name and filament), a PrusaSlicer
+object with several volumes, or a plain-3MF object built from components imports
+with those parts as labels — the code loads it with `api.importWithParts(0)`,
+and `listObjectParts()` / the object list show each part by the slicer's name
+(an unnamed one becomes "Part N"). When several 3MF objects share one Partwright
+object (`split: 'plate'`, or a whole file as one object), each 3MF object becomes
+a part ("<object> · <part>" for one that has parts of its own). This applies
+with or without `split`. `objects`
 without `split` imports just those objects as one. A split lands in a new session,
 or with `target: 'new-object'` as new objects in the current session
 (`'current-object'` is refused — a split makes separate objects). Splits are capped by

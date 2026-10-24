@@ -136,7 +136,7 @@ import {
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
-import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
+import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
 import { showScadCompanionModal } from './ui/scadCompanionModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
 import { showImageImportKindModal } from './ui/imageImportKindModal';
@@ -4973,8 +4973,15 @@ async function main() {
   /** Non-interactive 3MF parse + manifold probe of the whole (merged) model.
    *  Throws on an unreadable package. */
   async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
-    const result = await read3MF(bytes);
-    return { ...probeIndexedMesh(result.mesh, filename, '3mf'), result, triColor: result.triColor };
+    return probeWhole3MF(await read3MF(bytes), filename);
+  }
+
+  /** The whole (merged) 3MF as one import, its parts as labels. */
+  function probeWhole3MF(result: ThreeMFParseResult, filename: string): Parsed3MF {
+    const p3: Parsed3MF = { ...probeIndexedMesh(result.mesh, filename, '3mf'), result, triColor: result.triColor };
+    const items = threeMFItems(result);
+    attach3MFParts(p3.probe.mesh, items, { name: '', items: items.map((_, i) => i) });
+    return p3;
   }
 
   /** Bind a 3MF's palette to the user's palette collection and return the slot
@@ -5092,7 +5099,7 @@ async function main() {
       return false;
     }
     if (result.objects.length >= 2) return importMultiObject3MF(result, file.name);
-    const p3: Parsed3MF = { ...probeIndexedMesh(result.mesh, file.name, '3mf'), result, triColor: result.triColor };
+    const p3 = probeWhole3MF(result, file.name);
     if (!p3.probe.isManifold && !(await confirmRenderOnlyImport(file.name, p3.probe))) return false;
     return place3MFImport({ parsed: { mesh: p3.probe.mesh, isManifold: p3.probe.isManifold }, p3 }, file.name);
   }
@@ -5122,7 +5129,17 @@ async function main() {
       name: o.name,
       triangles: triangleRange(o.firstTriangle, o.triangleCount),
       ...(o.plate !== undefined ? { plate: o.plate } : {}),
+      ...(o.parts ? { parts: o.parts } : {}),
     }));
+  }
+
+  /** Give a 3MF object's import its named parts (the file's own parts, or the
+   *  objects merged into it) so they load as labels via `api.importWithParts`.
+   *  `triPart` follows the import's triangle order, which welding keeps. */
+  function attach3MFParts(mesh: ImportedMesh, items: ImportSplitItem[], group: ReturnType<typeof planImportSplit>[number]): void {
+    const labels = groupPartLabels(items, group);
+    if (!labels || labels.triPart.length !== mesh.numTri) return;
+    mesh.parts = { names: labels.names, colors: labels.names.map(() => null), triPart: labels.triPart };
   }
 
   /** One line about a 3MF for the multi-object chooser. */
@@ -5168,6 +5185,7 @@ async function main() {
         const g = groups[i];
         const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
         const p3: Parsed3MF = { ...probeIndexedMesh(sub.mesh, filename, '3mf'), result, triColor: sub.triColor! };
+        attach3MFParts(p3.probe.mesh, items, g);
         const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
         entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
         infos.push(seeder?.info);
@@ -13354,7 +13372,7 @@ async function main() {
           flavor: result.flavor,
           ...(result.title ? { title: result.title } : {}),
           triangleCount: result.mesh.numTri,
-          objects: result.objects.map((o, index) => ({ index, name: o.name, triangleCount: o.triangleCount, ...(o.plate !== undefined ? { plate: o.plate } : {}) })),
+          objects: result.objects.map((o, index) => ({ index, name: o.name, triangleCount: o.triangleCount, ...(o.plate !== undefined ? { plate: o.plate } : {}), ...(o.parts ? { parts: [...new Set(o.parts.map(r => r.name))] } : {}) })),
           plates: result.plates.map(p => ({ id: p.id, name: p.name, objectCount: result.objects.filter(o => o.plate === p.id).length })),
           palette: result.palette.map(e => ({ name: e.name, hex: e.hex })),
           splitModes: ['none', ...(result.objects.length > 1 ? ['object'] : []), ...(platesInUse(result) > 1 ? ['plate'] : [])],
@@ -20553,7 +20571,7 @@ async function main() {
         'importSession': { signature: 'await importSession(exportedSession) -- Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
         'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, target?: "new-session"|"new-object"|"current-object", adoptPalette?, split?, objects?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried). Default a new session; STL can also go into a new or the current object (3MF is new-session only); split "object"|"plate" (3MF) / "piece" (STL) makes one object each, in a new session or (target "new-object") this one -> {sessionId, target, object?, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects, plates, (split:) importedObjects} or {error}', docs: '/ai/file-io.md' },
-        'inspectMeshData': { signature: 'await inspectMeshData(base64, filename) -- Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?}], plates, palette, splitModes} | STL {pieces, splitModes} or {error}', docs: '/ai/file-io.md' },
+        'inspectMeshData': { signature: 'await inspectMeshData(base64, filename) -- Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?,parts?}], plates, palette, splitModes} | STL {pieces, splitModes} or {error}', docs: '/ai/file-io.md' },
         'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         'importImageAsRelief': { signature: "await importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) -- Colour tile / stepped-relief object from an image (data: or http(s) URL) -> {sessionId} or {error}", docs: '/ai/relief.md' },
         'importSvgAsRelief': { signature: 'await importSvgAsRelief({svgText, options?, quantized?, preprocess?}) -- Multi-colour tile from raw SVG; each <path fill> becomes one crisp region -> {sessionId} or {error}', docs: '/ai/relief.md#make-a-part-from-an-svg' },

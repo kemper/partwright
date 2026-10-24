@@ -49,8 +49,8 @@ function bambuProject(): Buffer {
 </model>`;
   const settings = `<?xml version="1.0" encoding="UTF-8"?>
 <config><object id="3"><metadata key="name" value="Two Boxes"/><metadata key="extruder" value="1"/>
-  <part id="1" subtype="normal_part"/>
-  <part id="2" subtype="normal_part"><metadata key="extruder" value="2"/></part>
+  <part id="1" subtype="normal_part"><metadata key="name" value="Left box"/></part>
+  <part id="2" subtype="normal_part"><metadata key="name" value="Right box"/><metadata key="extruder" value="2"/></part>
 </object></config>`;
   const project = JSON.stringify({ filament_colour: ['#FFFFFF', '#C02525', '#2452C0'], filament_type: ['PLA', 'PLA', 'PLA'] });
   return Buffer.from(buildZip([
@@ -105,11 +105,14 @@ test.describe('3MF import', () => {
         components: geo.componentCount,
         bboxX: geo.boundingBox.x,
         regions: regions.map(r => ({ name: r.name, triangles: r.triangles })),
+        parts: (pw.listObjectParts() as { parts: { name: string; triangleCount: number }[] }).parts.map(p => ({ name: p.name, triangles: p.triangleCount })),
         paletteName: palette.getActivePaletteName(),
         slots: palette.listFilaments().map(s => s.hex.toLowerCase()),
       };
     });
-    expect(state.code).toContain('Manifold.ofMesh(api.imports[0])');
+    // The object's two Bambu parts load as labelled parts.
+    expect(state.code).toContain('api.importWithParts(0)');
+    expect(state.parts).toEqual([{ name: 'Left box', triangles: 12 }, { name: 'Right box', triangles: 12 }]);
     expect(state.isManifold).toBe(true);
     expect(state.components).toBe(2);
     // Bed position (128,128) recentred on the origin.

@@ -25,6 +25,9 @@ export interface ImportSplitItem {
   triangles: ArrayLike<number>;
   /** Build plate id (3MF projects with a plate layout). */
   plate?: number;
+  /** Named parts inside the item (a 3MF object's parts): runs of SOURCE
+   *  triangle ids; a name may span several runs. */
+  parts?: { name: string; firstTriangle: number; triangleCount: number }[];
 }
 
 interface ImportSplitPlate { id: number; name: string }
@@ -185,4 +188,50 @@ export function groupTriangles(items: ImportSplitItem[], group: ImportSplitGroup
     for (let k = 0; k < tris.length; k++) out[o++] = tris[k];
   }
   return out;
+}
+
+/** Part labels for one planned object, per triangle of `groupTriangles`'
+ *  order: an item's own named parts, and — when several items share the
+ *  object (a plate, or everything as one) — each item as a part of its own
+ *  ("<object> · <part>" for an item that has parts). Null when that leaves
+ *  fewer than two parts. Names are unique. */
+export function groupPartLabels(items: ImportSplitItem[], group: ImportSplitGroup): { names: string[]; triPart: Int32Array } | null {
+  const multi = group.items.length > 1;
+  const names: string[] = [];
+  const used = new Set<string>();
+  const indexOf = new Map<string, number>();
+  const labelIndex = (key: string, name: string): number => {
+    let i = indexOf.get(key);
+    if (i === undefined) {
+      i = names.length;
+      names.push(uniqueName(name, used));
+      indexOf.set(key, i);
+    }
+    return i;
+  };
+  let n = 0;
+  for (const i of group.items) n += items[i].triangles.length;
+  const triPart = new Int32Array(n).fill(-1);
+  let o = 0;
+  for (const i of group.items) {
+    const item = items[i];
+    const tris = item.triangles;
+    const runs = item.parts ?? [];
+    if (runs.length > 0) {
+      // Triangles mostly walk the runs in order — try the last match first.
+      let last = runs[0];
+      const inRun = (r: typeof last, t: number) => t >= r.firstTriangle && t < r.firstTriangle + r.triangleCount;
+      for (let k = 0; k < tris.length; k++) {
+        const t = tris[k];
+        const run = inRun(last, t) ? last : runs.find(r => inRun(r, t));
+        if (run) last = run;
+        if (run) triPart[o + k] = labelIndex(`${i}\0${run.name}`, multi ? `${item.name} · ${run.name}` : run.name);
+        else if (multi) triPart[o + k] = labelIndex(`${i}`, item.name);
+      }
+    } else if (multi) {
+      triPart.fill(labelIndex(`${i}`, item.name), o, o + tris.length);
+    }
+    o += tris.length;
+  }
+  return names.length >= 2 ? { names, triPart } : null;
 }

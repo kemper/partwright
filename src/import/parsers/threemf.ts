@@ -45,6 +45,18 @@ export interface ThreeMFObjectSummary {
    *  1-based — see `plates`). Absent when the file has no plate layout or
    *  doesn't bind this instance to one. */
   plate?: number;
+  /** The object's named parts, when it has two or more: Bambu/Orca `<part>`s,
+   *  PrusaSlicer volumes, or a plain 3MF's components. Each run is a
+   *  contiguous range of `mesh` triangles; names are unique within the object
+   *  (a part split across runs repeats its name). */
+  parts?: ThreeMFPartRun[];
+}
+
+/** A run of one named part's triangles in the merged mesh. */
+export interface ThreeMFPartRun {
+  name: string;
+  firstTriangle: number;
+  triangleCount: number;
 }
 
 /** One Bambu/Orca build plate. */
@@ -436,7 +448,7 @@ function parseModelXml(xml: string): ModelFile {
 // ── Slicer project settings (Bambu / Orca / Prusa) ──────────────────────────
 
 interface SlicerPart { extruder: number; subtype: string; name?: string }
-interface SlicerVolume { first: number; last: number; extruder: number; printable: boolean }
+interface SlicerVolume { first: number; last: number; extruder: number; printable: boolean; name?: string }
 interface SlicerObject { extruder: number; name?: string; parts: Map<number, SlicerPart>; volumes: SlicerVolume[] }
 
 /** A `<plate>` of Bambu/Orca `model_settings.config`. */
@@ -540,6 +552,7 @@ function parsePrusaModelConfig(xml: string): Map<number, SlicerObject> {
       } else if (name === 'metadata' && cur) {
         if (vol) {
           if (a.key === 'extruder') vol.extruder = intOr0(a.value);
+          else if (a.key === 'name' && a.value) vol.name = decodeEntities(a.value);
           else if (a.key === 'volume_type') vol.printable = a.value === 'ModelPart';
           else if (a.key === 'modifier' && a.value === '1') vol.printable = false;
         } else if (a.key === 'extruder') cur.extruder = intOr0(a.value);
@@ -647,6 +660,23 @@ async function findRootModelPath(zip: ZipArchive): Promise<string> {
   throw new Error('Not a 3MF file: no 3D model part found in the package.');
 }
 
+/** An object's part runs with unique names, or undefined when it has fewer
+ *  than two parts (one part is just the object). */
+function namedPartRuns(runs: { key: string; name: string; first: number; count: number }[]): ThreeMFPartRun[] | undefined {
+  const names = new Map<string, string>();
+  const used = new Set<string>();
+  for (const r of runs) {
+    if (names.has(r.key)) continue;
+    const base = r.name.trim() || 'Part';
+    let name = base;
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = `${base} (${n})`;
+    used.add(name.toLowerCase());
+    names.set(r.key, name);
+  }
+  if (names.size < 2) return undefined;
+  return runs.map(r => ({ name: names.get(r.key)!, firstTriangle: r.first, triangleCount: r.count }));
+}
+
 /** Parse a .3mf package. Throws a human-readable Error on unreadable input. */
 export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions = {}): Promise<ThreeMFParseResult> {
   const zip = openZip(bytes, { maxEntryBytes: options.maxEntryBytes });
@@ -711,7 +741,18 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   let skippedParts = 0;
   let splitPaintedTriangles = 0;
 
-  interface Ctx { settingsObject: SlicerObject | undefined; part: SlicerPart | undefined }
+  /** `partKey` / `partName`: the build item's part being emitted (a first-
+   *  level component), for the object's part runs. */
+  interface Ctx { settingsObject: SlicerObject | undefined; part: SlicerPart | undefined; partKey?: string; partName?: string }
+
+  // The current build item's part runs (keyed so two same-named parts stay apart).
+  let partRuns: { key: string; name: string; first: number; count: number }[] = [];
+  const notePartTri = (key: string, name: string): void => {
+    const tri = triVerts.length / 3;
+    const last = partRuns[partRuns.length - 1];
+    if (last && last.key === key && last.first + last.count === tri) last.count++;
+    else partRuns.push({ key, name, first: tri, count: 1 });
+  };
 
   const emitMesh = (file: ModelFile, o: MeshObject, m: Mat, ctx: Ctx, settingsObjectId: number, meshId: number): void => {
     const s = file.unitScale;
@@ -739,16 +780,21 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     const numTri = o.tris.length / 3;
     for (let t = 0; t < numTri; t++) {
       let extruder = objExtruder;
+      let volume: SlicerVolume | null = null;
       if (vols.length > 0) {
         while (volIdx < vols.length - 1 && t > vols[volIdx].last) volIdx++;
         const v = vols[volIdx];
         if (t >= v.first && t <= v.last) {
           if (!v.printable) { skippedVols.add(volIdx); continue; }
           if (v.extruder) extruder = v.extruder;
+          volume = v;
         }
       }
       const a = o.tris[t * 3], b = o.tris[t * 3 + 1], c = o.tris[t * 3 + 2];
       if (a >= nv || b >= nv || c >= nv) throw new Error('3MF triangle references a vertex index out of range.');
+      // A component part names its triangles; inside one, a Prusa volume does.
+      if (ctx.partKey !== undefined) notePartTri(ctx.partKey, ctx.partName ?? 'Part');
+      else if (volume && vols.length > 1) notePartTri(`v${meshId}:${volIdx}`, volume.name ?? `Part ${volIdx + 1}`);
       if (flip) triVerts.push(base + a, base + c, base + b);
       else triVerts.push(base + a, base + b, base + c);
 
@@ -774,15 +820,21 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     if (!file || !o) throw new Error(`3MF references a missing object (id ${objectId}).`);
     if (o.type === 'support' || o.type === 'other') { skippedParts++; return; }
     if (o.kind === 'mesh') { emitMesh(file, o, m, ctx, settingsObjectId, objectId); return; }
-    for (const c of o.components) {
+    o.components.forEach((c, k) => {
       // Bambu: a first-level component is a "part" of the settings object.
       let part = ctx.part;
       if (!part && ctx.settingsObject) {
         part = ctx.settingsObject.parts.get(c.objectId);
-        if (part && part.subtype !== 'normal_part') { skippedParts++; continue; }
+        if (part && part.subtype !== 'normal_part') { skippedParts++; return; }
       }
-      emit(c.path ? normPath(c.path) : filePath, c.objectId, compose(c.transform, m), { settingsObject: ctx.settingsObject, part }, settingsObjectId, depth + 1);
-    }
+      const childPath = c.path ? normPath(c.path) : filePath;
+      // The build item's own components are its parts, named by the slicer's
+      // part settings, else the component object's name.
+      const named = depth === 0
+        ? { partKey: `c${k}`, partName: part?.name ?? files.get(childPath)?.objects.get(c.objectId)?.name ?? `Part ${k + 1}` }
+        : { partKey: ctx.partKey, partName: ctx.partName };
+      emit(childPath, c.objectId, compose(c.transform, m), { settingsObject: ctx.settingsObject, part, ...named }, settingsObjectId, depth + 1);
+    });
   };
 
   // Plate binding: Bambu writes one build item per object instance, in
@@ -803,6 +855,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     // printable="0" items sit on the plate but the slicer doesn't print them.
     if (!item.printable) { skippedParts++; continue; }
     const startTri = triVerts.length / 3;
+    partRuns = [];
     const filePath = item.path ? normPath(item.path) : rootPath;
     const settingsObject = slicer?.flavor === 'bambu' ? slicer.objects.get(item.objectId) : undefined;
     emit(filePath, item.objectId, item.transform, { settingsObject, part: undefined }, item.objectId, 0);
@@ -811,11 +864,13 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     if (triangleCount === 0) continue;
     const o = files.get(filePath)?.objects.get(item.objectId);
     const plate = plateOf.get(`${item.objectId}:${instanceId}`);
+    const parts = namedPartRuns(partRuns);
     objects.push({
       name: settingsObject?.name ?? o?.name ?? `Object ${item.objectId}`,
       triangleCount,
       firstTriangle: startTri,
       ...(plate !== undefined ? { plate } : {}),
+      ...(parts ? { parts } : {}),
     });
   }
 
