@@ -13127,8 +13127,10 @@ async function main() {
 
     /** Delete a session and all its versions */
     async deleteSession(id: string) {
-      assertString(id, 'deleteSession(id)', { allowEmpty: false });
+      const check = guard(() => assertString(id, 'deleteSession(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       await deleteSession(id);
+      return { success: true };
     },
 
     // === Object API ===
@@ -13504,9 +13506,13 @@ async function main() {
      *  routes for you. */
     async commitWithColors(opts: { code?: string; label?: string; assertions?: GeometryAssertions } = {}) {
       const o = opts ?? {};
-      assertString(o.code, 'commitWithColors(opts).code', { optional: true });
-      assertString(o.label, 'commitWithColors(opts).label', { optional: true });
-      if (o.assertions !== undefined) validateAssertionsShape(o.assertions, 'commitWithColors(opts).assertions');
+      const check = guard(() => {
+        assertString(o.code, 'commitWithColors(opts).code', { optional: true });
+        assertString(o.label, 'commitWithColors(opts).label', { optional: true });
+        if (o.assertions !== undefined) validateAssertionsShape(o.assertions, 'commitWithColors(opts).assertions');
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       // If no code is given, or the code matches what's in the editor, just
       // snapshot. The current-code check is intentionally string-equality —
       // whitespace-equivalent reformatting will still re-run, but that's
@@ -14054,14 +14060,18 @@ async function main() {
 
     /** Export a session as JSON (defaults to current session) */
     async exportSession(sessionId?: string, options?: ExportOptions) {
-      assertString(sessionId, 'exportSession(sessionId)', { optional: true });
-      if (options !== undefined) {
-        const o = assertObject(options, 'exportSession(options)')!;
-        assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'], 'exportSession(options)');
-        for (const k of ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'] as const) {
-          assertBoolean(o[k], `exportSession(options).${k}`, { optional: true });
+      const check = guard(() => {
+        assertString(sessionId, 'exportSession(sessionId)', { optional: true });
+        if (options !== undefined) {
+          const o = assertObject(options, 'exportSession(options)')!;
+          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'], 'exportSession(options)');
+          for (const k of ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'] as const) {
+            assertBoolean(o[k], `exportSession(options).${k}`, { optional: true });
+          }
         }
-      }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       return exportSession(sessionId, options);
     },
 
@@ -14529,8 +14539,9 @@ async function main() {
     // === Phase 1: Geometry Intelligence ===
 
     /** Analyze Z-profile of current geometry — returns features at each height with radii, areas, positions */
-    analyzeProfile(sampleCount?: number): ZProfile | null {
-      assertNumber(sampleCount, 'analyzeProfile(sampleCount)', { optional: true, min: 1, integer: true });
+    analyzeProfile(sampleCount?: number): ZProfile | null | { error: string } {
+      const check = guard(() => assertNumber(sampleCount, 'analyzeProfile(sampleCount)', { optional: true, min: 1, integer: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentManifold) return null;
       const bbox = getBoundingBox(currentManifold);
       if (!bbox) return null;
@@ -14538,9 +14549,13 @@ async function main() {
     },
 
     /** Analyze Z-profile of code in isolation — no side effects */
-    async analyzeProfileIsolated(code: string, sampleCount?: number): Promise<{ profile: ZProfile | null; stats: Record<string, unknown> }> {
-      assertString(code, 'analyzeProfileIsolated(code)', { allowEmpty: false });
-      assertNumber(sampleCount, 'analyzeProfileIsolated(sampleCount)', { optional: true, min: 1, integer: true });
+    async analyzeProfileIsolated(code: string, sampleCount?: number): Promise<{ profile: ZProfile | null; stats: Record<string, unknown> } | { error: string }> {
+      const check = guard(() => {
+        assertString(code, 'analyzeProfileIsolated(code)', { allowEmpty: false });
+        assertNumber(sampleCount, 'analyzeProfileIsolated(sampleCount)', { optional: true, min: 1, integer: true });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const { geometryData, manifold } = await executeIsolated(code);
       if (geometryData.status === 'error' || !manifold) {
         return { profile: null, stats: geometryData };
@@ -14554,16 +14569,21 @@ async function main() {
     },
 
     /** Probe geometry at an XY coordinate — shoots ray down Z axis, returns all hit Z values */
-    measureAt(xy: [number, number]): ProbeResult | null {
-      assertNumberTuple(xy, 2, 'measureAt(xy)');
+    measureAt(xy: [number, number]): ProbeResult | null | { error: string } {
+      const check = guard(() => { assertNumberTuple(xy, 2, 'measureAt(xy)'); return true; });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return null;
       return probeAtXY(currentMeshData, xy[0], xy[1]);
     },
 
     /** Euclidean distance between two 3D points */
-    measureBetween(p1: [number, number, number], p2: [number, number, number]): number {
-      assertNumberTuple(p1, 3, 'measureBetween(p1)');
-      assertNumberTuple(p2, 3, 'measureBetween(p2)');
+    measureBetween(p1: [number, number, number], p2: [number, number, number]): number | { error: string } {
+      const check = guard(() => {
+        assertNumberTuple(p1, 3, 'measureBetween(p1)');
+        assertNumberTuple(p2, 3, 'measureBetween(p2)');
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       return measureDistance(p1, p2);
     },
 
@@ -14578,10 +14598,14 @@ async function main() {
       origin: [number, number, number],
       direction: [number, number, number],
       opts?: { allHits?: boolean },
-    ): GeneralRayResult | null {
-      assertNumberTuple(origin, 3, 'probeRay(origin)');
-      assertNumberTuple(direction, 3, 'probeRay(direction)');
-      assertBoolean(opts?.allHits, 'probeRay(opts).allHits', { optional: true });
+    ): GeneralRayResult | null | { error: string } {
+      const check = guard(() => {
+        assertNumberTuple(origin, 3, 'probeRay(origin)');
+        assertNumberTuple(direction, 3, 'probeRay(direction)');
+        assertBoolean(opts?.allHits, 'probeRay(opts).allHits', { optional: true });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return null;
       return probeRay(currentMeshData, origin, direction, opts);
     },
@@ -14886,12 +14910,17 @@ async function main() {
     },
 
     /** Rename a session */
-    async renameSession(newName: string, id?: string): Promise<void> {
-      assertString(newName, 'renameSession(newName)', { allowEmpty: false });
-      assertString(id, 'renameSession(id)', { optional: true, allowEmpty: false });
+    async renameSession(newName: string, id?: string): Promise<{ success: true } | { error: string }> {
+      const check = guard(() => {
+        assertString(newName, 'renameSession(newName)', { allowEmpty: false });
+        assertString(id, 'renameSession(id)', { optional: true, allowEmpty: false });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const targetId = id ?? getState().session?.id;
-      if (!targetId) throw new Error('No active session and no id provided');
+      if (!targetId) return { error: 'renameSession: no active session and no id provided. Open or create a session first, or pass an id.' };
       await renameSession(targetId, newName);
+      return { success: true };
     },
 
     // === Phase 3: Reference/Phantom Geometry ===
@@ -14985,9 +15014,13 @@ async function main() {
     },
 
     /** Programmatic measurement between two 3D points (no clicking needed) */
-    measurePoints(p1: [number, number, number], p2: [number, number, number]): number {
-      assertNumberTuple(p1, 3, 'measurePoints(p1)');
-      assertNumberTuple(p2, 3, 'measurePoints(p2)');
+    measurePoints(p1: [number, number, number], p2: [number, number, number]): number | { error: string } {
+      const check = guard(() => {
+        assertNumberTuple(p1, 3, 'measurePoints(p1)');
+        assertNumberTuple(p2, 3, 'measurePoints(p2)');
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
       return measureDistance(p1, p2);
     },
 

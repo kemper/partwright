@@ -206,8 +206,8 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 
 **Conventions:**
 
-- **Methods that return a value** (e.g. `runAndSave`, `loadVersion`, `query`, `importSession`, `setReferenceGeometry`, notes/session CRUD) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`.
-- **Void setters** (`setCode`, `setClipZ`, `setImages`, `setView`, `setUnits`, `measureAt`, `measureBetween`, `probeRay`, `measurePoints`, `renameSession`) **throw** a `ValidationError`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
+- **Methods that return a value** (e.g. `runAndSave`, `loadVersion`, `navigateVersion`, `query`, `importSession`, `exportSession`, `setReferenceGeometry`, `measureAt`, `measurePoints`, `probeRay`, notes/session CRUD incl. `renameSession` / `deleteSession`) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`. Check `'error' in result` before using the value.
+- **Void setters** (`setCode`, `setClipZ`, `toggleClip`, `setImages`, `setView`, `setUnits`, `measureMode`, `setActiveLanguage`) **throw** a `ValidationError`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
 - **No coercion.** `setClipZ("5")` throws -- strings are not auto-converted to numbers. Pass the right type.
 - **Unknown object keys are rejected.** `runAndAssert(code, { widthToDeep: [1,2] })` errors on the typo; it does not silently ignore it. Allowed keys are listed on each assertion/options interface.
 - **Empty strings are rejected** by default for required string params (names, IDs, note text, code). Optional strings can be omitted but, if provided, must still be non-empty unless noted otherwise.
@@ -215,10 +215,10 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 **Examples of what gets rejected:**
 
 ```js
-partwright.navigateVersion('backward')            // ValidationError: direction must be one of: "prev" | "next"
+await partwright.navigateVersion('backward')      // returns { error: "... direction must be one of: \"prev\" | \"next\" ..." }
 partwright.setView('sketch')                      // ValidationError: tab must be one of: ...
-partwright.measureAt([5])                         // ValidationError: measureAt(xy) must have exactly 2 elements
-partwright.probeRay([0,0,0], [0, '1', 0])         // ValidationError: probeRay(direction)[1] must be a finite number
+partwright.measureAt([5])                         // returns { error: "measureAt(xy) must have exactly 2 elements ..." }
+partwright.probeRay([0,0,0], [0, '1', 0])         // returns { error: "probeRay(direction)[1] must be a finite number ..." }
 partwright.setImages([{ src: '' }])  // ValidationError: setImages(images)[0].src must be a non-empty string, got ""
 partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
 await partwright.runAndAssert(code, { minVolume: '1000' })  // returns { passed: false, failures: ["... .minVolume must be a finite number ..."] }
