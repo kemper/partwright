@@ -121,14 +121,14 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
-| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius, keepLabels?})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
-| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius, keepLabels?})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
+| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius, keepLabels?, select?})` (select = round only near those faces, rest stays exact) -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
+| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius, keepLabels?, select?})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
 | Text / relief wrapped around a cylinder (mug, ring, vase) | `api.wrapAround(flatShape, {radius})` -> `/ai/deform.md` | (not available) | (mesh-only) |
 | Bend / twist / taper an existing mesh | `api.bend/twist/taper(shape, {…})` -> `/ai/deform.md` | `linear_extrude(twist=, scale=)` at build time | (mesh-only) |
 | Strip / rail following a 3D path | `api.alongCurve(shape, points)` -> `/ai/deform.md` (or `Curves.sweep` to build from a profile) | BOSL2 `path_sweep()` | (use manifold-js) |
 | Spikes / studs / scales / rivets scattered over a surface | `api.scatter(target, instance, {count, seed})` -> `/ai/deform.md` | (build manually) | (mesh-only) |
 | Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
-| Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.sculpt.transform(m, {select: {label}, scale, blend})`; `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
+| Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.editPart(m, 'head', {scale: 1.3})` (rigid, cut at the seam; a function swaps/deletes the part); `api.sculpt.transform(m, {select: {label}, scale, blend})` (soft warp); `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
 | Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
@@ -441,7 +441,7 @@ await partwright.loadVersion({index} | {id})  // Load version into editor -> {id
 await partwright.navigateVersion('prev'|'next') // Step one version (switches to its language) -> {id, index, label}, null at either end, or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
 await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
-await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab. The chat tool takes 1-based indices {a, b} and returns a compact `codeDiff` line diff instead of both sources (includeCode: true for both)
+await partwright.diffVersions({index} | {id}, {index} | {id}, {geometry?, tolerance?, render?}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab. geometry: true re-runs both and adds the edit-locality check {maxDisplacement, meanDisplacement, changedFraction, changedBox, parts[{name, maxDisplacement, changedFraction, changed}], changedParts, unchangedParts}; render: true (or {azimuth, elevation, size}) adds `heatmap`, a PNG of b coloured by how far it moved. The chat tool takes 1-based indices {a, b} and returns a compact `codeDiff` line diff instead of both sources (includeCode: true for both)
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead

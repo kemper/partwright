@@ -23,9 +23,10 @@ import type { SurfaceOpId } from './surfaceOpSpec';
 
 /** Format an options value for source output. Numbers are rounded to 6
  *  significant digits so slider floats don't smear into 17-digit noise. Arrays
- *  and plain objects (the `region` scope's `{ point: [x,y,z], radius }`) are
- *  rendered recursively so scoped calls round-trip. */
-function formatValue(v: number | boolean | string | unknown[] | Record<string, unknown>): string {
+ *  and plain objects (the `region` scope's `{ point: [x,y,z], radius }`, a
+ *  `select` selector) are rendered recursively so scoped calls round-trip. */
+function formatValue(v: number | boolean | string | unknown[] | Record<string, unknown> | null): string {
+  if (v === null) return 'null'; // a selector's unbounded axis
   if (typeof v === 'number') return String(Number(v.toPrecision(6)));
   if (typeof v === 'boolean') return String(v);
   if (typeof v === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
