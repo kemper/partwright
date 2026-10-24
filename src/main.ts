@@ -9235,7 +9235,7 @@ async function main() {
 
     reset() {
       if (!simplifyBaselineMesh) return;
-      restoreBaselineColors(simplifyBaselineMesh);
+      return restoreBaselineColors(simplifyBaselineMesh);
     },
 
     async save() {
@@ -15320,7 +15320,7 @@ async function main() {
           const err = e as Error;
           // The op may have swapped a preview mesh in before failing — put the
           // baseline back so no unsaved result stays on screen.
-          simplifyHandlers.reset();
+          await simplifyHandlers.reset();
           return { error: err?.name === 'AbortError' ? 'simplifyModel: cancelled.' : `simplifyModel: ${mode} failed — ${err.message}` };
         }
         if (r && 'exceeded' in r) {
@@ -15334,7 +15334,7 @@ async function main() {
         const saved = await simplifyHandlers.save();
         if (!saved.ok) {
           // The simplified mesh is live but unsaved — restore the baseline.
-          simplifyHandlers.reset();
+          await simplifyHandlers.reset();
           return { error: `simplifyModel: ${saved.message}` };
         }
         const v = getState().currentVersion;

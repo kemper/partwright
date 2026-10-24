@@ -93,6 +93,22 @@ describe('redactSecrets', () => {
     expect(redactSecrets('short circuit')).toBe('short circuit');
   });
 
+  it('redacts a saved key that contains another saved key in full', () => {
+    const shorter = ['abcd', 'efgh'].join('');
+    const longer = shorter + ['1234', '5678', 'XYZ'].join('');
+    registerKnownSecret(shorter);
+    registerKnownSecret(longer);
+    expect(redactSecrets(`leak ${longer}`)).toBe(`leak ${REDACTED}`);
+    forgetKnownSecret(shorter);
+    forgetKnownSecret(longer);
+  });
+
+  it('redacts a bare token used as URL userinfo', () => {
+    const token = ['tok', 'abcdefghijklmnop'].join('_');
+    expect(redactSecrets(`GET https://${token}@llm.local/v1`)).toBe(`GET https://${REDACTED}@llm.local/v1`);
+    expect(redactSecrets('mailto://bob@example.com')).toBe('mailto://bob@example.com');
+  });
+
   it('leaves ordinary diagnostic text alone', () => {
     const plain = 'Engine: Manifold.ofMesh failed — not manifold (maxTokens=4096, tokens: n/a)';
     expect(redactSecrets(plain)).toBe(plain);

@@ -43,8 +43,9 @@ const PARAM_RE = new RegExp(
   'gi',
 );
 
-// scheme://user:password@host — URL userinfo.
-const USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:"'<>]+:[^\s/@"'<>]+@/gi;
+// scheme://user:password@host — URL userinfo; also a bare long token as the
+// whole userinfo (scheme://TOKEN@host).
+const USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@:"'<>]+:[^\s/@"'<>]+|[^\s/@:"'<>]{16,})@/gi;
 
 const FIELD_ALT = SECRET_FIELD_NAMES.map(escapeRe).join('|');
 // "name": "value" / 'name': 'value' (JSON-ish; the value may contain escaped
@@ -112,7 +113,9 @@ export function forgetKnownSecret(value: string | null | undefined): void {
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
-  for (const s of knownSecrets) {
+  // Longest first, so a saved key that contains another saved key is replaced
+  // whole rather than leaving its tail behind.
+  for (const s of [...knownSecrets].sort((a, b) => b.length - a.length)) {
     out = out.split(s).join(REDACTED);
     const enc = encodeURIComponent(s);
     if (enc !== s) out = out.split(enc).join(REDACTED);

@@ -136,7 +136,8 @@ export interface SimplifyHandlers {
    *  hard cap as a backstop. */
   estimateRefine(edgeLength: number): number;
   /** Restore the baseline mesh to the viewport (with original colors). */
-  reset(): void;
+  /** Restores the baseline mesh's colours; resolves when they're back. */
+  reset(): void | Promise<void>;
   /** Bake the mesh currently on screen into a new saved version. */
   save(): Promise<SimplifySaveResult>;
 }
