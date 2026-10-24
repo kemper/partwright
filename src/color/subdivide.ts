@@ -1523,12 +1523,15 @@ export function buildRefinedMeshFromSet(
 export function buildRefinedMesh(
   base: MeshData,
   regions: RefineRegion[],
+  /** Called before each region's pass with its index and the region count. */
+  onRegion?: (index: number, count: number) => void,
 ): { mesh: MeshData; childToParent: Int32Array } {
   let mesh = base;
   let comp: Int32Array = new Int32Array(base.numTri);
   for (let i = 0; i < comp.length; i++) comp[i] = i;
 
-  for (const region of regions) {
+  for (const [ri, region] of regions.entries()) {
+    onRegion?.(ri, regions.length);
     const splits = new Map<number, number>();
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       const selected = selectByClassify(mesh, region, comp);
