@@ -110,6 +110,7 @@ import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
 import { NATURAL_TONE_SWATCHES } from './naturalTones';
+import { registerTool, setToolNote, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -128,6 +129,13 @@ let replaceControls: HTMLElement | null = null;
 // Shape-smoothing controls appear in both the slab and box panels but share one
 // state; re-sync each instance's display on tool switch so neither goes stale.
 const shapeSmoothSyncs: (() => void)[] = [];
+/** Re-read every paint control from paint state — run after a programmatic
+ *  change (openTool prefill) so the panel shows what's now active. Each
+ *  builder pushes its own re-sync; the panel is built once, so these never
+ *  accumulate. */
+const controlSyncs: (() => void)[] = [];
+/** The panel's scrollable content (the AI note lands at its top). */
+let paintContentEl: HTMLElement | null = null;
 
 /** Initialize the paint UI inside the clip-controls overlay area. */
 export function initPaintUI(controlsContainer: HTMLElement): void {
@@ -177,6 +185,118 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   updateRedoButton();
   updateVisibilityButton();
   updateUndoClearButton();
+
+  registerTool({
+    id: 'tool-paint',
+    title: 'Paint colors',
+    hint: 'Tools',
+    prefillSchema: PAINT_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openPaintWithPrefill(prefill, ctx),
+    getState: () => (isActive() ? getPaintToolState() : null),
+    isOpen: isActive,
+    close: forceDeactivate,
+  });
+}
+
+/** Prefill keys for `openTool('tool-paint', …)` — they set the active tool
+ *  and its settings; nothing is painted until the user clicks the model. */
+const PAINT_PREFILL_SCHEMA: PrefillSchema = {
+  tool: { type: 'enum', values: ['bucket', 'brush', 'slab', 'box', 'replace'], description: 'Active paint tool.' },
+  color: { type: 'color', description: 'Paint colour ([r,g,b] 0..1 or "#rrggbb"); unslotted.' },
+  slot: { type: 'string', description: 'Palette slot to paint with, by id or name (instead of color).' },
+  withinPart: { type: 'string', description: 'Clip strokes to this part (an api.label / accepted part name); "" = whole model.' },
+  bucket: { type: 'object', description: 'Bucket settings.', fields: {
+    mode: { type: 'enum', values: ['color', 'geometry'] },
+    angleDeg: { type: 'number', min: 0, max: 180, description: 'Geometry mode: max bend angle crossed.' },
+    tolerance: { type: 'number', min: -1, max: 1, description: 'Geometry mode as a cosine (alternative to angleDeg).' },
+    colorTolerance: { type: 'number', min: 0, max: 1, description: 'Color mode: 0 exact … 1 any colour.' },
+  } },
+  brush: { type: 'object', description: 'Brush settings.', fields: {
+    size: { type: 'number', min: 0, description: 'Radius in mesh units (0 = one triangle).' },
+    shape: { type: 'enum', values: ['circle', 'square', 'diamond'] },
+    surface: { type: 'enum', values: ['slab', 'geodesic'] },
+    depth: { type: 'number', min: 0, description: 'Slab paint depth (0 = auto).' },
+    wrapAngleDeg: { type: 'number', min: WRAP_ANGLE_MIN, max: WRAP_ANGLE_MAX },
+    smooth: { type: 'boolean', description: 'Smooth (sub-triangle) edges.' },
+    divisor: { type: 'number', integer: true, min: SMOOTH_DIVISOR_MIN, max: SMOOTH_DIVISOR_MAX, description: 'Smooth-edge detail.' },
+    spray: { type: 'boolean', description: 'Airbrush speckle.' },
+    strength: { type: 'number', min: 0, max: 1 },
+    softness: { type: 'number', min: 0, max: 1 },
+  } },
+  slab: { type: 'object', description: 'Slab settings.', fields: { axis: { type: 'enum', values: ['x', 'y', 'z'] } } },
+};
+
+/** Every paint setting the panel shows — `getPaintState()` and the tool's
+ *  `getUiState().toolState`. */
+export function getPaintToolState(): Record<string, unknown> {
+  const tol = getBucketTolerance();
+  return {
+    active: isActive(),
+    tool: getTool(),
+    color: getColor(),
+    slot: getSlotId(),
+    withinPart: getPaintScope(),
+    bucket: { mode: getBucketMode(), angleDeg: toleranceToAngleDeg(tol), tolerance: tol, colorTolerance: getBucketColorTolerance() },
+    brush: {
+      size: getBrushRadius(), shape: getBrushShape(), surface: getBrushSurface(), depth: getBrushPaintDepth(),
+      wrapAngleDeg: getBrushWrapAngle(), smooth: isBrushSmooth(), divisor: getBrushSmoothDivisor(),
+      spray: isBrushSpray(), strength: getBrushSprayStrength(), softness: getBrushSpraySoftness(),
+    },
+    slab: { axis: getSlabAxis() },
+    box: { shape: getShapeType(), mode: getBoxMode() },
+    regions: getRegions().length,
+    visible: isPaintVisible(),
+  };
+}
+
+/** Open the Paint panel (if closed) with an already schema-validated prefill. */
+function openPaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  // Context-dependent checks first, so a bad value opens nothing.
+  if (pre.color !== undefined && pre.slot !== undefined) return { error: 'pass color OR slot, not both' };
+  let slotId: string | null = null;
+  if (typeof pre.slot === 'string') {
+    const slots = getActivePalette().slots;
+    const hit = slots.find(s => s.id === pre.slot) ?? slots.find(s => s.name.toLowerCase() === (pre.slot as string).toLowerCase());
+    if (!hit) return { error: `slot "${pre.slot}" is not in the palette (slots: ${slots.map(s => `${s.id} "${s.name}"`).join(', ')})` };
+    slotId = hit.id;
+  }
+  if (typeof pre.withinPart === 'string' && pre.withinPart !== '') {
+    const names = getPaintLabels().map(l => l.name);
+    if (!names.includes(pre.withinPart)) return { error: `withinPart "${pre.withinPart}" is not a part of this model (parts: ${names.join(', ') || 'none'})` };
+  }
+  const bucket = (pre.bucket ?? {}) as Record<string, unknown>;
+  if (bucket.angleDeg !== undefined && bucket.tolerance !== undefined) return { error: 'bucket: pass angleDeg OR tolerance, not both' };
+
+  if (!isActive()) togglePaintMode();
+  setToolNote(paintContentEl, ctx.note, ctx.source);
+
+  if (pre.tool !== undefined) setTool(pre.tool as PaintTool);
+  if (pre.color !== undefined) setColor(pre.color as [number, number, number]);
+  if (slotId) setSlot(slotId);
+  if (typeof pre.withinPart === 'string') setPaintScope(pre.withinPart === '' ? null : pre.withinPart);
+  if (bucket.mode !== undefined) setBucketMode(bucket.mode as 'color' | 'geometry');
+  if (bucket.angleDeg !== undefined) setBucketTolerance(Math.cos((bucket.angleDeg as number) * Math.PI / 180));
+  if (bucket.tolerance !== undefined) setBucketTolerance(bucket.tolerance as number);
+  if (bucket.colorTolerance !== undefined) setBucketColorTolerance(bucket.colorTolerance as number);
+  const brush = (pre.brush ?? {}) as Record<string, unknown>;
+  if (brush.size !== undefined) setBrushRadius(brush.size as number);
+  if (brush.shape !== undefined) setBrushShape(brush.shape as BrushShape);
+  if (brush.surface !== undefined) setBrushSurface(brush.surface as 'geodesic' | 'slab');
+  if (brush.depth !== undefined) setBrushPaintDepth(brush.depth as number);
+  if (brush.wrapAngleDeg !== undefined) setBrushWrapAngle(brush.wrapAngleDeg as number);
+  if (brush.smooth !== undefined) setBrushSmooth(brush.smooth as boolean);
+  if (brush.divisor !== undefined) setBrushSmoothDivisor(brush.divisor as number);
+  if (brush.spray !== undefined) setBrushSpray(brush.spray as boolean);
+  if (brush.strength !== undefined) setBrushSprayStrength(brush.strength as number);
+  if (brush.softness !== undefined) setBrushSpraySoftness(brush.softness as number);
+  const slab = (pre.slab ?? {}) as Record<string, unknown>;
+  if (slab.axis !== undefined) setSlabAxis(slab.axis as 'x' | 'y' | 'z');
+
+  syncToolPanels();
+  for (const sync of controlSyncs) sync();
+  refreshBucketPreview();
+  return { applied: pre, ignored: [] };
 }
 
 const paintRegistryEntry = { close(): void { if (isActive()) togglePaintMode(); } };
@@ -203,6 +323,7 @@ function togglePaintMode(): void {
 }
 
 function togglePaintModeInner(): void {
+  setToolNote(paintContentEl, null);
   if (isActive()) {
     deactivate();
     updateButtonState(false);
@@ -345,6 +466,7 @@ function createPaletteSection(): HTMLElement {
   renderSwatches();
   renderBudget();
   renderConstrain();
+  controlSyncs.push(renderSwatches);
   onPaletteChange(() => { renderSwatches(); renderBudget(); renderConstrain(); });
   onRegionsChange(() => { renderBudget(); renderSwatches(); });
 
@@ -382,6 +504,7 @@ function createPickerPanel(): HTMLElement {
   const content = document.createElement('div');
   content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5';
   panel.appendChild(content);
+  paintContentEl = content;
 
   // === Tool selector ===
   const toolTitle = document.createElement('div');
@@ -719,6 +842,12 @@ function createBucketControls(): HTMLElement {
   wrap.appendChild(geomPanel);
 
   syncModeBtns();
+  controlSyncs.push(() => {
+    syncModeBtns();
+    colorSlider.value = colorInput.value = String(Math.round(getBucketColorTolerance() * 100));
+    geomSlider.value = String(toleranceToSliderPct(getBucketTolerance()));
+    geomInput.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+  });
   return wrap;
 }
 
@@ -924,6 +1053,10 @@ function createBrushControls(): HTMLElement {
   row.appendChild(input);
   row.appendChild(unit);
   wrap.appendChild(row);
+  controlSyncs.push(() => {
+    slider.value = String(Math.round(Math.min(getBrushRadius(), 20) * 10));
+    input.value = getBrushRadius().toFixed(1);
+  });
 
   const help = document.createElement('div');
   help.className = 'text-[10px] text-zinc-500 mt-1';
@@ -1034,6 +1167,12 @@ function createBrushControls(): HTMLElement {
     depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
   };
   syncDepthVisibility();
+  controlSyncs.push(() => {
+    refreshSurfaceButtons();
+    syncDepthVisibility();
+    depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
+    depthInput.value = getBrushPaintDepth().toFixed(1);
+  });
 
   // Wrap tolerance — how sharp an edge paint may flow across. Applies to both
   // surface modes: lower stops the stroke at corners (stays on one face), higher
@@ -1080,6 +1219,7 @@ function createBrushControls(): HTMLElement {
     wrapInput.value = String(getBrushWrapAngle());
   };
   wrapInput.addEventListener('change', applyWrap);
+  controlSyncs.push(() => { wrapSlider.value = String(getBrushWrapAngle()); wrapInput.value = String(getBrushWrapAngle()); });
   wrapInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyWrap(); wrapInput.blur(); } });
 
   wrapRow.appendChild(wrapSlider);
@@ -1128,6 +1268,7 @@ function createBrushControls(): HTMLElement {
       set(v);
       val.textContent = `${Math.round(v * 100)}%`;
     });
+    controlSyncs.push(() => { slider.value = String(Math.round(get() * 100)); val.textContent = `${Math.round(get() * 100)}%`; });
     row.appendChild(slider);
     row.appendChild(val);
     sprayWrap.appendChild(row);
@@ -1150,6 +1291,7 @@ function createBrushControls(): HTMLElement {
   };
   sprayToggle.addEventListener('click', () => { setBrushSpray(!isBrushSpray()); syncSpray(); });
   syncSpray();
+  controlSyncs.push(syncSpray);
 
   // Brush shape selector
   const shapeLabel = document.createElement('div');
@@ -1179,6 +1321,9 @@ function createBrushControls(): HTMLElement {
     brushShapeButtons[s] = btn;
   }
   wrap.appendChild(shapeRow);
+  controlSyncs.push(() => {
+    for (const [k, b] of Object.entries(brushShapeButtons)) if (b) b.className = axisButtonClass(k === getBrushShape());
+  });
 
   // Smooth edges — subdivide the mesh under the brush so the painted region's
   // outline is rounded instead of following the existing tessellation.
@@ -1252,6 +1397,11 @@ function createBrushControls(): HTMLElement {
   wrap.appendChild(fineRow);
   wrap.appendChild(smoothHelp);
   syncSmoothToggle();
+  controlSyncs.push(() => {
+    syncSmoothToggle();
+    detailSlider.value = String(getBrushSmoothDivisor());
+    detailInput.value = String(getBrushSmoothDivisor());
+  });
 
   return wrap;
 }
@@ -1287,6 +1437,12 @@ function createSlabControls(): HTMLElement {
   }
   axisRow.appendChild(axisBtns);
   wrap.appendChild(axisRow);
+  controlSyncs.push(() => {
+    for (const child of Array.from(axisBtns.children)) {
+      const b = child as HTMLButtonElement;
+      b.className = axisButtonClass(b.dataset.axis === getSlabAxis());
+    }
+  });
 
   // Hint text
   const hint = document.createElement('div');
@@ -2104,6 +2260,7 @@ function rgbToHex(color: [number, number, number]): string {
 /** Deactivate paint mode externally (e.g. when switching tabs). */
 export function forceDeactivate(): void {
   if (isActive()) {
+    setToolNote(paintContentEl, null);
     deactivate();
     updateButtonState(false);
     closeViewportPanel(paintRegistryEntry);
@@ -2114,7 +2271,7 @@ export function forceDeactivate(): void {
 }
 
 // Let the annotate sub-modes deactivate paint without importing this module.
-registerExclusiveMode('paint', forceDeactivate);
+registerExclusiveMode('paint', forceDeactivate, isActive);
 
 /** True if the paint menu is open (paint mode is active). */
 export function isPaintOpen(): boolean {

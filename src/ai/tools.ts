@@ -22,6 +22,7 @@ import { getRenderBudget } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 import { specJsonSchema } from '../figure/characterSpec';
+import { listTools as listUiTools, type PrefillSchema } from '../ui/toolRegistry';
 
 export interface ToolDefinition {
   name: string;
@@ -63,7 +64,7 @@ export const SUBDOC_NAMES_LIST = [
   'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
-  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation',
+  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -1965,6 +1966,34 @@ Returns { ok, stats, metrics, version } or { error }.`,
       },
     },
   },
+  // --- UI control: open a tool panel for the user (hand-off) ---------------
+  {
+    name: 'openTool',
+    description: 'Open a tool panel FOR THE USER with its fields pre-set, and hand control over — it NEVER applies the operation; the user tweaks the values and clicks Apply themselves. Use this (instead of applying it yourself) when the user wants to tweak interactively, asks to "show me" a tool, or a look is subjective and they should dial it in. The chat stays visible beside the panel. `note` shows in the panel as "Suggested by AI: …" — say what you set and what to try. Unknown prefill keys and out-of-range values are rejected with an error naming each. If you cannot fill the `prefill` object (some providers drop free-form object fields), pass the same values as a JSON string in `prefillJson` instead. Follow up with getUiState to see what the user changed. Prefill keys per id are listed below (full docs: readDoc("ui-control")).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Tool id (e.g. "tool-surface", "tool-paint", "character-creator").' },
+        prefill: { type: 'object', description: 'Optional field values for that tool, e.g. {tab:"knit", mode:"whole", stitchWidth:3} for tool-surface or {tool:"brush", color:"#ff3366", brush:{size:2}} for tool-paint.' },
+        prefillJson: { type: 'string', description: 'Alternative to prefill: the same object as a JSON string, e.g. "{\\"tab\\":\\"knit\\",\\"mode\\":\\"whole\\"}". Used only when prefill is absent or empty; validated the same way.' },
+        note: { type: 'string', description: 'Optional one-line suggestion shown in the panel (≤ 500 chars).' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'closeTool',
+    description: 'Close a tool panel by id, or (no id) whichever tool is open. Opening a different tool already closes the current one, so use this only when the user is done with the panel.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Optional tool id; omit to close the open tool.' } },
+    },
+  },
+  {
+    name: 'getUiState',
+    description: 'What the user has on screen: activeTool (the open tool panel id or null), toolState (its CURRENT field values — what the user tweaked after you opened it), mode (paint / pen / text / select / imagePaint / voxelStudio or null), openModal (title of an open dialog), tab, codeView, camera, selection (arrange + part-detection), surfacePending (in-code textures waiting on "Re-apply"). Cheap and read-only — call it before answering "what am I looking at / what did I set" questions or after handing a tool over.',
+    input_schema: { type: 'object', properties: {} },
+  },
   {
     name: 'finish',
     description: 'Signal that the user\'s request is fully complete and you have nothing left to do. This ENDS your turn. Auto-continue is on: if you stop WITHOUT calling finish, you will be automatically resumed to keep working — so never end with a plain "all done" message; call finish instead. Call it once, only when the task is genuinely complete and verified. Optionally include a one-line summary of what you accomplished.',
@@ -2118,6 +2147,8 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  // Pure read of what's on screen (open tool + its values, mode, tab, camera).
+  'getUiState',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -2146,6 +2177,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'getUiState',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -2171,6 +2203,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'getUiState',
   // Visual-only view state; re-applying it is idempotent.
   'highlightObjectPart', 'setObjectPartHidden', 'isolateObjectPart',
   // Idempotent renders (produce a snapshot; no persistent mutation)
@@ -2208,8 +2241,50 @@ const AUTORESUME_GATED = new Set(['finish']);
 /** Gated by the Session-notes scope toggle. When off, the budget keeps the
  *  model from spending a tool round-trip writing notes the chat already holds. */
 const NOTES_GATED = new Set(['addSessionNote']);
+/** UI hand-off tools: open / close a tool panel for the user. Offered on every
+ *  non-plan turn (they change nothing persistent — the user clicks Apply), not
+ *  model-changing for auto-review, and never auto-retried (a retry would
+ *  re-open a panel the user may have just closed). Plan mode hides them: the
+ *  point there is to plan, not to rearrange the user's screen. */
+const UI_GATED = new Set(['openTool', 'closeTool']);
 
-export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
+/** One registered UI tool as the model sees it: id, title and a one-line list
+ *  of its prefill keys. Plain data, so it can cross the agent-Worker boundary. */
+export interface UiToolCatalogEntry {
+  id: string;
+  title: string;
+  prefillKeys: string;
+}
+
+/** Snapshot the live tool registry. The registry only exists on the main
+ *  thread (panels register there), so the agent-Worker client builds this and
+ *  passes it in the `run_turn` message — the Worker's own registry is empty. */
+export function buildUiToolCatalog(): UiToolCatalogEntry[] {
+  const keys = (s: PrefillSchema | undefined): string =>
+    s ? Object.entries(s).map(([k, f]) => (f.type === 'object' && f.fields ? `${k}{${Object.keys(f.fields).join(',')}}` : k)).join(', ') : '(no prefill)';
+  return listUiTools().map(tl => ({ id: tl.id, title: tl.title, prefillKeys: keys(tl.prefillSchema) }));
+}
+
+/** The openTool definition with its `id` enum and per-tool prefill keys taken
+ *  from the tool catalogue (so a newly registered panel reaches the model
+ *  without editing this file). Falls back to the static definition when no
+ *  tools are known (unit tests, early boot). */
+function withUiToolIds(def: ToolDefinition, catalog: UiToolCatalogEntry[]): ToolDefinition {
+  const tools = catalog;
+  if (tools.length === 0) return def;
+  const lines = tools.map(tl => `• ${tl.id} — ${tl.title}: ${tl.prefillKeys}`).join('\n');
+  const props = def.input_schema.properties as Record<string, Record<string, unknown>>;
+  return {
+    ...def,
+    description: `${def.description}\n${lines}`,
+    input_schema: { ...def.input_schema, properties: { ...props, id: { ...props.id, enum: tools.map(tl => tl.id) } } },
+  };
+}
+
+/** `uiTools` is the UI tool catalogue (see buildUiToolCatalog) — pass it when
+ *  building inside the agent Worker; on the main thread it defaults to the
+ *  live registry. */
+export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry[]): ToolDefinition[] {
   // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
   // can ground its plan in the actual session state — the open code, saved
   // versions, geometry stats, session notes, and docs — instead of guessing.
@@ -2226,6 +2301,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
 
   return ALL_TOOLS.filter(t => {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
+    if (UI_GATED.has(t.name)) return true;
     if (RUN_GATED.has(t.name)) return toggles.scope.runCode;
     if (SAVE_GATED.has(t.name)) {
       // loadVersion (rewind) and saveVersion (snapshot) don't execute code,
@@ -2242,7 +2318,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
-  });
+  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : t));
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;
@@ -3056,6 +3132,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.rotateModel(input);
     case 'layFlatModel':
       return api.layFlatModel(input);
+    // --- UI control (hand-off) ---
+    case 'openTool': {
+      // Providers whose schema subset can't populate a property-less object
+      // (Gemini) send the prefill as a JSON string instead.
+      let prefill = input.prefill;
+      const emptyPrefill = prefill === undefined || prefill === null
+        || (typeof prefill === 'object' && !Array.isArray(prefill) && Object.keys(prefill as object).length === 0);
+      if (emptyPrefill && typeof input.prefillJson === 'string' && input.prefillJson.trim() !== '') {
+        try {
+          prefill = JSON.parse(input.prefillJson);
+        } catch (e) {
+          return { error: `openTool: prefillJson is not valid JSON (${e instanceof Error ? e.message : String(e)})` };
+        }
+        if (prefill === null || typeof prefill !== 'object' || Array.isArray(prefill)) {
+          return { error: `openTool: prefillJson must encode a JSON object like {"tab":"knit"} (got ${prefill === null ? 'null' : Array.isArray(prefill) ? 'an array' : typeof prefill})` };
+        }
+      }
+      return api.openTool(input.id, prefill, { ...(input.note !== undefined ? { note: input.note } : {}), source: 'ai' });
+    }
+    case 'closeTool':
+      return api.closeTool(input.id);
+    case 'getUiState':
+      return api.getUiState();
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

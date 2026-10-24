@@ -233,7 +233,7 @@ function closePanel(): void {
 export function forceDeactivate(): void {
   if (isOpen) closePanel();
 }
-registerExclusiveMode('imagePaint', forceDeactivate);
+registerExclusiveMode('imagePaint', forceDeactivate, () => isOpen);
 
 // ─── Stamp mode ───────────────────────────────────────────────────────────────
 

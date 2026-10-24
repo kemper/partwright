@@ -23,6 +23,7 @@ Partwright is a browser-based parametric CAD tool with four modeling engines: **
 - [Printability](#printability)
 - [Visual verification](#visual-verification)
 - [Spending mode](#spending-mode)
+- [Handing a tool to the user](#handing-a-tool-to-the-user)
 
 ## Before you start
 
@@ -178,6 +179,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `spending` | To understand the user's compute budget and what each mode enforces or advises. |
 | `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
 | `segmentation` | Before painting an IMPORTED mesh (STL figurine, scan) — split it into named parts first with `detectParts` (seedless auto patches / seeded crease watershed / separate pieces), check with `renderParts` (numbered set-of-marks render), fix with `editParts`, then `acceptParts` so every part becomes a real label (`api.importWithParts`) you can paint by. |
+| `ui-control` | When the user wants to tweak something interactively or says "show me" — open the tool prefilled for them (`openTool`) instead of applying it; per-tool prefill keys, and reading what's on screen (`getUiState`, `getPaintState`, `getUndoState`). |
 | `reconstruction` | Before converting an imported mesh into editable code (`convertToCode` / `evalAgainstImport` / the /reconstruct workflow) — how to read the chamfer/hausdorff metrics, the noise floor, and the measured refinement tactics. |
 
 ## Common agent mistakes
@@ -507,6 +509,15 @@ await partwright.addSessionNote(text)    // -> {id, text, timestamp}
 await partwright.listSessionNotes()      // -> [{id, text, timestamp}, ...]
 await partwright.updateSessionNote(noteId, text) // Edit a note
 await partwright.deleteSessionNote(noteId)       // Remove a note
+
+// UI control -- open a tool FOR THE USER, prefilled, and hand it over (never applies). Full guide + per-tool keys: /ai/ui-control.md
+partwright.listUiCommands()              // every drivable action: [{id, title, hint, kind:'tool'|'command', enabled, open, prefill}] (prefill = the tool's key schema)
+await partwright.openTool(id, prefill?, {note?}) // e.g. openTool('tool-surface', {tab:'knit', mode:'whole', stitchWidth:3}, {note:'tweak, then Apply'}) -> {ok, applied, ignored} | {error}; unknown keys / out-of-range values rejected
+await partwright.runUiCommand(id)        // run a palette command by id ('export-3mf-bambu', 'place-drop-floor', ...) -> {ok} | {error}
+partwright.closeTool(id?)                // close that tool / whichever is open -> {ok, closed}
+partwright.getUiState()                  // {activeTool, openTools, mode, openModal, toolState (the open tool's CURRENT values), tab, codeView, camera, selection, surfacePending}
+partwright.getPaintState()               // paint settings: {active, tool, color, slot, withinPart, bucket, brush, slab, box, regions, visible}
+partwright.getUndoState()                // {paint:{undo, redo, undoClear}, arrange, annotations, voxel}
 
 // Session context -- get everything in one call (for resuming sessions)
 await partwright.getSessionContext()     // -> {session, versions[], notes[], currentVersion, versionCount, agentHints}
@@ -1235,6 +1246,12 @@ Read `partwright.getSpendingMode()` at session start and honor the user's budget
 Users can mark up the model surface with the **Annotate** tool (✏️ in the viewport overlay): freehand strokes raycast onto the mesh, and text labels pinned to a 3D anchor. Annotations are per-version, persist in session exports, and are distinct from color regions — they do not modify geometry.
 
 **Call `readDoc({name: "annotations"})`** when the user has placed annotations and you want to read them, or when you need to write annotations programmatically — covers the `getAnnotations` / `setAnnotations` shape and the persistence model.
+
+## Handing a tool to the user
+
+When the user wants to **tweak it interactively**, asks you to **show them** a tool, or the result is subjective (texture depth, colours, character proportions), **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values in its fields and leaves it to them — it never applies; they preview, adjust and click Apply. On desktop the chat stays beside the panel. Put what you set and what to try in `note` (shown as "Suggested by AI: …"), then read `getUiState().toolState` later to see what they changed. Everything else — "make it knit", "scale it to 80 mm" — you just do with the API.
+
+**Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-resize`, `tool-place`, `tool-quality`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`).
 
 ## Arrange mode
 

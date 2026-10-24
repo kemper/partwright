@@ -378,7 +378,7 @@ export function deactivate(): void {
 
 // Take our turn in the exclusive-tool registry so activating a mesh-paint or
 // annotate tool tears the studio down (and vice-versa, via activate() above).
-registerExclusiveMode('voxelStudio', () => deactivate());
+registerExclusiveMode('voxelStudio', () => deactivate(), isActive);
 
 /** Paint or erase the voxel that owns the given triangle — the legacy
  *  single-voxel primitive driven by the `eraser` flag. Kept for the
