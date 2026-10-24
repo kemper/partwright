@@ -8,6 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { getConfig } from '../config/appConfig';
 import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
+import { rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
@@ -1411,6 +1412,9 @@ function renderModelPicker(): void {
       sel.value = current;
       sel.addEventListener('change', () => {
         saveSettings(setCustomModel(loadSettings(), sel.value));
+        // Keep the saved endpoint's default in step, so re-selecting it in
+        // AI Settings doesn't revert this pick.
+        void rememberEndpointModel(settings.toggles.customBaseUrl, sel.value);
         recordSessionAiPreference();
         renderToggleStrip();
         renderCostMeter();
@@ -3166,7 +3170,7 @@ async function preflightTurn(
       );
       return PREFLIGHT_ABORT;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     // Hosted cloud provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
@@ -4316,7 +4320,7 @@ async function maybeAutoCompact(): Promise<void> {
   if (settings.toggles.provider === 'custom') {
     // Optional key; skip silently if the endpoint isn't fully configured.
     if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) return;
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     const key = await getKey(settings.toggles.provider);
     if (!key) return;
@@ -4370,7 +4374,7 @@ async function runCompact(): Promise<void> {
       void showAiSettingsModal({ onChange: () => panelStatusUpdate() }, { initialTab: 'custom' });
       return;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
     setTransientStatus('Summarizing the conversation…');
   } else if (settings.toggles.provider !== 'local') {
     const provider = settings.toggles.provider;
