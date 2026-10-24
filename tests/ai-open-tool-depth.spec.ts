@@ -4,6 +4,7 @@
 // prefill opens nothing. Plus the "[UI] user applied …" next-turn note.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openAiPanel, waitForEditorReady, waitForChatSessionId } from './helpers/aiPanel';
 
 async function waitForEngine(page: Page) {
   await page.waitForSelector('text=Ready', { timeout: 20_000 });
@@ -74,6 +75,9 @@ test.describe('AI opens a tool — prefill depth', () => {
     expect(bad.error).toMatch(/src must be a data:image\/ URL/);
     // Plain http (e.g. localhost / LAN) is refused before any request.
     expect((await api.open('tool-image-paint', { src: 'http://localhost:9/x.png' })).error).toMatch(/https:\/\/ URL.*http: URL/);
+    // …and so are https URLs on local / private-network hosts.
+    expect((await api.open('tool-image-paint', { src: 'https://127.0.0.1:9/x.png' })).error).toMatch(/local or private-network/);
+    expect((await api.open('tool-image-paint', { src: 'https://printer.local/x.png' })).error).toMatch(/local or private-network/);
     expect((await api.ui()).activeTool).toBeNull();
 
     const src = await makeDataUrl(page);
@@ -241,7 +245,7 @@ test.describe('AI opens a tool — prefill depth', () => {
     const picker = page.getByRole('dialog', { name: /Export objects to 3MF/ });
     await expect(picker).toBeVisible();
     await page.keyboard.press('Enter');
-    await expect(picker).toBeVisible();    await expect(page.getByRole('dialog', { name: /Export objects to 3MF/ })).toBeVisible();
+    await expect(picker).toBeVisible();
     expect((await api.ui()).toolState).toMatchObject({ format: '3mf-bambu', nozzle: '0.6', plateLayout: 'grid' });
     expect((await api.open('export-objects', { plateLayout: 'group' })).error).toMatch(/already open|grouped objects/);
     expect((await api.open('export-objects', { format: 'stl' })).error).toMatch(/already open|2\+ objects/);
@@ -314,6 +318,31 @@ test.describe('AI opens a tool — prefill depth', () => {
     const notes = await page.evaluate(async () => (await import('/src/ui/toolRegistry.ts')).drainToolAppliedNotes());
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/^\[UI · app note\] user applied Surface textures: smooth \{.*iterations: 3/);
+  });
+
+  test('[UI · app note] renders as a muted system line, not a user bubble', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sid = await waitForChatSessionId(page);
+    await page.evaluate(async (sid) => {
+      const db = await import('/src/ai/db.ts');
+      const note = '[UI · app note] user applied Surface textures: knit {mode: "whole", applies: "code", stitchWidth: 3.5, amplitude: 0.8}';
+      await db.putMessages([
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'm-user-note', sessionId: sid, role: 'user', blocks: [{ type: 'text', text: note }, { type: 'text', text: 'Looks good — make the stitches a bit tighter.' }], createdAt: Date.now(), seq: 1 } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'm-asst-note', sessionId: sid, role: 'assistant', blocks: [{ type: 'text', text: 'Tightened the stitches to 3 mm.' }], createdAt: Date.now(), seq: 2 } as any,
+      ]);
+    }, sid);
+    await page.reload();
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const line = page.locator('#ai-panel [data-ui-app-note]');
+    await expect(line).toBeVisible({ timeout: 15_000 });
+    await expect(line).toHaveText(/^\[UI · app note\] user applied Surface textures: knit/);
+    await expect(line).not.toHaveClass(/bg-blue-600/);
+    await expect(page.locator('#ai-panel').getByText('Looks good — make the stitches a bit tighter.')).toHaveClass(/bg-blue-600/);
+    await page.locator('#ai-panel').screenshot({ path: `${SHOTS}/pr6-app-note.png` });
   });
 
   test('image paint at phone width', async ({ page }) => {

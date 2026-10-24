@@ -137,7 +137,7 @@ async function loadPrefillImage(src: string, want: 'decode' | 'check'): Promise<
 }
 
 const RELIEF_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', description: 'Image to load: a data:image/ URL, an https:// URL (CORS-enabled host), or an image attachment id/label (SVG ok). Omit to open the picker empty.' },
+  src: { type: 'string', description: 'Image to load: a data:image/ URL, a public https:// URL (CORS-enabled, no redirects), or an image attachment id/label (SVG ok). Omit to open the picker empty.' },
   mode: { type: 'enum', values: ['quantized', 'luminance'], description: "'quantized' = flat colour tile (keychain), 'luminance' = relief / lithophane." },
   options: { type: 'object', description: 'Shared knobs.', fields: {
     widthMm: { type: 'number', min: 1, max: 2000 },
@@ -180,7 +180,7 @@ const RELIEF_PREFILL_SCHEMA: PrefillSchema = {
 };
 
 const VOXEL_IMPORT_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', description: 'Image to load (data:image/ URL, https:// URL, or image attachment id/label; not SVG). Omit to open the picker empty.' },
+  src: { type: 'string', description: 'Image to load (data:image/ URL, public https:// URL, or image attachment id/label; not SVG). Omit to open the picker empty.' },
   options: { type: 'object', description: 'Initial controls (as importImageAsVoxels opts).', fields: {
     maxSize: { type: 'number', integer: true, min: 1, max: 1024 },
     mode: { type: 'enum', values: ['billboard', 'heightmap'] },

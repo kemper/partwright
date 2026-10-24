@@ -684,8 +684,9 @@ function recordStrokeSample(p: [number, number, number]): boolean {
  *  with smooth on) store a `brushStroke` descriptor and trigger a mesh rebuild
  *  that subdivides under the stroke; otherwise the legacy whole-triangle set is
  *  stored directly. */
-function commitBrushStroke(): void {
-  if (!hasActiveStroke()) return;
+/** Returns true when a region was committed (and not dropped by the part scope). */
+function commitBrushStroke(): boolean {
+  if (!hasActiveStroke()) return false;
   const name = `Region ${getRegions().length + 1}`;
   const color = [...currentColor] as [number, number, number];
 
@@ -712,6 +713,7 @@ function commitBrushStroke(): void {
       true,
       currentSlotId ?? undefined,
     );
+    return true;
   } else if (brushSession && brushSession.size > 0) {
     // Projection paint collects ids in the *current* (possibly refined) mesh's
     // index space. Store them as base-mesh ids so a later smooth/slab stroke
@@ -720,9 +722,11 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    dropIfClippedEmpty(addRegion(name, color, 'paintbrush', withPaintScope({ kind: 'triangles', ids }), brushSession, true, currentSlotId ?? undefined));
+    const dropped = dropIfClippedEmpty(addRegion(name, color, 'paintbrush', withPaintScope({ kind: 'triangles', ids }), brushSession, true, currentSlotId ?? undefined));
     if (onRegionPainted) onRegionPainted();
+    return !dropped;
   }
+  return false;
 }
 
 /** The regular (non-smooth) brush footprint: the triangles *visible* under the
@@ -924,8 +928,7 @@ function onPointerUp(event: PointerEvent): void {
       strokeSamples = [];
       return;
     }
-    commitBrushStroke();
-    notifyUserPaint();
+    if (commitBrushStroke()) notifyUserPaint();
     brushPainting = false;
     brushSession = null;
     strokeSamples = [];
@@ -994,11 +997,11 @@ function onPointerUp(event: PointerEvent): void {
       currentSlotId ?? undefined,
     );
   }
-  if (scopedRegion) dropIfClippedEmpty(scopedRegion);
+  const dropped = scopedRegion ? dropIfClippedEmpty(scopedRegion) : false;
 
   clearHighlight();
   if (onRegionPainted) onRegionPainted();
-  notifyUserPaint();
+  if (!dropped) notifyUserPaint();
 }
 
 function onPointerCancel(event: PointerEvent): void {
@@ -1007,8 +1010,7 @@ function onPointerCancel(event: PointerEvent): void {
   // The pointer stream was cancelled (e.g. the OS took over the gesture);
   // commit whatever stroke is in progress, mirroring the old mouseleave edge.
   if (currentTool === 'brush' && hasActiveStroke()) {
-    commitBrushStroke();
-    notifyUserPaint();
+    if (commitBrushStroke()) notifyUserPaint();
   }
   brushPainting = false;
   brushSession = null;

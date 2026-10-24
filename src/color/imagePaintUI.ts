@@ -199,7 +199,7 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
  *  into the panel and sets the knobs; nothing is stamped until the user clicks
  *  the model. */
 const IMAGE_PAINT_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', description: 'Image to stamp: a data:image/ URL, an https:// URL (CORS-enabled host), or an image attachment id/label (SVG ok). Only downloaded into this tab; kept as the saved image only once the user stamps it.' },
+  src: { type: 'string', description: 'Image to stamp: a data:image/ URL, a public https:// URL (CORS-enabled, no redirects), or an image attachment id/label (SVG ok). Only downloaded into this tab; kept as the saved image only once the user stamps it.' },
   removeBackground: { type: 'boolean', description: 'Treat the background colour as transparent.' },
   bgColor: { type: 'color', description: 'Background colour to remove ([r,g,b] 0..1 or "#rrggbb"); implies removeBackground.' },
   smooth: { type: 'boolean', description: 'Subdivide the stamp footprint for crisp edges.' },

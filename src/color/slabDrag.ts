@@ -274,8 +274,7 @@ function onPointerUp(event: PointerEvent): void {
     const offset = Math.min(dragStart, dragEnd);
     const thickness = Math.max(dragStart, dragEnd) - offset;
     if (thickness > 0) {
-      commitSlab(offset, thickness);
-      notifyUserPaint();
+      if (commitSlab(offset, thickness)) notifyUserPaint();
     }
   }
 
@@ -292,7 +291,7 @@ function onPointerCancel(event: PointerEvent): void {
   if (dragging && dragStart !== null && dragEnd !== null) {
     const offset = Math.min(dragStart, dragEnd);
     const thickness = Math.max(dragStart, dragEnd) - offset;
-    if (thickness > 0) { commitSlab(offset, thickness); notifyUserPaint(); }
+    if (thickness > 0 && commitSlab(offset, thickness)) notifyUserPaint();
   }
   dragging = false;
   dragStart = null;
@@ -301,13 +300,14 @@ function onPointerCancel(event: PointerEvent): void {
   refreshVisual();
 }
 
-function commitSlab(offset: number, thickness: number): void {
+/** Returns true when a region was committed (and not dropped by the part scope). */
+function commitSlab(offset: number, thickness: number): boolean {
   const mesh = getCurrentMesh();
-  if (!mesh) return;
+  if (!mesh) return false;
 
   const normal = AXIS_NORMALS[axis];
   const triangles = findSlabTriangles(mesh, normal, offset, thickness);
-  if (triangles.size === 0) return;
+  if (triangles.size === 0) return false;
 
   const existingCount = getRegions().length;
   const name = `Slab ${axis.toUpperCase()} ${existingCount + 1}`;
@@ -321,7 +321,7 @@ function commitSlab(offset: number, thickness: number): void {
     true,
     getSlotId() ?? undefined,
   );
-  dropIfClippedEmpty(region);
+  return !dropIfClippedEmpty(region);
 }
 
 function colorToHex(color: [number, number, number]): number {

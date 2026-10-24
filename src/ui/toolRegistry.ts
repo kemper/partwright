@@ -105,10 +105,19 @@ onViewportPanelClose((panel) => {
  *  registry knows which tools the AI opened (see notifyToolApplied). */
 export function registerTool(spec: ToolSpec): void {
   const open: ToolSpec['open'] = async (prefill, ctx) => {
+    const before = getActiveViewportPanel();
+    let wasOpen = false;
+    try { wasOpen = spec.isOpen(); } catch { wasOpen = false; }
     const r = await spec.open(prefill, ctx);
     if (!(r && 'error' in r)) {
-      if (ctx.source === 'ai') aiOpened.set(spec.id, spec.overlay ? null : getActiveViewportPanel());
-      else aiOpened.delete(spec.id);
+      if (ctx.source === 'ai') {
+        // Bind to the docked panel only when this open produced it (or the
+        // tool was already open in it). A modal tool (settings, export
+        // dialogs) leaves the docked panel untouched — binding it to an
+        // unrelated panel would end its note session at the wrong time.
+        const after = getActiveViewportPanel();
+        aiOpened.set(spec.id, !spec.overlay && after && (after !== before || wasOpen) ? after : null);
+      } else aiOpened.delete(spec.id);
     }
     return r;
   };

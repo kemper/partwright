@@ -10,6 +10,7 @@ import {
 } from '../../src/ui/toolRegistry';
 import { openViewportPanel, closeViewportPanel } from '../../src/ui/viewportPanelRegistry';
 import { executeTool } from '../../src/ai/tools';
+import { isLocalOrPrivateHost, fetchRemoteBytes } from '../../src/import/remoteFetch';
 import { checkParamOverrides, normalizeParamSchema } from '../../src/geometry/params';
 import { checkPublishPrefill } from '../../src/ui/publishModal';
 
@@ -226,5 +227,36 @@ describe('openTool AI dispatch: customize values need the Run code scope', () =>
     vi.stubGlobal('window', { partwright: { openTool: openToolApi } });
     await executeTool('openTool', { id: 'tool-customize', prefill: { values: { width: 3 } } });
     expect(openToolApi).toHaveBeenCalledWith('tool-customize', { values: { width: 3 } }, { source: 'ai' });
+  });
+});
+
+describe('isLocalOrPrivateHost (AI image-prefill fetch guard)', () => {
+  test.each([
+    'localhost', 'LOCALHOST', 'api.localhost', 'printer.local', 'printer.local.',
+    '127.0.0.1', '127.8.9.10', '10.0.0.5', '172.16.0.1', '172.31.255.255', '192.168.1.20', '169.254.169.254', '0.0.0.0',
+    '[::1]', '::1', '::', '[fd12:3456::1]', 'fc00::1', 'fe80::1', '[fe80::abcd]', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:c0a8:101',
+  ])('blocks %s', (h) => { expect(isLocalOrPrivateHost(h)).toBe(true); });
+  test.each([
+    'example.com', 'images.example.org', '8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '11.0.0.1', '2001:4860::8888', 'localhost.example.com', '::ffff:8.8.8.8',
+  ])('allows %s', (h) => { expect(isLocalOrPrivateHost(h)).toBe(false); });
+});
+
+describe('fetchRemoteBytes options', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  test('passes the redirect mode and reports the caller\'s network-error text', async () => {
+    const fetchMock = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchRemoteBytes('https://example.com/a.png', { timeoutMs: 1000, maxBytes: 10, redirect: 'error', networkErrorMessage: 'host must allow CORS' }))
+      .rejects.toThrow('host must allow CORS');
+    expect((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe('error');
+  });
+  test('defaults to following redirects and rejects a final URL outside allowedProtocols', async () => {
+    const res = new Response(new Uint8Array([1, 2]), { status: 200, headers: { 'content-type': 'image/png' } });
+    Object.defineProperty(res, 'url', { value: 'http://example.com/a.png' });
+    const fetchMock = vi.fn(async () => res);
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchRemoteBytes('https://example.com/a.png', { timeoutMs: 1000, maxBytes: 10, allowedProtocols: ['https:'] }))
+      .rejects.toThrow(/unsupported URL/);
+    expect((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe('follow');
   });
 });

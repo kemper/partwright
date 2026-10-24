@@ -11,6 +11,13 @@ export interface RemoteFetchOptions {
   /** Inspect the response before the body is read (content type, final URL);
    *  return an error message to reject it. */
   check?: (res: Response) => string | null;
+  /** fetch redirect mode (default 'follow'). 'error' refuses any redirect —
+   *  the request a redirect would make never fires. */
+  redirect?: RequestRedirect;
+  /** Schemes the FINAL URL may have (default http: + https:). */
+  allowedProtocols?: string[];
+  /** Message for a network / CORS failure (default: the Import-from-URL text). */
+  networkErrorMessage?: string;
 }
 
 export interface RemoteFetchResult {
@@ -30,10 +37,10 @@ export async function fetchRemoteBytes(url: string, opts: RemoteFetchOptions): P
   try {
     let res: Response;
     try {
-      res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+      res = await fetch(url, { signal: controller.signal, redirect: opts.redirect ?? 'follow' });
     } catch (e) {
       if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
+      throw new Error(opts.networkErrorMessage ?? 'Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
     }
     if (!res.ok) throw new Error(`The server responded ${res.status} ${res.statusText}.`);
 
@@ -44,7 +51,7 @@ export async function fetchRemoteBytes(url: string, opts: RemoteFetchOptions): P
     if (res.url) {
       let finalProtocol: string;
       try { finalProtocol = new URL(res.url).protocol; } catch { controller.abort(); throw new Error('The remote server redirected to an invalid URL.'); }
-      if (finalProtocol !== 'http:' && finalProtocol !== 'https:') {
+      if (!(opts.allowedProtocols ?? ['http:', 'https:']).includes(finalProtocol)) {
         controller.abort();
         throw new Error(`The remote server redirected to an unsupported URL (got "${finalProtocol}").`);
       }
@@ -105,4 +112,39 @@ async function readBodyCapped(res: Response, cap: number, controller: AbortContr
   let offset = 0;
   for (const c of chunks) { out.set(c, offset); offset += c.byteLength; }
   return out;
+}
+
+/** True for hostnames an AI-supplied URL must not reach: `localhost`
+ *  (+ subdomains), `.local` mDNS names, and loopback / private / link-local IP
+ *  literals — 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, 0/8, ::1, ::,
+ *  fc00::/7, fe80::/10 and IPv4-mapped IPv6 forms of those. Pure. */
+export function isLocalOrPrivateHost(hostname: string): boolean {
+  let h = hostname.trim().toLowerCase().replace(/\.$/, '');
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  if (h === '' || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || a === 0 || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  if (h.includes(':')) {
+    if (h === '::1' || h === '::') return true;
+    const mapped = /^::ffff:(.+)$/.exec(h);
+    if (mapped) {
+      const tail = mapped[1];
+      if (tail.includes('.')) return isLocalOrPrivateHost(tail);
+      // ::ffff:7f00:1 style — rebuild the dotted quad.
+      const parts = tail.split(':');
+      if (parts.length === 2) {
+        const hi = parseInt(parts[0], 16), lo = parseInt(parts[1], 16);
+        return isLocalOrPrivateHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+      }
+      return true;
+    }
+    const first = parseInt(h.split(':')[0] || '0', 16);
+    if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+    if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  }
+  return false;
 }
