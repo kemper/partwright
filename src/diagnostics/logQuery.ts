@@ -94,12 +94,25 @@ const TOKEN_PATTERNS: RegExp[] = [
 const knownSecrets = new Set<string>();
 /** Shorter values are too likely to collide with ordinary text. */
 const MIN_KNOWN_SECRET_LENGTH = 8;
+/** Well-known placeholder "keys" that local OpenAI-compatible servers accept
+ *  (LM Studio, Ollama, vLLM, llama.cpp docs). They protect nothing, and
+ *  redacting them would blank ordinary words ("ollama", "none") across the
+ *  whole log. Compared case-insensitively. Joined at runtime so the
+ *  key-shaped one never sits in source as a literal. */
+const PLACEHOLDER_KEYS = new Set([
+  'lm-studio', 'lmstudio', 'ollama', 'not-needed', 'none', 'empty', 'dummy',
+  'placeholder', 'no-key', 'nokey', 'llama.cpp', 'local',
+  ['sk', 'no', 'key', 'required'].join('-'),
+]);
 
 export function registerKnownSecret(value: string | null | undefined): void {
   const v = typeof value === 'string' ? value.trim() : '';
-  if (v.length >= MIN_KNOWN_SECRET_LENGTH) knownSecrets.add(v);
+  if (v.length < MIN_KNOWN_SECRET_LENGTH || PLACEHOLDER_KEYS.has(v.toLowerCase())) return;
+  knownSecrets.add(v);
 }
 
+/** @internal test helper — undoes registerKnownSecret so unit tests don't leak
+ *  registered values into each other. The app never forgets a loaded key. */
 export function forgetKnownSecret(value: string | null | undefined): void {
   if (typeof value === 'string') knownSecrets.delete(value.trim());
 }

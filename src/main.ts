@@ -131,6 +131,9 @@ import {
   ensureExtensionForSource,
   parseImportUrlInput,
   MAX_REMOTE_BYTES,
+  codeBearingImportKind,
+  codeBearingSourceLabel,
+  geometryOnlyRefusalMessage,
 } from './import/urlImport';
 import { fetchRemoteBytes } from './import/remoteFetch';
 import { showImportTargetModal } from './ui/importTargetModal';
@@ -363,6 +366,7 @@ import type { Version, Part } from './storage/db';
 import {
   ValidationError,
   guard,
+  argError,
   assertString,
   assertNumber,
   assertBoolean,
@@ -4690,12 +4694,10 @@ async function main() {
     } else {
       if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
       await preserveCurrentEditsIfNeeded();
-      // composeMeshIntoCurrentPart's work, minus its toast — the API caller
-      // gets the failure as an { error } instead.
-      const cur = getState().currentPart;
-      const curBaked = cur ? await bakePartComponents(cur.id, cur.name) : null;
-      if (!curBaked) return { error: `${caller}: couldn't read the current object's geometry to combine.` };
-      await applyImportWrapper([...curBaked, parsed.mesh], true);
+      // Silent: the API caller gets the failure as an { error } instead of a toast.
+      if (!(await composeMeshIntoCurrentPart(parsed.mesh, undefined, { silent: true }))) {
+        return { error: `${caller}: couldn't read the current object's geometry to combine.` };
+      }
     }
     return apiImportResult(target);
   }
@@ -5441,13 +5443,15 @@ async function main() {
     return true;
   }
 
-  /** Compose the imported mesh with the current part's existing geometry. */
-  async function composeMeshIntoCurrentPart(mesh: ImportedMesh, seedRegions?: SeedRegionsInput): Promise<boolean> {
+  /** Compose the imported mesh with the current part's existing geometry.
+   *  `silent` skips the failure toast — for API callers that report the
+   *  failure as an `{ error }` themselves. */
+  async function composeMeshIntoCurrentPart(mesh: ImportedMesh, seedRegions?: SeedRegionsInput, opts: { silent?: boolean } = {}): Promise<boolean> {
     const cur = getState().currentPart;
     if (!cur) return false;
     const baked = await bakePartComponents(cur.id, cur.name);
     if (!baked) {
-      showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
+      if (!opts.silent) showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
     await applyImportWrapper([...baked, mesh], true, seedRegions);
@@ -6280,7 +6284,8 @@ async function main() {
     partIds?: string[],
     filename?: string,
   ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true });
+    const bad = argError(() => assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true }));
+    if (bad) return bad;
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
@@ -6297,7 +6302,8 @@ async function main() {
     partIds?: string[],
     filename?: string,
   ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true });
+    const bad = argError(() => assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true }));
+    if (bad) return bad;
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
@@ -6386,7 +6392,8 @@ async function main() {
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
   async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true });
+    const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
+    if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
@@ -6397,7 +6404,8 @@ async function main() {
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
   async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true });
+    const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
+    if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     return {
@@ -12224,7 +12232,8 @@ async function main() {
     canPlaceParametric(): boolean { return canPlaceParametric(); },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string, opts?: { preserveCamera?: boolean }): Promise<Record<string, unknown>> {
-      assertString(code, 'run(code)', { optional: true, allowEmpty: false });
+      const bad = argError(() => assertString(code, 'run(code)', { optional: true, allowEmpty: false }));
+      if (bad) return bad;
       const src = code ?? getValue();
       if (code !== undefined) setValue(code);
       // The in-app AI passes preserveCamera so iterating on a model doesn't snap
@@ -12349,7 +12358,8 @@ async function main() {
 
     /** Export current model as GLB download. Optional filename override. */
     async exportGLB(filename?: string) {
-      assertString(filename, 'exportGLB(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportGLB(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       assertFiniteMesh(currentMeshData);
       warnIfSurfaceStale('GLB');
@@ -12358,7 +12368,8 @@ async function main() {
 
     /** Export current model as STL download. Optional filename override. */
     exportSTL(filename?: string) {
-      assertString(filename, 'exportSTL(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportSTL(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('STL');
       exportSTL(fileExportMesh(false)!, filename);
@@ -12366,7 +12377,8 @@ async function main() {
 
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
-      assertString(filename, 'exportOBJ(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportOBJ(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('OBJ');
       exportOBJ(fileExportMesh(true)!, filename);
@@ -12374,9 +12386,12 @@ async function main() {
 
     /** Record the camera orbiting the model once and download the video. */
     async exportTurntable(opts?: { seconds?: number; revolutions?: number }) {
-      assertObject(opts, 'exportTurntable(opts)', { optional: true });
-      assertNumber(opts?.seconds, 'exportTurntable opts.seconds', { optional: true, min: 1, max: 60 });
-      assertNumber(opts?.revolutions, 'exportTurntable opts.revolutions', { optional: true, min: 0.25, max: 10 });
+      const bad = argError(() => {
+        assertObject(opts, 'exportTurntable(opts)', { optional: true });
+        assertNumber(opts?.seconds, 'exportTurntable opts.seconds', { optional: true, min: 1, max: 60 });
+        assertNumber(opts?.revolutions, 'exportTurntable opts.revolutions', { optional: true, min: 0.25, max: 10 });
+      });
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       try {
         const blob = await recordTurntable({ seconds: opts?.seconds, revolutions: opts?.revolutions });
@@ -12390,9 +12405,12 @@ async function main() {
 
     /** Record an exploded-view video: components ease apart, hold, reassemble. */
     async exportExplode(opts?: { seconds?: number; spread?: number }) {
-      assertObject(opts, 'exportExplode(opts)', { optional: true });
-      assertNumber(opts?.seconds, 'exportExplode opts.seconds', { optional: true, min: 1, max: 60 });
-      assertNumber(opts?.spread, 'exportExplode opts.spread', { optional: true, min: 0.1, max: 10 });
+      const bad = argError(() => {
+        assertObject(opts, 'exportExplode(opts)', { optional: true });
+        assertNumber(opts?.seconds, 'exportExplode opts.seconds', { optional: true, min: 1, max: 60 });
+        assertNumber(opts?.spread, 'exportExplode opts.spread', { optional: true, min: 0.1, max: 10 });
+      });
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!currentManifold) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
       // Decompose on the main thread; extract plain meshes then free the WASM pieces.
@@ -12432,12 +12450,15 @@ async function main() {
      *  Precomputes one mesh per step (manifold-js sessions only), then records
      *  a smooth ping-pong playback. */
     async exportParamSweep(param: string, from: number, to: number, opts?: { steps?: number; seconds?: number; pingPong?: boolean }) {
-      assertString(param, 'exportParamSweep(param)');
-      assertNumber(from, 'exportParamSweep(from)');
-      assertNumber(to, 'exportParamSweep(to)');
-      assertObject(opts, 'exportParamSweep(opts)', { optional: true });
-      assertNumber(opts?.steps, 'exportParamSweep opts.steps', { optional: true, min: 2, max: 120 });
-      assertNumber(opts?.seconds, 'exportParamSweep opts.seconds', { optional: true, min: 1, max: 60 });
+      const bad = argError(() => {
+        assertString(param, 'exportParamSweep(param)');
+        assertNumber(from, 'exportParamSweep(from)');
+        assertNumber(to, 'exportParamSweep(to)');
+        assertObject(opts, 'exportParamSweep(opts)', { optional: true });
+        assertNumber(opts?.steps, 'exportParamSweep opts.steps', { optional: true, min: 2, max: 120 });
+        assertNumber(opts?.seconds, 'exportParamSweep opts.seconds', { optional: true, min: 1, max: 60 });
+      });
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (getActiveLanguage() !== 'manifold-js') return { error: 'exportParamSweep runs the model per frame \u2014 only manifold-js sessions are supported.' };
       const steps = Math.round(opts?.steps ?? 12);
@@ -12465,7 +12486,8 @@ async function main() {
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
-      assertString(filename, 'export3MF(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'export3MF(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('3MF');
       export3MF(fileExportMesh(true)!, filename);
@@ -12477,7 +12499,8 @@ async function main() {
      *  title/description/tags to the clipboard, then opens the upload page —
      *  rather than posting directly. Optional `platform` preselects one site. */
     publish(platform?: string) {
-      assertString(platform, 'publish(platform)', { optional: true });
+      const bad = argError(() => assertString(platform, 'publish(platform)', { optional: true }));
+      if (bad) return bad;
       if (platform != null && !findPublishTarget(platform)) {
         return { error: `Unknown platform "${platform}". Use one of: printables, makerworld, thingiverse, thangs.` };
       }
@@ -12573,7 +12596,8 @@ async function main() {
      *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
      *  format's 256-per-axis limit). */
     exportVOX(filename?: string) {
-      assertString(filename, 'exportVOX(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportVOX(filename)', { optional: true }));
+      if (bad) return bad;
       const grid = getCurrentVoxelGrid();
       if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
       try { return { ok: true as const, filename: exportVOX(grid, filename) }; }
@@ -12619,7 +12643,8 @@ async function main() {
 
     /** Build a GLB and return its bytes as base64. Same blob as exportGLB(). */
     async exportGLBData(filename?: string) {
-      assertString(filename, 'exportGLBData(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportGLBData(filename)', { optional: true }));
+      if (bad) return bad;
       if (currentMeshData) assertFiniteMesh(currentMeshData);
       const warning = surfaceStaleExportWarning('GLB');
       const built = await buildGLB(filename);
@@ -12635,7 +12660,8 @@ async function main() {
 
     /** Build an STL and return its bytes as base64. */
     async exportSTLData(filename?: string) {
-      assertString(filename, 'exportSTLData(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportSTLData(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       const warning = surfaceStaleExportWarning('STL');
       const built = buildSTL(fileExportMesh(false)!, filename);
@@ -12655,7 +12681,8 @@ async function main() {
      * Inspect `mimeType` to tell which.
      */
     async exportOBJData(filename?: string) {
-      assertString(filename, 'exportOBJData(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportOBJData(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       const warning = surfaceStaleExportWarning('OBJ');
       const built = buildOBJ(fileExportMesh(true)!, filename);
@@ -12674,7 +12701,8 @@ async function main() {
 
     /** Build a 3MF (always a ZIP) and return its bytes as base64. */
     async export3MFData(filename?: string) {
-      assertString(filename, 'export3MFData(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'export3MFData(filename)', { optional: true }));
+      if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
       const warning = surfaceStaleExportWarning('3MF');
       const built = build3MF(fileExportMesh(true)!, filename);
@@ -12692,7 +12720,8 @@ async function main() {
      *  only. Returns `{ error }` with no grid, or when the model exceeds the
      *  format's 256-per-axis limit. */
     async exportVOXData(filename?: string) {
-      assertString(filename, 'exportVOXData(filename)', { optional: true });
+      const bad = argError(() => assertString(filename, 'exportVOXData(filename)', { optional: true }));
+      if (bad) return bad;
       const grid = getCurrentVoxelGrid();
       if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
       let built;
@@ -12711,14 +12740,17 @@ async function main() {
      *  Pass `options.includeThumbnails: true` to embed the per-version
      *  thumbnail PNG data URLs — needed when generating catalog entries. */
     async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean }) {
-      assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
-      if (options !== undefined) {
-        const o = assertObject(options, 'exportSessionData(_, options)')!;
-        assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
-        if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
-        if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
-        if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
-      }
+      const bad = argError(() => {
+        assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
+        if (options !== undefined) {
+          const o = assertObject(options, 'exportSessionData(_, options)')!;
+          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
+          if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
+          if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
+          if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
+        }
+      });
+      if (bad) return bad;
       const built = await buildSessionJSON(sessionId, options);
       if (!built) return { error: 'No active session to export' };
       registerExportFromBuilt(built, 'Session JSON');
@@ -12885,6 +12917,7 @@ async function main() {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
         assertObject(opts, 'importImageAsVoxels(opts)', { optional: true });
+        if (opts) assertNoUnknownKeys(opts as Record<string, unknown>, ['maxSize', 'mode', 'depth', 'maxHeight', 'baseThickness', 'invert', 'alphaThreshold', 'colorMode', 'flatColor', 'gamma', 'brightness', 'contrast', 'saturation', 'posterizeColors', 'palette', 'constrainToPalette', 'removeBackground', 'backgroundColor', 'codeStyle'], 'importImageAsVoxels(opts)');
         if (opts.maxSize !== undefined) assertNumber(opts.maxSize, 'importImageAsVoxels(opts.maxSize)', { min: 1, integer: true });
         if (opts.mode !== undefined) assertEnum(opts.mode, ['billboard', 'heightmap'], 'importImageAsVoxels(opts.mode)');
         if (opts.depth !== undefined) assertNumber(opts.depth, 'importImageAsVoxels(opts.depth)', { min: 1, integer: true });
@@ -13167,16 +13200,22 @@ async function main() {
     /** Replace the arrange-mode selection with the given part names. Names
      *  unknown to the current code are silently dropped; the returned array
      *  lists names that actually stuck. */
-    selectParts(names: string[]): string[] {
-      assertArray(names, 'selectParts(names)');
-      for (let i = 0; i < names.length; i++) assertString(names[i], `selectParts(names[${i}])`);
+    selectParts(names: string[]): string[] | { error: string } {
+      const bad = argError(() => {
+        assertArray(names, 'selectParts(names)');
+        for (let i = 0; i < names.length; i++) assertString(names[i], `selectParts(names[${i}])`);
+      });
+      if (bad) return bad;
       return apiSetSelection(names);
     },
 
     /** Extend the selection — equivalent to ⇧-click on each part. */
-    addToSelection(names: string[]): string[] {
-      assertArray(names, 'addToSelection(names)');
-      for (let i = 0; i < names.length; i++) assertString(names[i], `addToSelection(names[${i}])`);
+    addToSelection(names: string[]): string[] | { error: string } {
+      const bad = argError(() => {
+        assertArray(names, 'addToSelection(names)');
+        for (let i = 0; i < names.length; i++) assertString(names[i], `addToSelection(names[${i}])`);
+      });
+      if (bad) return bad;
       return apiAddToSelection(names);
     },
 
@@ -13210,17 +13249,21 @@ async function main() {
     /** Scale every part in the selection. `scale` may be uniform `[s,s,s]`
      *  or anisotropic `[sx, sy, sz]`. Same path as the Size X/Y/Z inputs.
      *  Errors are returned as `{ ok: false, reason }`. */
-    resizeSelection(scale: [number, number, number]): { ok: boolean; reason?: string } {
-      assertNumberTuple(scale, 3, 'resizeSelection(scale)');
+    resizeSelection(scale: [number, number, number]): { ok: boolean; reason?: string } | { error: string } {
+      const bad = argError(() => assertNumberTuple(scale, 3, 'resizeSelection(scale)'));
+      if (bad) return bad;
       return apiResizeSelection(scale as [number, number, number]);
     },
 
     /** Align 2+ selected parts on `axis` ('x' | 'y' | 'z') to `mode`
      *  ('min' | 'center' | 'max'). The reference is the union of the
      *  selection's bboxes (Tinkercad-style). */
-    alignSelection(axis: 'x' | 'y' | 'z', mode: 'min' | 'center' | 'max'): { ok: boolean; reason?: string } {
-      assertEnum(axis, ['x', 'y', 'z'] as const, 'alignSelection(axis)');
-      assertEnum(mode, ['min', 'center', 'max'] as const, 'alignSelection(mode)');
+    alignSelection(axis: 'x' | 'y' | 'z', mode: 'min' | 'center' | 'max'): { ok: boolean; reason?: string } | { error: string } {
+      const bad = argError(() => {
+        assertEnum(axis, ['x', 'y', 'z'] as const, 'alignSelection(axis)');
+        assertEnum(mode, ['min', 'center', 'max'] as const, 'alignSelection(mode)');
+      });
+      if (bad) return bad;
       return apiAlignSelection(axis, mode);
     },
 
@@ -13243,8 +13286,9 @@ async function main() {
     duplicateSelection(): { ok: boolean; reason?: string } { return apiDuplicateSelection(); },
 
     /** Mirror every selected part in place across the given axis. */
-    mirrorSelection(axis: 'x' | 'y' | 'z'): { ok: boolean; reason?: string } {
-      assertEnum(axis, ['x', 'y', 'z'] as const, 'mirrorSelection(axis)');
+    mirrorSelection(axis: 'x' | 'y' | 'z'): { ok: boolean; reason?: string } | { error: string } {
+      const bad = argError(() => assertEnum(axis, ['x', 'y', 'z'] as const, 'mirrorSelection(axis)'));
+      if (bad) return bad;
       return apiMirrorSelection(axis);
     },
 
@@ -13277,8 +13321,9 @@ async function main() {
     /** Rotate the current selection in place (degrees, per-axis). For 2+
      *  selected parts, the rotation pivots around the group centroid in the
      *  XY plane. Voxel sessions are rejected (lattice quantization). */
-    rotateSelection(deg: [number, number, number]): { ok: boolean; reason?: string } {
-      assertNumberTuple(deg, 3, 'rotateSelection(deg)');
+    rotateSelection(deg: [number, number, number]): { ok: boolean; reason?: string } | { error: string } {
+      const bad = argError(() => assertNumberTuple(deg, 3, 'rotateSelection(deg)'));
+      if (bad) return bad;
       return apiRotateSelection(deg as [number, number, number]);
     },
 
@@ -13291,16 +13336,19 @@ async function main() {
      *  edges: edge overlay — 'none' (plain shaded), 'crease' (feature edges
      *  only), or 'wireframe' (every triangle). Default: 'crease' for
      *  uncolored meshes, 'none' for painted ones. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }): string | null {
-      if (options !== undefined) {
-        const o = assertObject(options, 'renderView(options)')!;
-        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'renderView(options)');
-        assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
-        assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
-        assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
-        assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
-        if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderView(options).edges');
-      }
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }): string | null | { error: string } {
+      const bad = argError(() => {
+        if (options !== undefined) {
+          const o = assertObject(options, 'renderView(options)')!;
+          assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'renderView(options)');
+          assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
+          assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
+          assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
+          assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
+          if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderView(options).edges');
+        }
+      });
+      if (bad) return bad;
       if (!currentMeshData) return null;
       // Default image size follows the spending-mode resolution budget when the
       // caller omits size; an explicit size still wins (e.g. a final hi-res check).
@@ -13513,25 +13561,28 @@ async function main() {
      *  Bump `size` for a higher-resolution final inspection. `edges`
      *  ('none' | 'crease' | 'wireframe', default 'crease' for uncolored
      *  meshes) sets the edge overlay on every tile. */
-    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode }): Promise<string | null> {
-      if (options !== undefined) {
-        const o = assertObject(options, 'renderViews(options)')!;
-        assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges'], 'renderViews(options)');
-        if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
-        if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderViews(options).edges');
-        if (o.angles !== undefined) {
-          const arr = assertArray(o.angles, 'renderViews(options).angles') as unknown[];
-          for (let i = 0; i < arr.length; i++) {
-            const a = assertObject(arr[i], `renderViews(options).angles[${i}]`)!;
-            assertNoUnknownKeys(a, ['elevation', 'azimuth', 'ortho', 'label'], `renderViews(options).angles[${i}]`);
-            assertNumber(a.elevation, `renderViews(options).angles[${i}].elevation`, { min: -90, max: 90 });
-            assertNumber(a.azimuth, `renderViews(options).angles[${i}].azimuth`);
-            assertBoolean(a.ortho, `renderViews(options).angles[${i}].ortho`, { optional: true });
-            assertString(a.label, `renderViews(options).angles[${i}].label`, { optional: true, allowEmpty: true });
+    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode }): Promise<string | null | { error: string }> {
+      const bad = argError(() => {
+        if (options !== undefined) {
+          const o = assertObject(options, 'renderViews(options)')!;
+          assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges'], 'renderViews(options)');
+          if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
+          if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderViews(options).edges');
+          if (o.angles !== undefined) {
+            const arr = assertArray(o.angles, 'renderViews(options).angles') as unknown[];
+            for (let i = 0; i < arr.length; i++) {
+              const a = assertObject(arr[i], `renderViews(options).angles[${i}]`)!;
+              assertNoUnknownKeys(a, ['elevation', 'azimuth', 'ortho', 'label'], `renderViews(options).angles[${i}]`);
+              assertNumber(a.elevation, `renderViews(options).angles[${i}].elevation`, { min: -90, max: 90 });
+              assertNumber(a.azimuth, `renderViews(options).angles[${i}].azimuth`);
+              assertBoolean(a.ortho, `renderViews(options).angles[${i}].ortho`, { optional: true });
+              assertString(a.label, `renderViews(options).angles[${i}].label`, { optional: true, allowEmpty: true });
+            }
           }
+          assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
         }
-        assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
-      }
+      });
+      if (bad) return bad;
       if (!currentMeshData) return null;
       // Angle set and tile size default to the spending-mode budget when the
       // caller doesn't specify them; an explicit size still wins.
@@ -13647,22 +13698,27 @@ async function main() {
      *  Works for any engine (manifold-js or SCAD) — it operates on the rendered
      *  manifold, not the source code. */
     renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number }):
-      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null {
-      let axis: 'x' | 'y' | 'z' = 'z';
+      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null | { error: string } {
+      // Widened explicitly: the closure below assigns these, which TS's
+      // control-flow narrowing doesn't see.
+      let axis = 'z' as 'x' | 'y' | 'z';
       let offset: number | undefined;
       let size = 400;
-      if (options !== undefined) {
-        const o = assertObject(options, 'renderSection(options)')!;
-        assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
-        if (o.axis !== undefined) {
-          assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
-          axis = o.axis as 'x' | 'y' | 'z';
+      const bad = argError(() => {
+        if (options !== undefined) {
+          const o = assertObject(options, 'renderSection(options)')!;
+          assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
+          if (o.axis !== undefined) {
+            assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
+            axis = o.axis as 'x' | 'y' | 'z';
+          }
+          if (o.offset !== undefined) assertNumber(o.offset, 'renderSection(options).offset');
+          if (o.size !== undefined) assertNumber(o.size, 'renderSection(options).size', { min: 16, max: 4096, integer: true });
+          offset = o.offset as number | undefined;
+          size = (o.size as number | undefined) ?? size;
         }
-        if (o.offset !== undefined) assertNumber(o.offset, 'renderSection(options).offset');
-        if (o.size !== undefined) assertNumber(o.size, 'renderSection(options).size', { min: 16, max: 4096, integer: true });
-        offset = o.offset as number | undefined;
-        size = (o.size as number | undefined) ?? size;
-      }
+      });
+      if (bad) return bad;
       if (!currentManifold) return null;
 
       // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
@@ -13742,10 +13798,14 @@ async function main() {
     /** Is the given point inside the currently loaded solid? Uses a tiny
      *  probe cube — robust for points well inside or well outside, may be
      *  ambiguous within ~1e-5 of the surface. Works for any engine. */
-    pointInside(point: [number, number, number]): boolean | null {
-      const arr = assertArray(point, 'pointInside(point)') as unknown[];
-      if (arr.length !== 3) throw new ValidationError('pointInside(point): point must be a [x,y,z] vector');
-      for (let i = 0; i < 3; i++) assertNumber(arr[i], `pointInside(point)[${i}]`);
+    pointInside(point: [number, number, number]): boolean | null | { error: string } {
+      const bad = argError(() => {
+        const a = assertArray(point, 'pointInside(point)') as unknown[];
+        if (a.length !== 3) throw new ValidationError('pointInside(point): point must be a [x,y,z] vector');
+        for (let i = 0; i < 3; i++) assertNumber(a[i], `pointInside(point)[${i}]`);
+      });
+      if (bad) return bad;
+      const arr = point as unknown[];
       if (!currentManifold || currentManifold.isEmpty?.()) return null;
       const p = arr as [number, number, number];
       const bb = currentManifold.boundingBox();
@@ -13773,12 +13833,15 @@ async function main() {
      *  edges, re-run the boolean-cleanup pipeline) and return whether the
      *  result is now a clean manifold. Useful after STL import or whenever
      *  a boolean produced unexpected components. Works for any engine. */
-    healCurrent(opts?: { tolerance?: number }): { ok: boolean; volumeDelta: number; triangleDelta: number; componentCountBefore: number; componentCountAfter: number } | null {
-      if (opts !== undefined) {
-        const o = assertObject(opts, 'healCurrent(opts)')!;
-        assertNoUnknownKeys(o, ['tolerance'], 'healCurrent(opts)');
-        if (o.tolerance !== undefined) assertNumber(o.tolerance, 'healCurrent(opts).tolerance', { min: 0 });
-      }
+    healCurrent(opts?: { tolerance?: number }): { ok: boolean; volumeDelta: number; triangleDelta: number; componentCountBefore: number; componentCountAfter: number } | null | { error: string } {
+      const bad = argError(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'healCurrent(opts)')!;
+          assertNoUnknownKeys(o, ['tolerance'], 'healCurrent(opts)');
+          if (o.tolerance !== undefined) assertNumber(o.tolerance, 'healCurrent(opts).tolerance', { min: 0 });
+        }
+      });
+      if (bad) return bad;
       if (!currentManifold || currentManifold.isEmpty?.()) return null;
       // decompose() returns an array of fresh Manifolds — we must .delete()
       // each piece after counting, otherwise this leaks O(components) of WASM
@@ -13935,11 +13998,15 @@ async function main() {
     },
 
     /** Append a single image. Returns the appended item with its assigned id. */
-    addImage(image: { src: string; label?: string }): AttachedImage {
-      const obj = assertObject(image, 'addImage(image)')!;
-      assertNoUnknownKeys(obj, ['src', 'label'] as const, 'addImage(image)');
-      assertString(obj.src, 'addImage(image).src', { allowEmpty: false });
-      if (obj.label !== undefined) assertString(obj.label, 'addImage(image).label', { optional: true, allowEmpty: true });
+    addImage(image: { src: string; label?: string }): AttachedImage | { error: string } {
+      const bad = argError(() => {
+        const o = assertObject(image, 'addImage(image)')!;
+        assertNoUnknownKeys(o, ['src', 'label'] as const, 'addImage(image)');
+        assertString(o.src, 'addImage(image).src', { allowEmpty: false });
+        if (o.label !== undefined) assertString(o.label, 'addImage(image).label', { optional: true, allowEmpty: true });
+      });
+      if (bad) return bad;
+      const obj = image as unknown as Record<string, unknown>;
       const item = normalizeAttachment({
         src: obj.src as string,
         label: obj.label as string | undefined,
@@ -13952,8 +14019,9 @@ async function main() {
     },
 
     /** Remove an image (or any attachment) by id. Returns true if one was removed. */
-    removeImage(id: string): boolean {
-      assertString(id, 'removeImage(id)', { allowEmpty: false });
+    removeImage(id: string): boolean | { error: string } {
+      const bad = argError(() => assertString(id, 'removeImage(id)', { allowEmpty: false }));
+      if (bad) return bad;
       const current = _getAttachments();
       const next = current.filter(a => a.id !== id);
       if (next.length === current.length) return false;
@@ -13988,16 +14056,18 @@ async function main() {
 
     /** Append one attachment. `{src, kind?, mediaType?, label?}` — kind/mediaType
      *  inferred when omitted. Returns the stored item with its assigned id. */
-    addAttachment(attachment: { src: string; label?: string; kind?: AttachmentKind; mediaType?: string }): SessionAttachment {
-      const obj = assertObject(attachment, 'addAttachment(attachment)')!;
-      const item = buildAttachmentFromInput(obj, 'addAttachment(attachment)', 'user');
+    addAttachment(attachment: { src: string; label?: string; kind?: AttachmentKind; mediaType?: string }): SessionAttachment | { error: string } {
+      const built = guard(() => buildAttachmentFromInput(assertObject(attachment, 'addAttachment(attachment)')!, 'addAttachment(attachment)', 'user'));
+      if ('error' in built && !('src' in built)) return { error: built.error };
+      const item = built as SessionAttachment;
       commitAttachments([..._getAttachments(), item]);
       return item;
     },
 
     /** Remove an attachment by id. Returns true if one was removed. */
-    removeAttachment(id: string): boolean {
-      assertString(id, 'removeAttachment(id)', { allowEmpty: false });
+    removeAttachment(id: string): boolean | { error: string } {
+      const bad = argError(() => assertString(id, 'removeAttachment(id)', { allowEmpty: false }));
+      if (bad) return bad;
       const current = _getAttachments();
       const next = current.filter(a => a.id !== id);
       if (next.length === current.length) return false;
@@ -14019,7 +14089,8 @@ async function main() {
 
     /** Create a new session and make it active */
     async createSession(name?: string) {
-      assertString(name, 'createSession(name)', { optional: true });
+      const bad = argError(() => assertString(name, 'createSession(name)', { optional: true }));
+      if (bad) return bad;
       const session = await createSession(name, getActiveLanguage());
       await addSessionNote(
         '[WORKFLOW] Drive this app via window.partwright (see /ai.md). ' +
@@ -14283,7 +14354,8 @@ async function main() {
      *  active, or `{ skipped: true, reason }` when nothing has changed since
      *  the current version (code, annotations, and color regions all match). */
     async saveVersion(label?: string) {
-      assertString(label, 'saveVersion(label)', { optional: true });
+      const bad = argError(() => assertString(label, 'saveVersion(label)', { optional: true }));
+      if (bad) return bad;
       return saveCurrentVersion(label);
     },
 
@@ -15835,11 +15907,14 @@ async function main() {
       }
       if (!opts.view || typeof opts.view !== 'object') return { error: 'probePixel.view must match the renderView options used to produce the image' };
       const v = opts.view as { elevation?: unknown; azimuth?: unknown; ortho?: unknown; size?: unknown };
-      assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixel(opts).view');
-      assertNumber(v.elevation, 'probePixel(opts).view.elevation', { optional: true, min: -90, max: 90 });
-      assertNumber(v.azimuth, 'probePixel(opts).view.azimuth', { optional: true });
-      assertBoolean(v.ortho, 'probePixel(opts).view.ortho', { optional: true });
-      assertNumber(v.size, 'probePixel(opts).view.size', { optional: true, min: 1, integer: true });
+      const bad = argError(() => {
+        assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixel(opts).view');
+        assertNumber(v.elevation, 'probePixel(opts).view.elevation', { optional: true, min: -90, max: 90 });
+        assertNumber(v.azimuth, 'probePixel(opts).view.azimuth', { optional: true });
+        assertBoolean(v.ortho, 'probePixel(opts).view.ortho', { optional: true });
+        assertNumber(v.size, 'probePixel(opts).view.size', { optional: true, min: 1, integer: true });
+      });
+      if (bad) return bad;
       if (!currentMeshData) return null;
       const size = (v.size as number | undefined) ?? 500;
       const [px, py] = opts.pixel;
@@ -16532,16 +16607,12 @@ async function main() {
       if (isReadOnlyViewer() || isSharedPreview()) return { error: 'importFromUrl: importing is disabled in the read-only viewer.' };
       const parsed = parseImportUrlInput(url);
       if (parsed.kind === 'invalid') return { error: `importFromUrl: ${parsed.reason}` };
-      const codeRefusal = (what: string) => ({
-        error: `importFromUrl: ${what} contains model code that runs when it is imported, so it can't be imported automatically. Ask the user to import it themselves with Import → From URL…, which shows a preview first. (Only geometry files — .stl, .step/.stp, .vox — can be imported here.)`,
-      });
       const geometryOnly = opts?.geometryOnly === true;
-      if (geometryOnly && parsed.kind === 'share') return codeRefusal('a Partwright share link');
-      if (geometryOnly && parsed.kind === 'remote') {
-        // Refuse before fetching when the URL's own extension says code…
-        const byName = classifyRemoteResource(filenameFromUrl(parsed.url), null);
-        if (byName === 'JSON' || byName === 'JS' || byName === 'SCAD') return codeRefusal(`a ${byName === 'JSON' ? 'session' : byName} file`);
-      }
+      // Refuse before fetching when the input itself says code (a share link,
+      // or a .partwright.json / .js / .scad path). The in-app AI runs the same
+      // check before its confirm prompt (preConfirmToolResult in ai/tools.ts).
+      const codeByName = geometryOnly ? codeBearingImportKind(url) : null;
+      if (codeByName) return { error: geometryOnlyRefusalMessage(codeByName) };
       if (parsed.kind === 'share') {
         if (po.target !== 'new-session') return { error: "importFromUrl: a share link always imports as a new session — omit target or use 'new-session'." };
         try {
@@ -16560,7 +16631,8 @@ async function main() {
       }
       const source = classifyImportSource(file.name);
       // …and again after fetching (a Content-Type can classify an extensionless URL).
-      if (geometryOnly && (source === 'JSON' || source === 'JS' || source === 'SCAD')) return codeRefusal(`a ${source === 'JSON' ? 'session' : source} file`);
+      const codeByType = geometryOnly ? codeBearingSourceLabel(source) : null;
+      if (codeByType) return { error: geometryOnlyRefusalMessage(codeByType) };
       const name = po.sessionName ?? file.name.replace(/\.[^.]+$/, '');
       const remote = { kind: 'remote' as const, source, filename: file.name };
       if (source === 'JSON') {
@@ -18504,10 +18576,11 @@ async function main() {
       };
     },
 
-    /** Geodesic airbrush: spray a soft speckle along world-space surface points.
+    /** Airbrush: spray a soft speckle along world-space surface points.
      *  Coverage fades from the core out via a deterministic per-triangle dither
-     *  (each triangle stays one printable colour). Always surface-following — it
-     *  never bleeds through a thin/hollow wall. `strength` (0..1, default 0.4) is
+     *  (each triangle stays one printable colour). `surface` 'slab' (default)
+     *  sprays within `depth` of the stroke; 'geodesic' follows surface
+     *  connectivity, so it never bleeds through a thin/hollow wall. `strength` (0..1, default 0.4) is
      *  the core density, `softness` (0..1, default 0.5) the feather fraction,
      *  `seed` (default 1) makes the speckle reproducible. `shape` is
      *  circle|square|diamond; `resolution`/`maxEdge` set the speckle grain. */
@@ -19017,24 +19090,6 @@ async function main() {
       return { count: colors.length, colors };
     },
 
-    /** Paint a labelled feature by name. The label must have been
-     *  registered in the current run's code via `api.label(shape, name)`
-     *  or `api.labeledUnion([{name, shape}, ...])`. This is the cleanest
-     *  paint primitive on agent-authored geometry — no coordinate
-     *  guessing, no bounding-box estimation, no fan-bleed: the
-     *  triangle set comes straight from manifold-3d's provenance
-     *  tracking and is exact even for overlapping inputs.
-     *
-     *  ```
-     *  // In user code:
-     *  return api.label(Manifold.sphere(10), 'head')
-     *    .add(api.label(Manifold.sphere(2).translate([3, 5, 7]), 'eyeL'));
-     *
-     *  // After running:
-     *  partwright.paintByLabel({ label: 'eyeL', color: [0, 0, 1] });
-     *  ```
-     *  Returns `{ id, name, triangles, bbox, centroid }` on success or
-     *  `{ error }` if no such label exists or no labels were registered. */
     /** Voxel paint mode — only valid in `voxel` language sessions. Activates a
      *  per-voxel click-to-color edit loop: the current code is re-run locally
      *  to capture the grid + per-triangle voxel provenance, the editor is
@@ -19274,6 +19329,24 @@ async function main() {
       return result;
     },
 
+    /** Paint a labelled feature by name. The label must have been
+     *  registered in the current run's code via `api.label(shape, name)`
+     *  or `api.labeledUnion([{name, shape}, ...])`. This is the cleanest
+     *  paint primitive on agent-authored geometry — no coordinate
+     *  guessing, no bounding-box estimation, no fan-bleed: the
+     *  triangle set comes straight from manifold-3d's provenance
+     *  tracking and is exact even for overlapping inputs.
+     *
+     *  ```
+     *  // In user code:
+     *  return api.label(Manifold.sphere(10), 'head')
+     *    .add(api.label(Manifold.sphere(2).translate([3, 5, 7]), 'eyeL'));
+     *
+     *  // After running:
+     *  partwright.paintByLabel({ label: 'eyeL', color: [0, 0, 1] });
+     *  ```
+     *  Returns `{ id, name, triangles, bbox, centroid }` on success or
+     *  `{ error }` if no such label exists or no labels were registered. */
     paintByLabel(opts: { label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintByLabel requires { label, color }' };
       if (typeof opts.label !== 'string' || opts.label.length === 0) return { error: 'paintByLabel.label must be a non-empty string' };
@@ -19417,7 +19490,8 @@ async function main() {
 
     /** Remove a specific annotation by id. */
     removeAnnotation(id: string) {
-      assertString(id, 'removeAnnotation(id)');
+      const bad = argError(() => assertString(id, 'removeAnnotation(id)'));
+      if (bad) return bad;
       const removed = removeAnnotationById(id);
       return { removed: removed !== null, remaining: getAnnotationCount() };
     },
@@ -19452,10 +19526,14 @@ async function main() {
       color?: [number, number, number];
       fontSizePx?: number;
     }) {
-      const o = assertObject(opts, 'addTextAnnotation(opts)');
-      if (!o) return { error: 'addTextAnnotation requires {anchor, text, color?, fontSizePx?}' };
-      assertNoUnknownKeys(o, ['anchor', 'text', 'color', 'fontSizePx'], 'addTextAnnotation(opts)');
-      assertString(o.text, 'addTextAnnotation(opts).text', { allowEmpty: false });
+      const bad = argError(() => {
+        const v = assertObject(opts, 'addTextAnnotation(opts)')!;
+        assertNoUnknownKeys(v, ['anchor', 'text', 'color', 'fontSizePx'], 'addTextAnnotation(opts)');
+        assertString(v.text, 'addTextAnnotation(opts).text', { allowEmpty: false });
+        if (v.fontSizePx !== undefined) assertNumber(v.fontSizePx, 'addTextAnnotation(opts).fontSizePx', { min: 4, max: 256 });
+      });
+      if (bad) return bad;
+      const o = opts as unknown as Record<string, unknown>;
       if (!Array.isArray(o.anchor) || o.anchor.length !== 3) {
         return { error: 'addTextAnnotation(opts).anchor must be [x, y, z]' };
       }
@@ -19472,7 +19550,6 @@ async function main() {
           }
         }
       }
-      if (o.fontSizePx !== undefined) assertNumber(o.fontSizePx, 'addTextAnnotation(opts).fontSizePx', { min: 4, max: 256 });
 
       const ann = addTextAnnotationAtAnchor({
         anchor: o.anchor as [number, number, number],
@@ -19498,7 +19575,8 @@ async function main() {
     /** Snap the camera to the angle the given annotation was originally
      *  drawn from. Useful when reviewing where an annotation belongs. */
     restoreAnnotationView(id: string) {
-      assertString(id, 'restoreAnnotationView(id)');
+      const bad = argError(() => assertString(id, 'restoreAnnotationView(id)'));
+      if (bad) return bad;
       const ok = restoreAnnotationViewById(id);
       return ok ? { restored: true } : { error: `No annotation with id ${id}` };
     },
@@ -19647,6 +19725,53 @@ async function main() {
         selection: { arrange: apiGetSelection(), parts: partDetection.getPartSelection().parts },
         surfacePending: pendingSurface ? { ops: pendingSurface.ops.map(o => o.id) } : null,
       };
+    },
+
+    /** The built-in example catalog (the /catalog page) as data — each
+     *  manifest entry's `{ id, name, description, tags, language, group?,
+     *  printTested? }`. Read-only: opening an entry is the user's action on the
+     *  Catalog page (it switches this tab's session). Optional `query`
+     *  (case-insensitive, matched against name / description / tags / id),
+     *  `tag` (exact theme tag) and `limit` (default 50, max 200).
+     *  -> `{ total, matched, count, entries }` or `{ error }` */
+    async listCatalog(opts?: { query?: string; tag?: string; limit?: number }) {
+      const check = guard(() => {
+        const o = assertObject(opts, 'listCatalog(opts)', { optional: true });
+        if (!o) return;
+        assertNoUnknownKeys(o, ['query', 'tag', 'limit'], 'listCatalog(opts)');
+        assertString(o.query, 'listCatalog(opts).query', { optional: true, allowEmpty: true });
+        assertString(o.tag, 'listCatalog(opts).tag', { optional: true });
+        assertNumber(o.limit, 'listCatalog(opts).limit', { optional: true, min: 1, max: 200, integer: true });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      let entries: CatalogManifestEntry[];
+      try {
+        const res = await fetch(assetPath('/catalog/manifest.json'), { cache: 'no-cache' });
+        if (!res.ok) return { error: `listCatalog: could not load the catalog manifest (HTTP ${res.status}).` };
+        const manifest = await res.json() as { entries?: CatalogManifestEntry[] };
+        entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+      } catch (e) {
+        return { error: `listCatalog: could not load the catalog manifest — ${(e as Error).message}` };
+      }
+      const q = opts?.query?.trim().toLowerCase() ?? '';
+      const tag = opts?.tag?.toLowerCase();
+      const matched = entries.filter(e => {
+        const tags = (e.tags ?? []).map(t => String(t).toLowerCase());
+        if (tag && !tags.includes(tag)) return false;
+        if (!q) return true;
+        return [e.id, e.name, e.description ?? '', ...tags].some(s => String(s).toLowerCase().includes(q));
+      });
+      const limit = opts?.limit ?? 50;
+      const out = matched.slice(0, limit).map(e => ({
+        id: e.id,
+        name: e.name,
+        description: e.description ?? '',
+        tags: e.tags ?? [],
+        language: e.language ?? 'manifold-js',
+        ...(e.group ? { group: e.group } : {}),
+        ...(e.printTested ? { printTested: true } : {}),
+      }));
+      return { total: entries.length, matched: matched.length, count: out.length, entries: out };
     },
 
     /** Every paint setting the Paint panel holds — tool, colour / slot,
@@ -20099,6 +20224,7 @@ async function main() {
         'runUiCommand':    { signature: "await runUiCommand(id) -- Run a palette command by id (a tool opens unprefilled) -> {ok} | {error}", docs: '/ai/ui-control.md' },
         'closeTool':       { signature: 'closeTool(id?) -- Close a tool by id, or whichever is open -> {ok, closed}', docs: '/ai/ui-control.md' },
         'getUiState':      { signature: 'getUiState() -- What is on screen: {activeTool, openTools, mode, openModal, toolState (the open tool\'s current values), tab, codeView, camera, selection, surfacePending}', docs: '/ai/ui-control.md' },
+        'listCatalog':     { signature: 'await listCatalog({query?, tag?, limit?}) -- The built-in example catalog (read-only; open entries from the Catalog page) -> {total, matched, count, entries: [{id, name, description, tags, language, group?, printTested?}]} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getPaintState':   { signature: 'getPaintState() -- Paint panel settings: {active, tool, color, slot, withinPart, bucket, brush, slab, box, regions, visible}', docs: '/ai/ui-control.md' },
         'getUndoState':    { signature: 'getUndoState() -- Undo/redo availability: {paint:{undo, redo, undoClear}, arrange, annotations, voxel}', docs: '/ai/ui-control.md' },
       };

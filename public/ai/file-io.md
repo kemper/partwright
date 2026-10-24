@@ -2,6 +2,8 @@
 
 The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` methods trigger a browser download — the file goes to the user's Downloads folder, which an AI agent can't observe. Likewise, `Import` opens an OS file picker that an agent can't dismiss. Use the `*Data()` methods below instead: they return file contents over the API and skip the picker entirely.
 
+**In-app chat:** the assistant downloads through ONE tool, **`exportModel({format, objects?, filename?})`** — `format` `'stl' | 'obj' | 'glb' | '3mf'` (the current object, or several bundled with `objects`), `'3mf-objects'` (the Bambu Studio / OrcaSlicer plate project; default every object), `'step'` (BREP sessions) or `'vox'` (voxel sessions). It saves a file to the user's computer, so the user confirms each call; the prompt names the format and the objects. It returns `{ ok, format, filename?, parts? }` or `{ error }`.
+
 ## Export — return bytes over the API
 ```js
 // 3D model formats — binary blobs come back as base64
@@ -178,7 +180,7 @@ object is saved as a version first, exactly as in the dialog.
 session; `.stl` / `.step` / `.vox` → as above (`stepMode: 'mesh'` tessellates STEP);
 `.js` / `.scad` → code. Share links, session files and `.js` / `.scad` run model code when
 imported, so `geometryOnly: true` refuses them (the in-app assistant always passes it and asks
-the user to use Import → From URL…, which previews first). Images and SVGs need a converter — use `importImageAsRelief({src})`,
+the user to use Import → From URL…, which previews first — a code-bearing URL is refused before the user is even asked to confirm). Images and SVGs need a converter — use `importImageAsRelief({src})`,
 `importImageAsVoxels(url)` or `importSvgAsRelief({svgText})`.
 
 ## Recent Exports inbox

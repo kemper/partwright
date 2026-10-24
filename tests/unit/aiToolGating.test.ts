@@ -19,6 +19,8 @@ import {
   executeTool,
   isModelChangingTool,
   confirmToolLabel,
+  preConfirmToolResult,
+  declinedToolMessage,
 } from '../../src/ai/tools';
 import { computeCodeDiff } from '../../src/ai/codeDiff';
 import { loadSettings, setToggles } from '../../src/ai/settings';
@@ -104,6 +106,47 @@ describe('AI tool gating invariants', () => {
       expect(on.has(n)).toBe(true);
       expect(off.has(n)).toBe(false);
     }
+  });
+
+  test('PR5 wrappers sit in the right gates', () => {
+    const all = names(toggles({ scope: ALL_ON, vision: { views: true }, planFirst: false }));
+    const paused = names(toggles({ scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false }, vision: { views: false }, planFirst: false }));
+    const noPaint = names(toggles({ scope: { ...ALL_ON, paintFaces: false }, planFirst: false }));
+    const saveOnly = names(toggles({ scope: { ...ALL_ON, runCode: false }, planFirst: false }));
+    const plan = names(toggles({ planFirst: true, vision: { views: true } }));
+    // Paint-scoped.
+    for (const n of ['editPalette', 'replaceColor', 'paintAirbrush']) {
+      expect(all.has(n), n).toBe(true);
+      expect(noPaint.has(n), `${n} needs paintFaces`).toBe(false);
+      expect(RETRY_SAFE_TOOLS.has(n), `${n} not retried`).toBe(false);
+    }
+    expect(isModelChangingTool('replaceColor')).toBe(true);
+    expect(isModelChangingTool('paintAirbrush')).toBe(true);
+    expect(isModelChangingTool('editPalette')).toBe(false);
+    // Save-scoped: healCurrent re-shapes the live mesh (needs runCode too);
+    // saveAllObjects only snapshots, so saveVersions alone is enough.
+    expect(saveOnly.has('healCurrent')).toBe(false);
+    expect(saveOnly.has('saveAllObjects')).toBe(true);
+    expect(isModelChangingTool('healCurrent')).toBe(true);
+    // Always-on, even with every scope paused.
+    for (const n of ['setRegionVisibility', 'importImageAsVoxels', 'listCatalog', 'exportModel', 'setReferenceGeometry', 'clearReferenceGeometry']) {
+      expect(paused.has(n), `${n} always offered`).toBe(true);
+    }
+    expect(RETRY_SAFE_TOOLS.has('setRegionVisibility')).toBe(true);
+    // Read-only catalog listing: plan mode + retry-safe.
+    expect(plan.has('listCatalog')).toBe(true);
+    expect(RETRY_SAFE_TOOLS.has('listCatalog')).toBe(true);
+    // Section render needs the Views toggle; it is a plan-mode read.
+    expect(all.has('renderSection')).toBe(true);
+    expect(paused.has('renderSection')).toBe(false);
+    expect(plan.has('renderSection')).toBe(true);
+    // Downloads / new sessions need the user's OK and are never auto-retried.
+    for (const n of ['exportModel', 'importImageAsVoxels']) {
+      expect(CONFIRM_REQUIRED_TOOLS.has(n)).toBe(true);
+      expect(plan.has(n)).toBe(false);
+    }
+    expect(isModelChangingTool('exportModel')).toBe(false);
+    for (const n of ['healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection']) expect(OBJECT_TARGETABLE_TOOLS.has(n), n).toBe(true);
   });
 
   test('tool schemas stay inside the Gemini-safe keyword subset', () => {
@@ -320,6 +363,135 @@ describe('AI tool dispatch', () => {
     const input = { object: 'Lid', boundingBox: true };
     await executeTool('query', input);
     expect(input).toEqual({ object: 'Lid', boundingBox: true });
+  });
+
+  test('an { error } result is flagged isError; a success is not', async () => {
+    stubApi({ getUnits: () => 'mm', replaceColor: () => ({ error: 'replaceColor(opts.from) must have exactly 3 elements' }), listRegions: () => [] });
+    const bad = await executeTool('replaceColor', { from: [1], to: [0, 0, 1] });
+    expect(bad.isError).toBe(true);
+    expect(JSON.parse(bad.content).error).toMatch(/exactly 3/);
+    expect((await executeTool('getUnits', {})).isError).toBe(false);
+    // Arrays and nested errors are not top-level failures.
+    expect((await executeTool('listRegions', {})).isError).toBe(false);
+  });
+
+  test('editPalette routes each op and rejects keys the op does not take', async () => {
+    const calls = stubApi({ getPalette: () => ({ id: 'p1', slots: [] }) });
+    const add = JSON.parse((await executeTool('editPalette', { op: 'addFilament', name: 'PLA Red', hex: '#ff0000' })).content);
+    expect(add.palette).toEqual({ id: 'p1', slots: [] });
+    await executeTool('editPalette', { op: 'updateFilament', id: 's1', hex: '#00ff00' });
+    await executeTool('editPalette', { op: 'removeFilament', id: 's2' });
+    await executeTool('editPalette', { op: 'setCapacity', capacity: 4 });
+    await executeTool('editPalette', { op: 'setConstrained', constrained: true });
+    await executeTool('editPalette', { op: 'setActive', id: 'p2' });
+    const by = (m: string) => calls.find(c => c.method === m)?.args;
+    expect(by('addFilament')).toEqual([{ name: 'PLA Red', hex: '#ff0000' }]);
+    expect(by('updateFilament')).toEqual(['s1', { hex: '#00ff00' }]);
+    expect(by('removeFilament')).toEqual(['s2']);
+    expect(by('setPaletteCapacity')).toEqual([4]);
+    expect(by('setPaletteConstrained')).toEqual([true]);
+    expect(by('setActivePalette')).toEqual(['p2']);
+    const extra = JSON.parse((await executeTool('editPalette', { op: 'removeFilament', id: 's2', hex: '#000000' })).content);
+    expect(extra.error).toMatch(/does not take hex/);
+    const missing = JSON.parse((await executeTool('editPalette', { op: 'addFilament', name: 'x' })).content);
+    expect(missing.error).toMatch(/needs hex/);
+    const empty = JSON.parse((await executeTool('editPalette', { op: 'updateFilament', id: 's1' })).content);
+    expect(empty.error).toMatch(/at least one/);
+    const badOp = JSON.parse((await executeTool('editPalette', { op: 'toString' })).content);
+    expect(badOp.error).toMatch(/op must be one of/);
+  });
+
+  test('exportModel picks the single- or multi-object exporter and resolves object names', async () => {
+    const calls = stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }, { id: 'o2', name: 'Lid', order: 1, isCurrent: false }],
+      exportSTL: () => undefined,
+      export3MFObjects: () => ({ ok: true, filename: 'x.3mf', parts: 2 }),
+      exportSTEP: () => ({ ok: false, error: 'No BREP shape available.' }),
+    });
+    expect(JSON.parse((await executeTool('exportModel', { format: 'stl' })).content)).toEqual({ ok: true, format: 'stl' });
+    const proj = JSON.parse((await executeTool('exportModel', { format: '3mf-objects', objects: ['Lid', 'o1'] })).content);
+    expect(proj).toEqual({ ok: true, format: '3mf-objects', filename: 'x.3mf', parts: 2 });
+    expect(calls.find(c => c.method === 'export3MFObjects')?.args).toEqual([['o2', 'o1'], undefined]);
+    await executeTool('exportModel', { format: '3mf', objects: ['Base'] });
+    expect(calls.filter(c => c.method === 'export3MFObjects')[1].args).toEqual([['o1'], undefined, { bambu: false }]);
+    expect(JSON.parse((await executeTool('exportModel', { format: 'step' })).content)).toEqual({ error: 'No BREP shape available.' });
+    const unknown = JSON.parse((await executeTool('exportModel', { format: 'stl', objects: ['Nope'] })).content);
+    expect(unknown.error).toMatch(/"Nope"/);
+    const vox = JSON.parse((await executeTool('exportModel', { format: 'vox', objects: ['Base'] })).content);
+    expect(vox.error).toMatch(/only the current object/);
+  });
+
+  test('confirm labels name the export format + objects and the voxel image', async () => {
+    stubApi({ listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }, { id: 'o2', name: 'Lid', order: 1, isCurrent: false }] });
+    expect(await confirmToolLabel('exportModel', { format: 'stl' })).toBe('download an STL file of object "Base"');
+    expect(await confirmToolLabel('exportModel', { format: '3mf-objects' })).toBe('download a Bambu Studio / OrcaSlicer 3MF project of every object in this session');
+    expect(await confirmToolLabel('exportModel', { format: 'glb', objects: ['o2', 'Base'] })).toBe('download a GLB file of objects "Lid", "Base"');
+    expect(await confirmToolLabel('importImageAsVoxels', { imageRef: 2 })).toBe('turn reference image 2 into voxel art in a NEW session');
+    expect(await confirmToolLabel('importImageAsVoxels', { src: 'data:image/png;base64,AAAA' })).toBe('turn an embedded image into voxel art in a NEW session');
+    expect(await confirmToolLabel('exportModel', { format: 'stl', objects: ['Lid', 'Base'], filename: 'kit' })).toBe('download a .zip of STL files of objects "Lid", "Base" named "kit"');
+  });
+
+  test('a painted single-object OBJ export is labelled as a .zip', async () => {
+    stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }],
+      listRegions: () => [{ id: 1 }],
+      getModelColors: () => ({ count: 0 }),
+    });
+    expect(await confirmToolLabel('exportModel', { format: 'obj' })).toBe('download a .zip of an OBJ file and its .mtl colours of object "Base"');
+  });
+
+  test('export / voxel declines say nothing happened', () => {
+    expect(declinedToolMessage('exportModel')).toMatch(/nothing was downloaded/);
+    expect(declinedToolMessage('importImageAsVoxels')).toMatch(/no voxel session was created/);
+  });
+
+  test('pre-confirm uses the live API to refuse unknown objects and missing reference images', () => {
+    stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }],
+      getImages: () => [{ src: 'data:image/png;base64,AAAA' }],
+    });
+    expect(JSON.parse(preConfirmToolResult('exportModel', { format: 'glb', objects: ['Nope'] })!.content).error).toMatch(/"Nope"/);
+    expect(preConfirmToolResult('exportModel', { format: 'glb', objects: ['Base'] })).toBeNull();
+    expect(JSON.parse(preConfirmToolResult('importImageAsVoxels', { imageRef: 3 })!.content).error).toMatch(/index 3/);
+    expect(preConfirmToolResult('importImageAsVoxels', { imageRef: 1 })).toBeNull();
+    // null means "not given".
+    expect(preConfirmToolResult('exportModel', { format: 'stl', objects: null, filename: null })).toBeNull();
+    expect(preConfirmToolResult('importImageAsVoxels', { imageRef: null, src: 'https://example.com/a.png' })).toBeNull();
+  });
+
+  test('preConfirmToolResult refuses doomed calls before the prompt', () => {
+    // Code-bearing URLs are refused exactly as the geometry-only dispatch would.
+    for (const url of ['https://example.com/model.partwright.json', 'https://example.com/a.js', 'https://example.com/a.scad', '#share=abc']) {
+      const r = preConfirmToolResult('importFromUrl', { url });
+      expect(r?.isError, url).toBe(true);
+      expect(JSON.parse(r!.content).error).toMatch(/contains model code/);
+    }
+    expect(preConfirmToolResult('importFromUrl', { url: 'https://example.com/part.stl' })).toBeNull();
+    expect(preConfirmToolResult('exportModel', { format: 'dwg' })?.isError).toBe(true);
+    expect(preConfirmToolResult('exportModel', { format: 'stl' })).toBeNull();
+    expect(preConfirmToolResult('importImageAsVoxels', { src: 'file:///etc/passwd' })?.isError).toBe(true);
+    expect(preConfirmToolResult('importImageAsVoxels', {})?.isError).toBe(true);
+    expect(preConfirmToolResult('importImageAsVoxels', { src: 'https://example.com/a.png' })).toBeNull();
+    expect(preConfirmToolResult('importImageAsVoxels', { imageRef: 1 })).toBeNull();
+    expect(preConfirmToolResult('deleteVersion', { index: 1 })).toBeNull();
+  });
+
+  test('importImageAsVoxels resolves imageRef against the reference images', async () => {
+    const calls = stubApi({ getImages: () => [{ src: '' }, { src: 'data:image/png;base64,AAAA' }] });
+    await executeTool('importImageAsVoxels', { imageRef: 1, maxSize: 32 });
+    expect(calls.find(c => c.method === 'importImageAsVoxels')?.args).toEqual(['data:image/png;base64,AAAA', { maxSize: 32 }]);
+    const none = JSON.parse((await executeTool('importImageAsVoxels', { imageRef: 5 })).content);
+    expect(none.error).toMatch(/no reference image at index 5/);
+  });
+
+  test('setReferenceGeometry converts a hex colour; healCurrent maps "no model" to an error', async () => {
+    const calls = stubApi({ healCurrent: () => null });
+    await executeTool('setReferenceGeometry', { code: 'return api.Manifold.cube(1);', color: '#00ff80', opacity: 0.5 });
+    expect(calls.find(c => c.method === 'setReferenceGeometry')?.args).toEqual(['return api.Manifold.cube(1);', { color: 0x00ff80, opacity: 0.5 }]);
+    const bad = JSON.parse((await executeTool('setReferenceGeometry', { code: 'x', color: 'red' })).content);
+    expect(bad.error).toMatch(/#rrggbb/);
+    const heal = JSON.parse((await executeTool('healCurrent', {})).content);
+    expect(heal.error).toMatch(/no model loaded/);
   });
 
   test('confirmToolLabel names the version, its label and the object', async () => {

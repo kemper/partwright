@@ -17,13 +17,13 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
-import { isTransientError } from './transientError';
+import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
@@ -745,7 +745,12 @@ async function executeAllWithRetry(
       // can't hold a UI callback) delegates. Running the real executeTool here
       // with no prompt to show fails CLOSED.
       let content: string | null = null;
-      if (callbacks.confirmTool) {
+      // A call that would be refused anyway (e.g. a code-bearing importFromUrl)
+      // returns its refusal without bothering the user with a prompt.
+      const refused = preConfirmToolResult(tc.name, tc.input);
+      if (refused) {
+        content = refused.content;
+      } else if (callbacks.confirmTool) {
         let allowed = false;
         try { allowed = await callbacks.confirmTool(tc.name, tc.input); } catch { allowed = false; }
         // Stop pressed while the prompt was up: an Allow click that raced the
@@ -768,9 +773,11 @@ async function executeAllWithRetry(
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
     // succeeded before erroring would double-apply it; the retry budget is for
-    // transient read/render/run failures, not state changes.
+    // transient read/render/run failures, not state changes — and a
+    // deterministic failure (a validation { error }, a bad id) would just fail
+    // again, so only a transient-looking one is re-run.
     const retryable = RETRY_SAFE_TOOLS.has(tc.name);
-    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
+    while (result.isError && retryable && isTransientToolFailure(result.content) && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }

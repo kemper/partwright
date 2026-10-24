@@ -9,7 +9,7 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, declinedToolMessage, buildUiToolCatalog } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, declinedToolMessage, buildUiToolCatalog, preConfirmToolResult } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
@@ -82,7 +82,11 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       const confirm = currentCallbacks?.confirmTool;
       const turnLive = () => seq === turnSeq && resolveCurrentTurn !== null && !signal?.aborted;
       let content: string | null = null;
-      if (!confirm) {
+      // Refused-anyway calls skip the prompt (see preConfirmToolResult).
+      const refused = preConfirmToolResult(name, input);
+      if (refused) {
+        content = refused.content;
+      } else if (!confirm) {
         // No prompt can be shown: fail CLOSED rather than run unconfirmed.
         content = CONFIRM_UNAVAILABLE_MESSAGE;
       } else if (!turnLive()) {

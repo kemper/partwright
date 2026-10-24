@@ -2921,7 +2921,8 @@ function captureChatImageAsAttachment(img: ImageSource): void {
   try {
     const existing = pw.getAttachments();
     if (Array.isArray(existing) && existing.some(a => a.src === src)) return;
-    pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType });
+    const r = pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType }) as { error?: unknown } | undefined;
+    if (typeof r?.error === 'string') console.warn('Session attachments: capture failed', r.error);
   } catch (err) {
     console.warn('Session attachments: capture failed', err);
   }

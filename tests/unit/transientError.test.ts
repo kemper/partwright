@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { httpStatusOf, isTransientError } from '../../src/ai/transientError';
+import { httpStatusOf, isTransientError, isTransientToolFailure } from '../../src/ai/transientError';
 
 describe('httpStatusOf', () => {
   it('reads a numeric .status (Anthropic SDK APIError shape)', () => {
@@ -59,5 +59,18 @@ describe('isTransientError', () => {
   it('treats a missing-key / config error as fatal', () => {
     expect(isTransientError(new Error('OpenAI API key is required. Open AI Settings → OpenAI to connect one.'))).toBe(false);
     expect(isTransientError(new Error('No model is active. Open AI settings and choose a provider + model.'))).toBe(false);
+  });
+});
+
+describe('isTransientToolFailure', () => {
+  it('does not retry deterministic tool failures', () => {
+    expect(isTransientToolFailure(JSON.stringify({ error: 'renderViews(options).views must be one of: "all" | "box"' }, null, 2))).toBe(false);
+    expect(isTransientToolFailure(JSON.stringify({ error: 'No geometry loaded' }))).toBe(false);
+    expect(isTransientToolFailure('Unknown tool: nope')).toBe(false);
+  });
+  it('retries timeouts, superseded runs and a booting API', () => {
+    expect(isTransientToolFailure('Tool execution failed: tool call timed out after 120000ms')).toBe(true);
+    expect(isTransientToolFailure(JSON.stringify({ status: 'error', error: 'Run was superseded by a concurrent execution — retry' }))).toBe(true);
+    expect(isTransientToolFailure('window.partwright is not ready — the Partwright engine has not finished initializing.')).toBe(true);
   });
 });
