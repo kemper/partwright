@@ -38,11 +38,12 @@ export function resolveSeeds(
   seeds: SegSeed[],
   allow?: Uint8Array,
   mode: 'drop' | 'snap' = 'snap',
-): { names: string[]; seedTris: Int32Array; seedLabels: Int32Array } {
+): { names: string[]; seedTris: Int32Array; seedLabels: Int32Array; seedMaxRadius: Float64Array } {
   const names: string[] = [];
   const index = new Map<string, number>();
   const tris: number[] = [];
   const labels: number[] = [];
+  const radii: number[] = [];
   for (const s of seeds) {
     const name = s.label.trim();
     if (!name) continue;
@@ -58,8 +59,9 @@ export function resolveSeeds(
     if (li === undefined) { li = names.length; names.push(name); index.set(name, li); }
     tris.push(t);
     labels.push(li);
+    radii.push(typeof s.maxRadius === 'number' && s.maxRadius > 0 ? s.maxRadius : Infinity);
   }
-  return { names, seedTris: Int32Array.from(tris), seedLabels: Int32Array.from(labels) };
+  return { names, seedTris: Int32Array.from(tris), seedLabels: Int32Array.from(labels), seedMaxRadius: Float64Array.from(radii) };
 }
 
 export const creaseWatershedDetector: PartDetector = {
@@ -92,7 +94,7 @@ export const creaseWatershedDetector: PartDetector = {
     { name: 'Denoised scan', params: {}, featureOptions: { normalSmoothEdgeLengths: 3 } },
   ],
   run(mesh: SegMesh, f: MeshFeatures, ctx): DetectorResult {
-    const { names, seedTris, seedLabels } = resolveSeeds(f, ctx.seeds, ctx.allow, 'drop');
+    const { names, seedTris, seedLabels, seedMaxRadius } = resolveSeeds(f, ctx.seeds, ctx.allow, 'drop');
     if (names.length === 0) {
       throw new Error(ctx.allow
         ? 'No seeds fall inside the area being detected (focused part / unlocked parts) — place a seed there.'
@@ -103,6 +105,7 @@ export const creaseWatershedDetector: PartDetector = {
       creaseQuantumDeg: Number(ctx.params.creaseQuantumDeg),
       creaseWeight: Number(ctx.params.creaseWeight),
       allow: ctx.allow,
+      seedMaxRadius,
       signal: ctx.signal,
       progress: ctx.progress,
     });

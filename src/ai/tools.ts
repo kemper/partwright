@@ -366,6 +366,27 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'probePixels',
+    description: 'Batch probePixel: probe MANY pixels of one renderView image in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?}. Use to trace a seam, a stroke path or several seeds off a render in one round-trip instead of N probePixel calls. The view must match the renderView call.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
+        view: {
+          type: 'object',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+            size: { type: 'integer' },
+          },
+        },
+      },
+      required: ['pixels', 'view'],
+    },
+  },
+  {
     name: 'paintConnected',
     description: 'Flood-fill paint from a surface seed, gated by deviation from the SEED normal (not adjacent-face). This is what paintRegion should have been on smooth meshes — paintRegion compares adjacent pairs and is bimodal (all or nothing) on capsules / spheres / organic surfaces, paintConnected keeps the reference fixed at the seed so 30° gives you "this region of the surface facing roughly this way", regardless of how curved the connecting topology is. Best paired with probePixel — probe a pixel in a render, hand the {point, normal} straight to paintConnected.',
     input_schema: {
@@ -576,8 +597,51 @@ const ALL_TOOLS: ToolDefinition[] = [
         triangleIds: { type: 'array', items: { type: 'integer' } },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: ids outside that part are dropped.' },
       },
       required: ['triangleIds', 'color'],
+    },
+  },
+  {
+    name: 'getPartTriangles',
+    description: 'Triangle ids of one PART (an api.label region, incl. parts accepted from detectParts) on the current paint mesh -> {name, count, area, bbox, triangleIds, truncated?}. Mostly for inspection — to paint inside a part pass `withinPart` to the paint tools instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Part (label) name (listLabels / listObjectParts).' },
+        maxResults: { type: 'integer', minimum: 1, description: 'Cap on returned ids (default 5000); count is always the full size.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'partBoundary',
+    description: 'The seam between two parts (labels) as ordered polylines of surface points -> {loops:[{points, closed, length, pointCount}], count}, longest first. A collar running round the neck is one closed loop. Use to measure a seam or place things along it; to PAINT a band along it use paintAlongBoundary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        a: { type: 'string', description: 'First part (label) name.' },
+        b: { type: 'string', description: 'Second part (label) name.' },
+        maxPointsPerLoop: { type: 'integer', minimum: 2, description: 'Resample long loops to at most this many points (default 256).' },
+      },
+      required: ['a', 'b'],
+    },
+  },
+  {
+    name: 'paintAlongBoundary',
+    description: 'Paint a smooth band along the seam between two parts — collars, cuffs, hems, sock bands, belt edges: features with NO sculpted groove of their own, which part detection cannot find and seeds should not be used for. Each seam loop becomes a smooth paintStroke (clean curved edges). side "a"/"b" puts the whole width on that part with the band edge exactly on the seam; "both" (default) centres it on the seam. -> {regions:[{id,name,triangles}], loops}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        between: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 2, description: '[partA, partB] — two touching parts (labels).' },
+        width: { type: 'number', description: 'Band width in model units.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] 0..1' },
+        side: { type: 'string', enum: ['a', 'b', 'both'], description: 'Where the band lies (default "both").' },
+        name: { type: 'string' },
+        resolution: { type: 'number', description: 'paintStroke smoothness (target edge = width / resolution).' },
+        maxEdge: { type: 'number', description: 'Absolute target edge length (overrides resolution).' },
+      },
+      required: ['between', 'width', 'color'],
     },
   },
   {
@@ -755,7 +819,8 @@ const ALL_TOOLS: ToolDefinition[] = [
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         normalTolerance: { type: 'number' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
-        region: { type: 'string' },
+        region: { type: 'integer', description: 'Region id from listRegions().' },
+        withinPart: { type: 'string', description: 'Only triangles of this part (label).' },
         maxResults: { type: 'integer' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test for the `box` predicate. Default "centroid". Use "fully_inside" on cylinder/revolve meshes to exclude long radial triangles.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this.' },
@@ -1070,6 +1135,7 @@ const ALL_TOOLS: ToolDefinition[] = [
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
               color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
+              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
             },
             required: ['label', 'point'],
           },
@@ -1150,6 +1216,17 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: { point: { type: 'array', items: { type: 'number' }, description: '[x, y, z]' } }, required: ['point'] },
   },
   {
+    name: 'previewSeeds',
+    description: 'Check seeds BEFORE detectParts: for each seed, the triangle it lands on, the nearest surface point, its distance off the surface, a miss flag (too far off — detection would snap it somewhere unintended), and (with a draft) the part there now -> {seeds:[...], misses, hint?}. Omit seeds to check the current pins.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, maxRadius: { type: 'number' } }, required: ['label', 'point'] } },
+        importIndex: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+  {
     name: 'openPartsPanel',
     description: 'Open the Part Detection panel for the user (detectParts and reopenParts already open it). Use when handing a draft over for manual refinement.',
     input_schema: { type: 'object', properties: {} },
@@ -1181,8 +1258,8 @@ const ALL_TOOLS: ToolDefinition[] = [
               points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'brush: the stroke, [[x,y,z], …] on the surface (with radius).' },
               triangles: { type: 'array', items: { type: 'integer' }, description: 'brush: source (import) triangle indices to move.' },
               mode: { type: 'string', enum: ['triangles', 'patches'], description: 'brush: "triangles" (default) moves the brushed triangles; "patches" moves every touched part whole.' },
-              seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } } },
-              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, color: { type: 'string', description: 'Optional "#rrggbb" for the pin\'s part.' } } },
+              seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, maxRadius: { type: 'number' } } } },
+              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, color: { type: 'string', description: 'Optional "#rrggbb" for the pin\'s part.' }, maxRadius: { type: 'number', description: 'Optional geodesic growth cap (model units).' } } },
               algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'clear: also switch the draft to this method (start a seeded method fresh).' },
               index: { type: 'integer' },
               minAreaFrac: { type: 'number' },
@@ -1200,11 +1277,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'renderParts',
-    description: 'Render the part draft in colour with each part\'s id number drawn on a visible spot in every view (plus a legend) and return the image. Use after detectParts/editParts to check every part landed right — compare against the reference image; parts hidden from all views are listed in hiddenParts.',
+    description: 'Render the part draft in colour with each part\'s id number drawn on a visible spot in every view (plus a legend) and return the image. Use after detectParts/editParts to check every part landed right — compare against the reference image; parts hidden from all views are listed in hiddenParts. Named views assume a model facing −Y (front = azimuth 0); for a figure facing +X use angles [{azimuth:90,elevation:5}] for its front. focus zooms the camera onto one part (small parts: eyes, buttons).',
     input_schema: {
       type: 'object',
       properties: {
         views: { type: 'array', items: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] }, description: 'Default ["front","right","back","iso"].' },
+        angles: { type: 'array', items: { type: 'object', properties: { azimuth: { type: 'number' }, elevation: { type: 'number' } } }, description: 'Custom camera angles instead of named views (degrees; azimuth 0 = from −Y, 90 = from +X; elevation −90..90).' },
+        focus: { type: 'string', description: 'Part id ("4") or name: frame the camera on that part\'s bounding box.' },
         size: { type: 'integer', minimum: 128, maximum: 1600, description: 'Tile px (default 480).' },
         numbered: { type: 'boolean', description: 'Draw part numbers (default true).' },
       },
@@ -1791,7 +1870,8 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
-  'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
+  'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintPreview', 'paintExplain',
+  'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
@@ -1849,6 +1929,11 @@ const ALWAYS_AVAILABLE = new Set([
   // are always-available and need a region id to target.
   'listRegions',
   'probePixel',
+  'probePixels',
+  'getPartTriangles',
+  'partBoundary',
+  'partAt',
+  'previewSeeds',
   'paintPreview',
   'paintExplain',
   'forkVersion',
@@ -1910,6 +1995,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
+  'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -1934,6 +2020,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
+  'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   // Visual-only view state; re-applying it is idempotent.
   'highlightObjectPart', 'setObjectPartHidden',
   // Idempotent renders (produce a snapshot; no persistent mutation)
@@ -1950,7 +2037,7 @@ const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteO
  *  image-returning ones additionally need the Views vision toggle. */
 const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -2009,6 +2096,14 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;
+
+/** The renderParts tool takes custom angles as `angles` (a Gemini-safe
+ *  schema: no string-or-object union); the API takes them as `views`. */
+function renderPartsArgs(input: Record<string, unknown>): Record<string, unknown> {
+  const { angles, views, ...rest } = input;
+  if (Array.isArray(angles) && angles.length > 0) return { ...rest, views: Array.isArray(views) ? [...views, ...angles] : angles };
+  return views === undefined ? rest : { ...rest, views };
+}
 
 function getApi(): PartwrightAPI {
   const w = window as unknown as { partwright?: PartwrightAPI };
@@ -2496,6 +2591,14 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintByLabels(input.items as unknown[]);
     case 'probePixel':
       return api.probePixel(input);
+    case 'probePixels':
+      return api.probePixels(input.pixels, input.view);
+    case 'getPartTriangles':
+      return api.getPartTriangles(input.name, input.maxResults !== undefined ? { maxResults: input.maxResults } : undefined);
+    case 'partBoundary':
+      return api.partBoundary(input.a, input.b, input.maxPointsPerLoop !== undefined ? { maxPointsPerLoop: input.maxPointsPerLoop } : undefined);
+    case 'paintAlongBoundary':
+      return api.paintAlongBoundary(input);
     case 'photoMatch':
       return await api.photoMatch(input);
     case 'buildCharacter': {
@@ -2644,6 +2747,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'partAt':
       return api.partAt(input.point);
+    case 'previewSeeds':
+      return api.previewSeeds(input.seeds, input.importIndex !== undefined ? { importIndex: input.importIndex } : undefined);
     case 'openPartsPanel':
       return api.openPartsPanel();
     case 'autoDetectParts': {
@@ -2660,7 +2765,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'comparePartDetectors':
     case 'previewPartPresets': {
       const result = (name === 'renderParts'
-        ? await api.renderParts(input)
+        ? await api.renderParts(renderPartsArgs(input))
         : name === 'previewPartPresets'
           ? await api.previewPartPresets(input)
           : await api.comparePartDetectors(input.configs, {

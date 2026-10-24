@@ -37,7 +37,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
-import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -181,7 +181,10 @@ function registerExportFromBuilt(built: BuiltExport, source: string): void {
 }
 import type { MeshData, MeshResult, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
-import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
+import { probeAtXY, probeRay, probePixel, probePixels, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
+import { findFacesKeyError } from './color/findFacesOptions';
+import { capPolylinePoints, partBoundaryLoops, resamplePolyline } from './color/partBoundary';
+import { validPaintRefine, type PersistedPaintRefine } from './color/paintRefinePersist';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
@@ -221,13 +224,13 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -1693,6 +1696,99 @@ async function refineForRehydrate(
   }
 }
 
+/** FNV-1a over every label's name and its SORTED triangle ids (membership,
+ *  not just size — two runs whose labels cover different triangles of the
+ *  same counts must key apart). Memoized per label map. */
+const labelHashCache = new WeakMap<Map<string, Set<number>>, string>();
+function labelMembershipHash(labels: Map<string, Set<number>> | null): string {
+  if (!labels) return '';
+  const hit = labelHashCache.get(labels);
+  if (hit !== undefined) return hit;
+  let h = 0x811c9dc5;
+  const mix = (x: number) => { h ^= x & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 8) & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 16) & 0xff; h = Math.imul(h, 0x01000193); h ^= x >>> 24; h = Math.imul(h, 0x01000193); };
+  for (const name of [...labels.keys()].sort()) {
+    for (let i = 0; i < name.length; i++) mix(name.charCodeAt(i));
+    mix(0xffffffff);
+    const ids = Int32Array.from(labels.get(name)!).sort();
+    for (let i = 0; i < ids.length; i++) mix(ids[i]);
+    mix(0xfffffffe);
+  }
+  const out = `${labels.size}-${(h >>> 0).toString(36)}`;
+  labelHashCache.set(labels, out);
+  return out;
+}
+
+/** Content key of a smooth-paint refinement: the refine algorithm version,
+ *  the base mesh's content (incl. its colours), the refine-driving
+ *  descriptors (in region order) and the run's label membership (pattern
+ *  scopes resolve through labels). Same inputs → same refined mesh, so a
+ *  cached refine under this key can stand in for the rebuild. */
+function paintRefineKey(base: MeshData, refineDescriptors: RegionDescriptor[]): string {
+  return `r${REFINE_ALGO_VERSION}-${simpleHash(`${meshContentKey(base)}|${JSON.stringify(refineDescriptors)}|${labelMembershipHash(currentLabelMap)}`)}`;
+}
+
+/** Keys this tab already wrote to (or read from) the local refine cache, so
+ *  repeated saves of an unchanged painted model don't rewrite the entry. */
+const knownCachedRefines = new Set<string>();
+
+/** Cache the live smooth-paint refined mesh in the local IndexedDB cache
+ *  (`paintRefineCache`), keyed by content. Best-effort and fire-and-forget,
+ *  in its own transaction AFTER any version save has committed: a quota error
+ *  just skips caching, it never fails the save. Called after saves and after a
+ *  restore that had to rebuild (an imported / evicted session caches once). */
+function cacheCurrentPaintRefine(): void {
+  const r = currentPaintRefineForCache();
+  if (!r || knownCachedRefines.has(r.key)) return;
+  knownCachedRefines.add(r.key);
+  void putPaintRefineCache(r, getConfig().renderer.paintRefineCacheMaxMB * 1024 * 1024).then((ok) => {
+    if (!ok) knownCachedRefines.delete(r.key);
+  });
+}
+
+/** The smooth-paint refined mesh worth caching, or undefined. Only when the
+ *  live working mesh IS the refinement of the current refine set over the
+ *  run's base mesh (no stroke in flight, no smooth image stamp — those replay
+ *  on top of the restored mesh — and under the size cap). */
+function currentPaintRefineForCache(): PersistedPaintRefine | undefined {
+  const base = paintBaseMesh;
+  const mesh = currentMeshData;
+  if (!base || !mesh || mesh === base) return undefined;
+  if (mesh.numTri > getConfig().renderer.paintRefinePersistMaxTriangles) return undefined;
+  const refine = currentRefineList();
+  if (refine.length === 0 || !refineSetUnchanged()) return undefined;
+  if (getRegions().some((r) => r.descriptor.kind === 'imagePaint' && r.descriptor.smooth)) return undefined;
+  const lineage = meshLineage.get(mesh);
+  if (!lineage || lineage.root !== base) return undefined;
+  return {
+    key: paintRefineKey(base, refine),
+    mesh: { vertProperties: mesh.vertProperties, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: mesh.numProp },
+    toRoot: lineage.toRoot,
+  };
+}
+
+/** A cached refinement of `base` under these descriptors, ready to use in
+ *  place of refineForRehydrate — or null (miss, stale, malformed). The base
+ *  mesh's per-triangle colours (`triColors` + `_painted`, e.g. a voxel or
+ *  coloured import) aren't cached; they're carried onto the refined mesh
+ *  through `toRoot` exactly as buildRefinedMesh does. */
+async function cachedRefineFor(
+  base: MeshData,
+  descriptors: RegionDescriptor[],
+): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]>; strokeTris: null } | null> {
+  const refine = descriptors.filter(descriptorRefines);
+  if (refine.length === 0) return null;
+  const key = paintRefineKey(base, refine);
+  const hit = await getPaintRefineCache(key, getConfig().renderer.paintRefineCacheTouchMinutes * 60_000);
+  if (!hit || hit.key !== key || !validPaintRefine(hit, base.numTri)) return null;
+  const m = hit.mesh;
+  const plain: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+  const mesh = propagateTriColors(base, plain, hit.toRoot);
+  const parentToChildren = childrenByParent(hit.toRoot);
+  recordMeshLineage(mesh, base, parentToChildren);
+  knownCachedRefines.add(key);
+  return { mesh, parentToChildren, strokeTris: null };
+}
+
 async function rehydrateColorRegions(geometryData: Record<string, unknown> | null): Promise<{ carried: string[]; dropped: string[] }> {
   const gen = ++rehydrateGeneration;
   // Drop any in-flight worker job before we wipe + replace the region store;
@@ -1739,8 +1835,15 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // and a takeover leaves them for the next run to resolve.
   const waits = standardDescriptors.some(descriptorRefines);
   if (waits) stageUnresolvedColorRegions(geometryData);
-  const refined = await refineForRehydrate(base, standardDescriptors, gen);
+  // A smooth image stamp replays on top of the standard refinement, so such a
+  // version is never cached (see currentPaintRefineForCache) — skip the lookup.
+  const restored = waits && smoothImageStamps.length === 0 ? await cachedRefineFor(base, standardDescriptors) : null;
+  if (gen !== rehydrateGeneration) return report;
+  const refined = restored ?? await refineForRehydrate(base, standardDescriptors, gen);
   if (!refined) return report;
+  if (restored) {
+    errorLog.capture({ level: 'info', source: 'storage', message: `Restored smooth paint from the local mesh cache (${restored.mesh.numTri.toLocaleString()} triangles) — no rebuild needed.` });
+  }
   if (waits) {
     suspendReconcile = true;
     clearRegions();
@@ -1822,6 +1925,9 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
   markMeshRefineState();
+  // Rebuilt from scratch (an imported, evicted or never-cached version): cache
+  // it so the next open restores instantly.
+  if (waits && !restored) cacheCurrentPaintRefine();
 
   syncLockState();
 
@@ -2560,6 +2666,7 @@ async function saveCurrentVersion(label?: string): Promise<
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
     // away and back doesn't trigger a recompile. The code/geometry didn't
@@ -13210,6 +13317,7 @@ async function main() {
     setPartsView(options: unknown) { return partDetection.setPartsView(options); },
     getPartsView() { return partDetection.getPartsView(); },
     partAt(point: unknown) { return partDetection.partAt(point); },
+    previewSeeds(seeds?: unknown, options?: unknown) { return partDetection.previewSeeds(seeds, options); },
 
     /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
      *  `BREP.label`), tracked through every boolean so they survive fusing into
@@ -13538,6 +13646,7 @@ async function main() {
 
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -13719,6 +13828,7 @@ async function main() {
 
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -14472,6 +14582,63 @@ async function main() {
       };
     },
 
+    /** Batch `probePixel`: many pixels of ONE rendered view in one call (one
+     *  camera, one cached BVH, one ray each). `pixels` entries are `[x, y]` or
+     *  `{x, y}`; `view` is the renderView options of the image (same rules as
+     *  probePixel). Returns `{ results, hitCount, missCount, modelPixelBounds? }`
+     *  with one result per pixel in input order: `{ pixel, hit: true, point,
+     *  normal, distance, triangleId }` or `{ pixel, hit: false }`.
+     *  `modelPixelBounds` (where the model projects, `{minX, minY, maxX,
+     *  maxY}`) is present when any pixel missed; it is `null` when the model
+     *  doesn't project into the view at all (off-screen / degenerate mesh). Use it to trace a stroke or a seam from a render: pick
+     *  10–50 pixels along it, probe them all, pass the points on. */
+    probePixels(pixels: unknown, view?: unknown) {
+      return guard(() => {
+        const list = assertArray(pixels, 'probePixels(pixels)');
+        const max = getConfig().renderer.probePixelsMaxPixels;
+        if (list.length === 0) throw new ValidationError('probePixels(pixels): pass at least one pixel ([x, y] or {x, y}).');
+        if (list.length > max) throw new ValidationError(`probePixels(pixels): at most ${max} pixels per call (got ${list.length}).`);
+        const v = view === undefined ? {} : assertObject(view, 'probePixels(pixels, view)')!;
+        assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixels(pixels, view)');
+        const elevation = assertNumber(v.elevation, 'probePixels(pixels, view).elevation', { optional: true, min: -90, max: 90 });
+        const azimuth = assertNumber(v.azimuth, 'probePixels(pixels, view).azimuth', { optional: true });
+        const ortho = assertBoolean(v.ortho, 'probePixels(pixels, view).ortho', { optional: true });
+        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? 500;
+        const pts: [number, number][] = list.map((p, i) => {
+          let xy: number[];
+          if (Array.isArray(p)) xy = assertNumberTuple(p, 2, `probePixels(pixels)[${i}]`);
+          else {
+            const o = assertObject(p, `probePixels(pixels)[${i}]`)!;
+            assertNoUnknownKeys(o, ['x', 'y'], `probePixels(pixels)[${i}]`);
+            xy = [assertNumber(o.x, `probePixels(pixels)[${i}].x`)!, assertNumber(o.y, `probePixels(pixels)[${i}].y`)!];
+          }
+          if (xy[0] < 0 || xy[0] >= size || xy[1] < 0 || xy[1] >= size) {
+            throw new ValidationError(`probePixels(pixels)[${i}] [${xy[0]}, ${xy[1]}] is outside the ${size}×${size} view. Pixel (0,0) is top-left, (${size - 1},${size - 1}) bottom-right.`);
+          }
+          return [xy[0], xy[1]];
+        });
+        if (!currentMeshData) throw new ValidationError('probePixels: no geometry loaded — run code first.');
+        const camera = buildViewCamera(currentMeshData, { elevation, azimuth, ortho });
+        const raw = probePixels(currentMeshData, camera, pts, size);
+        let hitCount = 0;
+        let bounds: PixelMiss['modelPixelBounds'] | undefined;
+        const results = raw.map((r, i) => {
+          if ('hit' in r) {
+            bounds = r.modelPixelBounds;
+            return { pixel: pts[i], hit: false as const };
+          }
+          hitCount++;
+          return { pixel: pts[i], hit: true as const, ...r };
+        });
+        return {
+          results,
+          hitCount,
+          missCount: results.length - hitCount,
+          ...(bounds !== undefined ? { modelPixelBounds: bounds } : {}),
+        };
+      });
+    },
+
     /** Paint a connected patch starting from a seed point on the
      *  surface, expanding through adjacent triangles only as far as the
      *  surface stays within `maxDeviationDeg` of the seed's normal.
@@ -14861,11 +15028,16 @@ async function main() {
     },
 
     /** Paint a specific set of triangle indices as a single region.
-     *  Useful for paintbrush-style selections produced programmatically. */
-    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string }) {
+     *  Useful for paintbrush-style selections produced programmatically.
+     *  `withinPart` clips the ids to one part (an api.label region, incl.
+     *  accepted detected parts) — ids outside it are dropped; nothing left is
+     *  an error. */
+    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string; withinPart?: string }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintFaces requires {triangleIds, color}' };
-      const { triangleIds, color, name } = opts;
+      const { triangleIds, color, name, withinPart } = opts;
+      const scopeErr = validateWithinPart(withinPart, 'paintFaces');
+      if (scopeErr) return { error: scopeErr };
       if (!Array.isArray(triangleIds) || triangleIds.length === 0) return { error: 'triangleIds must be a non-empty array of integers' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
@@ -14878,13 +15050,17 @@ async function main() {
         ids.push(id);
       }
 
-      const triangles = new Set<number>(ids);
+      if (withinPart !== undefined) return commitPaintFromSet(new Set<number>(ids), color as [number, number, number], name, 'paintbrush', withinPart, 'paintFaces');
+      // Stored ids index the BASE mesh (that is how a reload / re-run resolves
+      // a `triangles` region), so ids of a refined paint mesh are recorded as
+      // their base triangles — and painted as such now, so live == reload.
+      const { ids: baseIds, live: triangles } = baseTriangleIds(new Set<number>(ids));
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'paintbrush',
-        { kind: 'triangles', ids: [...triangles] },
+        { kind: 'triangles', ids: baseIds },
         triangles,
       );
 
@@ -14893,6 +15069,133 @@ async function main() {
       syncLockState();
 
       return { id: region.id, name: region.name, triangles: triangles.size };
+    },
+
+    /** The triangles of one PART of the current model — an `api.label`
+     *  region (SCAD `label()`, `BREP.label`), including the parts an import
+     *  gets from detectParts → acceptParts. Ids index the CURRENT paint mesh
+     *  (after any smooth-paint refinement), so they go straight to
+     *  `paintFaces({ triangleIds })` or `findFaces`. Returns `{ name, count,
+     *  area, bbox, triangleIds, truncated? }`; `maxResults` (default 5000) caps
+     *  the id list, `count` is always the full size. Use `withinPart` on the
+     *  paint calls to scope paint to a part without fetching ids. */
+    getPartTriangles(name: unknown, options?: unknown) {
+      return guard(() => {
+        const part = assertString(name, 'getPartTriangles(name)')!;
+        const o = options === undefined ? {} : assertObject(options, 'getPartTriangles(name, options)')!;
+        assertNoUnknownKeys(o, ['maxResults'], 'getPartTriangles(name, options)');
+        const limit = assertNumber(o.maxResults, 'getPartTriangles(name, options).maxResults', { optional: true, integer: true, min: 1 }) ?? 5000;
+        if (!currentMeshData) throw new ValidationError('getPartTriangles: no geometry loaded — run code first.');
+        const err = validateWithinPart(part, 'getPartTriangles');
+        if (err) throw new ValidationError(err);
+        const tris = partTrianglesOnMesh(part, currentMeshData) ?? new Set<number>();
+        const stats = regionTriangleStats(tris, currentMeshData);
+        const ids = [...tris].sort((x, y) => x - y);
+        const { vertProperties: vp, triVerts: tv, numProp: P } = currentMeshData;
+        let area = 0;
+        for (const t of ids) {
+          const i0 = tv[t * 3] * P, i1 = tv[t * 3 + 1] * P, i2 = tv[t * 3 + 2] * P;
+          const ux = vp[i1] - vp[i0], uy = vp[i1 + 1] - vp[i0 + 1], uz = vp[i1 + 2] - vp[i0 + 2];
+          const wx = vp[i2] - vp[i0], wy = vp[i2 + 1] - vp[i0 + 1], wz = vp[i2 + 2] - vp[i0 + 2];
+          area += 0.5 * Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+        }
+        return {
+          name: part,
+          count: ids.length,
+          area: +area.toFixed(6),
+          bbox: stats.bbox,
+          triangleIds: ids.slice(0, limit),
+          ...(ids.length > limit ? { truncated: true } : {}),
+        };
+      });
+    },
+
+    /** The seam between two parts (labels) as ordered polylines of surface
+     *  points: `{ loops: [{ points, closed, length, pointCount }], count }`,
+     *  longest first. A collar that runs right round the neck is one closed
+     *  loop; a seam a third part interrupts is open. Points lie on the mesh
+     *  edges the two parts share (the base mesh of the run). `maxPointsPerLoop`
+     *  (default 256) resamples long loops evenly for a compact answer.
+     *  Pair with paintAlongBoundary to paint a band (collar, cuff, hem). */
+    partBoundary(a: unknown, b: unknown, options?: unknown) {
+      return guard(() => {
+        const r = resolveBoundaryParts(a, b, 'partBoundary');
+        const o = options === undefined ? {} : assertObject(options, 'partBoundary(a, b, options)')!;
+        assertNoUnknownKeys(o, ['maxPointsPerLoop'], 'partBoundary(a, b, options)');
+        const maxPts = assertNumber(o.maxPointsPerLoop, 'partBoundary(a, b, options).maxPointsPerLoop', { optional: true, integer: true, min: 2, max: 100_000 }) ?? 256;
+        const loops = partBoundaryLoops(r.mesh, r.setA, r.setB);
+        return {
+          between: [r.a, r.b],
+          count: loops.length,
+          loops: loops.map((l) => {
+            const pts = capPolylinePoints(l.points, l.closed, l.length, maxPts);
+            const round = (p: [number, number, number]) => p.map((c) => Math.round(c * 1e4) / 1e4) as [number, number, number];
+            return { closed: l.closed, length: +l.length.toFixed(4), pointCount: l.points.length, points: pts.map(round) };
+          }),
+        };
+      });
+    },
+
+    /** Paint a band along the seam between two parts — a collar, cuff, hem,
+     *  sock band, belt edge: features with no sculpted groove of their own
+     *  that part detection can't (and shouldn't) seed. Each seam loop becomes
+     *  one smooth `paintStroke` (densified along the loop, so the band's edge
+     *  is a clean curve, and the subdivision clips it exactly).
+     *  `between: [a, b]` names two parts (labels); `width` is the band width
+     *  in mesh units; `side` is where the band lies: `"a"` / `"b"` (the whole
+     *  width on that part, its edge exactly on the seam) or `"both"`
+     *  (default — centred on the seam). `resolution`/`maxEdge`/`surface`/
+     *  `depth`/`wrapAngleDeg` are paintStroke's. Loops shorter than `width`
+     *  (seam specks) are skipped unless they are the only loop.
+     *  -> `{ regions: [{id, name, triangles}], loops, skippedLoops? }` or `{ error }`. */
+    paintAlongBoundary(opts: unknown) {
+      return guard(() => {
+        const o = assertObject(opts, 'paintAlongBoundary(opts)')!;
+        assertNoUnknownKeys(o, ['between', 'width', 'color', 'side', 'name', 'resolution', 'maxEdge', 'surface', 'depth', 'wrapAngleDeg'], 'paintAlongBoundary(opts)');
+        const between = assertArray(o.between, 'paintAlongBoundary(opts).between');
+        if (between.length !== 2) throw new ValidationError('paintAlongBoundary(opts).between must be [partA, partB].');
+        const r = resolveBoundaryParts(between[0], between[1], 'paintAlongBoundary');
+        const width = assertNumber(o.width, 'paintAlongBoundary(opts).width', { min: 0 })!;
+        if (!(width > 0)) throw new ValidationError('paintAlongBoundary(opts).width must be > 0 (mesh units).');
+        const color = assertNumberTuple(o.color, 3, 'paintAlongBoundary(opts).color') as [number, number, number];
+        const side = o.side === undefined ? 'both' : assertEnum(o.side, ['a', 'b', 'both'] as const, 'paintAlongBoundary(opts).side');
+        const name = assertString(o.name, 'paintAlongBoundary(opts).name', { optional: true }) ?? `${r.a}/${r.b} band`;
+        const loops = partBoundaryLoops(r.mesh, r.setA, r.setB);
+        if (loops.length === 0) throw new ValidationError(`paintAlongBoundary: parts "${r.a}" and "${r.b}" do not touch — there is no seam between them.`);
+        // Loops come longest first: drop seam specks shorter than the band,
+        // then keep at most the configured number of loops (each is one
+        // main-thread stroke).
+        const kept = loops.filter((l, i) => i === 0 || l.length >= width).slice(0, getConfig().ui.boundaryPaintMaxLoops);
+        const radius = side === 'both' ? width / 2 : width;
+        const withinPart = side === 'a' ? r.a : side === 'b' ? r.b : undefined;
+        const step = radius * getConfig().ui.paintStrokePathSpacing;
+        const regions: { id: number; name: string; triangles: number }[] = [];
+        const failures: string[] = [];
+        // All loops are one undo step.
+        runAsUndoGroup(() => kept.forEach((l, i) => {
+          const res = partwrightAPI.paintStroke({
+            points: resamplePolyline(l.points, l.closed, step),
+            radius,
+            color,
+            name: kept.length > 1 ? `${name} ${i + 1}` : name,
+            ...(withinPart ? { withinPart } : {}),
+            ...(o.resolution !== undefined ? { resolution: o.resolution as number } : {}),
+            ...(o.maxEdge !== undefined ? { maxEdge: o.maxEdge as number } : {}),
+            ...(o.surface !== undefined ? { surface: o.surface as string } : {}),
+            ...(o.depth !== undefined ? { depth: o.depth as number } : {}),
+            ...(o.wrapAngleDeg !== undefined ? { wrapAngleDeg: o.wrapAngleDeg as number } : {}),
+          });
+          if ('error' in res) failures.push(String(res.error));
+          else regions.push({ id: res.id, name: res.name, triangles: res.triangles });
+        }));
+        if (regions.length === 0) throw new ValidationError(`paintAlongBoundary: nothing was painted — ${failures[0] ?? 'the stroke missed the surface'}`);
+        return {
+          regions,
+          loops: kept.length,
+          ...(loops.length > kept.length ? { skippedLoops: loops.length - kept.length } : {}),
+          ...(failures.length ? { failures } : {}),
+        };
+      });
     },
 
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
@@ -16435,7 +16738,13 @@ async function main() {
      *  - `normalTolerance`: cosine threshold (default `0.95`, ≈18°)
      *  - `color`: `[r,g,b]` — triangle is currently painted this color (RGB 0..1, matched to ±0.01)
      *  - `region`: number — only triangles inside the listRegions() entry with this `id`
+     *  - `withinPart`: string — only triangles of this part (an api.label region,
+     *    incl. accepted detected parts; see getPartTriangles)
      *  - `maxResults`: cap output (default `5000`)
+     *
+     *  Omit a key to skip that filter. A key passed explicitly as
+     *  `undefined`/`null`, or an unknown key, is an error — `{ region: undefined }`
+     *  used to match the whole mesh silently.
      */
     findFaces(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
@@ -16443,6 +16752,7 @@ async function main() {
       normalTolerance?: number;
       color?: [number, number, number];
       region?: number;
+      withinPart?: string;
       maxResults?: number;
       /** See paintInBox.coverageMode. Applies to the `box` predicate
        *  only; the normal / color / region predicates are per-triangle
@@ -16455,8 +16765,12 @@ async function main() {
       if (typeof opts !== 'object' || opts === null) {
         return { error: 'findFaces requires an options object — see /ai.md#color-regions' };
       }
+      const keyErr = findFacesKeyError(opts as Record<string, unknown>);
+      if (keyErr) return { error: keyErr };
 
-      const { box, normal, normalTolerance, color, region, maxResults, coverageMode, maxTriangleArea } = opts;
+      const { box, normal, normalTolerance, color, region, maxResults, coverageMode, maxTriangleArea, withinPart } = opts;
+      const partErr = validateWithinPart(withinPart, 'findFaces');
+      if (partErr) return { error: partErr };
       const coverageErr = validateCoverageMode(coverageMode);
       if (coverageErr) return { error: coverageErr };
       const areaErr = validateMaxTriangleArea(maxTriangleArea);
@@ -16509,6 +16823,10 @@ async function main() {
         const found = getRegions().find(r => r.id === region);
         if (!found) return { error: `findFaces.region: no region with id=${region}. Use listRegions() to see ids.` };
         regionTriangles = found.triangles;
+      }
+      if (withinPart !== undefined) {
+        const partTris = partTrianglesOnMesh(withinPart, currentMeshData) ?? new Set<number>();
+        regionTriangles = regionTriangles ? intersectWithScope(partTris, regionTriangles).triangles : partTris;
       }
 
       const limit = maxResults ?? 5000;
@@ -17343,8 +17661,8 @@ async function main() {
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
         'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"brush"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method; brush {to, points+radius | triangles, mode?:"triangles"|"patches"} is one brush stroke (patches = brush-merge whole parts)', docs: '/ai/segmentation.md' },
-        'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
-        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
+        'renderParts':       { signature: 'renderParts({views?:["front",...|{azimuth,elevation}], azimuth?, elevation?, focus?:part, size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks); custom angles and focus (zoom onto one part) -> {image, views, focus?, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
+        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft; tiles are captioned with the detector + the params that differ -> {results:[{caption, quality, partCount}], image}', docs: '/ai/segmentation.md' },
         'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
         'acceptParts':       { signature: 'await acceptParts({label?, smoothEdges?, applyColors?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version; each part keeps the colour it shows (explicit, else its overlay colour) as its model colour (applyColors:false = labels only); with edge smoothing on the import is re-meshed along the smooth boundaries -> {ok, parts, version, labels, smoothEdges?}', docs: '/ai/segmentation.md' },
         'discardParts':      { signature: 'await discardParts() -- Drop the draft and its overlay', docs: '/ai/segmentation.md' },
@@ -17353,7 +17671,8 @@ async function main() {
         'showPartPresetPreview': { signature: 'showPartPresetPreview(index | null) -- Show one preset result in the viewport (null = back to the draft)', docs: '/ai/segmentation.md' },
         'applyPartPreset':   { signature: 'await applyPartPreset(index) -- Make a previewPartPresets result the draft -> draft summary', docs: '/ai/segmentation.md' },
         'getPartSeeds':      { signature: 'getPartSeeds() -- The parts\' pins (the panel markers; auto = placed by the draft) -> [{label, point, auto?}]', docs: '/ai/segmentation.md' },
-        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z], color?}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
+        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z], color?, maxRadius?}]) -- Replace the working seeds (does not re-run detection); maxRadius caps a seed\'s geodesic growth', docs: '/ai/segmentation.md' },
+        'previewSeeds':      { signature: 'previewSeeds(seeds?, {importIndex?}) -- Check seeds before detecting: nearest triangle, surface point, distance, miss flag, and the draft part there -> {seeds:[{label, triangle, point, distance, onSurface, miss?, part?}], misses}', docs: '/ai/segmentation.md' },
         'openPartsPanel':    { signature: 'openPartsPanel() -- Open the Part Detection panel', docs: '/ai/segmentation.md' },
         'getPartSelection':  { signature: 'getPartSelection() -- Selected draft parts (shared with the panel and the model) -> {parts:[{id,name}]}', docs: '/ai/segmentation.md' },
         'setPartSelection':  { signature: 'setPartSelection([id|name, ...] | null, {mode?:"replace"|"add"|"toggle"|"remove"}) -- Select draft parts (highlighted in the viewport)', docs: '/ai/segmentation.md' },
@@ -17407,6 +17726,7 @@ async function main() {
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixels':     { signature: 'probePixels([[x,y] | {x,y}, ...], view) -- Batch probePixel: many pixels of one rendered view in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds present on any miss; null = model not in view)', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
@@ -17504,14 +17824,17 @@ async function main() {
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
         'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?, withinPart?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
-        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
+        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?, withinPart?}) -- Paint specific triangle indices (withinPart clips them to one part)', docs: '/ai/colors.md' },
+        'getPartTriangles': { signature: 'getPartTriangles(name, {maxResults?}) -- Triangle ids of one part (api.label / accepted detected part) on the current paint mesh -> {name, count, area, bbox, triangleIds, truncated?}', docs: '/ai/colors.md' },
+        'partBoundary':    { signature: 'partBoundary(a, b, {maxPointsPerLoop?}) -- The seam between two parts as ordered loops of surface points -> {loops:[{points, closed, length, pointCount}], count}', docs: '/ai/colors.md' },
+        'paintAlongBoundary': { signature: 'paintAlongBoundary({between:[a,b], width, color, side?:"a"|"b"|"both", name?, resolution?, maxEdge?}) -- Paint a smooth band along the seam between two parts (collar, cuff, hem) -> {regions, loops}', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?, withinPart?}) -- Paint planar slab range', docs: '/ai/colors.md' },
         'paintPattern':    { signature: 'paintPattern({pattern:"soccer"|"stripes"|"spots"|"patches"|"gradient"|"checker", colors:[base, mark, third?], withinPart?, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, smooth?, resolution?, maxEdge?, name?}) -- Algorithmic colourway over a part. soccer = ball panels fit to the part; smooth:true (soccer/stripes/checker) clips seams sub-triangle -> {id, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere?}', docs: '/ai/colors.md' },
         'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?, withinPart?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withinPart?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
-        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai/colors.md' },
+        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, withinPart?, maxResults?}) -- Query triangle ids by geometry/color filters (omit a key to skip it; an explicit undefined/null or unknown key is an error)', docs: '/ai/colors.md' },
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai/colors.md' },
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
@@ -18301,12 +18624,13 @@ async function main() {
   ) {
     if (!currentMeshData) return { error: 'No geometry loaded' };
     const regionName = name ?? `Region ${getRegions().length + 1}`;
+    const base = baseTriangleIds(triangles);
     const region = addRegion(
       regionName,
       color,
       source,
-      scopedDescriptor({ kind: 'triangles', ids: [...triangles] }, withinPart),
-      triangles,
+      scopedDescriptor({ kind: 'triangles', ids: base.ids }, withinPart),
+      base.live,
     );
     const emptyErr = emptyScopeError(region, withinPart, method);
     if (emptyErr) return emptyErr;
@@ -18314,6 +18638,38 @@ async function main() {
     syncLockState();
     const stats = regionTriangleStats(region.triangles, currentMeshData);
     return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** A `triangles` descriptor stores BASE-mesh ids (rehydrate and re-runs
+   *  resolve it through the base → refined map). When the paint mesh has been
+   *  refined by smooth paint, map the given current-mesh ids to their base
+   *  triangles and return the full current-mesh set those cover, so the live
+   *  region matches what a reload resolves. Unrefined (or unrelated) meshes
+   *  pass through unchanged. */
+  function baseTriangleIds(tris: Set<number>): { ids: number[]; live: Set<number> } {
+    const mesh = currentMeshData;
+    const lineage = mesh ? meshLineage.get(mesh) : undefined;
+    if (!mesh || !lineage || lineage.root !== paintBaseMesh) return { ids: [...tris], live: tris };
+    const roots = new Set<number>();
+    for (const t of tris) roots.add(lineage.toRoot[t]);
+    roots.delete(-1);
+    const live = new Set<number>();
+    for (let t = 0; t < lineage.toRoot.length; t++) if (roots.has(lineage.toRoot[t])) live.add(t);
+    return { ids: [...roots], live };
+  }
+
+  /** Resolve two part names for the boundary calls: both must be labels of
+   *  the current run and differ. Triangle sets index the run's label mesh. */
+  function resolveBoundaryParts(a: unknown, b: unknown, method: string): { a: string; b: string; setA: Set<number>; setB: Set<number>; mesh: MeshData } {
+    const na = assertString(a, `${method}: part a`)!;
+    const nb = assertString(b, `${method}: part b`)!;
+    if (na === nb) throw new ValidationError(`${method}: the two parts must differ (got "${na}" twice).`);
+    for (const nm of [na, nb]) {
+      const e = validateWithinPart(nm, method);
+      if (e) throw new ValidationError(e);
+    }
+    if (!currentLabelMesh || !currentLabelMap) throw new ValidationError(`${method}: no geometry loaded — run code first.`);
+    return { a: na, b: nb, setA: currentLabelMap.get(na)!, setB: currentLabelMap.get(nb)!, mesh: currentLabelMesh };
   }
 
   /** Validate a paint method's `withinPart` option: the name of a part (label)

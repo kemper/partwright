@@ -205,7 +205,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -316,6 +316,17 @@ function openDB(): Promise<IDBDatabase> {
         // Lets the rail count a session's unexpired entries without loading
         // their (heavy) versions — see countDeletedObjects.
         store.createIndex('sessionId_deletedAt', ['sessionId', 'deletedAt'], { unique: false });
+      }
+      // v10: local cache of smooth-paint refined meshes, keyed by a CONTENT key
+      // (base mesh + refine descriptors + labels — see paintRefineKey in
+      // main.ts), so reopening a painted version skips rebuilding every smooth
+      // edge. Not tied to a session or version and never exported: an entry
+      // is valid for any version with the same content. The
+      // [lastUsed, bytes] index lets eviction walk entries oldest-first and
+      // sum their sizes with a key cursor, without loading the meshes.
+      if (!db.objectStoreNames.contains('paintRefineCache')) {
+        const store = db.createObjectStore('paintRefineCache', { keyPath: 'key' });
+        store.createIndex('lastUsed_bytes', ['lastUsed', 'bytes'], { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -1273,7 +1284,9 @@ export async function clearAllData(): Promise<void> {
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
+  if (db.objectStoreNames.contains('paintRefineCache')) stores.push('paintRefineCache');
   const txn = db.transaction(stores, 'readwrite');
+  if (db.objectStoreNames.contains('paintRefineCache')) txn.objectStore('paintRefineCache').clear();
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
   txn.objectStore('notes').clear();
@@ -1402,4 +1415,84 @@ export async function clearInboxStore(store: InboxStore): Promise<void> {
   const txn = db.transaction(store, 'readwrite');
   txn.objectStore(store).clear();
   await txComplete(txn);
+}
+
+// === Smooth-paint refined-mesh cache (v9) ===
+//
+// Content-keyed, local-only, best-effort. Entries are evicted least-recently-
+// used first down to a total-bytes budget. Nothing references them, so a
+// deleted session's entries simply age out through the same LRU (clearAllData
+// and the Data-tab wipe clear the store outright).
+
+export interface PaintRefineCacheEntry {
+  key: string;
+  mesh: { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number };
+  /** Source triangle on the base mesh, per refined triangle. */
+  toRoot: Int32Array;
+  /** Buffer bytes (vertProperties + triVerts + toRoot) — the eviction weight. */
+  bytes: number;
+  /** ms epoch of the last write or (coarse) read. */
+  lastUsed: number;
+}
+
+/** Look a refined mesh up by content key. A hit whose `lastUsed` is older
+ *  than `touchAfterMs` is re-stamped (that rewrites the row, so reads only
+ *  touch it occasionally). Never throws: any failure reads as a miss. */
+export async function getPaintRefineCache(key: string, touchAfterMs: number): Promise<PaintRefineCacheEntry | null> {
+  try {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains('paintRefineCache')) return null;
+    const txn = db.transaction('paintRefineCache', 'readwrite');
+    const store = txn.objectStore('paintRefineCache');
+    let hit: PaintRefineCacheEntry | null = null;
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const row = req.result as PaintRefineCacheEntry | undefined;
+      if (!row) return;
+      hit = row;
+      const now = Date.now();
+      // Chained from the get's callback — no await between get and put.
+      if (now - row.lastUsed > touchAfterMs) store.put({ ...row, lastUsed: now });
+    };
+    await txComplete(txn);
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
+/** Cache a refined mesh, then evict least-recently-used entries until the
+ *  store fits `maxTotalBytes`. Its own transaction, best-effort: returns
+ *  false (and caches nothing) when the entry alone is over budget or the
+ *  write fails (e.g. QuotaExceededError) — never throws. */
+export async function putPaintRefineCache(
+  entry: Omit<PaintRefineCacheEntry, 'bytes' | 'lastUsed'>,
+  maxTotalBytes: number,
+): Promise<boolean> {
+  const bytes = entry.mesh.vertProperties.byteLength + entry.mesh.triVerts.byteLength + entry.toRoot.byteLength;
+  if (bytes > maxTotalBytes) return false;
+  try {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains('paintRefineCache')) return false;
+    const txn = db.transaction('paintRefineCache', 'readwrite');
+    const store = txn.objectStore('paintRefineCache');
+    const row: PaintRefineCacheEntry = { ...entry, bytes, lastUsed: Date.now() };
+    const putReq = store.put(row);
+    putReq.onsuccess = () => {
+      // Newest first: keep entries while they fit, delete the older rest.
+      let total = 0;
+      const cur = store.index('lastUsed_bytes').openKeyCursor(null, 'prev');
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return;
+        total += (c.key as [number, number])[1];
+        if (total > maxTotalBytes) store.delete(c.primaryKey);
+        c.continue();
+      };
+    };
+    await txComplete(txn);
+    return true;
+  } catch {
+    return false;
+  }
 }

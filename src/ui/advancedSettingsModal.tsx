@@ -781,6 +781,42 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
         <Field
+          label="Cache smooth-paint mesh up to"
+          unit="tris"
+          tooltip="Smooth paint (brush strokes, smooth slabs/boxes/cylinders, smooth patterns) subdivides the mesh under its edges. That refined mesh is cached locally in this browser (never in exports or share links) so reopening a painted version skips rebuilding every smooth edge. Above this triangle count it is not cached (reopening rebuilds the edges, which can take a while). 0 = never cache. Costs roughly 20 bytes per triangle."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefinePersistMaxTriangles}
+          value={c.renderer.paintRefinePersistMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'paintRefinePersistMaxTriangles', v)}
+        />
+        <Field
+          label="Smooth-paint mesh cache size"
+          unit="MB"
+          tooltip="Total size of the local smooth-paint mesh cache. When it is full, the least recently used meshes are dropped (their versions just rebuild their smooth edges on the next open)."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheMaxMB}
+          value={c.renderer.paintRefineCacheMaxMB}
+          min={0} max={4096} integer
+          onChange={v => set('renderer', 'paintRefineCacheMaxMB', v)}
+        />
+        <Field
+          label="Smooth-paint cache touch interval"
+          unit="min"
+          tooltip="Reopening a cached version marks its mesh as recently used at most this often (marking rewrites the entry). Lower = more precise least-recently-used eviction, more writes."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheTouchMinutes}
+          value={c.renderer.paintRefineCacheTouchMinutes}
+          min={0} max={10_080} integer
+          onChange={v => set('renderer', 'paintRefineCacheTouchMinutes', v)}
+        />
+        <Field
+          label="probePixels batch limit"
+          unit="px"
+          tooltip="The most pixels one partwright.probePixels call may cast a ray through. Each pixel is one ray against the model."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.probePixelsMaxPixels}
+          value={c.renderer.probePixelsMaxPixels}
+          min={1} max={100_000} integer
+          onChange={v => set('renderer', 'probePixelsMaxPixels', v)}
+        />
+        <Field
           label="SDF fast-preview coarsening"
           unit="×"
           hint="Higher = faster but rougher preview. Set to 1 to disable the preview pass."
@@ -1085,6 +1121,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('segmentation', 'labelGridResolution', v)}
         />
         <Field
+          label="Seed miss distance"
+          unit="edges"
+          hint="previewSeeds flags seeds farther than this from the surface."
+          tooltip="previewSeeds reports a seed as a miss when it lies farther than this many median edge lengths from the model's surface (detection would still snap it to the nearest triangle, usually not the intended spot)."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedMissEdgeLengths}
+          value={c.segmentation.seedMissEdgeLengths}
+          min={0.5} max={100} step={0.5}
+          onChange={v => set('segmentation', 'seedMissEdgeLengths', v)}
+        />
+        <Field
+          label="Focused render padding"
+          unit="×"
+          hint="Margin around a part when renderParts focuses on it."
+          tooltip="renderParts({ focus: 'part' }) frames the camera on that part's bounding box, padded by this fraction of its largest dimension."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.focusPadding}
+          value={c.segmentation.focusPadding}
+          min={0} max={2} step={0.05}
+          onChange={v => set('segmentation', 'focusPadding', v)}
+        />
+        <Field
           label="Live re-detect delay"
           unit="ms"
           hint="Live mode waits this long after your last change."
@@ -1319,6 +1375,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paintStrokePathSpacing}
           min={0.05} max={1}
           onChange={v => set('ui', 'paintStrokePathSpacing', v)}
+        />
+        <Field
+          label="Boundary paint loop limit"
+          unit="loops"
+          hint="paintAlongBoundary paints at most this many seam loops."
+          tooltip="paintAlongBoundary paints one smooth stroke per seam loop between two parts. A noisy seam can break into many small loops; only the longest this many are painted and the rest are reported as skippedLoops."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.boundaryPaintMaxLoops}
+          value={c.ui.boundaryPaintMaxLoops}
+          min={1} max={200} integer
+          onChange={v => set('ui', 'boundaryPaintMaxLoops', v)}
         />
         <Field
           label="Tooltip delay"

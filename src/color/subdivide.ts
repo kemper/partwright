@@ -5,10 +5,11 @@
 // brush boundary crosses (only those — never the deep interior or exterior), so
 // the painted region's edge can follow the brush outline closely. Subdivision
 // refines just those rim triangles 1→4 until they're below a target edge
-// length; coarse neighbours are left as-is, which leaves zero-width T-junctions
-// where the fine band meets the coarse interior. That keeps the result lean and
-// fast (the painted band is not strictly 2-manifold — fine for rendering colours
-// and most slicers; see the smooth-brush notes).
+// length. The passes leave T-junctions where the fine band meets coarse
+// neighbours; one repair step after the last pass re-fans each such neighbour
+// through its hanging vertices (closeTJunctions), so the band meets the coarse
+// interior vertex-to-vertex — bare T-junctions rasterized as 1–2 px speckle
+// cracks along refined paint edges. The interior stays coarse.
 //
 // Nothing here mutates the input mesh. The base (authored-code) mesh is always
 // kept pristine; the refined mesh is rebuilt from base + stroke descriptors so
@@ -107,6 +108,12 @@ export interface RefineRegion {
    *  would pass for a straight boundary, so the straight-edge skip is disabled
    *  wherever a sample reaches the bound. */
   fieldBound?: number;
+  /** How far the T-junction repair after refinement reaches, in multiples of
+   *  `maxEdge`: only band neighbours whose longest edge is at most this long
+   *  are re-fanned (see TJ_CLOSE_MAX_EDGE_RATIO). Omitted = every neighbour.
+   *  Brush strokes set it: they are appended one by one, and each later
+   *  stroke over a re-fanned HUGE triangle would refine its slivers one by one. */
+  tjReach?: number;
 }
 
 /** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
@@ -124,6 +131,12 @@ const MAX_PASSES = 16;
  *  rather than freeze. */
 const MAX_REFINED_TRIANGLES = 5_000_000;
 
+/** Version of the refinement algorithm (passes, T-junction repair, clip).
+ *  Part of the smooth-paint cache key (main.ts paintRefineKey): bump it
+ *  whenever a change here alters the refined mesh for the same inputs, so
+ *  meshes cached by an older build are rebuilt instead of reused. */
+export const REFINE_ALGO_VERSION = 2;
+
 /** Boundary-clip snap tolerance (fraction of an edge). When the `field = 0`
  *  contour crosses an edge within this fraction of an endpoint, the crossing is
  *  snapped exactly onto that vertex instead of spawning a near-coincident new
@@ -135,6 +148,25 @@ const MAX_REFINED_TRIANGLES = 5_000_000;
  *  stay crack-free; the collapsed sliver becomes degenerate and is dropped. At
  *  1% of an edge the boundary shift is sub-pixel (and zero on a refined rim). */
 const CLIP_SNAP_EPS = 1e-2;
+
+/** T-junction repair reach for brush strokes and image stamps (painted one by
+ *  one), in multiples of `maxEdge`: only a neighbour of the refined band whose
+ *  longest edge is at most this long is re-fanned through its hanging
+ *  vertices. Re-fanning a HUGE coarse triangle (a flat CAD face 1000× the brush
+ *  edge) turns it into hundreds of long slivers that every later stroke over
+ *  that face then refines one by one — 4× the triangles on the many-strokes
+ *  benchmark. Scans, sculpts and tessellated curves sit inside the reach (their
+ *  edges are a few maxEdges). Patterns / slabs / boxes / cylinders are one
+ *  region each and repair every neighbour. */
+const TJ_CLOSE_MAX_EDGE_RATIO = 16;
+
+/** Longest edge of triangle `t`, squared. */
+function triMaxEdge2(mesh: MeshData, t: number): number {
+  const v = mesh.triVerts, p = mesh.vertProperties, P = mesh.numProp;
+  const a = v[t * 3] * P, b = v[t * 3 + 1] * P, c = v[t * 3 + 2] * P;
+  const d = (i: number, j: number) => (p[i] - p[j]) ** 2 + (p[i + 1] - p[j + 1]) ** 2 + (p[i + 2] - p[j + 2]) ** 2;
+  return Math.max(d(a, b), d(b, c), d(c, a));
+}
 
 /** Whether the `slab` surface constraint is active for a stroke (mode not
  *  geodesic, a finite depth, and per-sample normals to measure offset against). */
@@ -979,6 +1011,7 @@ export function brushRefineRegion(stroke: BrushStroke): RefineRegion {
     // A spray has no hard edge (it dithers), so it skips the clip.
     field: stroke.spray ? undefined : (px, py, pz) => strokeSignedDist(px, py, pz, stroke),
     fieldBound: sampleGridFor(stroke)?.bound,
+    tjReach: TJ_CLOSE_MAX_EDGE_RATIO,
   };
 }
 
@@ -1132,14 +1165,22 @@ function clipByField(
     // Snap a crossing that lands within CLIP_SNAP_EPS of an endpoint ONTO that
     // existing vertex rather than minting a near-coincident one. A contour
     // grazing a corner (both of a vertex's edges crossing near it) would
-    // otherwise spawn a long razor-thin sliver; snapping collapses it to a
-    // degenerate triangle the emit loop drops. Pure function of the (shared)
+    // otherwise spawn a long razor-thin sliver; snapping collapses it and
+    // emitPoly re-fans what is left. Pure function of the (shared)
     // edge → neighbours snap identically, so no T-junction / crack. `!(t > …)`
     // also routes a NaN field ratio to the `a` endpoint.
+    //
+    // Also snap onto an endpoint that sits (nearly) ON the contour — within
+    // CLIP_SNAP_EPS × maxEdge of it in field units. That decision is per
+    // VERTEX, so every edge around such a vertex agrees: a contour running
+    // a hair beside a line of mesh vertices (a straight edge grazing a grid
+    // column, the long fan triangles of the band closure) snaps onto them
+    // instead of leaving hair-thin slivers along the whole line.
+    const onTol = CLIP_SNAP_EPS * region.maxEdge;
     let m: number;
-    if (!(t > CLIP_SNAP_EPS)) {
+    if (!(t > CLIP_SNAP_EPS) || (Math.abs(fa) <= onTol && Math.abs(fa) <= Math.abs(fb))) {
       m = a;
-    } else if (!(t < 1 - CLIP_SNAP_EPS)) {
+    } else if (!(t < 1 - CLIP_SNAP_EPS) || Math.abs(fb) <= onTol) {
       m = b;
     } else {
       m = nextV++;
@@ -1157,24 +1198,45 @@ function clipByField(
     outTris.push(a, b, c);
     childParent.push(parent);
   };
-  // Emit a clipped sub-triangle, skipping any that snapping has collapsed to a
-  // line or point (two coincident indices, or three collinear vertices). These
-  // carry zero surface area, so dropping them removes no coverage and can't open
-  // a crack — it just keeps the streak slivers out of the output. The untouched
-  // sibling sub-triangles already tile the parent's real area.
   // Position of a vertex by index — original verts live in `vertProperties`,
   // freshly-minted crossings in `newVertProps` (indices ≥ numVert).
   const posOf = (v: number, axis: number): number =>
     v < numVert ? vertProperties[v * P + axis] : newVertProps[(v - numVert) * P + axis];
-  const emitClip = (a: number, b: number, c: number, parent: number): void => {
-    if (a === b || b === c || a === c) return;
+  /** Zero-area triangle: coincident indices or (near-)collinear corners. */
+  const degenerate = (a: number, b: number, c: number): boolean => {
+    if (a === b || b === c || a === c) return true;
     const e1x = posOf(b, 0) - posOf(a, 0), e1y = posOf(b, 1) - posOf(a, 1), e1z = posOf(b, 2) - posOf(a, 2);
     const e2x = posOf(c, 0) - posOf(a, 0), e2y = posOf(c, 1) - posOf(a, 1), e2z = posOf(c, 2) - posOf(a, 2);
     const nx = e1y * e2z - e1z * e2y;
     const ny = e1z * e2x - e1x * e2z;
     const nz = e1x * e2y - e1y * e2x;
-    if (nx * nx + ny * ny + nz * nz <= 1e-20) return; // collinear → zero area
-    emit(a, b, c, parent);
+    const n2 = nx * nx + ny * ny + nz * nz;
+    const l2 = (e1x * e1x + e1y * e1y + e1z * e1z) * (e2x * e2x + e2y * e2y + e2z * e2z);
+    return n2 <= 1e-20 || n2 <= 1e-12 * l2;
+  };
+  // Emit one side of a clipped triangle — a convex polygon in winding order
+  // whose corners may include crossings snapped onto (or lying on the edge
+  // between) other corners. Coincident corners collapse; the polygon is then
+  // fanned from a corner that gives no zero-area triangle. Simply dropping the
+  // degenerate sub-triangles (the old behaviour) also dropped the crossing they
+  // carried, while the neighbour across that edge kept it — a T-junction, i.e.
+  // a crack at panel corners and wherever the contour grazes a vertex.
+  const emitPoly = (poly: number[], parent: number): void => {
+    const p: number[] = [];
+    for (const v of poly) if (p[p.length - 1] !== v) p.push(v);
+    while (p.length > 1 && p[0] === p[p.length - 1]) p.pop();
+    if (p.length < 3) return;
+    const n = p.length;
+    for (let k = 0; k < n; k++) {
+      let ok = true;
+      for (let i = 1; i < n - 1 && ok; i++) if (degenerate(p[k], p[(k + i) % n], p[(k + i + 1) % n])) ok = false;
+      if (!ok) continue;
+      for (let i = 1; i < n - 1; i++) emit(p[k], p[(k + i) % n], p[(k + i + 1) % n], parent);
+      return;
+    }
+    // Every fan has a sliver (a polygon that is itself a sliver): emit the
+    // non-degenerate triangles of the first fan; the rest carry no area.
+    for (let i = 1; i < n - 1; i++) if (!degenerate(p[0], p[i], p[i + 1])) emit(p[0], p[i], p[i + 1], parent);
   };
 
   for (let t = 0; t < numTri; t++) {
@@ -1197,9 +1259,8 @@ function clipByField(
     else if (in1 !== in0 && in1 !== in2) { A = v1; B = v2; C = v0; }
     else { A = v2; B = v0; C = v1; }
     const P1 = crossOf(A, B), Q = crossOf(A, C);
-    emitClip(A, P1, Q, t);
-    emitClip(P1, B, C, t);
-    emitClip(P1, C, Q, t);
+    emitPoly([A, P1, Q], t);
+    emitPoly([P1, B, C, Q], t);
   }
 
   const totalVert = numVert + newVertProps.length / P;
@@ -1216,15 +1277,19 @@ function clipByField(
   return { mesh: newMesh, childToParent: Int32Array.from(childParent) };
 }
 
+/** Edge key for the cross-pass split log (vertex ids are stable across
+ *  passes: originals keep their index, new vertices are appended). */
+const splitKey = (a: number, b: number): number => (a < b ? a * 0x4000000 + b : b * 0x4000000 + a);
+
 /** One refinement pass that splits ONLY the `selected` (rim) triangles 1→4,
  *  leaving every other triangle untouched. Edge midpoints are shared between
  *  adjacent selected triangles (watertight within the refined band), but where a
  *  selected triangle meets an unselected one the shared edge is split on the
- *  selected side only — a zero-width T-junction. That's deliberate: it keeps the
- *  disc interior coarse (just the rim is fine), which is ~10x leaner than a
- *  crack-free graded refinement. The seams are invisible when rendering colours
- *  and fine for GLB / most slicers, though the painted band is not strictly
- *  2-manifold (see the smooth-brush notes).
+ *  selected side only — a T-junction. The passes keep it that way (closing it
+ *  per pass would feed long fan triangles back into the next pass's selection
+ *  and flood the surface); `closeTJunctions` repairs every one in a single
+ *  step after the last pass. Each midpoint is logged in `splits` (edge →
+ *  midpoint) for that repair.
  *
  *  Returns the new mesh plus `childToParent`: for each output triangle, the
  *  index of the input triangle it came from (so callers can carry per-triangle
@@ -1232,6 +1297,7 @@ function clipByField(
 function subdivideSelected(
   mesh: MeshData,
   selected: Set<number>,
+  splits?: Map<number, number>,
 ): { mesh: MeshData; childToParent: Int32Array } {
   const { vertProperties, triVerts, numVert, numTri, numProp } = mesh;
   const P = numProp;
@@ -1252,6 +1318,7 @@ function subdivideSelected(
     if (existing !== undefined) return existing;
     const m = nextV++;
     midIndex.set(k, m);
+    splits?.set(splitKey(a, b), m);
     for (let p = 0; p < P; p++) {
       newVertProps.push((vertProperties[a * P + p] + vertProperties[b * P + p]) / 2);
     }
@@ -1290,6 +1357,97 @@ function subdivideSelected(
   return { mesh: newMesh, childToParent: Int32Array.from(childParent) };
 }
 
+/** Remove the T-junctions the refinement passes left: every triangle with
+ *  hanging vertices on its edges (midpoints its refined neighbours minted,
+ *  recursively — a coarse edge can carry several after many passes) is
+ *  re-triangulated as a fan from a new vertex at its centroid through all of
+ *  its boundary points, so neighbours meet vertex-to-vertex. A bare T-junction
+ *  rasterizes as 1–2 px cracks — the speckle seen along refined smooth-paint
+ *  edges (soccer-panel corners, brush strokes). Only triangles touching the
+ *  band change, and nothing is fed back into refinement, so it can't cascade.
+ *  `closable` (optional) leaves triangles outside a region's scope exact (a
+ *  pattern on the ball never splits the hand touching it); only that border
+ *  keeps its T-junctions. */
+function closeTJunctions(
+  mesh: MeshData,
+  splits: Map<number, number>,
+  closable?: (t: number) => boolean,
+): { mesh: MeshData; childToParent: Int32Array } | null {
+  if (splits.size === 0) return null;
+  const { vertProperties, triVerts, numVert, numTri, numProp: P } = mesh;
+  // Only a triangle with two corners on split edges can carry a hanging
+  // vertex: mark those endpoints so the (large) untouched rest of the mesh
+  // skips the chain lookups.
+  const onSplit = new Uint8Array(numVert);
+  for (const k of splits.keys()) {
+    onSplit[Math.floor(k / 0x4000000)] = 1;
+    onSplit[k % 0x4000000] = 1;
+  }
+  // Hanging points strictly inside edge (a → b), in order from a to b.
+  const chain = (a: number, b: number, out: number[]): void => {
+    const m = splits.get(splitKey(a, b));
+    if (m === undefined) return;
+    chain(a, m, out);
+    out.push(m);
+    chain(m, b, out);
+  };
+  const outTris: number[] = [];
+  const childParent: number[] = [];
+  const extra: number[] = [];
+  let nextV = numVert;
+  let changed = false;
+  const ring: number[] = [];
+  const c01: number[] = [], c12: number[] = [], c20: number[] = [];
+  for (let t = 0; t < numTri; t++) {
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    if (onSplit[v0] + onSplit[v1] + onSplit[v2] < 2) {
+      outTris.push(v0, v1, v2);
+      childParent.push(t);
+      continue;
+    }
+    c01.length = 0; c12.length = 0; c20.length = 0;
+    chain(v0, v1, c01); chain(v1, v2, c12); chain(v2, v0, c20);
+    const sides = (c01.length ? 1 : 0) + (c12.length ? 1 : 0) + (c20.length ? 1 : 0);
+    if (sides === 0 || (closable && !closable(t))) {
+      outTris.push(v0, v1, v2);
+      childParent.push(t);
+      continue;
+    }
+    changed = true;
+    if (sides === 1) {
+      // Hanging points on one edge only (the common case): fan from the
+      // opposite corner — no new vertex, one triangle per edge segment.
+      const [a, b, apex, pts] = c01.length ? [v0, v1, v2, c01] : c12.length ? [v1, v2, v0, c12] : [v2, v0, v1, c20];
+      let prev = a;
+      for (const p of [...pts, b]) {
+        outTris.push(apex, prev, p);
+        childParent.push(t);
+        prev = p;
+      }
+      continue;
+    }
+    ring.length = 0;
+    ring.push(v0, ...c01, v1, ...c12, v2, ...c20);
+    const c = nextV++;
+    for (let p = 0; p < P; p++) extra.push((vertProperties[v0 * P + p] + vertProperties[v1 * P + p] + vertProperties[v2 * P + p]) / 3);
+    for (let i = 0; i < ring.length; i++) {
+      outTris.push(c, ring[i], ring[(i + 1) % ring.length]);
+      childParent.push(t);
+    }
+  }
+  if (!changed) return null;
+  // Same OOM guard as the passes: past the ceiling keep the T-junctions.
+  if (outTris.length / 3 > MAX_REFINED_TRIANGLES) return null;
+  const totalVert = numVert + extra.length / P;
+  const vp = new Float32Array(totalVert * P);
+  vp.set(vertProperties.subarray(0, numVert * P), 0);
+  vp.set(extra, numVert * P);
+  return {
+    mesh: { vertProperties: vp, triVerts: new Uint32Array(outTris), numVert: totalVert, numTri: outTris.length / 3, numProp: P },
+    childToParent: Int32Array.from(childParent),
+  };
+}
+
 /** Refine a specific set of triangles until all their edges are ≤ maxEdge.
  *  Unlike buildRefinedMesh (which takes a spatial RefineRegion), this accepts
  *  an explicit triangle index set — useful for stamp smooth mode where the
@@ -1318,6 +1476,7 @@ export function buildRefinedMeshFromSet(
   for (let i = 0; i < comp.length; i++) comp[i] = i;
 
   let current = new Set<number>(seedTris);
+  const splits = new Map<number, number>();
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const selected = new Set<number>();
@@ -1333,7 +1492,7 @@ export function buildRefinedMeshFromSet(
     if (selected.size === 0) break;
     if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
 
-    const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
+    const { mesh: nm, childToParent } = subdivideSelected(mesh, selected, splits);
     comp = composeMaps(comp, childToParent);
 
     const p2c = childrenByParent(childToParent);
@@ -1345,6 +1504,13 @@ export function buildRefinedMeshFromSet(
     }
     current = next;
     mesh = nm;
+  }
+  const reach2 = (TJ_CLOSE_MAX_EDGE_RATIO * maxEdge) ** 2;
+  const closeMesh = mesh;
+  const closed = closeTJunctions(mesh, splits, (t) => triMaxEdge2(closeMesh, t) <= reach2);
+  if (closed) {
+    mesh = closed.mesh;
+    comp = composeMaps(comp, closed.childToParent);
   }
 
   return { mesh: propagateTriColors(base, mesh, comp), childToParent: comp };
@@ -1366,15 +1532,26 @@ export function buildRefinedMesh(
 
   for (const [ri, region] of regions.entries()) {
     onRegion?.(ri, regions.length);
+    const splits = new Map<number, number>();
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       const selected = selectByClassify(mesh, region, comp);
       if (selected.size === 0) break;
       // Each selected triangle becomes 4 (+3 net). Stop before crossing the
       // safety ceiling so a tiny maxEdge can't OOM the tab.
       if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
-      const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
+      const { mesh: nm, childToParent } = subdivideSelected(mesh, selected, splits);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
+    }
+    // Close the T-junctions the passes left (crack-free band edge), keeping
+    // triangles outside the region's scope exact.
+    const scope = region.allow;
+    const reach2 = region.tjReach === undefined ? Infinity : (region.tjReach * region.maxEdge) ** 2;
+    const closeMesh = mesh, closeComp = comp;
+    const closed = closeTJunctions(mesh, splits, (t) => (!scope || scope[closeComp[t]] === 1) && triMaxEdge2(closeMesh, t) <= reach2);
+    if (closed) {
+      mesh = closed.mesh;
+      comp = composeMaps(comp, closed.childToParent);
     }
     // Boundary-conforming clip: cut the now-fine rim exactly along the region
     // outline so the painted edge is the analytic curve, not a staircase.
@@ -1408,7 +1585,7 @@ function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32
  *  coloured model) keep its colours through paint subdivision instead of the
  *  refined triangles reverting to the default shade. No-op when the base carries
  *  no `triColors`, or when nothing was refined (output === base). */
-function propagateTriColors(base: MeshData, refined: MeshData, childToParent: Int32Array): MeshData {
+export function propagateTriColors(base: MeshData, refined: MeshData, childToParent: Int32Array): MeshData {
   const src = base.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
   if (!src || refined === base) return refined;
   const n = refined.numTri;

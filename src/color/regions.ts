@@ -22,6 +22,10 @@ export interface ColorRegion {
   /** Per-triangle colors for image-paint regions; overrides `color` per
    *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
   perTriColors?: Map<number, [number, number, number]>;
+  /** Regions added inside one `runAsUndoGroup` call share this id, and undo /
+   *  redo take them off / put them back together (e.g. the several seam loops
+   *  of one `paintAlongBoundary`). Transient — not persisted. */
+  undoGroup?: number;
 }
 
 // Every descriptor may carry `withinPart`: the name of a label (an `api.label`
@@ -164,6 +168,22 @@ const clearSnapshotListeners: ChangeListener[] = [];
 // (add, clear, deserialize) drops the stack so redo can never resurrect a
 // region into a state where the user wouldn't expect it.
 let regionRedoStack: ColorRegion[] = [];
+
+let nextUndoGroup = 1;
+let activeUndoGroup: number | null = null;
+
+/** Run `fn` so every region it adds is ONE undo step (undoLastPaint / the
+ *  Undo button remove them together; redo restores them together). Nested
+ *  calls join the outer group. */
+export function runAsUndoGroup<T>(fn: () => T): T {
+  if (activeUndoGroup !== null) return fn();
+  activeUndoGroup = nextUndoGroup++;
+  try {
+    return fn();
+  } finally {
+    activeUndoGroup = null;
+  }
+}
 
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
@@ -323,6 +343,7 @@ export function addRegion(
     triangles,
     slotId,
     perTriColors,
+    ...(activeUndoGroup !== null ? { undoGroup: activeUndoGroup } : {}),
   };
   regions.push(region);
   clearRedoStack();
@@ -354,21 +375,33 @@ export function removeRegion(id: number): boolean {
   return true;
 }
 
-/** Pop the most recently added region and push it onto the redo stack. */
+/** Pop the most recently added region — with the rest of its undo group, if
+ *  it was added in one (see runAsUndoGroup) — onto the redo stack. Returns
+ *  the last-added region of the step. */
 export function removeLastRegion(): ColorRegion | null {
   if (regions.length === 0) return null;
   const region = regions.pop()!;
   regionRedoStack.push(region);
+  const group = region.undoGroup;
+  while (group !== undefined && regions.length > 0 && regions[regions.length - 1].undoGroup === group) {
+    regionRedoStack.push(regions.pop()!);
+  }
   notifyRedo();
   notify();
   return region;
 }
 
-/** Pop the redo stack and re-add the region. Returns null if nothing to redo. */
+/** Pop the redo stack and re-add the region (with the rest of its undo
+ *  group). Returns null if nothing to redo. */
 export function redoLastRegion(): ColorRegion | null {
-  const region = regionRedoStack.pop() ?? null;
+  let region = regionRedoStack.pop() ?? null;
   if (!region) return null;
   regions.push(region);
+  const group = region.undoGroup;
+  while (group !== undefined && regionRedoStack.length > 0 && regionRedoStack[regionRedoStack.length - 1].undoGroup === group) {
+    region = regionRedoStack.pop()!;
+    regions.push(region);
+  }
   notifyRedo();
   notify();
   return region;

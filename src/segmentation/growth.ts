@@ -32,6 +32,12 @@ export interface GrowthOptions {
   creaseWeight: number;
   /** Only triangles with allow[t] = 1 may be claimed (undefined = all). */
   allow?: Uint8Array;
+  /** Per seed (aligned with `seedTris`): the furthest GEODESIC distance
+   *  (world units, measured along the surface between triangle centroids)
+   *  that seed may grow. 0 / Infinity / missing = uncapped. A capped seed
+   *  can't leak across an ungrooved stretch (a collar into a shirt); what it
+   *  can't reach goes to the other seeds, or stays unassigned. */
+  seedMaxRadius?: ArrayLike<number>;
   signal?: AbortSignal;
   progress?: (frac: number, msg?: string) => void;
 }
@@ -121,13 +127,19 @@ export function growFromSeeds(
   const q = opts.growth === 'hybrid' ? Math.max(1e-6, opts.creaseQuantumDeg) : 1;
   const w = Math.max(0, opts.creaseWeight) * (f.medianEdgeLen || 1);
   const allow = opts.allow;
+  // Heap payload is the SEED index (its label is seedLabels[seed]) so a
+  // capped seed's frontier can be confined to its own geodesic ball.
+  const balls = new Map<number, Uint8Array>();
+  const caps = opts.seedMaxRadius;
 
   for (let i = 0; i < seedTris.length; i++) {
     const t = seedTris[i];
     if (t < 0 || t >= n || (allow && !allow[t])) continue;
     if (best1[t] === 0 && best2[t] === 0) continue; // first seed on a tri wins
     best1[t] = 0; best2[t] = 0;
-    heap.push(0, 0, t, seedLabels[i]);
+    const cap = caps ? caps[i] : undefined;
+    if (cap !== undefined && cap > 0 && Number.isFinite(cap)) balls.set(i, geodesicBall(f, t, cap, allow));
+    heap.push(0, 0, t, i);
   }
 
   const out = new Float64Array(4);
@@ -135,10 +147,11 @@ export function growFromSeeds(
   const reportEvery = Math.max(4096, n >> 6);
   while (heap.size > 0) {
     heap.pop(out);
-    const k1 = out[0], k2 = out[1], t = out[2], lab = out[3];
+    const k1 = out[0], k2 = out[1], t = out[2], seed = out[3];
     if (triLabel[t] !== -1) continue;
     if (k1 !== best1[t] || k2 !== best2[t]) continue; // stale entry
-    triLabel[t] = lab;
+    triLabel[t] = seedLabels[seed];
+    const ball = balls.get(seed);
     // The summed component lives in k1 for 'summed', k2 otherwise.
     const summed = opts.growth === 'summed' ? k1 : k2;
     cost[t] = summed;
@@ -149,7 +162,7 @@ export function growFromSeeds(
     for (let j = f.adjStart[t]; j < f.adjStart[t + 1]; j++) {
       const e = f.adjPair[j];
       const o = f.edgeA[e] === t ? f.edgeB[e] : f.edgeA[e];
-      if (triLabel[o] !== -1 || (allow && !allow[o])) continue;
+      if (triLabel[o] !== -1 || (allow && !allow[o]) || (ball && !ball[o])) continue;
       const crease = f.creaseCost[e];
       const step = f.centroidDist[e] + w * crease;
       let n1: number, n2: number;
@@ -158,12 +171,41 @@ export function growFromSeeds(
       else { n1 = Math.max(k1, Math.floor(crease / q)); n2 = summed + step; }
       if (n1 < best1[o] || (n1 === best1[o] && n2 < best2[o])) {
         best1[o] = n1; best2[o] = n2;
-        heap.push(n1, n2, o, lab);
+        heap.push(n1, n2, o, seed);
       }
     }
   }
   if (opts.signal?.aborted) throw new AbortedError();
   return { triLabel, cost };
+}
+
+/**
+ * Triangles within geodesic distance `radius` of triangle `start` (Dijkstra
+ * over centroid-to-centroid steps, the same metric growth uses), as a mask.
+ * Exported for tests and previewSeeds' reach estimate.
+ */
+export function geodesicBall(f: MeshFeatures, start: number, radius: number, allow?: Uint8Array): Uint8Array {
+  const n = f.triCount;
+  const mask = new Uint8Array(n);
+  const dist = new Float64Array(n).fill(Infinity);
+  const heap = new PairHeap(64);
+  dist[start] = 0;
+  heap.push(0, 0, start, 0);
+  const out = new Float64Array(4);
+  while (heap.size > 0) {
+    heap.pop(out);
+    const d = out[0], t = out[2];
+    if (mask[t] || d !== dist[t]) continue;
+    mask[t] = 1;
+    for (let j = f.adjStart[t]; j < f.adjStart[t + 1]; j++) {
+      const e = f.adjPair[j];
+      const o = f.edgeA[e] === t ? f.edgeB[e] : f.edgeA[e];
+      if (mask[o] || (allow && !allow[o])) continue;
+      const nd = d + f.centroidDist[e];
+      if (nd <= radius && nd < dist[o]) { dist[o] = nd; heap.push(nd, 0, o, 0); }
+    }
+  }
+  return mask;
 }
 
 /**

@@ -28,13 +28,15 @@ import { MAX_EDGE_SMOOTHING, acceptColors, hexToRgb, isHexColor, UNASSIGNED_COLO
 import { medianEdgeLength, toSegMesh } from './features';
 import { LABEL_PRESETS } from './labelPresets';
 import { AbortedError } from './growth';
-import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, renderNumberedParts, renderPartsThumbnail } from './partsRender';
+import { DEFAULT_PARTS_VIEWS, PARTS_RENDER_VIEWS, partFrame, renderNumberedParts, renderPartsThumbnail, resolvePartsView, type PartsFrame, type PartsViewSpec, type PartsRenderView } from './partsRender';
 import { autoProposeDetectors, describeDetector, detectorIds, getDetector, listDetectors, resolveParams } from './registry';
 import {
   adoptPartsAsync, detectPartsAsync, discardPartsDraft, edgeCutAsync, editPartsAsync, previewPartsAsync, type SegCallControl,
 } from './segmentationClient';
 import { buildCutMesh, cutPointProps, type EdgeCut } from './smoothEdges';
-import type { FeatureOptions, SegMesh, SegSeed } from './types';
+import type { FeatureOptions, ParamValues, SegMesh, SegSeed } from './types';
+import { compareCaptions, type CaptionConfig } from './compareCaptions';
+import { seedLandings } from './seedPreview';
 
 export interface PartDetectionHost {
   getImports(): ImportedMesh[];
@@ -239,7 +241,7 @@ export function createPartDetection(host: PartDetectionHost) {
   }
 
   function sameSeeds(a: SegSeed[], b: SegSeed[]): boolean {
-    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.color === b[i].color && x.point.every((v, k) => v === b[i].point[k]));
+    return a.length === b.length && a.every((x, i) => x.label === b[i].label && !!x.auto === !!b[i].auto && x.color === b[i].color && x.maxRadius === b[i].maxRadius && x.point.every((v, k) => v === b[i].point[k]));
   }
 
   /** Copy a seed. A working (pre-detection) pin keeps its colour so the
@@ -249,6 +251,7 @@ export function createPartDetection(host: PartDetectionHost) {
     if (typeof x.triangle === 'number') out.triangle = x.triangle;
     if (x.auto) out.auto = true;
     if (x.color) out.color = x.color;
+    if (x.maxRadius !== undefined) out.maxRadius = x.maxRadius;
     return out;
   }
 
@@ -609,14 +612,17 @@ export function createPartDetection(host: PartDetectionHost) {
     if (raw === undefined) return undefined;
     return assertArray(raw, where).map((s, i) => {
       const o = assertObject(s, `${where}[${i}]`)!;
-      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto', 'color'], `${where}[${i}]`);
+      assertNoUnknownKeys(o, ['label', 'point', 'triangle', 'auto', 'color', 'maxRadius'], `${where}[${i}]`);
       const label = assertString(o.label, `${where}[${i}].label`)!;
       const point = assertNumberTuple(o.point, 3, `${where}[${i}].point`) as [number, number, number];
       const triangle = assertNumber(o.triangle, `${where}[${i}].triangle`, { optional: true, integer: true, min: 0 });
       const auto = assertBoolean(o.auto, `${where}[${i}].auto`, { optional: true });
       const color = assertString(o.color, `${where}[${i}].color`, { optional: true });
       if (color !== undefined && !isHexColor(color)) throw new ValidationError(`${where}[${i}].color must be "#rrggbb", got ${JSON.stringify(color)}`);
+      const maxRadius = assertNumber(o.maxRadius, `${where}[${i}].maxRadius`, { optional: true, min: 0 });
+      if (maxRadius !== undefined && !(maxRadius > 0)) throw new ValidationError(`${where}[${i}].maxRadius must be > 0 (geodesic distance in model units); omit it for no cap.`);
       const out: SegSeed = triangle === undefined ? { label, point } : { label, point, triangle };
+      if (maxRadius !== undefined) out.maxRadius = maxRadius;
       if (auto) out.auto = true;
       if (color !== undefined) out.color = color.toLowerCase();
       return out;
@@ -798,7 +804,12 @@ export function createPartDetection(host: PartDetectionHost) {
       const imports = host.getImports();
       const m = imports[d.importIndex];
       const source: NonNullable<ImportedMeshParts['source']> = {
-        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => (x.auto ? { label: x.label, point: x.point, auto: true } : { label: x.label, point: x.point })),
+        detectorId: s.detectorId, params: { ...s.params }, featureOptions: { ...s.featureOptions }, seeds: s.seeds.map((x) => ({
+          label: x.label, point: x.point,
+          ...(x.auto ? { auto: true } : {}),
+          ...(x.color ? { color: x.color } : {}),
+          ...(x.maxRadius !== undefined ? { maxRadius: x.maxRadius } : {}),
+        })),
       };
       let parts: ImportedMeshParts = {
         names: s.parts.map((p) => p.name),
@@ -1059,20 +1070,42 @@ export function createPartDetection(host: PartDetectionHost) {
     renderParts(opts?: unknown) {
       try {
         const o = opts === undefined ? {} : assertObject(opts, 'renderParts(options)')!;
-        assertNoUnknownKeys(o, ['views', 'size', 'numbered'], 'renderParts(options)');
-        const views = o.views === undefined ? DEFAULT_PARTS_VIEWS
-          : assertArray(o.views, 'renderParts(options).views').map((v, i) => assertEnum(v, Object.keys(PARTS_RENDER_VIEWS), `views[${i}]`));
+        assertNoUnknownKeys(o, ['views', 'size', 'numbered', 'azimuth', 'elevation', 'focus'], 'renderParts(options)');
+        if (o.views !== undefined && (o.azimuth !== undefined || o.elevation !== undefined)) {
+          throw new ValidationError('renderParts(options): pass either views or azimuth/elevation, not both.');
+        }
+        let views: PartsViewSpec[];
+        if (o.azimuth !== undefined || o.elevation !== undefined) {
+          views = [customView({ azimuth: o.azimuth, elevation: o.elevation }, 'renderParts(options)')];
+        } else if (o.views === undefined) {
+          views = DEFAULT_PARTS_VIEWS;
+        } else {
+          views = assertArray(o.views, 'renderParts(options).views').map((v, i) => (typeof v === 'string'
+            ? assertEnum(v, Object.keys(PARTS_RENDER_VIEWS), `renderParts(options).views[${i}]`)
+            : customView(v, `renderParts(options).views[${i}]`)));
+        }
         if (views.length === 0 || views.length > 8) throw new ValidationError('renderParts(options).views: 1–8 views');
         const size = assertNumber(o.size, 'renderParts(options).size', { optional: true, integer: true, min: 128, max: 1600 }) ?? 480;
         const numbered = assertBoolean(o.numbered, 'renderParts(options).numbered', { optional: true }) ?? true;
         const d = currentDraft();
         const shown = displayedPartsAndColors(d);
         if (!shown) throw new ValidationError('Nothing is rendered — run the model first.');
+        let frame: PartsFrame | undefined;
+        let focused: string | undefined;
+        if (o.focus !== undefined) {
+          const [nm] = resolveNames([o.focus], 'renderParts(options).focus');
+          const idx = d.summary.parts.findIndex((p) => p.name === nm);
+          frame = partFrame(shown.mesh, shown.triPart, idx, getConfig().segmentation.focusPadding) ?? undefined;
+          if (!frame) throw new ValidationError(`renderParts(options).focus: part "${nm}" has no visible triangles to frame.`);
+          focused = nm;
+        }
         const legend = d.summary.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor }));
-        const r = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views, size, numbered });
+        const r = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views, size, numbered, frame });
         const hidden = d.summary.parts.filter((p) => !r.visibleIn[p.id]).map((p) => p.id);
         return {
           image: r.dataUrl,
+          views: views.map((v) => { const rv = resolvePartsView(v); return { label: rv.label, azimuth: rv.azimuth, elevation: rv.elevation }; }),
+          ...(focused ? { focus: focused } : {}),
           legend: d.summary.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor, visibleIn: r.visibleIn[p.id] ?? [] })),
           ...(hidden.length ? { hiddenParts: hidden } : {}),
         };
@@ -1100,7 +1133,8 @@ export function createPartDetection(host: PartDetectionHost) {
         await dropOrphanedWorkerDraft();
         const displayed = host.getDisplayedMesh();
         const results: Record<string, unknown>[] = [];
-        const tiles: HTMLCanvasElement[] = [];
+        const images: (string | null)[] = [];
+        const captionCfgs: CaptionConfig[] = [];
         for (const [i, c] of parsed.entries()) {
           const m = importAt(c.importIndex);
           const meshKey = importMeshKey(m);
@@ -1109,16 +1143,23 @@ export function createPartDetection(host: PartDetectionHost) {
           }, ctl));
           const s = r.summary!;
           results.push({ index: i + 1, detector: s.detectorId, params: s.params, partCount: s.parts.length, quality: s.quality, parts: s.parts.slice(0, 20).map((p) => `${p.id}:${p.name}`) });
+          captionCfgs.push({ detectorId: s.detectorId, params: s.params, featureOptions: c.featureOptions ?? s.featureOptions });
+          let image: string | null = null;
           if (displayed) {
             const tmp: DraftState = { importIndex: c.importIndex, meshKey, summary: s, triPart: r.triPart! };
             const shown = displayedPartsAndColors(tmp);
             if (shown) {
               const legend = s.parts.map((p) => ({ id: p.id, name: p.name, color: p.displayColor }));
-              const img = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views: [view], size, numbered: true });
-              tiles.push(await loadCanvas(img.dataUrl, `${i + 1}. ${s.detectorId}`));
+              image = renderNumberedParts(shown.mesh, shown.triColors, shown.triPart, legend, { views: [view], size, numbered: true }).dataUrl;
             }
           }
+          images.push(image);
         }
+        // Captions name the detector AND what differs between the tiles, so
+        // two variants of one detector are distinguishable.
+        const captions = compareCaptions(captionCfgs, detectorDefaults);
+        results.forEach((r, i) => { r.caption = captions[i]; });
+        const tiles = await Promise.all(images.flatMap((img, i) => (img ? [loadCanvas(img, captions[i])] : [])));
         return { results, ...(tiles.length ? { image: contactSheet(tiles) } : {}), ...(draftDiscarded ? { draftDiscarded: true } : {}) };
       } catch (e) {
         if (e instanceof AbortedError) return { error: 'Comparison cancelled.' };
@@ -1361,6 +1402,52 @@ export function createPartDetection(host: PartDetectionHost) {
         return err(e);
       }
     },
+    /** Check seeds BEFORE detecting: where each one lands on the import
+     *  (nearest triangle, closest surface point, distance off the surface)
+     *  and, with a draft, which part that triangle is in now. A seed farther
+     *  than `segmentation.seedMissEdgeLengths` median edges from the surface
+     *  is a `miss` — detection would still snap it somewhere, usually not
+     *  where you meant. Seeds default to the working pins. */
+    previewSeeds(list?: unknown, opts?: unknown) {
+      try {
+        const o = opts === undefined ? {} : assertObject(opts, 'previewSeeds(seeds, options)')!;
+        assertNoUnknownKeys(o, ['importIndex'], 'previewSeeds(seeds, options)');
+        const importIndex = assertNumber(o.importIndex, 'previewSeeds(seeds, options).importIndex', { optional: true, integer: true, min: 0 }) ?? draft?.importIndex ?? 0;
+        const run = list === undefined || list === null ? seeds.map(copySeed) : parseSeeds(list, 'previewSeeds(seeds)')!;
+        if (run.length === 0) throw new ValidationError('previewSeeds: no seeds — pass [{ label, point }] (or place pins first).');
+        const m = importAt(importIndex);
+        const seg = segMeshOf(m);
+        const edge = medianEdgeLength(seg) || 1e-6;
+        const missDist = getConfig().segmentation.seedMissEdgeLengths * edge;
+        const landings = seedLandings(seg.positions, seg.triVerts, run.map((sd) => sd.point));
+        const d = draft && draft.importIndex === importIndex && draft.meshKey === importMeshKey(m) ? draft : null;
+        const r3 = (v: number) => Math.round(v * 1e4) / 1e4;
+        const out = run.map((sd, i) => {
+          const l = landings[i];
+          const L = d && l.triangle >= 0 ? d.triPart[l.triangle] : -1;
+          const part = L >= 0 ? d!.summary.parts[L] : undefined;
+          const miss = l.triangle < 0 || l.distance > missDist;
+          return {
+            index: i, label: sd.label, triangle: l.triangle,
+            point: l.point.map(r3), distance: r3(l.distance), normal: l.normal.map(r3),
+            onSurface: !miss,
+            ...(miss ? { miss: true } : {}),
+            ...(d ? { part: part ? { id: part.id, name: part.name } : null } : {}),
+            ...(sd.maxRadius !== undefined ? { maxRadius: sd.maxRadius } : {}),
+          };
+        });
+        const misses = out.filter((x) => x.miss).length;
+        return {
+          seeds: out,
+          misses,
+          medianEdgeLength: r3(edge),
+          missDistance: r3(missDist),
+          ...(misses ? { hint: 'A miss lies off the surface; re-pick it with probePixel (its point is ON the mesh) or use the returned `point` (the nearest surface point).' } : {}),
+        };
+      } catch (e) {
+        return err(e);
+      }
+    },
   };
   return api;
 }
@@ -1386,17 +1473,50 @@ function splitIndexOf(cut: EdgeCut, triCount: number): Int32Array {
   return idx;
 }
 
+/** A custom camera angle `{ azimuth, elevation }` (degrees; elevation −90..90). */
+function customView(raw: unknown, where: string): PartsRenderView {
+  const o = assertObject(raw, where)!;
+  assertNoUnknownKeys(o, ['azimuth', 'elevation'], where);
+  const azimuth = assertNumber(o.azimuth, `${where}.azimuth`, { optional: true }) ?? 0;
+  const elevation = assertNumber(o.elevation, `${where}.elevation`, { optional: true, min: -90, max: 90 }) ?? 5;
+  return { label: `az ${azimuth}° el ${elevation}°`, azimuth, elevation };
+}
+
+/** Default param values of a detector (for caption diffs). */
+function detectorDefaults(id: string): ParamValues {
+  const out: ParamValues = {};
+  for (const p of getDetector(id)?.params ?? []) out[p.key] = p.default;
+  return out;
+}
+
+/** Word-wrap `text` to lines no wider than `maxW` px in the context's font. */
+function wrapCaption(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (line && ctx.measureText(next).width > maxW) { lines.push(line); line = w; } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 4);
+}
+
 function loadCanvas(dataUrl: string, caption: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height + 22;
+      const probe = c.getContext('2d')!;
+      probe.font = 'bold 13px sans-serif';
+      const lines = wrapCaption(probe, caption, img.width - 16);
+      const head = 8 + lines.length * 16;
+      c.width = img.width; c.height = img.height + head;
       const ctx = c.getContext('2d')!;
       ctx.fillStyle = '#1e1e1e'; ctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(img, 0, 22);
+      ctx.drawImage(img, 0, head);
       ctx.fillStyle = '#fff'; ctx.font = 'bold 13px sans-serif';
-      ctx.fillText(caption, 8, 16);
+      lines.forEach((ln, i) => ctx.fillText(ln, 8, 16 + i * 16));
       resolve(c);
     };
     img.onerror = () => reject(new Error('compare: failed to compose tile'));

@@ -61,9 +61,16 @@ await partwright.detectParts({
 })
 // -> { parts: [{ id, name, triCount, areaFrac, neighbors, regions, anchor }], quality, unassigned }
 
+// 2b. Optional: check the seeds land where you meant BEFORE detecting.
+partwright.previewSeeds([{ label: 'eyes', point: [150, 110, 75] }])
+// -> { seeds: [{ label, triangle, point, distance, onSurface, miss?, part? }], misses }
+// A `miss` is off the surface; re-pick it with probePixel / probePixels.
+
 // 3. LOOK at it. Each part's number is drawn on a visible spot in every view.
 partwright.renderParts({ views: ['front', 'right', 'back', 'iso'] })
-// -> { image, legend: [{ id, name, visibleIn }], hiddenParts? }
+// -> { image, views, legend: [{ id, name, visibleIn }], hiddenParts? }
+// Custom angles and a zoom onto one small part:
+partwright.renderParts({ views: [{ azimuth: 90, elevation: 5 }], focus: 'eyes', size: 640 })
 
 // 4. Fix what's wrong (atomic batch; ids are the legend numbers, or part names)
 await partwright.editParts({ ops: [
@@ -169,6 +176,24 @@ A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is
 - **Big or wrapped parts need several seeds.** A shirt needs front, back and sleeves; hair needs top, back and sides. Without them, a nearby small seed such as a chest logo can claim the far side of the shirt. Seeds follow grooves, but on flat stretches the closest seed wins.
 - **Separate pieces need their own seed.** A seed can't grow across a gap, so a base disc or loose accessory with no seed stays **unassigned**.
 - **Featureless detail is paint, not a part.** If the mesh has no geometry for a detail (the panels on a smooth ball, a printed number), detect the containing part, then paint the detail inside it with `api.paint.pattern` scoped to that label, or with `paintImage`.
+- **Ungrooved bands are boundary paint, not seeds.** A collar, a cuff, a sock band or a belt edge usually has no groove of its own: a seed on it has nothing to stop at and floods the shirt or the leg. Detect the parts on either side (shirt + neck, leg + shoe), accept them, then paint the band along their seam: `paintAlongBoundary({ between: ['shirt', 'skin'], width: 2, color: [1,1,1], side: 'a' })` (see `/ai/colors.md`). If you must seed one, cap it: a seed's `maxRadius` (model units, measured along the surface) stops its growth there, and the rest goes to the other seeds. The cap works in `crease-watershed`, `random-walker` (a part whose seeds are all capped can't win triangles outside their reach), seeded `thickness`, and the draft's pin edits; it is saved with accepted parts, so `reopenParts` → `rerun` keeps it.
+- **Check seeds first.** `previewSeeds(seeds)` reports the triangle each seed lands on and its distance off the surface. Seeds farther than a few edge lengths off are flagged `miss`. Pick seed points with `probePixel`/`probePixels` (their points are on the mesh) and many seeds take one `probePixels` call.
+
+## View axes: which angle is the front?
+
+`renderParts`, `renderViews`/`renderView` and `probePixel` share one camera convention: **azimuth 0 looks from −Y** (the camera sits at −Y looking toward +Y), **90 from +X**, **180 from +Y**, **270 from −X**. Elevation 0 is the horizon, 90 straight down, negative from below. The named views (`front` = az 0, `right` = 90, `back` = 180, `left` = 270) assume the model faces **−Y**.
+
+Scans and imported figures often face another way. For a figure facing **+X**:
+
+| you want | azimuth | elevation |
+|---|---|---|
+| its front (face) | 90 | 5 |
+| its back | 270 | 5 |
+| its left side (the figure's own left, +Y) | 180 | 5 |
+| its right side (−Y) | 0 | 5 |
+| front three-quarter | 60 or 120 | 25 |
+
+So `renderParts({ views: [{ azimuth: 90, elevation: 5 }, { azimuth: 270, elevation: 5 }] })` shows front and back, and the named `front` view shows the figure's right side. Check which way it faces first: render `iso` and look where the face is.
 
 ## Reading `quality`
 
@@ -194,6 +219,10 @@ A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is
 
 `comparePartDetectors([{algorithm, seeds, params}, …])` runs up to 6 configurations
 side by side **without** touching the draft, and returns a quality table plus a contact sheet.
+Each tile (and each result's `caption`) names the detector **and the params that differ**:
+between configs of the same detector, the keys whose values differ; for a detector that
+appears once, what it changed from its defaults (feature options included), e.g.
+`2. crease-watershed · creaseWeight=4 growth=summed`.
 
 ## Notes
 

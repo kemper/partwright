@@ -423,12 +423,13 @@ partwright.showRecoverDeleted()          // Open the Recover deleted modal for t
 partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops + labelPresets (the panel's label chips: names + default colours)
 await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z], color?:'#rrggbb'}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
 await partwright.autoDetectParts({importIndex?}) // seedless first pass (what an STL import runs): first automatic detector that splits it into 2+ parts REPLACES the draft {proposed:true, proposedBy, parts…} | {proposed:false, reason} (draft untouched; one solid: seed it)
-partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
+partwright.renderParts({views?:[name|{azimuth,elevation}], azimuth?, elevation?, focus?, size?, numbered?})  // numbered colour render of the draft; custom angles; focus zooms onto one part -> {image, views, legend:[{id,name,visibleIn}], hiddenParts?}
+partwright.previewSeeds(seeds?, {importIndex?})  // check seeds before detecting: landing triangle, surface point, distance, miss flag, draft part -> {seeds, misses}
 await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'brush'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts; a seed's color sets its part's colour; clear {algorithm?} also switches method; brush {to, points+radius | triangles, mode?:'triangles'|'patches'} = one brush stroke ('patches' merges every touched part whole)
-await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched
+await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched; tiles captioned with detector + differing params
 await partwright.previewPartPresets({algorithm?, seeds?, view?}) // every preset, ranked, draft untouched -> {presets:[{index,name,partCount,score}], image}; then applyPartPreset(index) / showPartPresetPreview(index|null)
 partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.discardParts()
-partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel
+partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?, maxRadius?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel; maxRadius caps a seed's geodesic growth
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
 await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
@@ -444,6 +445,7 @@ await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo i
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
 partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
+partwright.probePixels([[x,y], ...], view)                                // batch: many pixels, one camera -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds on any miss; null = model not in view)
 partwright.paintConnected({seed, maxDeviationDeg?, color, name?})         // BFS-flood by seed-normal deviation (organic meshes)
 partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill (edge-bounded)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
@@ -451,18 +453,21 @@ partwright.paintNear({point, radius, normalCone?, color, name?})          // sph
 partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, wrapAngleDeg?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance, see note below)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
-partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
+partwright.paintFaces({triangleIds, color, name?, withinPart?})           // explicit triangle ids
+partwright.getPartTriangles(name, {maxResults?})                          // one part's triangle ids on the paint mesh -> {count, area, bbox, triangleIds}
+partwright.partBoundary(a, b, {maxPointsPerLoop?})                        // seam between two parts -> {loops:[{points, closed, length}]}
+partwright.paintAlongBoundary({between:[a,b], width, color, side?, name?}) // smooth band along a seam: collars, cuffs, hems (no groove needed)
 partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
 partwright.paintPattern({pattern, colors, withinPart?, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, smooth?, resolution?, maxEdge?, name?})  // algorithmic colourway: soccer|stripes|spots|patches|gradient|checker; smooth (soccer/stripes/checker) clips seams sub-triangle. Soccer ball: {pattern:'soccer', withinPart:'ball', colors:['#ffffff','#111111'], smooth:true} — see /ai/colors.md
 partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?, color, name?, smooth?})  // cylindrical/annular shell (rMin=0 = solid); axis x|y|z (default z)
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
-// paintNear/InBox/InOrientedBox/Slab/InCylinder/Connected/Region/NearestRegion/Stroke/Airbrush/Image (and paintPreview) take withinPart: '<label>' to clip the paint to one part (e.g. a detected part of an import) — see colors.md.
+// paintNear/InBox/InOrientedBox/Slab/InCylinder/Connected/Region/NearestRegion/Stroke/Airbrush/Image/Faces (and paintPreview, findFaces) take withinPart: '<label>' to clip the paint to one part (e.g. a detected part of an import) — see colors.md.
 partwright.paintPreview({...selector, withImage?, view?})                 // dry-run
 partwright.paintExplain({region, withImage?, view?})                      // diagnose committed region
 partwright.assertPaint({region, expectedTriangleCount?, ...})             // verify
-partwright.findFaces({box?, normal?, normalTolerance?, color?, ...})      // query by geometry/color
+partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, withinPart?, ...})  // query by geometry/color; omit a key to skip it (explicit undefined = error)
 partwright.getMesh()                     // raw mesh access for procedural workflows
 partwright.getMeshSummary({tolerance?, ...}?)                             // grouped coplanar faces
 partwright.getFeatureCentroids({maxGroups?, withinBox?}?)                 // lightweight planning
@@ -975,7 +980,7 @@ Before exporting anything intended for printing, **call `readDoc({name: "print-s
 
 Color regions tag a coplanar set of triangles with an RGB color. Regions are persisted on the saved version, ride through GLB and 3MF exports (vertex colors / `<basematerials>` `pid` attributes), and show as swatch badges in the gallery. They do **not** modify the geometry. STL and OBJ exports drop them — formats don't carry color.
 
-The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `paintNear`, `paintStroke`, `paintInBox`, `paintSlab`, `paintPattern`, `paintNearestRegion`, `paintComponent`, `paintByLabel`, `paintByLabels`, `paintConnected`, `paintPreview`, `paintExplain`, `findFaces`, `probePixel`, `probeRay`, `getMeshSummary`, `listComponents`, `listLabels`, `undoLastPaint`, `redoLastPaint`, `removeRegion`, `clearColors`) and on `window.partwright`.
+The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `paintNear`, `paintStroke`, `paintInBox`, `paintSlab`, `paintPattern`, `paintNearestRegion`, `paintComponent`, `paintByLabel`, `paintByLabels`, `paintConnected`, `paintAlongBoundary`, `paintPreview`, `paintExplain`, `findFaces`, `getPartTriangles`, `partBoundary`, `probePixel`, `probePixels`, `probeRay`, `getMeshSummary`, `listComponents`, `listLabels`, `undoLastPaint`, `redoLastPaint`, `removeRegion`, `clearColors`) and on `window.partwright`.
 
 Before painting anything substantial, **call `readDoc({name: "colors"})`** for the picker decision tree (which `paint*` for which intent), the labelled-construction workflow, vision-driven painting with `probePixel`/`paintConnected`, undo/redo, and export behavior.
 
