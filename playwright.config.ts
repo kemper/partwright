@@ -50,6 +50,10 @@ if (shard) {
   console.info(`[playwright.config] E2E_SHARD ${shard.index}/${shard.total}: ${shardFiles!.length} spec files`);
 }
 
+// E2E_PORT lets several checkouts (e.g. parallel agent worktrees) run specs at
+// once without reusing each other's dev server on the default port.
+const port = Number(process.env.E2E_PORT || 5173);
+
 export default defineConfig({
   testDir: './tests',
   // Only the browser e2e specs. Pure-logic *.test.ts files under tests/unit/
@@ -72,7 +76,7 @@ export default defineConfig({
     : [['list']],
   timeout: 30_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${port}`,
     trace: 'on-first-retry',
     // Default Desktop Chrome (1280x720) clips the bottom of the AI panel
     // (toggle strip + input row land below the fold), making low-pill
@@ -91,8 +95,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    command: port === 5173 ? 'npm run dev' : `npm run dev -- --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },
