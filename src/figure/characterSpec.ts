@@ -430,59 +430,209 @@ export const POSE_PRESET_LABELS: Record<string, string> = {
   contrapposto: 'Contrapposto', walking: 'Walking', waving: 'Waving',
 };
 
-/** A handful of complete starting characters, surfaced as one-click presets in
- *  the panel — the fastest path for a non-coder. Each is a deep-merge patch over
- *  DEFAULT_SPEC so it stays terse and forward-compatible with new fields. */
-export interface CharacterPreset { id: string; label: string; patch: () => CharacterSpec }
+/** A library of complete starting characters, surfaced as a scrollable
+ *  pick-list in the panel — the fastest path for a non-coder. Each is a
+ *  deep-merge patch over DEFAULT_SPEC so it stays terse and forward-compatible
+ *  with new fields. Keep labels distinct (no label a substring of another) so
+ *  the panel's buttons stay unambiguous by accessible name. */
+export interface CharacterPreset { id: string; label: string; description: string; patch: () => CharacterSpec }
 
 function withSpec(patch: (s: CharacterSpec) => void): () => CharacterSpec {
   return () => { const s = cloneSpec(DEFAULT_SPEC); patch(s); return s; };
 }
 
 export const CHARACTER_PRESETS: CharacterPreset[] = [
-  { id: 'adultF', label: 'Adult woman', patch: withSpec(s => {
+  // Every patch SPREADS over the default sub-objects (never replaces them
+  // wholesale), so a field added to the spec later defaults in every preset.
+  { id: 'adultF', label: 'Adult woman', description: 'Long hair, short-sleeve dress', patch: withSpec(s => {
     s.body = { ...s.body, height: 64, headsTall: 7.5, sex: 'female', bust: 0.5 };
     s.face = { ...s.face, shape: 'oval', lipShape: 'full', lids: 'almond', expression: 'slightSmile' };
-    s.hair = { style: 'long', length: 'long', volume: 1.1, ...lockDefaults() };
-    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'short', length: 'dress' };
-    s.clothing.pants = { ...s.clothing.pants, on: false, leg: 'slim', rise: 'mid', length: 'full' };
+    s.hair = { ...s.hair, style: 'long', length: 'long', volume: 1.1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'short', length: 'dress' };
+    s.clothing.pants = { ...s.clothing.pants, on: false };
     s.colors = { ...s.colors, top: '#a8466a', hair: '#3a2417' };
   }) },
-  { id: 'adultM', label: 'Adult man', patch: withSpec(s => {
+  { id: 'adultM', label: 'Adult man', description: 'Short hair, tee and slim pants', patch: withSpec(s => {
     s.body = { ...s.body, height: 66, headsTall: 7.5, sex: 'male', build: 'average', muscle: 0.35 };
     s.face = { ...s.face, shape: 'square', nose: 'straight', brows: 'flat', expression: 'neutral' };
-    s.hair = { style: 'short', length: 'short', volume: 0.8, ...lockDefaults() };
+    s.hair = { ...s.hair, style: 'short', length: 'short', volume: 0.8 };
     s.colors = { ...s.colors, top: '#356a4a', pants: '#33374a' };
   }) },
-  { id: 'child', label: 'Child', patch: withSpec(s => {
+  { id: 'child', label: 'Child', description: 'Seven years old, big grin', patch: withSpec(s => {
     s.body = { ...s.body, height: 38, headsTall: 5, age: 7, build: 'slim' };
     s.face = { ...s.face, shape: 'round', nose: 'button', expression: 'smile', lids: 'none' };
-    s.hair = { style: 'short', length: 'short', volume: 1, ...lockDefaults() };
+    s.hair = { ...s.hair, style: 'short', length: 'short', volume: 1 };
     s.colors = { ...s.colors, top: '#e0a93b', pants: '#3b6ea0' };
   }) },
-  { id: 'chibi', label: 'Chibi', patch: withSpec(s => {
+  { id: 'chibi', label: 'Chibi', description: 'Big head, tiny body, bob cut', patch: withSpec(s => {
     s.body = { ...s.body, height: 36, headsTall: 3.2, build: 'average' };
     s.face = { ...s.face, shape: 'round', nose: 'button', expression: 'bigSmile', lids: 'none' };
-    s.hair = { style: 'bob', length: 'mid', volume: 1.2, ...lockDefaults() };
+    s.hair = { ...s.hair, style: 'bob', length: 'mid', volume: 1.2 };
     s.colors = { ...s.colors, top: '#d65a7a' };
   }) },
-  { id: 'athlete', label: 'Athlete', patch: withSpec(s => {
+  { id: 'athlete', label: 'Athlete', description: 'Toned, ponytail, running kit', patch: withSpec(s => {
     s.body = { ...s.body, height: 66, headsTall: 7.5, build: 'average', muscle: 0.6 };
     s.pose = POSE_PRESETS.contrapposto();
     s.face = { ...s.face, expression: 'slightSmile' };
-    s.hair = { style: 'ponytail', length: 'long', volume: 0.9, ...lockDefaults() };
-    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'none', length: 'shirt' };
-    s.clothing.pants = { ...s.clothing.pants, on: true, leg: 'slim', rise: 'mid', length: 'briefs' };
+    s.hair = { ...s.hair, style: 'ponytail', length: 'long', volume: 0.9 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'none' };
+    s.clothing.pants = { ...s.clothing.pants, length: 'briefs' };
     s.colors = { ...s.colors, top: '#c43d3d', pants: '#1f2330' };
   }) },
-  { id: 'dancer', label: 'Dancer', patch: withSpec(s => {
+  { id: 'dancer', label: 'Dancer', description: 'Slim, arms raised, hair in a bun', patch: withSpec(s => {
     s.body = { ...s.body, height: 70, headsTall: 8, build: 'slim', sex: 'female', bust: 0.35 };
     s.pose = POSE_PRESETS.armsUp();
     s.face = { ...s.face, lipShape: 'full', expression: 'slightSmile' };
-    s.hair = { style: 'bun', length: 'mid', volume: 1, ...lockDefaults() };
-    s.clothing.top = { ...s.clothing.top, on: true, sleeve: 'none', length: 'shirt' };
-    s.clothing.pants = { ...s.clothing.pants, on: true, leg: 'slim', rise: 'high', length: 'briefs' };
+    s.hair = { ...s.hair, style: 'bun', length: 'mid', volume: 1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'none' };
+    s.clothing.pants = { ...s.clothing.pants, rise: 'high', length: 'briefs' };
     s.colors = { ...s.colors, top: '#c45c93', pants: '#c45c93' };
+  }) },
+  { id: 'toddler', label: 'Toddler', description: 'Three years old, waving hello', patch: withSpec(s => {
+    s.body = { ...s.body, height: 30, headsTall: 4, age: 3, build: 'average', weight: 0.6 };
+    s.pose = POSE_PRESETS.waving();
+    s.face = { ...s.face, shape: 'round', nose: 'button', expression: 'bigSmile', lids: 'none', brows: 'rounded' };
+    s.hair = { ...s.hair, style: 'short', length: 'short', volume: 1.1 };
+    s.clothing.pants = { ...s.clothing.pants, rise: 'high' };
+    s.colors = { ...s.colors, skin: '#f1c9a8', hair: '#c9923f', brows: '#a8782f', iris: '#3d6e9e', top: '#f3c94b', pants: '#4f8fcf' };
+  }) },
+  { id: 'teen', label: 'Teenager', description: 'Lanky, bangs, hoodie-blue top', patch: withSpec(s => {
+    s.body = { ...s.body, height: 58, headsTall: 6.75, age: 15, build: 'slim' };
+    s.pose = POSE_PRESETS.contrapposto();
+    s.face = { ...s.face, shape: 'oval', expression: 'neutral', gaze: 'left' };
+    s.hair = { ...s.hair, style: 'bangs', length: 'mid', volume: 1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long' };
+    s.colors = { ...s.colors, skin: '#dba37a', hair: '#1c1410', top: '#3d5fa8', pants: '#26262c', feet: '#e9e9e9' };
+  }) },
+  { id: 'grandpa', label: 'Grandpa', description: 'Bald, bushy brows, cardigan', patch: withSpec(s => {
+    s.body = { ...s.body, height: 62, headsTall: 7, age: 76, build: 'average', weight: 0.6, belly: 0.6, sex: 'male' };
+    s.face = { ...s.face, shape: 'long', nose: 'bulbous', brows: 'bushy', lids: 'upper', expression: 'slightSmile', ears: 'round' };
+    s.hair = { ...s.hair, style: 'bald', length: 'short' };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long' };
+    s.clothing.pants = { ...s.clothing.pants, rise: 'high' };
+    s.colors = { ...s.colors, skin: '#e8b48c', brows: '#d6d3cc', top: '#7a5a3c', pants: '#4b4b52', feet: '#3a2a20' };
+  }) },
+  { id: 'grandma', label: 'Grandma', description: 'Silver bun, long-sleeve dress', patch: withSpec(s => {
+    s.body = { ...s.body, height: 58, headsTall: 6.75, age: 72, sex: 'female', bust: 0.45, weight: 0.6, belly: 0.3 };
+    s.face = { ...s.face, shape: 'round', nose: 'snub', lids: 'upper', brows: 'natural', expression: 'smile' };
+    s.hair = { ...s.hair, style: 'bun', length: 'mid', volume: 1.1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long', length: 'dress' };
+    s.clothing.pants = { ...s.clothing.pants, on: false };
+    s.colors = { ...s.colors, skin: '#cf9163', hair: '#c8c6c2', brows: '#a9a6a0', top: '#6b4f8a', feet: '#2b2b30' };
+  }) },
+  { id: 'bodybuilder', label: 'Bodybuilder', description: 'Stocky, maximum muscle', patch: withSpec(s => {
+    s.body = { ...s.body, height: 68, headsTall: 7.5, build: 'stocky', sex: 'male', muscle: 1, weight: 0.6 };
+    s.pose = POSE_PRESETS.armsUp();
+    s.face = { ...s.face, shape: 'square', brows: 'angled', expression: 'bigSmile' };
+    s.hair = { ...s.hair, style: 'short', length: 'short', volume: 0.7 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'none' };
+    s.clothing.pants = { ...s.clothing.pants, length: 'briefs' };
+    s.colors = { ...s.colors, skin: '#945634', hair: '#161210', brows: '#161210', top: '#f0f0ea', pants: '#1f3d8a' };
+  }) },
+  { id: 'hiker', label: 'Hiker', description: 'Cargo pants and boots, mid-stride', patch: withSpec(s => {
+    s.body = { ...s.body, height: 65, headsTall: 7.5, build: 'average', muscle: 0.3 };
+    s.pose = POSE_PRESETS.walking();
+    s.face = { ...s.face, nose: 'roman', expression: 'smile' };
+    s.hair = { ...s.hair, style: 'ponytail', length: 'mid', volume: 1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long' };
+    s.clothing.pants = { ...s.clothing.pants, leg: 'cargo' };
+    s.clothing.feet = { ...s.clothing.feet, kind: 'boots' };
+    s.colors = { ...s.colors, skin: '#bd7c4f', hair: '#5a3a22', top: '#d0672f', pants: '#6b6a4a', feet: '#5a3b26' };
+  }) },
+  { id: 'punk', label: 'Punk rocker', description: 'Spiked magenta hair, black boots', patch: withSpec(s => {
+    s.body = { ...s.body, height: 64, headsTall: 7.5, build: 'slim' };
+    s.pose = POSE_PRESETS.contrapposto();
+    s.face = { ...s.face, shape: 'diamond', brows: 'angled', lids: 'tapered', expression: 'slightFrown', ears: 'pointed' };
+    s.hair = { ...s.hair, style: 'spiked', length: 'mid', volume: 1.3 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'none' };
+    s.clothing.feet = { ...s.clothing.feet, kind: 'boots' };
+    s.colors = { ...s.colors, skin: '#f5d8c6', hair: '#d6247a', brows: '#2a1d14', lips: '#5a2840', top: '#18181b', pants: '#2b2f3a', feet: '#101012' };
+  }) },
+  { id: 'elf', label: 'Elf ranger', description: 'Pointed ears, long hair, forest green', patch: withSpec(s => {
+    s.body = { ...s.body, height: 72, headsTall: 8, build: 'slim', muscle: 0.25 };
+    s.face = { ...s.face, shape: 'heart', ears: 'pointed', brows: 'arched', lids: 'almond', nose: 'pointed', expression: 'neutral' };
+    s.hair = { ...s.hair, style: 'long', length: 'long', volume: 1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long', trim: { collar: true, cuffs: true } };
+    s.clothing.feet = { ...s.clothing.feet, kind: 'boots' };
+    s.colors = { ...s.colors, skin: '#f1c9a8', hair: '#e8d9a8', brows: '#c4ae74', iris: '#3f7a4a', top: '#2f5a32', trim: '#b8954a', pants: '#4b3a26', feet: '#3b2a1a' };
+  }) },
+  { id: 'hero', label: 'Superhero', description: 'Heroic build, chest emblem, red boots', patch: withSpec(s => {
+    s.body = { ...s.body, height: 72, headsTall: 8, build: 'average', muscle: 0.8 };
+    s.pose = POSE_PRESETS.contrapposto();
+    s.face = { ...s.face, shape: 'square', brows: 'straight', expression: 'slightSmile' };
+    s.hair = { ...s.hair, style: 'short', length: 'short', volume: 0.9 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long', print: [{ ...PRINT_DEFAULT, text: 'H', size: 0.8, z: 0.15, color: '#f2c230' }] };
+    s.clothing.pants = { ...s.clothing.pants, rise: 'high' };
+    s.clothing.feet = { ...s.clothing.feet, kind: 'boots' };
+    s.colors = { ...s.colors, skin: '#aa6b3d', hair: '#161210', top: '#2a4fb0', pants: '#2a4fb0', feet: '#c42e2e' };
+  }) },
+  { id: 'office', label: 'Office worker', description: 'Long sleeves, navy slacks', patch: withSpec(s => {
+    s.body = { ...s.body, height: 64, headsTall: 7.5, sex: 'female', bust: 0.4, weight: 0.45 };
+    s.face = { ...s.face, shape: 'oval', brows: 'arched', expression: 'slightSmile' };
+    s.hair = { ...s.hair, style: 'bob', length: 'mid', volume: 1 };
+    s.clothing.top = { ...s.clothing.top, sleeve: 'long', trim: { collar: true, cuffs: false } };
+    s.clothing.pants = { ...s.clothing.pants, rise: 'high' };
+    s.colors = { ...s.colors, skin: '#7c472b', hair: '#1a1210', top: '#e9e4dc', trim: '#1f2a44', pants: '#1f2a44', feet: '#151518' };
+  }) },
+  { id: 'afro', label: 'Afro & sneakers', description: 'Big afro, relaxed stance', patch: withSpec(s => {
+    s.body = { ...s.body, height: 66, headsTall: 7.5, sex: 'male', muscle: 0.3 };
+    s.pose = POSE_PRESETS.contrapposto();
+    s.face = { ...s.face, shape: 'oval', nose: 'broad', lipShape: 'full', expression: 'smile' };
+    s.hair = { ...s.hair, style: 'afro', length: 'mid', volume: 1.2 };
+    s.colors = { ...s.colors, skin: '#4a281b', hair: '#120d0a', brows: '#120d0a', lips: '#5a3028', top: '#e2b23a', pants: '#3a4a6a', feet: '#f0f0f0' };
+  }) },
+  { id: 'braids', label: 'Long braids', description: 'Braided hair, waving hello', patch: withSpec(s => {
+    s.body = { ...s.body, height: 64, headsTall: 7.5, sex: 'female', bust: 0.45 };
+    s.pose = POSE_PRESETS.waving();
+    s.face = { ...s.face, shape: 'heart', lipShape: 'full', expression: 'bigSmile', brows: 'rounded' };
+    s.hair = { ...s.hair, style: 'braids', length: 'long', volume: 1 };
+    s.colors = { ...s.colors, skin: '#643622', hair: '#1a1210', brows: '#1a1210', lips: '#6a3a30', top: '#2f9b8f', pants: '#e8e1d2', feet: '#c9a24a' };
+  }) },
+  { id: 'animeHero', label: 'Anime hero', description: 'Chibi body, flowing anime locks', patch: withSpec(s => {
+    applyStyle(s, 'chibi');
+    s.body = { ...s.body, height: 40 };
+    s.pose = POSE_PRESETS.contrapposto();
+    s.face = { ...s.face, expression: 'bigSmile', brows: 'angled' };
+    s.hair = { ...s.hair, style: 'anime', length: 'mid', spike: 1.4, swoop: 1.6, seed: 7 };
+    s.clothing.top = { ...s.clothing.top, trim: { collar: true, cuffs: true } };
+    s.clothing.pants = { ...s.clothing.pants, length: 'shorts' };
+    s.clothing.feet = { ...s.clothing.feet, style: 'toy', size: 1.2 };
+    s.colors = { ...s.colors, skin: '#f1c9a8', hair: '#f0a030', brows: '#a8681c', iris: '#2f6fb0', top: '#e8452c', trim: '#1c1c22', pants: '#1c1c22', feet: '#f4f4f4' };
+  }) },
+  { id: 'vinylToy', label: 'Vinyl toy', description: 'Funko-style head, shaggy mop, toy shoes', patch: withSpec(s => {
+    applyStyle(s, 'funko');
+    s.body = { ...s.body, height: 60 };
+    s.face = { ...s.face, browThickness: 2.4 };
+    s.hair = { ...s.hair, style: 'shag', seed: 4, flare: 1.1 };
+    s.clothing.feet = { ...s.clothing.feet, style: 'toy', size: 1.25 };
+    s.colors = { ...s.colors, skin: '#e8b48c', hair: '#101012', brows: '#101012', top: '#7a3fd6', pants: '#26262c', feet: '#f4f4f4' };
+  }) },
+  { id: 'soccerStar', label: 'Soccer star', description: 'Funko footballer holding a ball', patch: withSpec(s => {
+    // The Captain Tsubasa Funko spec from public/ai/figure.md.
+    applyStyle(s, 'funko');
+    s.body = { ...s.body, height: 100, sex: 'male', headScale: { x: 2.3, y: 1.8, z: 2.1 }, headSink: 0.42 };
+    s.pose = { ...s.pose, legL: { ...s.pose.legL, raiseSide: 8, twist: 26 }, legR: { ...s.pose.legR, raiseSide: 8, twist: 26 },
+      hold: { ...s.pose.hold, kind: 'ball', radius: 10.5, cupR: 'under', handScale: 1.3, color: '#111111' } };
+    s.face = { ...s.face, nose: 'straight', eyeSize: 1.65, browThickness: 3, browWidth: 1.5, jaw: 1.4, cheek: 1.1 };
+    s.hair = { ...s.hair, style: 'shag', seed: 11, spike: 0.55, flare: 0.8, backWidth: 0.7 };
+    s.clothing.top = { ...s.clothing.top, trim: { collar: true, cuffs: true }, print: [
+      { ...PRINT_DEFAULT, text: 'N', x: 0.55, z: 0.24, size: 0.55, color: '#1f5fc8' },
+      { ...PRINT_DEFAULT, text: '10', where: 'back', z: 0.08, size: 0.95, color: '#1f5fc8' },
+    ] };
+    s.clothing.pants = { ...s.clothing.pants, length: 'shorts', hem: 0.94 };
+    s.clothing.socks = { ...s.clothing.socks, on: true, height: 1.12 };
+    s.clothing.feet = { ...s.clothing.feet, style: 'toy', size: 1.3, cleats: 6 };
+    s.colors = { ...s.colors, skin: '#f0c9a2', brows: '#0e0e10', hair: '#101012', top: '#f6f6f6', trim: '#1f5fc8', pants: '#1f5fc8',
+      socks: '#f6f6f6', sockStripe: '#1f5fc8', feet: '#f4f4f4', sole: '#e6e6e6', base: '#8a8d92' };
+  }) },
+  { id: 'mannequin', label: 'Mannequin', description: 'Bare T-posed base to build on', patch: withSpec(s => {
+    s.pose = POSE_PRESETS.tpose();
+    s.face = { ...s.face, expression: 'neutral' };
+    s.hair = { ...s.hair, style: 'bald' };
+    s.clothing.top.on = false;
+    s.clothing.pants.on = false;
+    s.clothing.feet.on = false;
+    s.colors = { ...s.colors, skin: '#d9d4cc', lips: '#c9b8aa', brows: '#a39a8f' };
   }) },
 ];
 
@@ -752,6 +902,28 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
   base: b('Include a round stand.'),
   place: b("Finish with F.place (bottom at z = 0, facing +X). Default true; v1 specs migrate to false."),
 };
+
+/** One leaf of the spec field tree: its dotted path, kind, and (enums) the
+ *  allowed values. Lists and head scales count as single leaves. */
+export interface SpecLeaf { path: string; kind: FieldSpec['t']; values?: readonly string[]; nullable?: boolean }
+
+/** Every leaf field of the spec, walked from SPEC_FIELDS — the one tree that
+ *  also drives `validateSpec` and `specJsonSchema`. Consumers that must cover
+ *  every field (the randomizer's drift test) enumerate this instead of keeping
+ *  their own list, so a field added to SPEC_FIELDS reaches them automatically. */
+export function specLeaves(): SpecLeaf[] {
+  const out: SpecLeaf[] = [];
+  const walk = (f: FieldSpec, path: string): void => {
+    if (f.t === 'obj') { for (const [k, sub] of Object.entries(f.fields)) walk(sub, path ? `${path}.${k}` : k); return; }
+    out.push({
+      path, kind: f.t,
+      values: f.t === 'enum' ? f.values : undefined,
+      nullable: 'nullable' in f ? f.nullable : undefined,
+    });
+  };
+  walk({ t: 'obj', fields: SPEC_FIELDS, d: '' }, '');
+  return out;
+}
 
 const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 /** Lettering allow-list: Unicode letters / numbers / punctuation / symbols and
