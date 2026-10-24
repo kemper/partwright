@@ -54,7 +54,17 @@ export interface RefineError {
   message: string;
 }
 
-export type RefineResponse = RefineDone | RefineError;
+/** Sent while a refine runs, so the main thread can show a real progress bar.
+ *  `done` of `total` steps are finished; `label` names the step now running. */
+export interface RefineProgressMsg {
+  type: 'progress';
+  id: number;
+  done: number;
+  total: number;
+  label: string;
+}
+
+export type RefineResponse = RefineDone | RefineError | RefineProgressMsg;
 
 // `tsconfig.json` ships with the DOM lib but not the WebWorker lib, so `self`
 // is typed as `Window` (whose `postMessage` is a different signature). Narrow
@@ -71,7 +81,10 @@ self.onmessage = (event: MessageEvent<RefineRequest>): void => {
   const started = performance.now();
   try {
     const ctxByIndex = new Map((patternContexts ?? []).map((e) => [e.index, e.ctx]));
-    const { mesh, childToParent, brushStrokeTriangles } = refineMeshPipeline(base, input, descriptors, (_d, i) => ctxByIndex.get(i) ?? null);
+    const { mesh, childToParent, brushStrokeTriangles } = refineMeshPipeline(
+      base, input, descriptors, (_d, i) => ctxByIndex.get(i) ?? null,
+      (done, total, label) => workerPost({ type: 'progress', id, done, total, label }),
+    );
 
     const brushList: RefineDone['brushStrokeTriangles'] = [];
     for (const [index, tris] of brushStrokeTriangles) {
