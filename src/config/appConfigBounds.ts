@@ -106,6 +106,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     threeMfMaxTriangles: { min: 10_000, max: 200_000_000, integer: true },
     threeMfMaxEntryMB: { min: 16, max: 8192, integer: true },
     threeMfMaxColors: { min: 1, max: 4096, integer: true },
+    maxSplitObjects: { min: 2, max: 1000, integer: true },
     remoteFetchTimeoutMs: { min: 1_000, max: 120_000, integer: true },
     filamentMatchThreshold: { min: 0.01, max: 1 },
     filamentConfidenceWarnThreshold: { min: 0.1, max: 1 },
