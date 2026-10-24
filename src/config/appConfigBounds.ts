@@ -40,6 +40,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     autoCompactMaxTokens: { min: 10_000, max: 1_000_000, integer: true },
     compactionKeepImages: { min: 0, max: 12, integer: true },
     reviewReferenceImages: { min: 0, max: 12, integer: true },
+    reviewConversationMaxChars: { min: 0, max: 100000, integer: true },
     reviewNoteMaxChars: { min: 200, max: 8000, integer: true },
     geometryTimeoutScadMs: { min: 5_000, max: 600_000, integer: true },
     geometryTimeoutReplicadMs: { min: 5_000, max: 600_000, integer: true },

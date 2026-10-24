@@ -14,6 +14,7 @@
 
 import { runWithSilentPanelOpen, notifyPanelOpen, getActiveViewportPanel, onViewportPanelClose, type ViewportPanel } from './viewportPanelRegistry';
 import { getConfig } from '../config/appConfig';
+import { UI_APPLIED_NOTE_PREFIX } from '../ai/userWords';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 
 // ---------------------------------------------------------------------------
@@ -361,9 +362,10 @@ export function setToolNote(host: HTMLElement | null, note: string | null | unde
 // is persisted or broadcast, so another tab's chat never sees it.
 // ---------------------------------------------------------------------------
 
-/** Every note starts with this, so it reads as app-generated context — never
- *  as words the user typed (the AI panel renders it as a muted system line). */
-export const UI_APPLIED_NOTE_PREFIX = '[UI · app note]';
+// Every note starts with UI_APPLIED_NOTE_PREFIX (in the src/ai/userWords leaf,
+// so the review can drop these notes from the user's words); the AI panel
+// renders such a line as a muted system line.
+export { UI_APPLIED_NOTE_PREFIX };
 
 const pendingApplied = new Map<string, string>();
 
