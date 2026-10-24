@@ -52,3 +52,5 @@ fraction rather than "changed".
 **Surface `select` reuses the selector.** `label` / `region` stay as
 shorthands; labels resolve main-side through a triangle-index lookup on the
 run's labelMap.
+
+**Follow-up filed:** the sub-voxel seam hairline in the edge overlay is #1112; a retro note records the boolean-robustness lessons.
