@@ -320,6 +320,25 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'listCharacterPresets',
+    description: 'List the Character Creator starting characters (the panel\'s preset cards: child, elder, chibi, Funko soccer star, vinyl toy, anime hero, elf, mannequin, …) as [{id, label, description}]. Pass id to get that preset\'s full spec — a ready starting point to tweak and hand to buildCharacter.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'A preset id from the list; returns {id, label, description, spec}.' } },
+    },
+  },
+  {
+    name: 'randomCharacter',
+    description: 'Build a random but coherent figure (the panel\'s 🎲 Random: a body-plan style — realistic / chibi / funko — and age drive proportions; hair, clothing, pose and colours are drawn from the spec\'s options) and commit it as a version. Returns {seed, spec, geometry, version}; the same seed re-creates the same character, and the spec can be tweaked and passed to buildCharacter.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seed: { type: 'integer', minimum: 0, maximum: 4294967295, description: 'Reproducible roll (omit for a fresh one).' },
+        label: { type: 'string', description: 'Version label (default "Random character").' },
+      },
+    },
+  },
+  {
     name: 'photoMatch',
     description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
     input_schema: {
@@ -1981,6 +2000,8 @@ const ALWAYS_AVAILABLE = new Set([
   'photoMatch',
   // Pure read of the current code's `// @character` header.
   'getCharacterSpec',
+  // Pure read of the built-in Character Creator presets.
+  'listCharacterPresets',
   'setObjectPartHidden',
   'assertPaint',
   'sliceAtZVisual',
@@ -2017,7 +2038,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
@@ -2042,7 +2063,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   // Visual-only view state; re-applying it is idempotent.
@@ -2054,7 +2075,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2639,6 +2660,21 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'getCharacterSpec':
       return api.getCharacterSpec();
+    case 'listCharacterPresets': {
+      const presets = api.listCharacterPresets() as Array<{ id: string; label: string; description: string; spec: unknown }>;
+      if (input.id === undefined) return presets.map(({ id, label, description }) => ({ id, label, description }));
+      const hit = presets.find(p => p.id === input.id);
+      return hit ?? { error: `listCharacterPresets: unknown id ${JSON.stringify(input.id)} — one of ${presets.map(p => p.id).join(', ')}` };
+    }
+    case 'randomCharacter': {
+      // Commits like buildCharacter and drops the generated code (token-cheap).
+      const r = await api.randomCharacter({ seed: input.seed, save: true, label: input.label }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'paintConnected':
       return api.paintConnected(input);
     case 'getFeatureCentroids':

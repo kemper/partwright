@@ -155,7 +155,8 @@ import { createPartDetection, importMeshKey, type PartDetectionApi } from './seg
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
 import { isFusedPiecesDraft } from './segmentation/labelPresets';
 import { specToCode } from './figure/characterCodegen';
-import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION } from './figure/characterSpec';
+import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION, CHARACTER_PRESETS } from './figure/characterSpec';
+import { randomSpec, seededRandom } from './figure/characterRandom';
 import { initResizeUI } from './ui/resizeModal';
 import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -13807,6 +13808,33 @@ async function main() {
       return { spec, version: SPEC_VERSION };
     },
 
+    /** The Character Creator's built-in starting characters (same list as the
+     *  panel's preset picker). Each entry carries its full spec, ready to pass
+     *  to buildCharacter (optionally tweaked first). */
+    listCharacterPresets() {
+      return CHARACTER_PRESETS.map(p => ({ id: p.id, label: p.label, description: p.description, spec: p.patch() }));
+    },
+
+    /** Roll a random, coherent character (the panel's 🎲 Random button) and build
+     *  it. Pass `seed` for a reproducible result; the seed used is returned so
+     *  a roll you like can be re-created. `save:true` commits a version. */
+    async randomCharacter(opts?: { seed?: number; save?: boolean; label?: string }) {
+      const parsed = guard(() => {
+        const o = assertObject(opts, 'randomCharacter(opts)', { optional: true }) ?? {};
+        assertNoUnknownKeys(o, ['seed', 'save', 'label'], 'randomCharacter(opts)');
+        return {
+          seed: assertNumber(o.seed, 'randomCharacter(opts).seed', { optional: true, integer: true, min: 0, max: 2 ** 32 - 1 }),
+          save: assertBoolean(o.save, 'randomCharacter(opts).save', { optional: true }),
+          label: assertString(o.label, 'randomCharacter(opts).label', { optional: true }),
+        };
+      });
+      if ('error' in parsed) return parsed;
+      const seed = parsed.seed ?? Math.floor(Math.random() * 2 ** 31);
+      const spec = randomSpec(seededRandom(seed));
+      const r = await partwrightAPI.buildCharacter(spec, { save: parsed.save, label: parsed.label ?? 'Random character' });
+      return { seed, spec, ...r };
+    },
+
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
      *  target: { index } or { id } from listVersions().
      *  transformFn: (code: string) => string — modifies the parent's code. Return the full new code.
@@ -17708,6 +17736,8 @@ async function main() {
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
         'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
         'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2; every detail field is filled) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
+        'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
+        'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?}) -- Build a random, coherent figure (any body-plan style) (the panel\'s Random button) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
