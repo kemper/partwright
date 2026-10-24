@@ -26,6 +26,7 @@ import {
 import { listSlotRgb255 } from '../color/palette';
 import { clampEntry, entryTitle, formatEntry, stepDecimals } from './sliderEntry';
 import { openColorPicker } from './colorPickerModal';
+import { createToolNote, type ToolOpenContext } from './toolRegistry';
 
 export interface ImageVoxelModalOptions {
   filename?: string;
@@ -38,7 +39,15 @@ export interface ImageVoxelModalOptions {
   file?: File | null;
   /** Pre-fill the controls (e.g. re-importing a past entry with its settings). */
   initialOptions?: ImageToVoxelOptions;
+  /** "Suggested by AI: …" line (openTool('import-image-voxel') prefill). */
+  note?: string;
+  noteSource?: ToolOpenContext['source'];
 }
+
+let openVoxelModal: { state: () => Record<string, unknown>; close: () => void } | null = null;
+export function isImageVoxelImportOpen(): boolean { return openVoxelModal !== null; }
+export function getImageVoxelImportState(): Record<string, unknown> | null { return openVoxelModal?.state() ?? null; }
+export function closeImageVoxelImport(): void { openVoxelModal?.close(); }
 
 /** What the modal resolves to on Import: the chosen options plus the image the
  *  user ended up with (original or swapped-in) and its source File + name. */
@@ -789,14 +798,20 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
     const fileSig = signal<File | null>(opts.file ?? null);
     const filenameSig = signal<string>(opts.filename ?? '');
     const swapErrorSig = signal<string | null>(null);
-    mountPreactModal(
+    const note = opts.note;
+    const handle = mountPreactModal(
       {
         title: 'Image → Voxel',
         scrollable: true,
-        onClose: () => resolve(result),
+        onClose: () => { openVoxelModal = null; resolve(result); },
       },
       close => ({
-        body: <ImageVoxelBody imageSig={imageSig} filenameSig={filenameSig} fileSig={fileSig} swapErrorSig={swapErrorSig} state={state} />,
+        body: (
+          <>
+            {note && <div ref={el => { if (el && !el.firstChild) el.append(createToolNote(note, opts.noteSource)); }} />}
+            <ImageVoxelBody imageSig={imageSig} filenameSig={filenameSig} fileSig={fileSig} swapErrorSig={swapErrorSig} state={state} />
+          </>
+        ),
         footer: (
           <ImageVoxelFooter
             imageSig={imageSig}
@@ -811,5 +826,9 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
         ),
       }),
     );
+    openVoxelModal = {
+      state: () => ({ src: filenameSig.value || null, options: emitOptions(state.value) }),
+      close: () => { result = null; handle.close(); },
+    };
   });
 }

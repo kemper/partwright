@@ -85,7 +85,7 @@ async function doBuild(page, job, write) {
     function num(v){ return typeof v === 'number'; }
     await window.partwright.createSession(job.name || job.id);
     const geo = await window.partwright.run(job.code);
-    if (!geo || geo.status === 'error') return { error: 'run failed: ' + (geo && geo.error), geo };
+    if (!geo || geo.error || geo.status === 'error') return { error: 'run failed: ' + (geo && geo.error), geo };
     // Replay paint ops.
     const paintErrors = [];
     for (const op of (job.paint || [])) {

@@ -25,6 +25,8 @@ import {
   smin,
   type GridSpec,
 } from './meshSdf';
+import { carryRunsByNearest } from './labelCarry';
+import { activeLabelIds } from './selector';
 
 const DEFAULT_MAX_RES = 192;
 
@@ -105,6 +107,30 @@ function levelSetFromField(
 export function createMeshSdfOps(module: any) {
   const { Manifold } = module;
 
+  /** `keepLabels`: re-attach the inputs' part provenance to the remeshed
+   *  output (each triangle takes its nearest input triangle's originalID), so
+   *  api.label parts survive the levelSet rebuild like they survive a boolean.
+   *  The intermediate `out` is freed by the sandbox's allocation tracking. */
+  function withCarriedLabels(out: any, inputs: any[]): any {
+    // Only labelled ids are worth the nearest-surface pass; an unlabelled
+    // input returns the remesh untouched.
+    const labelIds = activeLabelIds();
+    if (!labelIds || labelIds.size === 0) return out;
+    const sources = inputs.map(m => m.getMesh());
+    if (!sources.some(s => s.runOriginalID && Array.from(s.runOriginalID as Uint32Array).some(id => labelIds.has(id)))) return out;
+    const mesh = out.getMesh();
+    const fallback = mesh.runOriginalID && mesh.runOriginalID.length > 0 ? mesh.runOriginalID[0] : 0;
+    const carried = carryRunsByNearest(sources, mesh, fallback, id => labelIds.has(id));
+    if (!carried) return out;
+    return Manifold.ofMesh({
+      numProp: mesh.numProp,
+      vertProperties: mesh.vertProperties,
+      triVerts: carried.triVerts,
+      runIndex: carried.runIndex,
+      runOriginalID: carried.runOriginalID,
+    });
+  }
+
   interface RoundOpts {
     /** Fillet radius in world units (applies to convex edges and concave creases). */
     radius: number;
@@ -113,6 +139,8 @@ export function createMeshSdfOps(module: any) {
     /** Lattice resolution cap along the longest axis (default 192, max 320).
      *  Higher = finer surface, slower. */
     resolution?: number;
+    /** Keep the input's api.label parts on the rounded surface (default false). */
+    keepLabels?: boolean;
   }
 
   /** Round EVERY edge of a solid with radius r — the mesh-side analogue of
@@ -124,7 +152,7 @@ export function createMeshSdfOps(module: any) {
   function round(m: any, opts: RoundOpts): any {
     need(isManifold(m), 'round(m, {radius}): m must be a Manifold');
     need(opts && typeof opts === 'object', 'round(m, opts): opts object with { radius } is required');
-    const allowed = ['radius', 'mode', 'resolution'];
+    const allowed = ['radius', 'mode', 'resolution', 'keepLabels'];
     for (const k of Object.keys(opts)) {
       if (!allowed.includes(k)) throw new Error(`meshOps: round: unknown option "${k}" (allowed: ${allowed.join(', ')})`);
     }
@@ -132,6 +160,7 @@ export function createMeshSdfOps(module: any) {
     const mode = opts.mode ?? 'both';
     need(mode === 'both' || mode === 'convex' || mode === 'concave', "round.mode must be 'both', 'convex' or 'concave'");
     need(!m.isEmpty(), 'round(m): input manifold is empty');
+    need(opts.keepLabels === undefined || typeof opts.keepLabels === 'boolean', 'round.keepLabels must be true or false');
 
     const r = opts.radius;
     const spec = resolveGrid(bboxOf(m), r, opts.resolution, 'round');
@@ -149,7 +178,7 @@ export function createMeshSdfOps(module: any) {
         `${(2 * r).toFixed(2)} units. Use a smaller radius.`,
       );
     }
-    return out;
+    return opts.keepLabels ? withCarriedLabels(out, [m]) : out;
   }
 
   interface SmoothWeldOpts {
@@ -157,6 +186,8 @@ export function createMeshSdfOps(module: any) {
     radius: number;
     /** Lattice resolution cap along the longest axis (default 192, max 320). */
     resolution?: number;
+    /** Keep the inputs' api.label parts on the welded surface (default false). */
+    keepLabels?: boolean;
   }
 
   /** Union two (or more) Manifolds with a SMOOTH blended seam of radius r —
@@ -180,11 +211,12 @@ export function createMeshSdfOps(module: any) {
       need(!parts[i].isEmpty(), `smoothWeld: shape ${i} is empty`);
     }
     need(opts && typeof opts === 'object', 'smoothWeld: opts object with { radius } is required');
-    const allowed = ['radius', 'resolution'];
+    const allowed = ['radius', 'resolution', 'keepLabels'];
     for (const k of Object.keys(opts)) {
       if (!allowed.includes(k)) throw new Error(`meshOps: smoothWeld: unknown option "${k}" (allowed: ${allowed.join(', ')})`);
     }
     need(isFiniteNum(opts.radius) && opts.radius > 0, 'smoothWeld.radius must be a positive number');
+    need(opts.keepLabels === undefined || typeof opts.keepLabels === 'boolean', 'smoothWeld.keepLabels must be true or false');
 
     const r = opts.radius;
     let bounds = bboxOf(parts[0]);
@@ -203,7 +235,8 @@ export function createMeshSdfOps(module: any) {
       }
     }
     blurField(acc!, spec); // smooth the raster's half-voxel corduroy
-    return levelSetFromField(Manifold, acc!, spec);
+    const out = levelSetFromField(Manifold, acc!, spec);
+    return opts.keepLabels ? withCarriedLabels(out, parts) : out;
   }
 
   return { round, smoothWeld };

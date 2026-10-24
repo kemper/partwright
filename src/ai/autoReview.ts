@@ -13,7 +13,7 @@ import type { AutoReviewSettings } from './settings';
 import type { ChatBlock, ChatMessage, ChatToggles, Provider, TurnOutcomeReason } from './types';
 import { activeModel } from './types';
 import { CARRIED_ATTACHMENTS_NOTE } from './compactionAttachments';
-import { stripPlanWrapping } from './planMode';
+import { userWords } from './userWords';
 
 export type ReviewVerdict = 'pass' | 'minor' | 'rework';
 
@@ -76,11 +76,11 @@ export function resolveReviewer(settings: AutoReviewSettings, toggles: ChatToggl
 /** Model-changing tool calls made in assistant messages created at or after
  *  `since` (ms) — i.e. during the current round. `isChanging` is
  *  `isModelChangingTool` from tools.ts (injected to keep this module pure). */
-export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string) => boolean): number {
+export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string, input?: Record<string, unknown>) => boolean): number {
   let n = 0;
   for (const m of history) {
     if (m.role !== 'assistant' || m.createdAt < since || !m.toolCalls) continue;
-    for (const c of m.toolCalls) if (isChanging(c.name)) n++;
+    for (const c of m.toolCalls) if (isChanging(c.name, c.input)) n++;
   }
   return n;
 }
@@ -104,7 +104,7 @@ export function latestUserRequest(history: ChatMessage[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (m.role !== 'user' || m.autoResumeNudge) continue;
-    const text = stripPlanWrapping(requestText(m.blocks));
+    const text = userWords(m.blocks);
     if (text && !text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) return text;
   }
   return '';
@@ -143,7 +143,7 @@ export function userConversation(history: ChatMessage[], maxChars: number): User
       continue;
     }
     if (m.autoResumeNudge) continue;
-    const text = stripPlanWrapping(requestText(m.blocks));
+    const text = userWords(m.blocks);
     if (!text || text === CARRIED_ATTACHMENTS_NOTE || text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) continue;
     entries.push(text);
   }

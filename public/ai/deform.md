@@ -20,10 +20,59 @@ sessions.)
 | "Round every sharp edge" on any solid | `api.round(m, { radius })` |
 | Blend two plain meshes with a smooth seam | `api.smoothWeld(a, b, { radius })` |
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
+| Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.sculpt.transform(m, { select: { label }, scale \| rotate \| translate, blend })` |
+| Confine any of the above to one part / region / facing | `select: { label } \| { region } \| { where }` — see below |
 
 **When you're already in `api.sdf` land, stay there** — its `.twist/.bend/.shell/.round/.smoothUnion`
 are exact and cheaper. These verbs exist for geometry that *isn't* an SDF
 expression: boolean results, imports, text, helper output.
+
+## Selecting part of a shape — `select` + `blend`
+
+`api.sculpt.*`, `api.bend` / `api.twist` / `api.taper` and `api.scatter` can act
+on **part** of a shape instead of all of it. Name the part, not coordinates: a
+selector is plain data, so it lives in the code and keeps working when edits
+move the triangles around.
+
+```js
+{ label: 'arm' }                               // an api.label part — or a detected part of an import (api.importWithParts)
+{ label: ['hair', 'brows'] }                   // any of several parts
+{ region: { center: [0, 0, 40], radius: 8 } }  // a ball
+{ where: { facing: 'up', tolerance: 20 } }     // faces pointing a way: 'up' | 'down' | '+x' | '-x' | '+y' | '-y' | [x, y, z]; tolerance in degrees, default 30
+{ where: { min: [null, null, 30] } }           // faces above z = 30 (null = unbounded); also max, or box: { min, max }
+{ label: 'body', where: { facing: '+y' } }     // several keys AND together
+[{ label: 'hand' }, { label: 'arm' }]          // an array ORs its entries
+{ label: 'body', except: { label: 'base' } }   // subtract another selector
+{ except: { label: 'base' } }                  // everything except the base
+```
+
+A face is selected when its label, centroid and normal match. `blend: d` fades
+the edit over `d` units outside the selection, so it eases into the
+surroundings instead of creasing at the seam. A selector that matches nothing,
+or names an unknown part, **throws** with the list of parts. It never silently
+does nothing.
+
+```js
+// Soft-selection transform (Blender's proportional editing): move / scale /
+// rotate just the selection, about the centre of its bounding box unless you pass pivot.
+m = api.sculpt.transform(m, { select: { label: 'head' }, scale: 1.4, blend: 3 });
+m = api.sculpt.transform(m, { select: { label: 'arm' }, rotate: [0, -25, 0], pivot: [10, 0, 22] });
+m = api.sculpt.transform(m, { select: { where: { min: [null, null, 40] } }, translate: [0, 0, 5], blend: 4 }); // stretch the top
+
+m = api.twist(m, { select: { label: 'arm' }, degrees: 90, axis: 'x' });   // over the arm's own extent and axis
+m = api.bend(m, { select: { label: 'arm' }, angle: 60 });                  // the arm's min-X end (its root) stays put; anchor: 'max' | 'center'
+m = api.taper(m, { select: { label: 'leg' }, scaleTop: 0.6, blend: 2 });
+m = api.sculpt.inflate(m, { at: [0, -9, 36], radius: 6, amount: 2, select: { label: 'head' } }); // can't bleed onto the neck
+const studs = api.scatter(m, stud, { count: 40, where: { label: 'shell', where: { facing: 'up' } } });
+```
+
+Facts to respect:
+- **The selection deforms over its own bounds.** `twist` / `taper` / `bend` measure the selection's extent (and refine to its size), and twist turns about the centre line of the selection's bounding box, so one arm twists about itself and not the world origin. A scoped `bend` keeps the selection's min-X end fixed (`anchor: 'min'`, the default), so a limb stays on its socket. Pass `anchor: 'max'` or `'center'` to change that.
+- **A hard edge (no `blend`) moves whole triangles at the seam.** Triangles straddling the boundary stretch. Big scales or rotations of a part fused into the body read better with a `blend` of a few units.
+- **The fade weights the motion, not the position.** In the blend zone `sculpt.transform` and `twist` turn by a fraction of the angle (and scale or move by a fraction), so the surface follows the arc instead of pinching inward. `bend` and `taper` fade by position.
+- **Only `sculpt.transform` refines for `blend`.** It refines to about `blend / 3` edges so the fade has vertices, over the whole shape, and errors before building a mesh over the ~3M-triangle budget. Keep `blend` reasonable on huge imports, or pass `segmentLength`. The brushes and deforms refine by their own radius or span as before.
+- **Labels carry through.** The ops warp vertices without remeshing, so every `api.label` part keeps its faces, and `paintByLabel` / `withinPart` still work afterwards. `round` / `smoothWeld` remesh, so they need `keepLabels: true` for the same result (below).
+- **Imports:** after `acceptParts`, an imported mesh's detected parts are labels (`api.importWithParts(0)`), so `select: { label: 'hair' }` works on STL figurines too. That's the way to "make the head bigger" on an upload.
 
 ## Deforms (warp-based)
 
@@ -68,7 +117,8 @@ const spikes = api.scatter(base, spike, {
   scale: [0.8, 1.2],   // uniform per-instance scale (number or [min, max] range)
   offset: -0.5,        // along the normal; NEGATIVE sinks the base in so the union fuses
   minSpacing: 4,       // Poisson-ish minimum distance between anchors
-  where: (p, n) => n[2] > 0.2,  // optional predicate: position + unit normal
+  where: (p, n) => n[2] > 0.2,  // optional: a predicate (position + unit normal)…
+  // where: { label: 'shell', where: { facing: 'up' } },  // …or a selector object (see "Selecting part of a shape")
 });
 return api.expectUnion([base, spikes], { expectComponents: 1 });
 ```
@@ -93,10 +143,26 @@ respect: features thinner than `2·radius` are smoothed **away** — and in
 practice a flat face starts visibly bulging into a pill well before that limit,
 so on a shape with one thin dimension keep the radius under ~1/4 of the
 thinnest extent (a 5-unit-thick shell wants radius ≲ 1.2, not 1.8); the output
-is a remeshed surface (labels/paint regions on the input do NOT carry through —
-round first, label/paint after); accuracy is ~the lattice voxel, and a radius
+is a remeshed surface, so the input's `api.label` parts are dropped **unless you
+pass `keepLabels: true`** (below); accuracy is ~the lattice voxel, and a radius
 too small for the model errors with the fix in the message. For exact
 edge-picked fillets use BREP; for SDF trees use `.round()`.
+
+**`keepLabels: true` keeps the parts.** Each remeshed triangle takes the part of
+the input surface nearest to it, so `byLabel` / part colours, `paintByLabel`,
+`withinPart` and selectors still work on the result. This is how to fillet a
+labelled model, or a detected import (`api.importWithParts`), without losing its
+parts. It adds a nearest-surface pass over the output, roughly half the remesh's
+own time on a large model, so it's off by default. An input with no labels is
+returned exactly as it would be without the option:
+
+```js
+m = api.round(api.importWithParts(0), { radius: 1.2, keepLabels: true });
+```
+
+Part boundaries land at triangle resolution: in a fillet that blends two parts,
+the edge falls where the two input surfaces meet. It's off by default, so
+existing models render exactly as before.
 
 **Convex shapes have an exact alternative — use it.** The lattice's ~voxel
 error reads as gentle waviness/pillowing on large flat mirror-shaded faces
@@ -114,7 +180,9 @@ return api.smoothWeld([body, head, arm], { radius: 4 });  // or (a, b, {radius})
 
 `api.sdf`'s `smoothUnion`, but for arbitrary Manifolds. Parts should overlap or
 touch; the seam grows a smooth fillet of ~`radius`. Same lattice mechanics and
-caveats as `round` (remeshed output, labels don't carry through).
+caveats as `round` (remeshed output). Pass `keepLabels: true` to keep each
+input's `api.label` parts on the welded surface (e.g. weld a labelled head onto
+a body and still paint them separately).
 
 ## Sculpt — declarative brush nudges
 

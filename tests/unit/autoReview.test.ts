@@ -11,7 +11,7 @@ import {
   shouldAutoReview,
   userConversation,
 } from '../../src/ai/autoReview';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../../src/ai/planMode';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, UI_APPLIED_NOTE_PREFIX } from '../../src/ai/userWords';
 import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
@@ -143,6 +143,16 @@ describe('userConversation', () => {
     ];
     expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket', 'Use M4 holes']);
     expect(latestUserRequest(history)).toBe('Use M4 holes');
+  });
+
+  it('drops "[UI · app note]" blocks, also ahead of a plan-first turn', () => {
+    const note = { type: 'text' as const, text: `${UI_APPLIED_NOTE_PREFIX} user applied Resize: {scale: 2}` };
+    const history = [
+      msg('user', '', 1, { blocks: [note, { type: 'text', text: `${PLAN_FIRST_PREFIX}Make a bracket` }] }),
+      msg('user', '', 2, { blocks: [note] }),
+    ];
+    expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket']);
+    expect(latestUserRequest(history)).toBe('Make a bracket');
   });
 
   it('drops the compaction summary when user messages had to be left out or it does not fit', () => {

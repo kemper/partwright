@@ -6,6 +6,7 @@
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
+import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -18,14 +19,16 @@ import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { createModalShell } from './modalShell';
+import { BUTTON_CANCEL, BUTTON_DANGER, BUTTON_PRIMARY } from './styleConstants';
 import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/planMode';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { isModelChangingTool } from '../ai/tools';
+import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -47,6 +50,7 @@ import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
+import { getSelectedPartKeys, setSelectedPartKey, onPartSelectionChange, describePartKeys, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
 
 interface PanelState {
   open: boolean;
@@ -245,6 +249,7 @@ function pinTranscriptToBottom(): void {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 let pendingImagesEl: HTMLElement | null = null;
+let partContextEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
@@ -370,6 +375,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // Pending "[UI · app note] user applied …" lines describe the previous
+  // session's model — don't carry them into this one.
+  if (!state.inFlight) clearToolAppliedNotes();
   // If a turn is in flight the session change was triggered by the model
   // calling createSession mid-turn. Don't reload/re-render now — the
   // callbacks (onUserPersisted etc.) are keeping state.history current
@@ -968,6 +976,15 @@ function buildDrawer(): void {
   pendingImagesEl = document.createElement('div');
   pendingImagesEl.className = 'px-3 pb-1.5 flex flex-wrap gap-1.5 shrink-0 hidden';
   bottomSection.appendChild(pendingImagesEl);
+
+  // Selected-part context chip (#1003): while a part / piece is selected in the
+  // Objects list, it rides along with the next message as context.
+  partContextEl = document.createElement('div');
+  partContextEl.id = 'ai-part-context';
+  partContextEl.className = 'px-3 pb-1.5 shrink-0 hidden';
+  bottomSection.appendChild(partContextEl);
+  renderPartContext();
+  onPartSelectionChange(renderPartContext);
 
   // In-progress indicator — shown while a turn is in flight so the user
   // knows we haven't frozen. Hidden by default; populated by
@@ -2232,6 +2249,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     if (b.type === 'text') {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
+      // App-generated "[UI · app note] user applied …" context: a muted system
+      // line, not a blue bubble that would read as the user's own words.
+      if (msg.role === 'user' && b.text.startsWith(UI_APPLIED_NOTE_PREFIX)) {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] italic text-zinc-500 whitespace-pre-wrap break-words';
+        line.dataset.uiAppNote = '';
+        line.textContent = b.text;
+        wrap.appendChild(line);
+        continue;
+      }
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
@@ -2562,7 +2589,19 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
-  bubble.textContent = text;
+  // The Objects-list selection rides along as a context line; show it as a
+  // chip rather than raw "[Selected in …]" text in the user's own bubble.
+  const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
+  if (context) {
+    const chip = document.createElement('div');
+    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+    chip.title = 'The part selected in the Objects list was sent as context';
+    chip.textContent = `◎ ${context}`;
+    bubble.appendChild(chip);
+    bubble.appendChild(document.createTextNode(rest));
+  } else {
+    bubble.textContent = text;
+  }
   return bubble;
 }
 
@@ -2884,10 +2923,35 @@ function captureChatImageAsAttachment(img: ImageSource): void {
   try {
     const existing = pw.getAttachments();
     if (Array.isArray(existing) && existing.some(a => a.src === src)) return;
-    pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType });
+    const r = pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType }) as { error?: unknown } | undefined;
+    if (typeof r?.error === 'string') console.warn('Session attachments: capture failed', r.error);
   } catch (err) {
     console.warn('Session attachments: capture failed', err);
   }
+}
+
+function renderPartContext(): void {
+  if (!partContextEl) return;
+  const keys = getSelectedPartKeys();
+  partContextEl.replaceChildren();
+  partContextEl.classList.toggle('hidden', keys.length === 0);
+  if (keys.length === 0) return;
+  const chip = document.createElement('span');
+  chip.className = 'inline-flex items-center gap-1 max-w-full rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-100';
+  chip.title = 'Selected in the Objects list — sent with your message as context';
+  const t = document.createElement('span');
+  t.className = 'truncate';
+  t.textContent = `◎ ${describePartKeys(keys)}`;
+  chip.appendChild(t);
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-3 -mr-2 md:min-w-0 md:min-h-0 md:my-0 md:mr-0 text-amber-200/70 [@media(hover:hover)]:hover:text-amber-50';
+  rm.textContent = '✕';
+  rm.title = 'Clear the selection';
+  rm.setAttribute('aria-label', 'Clear the selected part');
+  rm.addEventListener('click', () => setSelectedPartKey(null));
+  chip.appendChild(rm);
+  partContextEl.appendChild(chip);
 }
 
 function renderPendingImages(): void {
@@ -3356,8 +3420,17 @@ async function sendMessage(): Promise<void> {
   const capturedText = text;
   const capturedImages = [...state.pendingImages];
 
-  const blocks: ChatBlock[] = [];
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
+  // "[UI · app note] user applied …" lines for panels the AI opened and the user then
+  // applied from (toolRegistry.notifyToolApplied) — one leading text block,
+  // so the model sees what the user settled on. Per-tab memory only.
+  const uiNotes = drainToolAppliedNotes();
+  const uiNoteBlocks: ChatBlock[] = uiNotes.length ? [{ type: 'text', text: uiNotes.join('\n') }] : [];
+
+  const blocks: ChatBlock[] = [...uiNoteBlocks];
+  // The Objects-list selection is chat context: "make it red" means the part
+  // the user has selected.
+  const partKeys = getSelectedPartKeys();
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
@@ -3401,12 +3474,12 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
@@ -3482,50 +3555,47 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
-/** Show a blocking overlay asking the user to allow or decline an AI-initiated
- *  import. Resolves true (allow) or false (decline). */
-function showToolConfirmation(toolName: string): Promise<boolean> {
+/** Ask the user to allow or decline a confirm-required AI tool call (imports,
+ *  deleteVersion). Resolves true (allow) or false (decline). Built on
+ *  modalShell, so Escape / click-outside / ✕ decline and focus moves into the
+ *  dialog (onto Decline — the safe default for an irreversible action). An
+ *  abort of the turn (Stop, tab take-over) dismisses the prompt as a decline. */
+async function showToolConfirmation(toolName: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const label = await confirmToolLabel(toolName, input);
+  if (signal?.aborted) return false;
   return new Promise(resolve => {
-    const label = toolName === 'importImageAsRelief'
-      ? 'import an image as a 3D relief'
-      : toolName === 'importSvgAsRelief'
-      ? 'import an SVG as a 3D relief tile'
-      : `run "${toolName}"`;
-
-    const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
-
-    const card = document.createElement('div');
-    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+    let allowed = false;
+    const onAbort = () => { allowed = false; shell.close(); };
+    const shell = createModalShell({
+      title: 'Allow this AI action?',
+      maxWidth: 'sm',
+      onClose: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(allowed);
+      },
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const msg = document.createElement('p');
-    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.className = 'text-sm text-zinc-200';
+    msg.setAttribute('data-testid', 'ai-tool-confirm-message');
     msg.textContent = `The AI wants to ${label}. Allow this?`;
-
-    const btns = document.createElement('div');
-    btns.className = 'flex gap-2 justify-end';
+    shell.body.appendChild(msg);
 
     const declineBtn = document.createElement('button');
-    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.className = BUTTON_CANCEL;
     declineBtn.textContent = 'Decline';
+    declineBtn.addEventListener('click', () => { allowed = false; shell.close(); });
 
     const allowBtn = document.createElement('button');
-    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.className = toolName === 'deleteVersion' ? BUTTON_DANGER : BUTTON_PRIMARY;
     allowBtn.textContent = 'Allow';
+    allowBtn.addEventListener('click', () => { allowed = true; shell.close(); });
 
-    btns.appendChild(declineBtn);
-    btns.appendChild(allowBtn);
-    card.appendChild(msg);
-    card.appendChild(btns);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    const done = (allowed: boolean) => {
-      overlay.remove();
-      resolve(allowed);
-    };
-    allowBtn.addEventListener('click', () => done(true));
-    declineBtn.addEventListener('click', () => done(false));
+    shell.footer.appendChild(declineBtn);
+    shell.footer.appendChild(allowBtn);
+    declineBtn.focus();
   });
 }
 
@@ -3678,7 +3748,7 @@ async function runTurnWithStallRetry(
         renderTranscript();
         renderCostMeter();
       },
-      confirmTool: (toolName) => showToolConfirmation(toolName),
+      confirmTool: (toolName, toolInput) => showToolConfirmation(toolName, toolInput, controller.signal),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

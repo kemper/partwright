@@ -218,6 +218,47 @@ export function coerceParamValue(spec: ParamSpec, value: unknown): ParamValue | 
   }
 }
 
+/** STRICT check of a set of overrides against the schema (the AI/console
+ *  prefill path — unlike coerceParamValue it never silently falls back): an
+ *  unknown key, a wrong type, a non-option select value, an over-long text or a
+ *  bad colour is an error naming the key. Numbers outside the declared min/max
+ *  are allowed, as in the panel's number field. */
+export function checkParamOverrides(schema: ParamSpec[], values: Record<string, unknown>): { values: ParamValues } | { error: string } {
+  const byKey = new Map(schema.map(s => [s.key, s]));
+  const errors: string[] = [];
+  const out: ParamValues = {};
+  for (const [key, v] of Object.entries(values)) {
+    const spec = byKey.get(key);
+    if (!spec) { errors.push(`unknown parameter "${key}" (parameters: ${schema.map(s => s.key).join(', ')})`); continue; }
+    switch (spec.type) {
+      case 'number':
+      case 'int':
+        if (typeof v !== 'number' || !Number.isFinite(v)) errors.push(`${key} must be a finite number`);
+        else if (spec.type === 'int' && !Number.isInteger(v)) errors.push(`${key} must be an integer`);
+        else out[key] = v;
+        break;
+      case 'boolean':
+        if (typeof v !== 'boolean') errors.push(`${key} must be a boolean`); else out[key] = v;
+        break;
+      case 'select':
+        if (typeof v !== 'string' || !spec.options?.some(o => o.value === v)) errors.push(`${key} must be one of ${(spec.options ?? []).map(o => JSON.stringify(o.value)).join(', ')}`);
+        else out[key] = v;
+        break;
+      case 'text':
+        if (typeof v !== 'string') errors.push(`${key} must be a string`);
+        else if (spec.maxLength !== undefined && v.length > spec.maxLength) errors.push(`${key} must be at most ${spec.maxLength} characters`);
+        else out[key] = v;
+        break;
+      case 'color': {
+        const hex = normalizeHexColor(v);
+        if (!hex) errors.push(`${key} must be a "#rrggbb" colour`); else out[key] = hex;
+        break;
+      }
+    }
+  }
+  return errors.length ? { error: errors.join('; ') } : { values: out };
+}
+
 /** Resolve the values handed to model code: each parameter takes a valid
  *  override if present, otherwise its default. */
 export function resolveParamValues(schema: ParamSpec[], overrides?: Record<string, unknown>): ParamValues {

@@ -43,3 +43,17 @@ export function getCurrentMesh(): MeshData | null {
 export function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
   return require().shapeSmoothDescriptorFields(mesh);
 }
+
+// "The user painted something by hand" — fired from the pointer commit paths
+// (brush stroke, bucket click, slab drag) only, never for programmatic paint
+// (AI tools, redo, version loads). Paint UI turns it into the AI's
+// "[UI · app note] user applied Paint …" line.
+let userPaintListener: (() => void) | null = null;
+
+export function onUserPaint(fn: () => void): void {
+  userPaintListener = fn;
+}
+
+export function notifyUserPaint(): void {
+  userPaintListener?.();
+}

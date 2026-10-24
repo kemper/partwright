@@ -31,10 +31,23 @@ export interface DeactivateOpts {
 type Deactivator = (opts?: DeactivateOpts) => void;
 
 const registry = new Map<ExclusiveMode, Deactivator>();
+const activeProbes = new Map<ExclusiveMode, () => boolean>();
 
-/** Register a mode's force-deactivate callback. Called once at init. */
-export function registerExclusiveMode(id: ExclusiveMode, deactivate: Deactivator): void {
+/** Register a mode's force-deactivate callback (and, optionally, an "is it
+ *  active?" probe for {@link getActiveMode}). Called once at init. */
+export function registerExclusiveMode(id: ExclusiveMode, deactivate: Deactivator, isActive?: () => boolean): void {
   registry.set(id, deactivate);
+  if (isActive) activeProbes.set(id, isActive);
+}
+
+/** The exclusive viewport mode currently active, or null — what
+ *  `partwright.getUiState().mode` reports. Modes are mutually exclusive, so at
+ *  most one probe answers true. */
+export function getActiveMode(): ExclusiveMode | null {
+  for (const [id, probe] of activeProbes) {
+    try { if (probe()) return id; } catch { /* an uninitialised mode isn't active */ }
+  }
+  return null;
 }
 
 /** Force-deactivate the given mode if it is registered (a no-op otherwise —

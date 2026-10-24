@@ -71,3 +71,23 @@ reviewer is a Local model (small window) and warns if they're ticked.
 
 **Checkbox focus**: `Item`/`Toggle` moved to module scope so a re-render doesn't
 remount the inputs.
+
+## Human
+
+You have conflicts on the PR, please fix. (Then: move the PR to ready for review.)
+
+## Assistant
+
+## Key decisions
+
+**Merge, not rebase** (branch already pushed). Conflicts: main added a `cfgKey`
+prop to Advanced Settings fields (kept on all three review fields) and
+`uiNoteBlocks` ahead of plan turns (kept, with the plan constants).
+
+**Main's "[UI · app note]" blocks** are app-written lines prepended to a user
+turn; read back naively they'd count as the user's words and break the
+plan-prefix match. Renamed the new `planMode.ts` leaf to `userWords.ts`, moved
+`UI_APPLIED_NOTE_PREFIX` into it (toolRegistry re-exports it, so its importers
+are unchanged) and added `userWords(blocks)`, which drops note blocks and strips
+plan wrapping per block. Also registered `ai.reviewConversationMaxChars` in main's
+new `APP_CONFIG_FIELD_BOUNDS` table (its parity test caught the omission).
