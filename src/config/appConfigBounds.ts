@@ -133,6 +133,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     triCountWarnBudget: { min: 10_000, max: 2_000_000, integer: true },
     minEdgeLengthWarn: { min: 0, max: 5 },
     aspectRatioWarn: { min: 2, max: 100 },
+    engineHeapHighPct: { min: 10, max: 100, integer: true },
   },
   segmentation: {
     autoDetectOnImport: BOOL,

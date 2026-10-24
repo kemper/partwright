@@ -478,6 +478,13 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+    /** Share of the ~4 GB WebAssembly heap ceiling (percent) at which a
+     *  manifold-js run counts as memory-heavy. Past it the geometry warnings
+     *  flag the model before it reaches "memory access out of bounds", and the
+     *  geometry Worker is reset once idle so the next run starts on a fresh,
+     *  unfragmented heap (WASM memory never shrinks on its own). 100 disables
+     *  both the warning and the reset. */
+    engineHeapHighPct: number;
   };
   segmentation: {
     /** Part detection: after an interactive STL import, try the automatic
@@ -709,6 +716,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+    engineHeapHighPct: 50,
   },
   segmentation: {
     autoDetectOnImport: true,
