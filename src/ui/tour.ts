@@ -134,7 +134,7 @@ const STEPS: TourStep[] = [
     target: '#import-wrapper',
     title: 'Import',
     description:
-      'Import an .stl or .step mesh, a .js / .scad source file, a .vox model, or a full .partwright.json session. You can also turn an image into a printable relief, keychain, or tile — or into a colored voxel model — straight from the Import menu.',
+      'Import an .stl, .3mf (with its colours), or .step mesh, a .js / .scad source file, a .vox model, or a full .partwright.json session. You can also turn an image into a printable relief, keychain, or tile — or into a colored voxel model — straight from the Import menu.',
     placement: 'bottom',
   },
   {

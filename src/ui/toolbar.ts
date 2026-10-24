@@ -115,7 +115,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
  *  sync with `classifyImportSource` (src/import/importInbox.ts) — every type
  *  the classifier recognizes should be selectable here. `.svg` opens the
  *  Relief Studio wizard; `.avif` is treated as a raster image. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.3mf,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -340,7 +340,7 @@ export function createToolbar(
   importWrapper.id = 'import-wrapper';
 
   const btnImport = createButton('btn-import', '\u2191 Import');
-  btnImport.title = 'Import a .partwright.json session, a .js / .scad source file, or an .stl mesh';
+  btnImport.title = 'Import a .partwright.json session, a .js / .scad source file, or an .stl / .3mf mesh';
   importWrapper.appendChild(btnImport);
 
   // Hidden file input — kept inside the wrapper so click-outside-to-close still works.
@@ -362,7 +362,7 @@ export function createToolbar(
   importDropdown.appendChild(createMenuSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
     'Choose file\u2026',
-    'Open a .partwright.json session, a .js / .scad source file, or an .stl mesh.',
+    'Open a .partwright.json session, a .js / .scad source file, or an .stl / .3mf mesh (3MF keeps its colours + filament palette).',
   );
   chooseFileOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
