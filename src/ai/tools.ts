@@ -26,6 +26,7 @@ import { computeCodeDiff } from './codeDiff';
 import { AI_WRITABLE_CONFIG_KEYS } from '../config/appConfigBounds';
 import { LOG_LEVELS, LOG_SOURCES } from '../diagnostics/logQuery';
 import { isStarterCode } from '../editor/starters';
+import { codeBearingImportKind, geometryOnlyRefusalMessage } from '../import/urlImport';
 import { listTools as listUiTools, type PrefillSchema } from '../ui/toolRegistry';
 
 export interface ToolDefinition {
@@ -2027,6 +2028,173 @@ Returns { ok, stats, metrics, version } or { error }.`,
       },
     },
   },
+  // ── Remaining window.partwright wrappers (#1085 PR5) ─────────────────────
+  // Kept in one contiguous block; gated in the sets below.
+  {
+    name: 'healCurrent',
+    description: "Try to repair the current model's mesh: run manifold-3d's cleanup pass (collapse near-degenerate edges, re-run boolean cleanup) and show the cleaned mesh in the viewport. Use it after an STL import or a boolean that left stray components / a non-manifold result, to learn whether cleanup fixes it. Returns { ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter } or { error }. It replaces only the LIVE geometry — the code is unchanged, so the next run rebuilds the original. For a lasting fix, fix the code (e.g. more overlap between shapes) or bake the mesh with simplifyModel.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        tolerance: { type: 'number', minimum: 0, description: 'Edge-collapse tolerance in model units. Default 0 = the lightest cleanup (manifold-3d falls back to the stored tolerance); larger values collapse more aggressively.' },
+      },
+    },
+  },
+  {
+    name: 'editPalette',
+    description: "Edit the filament palette (the colour slots a multi-colour model maps onto the printer's AMS/MMU) — use when the user describes their spools (\"I have black, white and red PLA in a 4-slot AMS\"). Read it first with getPalette. One op per call: setActive {id} switches palette (ids from getPalette().palettes); addFilament {name, hex, td?} adds a slot; updateFilament {id, name?, hex?, td?} edits a slot (it does NOT recolour regions already painted with the old hex — use replaceColor for that); removeFilament {id} deletes a slot (painted regions keep their colour but lose their slot link, so with constrained on they show as off-palette — repaint or replaceColor them onto a remaining slot); setCapacity {capacity} sets how many slots the printer holds at once; setConstrained {constrained} snaps paint to the palette (true) or allows free RGB (false). The palette is a browser-wide preference, not part of the session. Returns the op result plus the updated palette, or { error }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['setActive', 'addFilament', 'updateFilament', 'removeFilament', 'setCapacity', 'setConstrained'] },
+        id: { type: 'string', description: 'Palette id (setActive) or filament slot id (updateFilament / removeFilament), from getPalette.' },
+        name: { type: 'string', description: 'Slot name, e.g. "PLA Black" (addFilament, updateFilament).' },
+        hex: { type: 'string', description: 'Slot colour as "#rrggbb" (addFilament, updateFilament).' },
+        td: { type: 'number', minimum: 0, description: 'Optional transmission distance (relief preview only). Default 1.' },
+        capacity: { type: 'integer', minimum: 1, description: 'setCapacity: slots the printer can load at once.' },
+        constrained: { type: 'boolean', description: 'setConstrained: true = paint snaps to palette slots.' },
+      },
+      required: ['op'],
+    },
+  },
+  {
+    name: 'replaceColor',
+    description: 'Recolour every USER paint region whose colour matches `from` (within `tolerance`) to `to` — the paint panel\'s Replace colour. "Make everything blue red." Colours are [r,g,b] in 0..1 (like paintFaces). Colours declared in code (api.paint.* / api.label({color})) are not touched — edit the code for those; the result carries a hint when that is why nothing matched. There is no undo for this op (undoLastPaint removes the newest region, not a recolour), so check the colours with listRegions first. Returns { replaced, hint? }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Current colour [r,g,b] 0..1 (from listRegions / getModelColors).' },
+        to: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'New colour [r,g,b] 0..1.' },
+        tolerance: { type: 'number', minimum: 0, description: 'Max RGB distance counted as a match. Default 0.01.' },
+      },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'setRegionVisibility',
+    description: "Show or hide one paint region (id from listRegions) in the viewport — the eye icon in the paint panel's region list. View-only: hidden regions still export, and the paint is not changed. Use it to let the user see the model without one region's overlay. Returns { id, visible } or { error }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Region id from listRegions.' },
+        visible: { type: 'boolean', description: 'false hides the region, true shows it again.' },
+      },
+      required: ['id', 'visible'],
+    },
+  },
+  {
+    name: 'paintAirbrush',
+    description: 'Spray a SPECKLED airbrush stroke along a path of surface points — a dense core that thins into scattered speckles at the edge (each triangle stays one printable colour). The soft-edged sibling of paintStroke: use it for weathering, blush, dirt, gradients-by-dithering; use paintStroke for a crisp rounded edge. Like paintStroke it subdivides the mesh under the stroke, so it costs more than the region tools. Get `points` from probePixel against a render. `strength` (0..1, default 0.4) is the core density, `softness` (0..1, default 0.5) the feathered fraction of the radius, `seed` makes the speckle reproducible. Returns { ok, name, ... } or { error }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        points: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Ordered world-space surface points [[x,y,z], ...] (from probePixel). A single point sprays one dab.' },
+        radius: { type: 'number', description: 'Brush radius in mesh units (> 0).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] 0..1.' },
+        strength: { type: 'number', minimum: 0, maximum: 1, description: 'Core speckle density 0..1. Default 0.4.' },
+        softness: { type: 'number', minimum: 0, maximum: 1, description: 'Feathered fraction of the radius 0..1. Default 0.5.' },
+        seed: { type: 'number', description: 'Speckle seed (default 1) — same seed, same pattern.' },
+        shape: { type: 'string', enum: ['circle', 'square', 'diamond'], description: 'Brush footprint. Default "circle".' },
+        resolution: { type: 'number', description: 'Speckle grain: target triangle edge = radius / resolution. Default 96.' },
+        maxEdge: { type: 'number', description: 'Optional absolute target edge length (mesh units); overrides resolution.' },
+        surface: { type: 'string', enum: ['geodesic', 'slab'], description: '"slab" (default) sprays everything within `depth` of the stroke; "geodesic" follows surface connectivity, so it cannot punch through a thin wall — prefer it on thin shells.' },
+        depth: { type: 'number', minimum: 0, description: 'Slab depth in mesh units (surface "slab" only; 0 = auto).' },
+        name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge.' },
+      },
+      required: ['points', 'radius', 'color'],
+    },
+  },
+  {
+    name: 'exportModel',
+    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, parts? } or { error }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        format: { type: 'string', enum: ['stl', 'obj', 'glb', '3mf', '3mf-objects', 'step', 'vox'] },
+        objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids to bundle into one file. Default: the current object (\'3mf-objects\': every object).' },
+        filename: { type: 'string', description: 'Optional download filename (the extension is added if missing).' },
+      },
+      required: ['format'],
+    },
+  },
+  {
+    name: 'renderSection',
+    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). Returns the section as an image plus { axis, offset, area, contours } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Cut axis. Default 'z'." },
+        offset: { type: 'number', description: 'Cut position along the axis, in model units. Default: bounding-box midpoint.' },
+        size: { type: 'integer', minimum: 16, maximum: 1024, description: 'Image size in pixels. Default 320.' },
+      },
+    },
+  },
+  {
+    name: 'setReferenceGeometry',
+    description: "Show a translucent REFERENCE (ghost) shape in the user's viewport, overlaid on their model — for fitment: \"will a 30 mm bolt clear this hole?\", a phone outline inside a case. `code` is manifold-js code returning a Manifold (run in isolation, never saved, never exported, never merged into the model). Replaces any previous ghost. Optional color \"#rrggbb\", opacity 0..1, wireframe. Returns { success, boundingBox, volume } or { success: false, error }. Clear it with clearReferenceGeometry when done.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'manifold-js code that returns a Manifold, e.g. "return api.Manifold.cylinder(30, 4, 4, 32);".' },
+        color: { type: 'string', description: 'Ghost colour "#rrggbb". Default a light blue.' },
+        opacity: { type: 'number', minimum: 0, maximum: 1, description: 'Ghost opacity 0..1.' },
+        wireframe: { type: 'boolean', description: 'Draw the ghost as a wireframe.' },
+      },
+      required: ['code'],
+    },
+  },
+  {
+    name: 'clearReferenceGeometry',
+    description: 'Remove the reference (ghost) shape from setReferenceGeometry. Returns { cleared }.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'saveAllObjects',
+    description: "Save a version of EVERY object in the session that has unsaved changes, in one call — the save button's multi-object save. Use after editing several objects; for just the current one use saveVersion. Returns { saved, failed } or { error }.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'importImageAsVoxels',
+    description: "Turn an image into blocky VOXEL ART (pixel-art cubes, Minecraft-style) in a NEW session (it opens in this tab). REQUIRES USER CONFIRMATION — only call when the user asked to make voxel art from an image. The image: `imageRef` (1-based index of a session reference image, from getReferenceImages) OR `src` (an http(s) or data:image URL). mode 'billboard' (default) extrudes each pixel `depth` voxels deep; 'heightmap' raises each column by brightness (maxHeight, baseThickness, invert, gamma). maxSize caps the longest side in voxels. colorMode 'original' | 'grayscale' | 'flat' (flatColor). posterizeColors (k colours) or palette ([[r,g,b],...] 0..255) for a clean limited palette; removeBackground drops a flat backdrop. Returns { sessionId, voxelCount } or { error }. For a printable colour TILE instead, use importImageAsRelief.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        imageRef: { type: 'integer', minimum: 1, description: '1-based index of a session reference image (getReferenceImages order).' },
+        src: { type: 'string', description: 'Alternative to imageRef: an http(s) URL or a data:image/... URL.' },
+        maxSize: { type: 'integer', minimum: 1, description: 'Longest side in voxels after downsampling.' },
+        mode: { type: 'string', enum: ['billboard', 'heightmap'] },
+        depth: { type: 'integer', minimum: 1, description: "Billboard depth in voxels." },
+        maxHeight: { type: 'integer', minimum: 1, description: 'Heightmap: tallest column in voxels.' },
+        baseThickness: { type: 'integer', minimum: 0, description: 'Heightmap: solid backing slab in voxels.' },
+        invert: { type: 'boolean', description: 'Heightmap: dark = tall.' },
+        gamma: { type: 'number', description: 'Heightmap: brightness gamma (>1 sinks midtones). Default 1.' },
+        alphaThreshold: { type: 'integer', minimum: 0, maximum: 255, description: 'Pixels with alpha below this drop out.' },
+        colorMode: { type: 'string', enum: ['original', 'grayscale', 'flat'] },
+        flatColor: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3, description: "colorMode 'flat': [r,g,b] 0..255." },
+        brightness: { type: 'number', minimum: -1, maximum: 1 },
+        contrast: { type: 'number', minimum: -1, maximum: 1 },
+        saturation: { type: 'number', minimum: -1, maximum: 1 },
+        posterizeColors: { type: 'integer', minimum: 0, description: 'Cluster colours to this many (0 = off).' },
+        palette: { type: 'array', items: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 }, description: 'Snap colours to these [r,g,b] 0..255 entries.' },
+        removeBackground: { type: 'boolean', description: 'Drop a flat background colour.' },
+        backgroundColor: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3, description: 'The background [r,g,b] 0..255 to remove (default: sampled from the corners).' },
+        codeStyle: { type: 'string', enum: ['decode', 'calls'], description: "'decode' (default) = compact grid blob; 'calls' = editable v.fillBox(...) code." },
+      },
+    },
+  },
+  {
+    name: 'listCatalog',
+    description: "List the built-in example catalog (the /catalog page): premade models with id, name, description, tags and language. Use it to suggest a starting point (\"is there a gear example?\"). Read-only — you cannot open an entry from chat; tell the user its name so they can open it from the Catalog page. Optional `query` (matched against name, description and tags) and `tag` filters. Returns { total, count, entries }.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Case-insensitive text to match in name / description / tags.' },
+        tag: { type: 'string', description: 'Only entries with this tag (e.g. "figures", "games", "mechanical").' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Max entries returned. Default 50.' },
+      },
+    },
+  },
   // --- UI control: open a tool panel for the user (hand-off) ---------------
   {
     name: 'openTool',
@@ -2235,6 +2403,8 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'mirrorModel', 'diffVersions', 'renameVersion', 'deleteVersion',
   // Not frameObjectPart: its `part` arg would be eaten as the legacy object key.
   'simplifyModel',
+  // #1085 PR5: per-object repair, paint and section tools.
+  'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -2349,6 +2519,12 @@ const ALWAYS_AVAILABLE = new Set([
   'importFromUrl',
   // Pure read of what's on screen (open tool + its values, mode, tab, camera).
   'getUiState',
+  // #1085 PR5. View-only: hides/shows a region's overlay, paint is unchanged.
+  'setRegionVisibility',
+  // Creates a NEW session from an image, like the relief imports (confirmed).
+  'importImageAsVoxels',
+  // Pure read of the built-in example catalog (names only — never opens one).
+  'listCatalog',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -2363,6 +2539,10 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   // Fetches a remote file and creates a session/object — like the relief
   // imports, only when the user asked (guards against injected URLs).
   'importFromUrl',
+  // Downloads a file to the user's computer.
+  'exportModel',
+  // Creates a new session from an image, like the relief imports.
+  'importImageAsVoxels',
 ]);
 
 /** The phrase the confirm prompt shows ("The AI wants to <label>. Allow this?").
@@ -2431,9 +2611,10 @@ const PLAN_MODE_TOOLS = new Set([
   'getPalette', 'getUnits', 'listSessions',
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   'getUiState',
+  'listCatalog',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
-  'renderView', 'renderViews',
+  'renderView', 'renderViews', 'renderSection',
 ]);
 
 /** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
@@ -2460,32 +2641,34 @@ export const RETRY_SAFE_TOOLS = new Set([
   // #1085 pure reads.
   'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
-  'getUiState',
+  'getUiState', 'listCatalog',
   // Visual-only view state; re-applying it is idempotent.
-  'highlightObjectPart', 'setObjectPartHidden',
+  'highlightObjectPart', 'setObjectPartHidden', 'setRegionVisibility',
+  // The reference ghost is replaced (or cleared) wholesale — idempotent.
+  'setReferenceGeometry', 'clearReferenceGeometry',
   // Metadata-only setter; re-applying the same unit is idempotent.
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   // Camera moves are idempotent view changes.
   'setCamera', 'frameObjectPart',
   'setUnits',
   // Idempotent renders (produce a snapshot; no persistent mutation)
-  'renderView', 'renderViews', 'runIsolated', 'renderParts',
+  'renderView', 'renderViews', 'runIsolated', 'renderParts', 'renderSection',
   // Run-without-commit (re-running the same code reproduces the same state)
   'runCode', 'runAndAssert', 'runAndExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
-const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion']);
+const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
  *  image-returning ones additionally need the Views vision toggle. */
 const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors', 'editPalette', 'replaceColor', 'paintAirbrush']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -2495,6 +2678,8 @@ export function isModelChangingTool(name: string, input?: Record<string, unknown
   if (name === 'importFromUrl') return input?.target === 'current-object';
   // renameVersion is save-gated but only relabels a version — nothing to review.
   if (name === 'renameVersion') return false;
+  // editPalette is paint-gated but edits the spool list, not the model.
+  if (name === 'editPalette') return false;
   return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 
@@ -2518,6 +2703,11 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
   if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
   if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
   if (name === 'setAppConfig') return `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`;
+  if (name === 'exportModel') return describeExport(input);
+  if (name === 'importImageAsVoxels') {
+    const what = typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : typeof input.src === 'string' && /^data:/i.test(input.src) ? 'an attached image' : String(input.src ?? 'an image').slice(0, 200);
+    return `turn ${what} into voxel art in a NEW session`;
+  }
   if (name === 'importFromUrl') {
     const url = String(input.url ?? '').slice(0, 200);
     let api: PartwrightAPI | null = null;
@@ -2537,7 +2727,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
  *  vision spend in one place — when off, the agent has to reason from
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
-const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated']);
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection']);
 // `finish` only exists in auto-continue mode — it's the sentinel the model
 // calls to end a turn (otherwise the loop resumes it). Off-mode never offers
 // it, so off-mode behavior is unchanged.
@@ -2555,7 +2745,12 @@ export const ALL_TOOL_NAMES: readonly string[] = ALL_TOOLS.map(t => t.name);
  *  user's screen) and not model-changing for auto-review. openTool/closeTool
  *  are never auto-retried (a retry would re-open a panel the user just closed);
  *  the camera moves are idempotent and retry-safe. */
-const UI_GATED = new Set(['setCamera', 'frameObjectPart', 'openTool', 'closeTool']);
+const UI_GATED = new Set(['setCamera', 'frameObjectPart', 'openTool', 'closeTool', 'setReferenceGeometry', 'clearReferenceGeometry']);
+/** Tools that write a file to the user's computer. Offered on every non-plan
+ *  turn (no ChatToggles scope yet — the per-call confirmation in
+ *  CONFIRM_REQUIRED_TOOLS is the guard), kept as their own set so a future
+ *  "Export" scope toggle has one place to hook in. */
+const EXPORT_GATED = new Set(['exportModel']);
 
 /** One registered UI tool as the model sees it: id, title and a one-line list
  *  of its prefill keys. Plain data, so it can cross the agent-Worker boundary. */
@@ -2611,6 +2806,7 @@ export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry
   return ALL_TOOLS.filter(t => {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
     if (UI_GATED.has(t.name)) return true;
+    if (EXPORT_GATED.has(t.name)) return true;
     if (RUN_GATED.has(t.name)) return toggles.scope.runCode;
     if (SAVE_GATED.has(t.name)) {
       // loadVersion (rewind), saveVersion (snapshot) and renameVersion /
@@ -3643,6 +3839,45 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'listSessions':
       return api.listSessions();
+    // ── #1085 PR5: remaining window.partwright wrappers ────────────────────
+    case 'healCurrent': {
+      const r = api.healCurrent(input.tolerance === undefined ? undefined : { tolerance: input.tolerance });
+      return r ?? { error: 'healCurrent: no model loaded — run the code first.' };
+    }
+    case 'editPalette':
+      return executeEditPalette(api, input);
+    case 'replaceColor':
+      return api.replaceColor(input);
+    case 'setRegionVisibility':
+      return api.setRegionVisibility(input.id, input.visible);
+    case 'paintAirbrush':
+      return api.paintAirbrush(input);
+    case 'exportModel':
+      return executeExportModel(api, input);
+    case 'renderSection':
+      return executeRenderSection(api, input);
+    case 'setReferenceGeometry': {
+      const { code, color, ...rest } = input;
+      const opts: Record<string, unknown> = { ...rest };
+      if (color !== undefined) {
+        if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) return { success: false, error: 'setReferenceGeometry: color must be a "#rrggbb" hex string.' };
+        opts.color = parseInt(color.slice(1), 16);
+      }
+      return api.setReferenceGeometry(code, Object.keys(opts).length > 0 ? opts : undefined);
+    }
+    case 'clearReferenceGeometry':
+      api.clearReferenceGeometry();
+      return { cleared: true };
+    case 'saveAllObjects':
+      return api.saveAllObjects();
+    case 'importImageAsVoxels': {
+      const src = resolveVoxelImageSource(api, input);
+      if (typeof src !== 'string') return src;
+      const { imageRef: _ref, src: _src, ...opts } = input;
+      return api.importImageAsVoxels(src, opts);
+    }
+    case 'listCatalog':
+      return api.listCatalog(Object.keys(input).length > 0 ? input : undefined);
     // --- UI control (hand-off) ---
     case 'openTool': {
       // Providers whose schema subset can't populate a property-less object
@@ -3666,4 +3901,215 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+// ── #1085 PR5 helpers ──────────────────────────────────────────────────────
+
+/** The checks a CONFIRM_REQUIRED call can fail WITHOUT asking the user: run
+ *  before the confirm prompt so a call that would be refused anyway (a
+ *  code-bearing importFromUrl, a malformed export or image import) returns its
+ *  refusal straight to the model instead of showing the user a dialog whose
+ *  "Allow" would do nothing. Returns the tool result to send, or null to go on
+ *  to the prompt. Pure input checks only — never touches the session. */
+export function preConfirmToolResult(name: string, input: Record<string, unknown> = {}): ToolExecResult | null {
+  const refuse = (message: string): ToolExecResult => ({ content: JSON.stringify({ error: message }, null, 2), isError: true });
+  if (name === 'importFromUrl') {
+    // Same geometry-only classification the dispatch (importFromUrl with
+    // geometryOnly: true) applies before fetching.
+    const what = typeof input.url === 'string' ? codeBearingImportKind(input.url) : null;
+    return what ? refuse(geometryOnlyRefusalMessage(what)) : null;
+  }
+  if (name === 'exportModel') {
+    const err = exportInputError(input);
+    return err ? refuse(err) : null;
+  }
+  if (name === 'importImageAsVoxels') {
+    const err = voxelImageInputError(input);
+    return err ? refuse(err) : null;
+  }
+  return null;
+}
+
+const EXPORT_FORMATS = ['stl', 'obj', 'glb', '3mf', '3mf-objects', 'step', 'vox'] as const;
+type ExportFormat = typeof EXPORT_FORMATS[number];
+const EXPORT_FORMAT_LABEL: Record<ExportFormat, string> = {
+  stl: 'an STL file', obj: 'an OBJ file', glb: 'a GLB file', '3mf': 'a 3MF file',
+  '3mf-objects': 'a Bambu Studio / OrcaSlicer 3MF project', step: 'a STEP file', vox: 'a MagicaVoxel .vox file',
+};
+
+/** Shape errors in an exportModel call, checked before the confirm prompt and
+ *  again at dispatch. Null when the input is well-formed. */
+function exportInputError(input: Record<string, unknown>): string | null {
+  const unknown = Object.keys(input).filter(k => k !== 'format' && k !== 'objects' && k !== 'filename');
+  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename.`;
+  if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
+    return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
+  }
+  if (input.filename !== undefined && (typeof input.filename !== 'string' || input.filename.trim() === '')) {
+    return 'exportModel: filename must be a non-empty string when given.';
+  }
+  if (input.objects !== undefined) {
+    if (!Array.isArray(input.objects) || input.objects.length === 0 || input.objects.some(o => typeof o !== 'string' || o === '')) {
+      return 'exportModel: objects must be a non-empty array of object names or ids (from listObjects).';
+    }
+    if (input.format === 'step' || input.format === 'vox') {
+      return `exportModel: ${input.format.toUpperCase()} exports only the current object — omit objects (switch objects with changeObject first).`;
+    }
+  }
+  return null;
+}
+
+/** Resolve object names / ids to ids against listObjects(). */
+function resolveObjectIds(api: PartwrightAPI, targets: string[]): { ids: string[] } | { error: string } {
+  const rows = api.listObjects() as ObjectRow[] | undefined;
+  if (!Array.isArray(rows) || rows.length === 0) return { error: 'No active session with objects. Open a session first.' };
+  const ids: string[] = [];
+  const missing: string[] = [];
+  for (const t of targets) {
+    const row = matchObjectRow(rows, t);
+    if (row) ids.push(row.id); else missing.push(t);
+  }
+  if (missing.length > 0) return { error: `No object named or with id ${missing.map(m => JSON.stringify(m)).join(', ')}. Call listObjects() to see what's available.` };
+  return { ids };
+}
+
+/** The confirm-prompt phrase for exportModel: the format and which objects. */
+function describeExport(input: Record<string, unknown>): string {
+  const format = (EXPORT_FORMATS as readonly string[]).includes(input.format as string) ? input.format as ExportFormat : null;
+  const what = format ? EXPORT_FORMAT_LABEL[format] : 'a file';
+  let rows: ObjectRow[] = [];
+  try { rows = (getApi().listObjects() as ObjectRow[] | undefined) ?? []; } catch { rows = []; }
+  let which: string;
+  if (Array.isArray(input.objects) && input.objects.length > 0) {
+    const names = input.objects.map(o => matchObjectRow(rows, o as string)?.name ?? String(o));
+    which = `of ${names.length === 1 ? 'object' : 'objects'} ${names.map(n => `"${n}"`).join(', ')}`;
+  } else if (format === '3mf-objects') {
+    which = 'of every object in this session';
+  } else {
+    const cur = rows.find(r => r.isCurrent);
+    which = cur ? `of object "${cur.name}"` : 'of the current model';
+  }
+  return `download ${what} ${which}`;
+}
+
+async function executeExportModel(api: PartwrightAPI, input: Record<string, unknown>): Promise<unknown> {
+  const err = exportInputError(input);
+  if (err) return { error: err };
+  const format = input.format as ExportFormat;
+  const filename = input.filename as string | undefined;
+  let ids: string[] | undefined;
+  if (input.objects !== undefined) {
+    const r = resolveObjectIds(api, input.objects as string[]);
+    if ('error' in r) return { error: `exportModel: ${r.error}` };
+    ids = r.ids;
+  }
+  let r: unknown;
+  switch (format) {
+    case 'stl': r = ids ? await api.exportSTLObjects(ids, filename) : await api.exportSTL(filename); break;
+    case 'obj': r = ids ? await api.exportOBJObjects(ids, filename) : await api.exportOBJ(filename); break;
+    case 'glb': r = ids ? await api.exportGLBObjects(ids, filename) : await api.exportGLB(filename); break;
+    // A plain 3MF with several objects is the generic multi-object 3MF (any
+    // slicer); '3mf-objects' is the Bambu/Orca plate project.
+    case '3mf': r = ids ? await api.export3MFObjects(ids, filename, { bambu: false }) : await api.export3MF(filename); break;
+    case '3mf-objects': r = await api.export3MFObjects(ids, filename); break;
+    case 'step': r = await api.exportSTEP(filename); break;
+    case 'vox': r = await api.exportVOX(filename); break;
+  }
+  if (r && typeof r === 'object') {
+    const { ok: _ok, error, ...rest } = r as Record<string, unknown>;
+    if (typeof error === 'string') return { error };
+    return { ok: true, format, ...rest };
+  }
+  return { ok: true, format };
+}
+
+async function executeRenderSection(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const unknown = Object.keys(input).filter(k => k !== 'axis' && k !== 'offset' && k !== 'size');
+  if (unknown.length > 0) return { content: `renderSection: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: axis, offset, size.`, isError: true };
+  const size = typeof input.size === 'number' && Number.isFinite(input.size) ? Math.min(1024, Math.max(16, Math.round(input.size))) : 320;
+  const result = api.renderSection({ ...input, size }) as { svg: string; axis: string; offset: number; area: number; contours: number; error?: string } | null;
+  if (!result) return { content: 'renderSection: no geometry loaded — run the code first.', isError: true };
+  if (result.error) return { content: result.error, isError: true };
+  if (typeof result.svg !== 'string' || typeof result.area !== 'number') return { content: 'renderSection returned an unexpected value', isError: true };
+  const kind = result.contours === 1 ? 'solid' : result.contours > 1 ? 'hollow/multi-piece' : 'empty';
+  const summary = `Cross-section ${result.axis}=${Number(result.offset.toFixed(4))}: area=${result.area.toFixed(3)}, contours=${result.contours} (${kind})`;
+  const data = { axis: result.axis, offset: result.offset, area: result.area, contours: result.contours };
+  try {
+    const pngBase64 = await rasterizeSvg(result.svg, size);
+    return {
+      content: `${summary}\n${JSON.stringify(data)}\n\nSection image attached — inspect wall thickness, cavities and contour count.`,
+      isError: false,
+      image: { data: pngBase64, mediaType: 'image/png', label: `section ${result.axis}=${Number(result.offset.toFixed(2))}` },
+    };
+  } catch {
+    return { content: `${summary}\n${JSON.stringify(data)}`, isError: false };
+  }
+}
+
+/** Which keys each editPalette op takes. */
+const PALETTE_OPS: Record<string, { required: string[]; optional: string[] }> = {
+  setActive: { required: ['id'], optional: [] },
+  addFilament: { required: ['name', 'hex'], optional: ['td'] },
+  updateFilament: { required: ['id'], optional: ['name', 'hex', 'td'] },
+  removeFilament: { required: ['id'], optional: [] },
+  setCapacity: { required: ['capacity'], optional: [] },
+  setConstrained: { required: ['constrained'], optional: [] },
+};
+
+function executeEditPalette(api: PartwrightAPI, input: Record<string, unknown>): unknown {
+  const op = input.op;
+  const spec = typeof op === 'string' && Object.prototype.hasOwnProperty.call(PALETTE_OPS, op) ? PALETTE_OPS[op] : undefined;
+  if (!spec) return { error: `editPalette: op must be one of ${Object.keys(PALETTE_OPS).join(', ')}.` };
+  const allowed = new Set(['op', ...spec.required, ...spec.optional]);
+  const extra = Object.keys(input).filter(k => !allowed.has(k));
+  if (extra.length > 0) return { error: `editPalette: op '${op}' does not take ${extra.join(', ')} (it takes ${[...spec.required, ...spec.optional].join(', ')}).` };
+  const missing = spec.required.filter(k => input[k] === undefined);
+  if (missing.length > 0) return { error: `editPalette: op '${op}' needs ${missing.join(', ')}.` };
+  let r: unknown;
+  switch (op) {
+    case 'setActive': r = api.setActivePalette(input.id); break;
+    case 'addFilament': r = api.addFilament({ name: input.name, hex: input.hex, ...(input.td !== undefined ? { td: input.td } : {}) }); break;
+    case 'updateFilament': {
+      const patch: Record<string, unknown> = {};
+      for (const k of ['name', 'hex', 'td']) if (input[k] !== undefined) patch[k] = input[k];
+      if (Object.keys(patch).length === 0) return { error: "editPalette: op 'updateFilament' needs at least one of name, hex, td." };
+      r = api.updateFilament(input.id, patch);
+      break;
+    }
+    case 'removeFilament': r = api.removeFilament(input.id); break;
+    case 'setCapacity': r = api.setPaletteCapacity(input.capacity); break;
+    case 'setConstrained': r = api.setPaletteConstrained(input.constrained); break;
+  }
+  if (r && typeof r === 'object' && typeof (r as { error?: unknown }).error === 'string') return r;
+  return { op, result: r, palette: api.getPalette() };
+}
+
+/** Shape errors in an importImageAsVoxels call's image source (checked before
+ *  the confirm prompt). Model-supplied URLs must be http(s) or data:image. */
+function voxelImageInputError(input: Record<string, unknown>): string | null {
+  const hasRef = input.imageRef !== undefined;
+  const hasSrc = input.src !== undefined;
+  if (hasRef === hasSrc) return 'importImageAsVoxels: pass exactly one of imageRef (1-based index from getReferenceImages) or src (an http(s) or data:image URL).';
+  if (hasRef && (typeof input.imageRef !== 'number' || !Number.isInteger(input.imageRef) || input.imageRef < 1)) {
+    return 'importImageAsVoxels: imageRef must be a 1-based integer index from getReferenceImages.';
+  }
+  if (hasSrc && (typeof input.src !== 'string' || !/^(https?:\/\/|data:image\/)/i.test(input.src))) {
+    return 'importImageAsVoxels: src must be an http(s) URL or a data:image/... URL.';
+  }
+  return null;
+}
+
+/** The image URL an importImageAsVoxels call names: `src`, or the session
+ *  reference image `imageRef` indexes (the same filtered list getReferenceImages
+ *  numbers). Returns the URL, or an `{ error }`. */
+function resolveVoxelImageSource(api: PartwrightAPI, input: Record<string, unknown>): string | { error: string } {
+  const err = voxelImageInputError(input);
+  if (err) return { error: err };
+  if (typeof input.src === 'string') return input.src;
+  const imgs = typeof api.getImages === 'function' ? api.getImages() : [];
+  const list = ((Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>)
+    .filter(im => typeof im.src === 'string' && im.src.length > 0);
+  const entry = list[(input.imageRef as number) - 1];
+  if (!entry?.src) return { error: `importImageAsVoxels: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
+  return entry.src;
 }

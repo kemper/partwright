@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -745,7 +745,12 @@ async function executeAllWithRetry(
       // can't hold a UI callback) delegates. Running the real executeTool here
       // with no prompt to show fails CLOSED.
       let content: string | null = null;
-      if (callbacks.confirmTool) {
+      // A call that would be refused anyway (e.g. a code-bearing importFromUrl)
+      // returns its refusal without bothering the user with a prompt.
+      const refused = preConfirmToolResult(tc.name, tc.input);
+      if (refused) {
+        content = refused.content;
+      } else if (callbacks.confirmTool) {
         let allowed = false;
         try { allowed = await callbacks.confirmTool(tc.name, tc.input); } catch { allowed = false; }
         // Stop pressed while the prompt was up: an Allow click that raced the

@@ -131,3 +131,28 @@ export function ensureExtensionForSource(filename: string, source: ImportSource)
   const base = filename && filename !== 'import' ? filename : 'import';
   return base + ext[source];
 }
+
+/** The code-bearing kind of a resolved import source, as a phrase for a
+ *  refusal ("a session file", "a JS file"), or null for geometry. */
+export function codeBearingSourceLabel(source: ImportSource | null): string | null {
+  if (source === 'JSON') return 'a session file';
+  if (source === 'JS' || source === 'SCAD') return `a ${source} file`;
+  return null;
+}
+
+/** What code-bearing thing an import URL points at — "a Partwright share link",
+ *  "a session file", "a JS file" — judged from the input alone (a share
+ *  fragment, or the path's extension), or null when it may be geometry. A
+ *  geometry-only import (the in-app AI's importFromUrl) refuses these before
+ *  fetching; a fetched Content-Type is checked again after download. */
+export function codeBearingImportKind(raw: string): string | null {
+  const parsed = parseImportUrlInput(raw);
+  if (parsed.kind === 'share') return 'a Partwright share link';
+  if (parsed.kind !== 'remote') return null;
+  return codeBearingSourceLabel(classifyRemoteResource(filenameFromUrl(parsed.url), null));
+}
+
+/** The refusal a geometry-only import returns for a code-bearing source. */
+export function geometryOnlyRefusalMessage(what: string): string {
+  return `importFromUrl: ${what} contains model code that runs when it is imported, so it can't be imported automatically. Ask the user to import it themselves with Import → From URL…, which shows a preview first. (Only geometry files — .stl, .step/.stp, .vox — can be imported here.)`;
+}

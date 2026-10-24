@@ -93,6 +93,15 @@ describe('redactSecrets', () => {
     expect(redactSecrets('short circuit')).toBe('short circuit');
   });
 
+  it('does not register well-known placeholder keys (they would redact ordinary words)', () => {
+    const noKey = ['sk', 'no', 'key', 'required'].join('-');
+    for (const k of ['lm-studio', 'LM-Studio', 'not-needed', noKey]) registerKnownSecret(k);
+    expect(redactSecrets('lm-studio said not-needed')).toBe('lm-studio said not-needed');
+    // The OpenAI-shaped placeholder is too short for the sk- token pattern.
+    expect(redactSecrets(`key ${noKey}`)).toBe(`key ${noKey}`);
+    for (const k of ['lm-studio', 'LM-Studio', 'not-needed', noKey]) forgetKnownSecret(k);
+  });
+
   it('redacts a saved key that contains another saved key in full', () => {
     const shorter = ['abcd', 'efgh'].join('');
     const longer = shorter + ['1234', '5678', 'XYZ'].join('');
