@@ -15,6 +15,7 @@ import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
+import { setSelectorLabels } from '../selector';
 import { getBrepNamespace, setBrepRemovedParts, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../import/importParts';
@@ -922,6 +923,17 @@ export const manifoldJsEngine: Engine = {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
       // BREP.label honours api.removePart too (Phase C: BREP inside a JS run).
       setBrepRemovedParts(removedParts);
+      // Selector `label` terms (sculpt / deform / scatter `select:`) resolve
+      // against this run's labels — read live, so a label declared just before
+      // the op that selects it is found.
+      setSelectorLabels({
+        ids: (name) => {
+          const ids: number[] = [];
+          for (const [id, n] of labelRegistry) if (n === name) ids.push(id);
+          return ids.length > 0 ? ids : null;
+        },
+        names: () => [...new Set(labelRegistry.values())],
+      });
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
@@ -1039,6 +1051,7 @@ export const manifoldJsEngine: Engine = {
       };
     } finally {
       setBrepRemovedParts(null);
+      setSelectorLabels(null);
       // Stop tracking, then free every intermediate the run created. The value
       // the user returned (`result`) is spared — its lifecycle belongs to the
       // caller (the worker frees it after extracting the mesh; the sync path in

@@ -10,9 +10,15 @@
 // segment length targets ~2° of arc per edge; `segmentLength` overrides it and
 // `refine: false` disables (for pre-refined input).
 //
+// bend / twist / taper also take `select` (a selector — see selector.ts) to
+// deform only part of the shape (twist one arm, taper one leg), measured over
+// the selection's own extent, and `blend` to fade the deform into the rest.
+//
 // Pure warp-function builders are exported for unit tests (no WASM needed).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { parseSelectOpts, selectionWeights, weightedWarp, type SelectionWeights } from './selector';
 
 export type Vec3 = [number, number, number];
 
@@ -266,6 +272,12 @@ export function makeAlongCurveFn(frames: CurveFrame[], x0: number): (v: number[]
 // ---------------------------------------------------------------------------
 
 export function createDeformOps(_module: any) {
+  /** Resolve `select` on the refined shape (null when the op is unscoped). */
+  function selection(refined: any, opts: any, name: string): SelectionWeights | null {
+    const { select, blend } = parseSelectOpts(opts, name);
+    return select ? selectionWeights(refined, select, blend, name) : null;
+  }
+
   interface WrapOpts {
     /** Cylinder radius the shape's y=0 plane wraps onto. */
     radius: number;
@@ -321,6 +333,10 @@ export function createDeformOps(_module: any) {
     angle: number;
     segmentLength?: number;
     refine?: boolean;
+    /** Deform only this part of the shape (a selector — see /ai/deform.md). */
+    select?: unknown;
+    /** Fade the deform over this many units outside the selection. */
+    blend?: number;
   }
 
   /** Bend a shape's X extent into a circular arc in the XY plane (Z is
@@ -329,15 +345,19 @@ export function createDeformOps(_module: any) {
   function bend(shape: any, opts: BendOpts): any {
     need(isManifold(shape), 'bend(shape, opts): shape must be a Manifold');
     need(opts && typeof opts === 'object', 'bend: opts object with { angle } is required');
-    rejectUnknown(opts as any, ['angle', 'segmentLength', 'refine'], 'bend');
+    rejectUnknown(opts as any, ['angle', 'segmentLength', 'refine', 'select', 'blend'], 'bend');
+    parseSelectOpts(opts as any, 'bend');
     need(isFiniteNum(opts.angle) && opts.angle !== 0, 'bend.angle must be a non-zero number (degrees)');
     need(Math.abs(opts.angle) <= 360, 'bend.angle must be within ±360 degrees');
     const bb = shape.boundingBox();
     const spanX = Math.max(bb.max[0] - bb.min[0], 1e-9);
     const segDefault = spanX / Math.max(4, Math.abs(opts.angle) / 2); // ~2° per edge
     const refined = refineFor(shape, opts.segmentLength ?? segDefault, opts.refine, 'bend');
-    const yRef = (bb.min[1] + bb.max[1]) / 2;
-    return refined.warp(makeBendFn(bb.min[0], bb.max[0], yRef, opts.angle * DEG));
+    const sel = selection(refined, opts, 'bend');
+    // A selection bends over its own X extent (bend one limb, not the body).
+    const lo = sel ? sel.bounds.min : bb.min, hi = sel ? sel.bounds.max : bb.max;
+    const fn = makeBendFn(lo[0], hi[0], (lo[1] + hi[1]) / 2, opts.angle * DEG);
+    return refined.warp(sel ? weightedWarp(fn, sel.weightOf) : fn);
   }
 
   interface TwistOpts {
@@ -346,6 +366,10 @@ export function createDeformOps(_module: any) {
     axis?: 'x' | 'y' | 'z';
     segmentLength?: number;
     refine?: boolean;
+    /** Deform only this part of the shape (a selector — see /ai/deform.md). */
+    select?: unknown;
+    /** Fade the deform over this many units outside the selection. */
+    blend?: number;
   }
 
   /** Twist a shape about an axis, rotation growing linearly along the extent —
@@ -355,7 +379,8 @@ export function createDeformOps(_module: any) {
   function twist(shape: any, opts: TwistOpts): any {
     need(isManifold(shape), 'twist(shape, opts): shape must be a Manifold');
     need(opts && typeof opts === 'object', 'twist: opts object with { degrees } is required');
-    rejectUnknown(opts as any, ['degrees', 'axis', 'segmentLength', 'refine'], 'twist');
+    rejectUnknown(opts as any, ['degrees', 'axis', 'segmentLength', 'refine', 'select', 'blend'], 'twist');
+    parseSelectOpts(opts as any, 'twist');
     need(isFiniteNum(opts.degrees) && opts.degrees !== 0, 'twist.degrees must be a non-zero number');
     const axis = opts.axis ?? 'z';
     need(axis === 'x' || axis === 'y' || axis === 'z', "twist.axis must be 'x', 'y' or 'z'");
@@ -365,7 +390,19 @@ export function createDeformOps(_module: any) {
     const span = Math.max(h1 - h0, 1e-9);
     const segDefault = span / Math.max(4, Math.abs(opts.degrees) / 2);
     const refined = refineFor(shape, opts.segmentLength ?? segDefault, opts.refine, 'twist');
-    return refined.warp(makeTwistFn(axisIdx as 0 | 1 | 2, h0, h1, opts.degrees * DEG));
+    const sel = selection(refined, opts, 'twist');
+    if (!sel) return refined.warp(makeTwistFn(axisIdx as 0 | 1 | 2, h0, h1, opts.degrees * DEG));
+    // A selection twists over its own extent, about an axis through its own
+    // centroid (an arm twists about itself, not about the world origin).
+    const b = sel.bounds;
+    const twistFn = makeTwistFn(axisIdx as 0 | 1 | 2, b.min[axisIdx], b.max[axisIdx], opts.degrees * DEG);
+    const c = b.centroid;
+    const fn = (v: number[]) => {
+      for (let k = 0; k < 3; k++) if (k !== axisIdx) v[k] -= c[k];
+      twistFn(v);
+      for (let k = 0; k < 3; k++) if (k !== axisIdx) v[k] += c[k];
+    };
+    return refined.warp(weightedWarp(fn, sel.weightOf));
   }
 
   interface TaperOpts {
@@ -381,6 +418,10 @@ export function createDeformOps(_module: any) {
     center?: [number, number];
     segmentLength?: number;
     refine?: boolean;
+    /** Deform only this part of the shape (a selector — see /ai/deform.md). */
+    select?: unknown;
+    /** Fade the deform over this many units outside the selection. */
+    blend?: number;
   }
 
   /** Taper a shape along an axis — Blender Simple Deform's Taper. Scales the
@@ -389,7 +430,8 @@ export function createDeformOps(_module: any) {
   function taper(shape: any, opts: TaperOpts): any {
     need(isManifold(shape), 'taper(shape, opts): shape must be a Manifold');
     need(opts && typeof opts === 'object', 'taper: opts object with { scaleTop } is required');
-    rejectUnknown(opts as any, ['scaleTop', 'scaleBottom', 'axis', 'center', 'segmentLength', 'refine'], 'taper');
+    rejectUnknown(opts as any, ['scaleTop', 'scaleBottom', 'axis', 'center', 'segmentLength', 'refine', 'select', 'blend'], 'taper');
+    parseSelectOpts(opts as any, 'taper');
     const parseScale = (v: unknown, name: string, dflt?: [number, number]): [number, number] => {
       if (v === undefined && dflt) return dflt;
       if (isFiniteNum(v)) { need(v >= 0, `${name} must be >= 0`); return [v, v]; }
@@ -417,7 +459,14 @@ export function createDeformOps(_module: any) {
     const span = Math.max(bb.max[axisIdx] - bb.min[axisIdx], 1e-9);
     // Taper is linear, so curvature is mild — refine at ~1/12 of the extent.
     const refined = refineFor(shape, opts.segmentLength ?? span / 12, opts.refine, 'taper');
-    return refined.warp(makeTaperFn(axisIdx as 0 | 1 | 2, bb.min[axisIdx], bb.max[axisIdx], scaleBottom, scaleTop, cI, cJ));
+    const sel = selection(refined, opts, 'taper');
+    if (!sel) return refined.warp(makeTaperFn(axisIdx as 0 | 1 | 2, bb.min[axisIdx], bb.max[axisIdx], scaleBottom, scaleTop, cI, cJ));
+    // A selection tapers over its own extent, about its own centre line unless
+    // `center` says otherwise.
+    const b = sel.bounds;
+    if (opts.center === undefined) { cI = (b.min[i] + b.max[i]) / 2; cJ = (b.min[j] + b.max[j]) / 2; }
+    const fn = makeTaperFn(axisIdx as 0 | 1 | 2, b.min[axisIdx], b.max[axisIdx], scaleBottom, scaleTop, cI, cJ);
+    return refined.warp(weightedWarp(fn, sel.weightOf));
   }
 
   interface AlongCurveOpts {

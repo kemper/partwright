@@ -10,6 +10,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { mulberry32 } from './noise';
+import { parseSelector, selectTrianglesActive } from './selector';
 
 export type Vec3 = [number, number, number];
 
@@ -47,6 +48,9 @@ export interface SampleOpts {
   minSpacing?: number;
   /** Predicate filter — only samples where `where(p, n)` is truthy are kept. */
   where?: (p: Vec3, n: Vec3) => boolean;
+  /** Per-triangle mask (1 = eligible): masked-out faces get no area weight,
+   *  so a small selection still fills up instead of exhausting attempts. */
+  triMask?: Uint8Array;
 }
 
 /** Area-weighted random samples on a triangle mesh's surface, with optional
@@ -69,7 +73,7 @@ export function sampleMeshSurface(mesh: MeshLike, opts: SampleOpts): SurfaceSamp
     const vx = pos[c * 3] - pos[a * 3], vy = pos[c * 3 + 1] - pos[a * 3 + 1], vz = pos[c * 3 + 2] - pos[a * 3 + 2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz);
-    total += len / 2;
+    if (!opts.triMask || opts.triMask[t]) total += len / 2;
     cdf[t] = total;
     const inv = len > 1e-30 ? 1 / len : 0;
     normals[t * 3] = nx * inv; normals[t * 3 + 1] = ny * inv; normals[t * 3 + 2] = nz * inv;
@@ -224,9 +228,10 @@ export function createScatter(module: any) {
     offset?: number;
     /** Poisson-ish minimum spacing between instance anchor points. */
     minSpacing?: number;
-    /** Keep only samples where the predicate is truthy: `(p, n) => n[2] > 0.5`
-     *  scatters on upward-facing surfaces only. */
-    where?: (p: Vec3, n: Vec3) => boolean;
+    /** Where instances may land: a predicate `(p, n) => n[2] > 0.5` (upward
+     *  faces only), or a selector object — `{ label: 'shell' }`,
+     *  `{ where: { facing: 'up' } }`, `{ region: { center, radius } }`. */
+    where?: ((p: Vec3, n: Vec3) => boolean) | Record<string, unknown> | Record<string, unknown>[];
   }
 
   /** Scatter copies of `instance` across the surface of `target`. Returns the
@@ -246,7 +251,9 @@ export function createScatter(module: any) {
     if (opts.seed !== undefined) need(isFiniteNum(opts.seed), 'scatter.seed must be a number');
     if (opts.offset !== undefined) need(isFiniteNum(opts.offset), 'scatter.offset must be a number');
     if (opts.minSpacing !== undefined) need(isFiniteNum(opts.minSpacing) && opts.minSpacing >= 0, 'scatter.minSpacing must be >= 0');
-    if (opts.where !== undefined) need(typeof opts.where === 'function', 'scatter.where must be a function (p, n) => boolean');
+    // `where` is either a predicate (p, n) => boolean or a selector object
+    // ({ label }, { region }, { where: { facing } }, … — see /ai/deform.md).
+    const whereSel = opts.where !== undefined && typeof opts.where !== 'function' ? parseSelector(opts.where, 'scatter.where') : null;
     let sMin = 1, sMax = 1;
     if (opts.scale !== undefined) {
       if (isFiniteNum(opts.scale)) {
@@ -272,11 +279,13 @@ export function createScatter(module: any) {
     }
 
     const seed = opts.seed ?? 1;
-    const samples = sampleMeshSurface(target.getMesh(), {
+    const targetMesh = target.getMesh();
+    const samples = sampleMeshSurface(targetMesh, {
       count: opts.count,
       seed,
       minSpacing: opts.minSpacing,
-      where: opts.where,
+      where: typeof opts.where === 'function' ? opts.where : undefined,
+      triMask: whereSel ? selectTrianglesActive(targetMesh, whereSel, 'scatter.where') : undefined,
     });
     if (samples.length === 0) {
       throw new Error('meshOps: scatter: no placement samples survived the where/minSpacing constraints — nothing to place.');

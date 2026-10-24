@@ -20,10 +20,56 @@ sessions.)
 | "Round every sharp edge" on any solid | `api.round(m, { radius })` |
 | Blend two plain meshes with a smooth seam | `api.smoothWeld(a, b, { radius })` |
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
+| Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.sculpt.transform(m, { select: { label }, scale \| rotate \| translate, blend })` |
+| Confine any of the above to one part / region / facing | `select: { label } \| { region } \| { where }` — see below |
 
 **When you're already in `api.sdf` land, stay there** — its `.twist/.bend/.shell/.round/.smoothUnion`
 are exact and cheaper. These verbs exist for geometry that *isn't* an SDF
 expression: boolean results, imports, text, helper output.
+
+## Selecting part of a shape — `select` + `blend`
+
+`api.sculpt.*`, `api.bend` / `api.twist` / `api.taper` and `api.scatter` can act
+on **part** of a shape instead of all of it. Name the part, not coordinates: a
+selector is plain data, so it lives in the code and keeps working when edits
+move the triangles around.
+
+```js
+{ label: 'arm' }                               // an api.label part — or a detected part of an import (api.importWithParts)
+{ label: ['hair', 'brows'] }                   // any of several parts
+{ region: { center: [0, 0, 40], radius: 8 } }  // a ball
+{ where: { facing: 'up', tolerance: 20 } }     // faces pointing a way: 'up' | 'down' | '+x' | '-x' | '+y' | '-y' | [x, y, z]
+{ where: { min: [null, null, 30] } }           // faces above z = 30 (null = unbounded); also max, or box: { min, max }
+{ label: 'body', where: { facing: '+y' } }     // several keys AND together
+[{ label: 'hand' }, { label: 'arm' }]          // an array ORs its entries
+{ label: 'body', except: { label: 'base' } }   // subtract another selector
+```
+
+A face is selected when its label, centroid and normal match. `blend: d` fades
+the edit over `d` units outside the selection, so it eases into the
+surroundings instead of creasing at the seam. A selector that matches nothing,
+or names an unknown part, **throws** with the list of parts. It never silently
+does nothing.
+
+```js
+// Soft-selection transform (Blender's proportional editing): move / scale /
+// rotate just the selection, about its own centroid unless you pass pivot.
+m = api.sculpt.transform(m, { select: { label: 'head' }, scale: 1.4, blend: 3 });
+m = api.sculpt.transform(m, { select: { label: 'arm' }, rotate: [0, -25, 0], pivot: [10, 0, 22] });
+m = api.sculpt.transform(m, { select: { where: { min: [null, null, 40] } }, translate: [0, 0, 5], blend: 4 }); // stretch the top
+
+m = api.twist(m, { select: { label: 'arm' }, degrees: 90, axis: 'x' });   // over the arm's own extent and axis
+m = api.taper(m, { select: { label: 'leg' }, scaleTop: 0.6, blend: 2 });
+m = api.sculpt.inflate(m, { at: [0, -9, 36], radius: 6, amount: 2, select: { label: 'head' } }); // can't bleed onto the neck
+const studs = api.scatter(m, stud, { count: 40, where: { label: 'shell', where: { facing: 'up' } } });
+```
+
+Facts to respect:
+- **The selection deforms over its own bounds.** `twist` / `taper` / `bend` measure the selection's extent, and twist turns about the selection's own centre line, so one arm twists about itself and not the world origin.
+- **A hard edge (no `blend`) moves whole triangles at the seam.** Triangles straddling the boundary stretch. Big scales or rotations of a part fused into the body read better with a `blend` of a few units.
+- **`blend` refines the mesh** to about `blend / 3` edges so the fade has vertices, and that refine covers the whole shape. Keep `blend` reasonable on huge imports, or pass `segmentLength`.
+- **Labels carry through.** The ops warp vertices without remeshing, so every `api.label` part keeps its faces, and `paintByLabel` / `withinPart` still work afterwards. This is unlike `round` / `smoothWeld`.
+- **Imports:** after `acceptParts`, an imported mesh's detected parts are labels (`api.importWithParts(0)`), so `select: { label: 'hair' }` works on STL figurines too. That's the way to "make the head bigger" on an upload.
 
 ## Deforms (warp-based)
 
