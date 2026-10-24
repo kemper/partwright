@@ -17764,7 +17764,8 @@ async function main() {
      *  — it never applies the operation; the user tweaks and clicks Apply.
      *  `prefill` keys are per tool (listUiCommands().prefill, /ai/ui-control.md);
      *  unknown keys and out-of-range values are rejected. `note` shows in the
-     *  panel as "Suggested by AI: …". Doesn't step the AI panel aside.
+     *  panel as "Suggested by AI: …". On desktop the AI panel stays beside
+     *  the tool; on a phone (full-screen chat) it steps aside so the tool shows.
      *  Returns `{ ok, id, applied, ignored }` or `{ error }`. */
     async openTool(id: string, prefill?: Record<string, unknown>, opts?: { note?: string; source?: 'ai' | 'api' }) {
       const checked = guard(() => {

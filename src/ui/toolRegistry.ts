@@ -11,7 +11,7 @@
 // This module imports nothing from feature modules (only the leaf viewport
 // panel registry), so any module can register into it without a cycle.
 
-import { runWithSilentPanelOpen } from './viewportPanelRegistry';
+import { runWithSilentPanelOpen, notifyPanelOpen, getActiveViewportPanel } from './viewportPanelRegistry';
 
 // ---------------------------------------------------------------------------
 // Prefill schema — a tiny, JSON-able field description. It doubles as the
@@ -39,8 +39,10 @@ export type PrefillSchema = Record<string, PrefillField>;
 export interface ToolOpenContext {
   /** A one-line reason shown in the panel ("Suggested by AI: …"). */
   note?: string;
-  /** Who is opening it. Programmatic opens ('ai' / 'api') are "silent": they
-   *  don't step the AI chat panel aside, so the chat stays next to the tool. */
+  /** Who is opening it. On the desktop layout programmatic opens ('ai' /
+   *  'api') are "silent": they don't step the AI chat panel aside, so the chat
+   *  stays next to the tool. On a phone (full-screen chat) they step it aside
+   *  like a user open, so the staged tool is visible. */
   source?: 'ui' | 'ai' | 'api';
 }
 
@@ -100,7 +102,12 @@ export function getOpenTool(): ToolSpec | null {
   const all = [...tools.values()];
   // The docked panel (at most one is open — the viewport panel registry
   // enforces it) wins over an overlay mode that happens to be on too.
-  return all.find(t => !t.overlay && open(t)) ?? all.find(t => t.overlay && open(t)) ?? null;
+  const docked = all.find(t => !t.overlay && open(t));
+  if (docked) return docked;
+  // An unregistered docked panel (e.g. Customize) is the user's focus: report
+  // no registered tool rather than an overlay running beside it.
+  if (getActiveViewportPanel()) return null;
+  return all.find(t => t.overlay && open(t)) ?? null;
 }
 
 /** Whether a programmatic open should leave the AI panel where it is. Only on
@@ -257,8 +264,13 @@ export async function openTool(
   const source = ctx.source ?? 'ui';
   const run = () => spec.open(hasPrefill ? checked.value : undefined, { ...ctx, source });
   try {
-    const r = await (source !== 'ui' && keepAiPanelBeside() ? runWithSilentPanelOpen(run) : run());
+    // Programmatic opens run silently; on a phone (full-screen chat) the chat
+    // is then stepped aside exactly once AFTER a successful open — also when
+    // the tool was ALREADY open (a re-open / in-place prefill doesn't re-fire
+    // the open listeners) — so the staged tool is visible.
+    const r = await (source !== 'ui' ? runWithSilentPanelOpen(run) : run());
     if (r && 'error' in r) return { error: `openTool("${id}"): ${r.error}` };
+    if (source !== 'ui' && !keepAiPanelBeside()) notifyPanelOpen();
     return { ok: true, id, applied: r ? r.applied : checked.value, ignored: r ? r.ignored : [] };
   } catch (e) {
     return { error: `openTool("${id}"): ${e instanceof Error ? e.message : String(e)}` };
