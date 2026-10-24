@@ -356,6 +356,11 @@ test.describe('paint restore progress', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       pw.__setProgressModalDelay(0);
+      // Turn off the local smooth-paint cache (#1074) so the reload below
+      // really rebuilds the strokes instead of restoring the cached mesh.
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, renderer: { ...c.renderer, paintRefineCacheMaxMB: 0 } });
       await pw.createSession('restore progress');
       await pw.runAndSave(`const { Manifold } = api; return Manifold.sphere(10, 160);`, 'base');
       for (let k = 0; k < 3; k++) {
