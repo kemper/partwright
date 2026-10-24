@@ -47,9 +47,9 @@ export function isEngineHeapHigh(bytes: number | undefined, thresholdPct: number
 export function engineHeapWarning(bytes: number | undefined, thresholdPct: number): string | undefined {
   if (bytes === undefined || !isEngineHeapHigh(bytes, thresholdPct)) return undefined;
   return (
-    `High geometry-kernel memory: this run grew the WebAssembly heap to ${formatEngineMemory(bytes)}, and ~4 GB is a hard limit. ` +
+    `High geometry-kernel memory: the WebAssembly heap is at ${formatEngineMemory(bytes)} after this run, and ~4 GB is a hard limit. ` +
     'Scaling the model up (more parts or links, higher curve quality, bigger booleans) risks a "memory access out of bounds" fault. ' +
-    'The engine is reset after a run like this so the next run starts with a fresh heap. To lighten it: build with fewer copies first, ' +
+    'The engine resets once idle so the next run starts with a fresh heap. To lighten the model: build with fewer copies first, ' +
     'give small or hidden round features (pins, link rods) an explicit low segment count, combine non-touching parts with ' +
     'Manifold.compose instead of a union, and don\'t query intermediates (.volume(), .boundingBox(), .numTri()) inside a ' +
     'build loop — that meshes every step, and each one stays in memory until the run ends.'

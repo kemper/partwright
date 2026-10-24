@@ -49,3 +49,20 @@ and "halve, don't retry" after an OOM.
 **Not done**: the parallel `enginePool` (Assembly view / multi-part export) and
 headless `model:preview` don't get the warning; the pool is disposable and
 Node has no comparable heap readout wired up.
+
+## Assistant (review follow-up)
+
+A `work-reviewer` pass found nothing blocking. Fixed:
+
+- **Stale warning:** a cached version load, a shared preview and "No geometry"
+  write stats without running. They now clear `lastEngineHeapBytes`, so the
+  warning can't describe geometry that never ran.
+- **STEP import race:** `importSTEPToBrep` / `importSTEPToMesh` awaited
+  `blob.arrayBuffer()` *after* `await workerReady`. A reset in that gap left
+  `engineWorker` null. The bytes are now read first.
+- **Health panel:** the routine reset counted as a restart, which the panel
+  reads as a crash loop. It now uses `markWorkerStopped`.
+- **`api.BREP` runs skip the reset**, because each one would otherwise reload
+  OpenCASCADE (seconds).
+- **Wording:** "resets once idle" instead of a promise it can't always keep.
+  `ai.md` notes that isolated runs report `engineMemory` without warning.

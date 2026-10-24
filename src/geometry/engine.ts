@@ -14,11 +14,13 @@ import {
   registerWorker,
   markWorkerStarted,
   markWorkerRestarted,
+  markWorkerStopped,
   recordWorkerRun,
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
+import { sourceUsesBrep } from './brepRuntime';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -106,7 +108,7 @@ let callIdCounter = 0;
 let workerHoldsBrepImports = false;
 let workerHoldsBrepShape = false;
 
-const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language } }>();
+const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language; usesBrep?: boolean } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
@@ -257,6 +259,8 @@ export function cancelCurrentExecution(): void {
  *  faults instantly; recycling here is the only reliable recovery short of a
  *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
 function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): void {
+  // The routine high-heap reset ('info') is a clean stop, not a crash: it must
+  // not climb the restart counter the worker-health panel reads as a crash loop.
   rejectAllPending(new Error(reason));
   workerReadyReject?.(new Error(reason));
   workerReadyReject = null;
@@ -267,7 +271,8 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): v
   // make visible — so it bumps the restart counter like any other teardown.
   // Recovery, not a crash — warn rather than error, so it doesn't read as a
   // second hard failure to the user.
-  markWorkerRestarted('geometry', reason);
+  if (level === 'info') markWorkerStopped('geometry');
+  else markWorkerRestarted('geometry', reason);
   errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
   // eslint-disable-next-line no-console
   console.debug('[EngineWorker]', reason);
@@ -278,11 +283,14 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): v
  *  shrinks, so the old instance would keep its multi-GB heap; the next run
  *  then starts close to the ceiling, where a further grow can fail on
  *  fragmentation long before 4 GB. Skipped while other calls are in flight
- *  (the next run re-checks — a grown heap stays grown) and while the
- *  Worker holds BREP state a teardown would lose. */
-function maybeResetHighHeapWorker(heapBytes: number | undefined): void {
+ *  (the next run re-checks — a grown heap stays grown), while the Worker
+ *  holds BREP state a teardown would lose, and after runs that use
+ *  `api.BREP` (a reset would make every such run reload OpenCASCADE, which
+ *  takes seconds). The reset also drops the Worker's other lazy loads
+ *  (fonts, OpenSCAD); they reload on next use. */
+function maybeResetHighHeapWorker(heapBytes: number | undefined, usesBrep: boolean): void {
   if (!engineWorker || !isEngineHeapHigh(heapBytes, getConfig().geometry.engineHeapHighPct)) return;
-  if (geometryInFlight() > 0 || workerHoldsBrepImports || workerHoldsBrepShape) return;
+  if (usesBrep || geometryInFlight() > 0 || workerHoldsBrepImports || workerHoldsBrepShape) return;
   recycleEngineWorker(`Resetting geometry Worker after a high-memory run (heap ${formatEngineMemory(heapBytes!)})`, 'info');
 }
 
@@ -412,7 +420,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       return;
     }
     if (!result.error && pending.meta?.lang === 'replicad') workerHoldsBrepShape = true;
-    maybeResetHighHeapWorker(result.engineHeapBytes);
+    maybeResetHighHeapWorker(result.engineHeapBytes, pending.meta?.usesBrep === true);
     return;
   }
 
@@ -631,7 +639,7 @@ export async function executeCodeAsync(
       resolve,
       reject,
       onPreview,
-      meta: { startedAt: performance.now(), lang: l },
+      meta: { startedAt: performance.now(), lang: l, usesBrep: l === 'manifold-js' && sourceUsesBrep(source) },
     });
     // Like explicitImports: a caller (offscreen thumbnail backfill) may pass a
     // specific version's companion files so a SCAD run doesn't pick up the live
@@ -760,10 +768,13 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
  *  doesn't hold the parsed shape itself. Resolves with the filename so the
  *  caller can echo it in confirmation UI. */
 export async function importSTEPToBrep(blob: Blob, filename: string): Promise<string> {
+  // Read the file before the Worker gate: no await may sit between
+  // `await workerReady` and the postMessage, or a Worker reset in that gap
+  // (e.g. the high-heap reset after a run) leaves `engineWorker` null.
+  const bytes = await blob.arrayBuffer();
   initEngineWorker();
   await workerReady;
   const callId = `stepin-brep-${++callIdCounter}`;
-  const bytes = await blob.arrayBuffer();
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (pendingStepBrepImports.has(callId)) {
@@ -783,10 +794,11 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
  *  discarded — this path is for users who want the import as mesh (paint,
  *  mesh-only ops). */
 export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
+  // File read first — see importSTEPToBrep.
+  const bytes = await blob.arrayBuffer();
   initEngineWorker();
   await workerReady;
   const callId = `stepin-mesh-${++callIdCounter}`;
-  const bytes = await blob.arrayBuffer();
   return new Promise<MeshData>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (pendingStepMeshImports.has(callId)) {
