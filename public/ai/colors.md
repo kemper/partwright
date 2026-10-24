@@ -19,6 +19,8 @@ partwright.removeRegion(id) // delete one region by id (older mistake)
 partwright.hideRegion(id)   // toggle a region off in the viewport without deleting it; exports still include it
 partwright.showRegion(id)   // re-show a previously hidden region
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
+partwright.clearColors({ kind: 'image' })  // remove only image stamps (the Image Paint panel's Clear)
+partwright.undoClearColors()  // bring back what the last clear removed (until the next paint) -> {restored, regions}
 ```
 
 **Per-region visibility vs. delete.** `setRegionVisibility(id, false)` (or `hideRegion(id)`) toggles a region off in the *viewport* — the painted triangles render unpainted while the region is hidden, but the region itself stays in `listRegions()` and the `visible` flag is persisted across save/load. This is the right tool for "I want to see what the model looks like without this region" or "compare paint vs. no-paint." GLB / 3MF exports always include hidden regions — visibility is a viewer-state flag, not an export filter. Use `removeRegion(id)` when you actually want to delete a region permanently.
@@ -146,7 +148,8 @@ partwright.paintByLabels([
 // -> { results: [...], failed: [] }
 // Reach for paintByLabel({label, color}) only when painting a single
 // feature. listLabels() returns what's available; check it if a paint
-// call reports "no label X".
+// call reports "no label X". getLabelNames() is the cheap form: just the
+// names (string[]), no triangle counts / bboxes.
 ```
 
 `api.labeledUnion([{name, shape}, ...])` is sugar that labels each
@@ -540,7 +543,9 @@ The painted edge is **clipped to the exact outline** (the mesh is cut along the 
 
 **Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
 
-**Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
+**Driving the interactive brush from a script or test.** `paintStroke` / `paintAirbrush` return a populated region synchronously, so they never need to wait. Pointer events on the canvas commit through the async listener path instead, so the mesh updates one worker round-trip later: `await partwright.waitForPaint()` (resolves once no paint subdivision job is in flight) before reading mesh or region state after a synthetic drag.
+
+**Airbrush — soft speckle (`paintAirbrush`).** Sprays a soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. Like `paintStroke` it takes `surface`: `'slab'` (the default) sprays everything within `depth` of the stroke (0 = auto), `'geodesic'` follows surface connectivity so it can't punch through a thin wall. It works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle, which sprays on whichever Surface (Slab / Geodesic) is selected.
 
 ```js
 partwright.paintAirbrush({
@@ -764,7 +769,7 @@ partwright.assertPaint({
 partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3 }
 ```
 
-This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors. It has no undo entry (`undoLastPaint` removes the newest region, not a recolour). The in-app chat has the same **`replaceColor`** tool, plus **`setRegionVisibility({id, visible})`** (view-only, always available) and **`paintAirbrush`**.
 
 **It only rewrites user paint regions.** Colors declared *in code* (`api.paint.*` / `api.label({color})`) are re-derived from the source on every run, so `replaceColor` — like the palette slot/replace/merge operations — deliberately leaves them alone. To change one, edit the `color` argument in the code and re-run. When nothing matched but the model has code-declared colors, the result carries a `hint` saying exactly that.
 
@@ -822,6 +827,8 @@ const slot = partwright.getPalette().slots[0];
 const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice(3,5),16)/255, parseInt(slot.hex.slice(5,7),16)/255];
 partwright.paintByLabel({ label: 'body', color: [r, g, b] });
 ```
+
+In the in-app chat, the read-only **`getPalette`** tool returns `{ active: <getPalette()>, palettes: <listPalettes()> }` in one call, and **`editPalette({op, ...})`** wraps the setters below — `op: 'setActive' | 'addFilament' | 'updateFilament' | 'removeFilament' | 'setCapacity' | 'setConstrained'` with that op's own fields (unknown fields are rejected) — returning the result plus the updated palette. Editing or removing a slot does not recolour regions already painted with it: removed-slot regions keep their colour but lose the slot link, so `replaceColor` them onto a remaining slot.
 
 Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
 

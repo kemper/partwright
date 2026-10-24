@@ -82,7 +82,7 @@ async function prepareOne(page, entry) {
     await new Promise(r => setTimeout(r, 500));
     const code = payload.versions[payload.versions.length - 1].code;
     const geo = await pw.run(code);
-    if (!geo || geo.status === 'error') return { error: `run: ${geo?.error ?? 'no result'}` };
+    if (!geo || geo.error || geo.status === 'error') return { error: `run: ${geo?.error ?? 'no result'}` };
     if (typeof pw.ensureSurfaceTexturesApplied === 'function') { try { await pw.ensureSurfaceTexturesApplied(); } catch { /* best effort */ } }
     await new Promise(r => setTimeout(r, 300));
     const review = await import('/src/ai/review.ts');

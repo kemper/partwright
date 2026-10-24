@@ -879,6 +879,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('import', 'threeMfMaxColors', v)}
         />
         <Field
+          label="Max objects per split import"
+          unit="objects"
+          hint="Most objects a 3MF or STL import may be split into."
+          tooltip="A multi-object 3MF can import one object per 3MF object or per plate, and a multi-piece STL can be split into one object per piece. Each becomes its own object with a saved version, so very large splits take a while; past this many the split option is unavailable and the file imports as one object."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxSplitObjects}
+          value={c.import.maxSplitObjects}
+          min={2} max={1000} integer
+          onChange={v => set('import', 'maxSplitObjects', v)}
+        />
+        <Field
           label="Voxel default max size"
           unit="voxels"
           hint="Default max voxel grid dimension for image → voxel imports."
@@ -1654,6 +1664,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.workerPanelRefreshMs}
           min={200} max={10_000} integer
           onChange={v => set('ui', 'workerPanelRefreshMs', v)}
+        />
+        <Field
+          label="Diagnostic log entries for agents"
+          unit="entries"
+          hint="How many recent Diagnostic Log entries partwright.getDiagnosticLog() and the AI tool return when no limit is given."
+          tooltip="AI agents call getDiagnosticLog() to answer 'why did that fail?'. It returns the newest entries first, with secrets (API keys, auth headers, key-bearing URLs) redacted. A larger default gives the agent more history per call at the cost of a bigger tool result; callers can always pass an explicit limit."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.diagnosticLogApiLimit}
+          value={c.ui.diagnosticLogApiLimit}
+          min={1} max={200} integer
+          onChange={v => set('ui', 'diagnosticLogApiLimit', v)}
         />
       </Section>
 

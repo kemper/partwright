@@ -74,11 +74,11 @@ export function resolveReviewer(settings: AutoReviewSettings, toggles: ChatToggl
 /** Model-changing tool calls made in assistant messages created at or after
  *  `since` (ms) — i.e. during the current round. `isChanging` is
  *  `isModelChangingTool` from tools.ts (injected to keep this module pure). */
-export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string) => boolean): number {
+export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string, input?: Record<string, unknown>) => boolean): number {
   let n = 0;
   for (const m of history) {
     if (m.role !== 'assistant' || m.createdAt < since || !m.toolCalls) continue;
-    for (const c of m.toolCalls) if (isChanging(c.name)) n++;
+    for (const c of m.toolCalls) if (isChanging(c.name, c.input)) n++;
   }
   return n;
 }

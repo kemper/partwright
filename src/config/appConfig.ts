@@ -267,6 +267,11 @@ export interface AppConfig {
     /** Max distinct colours a 3MF import is painted with. Files with more
      *  (per-triangle-coloured scans) import as mesh only, with a notice. */
     threeMfMaxColors: number;
+    /** Max objects one import may be split into (a multi-object 3MF imported
+     *  one object per 3MF object / plate, or an STL split into one object per
+     *  piece). Each becomes its own object with a version, so this bounds the
+     *  run time of a split import. */
+    maxSplitObjects: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -409,6 +414,10 @@ export interface AppConfig {
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Default number of entries `partwright.getDiagnosticLog()` (and the AI
+     *  `getDiagnosticLog` tool) returns when the caller passes no `limit`.
+     *  Newest first; the log itself keeps up to 200 entries. */
+    diagnosticLogApiLimit: number;
     /** Whether the "Did you know?" rolling hints strip shows at the top of the
      *  editor. Users can turn it off permanently here; the strip's ✕ only hides
      *  it for the current tab/session. */
@@ -609,6 +618,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxTriangles: 20_000_000,
     threeMfMaxEntryMB: 1024,
     threeMfMaxColors: 256,
+    maxSplitObjects: 100,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,
@@ -657,6 +667,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    diagnosticLogApiLimit: 30,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
