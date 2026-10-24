@@ -125,12 +125,16 @@ export interface AutoReviewSettings {
   /** How many times the agent may act on a non-passing review before the
    *  loop stops (0 = just post the review). */
   fixRounds: number;
+  /** Send the user's earlier messages in this chat (not the agent's replies)
+   *  with the review, so it grades against every requirement and correction
+   *  — not just the latest message. Also the 👁 Review modal's default. */
+  includeConversation: boolean;
 }
 
 /** Upper bound for AutoReviewSettings.fixRounds. */
 export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
 
-const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1 };
+const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1, includeConversation: true };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
 const SETTINGS_REV = 1;
@@ -706,6 +710,7 @@ function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): Auto
     provider: r.provider && AUTO_REVIEW_PROVIDERS.includes(r.provider) ? r.provider : DEFAULT_AUTO_REVIEW.provider,
     model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
     fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
+    includeConversation: typeof r.includeConversation === 'boolean' ? r.includeConversation : DEFAULT_AUTO_REVIEW.includeConversation,
   };
 }
 

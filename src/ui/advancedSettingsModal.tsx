@@ -325,13 +325,22 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ai', 'compactionKeepImages', v)}
         />
         <Field
-          label="Reference images sent to the automatic review"
-          hint="How many of your attached images the automatic end-of-task review sees next to the renders."
-          tooltip="The automatic review grades the finished model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
+          label="Reference images sent to reviews"
+          hint="How many of your attached images a review (automatic or 👁) sees next to the renders."
+          tooltip="A review grades the model against your request. When you attached reference images (a photo, a sketch), the newest N are sent with the renders so the reviewer can compare the result to them. Set 0 to send renders only."
           defaultValue={APP_CONFIG_DEFAULTS.ai.reviewReferenceImages}
           value={c.ai.reviewReferenceImages}
           min={0} max={12} integer
           onChange={v => set('ai', 'reviewReferenceImages', v)}
+        />
+        <Field
+          label="Your messages sent to reviews (chars)"
+          hint="How much of what you wrote in this chat a review sees, newest first. The agent's replies are never sent."
+          tooltip="So the reviewer grades against every requirement and correction you gave — not only your latest message — your own chat messages are sent with the review (when 'Your messages' is on). Older messages beyond this budget are left out. After a compaction, the agent's summary of the deleted early turns is sent too (labelled as the agent's) when it fits. Set 0 to send none."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.reviewConversationMaxChars}
+          value={c.ai.reviewConversationMaxChars}
+          min={0} max={100000} integer
+          onChange={v => set('ai', 'reviewConversationMaxChars', v)}
         />
         <Field
           label="Review note length (chars)"
