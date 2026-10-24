@@ -25,3 +25,33 @@ export function formatEngineMemory(bytes: number): string {
   const pct = Math.round((bytes / WASM_HEAP_MAX_BYTES) * 100);
   return `${mb} MB / ${maxMb} MB (${pct}%)`;
 }
+
+/** Share of the wasm32 ceiling that `bytes` occupies, 0–100 (unrounded). */
+export function engineHeapPercent(bytes: number): number {
+  return (bytes / WASM_HEAP_MAX_BYTES) * 100;
+}
+
+/** True when a run left the kernel heap at or above `thresholdPct` of the
+ *  ceiling. Drives both the high-memory geometry warning and the proactive
+ *  Worker reset, so the two always agree. A threshold of 100 or more disables
+ *  both (the heap never sits above 100% — a run that needs more faults). */
+export function isEngineHeapHigh(bytes: number | undefined, thresholdPct: number): boolean {
+  if (bytes === undefined || !(thresholdPct < 100)) return false;
+  return engineHeapPercent(bytes) >= thresholdPct;
+}
+
+/** Geometry warning for a run whose heap crossed `thresholdPct`, or undefined.
+ *  Fires *before* the out-of-memory fault: WASM memory only grows, so a model
+ *  that already needed half the ceiling crashes at roughly double the parts or
+ *  curve segments. The text names the cheap fixes so the agent can back off. */
+export function engineHeapWarning(bytes: number | undefined, thresholdPct: number): string | undefined {
+  if (bytes === undefined || !isEngineHeapHigh(bytes, thresholdPct)) return undefined;
+  return (
+    `High geometry-kernel memory: this run grew the WebAssembly heap to ${formatEngineMemory(bytes)}, and ~4 GB is a hard limit. ` +
+    'Scaling the model up (more parts or links, higher curve quality, bigger booleans) risks a "memory access out of bounds" fault. ' +
+    'The engine is reset after a run like this so the next run starts with a fresh heap. To lighten it: build with fewer copies first, ' +
+    'give small or hidden round features (pins, link rods) an explicit low segment count, combine non-touching parts with ' +
+    'Manifold.compose instead of a union, and don\'t query intermediates (.volume(), .boundingBox(), .numTri()) inside a ' +
+    'build loop — that meshes every step, and each one stays in memory until the run ends.'
+  );
+}

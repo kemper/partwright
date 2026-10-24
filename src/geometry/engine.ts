@@ -18,6 +18,7 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
+import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -98,6 +99,12 @@ let workerReadyReject: ((e: Error) => void) | null = null;
 // from its predecessor — callers would skip the await and race the new init.
 let workerReady: Promise<void> = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
 let callIdCounter = 0;
+// BREP state that lives only inside the Worker: STEP files parsed into the
+// pending-imports list, and the shape a replicad run retains for STEP export.
+// Tracked here so the proactive high-heap reset never throws them away (a
+// teardown for any other reason loses them as it always has).
+let workerHoldsBrepImports = false;
+let workerHoldsBrepShape = false;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
@@ -249,7 +256,7 @@ export function cancelCurrentExecution(): void {
  *  state half-mutated, after which every subsequent call into the same instance
  *  faults instantly; recycling here is the only reliable recovery short of a
  *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
-function recycleEngineWorker(reason: string): void {
+function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): void {
   rejectAllPending(new Error(reason));
   workerReadyReject?.(new Error(reason));
   workerReadyReject = null;
@@ -261,13 +268,29 @@ function recycleEngineWorker(reason: string): void {
   // Recovery, not a crash — warn rather than error, so it doesn't read as a
   // second hard failure to the user.
   markWorkerRestarted('geometry', reason);
-  errorLog.capture({ level: 'warn', source: 'engine', message: `Geometry worker recycled: ${reason}` });
+  errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
   // eslint-disable-next-line no-console
   console.debug('[EngineWorker]', reason);
 }
 
+/** After a run that left the heap above the high-memory threshold, swap in a
+ *  fresh Worker while nothing else is using it. WASM linear memory never
+ *  shrinks, so the old instance would keep its multi-GB heap; the next run
+ *  then starts close to the ceiling, where a further grow can fail on
+ *  fragmentation long before 4 GB. Skipped while other calls are in flight
+ *  (the next run re-checks — a grown heap stays grown) and while the
+ *  Worker holds BREP state a teardown would lose. */
+function maybeResetHighHeapWorker(heapBytes: number | undefined): void {
+  if (!engineWorker || !isEngineHeapHigh(heapBytes, getConfig().geometry.engineHeapHighPct)) return;
+  if (geometryInFlight() > 0 || workerHoldsBrepImports || workerHoldsBrepShape) return;
+  recycleEngineWorker(`Resetting geometry Worker after a high-memory run (heap ${formatEngineMemory(heapBytes!)})`, 'info');
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
+  // A fresh Worker starts with none of the old one's BREP state.
+  workerHoldsBrepImports = false;
+  workerHoldsBrepShape = false;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
@@ -386,7 +409,10 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     // the same error until the page is reloaded. Recycle so it boots fresh.
     if (result.error && isFatalWasmFault(result.error)) {
       recycleEngineWorker(`Recycling geometry Worker after fatal WASM fault: ${result.error}`);
+      return;
     }
+    if (!result.error && pending.meta?.lang === 'replicad') workerHoldsBrepShape = true;
+    maybeResetHighHeapWorker(result.engineHeapBytes);
     return;
   }
 
@@ -429,6 +455,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     pendingStepBrepImports.delete(callId);
     const error = msg.error as string | null;
     if (error) { pending.reject(new Error(error)); return; }
+    workerHoldsBrepImports = true;
     pending.resolve(msg.filename as string);
     return;
   }
@@ -451,6 +478,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     pendingClearBrepImports.delete(callId);
     const error = msg.error as string | null;
     if (error) { pending.reject(new Error(error)); return; }
+    workerHoldsBrepImports = false;
     pending.resolve();
     return;
   }
@@ -462,6 +490,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     pendingClearBrepShapes.delete(callId);
     const error = msg.error as string | null;
     if (error) { pending.reject(new Error(error)); return; }
+    workerHoldsBrepShape = false;
     pending.resolve();
     return;
   }

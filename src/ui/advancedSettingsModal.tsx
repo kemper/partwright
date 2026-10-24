@@ -1090,6 +1090,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2} max={100} step={1}
           onChange={v => set('geometry', 'aspectRatioWarn', v)}
         />
+        <Field
+          label="High engine-memory threshold"
+          unit="% of 4 GB"
+          hint="Warns and resets the geometry engine above this heap use."
+          tooltip="The geometry kernel runs in WebAssembly, whose heap is capped at about 4 GB and never shrinks. When a run grows it past this share of the ceiling, the geometry warnings (shown to you and to the AI agent) flag the model as memory-heavy before it fails with 'memory access out of bounds', and the engine is restarted once it is idle so the next run starts on a fresh heap. Set 100 to turn both off."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.engineHeapHighPct}
+          value={c.geometry.engineHeapHighPct}
+          min={10} max={100} integer
+          onChange={v => set('geometry', 'engineHeapHighPct', v)}
+        />
       </Section>
 
       <Section title="Part detection">

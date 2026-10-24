@@ -24,7 +24,7 @@ import { errorLog } from './diagnostics/errorLog';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
-import { formatEngineMemory } from './geometry/engineMemory';
+import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -18715,6 +18715,12 @@ async function main() {
       },
       getConfig().geometry,
     ));
+    // Kernel memory: flag a run that grew the WASM heap past the high-memory
+    // threshold *before* a bigger variant faults with "memory access out of
+    // bounds". `geo` is always the live run's data, which is the run
+    // lastEngineHeapBytes was recorded from.
+    const heapWarning = engineHeapWarning(lastEngineHeapBytes, getConfig().geometry.engineHeapHighPct);
+    if (heapWarning) warnings.push(heapWarning);
     return warnings;
   }
 
