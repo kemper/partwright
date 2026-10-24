@@ -6,6 +6,7 @@
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
+import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -18,13 +19,15 @@ import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { createModalShell } from './modalShell';
+import { BUTTON_CANCEL, BUTTON_DANGER, BUTTON_PRIMARY } from './styleConstants';
 import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
-import { isModelChangingTool } from '../ai/tools';
+import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -371,6 +374,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // Pending "[UI · app note] user applied …" lines describe the previous
+  // session's model — don't carry them into this one.
+  if (!state.inFlight) clearToolAppliedNotes();
   // If a turn is in flight the session change was triggered by the model
   // calling createSession mid-turn. Don't reload/re-render now — the
   // callbacks (onUserPersisted etc.) are keeping state.history current
@@ -2242,6 +2248,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     if (b.type === 'text') {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
+      // App-generated "[UI · app note] user applied …" context: a muted system
+      // line, not a blue bubble that would read as the user's own words.
+      if (msg.role === 'user' && b.text.startsWith(UI_APPLIED_NOTE_PREFIX)) {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] italic text-zinc-500 whitespace-pre-wrap break-words';
+        line.dataset.uiAppNote = '';
+        line.textContent = b.text;
+        wrap.appendChild(line);
+        continue;
+      }
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
@@ -3401,7 +3417,13 @@ async function sendMessage(): Promise<void> {
   const capturedText = text;
   const capturedImages = [...state.pendingImages];
 
-  const blocks: ChatBlock[] = [];
+  // "[UI · app note] user applied …" lines for panels the AI opened and the user then
+  // applied from (toolRegistry.notifyToolApplied) — one leading text block,
+  // so the model sees what the user settled on. Per-tab memory only.
+  const uiNotes = drainToolAppliedNotes();
+  const uiNoteBlocks: ChatBlock[] = uiNotes.length ? [{ type: 'text', text: uiNotes.join('\n') }] : [];
+
+  const blocks: ChatBlock[] = [...uiNoteBlocks];
   // The Objects-list selection is chat context: "make it red" means the part
   // the user has selected.
   const partKey = getSelectedPartKey();
@@ -3450,7 +3472,7 @@ async function sendMessage(): Promise<void> {
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
       const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
@@ -3461,7 +3483,7 @@ async function sendMessage(): Promise<void> {
         + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
         + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
         + '---\n\n';
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
@@ -3537,50 +3559,47 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
-/** Show a blocking overlay asking the user to allow or decline an AI-initiated
- *  import. Resolves true (allow) or false (decline). */
-function showToolConfirmation(toolName: string): Promise<boolean> {
+/** Ask the user to allow or decline a confirm-required AI tool call (imports,
+ *  deleteVersion). Resolves true (allow) or false (decline). Built on
+ *  modalShell, so Escape / click-outside / ✕ decline and focus moves into the
+ *  dialog (onto Decline — the safe default for an irreversible action). An
+ *  abort of the turn (Stop, tab take-over) dismisses the prompt as a decline. */
+async function showToolConfirmation(toolName: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const label = await confirmToolLabel(toolName, input);
+  if (signal?.aborted) return false;
   return new Promise(resolve => {
-    const label = toolName === 'importImageAsRelief'
-      ? 'import an image as a 3D relief'
-      : toolName === 'importSvgAsRelief'
-      ? 'import an SVG as a 3D relief tile'
-      : `run "${toolName}"`;
-
-    const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
-
-    const card = document.createElement('div');
-    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+    let allowed = false;
+    const onAbort = () => { allowed = false; shell.close(); };
+    const shell = createModalShell({
+      title: 'Allow this AI action?',
+      maxWidth: 'sm',
+      onClose: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(allowed);
+      },
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const msg = document.createElement('p');
-    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.className = 'text-sm text-zinc-200';
+    msg.setAttribute('data-testid', 'ai-tool-confirm-message');
     msg.textContent = `The AI wants to ${label}. Allow this?`;
-
-    const btns = document.createElement('div');
-    btns.className = 'flex gap-2 justify-end';
+    shell.body.appendChild(msg);
 
     const declineBtn = document.createElement('button');
-    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.className = BUTTON_CANCEL;
     declineBtn.textContent = 'Decline';
+    declineBtn.addEventListener('click', () => { allowed = false; shell.close(); });
 
     const allowBtn = document.createElement('button');
-    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.className = toolName === 'deleteVersion' ? BUTTON_DANGER : BUTTON_PRIMARY;
     allowBtn.textContent = 'Allow';
+    allowBtn.addEventListener('click', () => { allowed = true; shell.close(); });
 
-    btns.appendChild(declineBtn);
-    btns.appendChild(allowBtn);
-    card.appendChild(msg);
-    card.appendChild(btns);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    const done = (allowed: boolean) => {
-      overlay.remove();
-      resolve(allowed);
-    };
-    allowBtn.addEventListener('click', () => done(true));
-    declineBtn.addEventListener('click', () => done(false));
+    shell.footer.appendChild(declineBtn);
+    shell.footer.appendChild(allowBtn);
+    declineBtn.focus();
   });
 }
 
@@ -3733,7 +3752,7 @@ async function runTurnWithStallRetry(
         renderTranscript();
         renderCostMeter();
       },
-      confirmTool: (toolName) => showToolConfirmation(toolName),
+      confirmTool: (toolName, toolInput) => showToolConfirmation(toolName, toolInput, controller.signal),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

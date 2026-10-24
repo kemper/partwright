@@ -279,6 +279,11 @@ export interface AppConfig {
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
     remoteFetchTimeoutMs: number;
+    /** Longest image `src` string (chars) an AI openTool prefill accepts — a
+     *  data URL of a few MB. */
+    prefillImageSrcMaxChars: number;
+    /** Largest image (width × height pixels) an openTool prefill will decode. */
+    prefillImageMaxPixels: number;
     /** Color-distance threshold for matching swapped filament colors (0–1, lower = stricter). */
     filamentMatchThreshold: number;
     /** Confidence score below which the filament swap guide shows a warning (0–1). */
@@ -333,6 +338,15 @@ export interface AppConfig {
     photoMatchBusyBorderTolerance: number;
   };
   ui: {
+    /** openTool on an export / publish dialog: how long to wait for the dialog
+     *  to appear (a pre-export "unsaved objects" confirm can come first) before
+     *  reporting the prefill as staged-for-when-it-opens (ms). */
+    toolDialogOpenWaitMs: number;
+    /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
+     *  tool; the oldest drop past this). */
+    maxPendingAppliedNotes: number;
+    /** Longest "[UI · app note] user applied …" note line (chars; truncated past it). */
+    maxAppliedNoteChars: number;
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
     /** How long a toast carrying an action button (e.g. a delete's "Undo")
@@ -409,6 +423,10 @@ export interface AppConfig {
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Default number of entries `partwright.getDiagnosticLog()` (and the AI
+     *  `getDiagnosticLog` tool) returns when the caller passes no `limit`.
+     *  Newest first; the log itself keeps up to 200 entries. */
+    diagnosticLogApiLimit: number;
     /** Whether the "Did you know?" rolling hints strip shows at the top of the
      *  editor. Users can turn it off permanently here; the strip's ✕ only hides
      *  it for the current tab/session. */
@@ -614,6 +632,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
+    prefillImageSrcMaxChars: 15_000_000,
+    prefillImageMaxPixels: 40_000_000,
     filamentMatchThreshold: 0.18,
     filamentConfidenceWarnThreshold: 0.9,
     reconstructCellBudget: 6_000_000,
@@ -633,6 +653,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     photoMatchBusyBorderTolerance: 75,
   },
   ui: {
+    toolDialogOpenWaitMs: 4000,
+    maxPendingAppliedNotes: 6,
+    maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
     deletedObjectRetentionDays: 30,
@@ -657,6 +680,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    diagnosticLogApiLimit: 30,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,

@@ -38,7 +38,14 @@ export interface ModalShell {
 }
 
 let currentModal: HTMLElement | null = null;
+let currentModalTitle: string | null = null;
 let modalSeq = 0;
+
+/** Title of the shell modal currently open, or null — what
+ *  `partwright.getUiState().openModal` reports. */
+export function getOpenModalTitle(): string | null {
+  return currentModal ? currentModalTitle : null;
+}
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -122,6 +129,7 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
   currentModal = overlay;
+  currentModalTitle = opts.title;
 
   let closed = false;
   const escHandler = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
@@ -161,7 +169,7 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
     closed = true;
     document.removeEventListener('keydown', escHandler);
     overlay.remove();
-    if (currentModal === overlay) currentModal = null;
+    if (currentModal === overlay) { currentModal = null; currentModalTitle = null; }
     // Restore focus to whatever opened the modal, if it's still in the document.
     if (previouslyFocused && previouslyFocused.isConnected) previouslyFocused.focus();
     opts.onClose?.();
