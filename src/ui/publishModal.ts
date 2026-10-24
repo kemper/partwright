@@ -23,6 +23,48 @@ import {
   type PublishTarget,
   type PublishFormat,
 } from '../publish/publishTargets';
+import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+
+/** Pre-set values for the NEXT publish modal (`openTool('publish-model')`).
+ *  It only opens staged — nothing is downloaded until the user clicks. */
+export interface PublishPrefill {
+  platform?: string;
+  format?: string;
+  title?: string;
+  description?: string;
+  tags?: string[];
+  includeCover?: boolean;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
+
+let stagedPrefill: { prefill: PublishPrefill; settle: (r: ToolOpenResult) => void } | null = null;
+let openPublish: { state: () => Record<string, unknown>; close: () => void } | null = null;
+
+/** Check a publish prefill against the platform list (pure). */
+export function checkPublishPrefill(p: PublishPrefill): string | null {
+  const target = p.platform !== undefined ? PUBLISH_TARGETS.find(t => t.id === p.platform) : undefined;
+  if (p.platform !== undefined && !target) return `platform must be one of ${PUBLISH_TARGETS.map(t => t.id).join(', ')}`;
+  if (p.format !== undefined) {
+    const formats = (target ?? PUBLISH_TARGETS[0]).formats as readonly string[];
+    if (!formats.includes(p.format)) return `format must be one of ${formats.join(', ')} for ${(target ?? PUBLISH_TARGETS[0]).id}`;
+  }
+  return null;
+}
+
+/** Stage a (checked) prefill for the next openPublishModal; resolves when it opens. */
+export function stagePublishPrefill(prefill: PublishPrefill): Promise<ToolOpenResult> {
+  stagedPrefill?.settle({ error: 'superseded by a newer prefill' });
+  return new Promise(resolve => { stagedPrefill = { prefill, settle: resolve }; });
+}
+export function clearPublishPrefill(reason: string): void {
+  if (!stagedPrefill) return;
+  stagedPrefill.settle({ error: reason });
+  stagedPrefill = null;
+}
+export function isPublishModalOpen(): boolean { return openPublish !== null; }
+export function getPublishModalState(): Record<string, unknown> | null { return openPublish?.state() ?? null; }
+export function closePublishModal(): void { openPublish?.close(); }
 
 export interface PublishModalContext {
   /** Default title (usually the session name). */
@@ -61,8 +103,13 @@ export function openPublishModal(ctx: PublishModalContext): void {
   let target: PublishTarget =
     PUBLISH_TARGETS.find(t => t.id === ctx.preselect) ?? PUBLISH_TARGETS[0];
   let format: PublishFormat = recommendedFormat(target);
+  const staged = stagedPrefill;
+  stagedPrefill = null;
+  const pre = staged?.prefill;
+  if (pre?.format) format = pre.format as PublishFormat;
 
-  const shell = createModalShell({ title: 'Publish to a print site', maxWidth: 'lg', scrollable: true });
+  const shell = createModalShell({ title: 'Publish to a print site', maxWidth: 'lg', scrollable: true, onClose: () => { openPublish = null; } });
+  if (pre?.note) shell.body.appendChild(createToolNote(pre.note, pre.source));
 
   // Assisted-publish explanation — sets expectations up front.
   const intro = document.createElement('p');
@@ -270,6 +317,21 @@ export function openPublishModal(ctx: PublishModalContext): void {
   }
 
   syncTarget();
+  if (pre) {
+    if (pre.title !== undefined) titleInput.value = pre.title;
+    if (pre.description !== undefined) descInput.value = pre.description;
+    if (pre.tags !== undefined) tagsInput.value = pre.tags.join(', ');
+    if (pre.includeCover !== undefined) coverCheck.checked = pre.includeCover;
+  }
+  openPublish = {
+    state: () => ({ platform: target.id, format, ...currentMeta(), includeCover: coverCheck.checked }),
+    close: () => shell.close(),
+  };
+  if (staged && pre) {
+    const { note: _n, source: _s, ...applied } = pre;
+    void _n; void _s;
+    staged.settle({ applied: { ...applied, platform: target.id }, ignored: [] });
+  }
   requestAnimationFrame(() => titleInput.focus());
 }
 

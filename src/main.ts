@@ -48,7 +48,8 @@ import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands, listCommands, runCommandById } from './ui/commandPalette';
-import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, type ToolSpec } from './ui/toolRegistry';
+import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, notifyToolApplied, type ToolSpec } from './ui/toolRegistry';
+import { registerHostTools } from './ui/hostTools';
 import { getActiveMode } from './ui/modeExclusion';
 import { getOpenModalTitle } from './ui/modalShell';
 import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
@@ -102,7 +103,7 @@ import { generatePublishMetadata, isActiveProviderConnected } from './ai/publish
 import { computeCodeDiff } from './ai/codeDiff';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -135,6 +136,7 @@ import {
   codeBearingSourceLabel,
   geometryOnlyRefusalMessage,
 } from './import/urlImport';
+import { fetchRemoteBytes } from './import/remoteFetch';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
 import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
@@ -191,7 +193,7 @@ import {
   getPaletteSlots,
 } from './color/palette';
 import { meshBounds } from './color/slabPaint';
-import { openReliefImportModal } from './ui/reliefImportModal';
+import { openReliefImportModal, type ReliefStagedOptions } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
 import type { BuiltExport } from './export/gltf';
 
@@ -4107,11 +4109,12 @@ async function main() {
     return { mode: 'luminance', luminance: { ...opts.luminance, levels, invert }, note: `Tonal image — suggested Luminance relief with ${levels} levels${invert ? ' (inverted)' : ''}.` };
   }
 
-  function openReliefImportFlow(initialFile?: File, initialOptions?: ReliefOptions): void {
+  function openReliefImportFlow(initialFile?: File, initialOptions?: ReliefOptions, staged?: { options: ReliefStagedOptions; note?: string; noteSource?: 'ui' | 'ai' | 'api' }): void {
     openReliefImportModal({
       aiAvailable: true,
       initialFile,
       initialOptions,
+      ...(staged ? { stagedOptions: staged.options, note: staged.note, noteSource: staged.noteSource } : {}),
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
       // Don't catch — let runCreate (inside the wizard) handle the error: it
       // already shows an inline aiNote and keeps the modal open so the user
@@ -4390,107 +4393,20 @@ async function main() {
    *  type classification, wrapped in a File named so handleImportFile routes
    *  it. Throws a human-readable message on any failure. */
   async function fetchRemoteImportFile(url: string): Promise<File> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
-    let res: Response;
-    try {
-      res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
-    } catch (e) {
-      clearTimeout(timer);
-      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
-    }
-    if (!res.ok) {
-      clearTimeout(timer);
-      throw new Error(`The server responded ${res.status} ${res.statusText}.`);
-    }
-
-    // Defense-in-depth: parseImportUrlInput only vetted the *initial* URL's
-    // scheme. With redirect: 'follow', the final URL could in theory be a
-    // non-http(s) scheme; browsers already block http(s)→file:/data: redirects,
-    // but re-check the resolved URL before touching the body just in case.
-    if (res.url) {
-      let finalProtocol: string;
-      try {
-        finalProtocol = new URL(res.url).protocol;
-      } catch {
-        clearTimeout(timer);
-        controller.abort();
-        throw new Error('The remote server redirected to an invalid URL.');
-      }
-      if (finalProtocol !== 'http:' && finalProtocol !== 'https:') {
-        clearTimeout(timer);
-        controller.abort();
-        throw new Error(`The remote server redirected to an unsupported URL (got "${finalProtocol}").`);
-      }
-    }
-
-    // Up-front size guard from Content-Length when present.
-    const declared = Number(res.headers.get('content-length'));
-    if (Number.isFinite(declared) && declared > MAX_REMOTE_BYTES) {
-      clearTimeout(timer);
-      controller.abort();
-      throw new Error(`That file is too large (${(declared / 1048576).toFixed(1)} MB; limit 25 MB).`);
-    }
-
-    const contentType = res.headers.get('content-type');
     const filename = filenameFromUrl(url);
-
-    // Classify before buffering so we can reject unsupported types early. The
-    // filename extension is authoritative; fall back to Content-Type.
-    const source = classifyRemoteResource(filename, contentType);
-    if (!source) {
-      clearTimeout(timer);
-      controller.abort();
-      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .3mf, .step / .stp, .svg, .vox, or an image.');
-    }
-
-    // Stream the body with a hard byte cap as a backstop for servers that omit
-    // or under-report Content-Length.
-    let bytes: Uint8Array;
-    try {
-      bytes = await readBodyCapped(res, MAX_REMOTE_BYTES, controller);
-    } catch (e) {
-      clearTimeout(timer);
-      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw e;
-    }
-    clearTimeout(timer);
-
-    const safeName = ensureExtensionForSource(filename, source);
+    let source: ReturnType<typeof classifyRemoteResource> = null;
+    const { bytes, contentType } = await fetchRemoteBytes(url, {
+      timeoutMs: getConfig().import.remoteFetchTimeoutMs,
+      maxBytes: MAX_REMOTE_BYTES,
+      // Classify before buffering so we can reject unsupported types early. The
+      // filename extension is authoritative; fall back to Content-Type.
+      check: (res) => {
+        source = classifyRemoteResource(filename, res.headers.get('content-type'));
+        return source ? null : 'Unsupported file type. Supported: .partwright.json, .stl, .3mf, .step / .stp, .svg, .vox, or an image.';
+      },
+    });
+    const safeName = ensureExtensionForSource(filename, source!);
     return new File([bytes], safeName, { type: contentType ?? '' });
-  }
-
-  /** Read a fetch Response body into a Uint8Array, aborting once the streamed
-   *  total exceeds `cap`. Falls back to a plain arrayBuffer() read (still cap-
-   *  checked) when the body isn't a readable stream. */
-  async function readBodyCapped(res: Response, cap: number, controller: AbortController): Promise<Uint8Array> {
-    const body = res.body;
-    if (!body || typeof body.getReader !== 'function') {
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.byteLength > cap) throw new Error(`That file is too large (limit 25 MB).`);
-      return buf;
-    }
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        total += value.byteLength;
-        if (total > cap) {
-          controller.abort();
-          try { await reader.cancel(); } catch { /* ignore */ }
-          throw new Error('That file is too large (limit 25 MB).');
-        }
-        chunks.push(value);
-      }
-    }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const c of chunks) { out.set(c, offset); offset += c.byteLength; }
-    return out;
   }
 
   /** Open the "Import from URL…" modal and route the user's input to either the
@@ -6604,8 +6520,8 @@ async function main() {
       bambu: bambu ? {
         printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
-        nozzles: ['0.2', '0.4', '0.6', '0.8'],
-        defaultNozzle: '0.4',
+        nozzles: [...BAMBU_NOZZLES],
+        defaultNozzle: DEFAULT_BAMBU_NOZZLE,
         filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
         defaultFilament: DEFAULT_BAMBU_FILAMENT,
       } : undefined,
@@ -7165,6 +7081,24 @@ async function main() {
     return { blob, filename };
   };
 
+  /** Toolbar "Export session (.partwright.json)": the options dialog, then the file. */
+  const actionExportSession = async (): Promise<void> => {
+    if (!getState().session) {
+      showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
+      return;
+    }
+    // Imported meshes (STL) ride along in the export from schema 1.7 (their
+    // buffers are base64-encoded in `versions[].importedMeshes`), so no
+    // re-import warning is needed.
+    const versions = await listCurrentVersions();
+    const opts = await showExportOptionsDialog(
+      versions.map(v => ({ index: v.index, label: v.label })),
+    );
+    if (!opts) return;
+    const ok = await exportSessionJSON(undefined, opts);
+    if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
+  };
+
   /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
    *  Thangs). `preselect` optionally focuses one platform. */
   const actionPublish = async (preselect?: string): Promise<void> => {
@@ -7205,22 +7139,7 @@ async function main() {
     onExport3MFBambu: actionExport3MFBambu,
     onExportVOX: actionExportVOX,
     onExportSTEP: actionExportSTEP,
-    onExportSessionJSON: async () => {
-      if (!getState().session) {
-        showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
-        return;
-      }
-      // Imported meshes (STL) ride along in the export from schema 1.7 (their
-      // buffers are base64-encoded in `versions[].importedMeshes`), so no
-      // re-import warning is needed.
-      const versions = await listCurrentVersions();
-      const opts = await showExportOptionsDialog(
-        versions.map(v => ({ index: v.index, label: v.label })),
-      );
-      if (!opts) return;
-      const ok = await exportSessionJSON(undefined, opts);
-      if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
-    },
+    onExportSessionJSON: actionExportSession,
     onShareLink: () => { void actionShareLink(); },
     onPublish: () => { void actionPublish(); },
     onExportRawCode: () => {
@@ -8358,11 +8277,11 @@ async function main() {
     { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => toggleRegisteredTool('tool-measure'), enabled: viewportToolEnabled },
     { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => toggleRegisteredTool('tool-cross-section'), enabled: viewportToolEnabled },
     { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => toggleRegisteredTool('tool-paint'), enabled: viewportToolEnabled },
-    { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => document.getElementById('palette-manager-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => document.getElementById('image-paint-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => toggleRegisteredTool('tool-palette'), enabled: viewportToolEnabled },
+    { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => toggleRegisteredTool('tool-image-paint'), enabled: viewportToolEnabled },
     { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => toggleRegisteredTool('tool-annotate'), enabled: viewportToolEnabled },
     { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => toggleRegisteredTool('tool-quality'), enabled: viewportToolEnabled },
-    { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
+    { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => toggleRegisteredTool('tool-customize'), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point.
     // Registered tools open through the tool registry (as above); Voxel Studio
@@ -8371,7 +8290,7 @@ async function main() {
     { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => { void openRegisteredTool('tool-resize'); }, enabled: viewportToolEnabled },
     { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => { void openRegisteredTool('tool-place'); }, enabled: viewportToolEnabled },
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => toggleRegisteredTool('tool-print'), enabled: viewportToolEnabled },
-    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
+    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => toggleRegisteredTool('tool-voxel-paint'), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
     { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'mini' },
@@ -9648,6 +9567,7 @@ async function main() {
   paramsPanel = createParamsPanel({
     onChange: (key, value) => {
       currentParamValues = { ...currentParamValues, [key]: value };
+      notifyToolApplied('tool-customize'); // the AI opened it → next-turn [UI] note
       runCode();
     },
     onReset: () => {
@@ -10640,6 +10560,7 @@ async function main() {
       if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       else showToast('Voxel edits applied to your code', { variant: 'success' });
       syncVoxelPaintUI();
+      return !('error' in result);
     },
     saveRaw: async () => {
       // Replacing destroys the current source; confirm when there's code to lose.
@@ -10648,11 +10569,12 @@ async function main() {
           'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
           { title: 'Replace code', confirmLabel: 'Replace', danger: true },
         );
-        if (!ok) return;
+        if (!ok) return false;
       }
       const result = await commitVoxelEdits('replace', 'painted');
       if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
+      return !('error' in result);
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
@@ -10709,14 +10631,48 @@ async function main() {
     onCancelRender: () => { cancelCurrentExecution(); },
   });
   initMeasureToggle(clipControls);
-  // Prefill-less tools: registered so palette / API / getUiState see them
-  // (their prefill support is follow-up work).
-  const toggleTool = (id: string, title: string, hint: string, toggleId: string, isOpen: () => boolean, close: () => void, overlay = false): ToolSpec => ({
-    id, title, hint, isOpen, close, overlay,
-    open: () => { if (!isOpen()) document.getElementById(toggleId)?.click(); },
+  // Tools whose state lives here (clip plane, Customizer, export / publish
+  // dialogs, import wizards) — openTool / palette / getUiState openers. The
+  // Print tools panel registers itself (printToolsUI).
+  registerHostTools({
+    toast: (message) => showToast(message, { variant: 'neutral', source: 'ai' }),
+    clip: {
+      get: () => getClipState(),
+      setEnabled: (on) => { setClipping(on); syncClipUI(); },
+      setZ: (z) => { setClipZ(z); syncClipUI(); },
+    },
+    params: {
+      schema: () => currentParamSchema ?? null,
+      values: () => (currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {}),
+      isOpen: () => !!paramsPanel?.isOpen(),
+      open: () => paramsPanel?.open(),
+      close: () => paramsPanel?.close(),
+      setNote: (note, source) => paramsPanel?.setNote(note, source),
+      stage: (values) => { currentParamValues = { ...currentParamValues, ...values }; runCode(); },
+    },
+    exports: {
+      canExport: () => currentMeshData !== null && !isSharedPreview(),
+      objectCount: () => getState().parts.length,
+      objects: () => getState().parts.map(o => ({ id: o.id, name: o.name, ...(o.group ? { group: o.group } : {}) })),
+      bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: [...BAMBU_NOZZLES], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
+      versionIndices: async () => (await listCurrentVersions()).map(v => v.index),
+      hasSession: () => !!getState().session,
+      runObjects: (format) => (format === '3mf-bambu' ? actionExport3MFBambu() : format === '3mf' ? actionExport3MF()
+        : format === 'stl' ? actionExportSTL() : format === 'obj' ? actionExportOBJ() : actionExportGLB()),
+      runSession: actionExportSession,
+      runPublish: (platform) => actionPublish(platform),
+    },
+    imports: {
+      relief: (file, options, note, noteSource) => openReliefImportFlow(file, undefined, { options, note, noteSource }),
+      imageVoxel: async (img, options, note, noteSource) => {
+        const result = await showImageVoxelImportModal({
+          ...(img ? { filename: img.file.name, image: img.imageData, file: img.file } : {}),
+          initialOptions: options, note, noteSource,
+        });
+        if (result) await finishVoxelImport(result, img?.file);
+      },
+    },
   });
-  registerTool(toggleTool('tool-print', 'Print tools / check printability', 'Inspect', 'print-tools-toggle', isPrintToolsOpen, closePrintToolsMenu));
-  registerTool(toggleTool('tool-cross-section', 'Cross section', 'Inspect', 'clip-toggle', () => getClipState().enabled, () => { if (getClipState().enabled) { setClipping(false); syncClipUI(); } }, true));
   initOrbitLockToggle(clipControls);
   initResetViewButton(clipControls);
 
@@ -21086,7 +21042,7 @@ async function main() {
     },
     getSettings: () => loadPrinterSettings(),
     setSettings: (partial) => savePrinterSettings(partial),
-    check: () => partwrightAPI.checkPrintability(),
+    check: (overrides) => partwrightAPI.checkPrintability(overrides),
   };
   initPrintToolsUI(clipControls, printToolsHandlers);
 

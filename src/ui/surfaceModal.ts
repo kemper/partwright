@@ -30,7 +30,7 @@ import { createSliderEntry, formatEntry, stepDecimals } from './sliderEntry';
 import { MAX_FIELD_RESOLUTION } from '../surface/sdfModifier';
 import { SMOOTH_MAX_ITERATIONS } from '../surface/smoothSurface';
 import { MAX_RESOLUTION as VOXELIZE_MAX_RESOLUTION } from '../surface/voxelizeMesh';
-import { registerTool, createToolNote, checkRange, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { registerTool, createToolNote, checkRange, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -122,6 +122,12 @@ const SURFACE_PREFILL_SCHEMA: PrefillSchema = {
   font: { type: 'enum', values: ['bold', 'regular', 'italic', 'bold-italic'], description: 'Engrave font.' },
   through: bool('Engrave: cut clean through (stencil).'),
   size: num('Engrave text width.'), depth: num('Engrave depth / emboss height.'),
+  face: { type: 'enum', values: ['+x', '-x', '+y', '-y', '+z', '-z'], description: "Engrave placement face: '+z' top, '-z' bottom, '-y' front, '+y' back, '+x' right, '-x' left." },
+  posU: { type: 'number', min: 0, max: 1, description: 'Engrave position across the face (0..1 of the bbox).' },
+  posV: { type: 'number', min: 0, max: 1, description: 'Engrave position up the face (0..1 of the bbox).' },
+  rotationDeg: { type: 'number', min: -180, max: 180, description: 'Engrave in-plane rotation (degrees).' },
+  curve: { type: 'enum', values: ['none', 'u', 'v'], description: "Engrave wrap: 'v' around the vertical axis (mug), 'u' around the horizontal, 'none' flat." },
+  curveAngle: { type: 'number', min: 10, max: 360, description: 'Engrave wrap angle (degrees) when curve is set.' },
   iterations: num('Smooth rounding strength.'), subdivide: bool('Smooth: subdivide first.'),
   smooth: bool('Voxelize: smooth voxels.'),
 };
@@ -256,6 +262,8 @@ function sliderWithSnaps(label: string, value: number, onChange: () => void) {
 /** In-plane axis indices for a planar face normal axis (mirrors engraveStamp's
  *  PLANE_AXES so click-placement fractions line up with the field math). */
 const ENGRAVE_PLANE_AXES: Record<'x' | 'y' | 'z', [number, number]> = { z: [0, 1], y: [0, 2], x: [1, 2] };
+/** Axis-aligned faces an engrave prefill can name: '+z' = top, '-y' = front, …. */
+const ENGRAVE_FACES = ['+x', '-x', '+y', '-y', '+z', '-z'] as const;
 
 type Vec3 = [number, number, number];
 /** A committed engrave placement. `planar` snaps to an axis-aligned face (the
@@ -1222,6 +1230,32 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
           syncEngraveModeUI();
         } },
         size: sizeS, depth, resolution: res, watertight: wtight,
+        // Placement (prefill / getUiState): stage a face + position like the
+        // sliders / a click would; the outline previews it, nothing is applied.
+        face: { kind: 'enum', values: [...ENGRAVE_FACES],
+          get: () => (engravePlace.mode === 'free' ? 'free' : `${engravePlace.side === 'max' ? '+' : '-'}${engravePlace.axis}`),
+          set: (v: string) => {
+            engravePlace.mode = 'planar';
+            engravePlace.axis = v[1] as 'x' | 'y' | 'z';
+            engravePlace.side = v[0] === '+' ? 'max' : 'min';
+            engravePlace.placed = true;
+            updateEngravePlacementUI(); refreshEngraveOutline();
+          } },
+        posU: { kind: 'number', min: 0, max: 1, get: () => engravePlace.posU, set: (v: number) => {
+          engravePlace.mode = 'planar'; engravePlace.posU = v; posX.set(v); updateEngravePlacementUI(); refreshEngraveOutline();
+        } },
+        posV: { kind: 'number', min: 0, max: 1, get: () => engravePlace.posV, set: (v: number) => {
+          engravePlace.mode = 'planar'; engravePlace.posV = v; posY.set(v); updateEngravePlacementUI(); refreshEngraveOutline();
+        } },
+        rotationDeg: { kind: 'number', min: -180, max: 180, get: () => engravePlace.rot, set: (v: number) => {
+          angle.set(v); engravePlace.rot = angle.get(); refreshEngraveOutline();
+        } },
+        curve: { kind: 'enum', values: ['none', 'u', 'v'], get: () => engravePlace.curveAxis, set: (v: string) => {
+          curveAxis.set(v as 'none' | 'u' | 'v'); engravePlace.curveAxis = v as 'none' | 'u' | 'v'; syncCurveUI();
+        } },
+        curveAngle: { kind: 'number', min: 10, max: 360, get: () => curveAngle.get(), set: (v: number) => {
+          curveAngle.set(v); engravePlace.curveAngle = curveAngle.get();
+        } },
       };
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, schedulePreview, { hardMax: SMOOTH_MAX_ITERATIONS });
@@ -1541,6 +1575,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
         applyBtn.textContent = prev;
         return;
       }
+      notifyToolApplied('tool-surface'); // before close(): getState still reads the panel
       close();
     } catch (e) {
       status.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;

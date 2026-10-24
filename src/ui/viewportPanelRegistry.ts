@@ -41,7 +41,12 @@ export function runWithSilentPanelOpen<T>(fn: () => T): T {
  *  open-listeners, so they don't pull the AI panel out of the way — only a
  *  hands-on, user-initiated tool open should do that. */
 export function openViewportPanel(panel: ViewportPanel, opts?: { silent?: boolean }): void {
-  if (active && active !== panel) active.close();
+  if (active && active !== panel) {
+    const prev = active;
+    prev.close();
+    // Panels normally call closeViewportPanel from close(); cover any that don't.
+    if (active === prev) { active = null; for (const fn of closeListeners) fn(prev); }
+  }
   const reopening = active === panel;
   active = panel;
   // Notify subscribers only on a genuine, non-silent open (a panel re-asserting
@@ -58,9 +63,19 @@ export function notifyPanelOpen(): void {
   for (const fn of openListeners) fn();
 }
 
+type CloseListener = (panel: ViewportPanel) => void;
+const closeListeners: CloseListener[] = [];
+
+/** Subscribe to "a viewport tool panel closed" (× / Escape / replaced by
+ *  another panel). The tool registry uses it to end an AI-opened tool session. */
+export function onViewportPanelClose(fn: CloseListener): void {
+  closeListeners.push(fn);
+}
+
 /** Call when a panel hides itself (× button, Escape, or forced close). */
 export function closeViewportPanel(panel: ViewportPanel): void {
   if (active === panel) active = null;
+  for (const fn of closeListeners) fn(panel);
 }
 
 /** The viewport tool panel currently open ("the current menu"), or `null` if

@@ -49,6 +49,8 @@ import { pickFace } from './facePicker';
 import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import type { PreprocessOptions } from '../relief/types';
 import { createSliderEntry } from '../ui/sliderEntry';
+import { registerTool, setToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
+import { resolvePrefillImageSrc, loadPrefillImageBlob, blobToImageData } from '../ui/prefillImage';
 
 // Max resolution for stamping — higher = crisper stamp detail.
 const STAMP_MAX = 1024;
@@ -138,6 +140,12 @@ let visibilityBtn: HTMLButtonElement | null = null;
 // Badge on toggle button
 let countBadge: HTMLElement | null = null;
 
+// Scrollable panel body (the AI note banner goes at its top) and the control
+// re-syncs a programmatic prefill runs (sliders / toggles don't observe state).
+let contentEl: HTMLElement | null = null;
+const controlSyncs: Array<() => void> = [];
+let syncBgSwatch: ((rgb: [number, number, number] | undefined) => void) | null = null;
+
 export function initImagePaintUI(controlsContainer: HTMLElement): void {
   imagePaintBtn = document.createElement('button');
   imagePaintBtn.id = 'image-paint-toggle';
@@ -174,6 +182,93 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
   updateBadge();
   updateFooterButtons();
   restorePersistedImage();
+
+  registerTool({
+    id: 'tool-image-paint',
+    title: 'Stamp image onto model',
+    hint: 'Tools',
+    prefillSchema: IMAGE_PAINT_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openImagePaintWithPrefill(prefill, ctx),
+    getState: () => (isOpen ? getImagePaintState() : null),
+    isOpen: () => isOpen,
+    close: forceDeactivate,
+  });
+}
+
+/** Prefill keys for `openTool('tool-image-paint', …)`. Staging loads the image
+ *  into the panel and sets the knobs; nothing is stamped until the user clicks
+ *  the model. */
+const IMAGE_PAINT_PREFILL_SCHEMA: PrefillSchema = {
+  src: { type: 'string', description: 'Image to stamp: a data:image/ URL, a public https:// URL (CORS-enabled, no redirects), or an image attachment id/label (SVG ok). Only downloaded into this tab; kept as the saved image only once the user stamps it.' },
+  removeBackground: { type: 'boolean', description: 'Treat the background colour as transparent.' },
+  bgColor: { type: 'color', description: 'Background colour to remove ([r,g,b] 0..1 or "#rrggbb"); implies removeBackground.' },
+  smooth: { type: 'boolean', description: 'Subdivide the stamp footprint for crisp edges.' },
+  detail: { type: 'number', integer: true, min: 16, max: 1024, description: 'Smooth mode: triangle rows across the stamp.' },
+  size: { type: 'number', min: 1, description: 'Stamp width (world units).' },
+  rotationDeg: { type: 'number', min: 0, max: 359, description: 'Stamp rotation (degrees).' },
+};
+
+let pickedImageLabel: string | null = null;
+/** The picked image came from an openTool prefill and isn't saved yet. */
+let persistPending = false;
+
+function getImagePaintState(): Record<string, unknown> {
+  const bg = opts.manualBgColor;
+  return {
+    src: pickedImageData ? pickedImageLabel : null,
+    removeBackground: opts.removeBackground,
+    bgColor: bg ? [bg[0] / 255, bg[1] / 255, bg[2] / 255] : null,
+    smooth: stampSmooth,
+    detail: stampDetail,
+    size: stampSize,
+    rotationDeg: stampRotation,
+  };
+}
+
+/** Open (or update in place) the Image Paint panel with a schema-validated
+ *  prefill. The image is resolved and decoded FIRST, so a bad src opens nothing. */
+async function openImagePaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): Promise<ToolOpenResult> {
+  const pre = p ?? {};
+  let loaded: { full: ImageData; thumb: ImageData; label: string } | null = null;
+  if (typeof pre.src === 'string') {
+    const resolved = resolvePrefillImageSrc(pre.src);
+    if ('error' in resolved) return resolved;
+    try {
+      const full = await blobToImageData(await loadPrefillImageBlob(resolved), STAMP_MAX);
+      loaded = { full, thumb: resizeImageData(full, THUMB_MAX), label: resolved.label };
+    } catch (e) {
+      return { error: `src: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  if (!isOpen) toggleImagePaint();
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (loaded) {
+    pickedImageData = loaded.full;
+    pickedImageThumb = loaded.thumb;
+    pickedImageLabel = loaded.label;
+    if (sourceLabel) sourceLabel.textContent = loaded.label;
+    // Not persisted yet (localStorage is shared by every tab): an AI-staged
+    // image becomes the saved image only once the user stamps with it.
+    persistPending = true;
+  }
+  if (pre.removeBackground !== undefined) opts.removeBackground = pre.removeBackground as boolean;
+  if (pre.bgColor !== undefined) {
+    const [r, g, b] = pre.bgColor as [number, number, number];
+    opts.manualBgColor = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    opts.removeBackground = true;
+  }
+  if (pre.smooth !== undefined) stampSmooth = pre.smooth as boolean;
+  if (pre.detail !== undefined) stampDetail = pre.detail as number;
+  if (pre.size !== undefined) stampSize = pre.size as number;
+  if (pre.rotationDeg !== undefined) stampRotation = pre.rotationDeg as number;
+  for (const sync of controlSyncs) sync();
+  syncBgSwatch?.(opts.manualBgColor);
+  renderPreview();
+  updateStampMode();
+  const applied: Record<string, unknown> = { ...pre };
+  if (loaded) applied.src = loaded.label; // never echo a multi-MB data URL back
+  return { applied, ignored: [] };
 }
 
 function toggleImagePaint(): void {
@@ -223,6 +318,7 @@ function openPanel(): void {
 
 function closePanel(): void {
   isOpen = false;
+  setToolNote(contentEl, null); // an AI note belongs to the open it came with
   imagePaintBtn!.className = btnClass(false);
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onImagePaintEscape);
@@ -375,6 +471,9 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
   if (scope && stamped && stamped.triangles === 0) {
     const all = getRegions();
     if (all.length > 0) dropIfClippedEmpty(all[all.length - 1]);
+  } else if (stamped) {
+    if (persistPending && pickedImageData) { persistImage(pickedImageData); persistPending = false; }
+    notifyToolApplied('tool-image-paint', 'stamp');
   }
 }
 
@@ -533,6 +632,7 @@ function buildPanel(): HTMLElement {
   // ── Scrollable content ──
   const content = document.createElement('div');
   content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5 flex flex-col gap-3';
+  contentEl = content;
 
   // Image source picker
   content.appendChild(buildImageSection());
@@ -678,6 +778,8 @@ async function applyImageFile(file: File): Promise<void> {
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
+    pickedImageLabel = file.name;
+    persistPending = false;
     persistImage(pickedImageData);
     renderPreview();
     updateStampMode();
@@ -706,6 +808,7 @@ async function restorePersistedImage(): Promise<void> {
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = 'Saved image';
+    pickedImageLabel = 'Saved image';
     renderPreview();
     updateStampMode();
   } catch {
@@ -818,6 +921,10 @@ function buildBackgroundSection(): HTMLElement {
     },
   });
   const colorInput = colorSwatch.el;
+  syncBgSwatch = (rgb) => {
+    if (rgb) colorSwatch.setHex(`#${rgb.map(n => n.toString(16).padStart(2, '0')).join('')}`);
+  };
+  controlSyncs.push(() => { autoCheck.checked = opts.removeBackground; });
 
   const colorClear = document.createElement('button');
   colorClear.className = 'text-[10px] text-zinc-500 hover:text-zinc-200 underline-offset-2 hover:underline transition-colors';
@@ -898,6 +1005,7 @@ function buildStampSettingsSection(): HTMLElement {
   grid.appendChild(maxEdgeRow);
 
   syncSmoothUI(stampSmooth);
+  controlSyncs.push(() => syncSmoothUI(stampSmooth));
 
   section.appendChild(grid);
   return section;
@@ -1136,6 +1244,7 @@ function addSlider(
 
   wrap.append(lbl, entry.range, entry.input);
   parent.appendChild(wrap);
+  controlSyncs.push(() => entry.set(get()));
 }
 
 function sectionLabel(text: string): HTMLElement {

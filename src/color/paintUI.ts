@@ -65,7 +65,7 @@ import {
   onPaletteChange,
 } from './palette';
 import { usedSlotIds } from './regions';
-import { openPaletteManager } from './paletteManager';
+import { openPaletteManager, registerPaletteTool } from './paletteManager';
 import {
   getRegions,
   onChange as onRegionsChange,
@@ -100,7 +100,7 @@ import { promptDialog } from '../ui/dialogs';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
-import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
+import { setBoxMode, getBoxMode, setBox, getBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { forceDeactivate as closePrintToolsMenu } from '../ui/printToolsUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
@@ -110,7 +110,8 @@ import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
 import { NATURAL_TONE_SWATCHES } from './naturalTones';
-import { registerTool, setToolNote, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
+import { onUserPaint } from './paintAccessors';
+import { registerTool, setToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -177,6 +178,9 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
     updateBadge();
     updateUndoButton();
   });
+  // A hand-painted stroke / fill / slab (pointer commit paths only): if the AI
+  // opened Paint, its next turn hears what the user used.
+  onUserPaint(() => { if (isActive()) notifyToolApplied('tool-paint', 'stroke'); });
   onRedoChange(updateRedoButton);
   onVisibilityChange(updateVisibilityButton);
   onClearSnapshotChange(updateUndoClearButton);
@@ -186,6 +190,7 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   updateVisibilityButton();
   updateUndoClearButton();
 
+  registerPaletteTool();
   registerTool({
     id: 'tool-paint',
     title: 'Paint colors',
@@ -224,6 +229,13 @@ const PAINT_PREFILL_SCHEMA: PrefillSchema = {
     softness: { type: 'number', min: 0, max: 1 },
   } },
   slab: { type: 'object', description: 'Slab settings.', fields: { axis: { type: 'enum', values: ['x', 'y', 'z'] } } },
+  box: { type: 'object', description: 'Shape tool: the translucent shape is placed (previewed) — the user still clicks "Paint inside shape". center/size/rotation imply tool "box".', fields: {
+    shape: { type: 'enum', values: ['box', 'sphere', 'cylinder', 'cone'] },
+    mode: { type: 'enum', values: ['translate', 'rotate', 'scale'], description: 'Gizmo mode.' },
+    center: { type: 'vec3', description: 'Shape centre (world units).' },
+    size: { type: 'vec3', description: 'Shape size [x,y,z] (> 0; sphere/cylinder/cone: x = diameter, y = height).' },
+    rotation: { type: 'vec3', description: 'XYZ Euler rotation in degrees.' },
+  } },
 };
 
 /** Every paint setting the panel shows — `getPaintState()` and the tool's
@@ -243,7 +255,11 @@ export function getPaintToolState(): Record<string, unknown> {
       spray: isBrushSpray(), strength: getBrushSprayStrength(), softness: getBrushSpraySoftness(),
     },
     slab: { axis: getSlabAxis() },
-    box: { shape: getShapeType(), mode: getBoxMode() },
+    box: (() => {
+      const b = getBox();
+      const e = quatToEulerXYZ(b.quaternion).map(r => Number((r * 180 / Math.PI).toFixed(3)));
+      return { shape: getShapeType(), mode: getBoxMode(), center: b.center, size: b.size, rotation: e };
+    })(),
     regions: getRegions().length,
     visible: isPaintVisible(),
   };
@@ -267,6 +283,10 @@ function openPaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolO
   }
   const bucket = (pre.bucket ?? {}) as Record<string, unknown>;
   if (bucket.angleDeg !== undefined && bucket.tolerance !== undefined) return { error: 'bucket: pass angleDeg OR tolerance, not both' };
+  const box = (pre.box ?? {}) as Record<string, unknown>;
+  const boxPlaced = box.center !== undefined || box.size !== undefined || box.rotation !== undefined;
+  if (boxPlaced && pre.tool !== undefined && pre.tool !== 'box') return { error: 'box.center/size/rotation need tool "box"' };
+  if (Array.isArray(box.size) && (box.size as number[]).some(n => !(n > 0))) return { error: 'box.size values must be > 0' };
 
   if (!isActive()) togglePaintMode();
   setToolNote(paintContentEl, ctx.note, ctx.source);
@@ -292,6 +312,17 @@ function openPaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolO
   if (brush.softness !== undefined) setBrushSpraySoftness(brush.softness as number);
   const slab = (pre.slab ?? {}) as Record<string, unknown>;
   if (slab.axis !== undefined) setSlabAxis(slab.axis as 'x' | 'y' | 'z');
+  if (boxPlaced && getTool() !== 'box') setTool('box');
+  if (box.shape !== undefined) setShapeType(box.shape as ShapeType);
+  if (box.mode !== undefined) setBoxMode(box.mode as BoxMode);
+  if (boxPlaced) {
+    const r = box.rotation as [number, number, number] | undefined;
+    setBox({
+      ...(box.center ? { center: box.center as [number, number, number] } : {}),
+      ...(box.size ? { size: box.size as [number, number, number] } : {}),
+      ...(r ? { quaternion: eulerXYZToQuat(r[0] * Math.PI / 180, r[1] * Math.PI / 180, r[2] * Math.PI / 180) } : {}),
+    });
+  }
 
   syncToolPanels();
   for (const sync of controlSyncs) sync();
@@ -1603,6 +1634,12 @@ function createBoxControls(): HTMLElement {
     modeBtns[m] = btn;
   }
   wrap.appendChild(modeRow);
+  // Reflect programmatic changes (openTool prefill) on the shape / mode rows.
+  controlSyncs.push(() => {
+    for (const [k, b] of Object.entries(shapeBtns)) if (b) b.className = axisButtonClass(k === getShapeType());
+    for (const [k, b] of Object.entries(modeBtns)) if (b) b.className = axisButtonClass(k === getBoxMode());
+    updatePaintShapeButton();
+  });
 
   // Numeric readout — center / size / rotation. Two-way synced with the gizmo.
   const grid = document.createElement('div');
@@ -1631,6 +1668,7 @@ function createBoxControls(): HTMLElement {
   updatePaintShapeButton();
   paintShapeBtn.addEventListener('click', () => {
     const painted = commitBox();
+    if (painted > 0) notifyToolApplied('tool-paint', 'paint inside shape');
     if (painted === 0) {
       paintShapeBtn!.textContent = 'No triangles in shape';
       window.setTimeout(() => { if (paintShapeBtn) updatePaintShapeButton(); }, 1200);

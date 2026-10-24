@@ -8,10 +8,13 @@
 // for the user with its fields pre-set and hand control over — the user
 // tweaks and clicks Apply; opening never applies anything by itself.
 //
-// This module imports nothing from feature modules (only the leaf viewport
-// panel registry), so any module can register into it without a cycle.
+// This module imports nothing from feature modules (only leaves: the viewport
+// panel registry, app config, style constants), so any module can register
+// into it without a cycle.
 
-import { runWithSilentPanelOpen, notifyPanelOpen, getActiveViewportPanel } from './viewportPanelRegistry';
+import { runWithSilentPanelOpen, notifyPanelOpen, getActiveViewportPanel, onViewportPanelClose, type ViewportPanel } from './viewportPanelRegistry';
+import { getConfig } from '../config/appConfig';
+import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 
 // ---------------------------------------------------------------------------
 // Prefill schema — a tiny, JSON-able field description. It doubles as the
@@ -30,6 +33,8 @@ export type PrefillField =
   | { type: 'numberOrVec3'; min?: number; description?: string }
   /** `[r, g, b]` in 0..1 or a `#rrggbb` / `#rgb` hex string — normalized to `[r, g, b]`. */
   | { type: 'color'; description?: string }
+  /** An array of strings or integers (e.g. object names, version indices). */
+  | { type: 'list'; of: 'string' | 'integer'; maxItems?: number; description?: string }
   /** A nested object. With `fields`, its keys are validated too (unknown keys
    *  rejected); without, it is free-form and the opener validates it. */
   | { type: 'object'; fields?: PrefillSchema; description?: string };
@@ -52,6 +57,11 @@ export interface ToolOpenOutcome {
   /** Valid keys that had no effect in the current context (e.g.
    *  `preserveColor` on an unpainted model) — reported, not an error. */
   ignored: string[];
+  /** The panel isn't up yet: something the user must answer first is showing
+   *  (an export's "unsaved objects" confirm); it opens with these values after
+   *  they answer. `message` says what's waiting. */
+  pending?: boolean;
+  message?: string;
 }
 
 export type ToolOpenResult = ToolOpenOutcome | { error: string };
@@ -81,10 +91,37 @@ export interface ToolSpec {
 }
 
 const tools = new Map<string, ToolSpec>();
+/** Tools the AI opened whose open session is still running, mapped to the
+ *  docked panel they opened as (null for modes / dialogs). Per-tab memory only
+ *  (never persisted or shared). The session ends when that panel closes or
+ *  the tool is opened again by someone else — see notifyToolApplied. */
+const aiOpened = new Map<string, ViewportPanel | null>();
 
-/** Register (or replace, by id) a tool. */
+onViewportPanelClose((panel) => {
+  for (const [id, p] of aiOpened) if (p === panel) aiOpened.delete(id);
+});
+
+/** Register (or replace, by id) a tool. The stored spec wraps `open` so the
+ *  registry knows which tools the AI opened (see notifyToolApplied). */
 export function registerTool(spec: ToolSpec): void {
-  tools.set(spec.id, spec);
+  const open: ToolSpec['open'] = async (prefill, ctx) => {
+    const before = getActiveViewportPanel();
+    let wasOpen = false;
+    try { wasOpen = spec.isOpen(); } catch { wasOpen = false; }
+    const r = await spec.open(prefill, ctx);
+    if (!(r && 'error' in r)) {
+      if (ctx.source === 'ai') {
+        // Bind to the docked panel only when this open produced it (or the
+        // tool was already open in it). A modal tool (settings, export
+        // dialogs) leaves the docked panel untouched — binding it to an
+        // unrelated panel would end its note session at the wrong time.
+        const after = getActiveViewportPanel();
+        aiOpened.set(spec.id, !spec.overlay && after && (after !== before || wasOpen) ? after : null);
+      } else aiOpened.delete(spec.id);
+    }
+    return r;
+  };
+  tools.set(spec.id, { ...spec, open });
 }
 
 /** All registered tools, in registration order. */
@@ -104,8 +141,8 @@ export function getOpenTool(): ToolSpec | null {
   // enforces it) wins over an overlay mode that happens to be on too.
   const docked = all.find(t => !t.overlay && open(t));
   if (docked) return docked;
-  // An unregistered docked panel (e.g. Customize) is the user's focus: report
-  // no registered tool rather than an overlay running beside it.
+  // A docked panel with no ToolSpec is the user's focus: report no
+  // registered tool rather than an overlay running beside it.
   if (getActiveViewportPanel()) return null;
   return all.find(t => t.overlay && open(t)) ?? null;
 }
@@ -186,6 +223,12 @@ function checkField(field: PrefillField, v: unknown, path: string, errors: strin
       if (!c) { errors.push(`${path} must be [r, g, b] in 0..1 or a "#rrggbb" hex string`); return undefined; }
       return c;
     }
+    case 'list': {
+      const ok = Array.isArray(v) && v.every(x => (field.of === 'string' ? typeof x === 'string' : Number.isInteger(x)));
+      if (!ok) { errors.push(`${path} must be an array of ${field.of === 'string' ? 'strings' : 'integers'}`); return undefined; }
+      if (field.maxItems !== undefined && v.length > field.maxItems) { errors.push(`${path} must have at most ${field.maxItems} items`); return undefined; }
+      return [...v];
+    }
     case 'object': {
       if (!isPlainObject(v)) { errors.push(`${path} must be an object`); return undefined; }
       if (!field.fields) return v;
@@ -252,7 +295,7 @@ export async function openTool(
   id: string,
   prefill?: unknown,
   ctx: ToolOpenContext = {},
-): Promise<{ ok: true; id: string; applied: Record<string, unknown>; ignored: string[] } | { error: string }> {
+): Promise<{ ok: true; id: string; applied: Record<string, unknown>; ignored: string[]; pending?: true; message?: string } | { error: string }> {
   const spec = tools.get(id);
   if (!spec) return { error: `openTool: unknown tool "${id}". Known tools: ${[...tools.keys()].join(', ')}` };
   try {
@@ -271,7 +314,10 @@ export async function openTool(
     const r = await (source !== 'ui' ? runWithSilentPanelOpen(run) : run());
     if (r && 'error' in r) return { error: `openTool("${id}"): ${r.error}` };
     if (source !== 'ui' && !keepAiPanelBeside()) notifyPanelOpen();
-    return { ok: true, id, applied: r ? r.applied : checked.value, ignored: r ? r.ignored : [] };
+    return {
+      ok: true, id, applied: r ? r.applied : checked.value, ignored: r ? r.ignored : [],
+      ...(r?.pending ? { pending: true as const, ...(r.message ? { message: r.message } : {}) } : {}),
+    };
   } catch (e) {
     return { error: `openTool("${id}"): ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -306,4 +352,130 @@ export function setToolNote(host: HTMLElement | null, note: string | null | unde
   const banner = createToolNote(note, source);
   banner.classList.add('mb-2');
   host.prepend(banner);
+}
+
+// ---------------------------------------------------------------------------
+// "[UI · app note] user applied …" notes — when the user applies / commits from a panel
+// the AI opened, the AI panel adds a one-line note to its NEXT turn so the
+// model learns what the user settled on. Per-tab module memory only: nothing
+// is persisted or broadcast, so another tab's chat never sees it.
+// ---------------------------------------------------------------------------
+
+/** Every note starts with this, so it reads as app-generated context — never
+ *  as words the user typed (the AI panel renders it as a muted system line). */
+export const UI_APPLIED_NOTE_PREFIX = '[UI · app note]';
+
+const pendingApplied = new Map<string, string>();
+
+function fmtValue(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? String(Number(v.toPrecision(4))) : null;
+  if (typeof v === 'boolean') return String(v);
+  if (typeof v === 'string') return JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}…` : v);
+  if (Array.isArray(v)) {
+    const parts = v.slice(0, 4).map(fmtValue);
+    return parts.every(p => p !== null) ? `[${parts.join(', ')}${v.length > 4 ? ', …' : ''}]` : null;
+  }
+  if (typeof v === 'object') {
+    const inner = Object.entries(v as Record<string, unknown>)
+      .map(([k, x]) => { const s = fmtValue(x); return s === null ? null : `${k}: ${s}`; })
+      .filter((s): s is string => s !== null);
+    return inner.length ? `{${inner.join(', ')}}` : null;
+  }
+  return null;
+}
+
+/** Pure: `[UI · app note] user applied <title>: <lead> {k: v, …}` from a tool's
+ *  getState() snapshot. `lead` is the state's `tab` / `tool`, or `what`. */
+export function formatToolAppliedNote(title: string, state: Record<string, unknown> | null, what?: string): string {
+  const s = state ?? {};
+  const leadKey = typeof s.tab === 'string' ? 'tab' : typeof s.tool === 'string' ? 'tool' : null;
+  const lead = what ?? (leadKey ? String(s[leadKey]) : '');
+  const rest = what === undefined ? Object.fromEntries(Object.entries(s).filter(([k]) => k !== leadKey)) : s;
+  const vals = fmtValue(rest);
+  let line = `${UI_APPLIED_NOTE_PREFIX} user applied ${title}${lead ? `: ${lead}` : ''}${vals ? ` ${vals}` : ''}`;
+  const max = getConfig().ui.maxAppliedNoteChars;
+  if (line.length > max) line = `${line.slice(0, max - 1)}…`;
+  return line;
+}
+
+/** A panel calls this when the user applies / commits from it (BEFORE it
+ *  closes, so getState() still reads the panel). Records a note only while
+ *  the tool's AI-opened session is running; `what` overrides the lead (e.g.
+ *  "stroke"). */
+export function notifyToolApplied(id: string, what?: string): void {
+  captureToolApplied(id, what)?.();
+}
+
+/** Snapshot the note NOW (while the panel can still be read) and return a
+ *  function that queues it — for commits that finish asynchronously and may
+ *  fail (call it only on success). Null when no note applies. */
+export function captureToolApplied(id: string, what?: string): (() => void) | null {
+  if (!aiOpened.has(id)) return null;
+  const spec = tools.get(id);
+  if (!spec) return null;
+  let open = false;
+  try { open = spec.isOpen(); } catch { open = false; }
+  if (!open) { aiOpened.delete(id); return null; } // its AI-opened session is over
+  let state: Record<string, unknown> | null = null;
+  try { state = spec.getState?.() ?? null; } catch { state = null; }
+  const line = formatToolAppliedNote(spec.title, state, what);
+  return () => {
+    pendingApplied.delete(id); // re-insert so the latest is newest
+    pendingApplied.set(id, line);
+    while (pendingApplied.size > getConfig().ui.maxPendingAppliedNotes) {
+      const oldest = pendingApplied.keys().next().value;
+      if (oldest === undefined) break;
+      pendingApplied.delete(oldest);
+    }
+  };
+}
+
+/** Drop pending notes (the session changed — they describe another model). */
+export function clearToolAppliedNotes(): void {
+  pendingApplied.clear();
+}
+
+/** Take (and clear) the pending "[UI · app note] user applied …" lines, oldest first. */
+export function drainToolAppliedNotes(): string[] {
+  const out = [...pendingApplied.values()];
+  pendingApplied.clear();
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Shared "Suggested …" confirm row — for panels that save every edit at once
+// (palette manager, print tools): a prefill is shown here and only written
+// when the user clicks the primary button.
+// ---------------------------------------------------------------------------
+
+/** A violet row with the suggestion text and Dismiss (left) / primary (right)
+ *  buttons — the shared button styles, ≥ 44 px tall on touch layouts. */
+export function createSuggestionRow(opts: {
+  text: string;
+  primaryLabel: string;
+  onPrimary: () => void;
+  dismissLabel: string;
+  onDismiss: () => void;
+}): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'flex flex-col gap-1.5 rounded border border-violet-500/40 bg-violet-500/10 px-2.5 py-2';
+  const text = document.createElement('div');
+  text.className = 'text-[11px] text-zinc-200 leading-snug';
+  text.textContent = opts.text;
+  const buttons = document.createElement('div');
+  buttons.className = 'flex items-center justify-end gap-2';
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = `${BUTTON_CANCEL} min-h-[44px] md:min-h-0`;
+  dismiss.textContent = opts.dismissLabel;
+  dismiss.addEventListener('click', opts.onDismiss);
+  const primary = document.createElement('button');
+  primary.type = 'button';
+  primary.className = `${BUTTON_PRIMARY} min-h-[44px] md:min-h-0`;
+  primary.textContent = opts.primaryLabel;
+  primary.addEventListener('click', opts.onPrimary);
+  buttons.append(dismiss, primary);
+  row.append(text, buttons);
+  return row;
 }
