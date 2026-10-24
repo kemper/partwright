@@ -92,15 +92,12 @@ test.describe('AI chat panel', () => {
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
   });
 
-  test('code pane defaults hidden when the AI drawer is open, and respects an explicit Show code', async ({ page }) => {
-    // With the AI drawer open, the code pane should NOT compete with it for
-    // screen real estate, so it defaults collapsed (`editorCollapsed ??
-    // drawerOpen`). The drawer no longer opens on a fresh visit, so seed the
-    // remembered-open preference to exercise that path. The "▶ Show code"
-    // expand button only shows when the editor group is collapsed.
-    // Seed only on the very first load — addInitScript re-runs on every
-    // navigation, so guard it or the reload below would clobber the
-    // editorCollapsed=false that the "Show code" click persists.
+  test('code pane defaults to the compact code map, and remembers an explicit Hide / Show', async ({ page }) => {
+    // Most model work is AI- or tool-driven, so the code pane starts as the
+    // compact code map (not the full editor), even with the AI drawer open.
+    // Hiding it and bringing it back must survive a reload. Seed only on the
+    // very first load — addInitScript re-runs on every navigation, so guard it
+    // or the reload below would clobber the persisted choice.
     await page.addInitScript(() => {
       try {
         if (!localStorage.getItem('partwright-ai-settings-v1')) {
@@ -112,20 +109,27 @@ test.describe('AI chat panel', () => {
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.locator('#code-minimap')).toBeVisible();
+    await expect(page.locator('.cm-content')).toBeHidden();
     const expandBtn = page.locator('button:has-text("▶ Show code")');
-    await expect(expandBtn).toBeVisible();
-
-    // User opts in to the code pane; that choice must survive a reload even
-    // though the AI drawer is still open.
-    await expandBtn.click();
     await expect(expandBtn).toBeHidden();
-    await expect(page.locator('.cm-content')).toBeVisible();
 
+    // Hide it; the floating "Show code" chip takes over, and the choice persists.
+    await page.click('#code-minimap-hide');
+    await expect(expandBtn).toBeVisible();
     await page.reload();
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(expandBtn).toBeVisible();
+    await expect(page.locator('#code-minimap')).toBeHidden();
+
+    // "Show code" brings back the compact map (the last visible mode).
+    await expandBtn.click();
+    await expect(expandBtn).toBeHidden();
+    await expect(page.locator('#code-minimap')).toBeVisible();
+    await page.reload();
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#code-minimap')).toBeVisible();
     await expect(page.locator('button:has-text("▶ Show code")')).toBeHidden();
-    await expect(page.locator('.cm-content')).toBeVisible();
   });
 
   test('drawer open/close state persists across reload', async ({ page }) => {

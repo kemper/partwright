@@ -60,12 +60,16 @@ test.describe('Static, app-free landing route', () => {
     const href = await firstTile.getAttribute('href');
     expect(href).toMatch(/^\/editor\?catalog=/);
 
-    // Hard-navigate to the catalog deep-link (the app boots here on demand).
-    await page.goto(href!);
+    // Hard-navigate to a catalog deep-link (the app boots here on demand). The
+    // landing grid shows a random shuffle, so the first tile can be a heavy
+    // model that takes longer than the timeouts below to build on a CI runner
+    // (#1064) — load a known-light entry instead: this checks the deep-link
+    // wiring, not how fast a random model meshes.
+    await page.goto('/editor?catalog=parametric_vent_panel.partwright.json');
 
     // The editor loads and imports the entry: code pane shows, the app booted,
     // and importSessionPayload's openSession rewrites the URL to ?session=.
-    await expect(page.locator('.cm-content')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('#code-pane')).toBeVisible({ timeout: 30000 });
     await page.waitForFunction(() => 'partwright' in window, null, { timeout: 30000 });
     await expect(page).toHaveURL(/\/editor\?session=/, { timeout: 30000 });
   });

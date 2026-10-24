@@ -11,7 +11,8 @@
     "tests/unit/**/*.test.ts",
     "scripts/**/*.mjs",
     "bin/*.mjs",
-    "src/tools/previewModel.ts"
+    "src/tools/previewModel.ts",
+    "src/tools/segmentMesh.ts"
   ],
   "project": ["src/**/*.{ts,tsx}"],
   "paths": {

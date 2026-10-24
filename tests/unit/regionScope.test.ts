@@ -1,45 +1,46 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  addRegion, addPaintRegion, clearRegions, getRegions, setScopeClipper, setImplicitPaintScope,
-  withExplicitPaintScope, withPartScope, descriptorPartLabel, setRegionDescriptor,
+  addRegion, clearRegions, getRegions, setPartScopeResolver, descriptorPartLabel, setRegionDescriptor,
 } from '../../src/color/regions';
+import { getPaintScope, setPaintScope, withPaintScope } from '../../src/color/paintScope';
 
 // Part "handle" = triangles 0..4 of the working mesh.
 const HANDLE = new Set([0, 1, 2, 3, 4]);
 
-describe('part scope on paint regions (#1003)', () => {
+describe('part scope on paint regions (#1003 / #1025)', () => {
   beforeEach(() => {
     clearRegions();
-    setScopeClipper((label, tris) => new Set([...tris].filter(t => label === 'handle' && HANDLE.has(t))));
+    setPartScopeResolver((label) => (label === 'handle' ? HANDLE : null));
   });
   afterEach(() => {
-    setScopeClipper(null);
-    setImplicitPaintScope(null);
+    setPartScopeResolver(null);
+    setPaintScope(null);
   });
 
-  it('interactive paint takes the rail selection as its scope and is clipped to the part', () => {
-    setImplicitPaintScope(() => 'handle');
-    const r = addPaintRegion('stroke', [1, 0, 0], 'paintbrush', { kind: 'slab', normal: [0, 0, 1], offset: 0, thickness: 1 }, new Set([3, 4, 5, 6]));
-    expect(r.descriptor.scope).toEqual({ label: 'handle' });
+  it('the UI paint scope stamps withinPart and the region is clipped to the part', () => {
+    setPaintScope('handle');
+    const d = withPaintScope({ kind: 'slab', normal: [0, 0, 1], offset: 0, thickness: 1 } as const);
+    const r = addRegion('stroke', [1, 0, 0], 'paintbrush', d, new Set([3, 4, 5, 6]));
+    expect(r.descriptor.withinPart).toBe('handle');
     expect([...r.triangles]).toEqual([3, 4]);
   });
 
-  it('plain addRegion ignores the UI selection; withExplicitPaintScope applies one', () => {
-    setImplicitPaintScope(() => 'handle');
+  it('plain addRegion ignores the UI scope; an explicit withinPart applies one', () => {
+    setPaintScope('handle');
     const plain = addRegion('api', [0, 1, 0], 'slab', { kind: 'slab', normal: [0, 0, 1], offset: 0, thickness: 1 }, new Set([5, 6]));
-    expect(plain.descriptor.scope).toBeUndefined();
+    expect(plain.descriptor.withinPart).toBeUndefined();
     expect(plain.triangles.size).toBe(2);
-    const scoped = withExplicitPaintScope('handle', () => addRegion('api2', [0, 1, 0], 'slab', { kind: 'slab', normal: [0, 0, 1], offset: 0, thickness: 1 }, new Set([1, 9])));
-    expect(scoped.descriptor.scope?.label).toBe('handle');
+    const scoped = addRegion('api2', [0, 1, 0], 'slab', { kind: 'slab', normal: [0, 0, 1], offset: 0, thickness: 1, withinPart: 'handle' }, new Set([1, 9]));
     expect([...scoped.triangles]).toEqual([1]);
+    expect(getPaintScope()).toBe('handle');
   });
 
   it('byLabel is the part itself; per-triangle colours are clipped with the set', () => {
-    expect(withPartScope({ kind: 'byLabel', label: 'body' }, 'handle')).toEqual({ kind: 'byLabel', label: 'body' });
     expect(descriptorPartLabel({ kind: 'byLabel', label: 'body' })).toBe('body');
     expect(descriptorPartLabel({ kind: 'triangles', ids: [1] })).toBeNull();
+    expect(descriptorPartLabel({ kind: 'triangles', ids: [1], withinPart: 'handle' })).toBe('handle');
     const ptc = new Map<number, [number, number, number]>([[2, [1, 1, 1]], [8, [0, 0, 0]]]);
-    const r = addRegion('img', [1, 1, 1], 'imagePaint', { kind: 'imagePaint', entries: [], avgColor: [1, 1, 1], scope: { label: 'handle' } }, new Set([2, 8]), true, undefined, ptc);
+    const r = addRegion('img', [1, 1, 1], 'imagePaint', { kind: 'imagePaint', entries: [], avgColor: [1, 1, 1], withinPart: 'handle' }, new Set([2, 8]), true, undefined, ptc);
     expect([...r.triangles]).toEqual([2]);
     expect([...(r.perTriColors?.keys() ?? [])]).toEqual([2]);
   });

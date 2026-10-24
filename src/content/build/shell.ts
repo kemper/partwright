@@ -11,7 +11,7 @@
 // (landing, content pages, ideas) — see src/content/chrome.ts.
 import { contentHeaderHtml } from '../chrome';
 import { buildInfo } from '../../buildInfo';
-import { discussionsUrl, issueChooserUrl } from '../../feedbackLinks';
+import { DISCORD_INVITE_URL, discussionsUrl, issueChooserUrl } from '../../feedbackLinks';
 
 /** Shared footer with cross-links + a non-commercial note. */
 export function footerHtml(): string {
@@ -38,6 +38,7 @@ export function footerHtml(): string {
         { href: '/legal', label: 'Legal & privacy' },
         { href: issueChooserUrl(buildInfo), label: 'Feedback & bug reports', external: true },
         { href: discussionsUrl(buildInfo), label: 'Community discussions', external: true },
+        { href: DISCORD_INVITE_URL, label: 'Join our Discord', external: true },
       ],
     },
   ];

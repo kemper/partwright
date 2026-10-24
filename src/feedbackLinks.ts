@@ -1,5 +1,5 @@
-// Where users send feedback: GitHub issue forms (bug / feature) and GitHub
-// Discussions (questions, show-and-tell). Pure URL builders — nothing here
+// Where users send feedback: GitHub issue forms (bug / feature), GitHub
+// Discussions (questions, show-and-tell), and the community Discord. Pure URL builders — nothing here
 // sends data anywhere. The bug-report link pre-fills the issue form with build
 // and browser details via GitHub's query-param prefill, so the user sees and
 // can edit every field on GitHub before choosing to submit.
@@ -65,6 +65,10 @@ export function discussionsUrl(info: BuildInfo, category?: 'q-a' | 'show-and-tel
   const base = `${feedbackRepo(info)}/discussions`;
   return category ? `${base}/new?category=${category}` : base;
 }
+
+/** Public invite to the Partwright community Discord server. Also reachable
+ *  as the `/discord` redirect (public/_redirects). */
+export const DISCORD_INVITE_URL = 'https://discord.gg/vbUy95fP3Q';
 
 /** GitHub private vulnerability report form. */
 export function securityReportUrl(info: BuildInfo): string {

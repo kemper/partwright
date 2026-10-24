@@ -65,7 +65,7 @@ async function loadStampImage(page: Page) {
 // Click the centre of the viewport to drop a stamp there.
 async function stampAtCentre(page: Page) {
   await page.evaluate(() => {
-    const canvas = document.querySelector('canvas')!;
+    const canvas = document.querySelector('#viewport-container canvas')!;
     const r = canvas.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     const fire = (t: string) => canvas.dispatchEvent(new PointerEvent(t, {

@@ -12,6 +12,8 @@
 
 import { createColorSwatch } from './colorPickerModal';
 import { promptDialog } from './dialogs';
+import { eyeIconSVG, eyeOffIconSVG } from './icons';
+import { showToast } from './toast';
 
 /** What the section lists. Mirrors `partwright.listObjectParts()` (minus the
  *  object id/name). */
@@ -19,13 +21,13 @@ export interface ObjectPartsView {
   /** api.label regions, in declaration order. `color` is the drawn colour;
    *  `colorSource` says where it comes from: `code` (api.label colour /
    *  api.paint) or `painted` (a paint region fills the part). */
-  parts: { name: string; triangleCount: number; color?: string; colorSource?: 'code' | 'painted' }[];
+  parts: { name: string; triangleCount: number; color?: string; colorSource?: 'code' | 'painted'; hidden?: boolean }[];
   /** Labels the code declared that ended up with no triangles. */
   lostParts: string[];
   /** Triangles no part covers (0 when the object declares no parts). */
   unlabeledTriangleCount: number;
   /** Connected components; `part` names the part covering most of each. */
-  pieces: { index: number; triangleCount: number; part?: string }[];
+  pieces: { index: number; triangleCount: number; part?: string; hidden?: boolean }[];
   /** Paint regions tied to a part the code no longer has (they paint nothing).
    *  `kept` ones were acknowledged with "Keep" and stay dormant — they come
    *  back on their own if the label returns. */
@@ -68,7 +70,14 @@ export interface ObjectPartsActions {
   arrange(name: string): void;
   extractPiece(index: number): void | Promise<void>;
   exportPiece(index: number): void;
-  deletePiece(index: number): void | Promise<void>;
+  /** Hide or show `part:<name>` / `piece:<n>` in the viewport (view only). */
+  setHidden(key: string, hidden: boolean): void;
+  /** Whether to show a delete ✕ for `part:<name>` / `piece:<n>`, and — when it
+   *  can't be deleted — why (shown disabled). */
+  getDelete(key: string): { show: boolean; reason?: string };
+  /** Delete `part:<name>` / `piece:<n>`: writes a removal line into the code
+   *  (api.removePart / api.removePiece — recoverable). */
+  deletePart(key: string): void | Promise<void>;
   reassignPaint(regionId: number, label: string): void;
   keepPaint(regionId: number): void;
   deletePaint(regionId: number): void;
@@ -82,6 +91,18 @@ function compactCount(n: number): string {
 function fmt(n: number): string {
   const a = Math.abs(n);
   return a >= 100 ? n.toFixed(0) : a >= 10 ? n.toFixed(1) : n.toFixed(2);
+}
+
+/** A small icon button for a row (eye / ✕). 28px hit target — the dense rail's
+ *  compromise with touch use; the full-width row is the primary target. */
+function rowIconBtn(glyph: string, title: string): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 text-sm leading-none transition-colors';
+  b.textContent = glyph;
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  return b;
 }
 
 const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
@@ -114,10 +135,10 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
 
   /** One selectable row. Parts get a colour swatch (fill the whole part);
    *  pieces and the unlabeled remainder get a plain chip. */
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; partName?: string; badge?: string }) => {
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; partName?: string; badge?: string; hidden?: boolean; deleteLabel?: string }) => {
     const on = selected === key;
     const row = document.createElement('div');
-    row.className = 'flex items-center gap-1 rounded transition-colors '
+    row.className = 'group/op flex items-center gap-1 rounded transition-colors '
       + (on ? 'bg-amber-400/15' : '[@media(hover:hover)]:hover:bg-zinc-700/40');
     if (opts.partName !== undefined) {
       const partName = opts.partName;
@@ -150,7 +171,7 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     b.className = 'flex-1 min-w-0 flex items-center gap-1.5 px-1 py-1 min-h-[44px] md:min-h-0 rounded text-left '
       + (on ? 'text-amber-100' : 'text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200');
     const label = document.createElement('span');
-    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '');
+    label.className = 'flex-1 min-w-0 truncate' + (opts.italic ? ' italic' : '') + (opts.hidden ? ' opacity-50' : '');
     label.textContent = name;
     b.appendChild(label);
     if (opts.badge) {
@@ -172,6 +193,42 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
       a.select(on ? null : key);
     });
     row.appendChild(b);
+    if (opts.hidden !== undefined) {
+      const hidden = opts.hidden;
+      const eye = rowIconBtn('', hidden ? 'Show in the viewport' : 'Hide in the viewport (view only — the code and exports keep it)');
+      eye.innerHTML = hidden ? eyeOffIconSVG() : eyeIconSVG();
+      eye.dataset.hideObjectPart = key;
+      eye.setAttribute('aria-pressed', String(hidden));
+      // A hidden row keeps its eye visible so it's obvious why the part is
+      // missing; otherwise it fades in on hover like the ✕.
+      if (!hidden) eye.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      eye.addEventListener('click', (e) => {
+        e.stopPropagation();
+        a.setHidden(key, !hidden);
+      });
+      row.appendChild(eye);
+    }
+    const delState = opts.deleteLabel ? a.getDelete(key) : { show: false };
+    if (delState.show && opts.deleteLabel) {
+      const reason = delState.reason;
+      const del = rowIconBtn('✕', reason ?? opts.deleteLabel);
+      del.dataset.deleteObjectPart = key;
+      // Visible on touch; fades in on hover/focus on pointer devices. A blocked
+      // delete stays clickable-looking-but-dim so its tooltip explains why.
+      del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/op:opacity-100 focus:opacity-100';
+      if (reason) {
+        del.setAttribute('aria-disabled', 'true');
+        del.className = del.className.replace('text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700', 'text-zinc-600 cursor-not-allowed');
+      }
+      // No confirm — the delete is one code line, undoable from its toast or
+      // from Recover deleted.
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (reason) { showToast(reason, { variant: 'neutral' }); return; }
+        void a.deletePart(key);
+      });
+      row.appendChild(del);
+    }
     section.appendChild(row);
     if (on && view) section.appendChild(buildDrawer(a, key, view, isolated === key));
   };
@@ -190,6 +247,8 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
       partName: p.name,
       badge: p.colorSource,
       title: `Select part "${p.name}" (${p.triangleCount} triangles) — Paint, Surface and the AI then act on just this part`,
+      hidden: !!p.hidden,
+      deleteLabel: 'Delete part — adds a removal line to the top of the code (recoverable)',
     });
   }
   if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
@@ -219,7 +278,11 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     heading(`Pieces · ${view.pieces.length}`, 'Physically separate solids — what comes off the print bed as its own lump (e.g. the moving parts of a print-in-place mechanism).');
     for (const piece of view.pieces) {
       const name = piece.part ? `Piece ${piece.index + 1} · ${piece.part}` : `Piece ${piece.index + 1}`;
-      item(`piece:${piece.index}`, name, piece.triangleCount, { title: `Select piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}` });
+      item(`piece:${piece.index}`, name, piece.triangleCount, {
+        title: `Select piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
+        hidden: !!piece.hidden,
+        deleteLabel: 'Delete piece — adds a removal line to the top of the code (recoverable)',
+      });
     }
   }
   return section;
@@ -290,7 +353,6 @@ function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, 
     const why = 'Rewriting the code to split pieces needs a JavaScript (manifold-js) object';
     btn('extract-piece', '⤴ Extract', noCode ? why : 'Move this piece into its own new object (both objects’ code gets a piece filter; version history keeps the original)', () => { void a.extractPiece(index); }, { disabled: noCode || view.pieces.length < 2 });
     btn('export-piece', '⤓ STL', 'Download just this piece as an STL', () => a.exportPiece(index));
-    btn('delete-piece', '✕ Delete', noCode ? why : 'Remove this stray piece from the object (adds a piece filter to the code)', () => { void a.deletePiece(index); }, { disabled: noCode || view.pieces.length < 2 });
     btn('edit-with-ai', '✦ Ask AI', 'Ask the AI about this piece', () => a.editWithAI(key));
   } else {
     isolateBtn();

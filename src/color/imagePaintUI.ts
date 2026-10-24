@@ -16,8 +16,6 @@ import {
 import type { ImagePaintResult } from './imagePaint';
 import {
   addRegion,
-  withPartScope,
-  getImplicitPaintScope,
   getRegions,
   onChange as onRegionsChange,
   removeLastRegion,
@@ -36,6 +34,7 @@ import {
 // rather than importing paintMode directly — same one-way dependency the drag
 // tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
 import { getCurrentMesh as getPaintMesh } from './paintAccessors';
+import { dropIfClippedEmpty, getPaintScope } from './paintScope';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -49,6 +48,7 @@ import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMod
 import { pickFace } from './facePicker';
 import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import type { PreprocessOptions } from '../relief/types';
+import { createSliderEntry } from '../ui/sliderEntry';
 
 // Max resolution for stamping — higher = crisper stamp detail.
 const STAMP_MAX = 1024;
@@ -357,7 +357,8 @@ function updatePreviewLines(
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
   const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
-  runStamp({
+  const scope = getPaintScope();
+  const stamped = runStamp({
     imageData: pickedImageData,
     hitPoint,
     hitNormal,
@@ -368,8 +369,13 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     removeBackground: opts.removeBackground,
     manualBgColor: opts.manualBgColor,
     preprocess: opts.preprocess,
-    scope: getImplicitPaintScope(),
+    withinPart: scope ?? undefined,
   });
+  // Stamped outside the chosen part: drop the empty region and say why.
+  if (scope && stamped && stamped.triangles === 0) {
+    const all = getRegions();
+    if (all.length > 0) dropIfClippedEmpty(all[all.length - 1]);
+  }
 }
 
 interface StampRun {
@@ -386,9 +392,10 @@ interface StampRun {
   manualBgColor?: [number, number, number];
   preprocess: PreprocessOptions;
   name?: string;
-  /** Part (api.label) the stamp is clipped to — the rail selection for the
-   *  click-driven tool, an explicit `scope` for the programmatic API. */
-  scope?: string | null;
+  /** Clip the stamp to one part (label). The click-driven tool passes the
+   *  panel's "Paint within" scope; the programmatic API passes its own option
+   *  and never inherits the panel's. */
+  withinPart?: string;
 }
 
 /** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
@@ -426,11 +433,12 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
   stampCounter++;
   const name = r.name ?? `Stamp ${stampCounter}`;
   const triangles = new Set(result.perTriColors.keys());
-  const commit = () => addRegion(
+  let committed = triangles.size;
+  const commit = () => { committed = addRegion(
     name,
     result.avgColor,
     'imagePaint',
-    withPartScope({
+    {
       kind: 'imagePaint',
       entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
@@ -442,17 +450,19 @@ function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [nu
         ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
-    }, r.scope ?? null),
+      ...(r.withinPart ? { withinPart: r.withinPart } : {}),
+    },
     triangles,
     true,
     undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
     result.perTriColors,
-  );
+  ).triangles.size; };
   // Commit through the reconcile-suspending hook when wired (see setStampCommitHook),
   // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
   if (stampCommitHook) stampCommitHook(commit);
   else commit();
-  return { name, triangles: triangles.size, avgColor: result.avgColor };
+  // `committed` is the size after any withinPart clip.
+  return { name, triangles: committed, avgColor: result.avgColor };
 }
 
 export interface ProgrammaticStampParams {
@@ -471,8 +481,8 @@ export interface ProgrammaticStampParams {
   preprocess?: PreprocessOptions;
   /** Region label; defaults to "Stamp N". */
   name?: string;
-  /** Clip the stamp to this part (an api.label region). */
-  scope?: string;
+  /** Clip the stamp to one part (label). */
+  withinPart?: string;
 }
 
 /** Stamp `imageData` onto the current mesh programmatically — the engine behind
@@ -498,7 +508,7 @@ export function stampImageProgrammatic(
     manualBgColor: params.manualBgColor,
     preprocess: params.preprocess ?? defaultPreprocess(),
     name: params.name,
-    scope: params.scope ?? null,
+    withinPart: params.withinPart,
   });
 }
 
@@ -647,9 +657,12 @@ function buildImageSection(): HTMLElement {
   // Allow drag-drop onto the preview
   previewWrap.addEventListener('dragover', (e) => { e.preventDefault(); });
   previewWrap.addEventListener('drop', async (e) => {
-    e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
+    // Claim image drops only, and keep them from also reaching main.ts's
+    // document-level import (which would pop the relief/voxel chooser).
+    e.preventDefault();
+    e.stopPropagation();
     await applyImageFile(file);
   });
 
@@ -839,7 +852,7 @@ function buildStampSettingsSection(): HTMLElement {
   addSlider(grid, 'Size (units)', 1, 200, 1, 20,
     () => stampSize,
     v => { stampSize = v; updatePreviewSize(); },
-    true);
+    true, true /* uncappedInput */);
 
   addSlider(grid, 'Rotation (°)', 0, 359, 1, 0,
     () => stampRotation,
@@ -1104,51 +1117,24 @@ function addSlider(
   lbl.className = 'text-[10px] text-zinc-500 w-[72px] shrink-0';
   lbl.textContent = label;
 
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = String(min);
-  slider.max = String(max);
-  slider.step = String(step);
-  slider.value = String(get());
-  slider.className = 'flex-1 accent-blue-500 min-w-0';
-
-  const numInput = document.createElement('input');
-  numInput.type = 'number';
-  numInput.min = String(min);
-  if (!uncappedInput) numInput.max = String(max);
-  numInput.step = String(step);
-  numInput.value = integer ? String(Math.round(get())) : get().toFixed(2);
-  numInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-
-  slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    set(v);
-    numInput.value = integer ? String(Math.round(v)) : v.toFixed(2);
+  const entry = createSliderEntry({
+    label, min, max, step, value: get(), integer,
+    hardMax: uncappedInput ? Infinity : max,
+    format: v => (integer ? String(Math.round(v)) : v.toFixed(2)),
+    onChange: set,
+    rangeClass: 'flex-1 accent-blue-500 min-w-0',
+    inputClass: 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums',
   });
-
-  const applyNum = (): void => {
-    const raw = parseFloat(numInput.value);
-    if (!Number.isFinite(raw)) { numInput.value = integer ? String(Math.round(get())) : get().toFixed(2); return; }
-    const v = uncappedInput ? Math.max(min, raw) : Math.max(min, Math.min(max, raw));
-    set(v);
-    slider.value = String(Math.min(v, max)); // slider stays within its own range
-    numInput.value = integer ? String(Math.round(v)) : v.toFixed(2);
-  };
-  numInput.addEventListener('change', applyNum);
-  numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyNum(); numInput.blur(); } });
 
   // Reset on double-click
   wrap.addEventListener('dblclick', (e) => {
     if (e.target === lbl || e.target === wrap) {
       set(defaultVal);
-      slider.value = String(defaultVal);
-      numInput.value = integer ? String(Math.round(defaultVal)) : defaultVal.toFixed(2);
+      entry.set(defaultVal);
     }
   });
 
-  wrap.appendChild(lbl);
-  wrap.appendChild(slider);
-  wrap.appendChild(numInput);
+  wrap.append(lbl, entry.range, entry.input);
   parent.appendChild(wrap);
 }
 

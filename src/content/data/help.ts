@@ -9,7 +9,7 @@
 
 import type { ContentSection } from './legal';
 import { buildInfo } from '../../buildInfo';
-import { discussionsUrl, featureRequestUrl, issueChooserUrl } from '../../feedbackLinks';
+import { DISCORD_INVITE_URL, discussionsUrl, featureRequestUrl, issueChooserUrl } from '../../feedbackLinks';
 
 export type { ContentSection };
 
@@ -66,6 +66,7 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
     heading: 'Character Creator (no-code figures)',
     body:
       'Want a printable human figure without writing any code? Open <strong class="text-zinc-300">Character Creator</strong> from the <strong class="text-zinc-300">Tools</strong> menu (or the command palette) for a GUI over the whole figure system. Choose a body build, pose, face, hair, garments, and footwear with sliders and presets, and a live preview updates as you go — Partwright generates the underlying model code for you, so you can keep tweaking in the panel or drop into the editor to take it further. ' +
+      'To get going fast, scroll the <strong class="text-zinc-300">preset list</strong> at the top of the panel (child, grandparent, chibi, a Funko-style soccer star, anime hero, elf ranger, a bare mannequin, and more) and click one to start from it, or press <strong class="text-zinc-300">🎲 Random</strong> to roll a brand-new character (realistic, chibi or vinyl-toy) — press it again for another. ' +
       'The preview cancels an in-flight render the moment you change a control, so dragging a slider stays responsive even though each figure rebuild is heavy.',
   },
   {
@@ -305,8 +306,9 @@ export function helpDynamicSections(opts: {
         `<li><a href="${issueChooserUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Report a bug</a> — anything broken or behaving oddly. A screenshot, the code, or a share link helps a lot.</li>` +
         `<li><a href="${featureRequestUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Request a feature</a> — ideas for new capabilities or improvements.</li>` +
         `<li><a href="${discussionsUrl(buildInfo)}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discussions</a> — questions, tips, and things you've made.</li>` +
+        `<li><a href="${DISCORD_INVITE_URL}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline">Discord</a> — chat with other makers and the Partwright team in real time.</li>` +
         '</ul>' +
-        'Posting needs a free GitHub account.',
+        'Bug reports, feature requests, and Discussions need a free GitHub account.',
     },
   ];
 }

@@ -30,7 +30,7 @@ test('api.paint.pattern renders multiple coat colors in-app', async ({ page }) =
   // reliably, unlike readPixels on a non-preserved WebGL buffer), then count
   // distinct WARM coat colours. The light base (#D6913E) and the dark stripe
   // (#5A3A1F) must BOTH appear — with the bug they'd collapse to one.
-  const canvas = page.locator('canvas').first();
+  const canvas = page.locator('#viewport-container canvas').first();
   const png = await canvas.screenshot();
   const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
   const ch = info.channels;

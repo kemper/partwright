@@ -1440,6 +1440,126 @@ function opFineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode {
   });
 }
 
+/** Bounding-box CULLING wrapper (internal — used by the figure's many-lock hair
+ *  styles and emboss). Where the query point is more than `margin` outside the
+ *  child's bounds, return the (cheap) Euclidean distance to those bounds instead
+ *  of evaluating the child; inside that band, evaluate the child exactly. The
+ *  shape is unchanged: the child's surface lies inside its bounds, so a point
+ *  past the band is outside the child by at least ~`margin` either way — only
+ *  the far-field VALUE differs, never the sign. Put it around a small subtree
+ *  inside a big union and the union stops paying for every far-away part on
+ *  every sample. Choose `margin` comfortably larger than any smooth-blend `k`
+ *  the result is combined with (plus a few march cells), so blends and the
+ *  meshed iso-surface see the exact field. */
+function opBounded(child: SdfNode, margin: number): SdfNode {
+  assertNumber(margin, 'bounded(margin)', { min: 0 });
+  const b = child._bounds;
+  const x0 = b.min[0], y0 = b.min[1], z0 = b.min[2], x1 = b.max[0], y1 = b.max[1], z1 = b.max[2];
+  const m = margin;
+  return new SdfNode({
+    kind: 'bounded',
+    eval: (x, y, z) => {
+      const dx = Math.max(x0 - x, x - x1, 0), dy = Math.max(y0 - y, y - y1, 0), dz = Math.max(z0 - z, z - z1, 0);
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      return d > m ? d : child._eval(x, y, z);
+    },
+    bounds: child._bounds,
+    children: [child],
+    partitionable: false,
+    cp: { margin: m, min: [x0, y0, z0], max: [x1, y1, z1] },
+  });
+}
+
+/** RADIAL PROJECTION warp (internal — the figure hair's face window): evaluates
+ *  `child` at `p` pushed along the ray from `center` onto the surface at
+ *  distance `radiusOf(unit ray direction)` (the real skull, from a lookup the
+ *  caller precomputes). The result is constant along every ray from the centre,
+ *  so a cut made with it has walls that run RADIALLY — perpendicular to the
+ *  skull — instead of meeting it at whatever grazing angle the child's own
+ *  surface has. Near that surface the field is the child's (≈ a distance); it
+ *  is not a metric far from it, so use it only as a subtracted cutter that
+ *  matters near that surface. Its bounds are the child's grown by `pad`: wrap
+ *  it in `opBounded` and the cutter is only evaluated near where it can cut a
+ *  shell within `pad` of that surface. */
+function opRadialProject(child: SdfNode, center: Vec3, radiusOf: (ux: number, uy: number, uz: number) => number, pad: number): SdfNode {
+  const [cx, cy, cz] = center;
+  return new SdfNode({
+    kind: 'radialProject',
+    eval: (x, y, z) => {
+      const dx = x - cx, dy = y - cy, dz = z - cz;
+      const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (L < 1e-9) return child._eval(x, y, z);
+      const ux = dx / L, uy = dy / L, uz = dz / L;
+      const rho = radiusOf(ux, uy, uz);
+      return child._eval(cx + ux * rho, cy + uy * rho, cz + uz * rho);
+    },
+    bounds: bbExpand(child._bounds, pad),
+    children: [child],
+    partitionable: false,
+  });
+}
+
+/** A 2D polygon set (even-odd fill — glyph holes work) in the XY plane,
+ *  extruded along Z to `-halfDepth..+halfDepth` (internal — the figure's
+ *  `emboss`). Exact 2D distance to the nearest contour edge combined with the
+ *  slab, so it is a true SDF. Contours are closed implicitly. */
+function primPolygonPrism(contours: Array<Array<[number, number]>>, halfDepth: number): SdfNode {
+  assertNumber(halfDepth, 'polygonPrism(halfDepth)', { min: 1e-6 });
+  const polys = contours.filter((c) => Array.isArray(c) && c.length >= 3).map((c) => {
+    const xs = new Float64Array(c.length), ys = new Float64Array(c.length);
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (let i = 0; i < c.length; i++) {
+      const px = c[i][0], py = c[i][1];
+      if (!Number.isFinite(px) || !Number.isFinite(py)) throw new ValidationError('polygonPrism: contour points must be finite [x, y] pairs');
+      xs[i] = px; ys[i] = py;
+      bx0 = Math.min(bx0, px); by0 = Math.min(by0, py); bx1 = Math.max(bx1, px); by1 = Math.max(by1, py);
+    }
+    return { xs, ys, bx0, by0, bx1, by1 };
+  });
+  if (polys.length === 0) throw new ValidationError('polygonPrism: need at least one contour with ≥ 3 points');
+  const h = halfDepth;
+  let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
+  for (const p of polys) { gx0 = Math.min(gx0, p.bx0); gy0 = Math.min(gy0, p.by0); gx1 = Math.max(gx1, p.bx1); gy1 = Math.max(gy1, p.by1); }
+  const d2 = (x: number, y: number): number => {
+    let best = Infinity;
+    let inside = false;
+    for (const p of polys) {
+      // Even-odd crossing (only contours spanning this y can be crossed).
+      if (y >= p.by0 && y <= p.by1) {
+        const { xs, ys } = p, n = xs.length;
+        for (let i = 0, j = n - 1; i < n; j = i++) {
+          if ((ys[i] > y) !== (ys[j] > y) && x < xs[j] + ((y - ys[j]) * (xs[i] - xs[j])) / (ys[i] - ys[j])) inside = !inside;
+        }
+      }
+      // Distance: skip contours whose box is already farther than the best edge.
+      const ox = Math.max(p.bx0 - x, x - p.bx1, 0), oy = Math.max(p.by0 - y, y - p.by1, 0);
+      if (ox * ox + oy * oy >= best) continue;
+      const { xs, ys } = p, n = xs.length;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const ex = xs[i] - xs[j], ey = ys[i] - ys[j];
+        const wx = x - xs[j], wy = y - ys[j];
+        const ll = ex * ex + ey * ey;
+        let t = ll > 0 ? (wx * ex + wy * ey) / ll : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const qx = wx - ex * t, qy = wy - ey * t;
+        const dd = qx * qx + qy * qy;
+        if (dd < best) best = dd;
+      }
+    }
+    const d = Math.sqrt(best);
+    return inside ? -d : d;
+  };
+  return leafNode(
+    'polygonPrism',
+    (x, y, z) => {
+      const wx = d2(x, y), wz = Math.abs(z) - h;
+      const ox = wx > 0 ? wx : 0, oz = wz > 0 ? wz : 0;
+      return Math.min(Math.max(wx, wz), 0) + Math.sqrt(ox * ox + oz * oz);
+    },
+    { min: [gx0, gy0, -h], max: [gx1, gy1, h] },
+  );
+}
+
 function opSubtract(a: SdfNode, b: SdfNode): SdfNode {
   return new SdfNode({
     kind: 'subtract',
@@ -2238,6 +2358,14 @@ export interface SdfNamespace {
    *  uniform fine grid and hard-unioned (used by the figure's hands so the
    *  coarse body march never webs the fingers). Not a documented user API. */
   __fineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode;
+  /** @internal Bounding-box culling wrapper (see `opBounded`) — far from the
+   *  child's bounds, return the box distance instead of evaluating it. */
+  __bounded(node: SdfNode, margin: number): SdfNode;
+  /** @internal A 2D even-odd polygon set extruded along Z (`±halfDepth`) —
+   *  the figure's `emboss` lettering. */
+  __polygonPrism(contours: Array<Array<[number, number]>>, halfDepth: number): SdfNode;
+  /** @internal Radial-projection warp onto an ellipsoid (see `opRadialProject`). */
+  __radialProject(node: SdfNode, center: Vec3, radiusOf: (ux: number, uy: number, uz: number) => number, pad: number): SdfNode;
 }
 
 /** Construct a fresh SDF namespace for one engine run. Bound to the
@@ -2299,6 +2427,9 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
     __fineHands: (node, regions) => bound(opFineHands(assertSdfNode(node, '__fineHands(node)'), regions)),
+    __bounded: (node, margin) => bound(opBounded(assertSdfNode(node, '__bounded(node)'), margin)),
+    __polygonPrism: (contours, halfDepth) => bound(primPolygonPrism(contours, halfDepth)),
+    __radialProject: (node, center, radiusOf, pad) => bound(opRadialProject(assertSdfNode(node, '__radialProject(node)'), center, radiusOf, pad)),
     // Placeholder; replaced below once `namespace` exists (figure builds its
     // parts from these bound namespace methods).
     figure: undefined as unknown as FigureNamespace,
@@ -2332,6 +2463,9 @@ export const __testables__ = {
   primGradedLidinoid,
   opUnion,
   opFineHands,
+  opBounded,
+  primPolygonPrism,
+  opRadialProject,
   opSubtract,
   opIntersect,
   opSmoothUnion,

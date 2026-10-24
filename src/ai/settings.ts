@@ -9,6 +9,9 @@ import { getKey } from './db';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
 
+/** Desktop code-pane presentation — see `AiSettings.codeView`. */
+export type CodeViewMode = 'hidden' | 'mini' | 'full';
+
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
 export interface AiSettings {
@@ -19,13 +22,15 @@ export interface AiSettings {
    *  Persists the user's choice thereafter, so once they open it it stays open
    *  on reload (and once they close it it stays closed). */
   drawerOpen: boolean;
-  /** Whether the code editor pane is collapsed. `null` means "no explicit
-   *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
-   *  visitor with the AI panel up doesn't see two competing surfaces in the
-   *  editor (and a visitor with it closed gets the code pane). Once the user
-   *  clicks "Hide code" / "Show code" the choice is persisted and respected on
-   *  every subsequent load. */
+  /** Legacy two-state "Hide code" preference, superseded by `codeView` and no
+   *  longer written. Still read once: a stored `true` carries over as
+   *  `codeView: 'hidden'` until the user picks a mode. */
   editorCollapsed: boolean | null;
+  /** How the desktop code pane is shown: `'mini'` (the compact code map —
+   *  the default), `'full'` (the CodeMirror editor) or `'hidden'`. `null` means
+   *  no choice since the three-way mode shipped; layout.ts then honors a legacy
+   *  `editorCollapsed: true` as `'hidden'` and otherwise starts on `'mini'`. */
+  codeView: CodeViewMode | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
   /** True once the user picked an auto-compact mode themselves (or had a
@@ -219,6 +224,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   toggles: DEFAULT_TOGGLES,
   drawerOpen: false,
   editorCollapsed: null,
+  codeView: null,
   // Auto at 70% of the context window, capped by the auto-compact token
   // ceiling (app config). With history caching, compacting only when the
   // conversation is big keeps each cache miss affordable.
@@ -578,6 +584,7 @@ interface LegacyAiSettings {
   autoCompactUserSet?: boolean;
   drawerOpen?: boolean;
   editorCollapsed?: boolean | null;
+  codeView?: CodeViewMode | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
   systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']>;
   customLocalModels?: CustomLocalModel[];
@@ -648,6 +655,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       : (partial.autoCompactMode !== undefined && partial.autoCompactMode !== 'off'),
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
     editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
+    codeView: partial.codeView === 'hidden' || partial.codeView === 'mini' || partial.codeView === 'full' ? partial.codeView : null,
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },

@@ -20,7 +20,7 @@ import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
 import type { MeshData } from './types';
-import type { ImportedMesh } from '../import/importedMesh';
+import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
 
 export interface PoolBuildRequest {
   code: string;
@@ -210,11 +210,7 @@ function dispatch(pw: PoolWorker, job: Job): void {
   // as "rendering started". Guarded so a throwing callback can't wedge dispatch.
   try { job.req.onStart?.(); } catch { /* progress callback must not break dispatch */ }
   const { code, lang, params, imports, companionFiles } = job.req;
-  const wireImports = (imports ?? []).map(m => ({
-    id: m.id, filename: m.filename, format: m.format,
-    numProp: m.numProp, numVert: m.numVert, numTri: m.numTri,
-    vertProperties: m.vertProperties.slice(), triVerts: m.triVerts.slice(),
-  }));
+  const wireImports = (imports ?? []).map(cloneImportForWorker);
   pw.worker.postMessage({
     type: 'execute',
     callId,

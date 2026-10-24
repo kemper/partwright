@@ -11,6 +11,7 @@ import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewport
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { createColorSwatch } from '../ui/colorPickerModal';
+import { createSliderEntry, type SliderEntry } from '../ui/sliderEntry';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -70,14 +71,13 @@ let brushSection: HTMLElement | null = null;
 let blockSection: HTMLElement | null = null;
 let depthSection: HTMLElement | null = null;
 let levelSection: HTMLElement | null = null;
-let sizeSlider: HTMLInputElement | null = null;
+let sizeEntry: SliderEntry | null = null;
 let sizeLabel: HTMLElement | null = null;
 let sprayBtn: HTMLButtonElement | null = null;
 let sprayRow: HTMLElement | null = null;
-const blockSliders: Partial<Record<0 | 1 | 2, HTMLInputElement>> = {};
+const blockEntries: Partial<Record<0 | 1 | 2, SliderEntry>> = {};
 let blockSizeLabel: HTMLElement | null = null;
-let depthSlider: HTMLInputElement | null = null;
-let depthInput: HTMLInputElement | null = null;
+let depthEntry: SliderEntry | null = null;
 let depthLabel: HTMLElement | null = null;
 let roundSlider: HTMLInputElement | null = null;
 let roundValueLabel: HTMLElement | null = null;
@@ -201,7 +201,7 @@ function refreshControls(): void {
   for (const s of BRUSH_SHAPES) setActive(shapeBtns[s.shape], s.shape === voxelPaint.getBrushShape());
   for (const a of AXES) setActive(axisBtns[a.axis], a.axis === voxelPaint.getLevelAxis());
 
-  if (sizeSlider) sizeSlider.value = String(voxelPaint.getBrushRadius());
+  syncEntry(sizeEntry, voxelPaint.getBrushRadius());
   if (sizeLabel) {
     const r = voxelPaint.getBrushRadius();
     sizeLabel.textContent = r === 0 ? 'Size: 1 voxel' : `Size: ${r * 2 + 1} wide`;
@@ -216,12 +216,10 @@ function refreshControls(): void {
   // Add-block controls.
   const size = voxelPaint.getBlockSize();
   for (const axis of [0, 1, 2] as const) {
-    const s = blockSliders[axis];
-    if (s) s.value = String(size[axis]);
+    syncEntry(blockEntries[axis], size[axis]);
   }
   if (blockSizeLabel) blockSizeLabel.textContent = `${size[0]}×${size[1]}×${size[2]}`;
-  if (depthSlider) depthSlider.value = String(Math.min(16, voxelPaint.getAddDepth()));
-  if (depthInput && document.activeElement !== depthInput) depthInput.value = String(voxelPaint.getAddDepth());
+  syncEntry(depthEntry, voxelPaint.getAddDepth());
   if (depthLabel) {
     const d = voxelPaint.getAddDepth();
     if (d === 0) depthLabel.textContent = isBox ? 'flat' : 'on surface';
@@ -403,17 +401,16 @@ function buildBrushSection(): HTMLElement {
   head.appendChild(sizeLabel);
   sec.appendChild(head);
 
-  // Size slider (0 = single voxel … 8 = wide).
-  sizeSlider = document.createElement('input');
-  sizeSlider.type = 'range';
-  sizeSlider.min = '0';
-  sizeSlider.max = '8';
-  sizeSlider.step = '1';
-  sizeSlider.value = '0';
-  sizeSlider.className = 'w-full accent-blue-500';
-  sizeSlider.title = 'Brush radius in voxels (0 = a single voxel)';
-  sizeSlider.addEventListener('input', () => { voxelPaint.setBrushRadius(Number(sizeSlider!.value)); refreshControls(); });
-  sec.appendChild(sizeSlider);
+  // Size slider (0 = single voxel … 8 = wide); the box accepts up to the
+  // engine cap.
+  sizeEntry = voxelEntry(0, 8, voxelPaint.MAX_BRUSH_RADIUS, voxelPaint.getBrushRadius(),
+    v => voxelPaint.setBrushRadius(v));
+  sizeEntry.range.title = 'Brush radius in voxels (0 = a single voxel)';
+  sizeEntry.input.title = `Brush radius in voxels. Type up to ${voxelPaint.MAX_BRUSH_RADIUS} to go past the slider.`;
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'flex items-center gap-2';
+  sizeRow.append(sizeEntry.range, sizeEntry.input);
+  sec.appendChild(sizeRow);
 
   // Shape buttons.
   shapeBtns = {};
@@ -486,21 +483,35 @@ function buildBlockSection(): HTMLElement {
     tag.className = 'w-3 text-zinc-300';
     tag.textContent = label;
     row.appendChild(tag);
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '1';
-    slider.max = '16';
-    slider.step = '1';
-    slider.value = String(voxelPaint.getBlockSize()[axis]);
-    slider.className = 'flex-1 accent-blue-500';
-    slider.title = `Block ${label} size in voxels`;
-    slider.addEventListener('input', () => { voxelPaint.setBlockSize(axis, Number(slider.value)); refreshControls(); });
-    row.appendChild(slider);
-    blockSliders[axis] = slider;
+    // The slider covers 1–16, the box accepts up to the engine cap.
+    const entry = voxelEntry(1, 16, voxelPaint.MAX_BLOCK_SIZE, voxelPaint.getBlockSize()[axis],
+      v => voxelPaint.setBlockSize(axis, v));
+    entry.range.title = `Block ${label} size in voxels`;
+    entry.input.title = `Block ${label} size in voxels. Type up to ${voxelPaint.MAX_BLOCK_SIZE} to go past the slider.`;
+    row.append(entry.range, entry.input);
+    blockEntries[axis] = entry;
     sec.appendChild(row);
   }
 
   return sec;
+}
+
+/** Re-sync a control from paint state. refreshControls also runs on background
+ *  state changes (remesh, undo, API calls), so a box the user is typing in is
+ *  left alone until they commit. */
+function syncEntry(entry: SliderEntry | null | undefined, v: number): void {
+  if (entry && document.activeElement !== entry.input) entry.set(v);
+}
+
+/** Whole-number slider + typed box for a voxel count: the slider covers
+ *  [min, sliderMax], the box accepts up to `hardMax`. Each edit applies the
+ *  value to the paint state, then re-syncs every control from that state. */
+function voxelEntry(min: number, sliderMax: number, hardMax: number, value: number, apply: (v: number) => void): SliderEntry {
+  return createSliderEntry({
+    min, max: sliderMax, step: 1, value, hardMax, integer: true,
+    onChange: v => { apply(v); refreshControls(); },
+    inputClass: 'w-12 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums',
+  });
 }
 
 // Depth control, shared by the add tool (how far the block sinks into the
@@ -524,35 +535,13 @@ function buildDepthSection(): HTMLElement {
   const row = document.createElement('div');
   row.className = 'flex items-center gap-2';
 
-  depthSlider = document.createElement('input');
-  depthSlider.type = 'range';
-  depthSlider.min = '0';
-  depthSlider.max = '16';
-  depthSlider.step = '1';
-  depthSlider.value = String(voxelPaint.getAddDepth());
-  depthSlider.className = 'flex-1 min-w-0 accent-blue-500';
-  depthSlider.title = 'Add: layers the block sinks into the surface. Box: extra layers the fill grows / subtract carves (0 = flush to the clicked face).';
-  depthSlider.addEventListener('input', () => { voxelPaint.setAddDepth(Number(depthSlider!.value)); refreshControls(); });
-  row.appendChild(depthSlider);
-
-  // Typed value: the slider tops out at 16, but the input has no max so you can
+  // Typed value: the slider tops out at 16, but the box has no max so you can
   // sink a block deeper than the slider reaches.
-  depthInput = document.createElement('input');
-  depthInput.type = 'number';
-  depthInput.min = '0';
-  depthInput.step = '1';
-  depthInput.value = String(voxelPaint.getAddDepth());
-  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  depthInput.title = 'Depth in layers. Type a value past the slider’s 16 to go deeper.';
-  const applyDepthInput = (): void => {
-    const raw = parseInt(depthInput!.value, 10);
-    if (!Number.isFinite(raw) || raw < 0) { depthInput!.value = String(voxelPaint.getAddDepth()); return; }
-    voxelPaint.setAddDepth(raw);
-    refreshControls();
-  };
-  depthInput.addEventListener('change', applyDepthInput);
-  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyDepthInput(); });
-  row.appendChild(depthInput);
+  depthEntry = voxelEntry(0, 16, Infinity, voxelPaint.getAddDepth(), v => voxelPaint.setAddDepth(v));
+  depthEntry.range.title = 'Add: layers the block sinks into the surface. Box: extra layers the fill grows / subtract carves (0 = flush to the clicked face).';
+  depthEntry.input.title = 'Depth in layers. Type a value past the slider’s 16 to go deeper.';
+  depthEntry.input.classList.replace('w-12', 'w-14');
+  row.append(depthEntry.range, depthEntry.input);
 
   sec.appendChild(row);
 

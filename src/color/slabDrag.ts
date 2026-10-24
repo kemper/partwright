@@ -7,7 +7,8 @@
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/viewport';
-import { addPaintRegion, getRegions } from './regions';
+import { addRegion, getRegions } from './regions';
+import { dropIfClippedEmpty, withPaintScope } from './paintScope';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
 import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 
@@ -310,15 +311,16 @@ function commitSlab(offset: number, thickness: number): void {
   const existingCount = getRegions().length;
   const name = `Slab ${axis.toUpperCase()} ${existingCount + 1}`;
   const { smooth, maxEdge } = shapeSmoothDescriptorFields(mesh);
-  addPaintRegion(
+  const region = addRegion(
     name,
     [...getColor()] as [number, number, number],
     'slab',
-    { kind: 'slab', normal: [...normal] as [number, number, number], offset, thickness, smooth, maxEdge },
+    withPaintScope({ kind: 'slab', normal: [...normal] as [number, number, number], offset, thickness, smooth, maxEdge }),
     triangles,
     true,
     getSlotId() ?? undefined,
   );
+  dropIfClippedEmpty(region);
 }
 
 function colorToHex(color: [number, number, number]): number {

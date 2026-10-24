@@ -23,7 +23,7 @@ async function openEditor(page: Page): Promise<void> {
     try { localStorage.setItem('partwright-tour-completed', new Date().toISOString()); } catch { /* ignore */ }
     // Keep the code pane visible: the app collapses it when the AI drawer
     // auto-opens, which would hide .cm-content and break editor interactions.
-    try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
+    try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' })); } catch { /* ignore */ }
   });
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 20000 });

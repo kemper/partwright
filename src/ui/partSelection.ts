@@ -52,7 +52,7 @@ export function describePartKey(key: string): string {
 export function partSelectionChatContext(key: string): string {
   if (key.startsWith('part:')) {
     const name = JSON.stringify(key.slice(5));
-    return `[Selected in the Objects list: part ${name} of the current object. "It" / "this part" means this part; confine edits to it — e.g. paint with scope: { label: ${name} } and change its code at its api.label(…, ${name}) call.]`;
+    return `[Selected in the Objects list: part ${name} of the current object. "It" / "this part" means this part; confine edits to it — e.g. paint with withinPart: ${name} and change its code at its api.label(…, ${name}) call.]`;
   }
   return `[Selected in the Objects list: ${describePartKey(key)} of the current object (see listObjectParts). "It" / "this" refers to it.]`;
 }

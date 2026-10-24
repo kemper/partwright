@@ -347,6 +347,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
+  /** Frame this world box instead of the whole mesh (zoom onto a part).
+   *  The rest of the mesh still renders — anything in front occludes. */
+  frame?: { min: [number, number, number]; max: [number, number, number] };
 }): THREE.Camera {
   const elevation = (options.elevation ?? 30) * Math.PI / 180;
   const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
@@ -364,9 +367,14 @@ export function buildViewCamera(meshData: MeshData, options: {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+  const meshDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  if (options.frame) {
+    [minX, minY, minZ] = options.frame.min;
+    [maxX, maxY, maxZ] = options.frame.max;
+  }
   const center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
   const bsize = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ);
-  const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z) || meshDim || 1;
   const dist = maxDim * 2;
 
   // Spherical to cartesian (Z-up)
@@ -381,7 +389,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   // matching the standard slicer/CAD build-plate orientation.
   const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
   const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
-  const { near, far } = clipPlanes(maxDim);
+  const { near } = clipPlanes(maxDim);
+  // A framed (zoomed) view still has the whole mesh behind the focus box.
+  const { far } = clipPlanes(Math.max(maxDim, meshDim));
 
   let camera: THREE.Camera;
   if (options.ortho) {
@@ -391,6 +401,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
+    orthoCamera.updateMatrixWorld();
     camera = orthoCamera;
   } else {
     const perspCamera = new THREE.PerspectiveCamera(40, 1, near, far);
@@ -398,6 +409,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
     perspCamera.updateProjectionMatrix();
+    perspCamera.updateMatrixWorld();
     camera = perspCamera;
   }
   return camera;
@@ -409,6 +421,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   ortho?: boolean;
   size?: number;
   edges?: EdgeMode;
+  frame?: { min: [number, number, number]; max: [number, number, number] };
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
@@ -435,6 +448,82 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   disposeScene(scene);
   geometry.dispose();
   return canvas;
+}
+
+/** Flat, unlit, aliased REGION render for the photo-match score: returns one
+ *  int per pixel — -2 background, -1 a triangle with no region, ≥0 the
+ *  triangle's region index from `triRegion` (-3 there drops the triangle,
+ *  e.g. an excluded display base). Same camera as renderSingleView /
+ *  buildViewCamera. Rendered into a non-multisampled target with a raw
+ *  ShaderMaterial so the encoded ids come back bit-exact (no MSAA blending,
+ *  no lighting, no colour-space conversion). Rows are top-to-bottom. */
+export function renderRegionLabels(meshData: MeshData, triRegion: Int32Array, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+} = {}): { width: number; height: number; labels: Int32Array } {
+  const size = options.size ?? 512;
+  const { vertProperties, triVerts, numProp, numTri } = meshData;
+  let kept = 0;
+  for (let t = 0; t < numTri; t++) if (triRegion[t] !== -3) kept++;
+  const positions = new Float32Array(kept * 9);
+  const ids = new Float32Array(kept * 9);
+  let k = 0;
+  for (let t = 0; t < numTri; t++) {
+    const region = triRegion[t];
+    if (region === -3) continue;
+    // id+2 so background (alpha 0) and "no region" (-1 → 1) stay distinct;
+    // low byte in R, high byte in G.
+    const code = Math.max(-1, region) + 2;
+    const r = (code & 255) / 255, g = ((code >> 8) & 255) / 255;
+    for (let v = 0; v < 3; v++) {
+      const vi = triVerts[t * 3 + v];
+      positions[k * 9 + v * 3] = vertProperties[vi * numProp];
+      positions[k * 9 + v * 3 + 1] = vertProperties[vi * numProp + 1];
+      positions[k * 9 + v * 3 + 2] = vertProperties[vi * numProp + 2];
+      ids[k * 9 + v * 3] = r; ids[k * 9 + v * 3 + 1] = g; ids[k * 9 + v * 3 + 2] = 0;
+    }
+    k++;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('regionId', new THREE.BufferAttribute(ids, 3));
+  const material = new THREE.ShaderMaterial({
+    vertexShader: 'attribute vec3 regionId; varying vec3 vId; void main() { vId = regionId; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying vec3 vId; void main() { gl_FragColor = vec4(vId, 1.0); }',
+    side: THREE.DoubleSide,
+  });
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(geometry, material));
+  const camera = buildViewCamera(meshData, options);
+  const renderer = getOffscreenRenderer(size);
+  const target = new THREE.WebGLRenderTarget(size, size, { samples: 0, depthBuffer: true });
+  const prevTarget = renderer.getRenderTarget();
+  const prevClear = renderer.getClearColor(new THREE.Color());
+  const prevAlpha = renderer.getClearAlpha();
+  const buf = new Uint8Array(size * size * 4);
+  try {
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(target, 0, 0, size, size, buf);
+  } finally {
+    renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevClear, prevAlpha);
+    target.dispose();
+    disposeScene(scene);
+  }
+  const labels = new Int32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const src = (size - 1 - y) * size; // GL rows are bottom-up
+    for (let x = 0; x < size; x++) {
+      const o = (src + x) * 4;
+      labels[y * size + x] = buf[o + 3] === 0 ? -2 : (buf[o] | (buf[o + 1] << 8)) - 2;
+    }
+  }
+  return { width: size, height: size, labels };
 }
 
 /** Render a single named angle to a PNG data URL. */

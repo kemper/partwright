@@ -1,7 +1,7 @@
 // Editing parts from the Objects list (#1003). The rail is a SELECTOR: a
 // selected part becomes the scope the existing tools act in (paint, surface,
 // AI), plus the part-level actions (colour, isolate, info, go-to-code, rename,
-// bake) and the piece actions (extract / export / delete). Paint whose part
+// bake), hide / delete, and the piece actions (extract / export). Paint whose part
 // the code no longer has is flagged as "Unmatched paint" with a fix.
 
 import { test, expect, type Page } from 'playwright/test';
@@ -48,15 +48,17 @@ test.describe('Objects list — editing parts', () => {
     await expect(drawer.locator('[data-part-info]')).toContainText('area');
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ part: 'handle' });
 
+    // Selecting a part sets the Paint panel's "Paint within" scope (one shared scope).
+    expect(await page.evaluate(() => import('/src/color/paintScope.ts').then(m => m.getPaintScope()))).toBe('handle');
+
     // Scoped API paint: the same slab paints far fewer triangles inside the handle.
-    const scoped = await pw<{ triangles: number; scope: { label: string } }>(page, 'paintSlab', { axis: 'z', offset: 30, thickness: 30, color: [0.1, 0.8, 0.2], scope: { label: 'handle' } });
-    expect(scoped.scope).toEqual({ label: 'handle' });
+    const scoped = await pw<{ triangles: number }>(page, 'paintSlab', { axis: 'z', offset: 30, thickness: 30, color: [0.1, 0.8, 0.2], withinPart: 'handle' });
     const unscoped = await pw<{ triangles: number }>(page, 'paintSlab', { axis: 'z', offset: 30, thickness: 30, color: [0.1, 0.8, 0.2] });
     expect(scoped.triangles).toBeGreaterThan(0);
     expect(scoped.triangles).toBeLessThan(unscoped.triangles);
     await pw(page, 'undoLastPaint');
     // A scope naming a missing part is a clear error.
-    expect(await pw(page, 'paintSlab', { axis: 'z', offset: 30, thickness: 30, color: [1, 0, 0], scope: { label: 'lid' } })).toMatchObject({ error: expect.stringContaining('no part "lid"') });
+    expect(await pw(page, 'paintSlab', { axis: 'z', offset: 30, thickness: 30, color: [1, 0, 0], withinPart: 'lid' })).toMatchObject({ error: expect.stringContaining('no part "lid"') });
 
     // Isolate ghosts the rest of the object.
     await drawer.locator('[data-part-action="isolate"]').click();
@@ -121,7 +123,7 @@ test.describe('Objects list — editing parts', () => {
     expect(code).toContain('return mug.add');
   });
 
-  test('pieces: delete a stray piece and extract one into a new object', async ({ page }) => {
+  test('pieces: extract one into a new object and delete a stray one', async ({ page }) => {
     await openMug(page);
     // Extract the coaster (piece 2) into its own object.
     await page.locator('#parts-rail [data-object-part="piece:1"]').click();
@@ -146,7 +148,7 @@ test.describe('Objects list — editing parts', () => {
     }).toBe('1:false');
     expect(await pw<string>(page, 'getCode')).toMatch(/__pwPieces = \{\s*"?mode"?: ["']drop/);
 
-    // Delete a stray piece via the API twin.
+    // Delete a stray piece with its row ✕ (a recoverable api.removePiece line).
     await page.evaluate(async () => {
       const p = (window as unknown as { partwright: PW }).partwright;
       await p.runAndSave(`const { Manifold } = api;
@@ -154,10 +156,8 @@ return api.label(Manifold.cube([10, 10, 10], true), 'block').add(Manifold.cube([
     });
     parts = await pw(page, 'listObjectParts');
     expect(parts.pieces).toHaveLength(2);
-    await page.locator('#parts-rail [data-object-part="piece:1"]').click();
-    await page.locator('#object-part-drawer [data-part-action="delete-piece"]').click();
-    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.locator('#parts-rail [data-delete-object-part="piece:1"]').click();
     await expect.poll(async () => (await pw<{ pieces?: unknown[] }>(page, 'listObjectParts')).pieces?.length).toBe(1);
-    expect(await pw<string>(page, 'getCode')).toContain('Partwright piece filter');
+    expect(await pw<string>(page, 'getCode')).toContain('api.removePiece(');
   });
 });

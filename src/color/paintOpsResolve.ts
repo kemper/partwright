@@ -37,6 +37,21 @@ export function resolvePaintDescriptor(
   mesh: MeshData,
   labelMap?: Map<string, Set<number>> | null,
 ): Set<number> | null {
+  const tris = resolveUnscoped(descriptor, mesh, labelMap);
+  // `withinPart` clips to one part (label); a missing part paints nothing,
+  // matching byLabel and the browser resolver.
+  if (!tris || !descriptor.withinPart) return tris;
+  const scope = labelMap?.get(descriptor.withinPart);
+  const out = new Set<number>();
+  if (scope) for (const t of tris) if (scope.has(t)) out.add(t);
+  return out;
+}
+
+function resolveUnscoped(
+  descriptor: RegionDescriptor,
+  mesh: MeshData,
+  labelMap?: Map<string, Set<number>> | null,
+): Set<number> | null {
   switch (descriptor.kind) {
     case 'slab': {
       const { normal, offset, thickness } = descriptor;

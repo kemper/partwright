@@ -73,9 +73,9 @@ function extractApiMembers(src: string): Set<string> {
   const apiStart = src.indexOf('const partwrightAPI = {');
   if (apiStart === -1) throw new Error('Could not find partwrightAPI in main.ts');
 
-  // Scan the WHOLE object (it's ~300 KB and we stop at the `help(` member
-  // anyway); an earlier 80 KB window silently scanned only the first third.
-  const chunk = src.slice(apiStart, apiStart + 400_000);
+  // Scan the WHOLE object — we stop at the `help(` member anyway. Fixed
+  // windows kept going stale as the object grew (80 KB, then 400 KB).
+  const chunk = src.slice(apiStart);
   const lines = chunk.split('\n');
   const members = new Set<string>();
 
@@ -110,8 +110,11 @@ function extractHelpKeys(src: string): Set<string> {
   const start = src.indexOf(marker);
   if (start === -1) throw new Error('Could not find help() methods table in main.ts');
 
-  // The table is large (~8 000 chars). Take 60 000 to be safe.
-  const chunk = src.slice(start, start + 60_000);
+  // Read up to the table's closing `};` rather than a fixed window: the table
+  // passed 60 000 chars in Oct 2026 and a fixed slice silently dropped the
+  // last entries, failing the parity check for methods that WERE documented.
+  const end = src.slice(start).search(/\n\s*\};/);
+  const chunk = src.slice(start, end === -1 ? undefined : start + end);
 
   // Match 'keyName': { signature: ... patterns.
   const keys = new Set<string>();

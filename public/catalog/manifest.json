@@ -15,7 +15,7 @@
    "name": "Pac-Man Ghost",
    "file": "pacman_ghost.partwright.json",
    "language": "manifold-js",
-   "description": "Blinky \u2014 the classic red Pac-Man ghost \u2014 as a standalone 3D figurine. Smooth revolve profile gives the iconic teardrop silhouette, with white 3D oval eyes, blue pupils looking left, and four scalloped hem teeth.",
+   "description": "Blinky \u2014 the classic red Pac-Man ghost \u2014 in a small Pac-Man diorama: the ghost with a domed top, white oval eyes with blue pupils looking left, and a scalloped hem of eight round lobes all around the skirt, facing a yellow Pac-Man across three pellets on a slim rounded base.",
    "tags": [
     "figures",
     "games"
@@ -286,7 +286,7 @@
    "name": "Pipe Tee Fitting",
    "file": "pipe_tee_fitting.partwright.json",
    "language": "scad",
-   "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges.",
+   "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer=) for the flared collar edges.",
    "tags": [
     "mechanical"
    ]
@@ -393,7 +393,7 @@
    "name": "Machine Tool Knob",
    "file": "machine_knob.partwright.json",
    "language": "replicad",
-   "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore \u2014 showcasing BREP's exact chamfers and fillets on rotational geometry.",
+   "description": "A precision machine-tool grip knob with a fluted finger-grip skirt, chamfered and domed crown, and a shaft bore \u2014 showcasing BREP's exact chamfers and fillets on rotational geometry.",
    "tags": [
     "mechanical"
    ]
@@ -483,7 +483,7 @@
    "name": "Coffee Mug",
    "file": "coffee_mug.partwright.json",
    "language": "replicad",
-   "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle \u2014 showcasing BREP's shell op + paint.",
+   "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle \u2014 showcasing BREP booleans + paint.",
    "tags": [
     "decor"
    ]
@@ -1307,7 +1307,7 @@
    "name": "Lotus Meditation Yogi",
    "file": "lotus_yogi.partwright.json",
    "language": "manifold-js",
-   "description": "A meditator seated in full cross-legged lotus, palms resting on the knees with eyes closed \u2014 bald and bare-chested with a navel, a calm seated study of the figure rig's deep-fold pose.",
+   "description": "A meditator seated cross-legged in a simplified lotus on a cushion, shins crossed and palms resting on the knees with eyes closed \u2014 bald and bare-chested with a navel, a calm seated study of the figure rig.",
    "tags": [
     "figures"
    ]

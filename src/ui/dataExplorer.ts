@@ -39,6 +39,7 @@ export function refreshDataExplorer(): void {
 function recordKey(store: StoreName, rec: Record<string, unknown>): string {
   if (store === 'aiKeys') return String(rec.provider ?? '');
   if (store === 'reliefSources') return String(rec.sessionId ?? ''); // keyed by sessionId, no `id`
+  if (store === 'paintRefineCache') return String(rec.key ?? ''); // content-keyed
   return String(rec.id ?? '');
 }
 
@@ -55,6 +56,8 @@ function recordLabel(store: StoreName, rec: Record<string, unknown>): string {
     case 'aiAttachments': return String(rec.label || rec.mediaType || rec.id || '');
     case 'importInbox':
     case 'exportInbox': return `${String(rec.source ?? '')} · ${String(rec.filename ?? rec.id ?? '')}`.trim();
+    case 'deletedObjects': return String((rec.part as { name?: unknown } | undefined)?.name ?? rec.id ?? '(unnamed)');
+    case 'paintRefineCache': return `${String((rec.mesh as { numTri?: number } | undefined)?.numTri ?? '?')} tris · ${String(rec.key ?? '')}`;
   }
 }
 

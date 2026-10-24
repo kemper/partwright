@@ -22,18 +22,21 @@ export interface ColorRegion {
   /** Per-triangle colors for image-paint regions; overrides `color` per
    *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
   perTriColors?: Map<number, [number, number, number]>;
+  /** Regions added inside one `runAsUndoGroup` call share this id, and undo /
+   *  redo take them off / put them back together (e.g. the several seam loops
+   *  of one `paintAlongBoundary`). Transient — not persisted. */
+  undoGroup?: number;
 }
 
-/** Optional PART scope carried by any paint descriptor (#1003): the region is
- *  resolved as usual and then intersected with the triangles of the
- *  `api.label` region named `label`, so it never bleeds onto the rest of the
- *  object. Keyed by name, so it survives code edits the way `byLabel` does —
- *  and when that label disappears the region is reported as unmatched paint
- *  instead of silently painting nothing. Absent ⇒ unscoped (pre-1.20 files).
- *  The `pattern` kind's own `scope` (a {@link PatternScope}) is a superset. */
-export interface PartScope { label?: string }
+// Every descriptor may carry `withinPart`: the name of a label (an `api.label`
+// region or a detected part of an import, #1025). The region is then clipped
+// to that part, so the paint can never bleed across the part's edge. The clip
+// is applied wherever a region's triangles are set (live and on re-resolve),
+// via the resolver main.ts registers with `setPartScopeResolver`. Descriptors
+// saved before scoping simply omit it.
+export type RegionDescriptor = RegionDescriptorKind & { withinPart?: string };
 
-type BaseRegionDescriptor =
+type RegionDescriptorKind =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
   // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
   // is set, the mesh is locally subdivided near the region's boundary until
@@ -116,25 +119,28 @@ type BaseRegionDescriptor =
   // colour. Resolved by `computePatternColors` (src/color/colorPattern.ts), which
   // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
   // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
+  // `smooth` + `maxEdge` (soccer / stripes / checker only — SMOOTH_PATTERN_KINDS)
+  // subdivide + clip the scope's boundary triangles along the pattern's analytic
+  // field, exactly like a smooth slab: only the descriptor is saved, and the
+  // refined mesh is rebuilt from it on load. Omitted ⇒ whole-triangle colours.
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
       scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
-      anchors?: [number, number, number][] }
+      anchors?: [number, number, number][];
+      smooth?: boolean; maxEdge?: number }
   // Colour match (the Replace tool with a part selected): every triangle whose
   // DRAWN colour (with this region excluded, like `colorFlood`) is within
   // `colorTolerance` of `seedColor` — not just a connected patch. `unpainted`
   // also matches triangles no layer colours (the neutral model shade the user
-  // picked as the source). Normally carries a `scope`, so a swap stays inside
-  // one part; re-resolved by colour on every reconcile.
+  // picked as the source). Normally carries a `withinPart`, so a swap stays
+  // inside one part; re-resolved by colour on every reconcile.
   | { kind: 'colorMatch'; seedColor: [number, number, number]; colorTolerance: number; unpainted?: boolean };
 
-export type RegionDescriptor = BaseRegionDescriptor & { scope?: PartScope };
-
-/** The part a descriptor is scoped to (`scope.label`), or null. `byLabel`
+/** The part a descriptor is confined to (`withinPart`), or null. `byLabel`
  *  regions ARE the part, so they report their own label. */
 export function descriptorPartLabel(d: RegionDescriptor): string | null {
   if (d.kind === 'byLabel') return d.label;
-  return d.scope?.label ?? null;
+  return d.withinPart ?? null;
 }
 
 export interface SerializedColorRegion {
@@ -176,6 +182,22 @@ const clearSnapshotListeners: ChangeListener[] = [];
 // (add, clear, deserialize) drops the stack so redo can never resurrect a
 // region into a state where the user wouldn't expect it.
 let regionRedoStack: ColorRegion[] = [];
+
+let nextUndoGroup = 1;
+let activeUndoGroup: number | null = null;
+
+/** Run `fn` so every region it adds is ONE undo step (undoLastPaint / the
+ *  Undo button remove them together; redo restores them together). Nested
+ *  calls join the outer group. */
+export function runAsUndoGroup<T>(fn: () => T): T {
+  if (activeUndoGroup !== null) return fn();
+  activeUndoGroup = nextUndoGroup++;
+  try {
+    return fn();
+  } finally {
+    activeUndoGroup = null;
+  }
+}
 
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
@@ -274,23 +296,6 @@ export function hasRegions(): boolean {
   return regions.length > 0;
 }
 
-// Clips a scoped region's triangles to its part on the CURRENT working mesh.
-// Published by main.ts (it owns the label map and the mesh it indexes); null
-// in headless contexts, where scoped regions are clipped by their resolver.
-let scopeClipper: ((label: string, triangles: Set<number>) => Set<number>) | null = null;
-
-export function setScopeClipper(fn: ((label: string, triangles: Set<number>) => Set<number>) | null): void {
-  scopeClipper = fn;
-}
-
-// The part the interactive paint tools are confined to (the rail selection).
-// Published by main.ts so this module stays a leaf.
-let implicitPaintScope: (() => string | null) | null = null;
-
-export function setImplicitPaintScope(fn: (() => string | null) | null): void {
-  implicitPaintScope = fn;
-}
-
 // Resolves a descriptor against the CURRENT working mesh (published by main.ts,
 // which owns the mesh, adjacency and label map). Lets the paint panel build
 // descriptor-driven regions (e.g. Replace-within-a-part) without importing main.
@@ -305,74 +310,42 @@ export function resolveOnCurrentMesh(d: RegionDescriptor): Set<number> {
   return currentMeshResolver?.(d) ?? new Set<number>();
 }
 
-// Told when an interactive paint landed entirely outside its part (so the UI
-// can say why nothing happened). Published by main.ts.
-let scopeMissHandler: ((label: string) => void) | null = null;
+/** Resolves a part (label) name to its triangle set on the CURRENT working
+ *  mesh, or null when no such part exists. Registered by main.ts, which owns
+ *  the label map and the refined-mesh lineage. */
+type PartScopeResolver = (label: string) => Set<number> | null;
+let partScopeResolver: PartScopeResolver | null = null;
 
-export function setScopeMissHandler(fn: ((label: string) => void) | null): void {
-  scopeMissHandler = fn;
+export function setPartScopeResolver(fn: PartScopeResolver | null): void {
+  partScopeResolver = fn;
 }
 
-/** The part interactive paint is currently confined to, or null. */
-export function getImplicitPaintScope(): string | null {
-  return implicitPaintScope?.() ?? null;
-}
-
-/** The part of `tris` that interactive paint would actually land on — the
- *  hover preview uses it so it never shows paint bleeding outside the
- *  selected part. `tris` unchanged when nothing is selected. */
-export function clipToActivePaintScope(tris: Set<number>): Set<number> {
-  const label = getImplicitPaintScope();
-  return label && scopeClipper && tris.size > 0 ? scopeClipper(label, tris) : tris;
-}
-
-/** Add a scope to a descriptor (no-op for `byLabel`, which is already a whole
- *  part, and when `label` is null). Pattern scopes keep their predicates. */
-export function withPartScope(descriptor: RegionDescriptor, label: string | null): RegionDescriptor {
-  if (!label || descriptor.kind === 'byLabel') return descriptor;
-  return { ...descriptor, scope: { ...(descriptor.scope ?? {}), label } } as RegionDescriptor;
-}
-
-// An explicit part scope for the duration of one SYNCHRONOUS script/agent paint
-// call (`partwright.paintInBox({ …, scope: { label } })`): every region the
-// call adds is scoped to that part. Set only via withExplicitPaintScope.
-let explicitPaintScope: string | null = null;
-
-/** Run a synchronous paint call with every region it adds scoped to `label`. */
-export function withExplicitPaintScope<T>(label: string, fn: () => T): T {
-  const prev = explicitPaintScope;
-  explicitPaintScope = label;
-  try {
-    return fn();
-  } finally {
-    explicitPaintScope = prev;
-  }
-}
-
-/** {@link addRegion} for the INTERACTIVE paint tools (brush, bucket, slab,
- *  shape, image stamp, replace): applies the rail's part selection as the
- *  region's scope, so every tool respects it the same way. Script/agent paint
- *  goes through `addRegion` with an explicit `scope` instead — a UI selection
- *  never silently narrows an API call. */
-export function addPaintRegion(
-  name: string,
-  color: [number, number, number],
-  source: ColorRegion['source'],
+/** Clip a region's triangles (and per-triangle colours) to its `withinPart`
+ *  scope. A part that no longer exists clips to nothing — the same "missing
+ *  label paints nothing" rule `byLabel` follows. Idempotent, so resolving an
+ *  already-clipped set again is harmless. */
+export function clipToPart(
   descriptor: RegionDescriptor,
   triangles: Set<number>,
-  visible: boolean = true,
-  slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
-): ColorRegion | null {
-  const scoped = descriptor.scope?.label ? descriptor : withPartScope(descriptor, getImplicitPaintScope());
-  // A click/stroke that lands entirely outside the selected part paints
-  // nothing — don't litter the region list with an empty region.
-  const label = scoped.kind === 'byLabel' || scoped.kind === 'pattern' ? null : scoped.scope?.label;
-  if (label && scopeClipper && triangles.size > 0 && scopeClipper(label, triangles).size === 0) {
-    scopeMissHandler?.(label);
-    return null;
-  }
-  return addRegion(name, color, source, scoped, triangles, visible, slotId, perTriColors);
+): { triangles: Set<number>; perTriColors?: Map<number, [number, number, number]> } {
+  const label = descriptor.withinPart;
+  if (!label || !partScopeResolver) return { triangles, perTriColors };
+  return intersectWithScope(partScopeResolver(label) ?? new Set<number>(), triangles, perTriColors);
+}
+
+/** Keep only the triangles (and per-triangle colours) inside `scope`. */
+export function intersectWithScope(
+  scope: Set<number>,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): { triangles: Set<number>; perTriColors?: Map<number, [number, number, number]> } {
+  const clipped = new Set<number>();
+  for (const t of triangles) if (scope.has(t)) clipped.add(t);
+  if (!perTriColors) return { triangles: clipped };
+  const colors = new Map<number, [number, number, number]>();
+  for (const [t, c] of perTriColors) if (scope.has(t)) colors.set(t, c);
+  return { triangles: clipped, perTriColors: colors };
 }
 
 export function addRegion(
@@ -385,18 +358,7 @@ export function addRegion(
   slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
-  if (explicitPaintScope && !descriptor.scope?.label) descriptor = withPartScope(descriptor, explicitPaintScope);
-  // A scoped region never covers triangles outside its part — clip here so
-  // every add path (UI, API, rehydrate) agrees, whatever the caller resolved.
-  const scopeLabel = descriptor.kind === 'byLabel' || descriptor.kind === 'pattern' ? null : descriptor.scope?.label;
-  if (scopeLabel && scopeClipper && triangles.size > 0) {
-    triangles = scopeClipper(scopeLabel, triangles);
-    if (perTriColors) {
-      const kept = new Map<number, [number, number, number]>();
-      for (const [t, c] of perTriColors) if (triangles.has(t)) kept.set(t, c);
-      perTriColors = kept;
-    }
-  }
+  if (descriptor.withinPart) ({ triangles, perTriColors } = clipToPart(descriptor, triangles, perTriColors));
   const id = nextRegionId++;
   const region: ColorRegion = {
     id,
@@ -409,6 +371,7 @@ export function addRegion(
     triangles,
     slotId,
     perTriColors,
+    ...(activeUndoGroup !== null ? { undoGroup: activeUndoGroup } : {}),
   };
   regions.push(region);
   clearRedoStack();
@@ -440,21 +403,33 @@ export function removeRegion(id: number): boolean {
   return true;
 }
 
-/** Pop the most recently added region and push it onto the redo stack. */
+/** Pop the most recently added region — with the rest of its undo group, if
+ *  it was added in one (see runAsUndoGroup) — onto the redo stack. Returns
+ *  the last-added region of the step. */
 export function removeLastRegion(): ColorRegion | null {
   if (regions.length === 0) return null;
   const region = regions.pop()!;
   regionRedoStack.push(region);
+  const group = region.undoGroup;
+  while (group !== undefined && regions.length > 0 && regions[regions.length - 1].undoGroup === group) {
+    regionRedoStack.push(regions.pop()!);
+  }
   notifyRedo();
   notify();
   return region;
 }
 
-/** Pop the redo stack and re-add the region. Returns null if nothing to redo. */
+/** Pop the redo stack and re-add the region (with the rest of its undo
+ *  group). Returns null if nothing to redo. */
 export function redoLastRegion(): ColorRegion | null {
-  const region = regionRedoStack.pop() ?? null;
+  let region = regionRedoStack.pop() ?? null;
   if (!region) return null;
   regions.push(region);
+  const group = region.undoGroup;
+  while (group !== undefined && regionRedoStack.length > 0 && regionRedoStack[regionRedoStack.length - 1].undoGroup === group) {
+    region = regionRedoStack.pop()!;
+    regions.push(region);
+  }
   notifyRedo();
   notify();
   return region;
@@ -617,6 +592,7 @@ export function setRegionTriangles(
 ): void {
   const region = regions.find(r => r.id === id);
   if (region) {
+    if (region.descriptor.withinPart) ({ triangles, perTriColors } = clipToPart(region.descriptor, triangles, perTriColors));
     region.triangles = triangles;
     region.perTriColors = perTriColors;
   }

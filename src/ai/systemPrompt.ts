@@ -387,7 +387,7 @@ Vocabulary — keep these three straight:
 Label every meaningful feature you build so the user can point at it by name.
 When the user has a part selected in the rail, their message starts with
 "[Selected in the Objects list: part …]" — "it" / "this" means that part. Pass
-\`scope: { label }\` to paint tools to keep paint inside a part; rename a part
+\`withinPart: '<part>'\` to paint tools to keep paint inside a part; rename a part
 with renameObjectPart (its paint follows); if runAndSave reports
 \`unmatchedPaint\` (paint whose part your edit renamed/removed), fix it with
 reassignPaint before moving on.
