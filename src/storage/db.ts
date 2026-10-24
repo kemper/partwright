@@ -205,7 +205,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 10;
+const DB_VERSION = 11;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -327,6 +327,12 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('paintRefineCache')) {
         const store = db.createObjectStore('paintRefineCache', { keyPath: 'key' });
         store.createIndex('lastUsed_bytes', ['lastUsed', 'bytes'], { unique: false });
+      }
+      // v11: saved Custom-provider endpoints (name, base URL, API key, default
+      // model, …) — one row per endpoint, keyed by id. See
+      // src/ai/customEndpoints.ts.
+      if (!db.objectStoreNames.contains('aiEndpoints')) {
+        db.createObjectStore('aiEndpoints', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => {

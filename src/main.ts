@@ -102,6 +102,8 @@ import { findPublishTarget, type PublishFormat } from './publish/publishTargets'
 import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { computeCodeDiff } from './ai/codeDiff';
 import { export3MF, build3MF } from './export/threemf';
+import { collectExportColors, suggestColorMerges, applyColorRemap, normalizeColorRemap, composeColorRemaps, countRemappedColors, type ColorRemap } from './export/exportColors';
+import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
@@ -6416,6 +6418,69 @@ async function main() {
   const coloredMeshForExport = (mesh: MeshData): MeshData =>
     (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(mesh) : mesh;
 
+  /** hex → names of the colour regions (paint + model labels) that use it, so the
+   *  3MF "Filament colors" step can say "hair, brows" instead of a bare hex. */
+  const exportColorNames = (): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    const toHex = (c: number) => Math.round(c * 255).toString(16).padStart(2, '0');
+    for (const r of [...getModelRegions(), ...getRegions()]) {
+      if (!r.name) continue;
+      const hex = `#${toHex(r.color[0])}${toHex(r.color[1])}${toHex(r.color[2])}`;
+      const list = (out[hex] ??= []);
+      if (!list.includes(r.name)) list.push(r.name);
+    }
+    return out;
+  };
+
+  /** The 3MF exports' "Filament colors" step: when the meshes carry 2+ distinct
+   *  colours, let the user merge / recolour them (every distinct hex is its own
+   *  filament in the slicer). Resolves to the export-only remap — `{}` when there
+   *  is nothing to choose — or null when the user cancels the export. */
+  const chooseExportColors = async (meshes: MeshData[], withNames = true): Promise<ColorRemap | null> => {
+    const colors = collectExportColors(meshes);
+    if (colors.length < 2) return {};
+    const choice = await showExportColorsModal({
+      colors,
+      // Region names describe the ACTIVE object only, so they'd mislabel colours
+      // baked from other objects.
+      ...(withNames ? { names: exportColorNames() } : {}),
+      tolerance: getConfig().ui.exportColorMergeTolerance,
+      slotCapacity: getPaletteCapacity(),
+    });
+    return choice ? choice.remap : null;
+  };
+
+  /** Console/AI twin of the Filament-colors step: validate `{ mergeColors,
+   *  maxColors, colorMap }` and resolve the remap for `meshes` (auto-merge first,
+   *  then the explicit colorMap on top). An empty remap when no option is given. */
+  const resolveApiColorRemap = (
+    meshes: MeshData[],
+    opts: { mergeColors?: unknown; maxColors?: unknown; colorMap?: unknown } | undefined,
+    fn: string,
+  ): { remap: ColorRemap } | { error: string } => {
+    if (!opts) return { remap: {} };
+    const { mergeColors, maxColors, colorMap } = opts;
+    if (mergeColors !== undefined && (typeof mergeColors !== 'number' || !Number.isFinite(mergeColors) || mergeColors < 0))
+      return { error: `${fn}: mergeColors must be a non-negative number (ΔE tolerance), got ${JSON.stringify(mergeColors)}.` };
+    if (maxColors !== undefined && (typeof maxColors !== 'number' || !Number.isInteger(maxColors) || maxColors < 1))
+      return { error: `${fn}: maxColors must be a positive integer, got ${JSON.stringify(maxColors)}.` };
+    if (colorMap !== undefined && (colorMap === null || typeof colorMap !== 'object' || Array.isArray(colorMap)))
+      return { error: `${fn}: colorMap must be an object of {"#rrggbb": "#rrggbb"}.` };
+    let remap: ColorRemap = {};
+    if (mergeColors !== undefined || maxColors !== undefined) {
+      remap = suggestColorMerges(collectExportColors(meshes), {
+        tolerance: (mergeColors as number | undefined) ?? 0,
+        ...(maxColors !== undefined ? { maxColors: maxColors as number } : {}),
+      });
+    }
+    if (colorMap !== undefined) {
+      const explicit = normalizeColorRemap(colorMap as Record<string, string>);
+      if ('error' in explicit) return { error: `${fn}: ${explicit.error}` };
+      remap = composeColorRemaps(remap, explicit);
+    }
+    return { remap };
+  };
+
   /** Non-blocking heads-up that a multi-part session exports only the active
    *  part (mesh exports consume the single `currentMeshData`). Mirrors the
    *  share-link warning so users aren't silently handed one part of an
@@ -6553,10 +6618,15 @@ async function main() {
       });
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
-      progress.setTitle('Writing 3MF…');
+      // Filament colours: merge near-identical shades before writing (export-only).
+      progress.end();
+      const onlyActive = baked.length === 1 && selectedIds.length === 1 && selectedIds[0] === activeId;
+      const remap = await chooseExportColors(baked.map(b => b.mesh), onlyActive);
+      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+      const toWrite = baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, {
+      const built = build3MFProject(toWrite, {
         bambu, bedSize: [bed[0], bed[1]],
         printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
@@ -6715,7 +6785,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -6755,11 +6825,17 @@ async function main() {
       if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
       bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
     }
+    // Validate the colour options before baking (no meshes → no merge computed).
+    const colorOptsCheck = resolveApiColorRemap([], opts, 'export3MFObjects');
+    if ('error' in colorOptsCheck) return colorOptsCheck;
     const { baked } = await bakePartsParallel(bakeParts);
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
+    const merge = resolveApiColorRemap(baked.map(b => b.mesh), opts, 'export3MFObjects');
+    if ('error' in merge) return merge;
+    const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, {
+      const built = build3MFProject(baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
@@ -6774,7 +6850,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -6786,7 +6862,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -6809,7 +6885,12 @@ async function main() {
     // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
     // single-object export.
     if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
-    try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
+    try {
+      const mesh = fileExportMesh(true)!;
+      const remap = await chooseExportColors([mesh]);
+      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+      showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
+    }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
@@ -13047,12 +13128,40 @@ async function main() {
     },
 
     /** Export current model as 3MF download. Optional filename override. */
-    export3MF(filename?: string) {
+    export3MF(filename?: string, opts?: { mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       const bad = argError(() => assertString(filename, 'export3MF(filename)', { optional: true }));
       if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      const mesh = fileExportMesh(true)!;
+      const merge = resolveApiColorRemap([mesh], opts, 'export3MF');
+      if ('error' in merge) return merge;
+      const { remap } = merge;
       warnIfSurfaceStale('3MF');
-      export3MF(fileExportMesh(true)!, filename);
+      export3MF(applyColorRemap(mesh, remap), filename);
+    },
+
+    /** The distinct colours a 3MF export of the current object will carry (each
+     *  one is a filament in the slicer), most-used first, plus the merge a given
+     *  `{ mergeColors, maxColors }` would apply. Read-only — pass the same options
+     *  to export3MF / export3MFData / export3MFObjects to export with the merge. */
+    listExportColors(opts?: { mergeColors?: number; maxColors?: number }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (opts !== undefined && (opts === null || typeof opts !== 'object')) return { error: 'listExportColors(opts): opts must be an object.' };
+      const mesh = fileExportMesh(true)!;
+      const colors = collectExportColors([mesh]);
+      const merge = resolveApiColorRemap([mesh], opts ? { mergeColors: opts.mergeColors, maxColors: opts.maxColors } : undefined, 'listExportColors');
+      if ('error' in merge) return merge;
+      const { remap } = merge;
+      const names = exportColorNames();
+      return {
+        colors: colors.map(c => ({
+          hex: c.hex, triangles: c.triangles, share: Math.round(c.share * 10000) / 10000,
+          ...(names[c.hex] ? { names: names[c.hex] } : {}),
+          ...(c.unpainted ? { unpainted: true } : {}),
+        })),
+        merges: remap,
+        filaments: colors.length ? countRemappedColors(colors, remap) : 0,
+      };
     },
 
     /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
@@ -13082,7 +13191,7 @@ async function main() {
      *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
      *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
      *  `{ ok, filename, parts }` or `{ error }`. */
-    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -13092,7 +13201,7 @@ async function main() {
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
      *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
-    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -13139,10 +13248,10 @@ async function main() {
     // Deprecated pre-rename aliases — "parts" were renamed to "objects" (a part
     // is now a labelled piece inside one object). Kept so older prompts, agents,
     // and scripts keep working; prefer the *Objects* names.
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       return partwrightAPI.export3MFObjects(partIds, filename, opts);
     },
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       return partwrightAPI.export3MFObjectsData(partIds, filename, opts);
     },
     exportOBJParts(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjects(partIds, filename); },
@@ -13262,12 +13371,16 @@ async function main() {
     },
 
     /** Build a 3MF (always a ZIP) and return its bytes as base64. */
-    async export3MFData(filename?: string) {
+    async export3MFData(filename?: string, opts?: { mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
       const bad = argError(() => assertString(filename, 'export3MFData(filename)', { optional: true }));
       if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      const mesh = fileExportMesh(true)!;
+      const merge = resolveApiColorRemap([mesh], opts, 'export3MFData');
+      if ('error' in merge) return merge;
+      const { remap } = merge;
       const warning = surfaceStaleExportWarning('3MF');
-      const built = build3MF(fileExportMesh(true)!, filename);
+      const built = build3MF(applyColorRemap(mesh, remap), filename);
       registerExportFromBuilt(built, '3MF');
       return {
         filename: built.filename,
@@ -20771,13 +20884,14 @@ async function main() {
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
-        'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'export3MF':       { signature: 'export3MF(filename?, {mergeColors?, maxColors?, colorMap?}) -- Download 3MF file. Each distinct colour is a slicer filament: mergeColors (ΔE, ~10) merges near-identical shades, maxColors caps the count, colorMap {"#from":"#to"} recolours (export-only)', docs: '/ai/file-io.md' },
+        'listExportColors': { signature: 'listExportColors({mergeColors?, maxColors?}?) -- Distinct colours (= filaments) a 3MF export carries -> {colors:[{hex, triangles, share, names?, unpainted?}], merges:{"#from":"#to"}, filaments}', docs: '/ai/file-io.md' },
         'exportTurntable': { signature: 'await exportTurntable({seconds?, revolutions?}) -- Record the camera orbiting the model and download a turntable video (.webm) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects}', docs: '/ai/file-io.md' },
+        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
         'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?) -- Bundle objects into a .zip of one .stl per object -> {ok, filename, objects}', docs: '/ai/file-io.md' },
@@ -20798,7 +20912,7 @@ async function main() {
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportSTLData':   { signature: 'await exportSTLData() -- Return STL as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
-        'export3MFData':   { signature: 'await export3MFData() -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'export3MFData':   { signature: 'await export3MFData(filename?, {mergeColors?, maxColors?, colorMap?}) -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
         'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
         'exportSession': { signature: 'await exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) -- Session (default: current) as an ExportedSession object (thumbnails off by default) -> object, null when none, or {error}', docs: '/ai/file-io.md' },

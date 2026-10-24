@@ -8,6 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { getConfig } from '../config/appConfig';
 import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
+import { rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
@@ -26,7 +27,8 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
+import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -1410,6 +1412,9 @@ function renderModelPicker(): void {
       sel.value = current;
       sel.addEventListener('change', () => {
         saveSettings(setCustomModel(loadSettings(), sel.value));
+        // Keep the saved endpoint's default in step, so re-selecting it in
+        // AI Settings doesn't revert this pick.
+        void rememberEndpointModel(settings.toggles.customBaseUrl, sel.value);
         recordSessionAiPreference();
         renderToggleStrip();
         renderCostMeter();
@@ -2053,7 +2058,7 @@ async function approvePlan(): Promise<void> {
   // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
   // the approved turn could only re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
-    { type: 'text', text: 'Plan approved. Please proceed.' },
+    { type: 'text', text: PLAN_APPROVED_TEXT },
   ], { reviewRequest });
 }
 
@@ -2702,6 +2707,7 @@ async function launchReview(): Promise<void> {
   showAiReviewModal({
     activeProvider,
     sessionId: state.sessionId,
+    history: state.history,
     onReviewPosted: (msg) => {
       state.history.push(msg);
       renderTranscript();
@@ -3164,7 +3170,7 @@ async function preflightTurn(
       );
       return PREFLIGHT_ABORT;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     // Hosted cloud provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
@@ -3472,20 +3478,13 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
       planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      const planPrefix =
-        'Before doing anything, write a concise plan for the following request. '
-        + 'Describe your approach, key steps, and any design decisions. '
-        + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
-        + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
-        + '---\n\n';
       planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -4043,15 +4042,23 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
   try {
     const context = await gatherReviewContext();
     if (controller.signal.aborted || state.sessionId !== reviewSession || !writeOwner) return null;
+    // The user's own messages (never the agent's replies), so the review
+    // grades against every requirement and correction, not just the last ask.
+    const conversation = cfg.includeConversation ? userConversation(state.history, getConfig().ai.reviewConversationMaxChars) : undefined;
     const result = await runReview({
       provider: reviewer.provider,
       model: reviewer.model,
       context: {
         ...context,
-        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The pinned request stays in the focus: on plan approval it's the
+        // original ask, which the conversation alone wouldn't single out.
+        focus: request
+          ? `Grade the result against the user's request: ${request}${conversation && conversation.messages.length > 0 ? "\n(Their earlier messages below give the rest of their requirements and corrections.)" : ''}`
+          : undefined,
         // The images the user attached anywhere in this conversation (incl.
         // ones compaction carried forward), not the agent's own renders.
         references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+        conversation,
       },
       sessionId: reviewSession,
       // The review is in the transcript — a session note per automatic
@@ -4313,7 +4320,7 @@ async function maybeAutoCompact(): Promise<void> {
   if (settings.toggles.provider === 'custom') {
     // Optional key; skip silently if the endpoint isn't fully configured.
     if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) return;
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     const key = await getKey(settings.toggles.provider);
     if (!key) return;
@@ -4367,7 +4374,7 @@ async function runCompact(): Promise<void> {
       void showAiSettingsModal({ onChange: () => panelStatusUpdate() }, { initialTab: 'custom' });
       return;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
     setTransientStatus('Summarizing the conversation…');
   } else if (settings.toggles.provider !== 'local') {
     const provider = settings.toggles.provider;
