@@ -126,14 +126,15 @@ test.describe('render edge modes', () => {
       const pw = (window as any).partwright;
       pw.clearColors();
       await pw.run('return api.Manifold.cube([10,10,10], true);');
+      // Value-returning methods report bad input as { error } (ai.md#argument-validation).
       try {
-        await pw.renderViews({ edges: 'sketch' });
-        return { threw: false, msg: '' };
+        const r = await pw.renderViews({ edges: 'sketch' });
+        return { threw: false, msg: typeof r?.error === 'string' ? r.error : '' };
       } catch (e) {
         return { threw: true, msg: e instanceof Error ? e.message : String(e) };
       }
     });
-    expect(result.threw).toBe(true);
+    expect(result.threw).toBe(false);
     expect(result.msg).toContain('edges');
   });
 });

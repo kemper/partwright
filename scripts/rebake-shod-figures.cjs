@@ -64,7 +64,7 @@ async function rebakeOne(page, file) {
   const res = await page.evaluate(async ({ code, paint, view }) => {
     await window.partwright.createSession('rebake');
     const geo = await window.partwright.run(code);
-    if (!geo || geo.status === 'error') return { error: 'run failed: ' + (geo && geo.error) };
+    if (!geo || geo.error || geo.status === 'error') return { error: 'run failed: ' + (geo && geo.error) };
     const paintErrors = [];
     for (const op of paint) {
       let r;

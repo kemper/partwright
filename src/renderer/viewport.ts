@@ -1321,6 +1321,41 @@ export function setCameraPose(pose: { position: [number, number, number]; target
   needsRender = true;
 }
 
+/** Orbit the live camera to an explicit angle — the inverse of getCameraState,
+ *  in the same convention: azimuth 0 = looking from the front (−Y), 90 = from
+ *  the right (+X); elevation 0 = horizon, +90 = straight down from above.
+ *  `distance` / `target` default to the current ones. Elevation is held just
+ *  off ±90 so OrbitControls (Z-up) keeps a defined azimuth. */
+export function setCameraOrbit(opts: { azimuth: number; elevation: number; distance?: number; target?: [number, number, number] }): void {
+  const cur = camera.position.clone().sub(controls.target);
+  const target = opts.target ?? [controls.target.x, controls.target.y, controls.target.z];
+  const distance = opts.distance ?? cur.length();
+  const el = Math.max(-89.9, Math.min(89.9, opts.elevation)) * Math.PI / 180;
+  const az = opts.azimuth * Math.PI / 180;
+  const dir = [Math.sin(az) * Math.cos(el), -Math.cos(az) * Math.cos(el), Math.sin(el)];
+  setCameraPose({
+    position: [target[0] + dir[0] * distance, target[1] + dir[1] * distance, target[2] + dir[2] * distance],
+    target: [target[0], target[1], target[2]],
+  });
+}
+
+/** Aim the camera at a world-space box (e.g. one labelled part) from the
+ *  current viewing direction, at the same relative distance the default
+ *  framing uses for the whole model (frameFactor·√3·maxDim). */
+export function frameBounds(min: [number, number, number], max: [number, number, number]): void {
+  const center: [number, number, number] = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  const maxDim = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+  if (!Number.isFinite(maxDim) || !center.every(Number.isFinite)) return;
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() === 0) dir.set(1, -1, 1);
+  dir.normalize();
+  const distance = Math.max(maxDim, 1e-3) * getConfig().renderer.defaultFrameFactor * Math.sqrt(3);
+  setCameraPose({
+    position: [center[0] + dir.x * distance, center[1] + dir.y * distance, center[2] + dir.z * distance],
+    target: center,
+  });
+}
+
 export function getCanvas(): HTMLCanvasElement {
   return renderer.domElement;
 }
