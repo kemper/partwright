@@ -79,10 +79,13 @@ reasoning behind them:
   that, using `executeIsolated`, which now also returns `labelMap`. A rewrite
   that runs but moves the wrong geometry (for example with nested labels) is
   refused before anything changes.
-- **Order of commits.** The new objects are created first and the original is
-  saved without the selection last. If a step fails part-way, the selection
-  therefore still exists in the original, and the error lists what was already
-  done. The last new object is still left open, as Extract did before.
+- **Order of commits.** I tried creating the new objects first and saving the
+  original last. That needs two extra object switches, and those made the
+  existing extract e2e test flaky: a late editor run raced the test's next
+  `runAndSave`. So the original order stays: save the original first, then
+  create the new objects. That is safe now because every rewrite is verified
+  by its dry-run before anything is committed. A save error after that point
+  says what was already done and points to the original's version history.
 - **Colours move with their parts.** `byLabel` fills (the swatch colour) of
   parts that move entirely into a new object are re-applied there and removed
   from the original. Without this they stayed behind as unmatched paint.

@@ -11525,11 +11525,12 @@ async function main() {
    *  object (or, with `separate`, one new object each): the Objects list's
    *  "Move to new object" / "Split into objects", extractObjectParts and
    *  extractObjectPiece. Every rewrite is dry-run and checked against what it
-   *  must contain first, so a refused move changes nothing. Then each new
-   *  object is created with its share (and the colour fills of the parts it
-   *  takes), and the original is saved without the selection last — so a
-   *  failure part-way never leaves the selection only in the original's
-   *  history. manifold-js only. The (last) new object is left open. */
+   *  must contain first, so a refused move changes nothing. Then the original
+   *  is saved without the selection and each new object is created with its
+   *  share (and the colour fills of the parts it takes). A failure after that
+   *  (a save error) says what was already done — the original's version
+   *  history still has the selection. manifold-js only. The (last) new
+   *  object is left open. */
   async function moveObjectSelection(keys: string[], separate: boolean, fn: string): Promise<
     { ok: true; objects: { id: string; name: string }[]; original: { id: string; name: string }; via: 'pieces' | 'parts' } | { error: string }
   > {
@@ -11573,7 +11574,13 @@ async function main() {
 
     const what = describePartKeys(unique);
     const done: string[] = [];
-    const failed = (msg: string) => ({ error: `${fn}: ${msg}${done.length ? ` Already done: ${done.join('; ')}.` : ''}` });
+    const failed = (msg: string) => ({ error: `${fn}: ${msg}${done.length ? ` Already done: ${done.join('; ')} — "${original.name}"'s version history still has the code from before.` : ''}` });
+    const movedFills = new Set(fillsFor.flat().map(f => f.label));
+    for (const r of getRegions().filter(x => x.descriptor.kind === 'byLabel' && movedFills.has(x.descriptor.label))) removeRegion(r.id);
+    const dropped = await partwrightAPI.runAndSave(plan.dropCode, separate && plan.objects.length > 1 ? `Split ${what} into objects` : `Move ${what} to a new object`);
+    const dropFailed = saveFailed(dropped);
+    if (dropFailed) return { error: `${fn}: ${dropFailed}` };
+    done.push(`"${original.name}" saved without ${what}`);
     const objects: { id: string; name: string }[] = [];
     for (const [i, o] of plan.objects.entries()) {
       const created = await partwrightAPI.createObject(`${original.name} · ${o.name}`) as Record<string, unknown>;
@@ -11587,15 +11594,6 @@ async function main() {
       objects.push({ id: String(created.id), name: String(created.name) });
       done.push(`created "${String(created.name)}"`);
     }
-    const back = await partwrightAPI.changeObject({ id: original.id }) as Record<string, unknown>;
-    if (back.error) return failed(`couldn't reopen "${original.name}" to remove the selection — ${String(back.error)}`);
-    // Reopening reloaded the original's paint (new region ids) — match by label.
-    const movedFills = new Set(fillsFor.flat().map(f => f.label));
-    for (const r of getRegions().filter(x => x.descriptor.kind === 'byLabel' && movedFills.has(x.descriptor.label))) removeRegion(r.id);
-    const dropped = await partwrightAPI.runAndSave(plan.dropCode, separate && plan.objects.length > 1 ? `Split ${what} into objects` : `Move ${what} to a new object`);
-    const dropFailed = saveFailed(dropped);
-    if (dropFailed) return failed(`"${original.name}" didn't save without them — ${dropFailed}.`);
-    await partwrightAPI.changeObject({ id: objects[objects.length - 1].id });
     return { ok: true, objects, original: { id: original.id, name: original.name }, via: plan.via };
   }
 
