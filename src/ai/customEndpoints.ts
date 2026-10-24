@@ -84,13 +84,23 @@ export async function ensureEndpointsSeeded(
   return sortByCreated(result);
 }
 
-/** The API key to send to a Custom endpoint: the saved endpoint's key when
- *  `baseUrl` matches one, else the legacy single `aiKeys` 'custom' row.
- *  Matching by URL keeps the key right when a session restores toggles that
- *  point at a different saved endpoint than the last one selected. */
+/** The saved endpoint the Custom provider is pointed at: matched by base
+ *  URL, with the legacy `aiKeys` 'custom' row (which every apply mirrors)
+ *  breaking ties — so two endpoints for one URL (two bridge entries for
+ *  localhost:8317, say) resolve to the one actually selected, not merely the
+ *  last one edited. */
+export async function findActiveEndpoint(baseUrl: string, list?: SavedEndpoint[]): Promise<SavedEndpoint | null> {
+  const legacy = (await getKey('custom'))?.apiKey ?? '';
+  return findEndpointForUrl(list ?? await listEndpoints(), baseUrl, legacy);
+}
+
+/** The API key to send to a Custom endpoint: the active saved endpoint's
+ *  key when `baseUrl` matches one, else the legacy single `aiKeys` 'custom'
+ *  row. Matching by URL keeps the key right when a session restores toggles
+ *  that point at a different saved endpoint than the last one selected. */
 export async function resolveCustomApiKey(baseUrl: string): Promise<string> {
   try {
-    const hit = findEndpointForUrl(await listEndpoints(), baseUrl);
+    const hit = await findActiveEndpoint(baseUrl);
     if (hit) return hit.apiKey;
   } catch { /* store unavailable — fall back to the legacy row */ }
   return (await getKey('custom'))?.apiKey ?? '';
@@ -119,7 +129,7 @@ export async function syncLegacyCustomKey(apiKey: string): Promise<void> {
  *  later doesn't revert it. Best-effort. */
 export async function rememberEndpointModel(baseUrl: string, model: string): Promise<void> {
   try {
-    const hit = findEndpointForUrl(await listEndpoints(), baseUrl);
+    const hit = await findActiveEndpoint(baseUrl);
     if (!hit || hit.model === model) return;
     await putEndpoint({ ...hit, model, updatedAt: Date.now() });
   } catch { /* best-effort */ }

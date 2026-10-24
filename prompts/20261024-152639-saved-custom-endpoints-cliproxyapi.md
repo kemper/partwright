@@ -23,3 +23,14 @@ For the CLIProxyAPI setup: let me set an API key in settings instead of always b
 **UX.** The bridge editor's steps are the form itself, in order: install, key (field + append command), login, base URL + Connect (which tests and fetches in one go), then model. The key comes before Connect, and a paste saves at once. The long append script shows as a one-line summary; Copy copies the whole script and a toggle reveals it. Generic endpoints use the same editor without the bridge steps and are auto-named after their host.
 
 **Not added:** no `window.partwright` API for endpoints. AI-provider settings and keys have no console API today, and exposing stored keys to page scripts would be a step backwards.
+
+**Review round (work-reviewer findings, all fixed).**
+- The active endpoint is now resolved with the mirrored legacy key as the tie-break. Two entries at one URL (e.g. a second bridge entry) can no longer hijack the key being sent.
+- Connect writes its results to the endpoint it started on, by id, even if the user switched rows mid-request.
+- A plain Save no longer re-applies an untouched endpoint over the session's model.
+- Deleting the in-use endpoint clears the mirrored key.
+- Restoring a backup re-opens the editor from the stored rows, so a stale draft can't write itself back.
+- The awk script strips CRLF and accepts a header comment. It exits 3, leaving the file untouched, on a non-empty flow list rather than appending a duplicate section.
+- The command keeps a `.pw-bak` copy and restarts the bridge only after a successful write.
+- Only the exact Homebrew default path is double-quoted; anything else is single-quoted, which closes the injection path through a restored config path. macOS ignores a stored config path.
+- Backup download now asks for confirmation, since the file holds plaintext keys.

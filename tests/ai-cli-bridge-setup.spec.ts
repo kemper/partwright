@@ -52,7 +52,7 @@ test.describe('AI CLI bridge setup', () => {
     const fullCmd = await addCmd.getAttribute('data-command');
     expect(fullCmd).toContain(`KEY='${key}'`);
     expect(fullCmd).toContain('awk');
-    expect(fullCmd).toMatch(/brew services restart cliproxyapi$/);
+    expect(fullCmd).toContain('brew services restart cliproxyapi');
     // The long script shows as a one-line summary until expanded.
     await expect(addCmd).toContainText('then restart the bridge');
     await page.getByRole('button', { name: 'Show the full command' }).click();
@@ -92,6 +92,20 @@ test.describe('AI CLI bridge setup', () => {
     });
     expect(applied).toEqual({ provider: 'custom', model: 'claude-opus-5-5', key });
 
+    // A second bridge entry at the same URL (with its own, newer key) must
+    // not hijack the key the in-use one sends.
+    await page.getByRole('button', { name: '+ CLIProxyAPI bridge' }).click();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText('In use');
+    const stillKey = await page.evaluate(async () => {
+      const [{ loadSettings }, { resolveCustomApiKey }] = await Promise.all([
+        import('/src/ai/settings.ts'),
+        import('/src/ai/customEndpoints.ts'),
+      ]);
+      return resolveCustomApiKey(loadSettings().toggles.customBaseUrl);
+    });
+    expect(stillKey).toBe(key);
+
     // A second endpoint (e.g. a remote gateway) — "Use" switches the provider
     // to it, and both stay saved.
     await page.getByRole('button', { name: '+ Other endpoint' }).click();
@@ -100,9 +114,9 @@ test.describe('AI CLI bridge setup', () => {
     await page.getByTestId('custom-endpoint-key').fill('sk-remote');
     await page.getByTestId('custom-endpoint-key').blur();
     await page.getByRole('button', { name: 'Use this endpoint' }).click();
-    await expect(rows).toHaveCount(2);
-    await expect(rows.nth(1)).toContainText('gw.example.com');
-    await expect(rows.nth(1)).toContainText('In use');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(2)).toContainText('gw.example.com');
+    await expect(rows.nth(2)).toContainText('In use');
     const switched = await page.evaluate(async () => {
       const [{ loadSettings }, { resolveCustomApiKey }] = await Promise.all([
         import('/src/ai/settings.ts'),

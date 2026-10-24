@@ -69,26 +69,34 @@ export function defaultConfigPath(os: BridgeOs): string {
 /** Shell-quote a config path. The Homebrew default stays double-quoted so
  *  `$(brew --prefix)` expands; anything the user typed is single-quoted. */
 function quotePath(path: string): string {
-  if (path.startsWith('$(brew --prefix)')) return `"${path}"`;
+  // Only the exact Homebrew default is double-quoted (so `$(brew --prefix)`
+  // expands). Anything else — typed, or restored from a backup file — is
+  // single-quoted, so `$(…)`, backticks or quotes in it can't run.
+  if (path === defaultConfigPath('mac')) return `"${path}"`;
   return `'${path.replace(/'/g, `'\\''`)}'`;
 }
 
 /** awk program that appends `k` to the `api-keys:` list. Keeps every key
  *  already there, drops the `your-api-key-N` template lines (which stop the
  *  bridge from starting), matches the list's existing indentation, turns
- *  `api-keys: []` into a block list, and adds the section when the config
- *  has none. Blank/comment lines that trail the list stay after the new key.
- *  Contains no single quotes, so it can sit inside '…' in the shell. */
+ *  `api-keys: []` into a block list, tolerates a trailing comment on the
+ *  header and CRLF line endings, and adds the section when the config has
+ *  none. Blank/comment lines that trail the list stay after the new key.
+ *  Any other `api-keys:` shape (a non-empty flow list `["a","b"]`) makes it
+ *  exit 3 so the command leaves the file untouched instead of appending a
+ *  duplicate section. Contains no single quotes, so it can sit inside '…'. */
 export const APPEND_KEY_AWK = [
   'function ind(){match($0,/^[ \\t]*/);return substr($0,1,RLENGTH)}',
   'function add(){if(!done)print (hl?li:ki "  ") "- \\"" k "\\"";done=1;printf "%s",b;b=""}',
-  '{if(!seen&&$0~/^[ \\t]*api-keys:[ \\t]*(\\[\\])?[ \\t]*$/){seen=1;inb=1;ki=ind();sub(/[ \\t]*\\[\\][ \\t]*$/,"");print;next}',
+  '{sub(/\\r$/,"")}',
+  '!seen&&/^[ \\t]*api-keys:/{if($0!~/^[ \\t]*api-keys:[ \\t]*(\\[[ \\t]*\\])?[ \\t]*(#.*)?$/){bad=1;exit 3}seen=1;inb=1;ki=ind();print ki "api-keys:";next}',
+  '{',
   'if(inb){if($0~/^[ \\t]*-[ \\t]*.?your-api-key-[0-9]+.?[ \\t]*$/){if(!hl){li=ind();hl=1}next}',
   'if($0~/^[ \\t]*-/){li=ind();hl=1;printf "%s",b;b="";print;next}',
   'if($0~/^[ \\t]*(#.*)?$/){b=b $0 "\\n";next}',
   'add();inb=0}',
   'print}',
-  'END{if(inb)add();if(!seen){print "api-keys:";add()}}',
+  'END{if(bad)exit 3;if(inb)add();if(!seen){print "api-keys:";add()}}',
 ].join('');
 
 /** awk program that prints each key under `api-keys:`, one per line. */
@@ -96,13 +104,15 @@ export const LIST_KEYS_AWK =
   '/^[ \\t]*api-keys:/{f=1;next} f&&/^[ \\t]*-/{s=$0;sub(/^[ \\t]*-[ \\t]*/,"",s);sub(/[ \\t]+#.*$/,"",s);gsub(/["\\047 \\t]/,"",s);print s;next} f&&/^[ \\t]*[^ \\t#]/{f=0}';
 
 /** One-liner that adds `key` to the bridge config (idempotent: a key that's
- *  already there is left alone) and, on macOS, restarts the service. Null
+ *  already there is left alone; a `.pw-bak` copy is kept) and, on macOS,
+ *  restarts the service after a successful write. Null
  *  when the key or OS can't be scripted safely — show manualAddKeyText. */
 export function addKeyCommand(key: string, os: BridgeOs, configPath?: string): string | null {
   if (os === 'windows' || !isCommandSafeKey(key)) return null;
   const cfg = quotePath((configPath ?? '').trim() || defaultConfigPath(os));
-  const restart = os === 'mac' ? '; brew services restart cliproxyapi' : '';
-  return `CFG=${cfg}; KEY='${key}'; if grep -qF -- "$KEY" "$CFG"; then echo "Key already in $CFG"; else awk -v k="$KEY" '${APPEND_KEY_AWK}' "$CFG" > "$CFG.pw-tmp" && cat "$CFG.pw-tmp" > "$CFG" && rm -f "$CFG.pw-tmp" && echo "Added the key to $CFG"; fi${restart}`;
+  const restart = os === 'mac' ? ' && brew services restart cliproxyapi' : '';
+  // Keeps a backup (.pw-bak) before rewriting; restarts only after a write.
+  return `CFG=${cfg}; KEY='${key}'; if grep -qF -- "$KEY" "$CFG"; then echo "Key already in $CFG"; elif awk -v k="$KEY" '${APPEND_KEY_AWK}' "$CFG" > "$CFG.pw-tmp"; then cp "$CFG" "$CFG.pw-bak" && cat "$CFG.pw-tmp" > "$CFG" && rm -f "$CFG.pw-tmp" && echo "Added the key to $CFG (backup: $CFG.pw-bak)"${restart}; else rm -f "$CFG.pw-tmp"; echo "Couldn't update api-keys in $CFG automatically - add the key by hand"; fi`;
 }
 
 /** Command that prints the keys the bridge accepts, so a second browser (or

@@ -63,6 +63,12 @@ debug: false
     expect(awk(APPEND_KEY_AWK, 'port: 1\n', 'k')).toBe('port: 1\napi-keys:\n  - "k"\n');
   });
 
+  test('tolerates a header comment and CRLF; refuses a flow list instead of duplicating the section', () => {
+    expect(awk(APPEND_KEY_AWK, 'api-keys: # mine\n  - "a"\nx: 1\n', 'k')).toBe('api-keys:\n  - "a"\n  - "k"\nx: 1\n');
+    expect(awk(APPEND_KEY_AWK, 'api-keys:\r\n  - "a"\r\nx: 1\r\n', 'k')).toBe('api-keys:\n  - "a"\n  - "k"\nx: 1\n');
+    expect(() => awk(APPEND_KEY_AWK, 'api-keys: ["a","b"]\nx: 1\n', 'k')).toThrow();
+  });
+
   test('the full command is idempotent and leaves other keys alone', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cliproxy-'));
     const cfg = join(dir, 'config.yaml');
@@ -74,6 +80,12 @@ debug: false
     const listed = execFileSync('sh', ['-c', listKeysCommand('other', cfg)!], { encoding: 'utf8' });
     expect(listed.trim().split('\n')).toEqual(['pw-a', 'pw-b']);
     expect(readFileSync(cfg, 'utf8')).not.toContain('your-api-key');
+    expect(readFileSync(`${cfg}.pw-bak`, 'utf8')).toContain('pw-a');
+
+    // An unparseable api-keys shape leaves the file untouched.
+    writeFileSync(cfg, 'api-keys: ["x"]\n');
+    expect(run('pw-c')).toContain("Couldn't update api-keys");
+    expect(readFileSync(cfg, 'utf8')).toBe('api-keys: ["x"]\n');
   });
 });
 
@@ -82,7 +94,7 @@ describe('commands', () => {
     const cmd = addKeyCommand('pw-abc', 'mac')!;
     expect(cmd).toContain('CFG="$(brew --prefix)/etc/cliproxyapi.conf"');
     expect(cmd).toContain("KEY='pw-abc'");
-    expect(cmd).toMatch(/brew services restart cliproxyapi$/);
+    expect(cmd).toContain('&& brew services restart cliproxyapi; else');
   });
 
   test('Windows and unsafe keys fall back to manual instructions', () => {
@@ -93,8 +105,10 @@ describe('commands', () => {
     expect(isCommandSafeKey('a b')).toBe(false);
   });
 
-  test('a typed config path is single-quoted', () => {
+  test('a typed config path is single-quoted, even one dressed up as the brew default', () => {
     expect(listKeysCommand('other', "/srv/it's/config.yaml")).toContain(`'/srv/it'\\''s/config.yaml'`);
+    expect(listKeysCommand('other', '$(brew --prefix)/x$(touch /tmp/pwned)')).toContain(`'$(brew --prefix)/x$(touch /tmp/pwned)'`);
+    expect(listKeysCommand('mac')).toContain('"$(brew --prefix)/etc/cliproxyapi.conf"');
   });
 
   test('login flag follows the model family', () => {

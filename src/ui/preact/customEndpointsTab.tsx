@@ -39,7 +39,6 @@ import {
   type BridgeOs,
 } from '../../ai/cliProxy';
 import {
-  findEndpointForUrl,
   mergeBackup,
   nameFromUrl,
   newEndpoint,
@@ -55,6 +54,7 @@ import {
   putEndpoint,
   putEndpoints,
   syncLegacyCustomKey,
+  findActiveEndpoint,
 } from '../../ai/customEndpoints';
 import {
   loadSettings,
@@ -67,6 +67,7 @@ import { generateId } from '../../storage/db';
 import { downloadBlob } from '../../export/download';
 import { confirmDialog } from '../dialogs';
 import { showToast } from '../toast';
+import { BUTTON_SMALL_DANGER } from '../styleConstants';
 
 import { settingsSignal, setSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton } from './primitives';
@@ -109,10 +110,10 @@ export function CustomEndpointsTab(props: {
     void ensureEndpointsSeeded(
       { baseUrl: t.customBaseUrl, model: t.customModel, models: t.customModels, reasoningEffort: t.customReasoningEffort },
       generateId(),
-    ).then(list => {
+    ).then(async list => {
+      const applied = await findActiveEndpoint(t.customBaseUrl, list);
       if (cancelled) return;
       endpoints.value = list;
-      const applied = findEndpointForUrl(list, t.customBaseUrl);
       appliedId.value = applied?.id ?? null;
       select(applied ?? list[0] ?? null);
       loaded.value = true;
@@ -128,8 +129,11 @@ export function CustomEndpointsTab(props: {
     registerFlush(async activate => {
       const d = draft.value;
       if (!d) return;
+      // persist() re-applies the in-use endpoint when something changed; an
+      // untouched one is NOT re-applied, so a plain Save never overwrites a
+      // model the session picked from the AI panel.
       await persist({});
-      if (activate || appliedId.value === d.id) await apply(draft.value!);
+      if (activate) await apply(draft.value!);
     });
     return () => registerFlush(null);
   }, []);
@@ -162,9 +166,13 @@ export function CustomEndpointsTab(props: {
   }
 
   /** Save the draft (plus `patch`) to its endpoint; re-apply it when it's
-   *  the one in use, so edits take effect without another click. */
-  async function persist(patch: Partial<SavedEndpoint>): Promise<SavedEndpoint | null> {
-    const d = draft.value;
+   *  the one in use, so edits take effect without another click. With
+   *  `targetId` naming an endpoint that's no longer open in the editor (an
+   *  async Connect finishing after the user switched rows), the patch goes to
+   *  that endpoint's stored row and the open draft is left alone. */
+  async function persist(patch: Partial<SavedEndpoint>, targetId?: string): Promise<SavedEndpoint | null> {
+    const inDraft = !targetId || draft.value?.id === targetId;
+    const d = inDraft ? draft.value : endpoints.value.find(x => x.id === targetId) ?? null;
     if (!d) return null;
     const m: SavedEndpoint = { ...d, ...patch };
     // A generic endpoint still carrying its placeholder name takes its host's
@@ -183,11 +191,13 @@ export function CustomEndpointsTab(props: {
     // so `updatedAt` keeps meaning "last edited" for tie-breaks and backups.
     const stored = endpoints.value.find(x => x.id === next.id);
     if (stored && sameEndpoint(stored, next)) {
-      draft.value = { ...stored };
+      if (inDraft) draft.value = { ...stored };
       return stored;
     }
-    draft.value = next;
-    customEditorUrl.value = next.baseUrl;
+    if (inDraft) {
+      draft.value = next;
+      customEditorUrl.value = next.baseUrl;
+    }
     replaceInList(next);
     await putEndpoint(next);
     if (appliedId.value === next.id) await apply(next);
@@ -214,7 +224,13 @@ export function CustomEndpointsTab(props: {
     if (!ok) return;
     await deleteEndpoint(e.id);
     endpoints.value = endpoints.value.filter(x => x.id !== e.id);
-    if (appliedId.value === e.id) appliedId.value = null;
+    if (appliedId.value === e.id) {
+      // Forget the mirrored key too, or chats would keep sending it (and the
+      // next open would re-seed the deleted endpoint from it).
+      await syncLegacyCustomKey('');
+      appliedId.value = null;
+      onChange();
+    }
     select(endpoints.value[0] ?? null);
   }
 
@@ -234,21 +250,30 @@ export function CustomEndpointsTab(props: {
     if (!d) return;
     if (!d.baseUrl.trim()) { status.value = { tone: 'err', text: 'Enter the endpoint’s base URL first.' }; return; }
     status.value = { tone: 'busy', text: 'Connecting…' };
+    // The user may switch rows while this awaits: results go to THIS
+    // endpoint (by id), and the status only shows if it's still open.
+    const stillOpen = () => draft.value?.id === d.id;
     try {
       const list = await listCustomModels(d.baseUrl, d.apiKey);
       const ids = list.map(m => m.id);
-      const model = d.model.trim() || (d.kind === 'cliproxyapi' ? pickDefaultModel(ids) : (ids.length === 1 ? ids[0] : ''));
-      const saved = await persist({ models: ids, model, lastConnectedAt: Date.now() });
+      const cur = stillOpen() ? draft.value! : endpoints.value.find(x => x.id === d.id);
+      if (!cur) return; // deleted meanwhile
+      const model = cur.model.trim() || (d.kind === 'cliproxyapi' ? pickDefaultModel(ids) : (ids.length === 1 ? ids[0] : ''));
+      const saved = await persist({ models: ids, model, lastConnectedAt: Date.now() }, d.id);
+      if (!stillOpen()) return;
       const hint = d.kind === 'cliproxyapi' ? diagnoseBridgeModels(ids, saved?.model ?? model, os.value) : null;
       status.value = hint
         ? { tone: 'warn', text: hint.text, command: hint.command }
         : { tone: 'ok', text: ids.length ? `Connected — ${ids.length} model(s) available.${model ? '' : ' Pick one below.'}` : 'Connected, but the endpoint reported no models — type the model id below.' };
     } catch (err) {
+      if (!stillOpen()) return;
       status.value = explainConnectError(err instanceof Error ? err.message : String(err), d, os.value);
     }
   }
 
   async function exportBackup(): Promise<void> {
+    const ok = await confirmDialog('The backup file holds every saved endpoint INCLUDING its API key, in plain text. Keep it somewhere private, and only restore backups you made yourself.', { confirmLabel: 'Download backup' });
+    if (!ok) return;
     const list = await listEndpoints();
     downloadBlob(new Blob([serializeBackup(list)], { type: 'application/json' }), 'partwright-ai-endpoints.json');
     showToast(`Backed up ${list.length} endpoint(s). The file contains your API keys — keep it private.`, { variant: 'success', source: 'ai' });
@@ -260,7 +285,9 @@ export function CustomEndpointsTab(props: {
       const { list, changed } = mergeBackup(await listEndpoints(), incoming);
       await putEndpoints(list);
       endpoints.value = await listEndpoints();
-      if (!draft.value && endpoints.value[0]) select(endpoints.value[0]);
+      // Re-open from the stored rows, so a stale draft can't write the
+      // pre-restore copy back over what was just restored.
+      select(endpoints.value.find(x => x.id === draft.value?.id) ?? endpoints.value[0] ?? null);
       showToast(changed ? `Restored ${changed} endpoint(s).` : 'Those endpoints are already saved here.', { variant: 'success', source: 'ai' });
     } catch (err) {
       showToast(`Couldn't restore endpoints: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
@@ -413,8 +440,11 @@ function EndpointEditor(props: {
   const connected = d.lastConnectedAt > 0;
   /** Reached, and serving models — so the key and the login both work. */
   const working = connected && d.models.length > 0 && props.status?.tone !== 'err' && props.status?.tone !== 'warn';
-  const addCmd = bridge ? addKeyCommand(d.apiKey, os, d.configPath) : null;
-  const listCmd = bridge ? listKeysCommand(os, d.configPath) : null;
+  // The config-path field only shows off macOS, so a path saved there (or
+  // restored from another machine's backup) never steers the brew command.
+  const cfgPath = os === 'mac' ? undefined : d.configPath;
+  const addCmd = bridge ? addKeyCommand(d.apiKey, os, cfgPath) : null;
+  const listCmd = bridge ? listKeysCommand(os, cfgPath) : null;
   let n = 0;
 
   const header = (
@@ -433,7 +463,7 @@ function EndpointEditor(props: {
       {props.applied
         ? <span class="shrink-0 mb-2 text-[11px] text-emerald-300">In use by the Custom provider</span>
         : <SecondaryButton label="Use this endpoint" size="sm" disabled={!d.baseUrl.trim()} onClick={props.onUse} />}
-      <button type="button" class="shrink-0 mb-2 text-[11px] text-red-300 hover:text-red-200 underline" onClick={props.onDelete}>Delete</button>
+      <button type="button" class={`shrink-0 mb-1 ${BUTTON_SMALL_DANGER}`} onClick={props.onDelete}>Delete</button>
     </div>
   );
 
@@ -561,7 +591,7 @@ function EndpointEditor(props: {
             {d.apiKey.trim() ? (
               <>
                 <span class="text-[10px] text-zinc-400">Add it to the bridge — keeps any keys already there, so other browsers stay connected. Safe to re-run.</span>
-                {addCmd ? <CopyRow cmd={addCmd} summary={`# add ${shortKey(d.apiKey)} to ${d.configPath.trim() || defaultConfigPath(os)}${os === 'mac' ? ', then restart the bridge' : ''}`} testId="bridge-add-key-cmd" /> : <p class="text-[11px] text-amber-200 leading-snug">{manualAddKeyText(d.apiKey.trim())}</p>}
+                {addCmd ? <CopyRow cmd={addCmd} summary={`# add ${shortKey(d.apiKey)} to ${cfgPath?.trim() || defaultConfigPath(os)}${os === 'mac' ? ', then restart the bridge' : ''}`} testId="bridge-add-key-cmd" /> : <p class="text-[11px] text-amber-200 leading-snug">{manualAddKeyText(d.apiKey.trim())}</p>}
               </>
             ) : (
               <span class="text-[10px] text-amber-200">Click <strong>New key</strong> (or paste one the bridge already accepts) — CLIProxyAPI won’t start until its config has a real key.</span>
