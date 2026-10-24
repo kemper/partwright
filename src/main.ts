@@ -24,7 +24,7 @@ import { errorLog } from './diagnostics/errorLog';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, setEngineTrustDomain, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
-import { formatEngineMemory } from './geometry/engineMemory';
+import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
 import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
 import { queryDiagnosticLog, LOG_LEVELS, LOG_SOURCES } from './diagnostics/logQuery';
@@ -1545,6 +1545,7 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
 
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   if (!currentMeshData) {
+    lastEngineHeapBytes = undefined;
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
     return;
   }
@@ -8674,6 +8675,9 @@ async function main() {
       // paint mesh stays the uncoloured base (it backs hit-testing).
       updateMesh(cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
+      // Stats come from the stored version, not a run: drop the last run's heap
+      // reading so it can't be reported (or warned about) for this geometry.
+      lastEngineHeapBytes = undefined;
       geometryDataEl.textContent = version.geometryData
         ? JSON.stringify(version.geometryData, null, 2)
         : JSON.stringify({ status: 'ready' });
@@ -9309,6 +9313,7 @@ async function main() {
     // Populate the live stats panel straight from the embedded geometryData —
     // we deliberately do NOT run the code.
     const stats = version.geometryData;
+    lastEngineHeapBytes = undefined; // no run, so no heap reading for these stats
     geometryDataEl.textContent = stats
       ? JSON.stringify(stats, null, 2)
       : JSON.stringify({ status: 'shared-preview' });
@@ -21843,6 +21848,13 @@ async function main() {
       },
       getConfig().geometry,
     ));
+    // Kernel memory: flag a run that grew the WASM heap past the high-memory
+    // threshold *before* a bigger variant faults with "memory access out of
+    // bounds". Every path that shows stats without running (cached version
+    // load, shared preview, no geometry) clears lastEngineHeapBytes, so the
+    // reading always belongs to the geometry `geo` describes.
+    const heapWarning = engineHeapWarning(lastEngineHeapBytes, getConfig().geometry.engineHeapHighPct);
+    if (heapWarning) warnings.push(heapWarning);
     return warnings;
   }
 
