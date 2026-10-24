@@ -56,6 +56,8 @@ describe('creature.eyes', () => {
     expect(() => C.eyes({})).toThrow(/'at'/);
     expect(() => C.eyes({ at, colour: 'red' })).toThrow(/colour/);
     expect(() => C.eyes({ at, opening: 2 })).toThrow(/opening/);
+    expect(() => C.eyes({ at, aspect: [1, 0, 1] })).toThrow(/aspect/);
+    expect(C.eyes({ at, radius: null }).detail).toHaveLength(2);   // null = default
   });
 });
 
@@ -75,6 +77,12 @@ describe('creature.crease', () => {
     // The groove runs along the chord between the two seated points (x ≈ 8.9).
     expect(ev(carved, [9.4, 0, 0])).toBeGreaterThan(0);
     expect(ev(carved, [-9.4, 0, 0])).toBeLessThan(0);
+  });
+
+  it('seats 2-D points on a surface that sits far from y = 0', () => {
+    const snout = api.sphere(10).translate(0, -40, 50) as unknown as SdfNode;
+    const carved = C.crease(snout as never, [[-3, 50], [3, 50]], { radius: 0.6 });
+    expect(ev(carved, [0, -49.6, 50])).toBeGreaterThan(0);
   });
 
   it('rejects points that miss the surface and 2-D points off the Y axis', () => {
@@ -108,6 +116,7 @@ describe('creature.ears / feet / hands', () => {
     const labelled = C.feet({ at: [12, 0], clawLabel: 'claws' });
     expect(labelled.parts.map(labelOf)).toEqual(['claws']);
     expect(() => C.feet({ at: [12, 0, 0] })).toThrow(/feet\.at/);
+    expect(() => C.feet({ at: [12, 0], toes: 2.5 })).toThrow(/toes/);
   });
 
   it('hands hang below the palm centre', () => {
@@ -134,7 +143,7 @@ describe('creature.build', () => {
   it('labels the skin, flattens it at the ground, and gathers parts + detail', () => {
     const eyes = R.eyes({ at: [6, -14, 24], radius: 4 });
     const nose = api.sphere(2).translate(0, -20, 18).label('nose');
-    const out = R.build({ skin, features: [eyes], parts: [nose], edgeLength: 0.7,
+    const out = R.build({ skin, features: [eyes], parts: [nose], edgeLength: 0.7, ground: 0,
       detail: [{ center: [0, -15, 20], radius: 8, edgeLength: 0.2 }] });
     expect(out).toBe('MESH');
     const { nodes, opts } = captured!;
@@ -146,6 +155,19 @@ describe('creature.build', () => {
     expect(ev(nodes[0], [0, 0, 1])).toBeLessThan(0);
   });
 
+  it('clips at the feet\'s ground by default, and not at all without feet', () => {
+    R.build({ skin, features: [C.feet({ at: [12, 0], ground: 3 })] });
+    expect(ev(captured!.nodes[0], [0, 0, 2])).toBeGreaterThan(0);
+    expect(ev(captured!.nodes[0], [0, 0, 4])).toBeLessThan(0);
+    R.build({ skin });
+    expect(ev(captured!.nodes[0], [0, 0, -1])).toBeLessThan(0);
+  });
+
+  it('validates user detail spheres by their own index', () => {
+    expect(() => R.build({ skin, detail: [{ center: [0, 0], radius: 1, edgeLength: 0.2 }] })).toThrow(/build\.detail\[0\]\.center/);
+    expect(() => R.build({ skin, detail: [{ center: [0, 0, 0] }] })).toThrow(/detail\[0\]/);
+  });
+
   it('ground: null keeps the full skin; skinLabel renames it', () => {
     R.build({ skin, ground: null, skinLabel: 'fur' });
     expect(labelOf(captured!.nodes[0])).toBe('fur');
@@ -155,7 +177,7 @@ describe('creature.build', () => {
   it('rejects a missing skin, foreign features and too many detail spheres', () => {
     expect(() => R.build({})).toThrow(/'skin'/);
     expect(() => R.build({ skin, features: [skin] })).toThrow(/features\[0\]/);
-    const many = Array.from({ length: 15 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.2 }));
-    expect(() => R.build({ skin, features: [R.eyes({ at: [6, -14, 24] })], detail: many })).toThrow(/limit is 16/);
+    const many = Array.from({ length: 23 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.2 }));
+    expect(() => R.build({ skin, features: [R.eyes({ at: [6, -14, 24] })], detail: many })).toThrow(/limit is 24/);
   });
 });

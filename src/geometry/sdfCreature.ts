@@ -82,6 +82,8 @@ interface DetailSphere { center: Vec3; radius: number; edgeLength: number }
 interface CreatureFeature {
   readonly kind: 'creature-feature';
   readonly name: string;
+  /** Sole height, for features that stand on the ground (feet). */
+  readonly ground?: number;
   attach(skin: Node): Node;
   parts: Node[];
   detail: DetailSphere[];
@@ -108,16 +110,20 @@ export interface CreatureNamespace {
 
 // --- small helpers --------------------------------------------------------
 
-function num(v: unknown, def: number, name: string, min?: number, max?: number): number {
-  if (v === undefined) return def;
-  return assertNumber(v, name, { min, max }) as number;
+// `null` reads as "use the default", like `undefined`.
+function num(v: unknown, def: number, name: string, min?: number, max?: number, integer = false): number {
+  if (v === undefined || v === null) return def;
+  return assertNumber(v, name, { min, max, integer }) as number;
+}
+function int(v: unknown, def: number, name: string, min: number, max: number): number {
+  return num(v, def, name, min, max, true);
 }
 function bool(v: unknown, def: boolean, name: string): boolean {
-  if (v === undefined) return def;
+  if (v === undefined || v === null) return def;
   return assertBoolean(v, name) as boolean;
 }
 function str(v: unknown, def: string, name: string): string {
-  if (v === undefined) return def;
+  if (v === undefined || v === null) return def;
   return assertString(v, name) as string;
 }
 function opts(v: unknown, name: string, allowed: readonly string[]): Record<string, unknown> {
@@ -145,10 +151,13 @@ function add(a: Vec3, b: Vec3): Vec3 { return [a[0] + b[0], a[1] + b[1], a[2] + 
 
 const mirrorNode = (n: Node, on: boolean): Node => (on ? n.union(n.mirror('x')) : n);
 const mirrorDetail = (d: DetailSphere[], on: boolean): DetailSphere[] =>
-  on ? [...d, ...d.map((s) => ({ ...s, center: [-s.center[0], s.center[1], s.center[2]] as Vec3 }))] : d;
+  on ? [...d, ...d.filter((s) => Math.abs(s.center[0]) > 1e-6)
+    .map((s) => ({ ...s, center: [-s.center[0], s.center[1], s.center[2]] as Vec3 }))] : d;
 
-function feature(name: string, attach: (skin: Node) => Node, parts: Node[], detail: DetailSphere[]): CreatureFeature {
-  return { kind: 'creature-feature', name, attach, parts, detail };
+function feature(name: string, attach: (skin: Node) => Node, parts: Node[], detail: DetailSphere[], ground?: number): CreatureFeature {
+  return ground === undefined
+    ? { kind: 'creature-feature', name, attach, parts, detail }
+    : { kind: 'creature-feature', name, attach, parts, detail, ground };
 }
 
 function isFeature(v: unknown): v is CreatureFeature {
@@ -172,7 +181,8 @@ function buildEyes(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   if (o.at === undefined) throw new ValidationError(`creature.eyes: 'at' (the +X eyeball centre [x, y, z]) is required. ${DOC}`);
   const at = point3(o.at, 'creature.eyes.at');
   const r = num(o.radius, 6, 'creature.eyes.radius', 0.1);
-  const aspect = (o.aspect === undefined ? [1.06, 0.98, 1] : assertNumberTuple(o.aspect, 3, 'creature.eyes.aspect')) as Vec3;
+  const aspect = (o.aspect === undefined || o.aspect === null ? [1.06, 0.98, 1] : assertNumberTuple(o.aspect, 3, 'creature.eyes.aspect')) as Vec3;
+  if (aspect.some((a) => !(a > 0))) throw new ValidationError(`creature.eyes.aspect must be three positive multipliers, got [${aspect.join(', ')}]. ${DOC}`);
   const opening = num(o.opening, 0.85, 'creature.eyes.opening', 0.3, 0.98);
   const rim = num(o.rim, 1, 'creature.eyes.rim', 0, 3);
   const hood = num(o.hood, 0.7, 'creature.eyes.hood', 0, 2);
@@ -224,7 +234,7 @@ function buildEars(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const t = num(o.thickness, Math.max(0.8, L * 0.045), 'creature.ears.thickness', 0.2);
   const lift = num(o.lift, 16, 'creature.ears.lift', -90, 90);
   const sweep = num(o.sweep, 12, 'creature.ears.sweep', -90, 90);
-  const veins = Math.round(num(o.veins, 3, 'creature.ears.veins', 0, 9));
+  const veins = int(o.veins, 3, 'creature.ears.veins', 0, 9);
   const inner = bool(o.inner, true, 'creature.ears.inner');
   const innerLabel = str(o.innerLabel, 'innerEar', 'creature.ears.innerLabel');
   const mirror = bool(o.mirror, true, 'creature.ears.mirror');
@@ -238,7 +248,7 @@ function buildEars(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const cupR = (L * 0.49) / cup;
   const cupC: Vec3 = [L * 0.45, -cupR, 0];
   const keepBack = sdf.box([L * 3, half, L * 3]).translate(0, half / 6, 0);
-  const outline = sdf.tube([[-3, 0, 0], [L * 0.45, 0, half * 0.07], [L, 0, half * 0.2]], half, { taper: 0.05 });
+  const outline = sdf.tube([[-L * 0.09, 0, 0], [L * 0.45, 0, half * 0.07], [L, 0, half * 0.2]], half, { taper: 0.05 });
   const skinEar = sdf.sphere(cupR).translate(cupC).shell(t).smoothIntersect(outline, t * 0.5).intersect(keepBack);
   const rot: Vec3 = [0, -lift, sweep];
   const place = (n: Node): Node => mirrorNode(n.rotate(rot).translate(root), mirror);
@@ -282,7 +292,7 @@ function buildFeet(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const L = num(o.length, 36, 'creature.feet.length', 1);
   const W = num(o.width, L * 0.6, 'creature.feet.width', 0.5);
   const H = num(o.height, L * 0.28, 'creature.feet.height', 0.5);
-  const toes = Math.round(num(o.toes, 3, 'creature.feet.toes', 0, 6));
+  const toes = int(o.toes, 3, 'creature.feet.toes', 0, 6);
   const claws = bool(o.claws, true, 'creature.feet.claws');
   const clawLabel = o.clawLabel === undefined ? null : str(o.clawLabel, '', 'creature.feet.clawLabel');
   const yaw = num(o.yaw, 14, 'creature.feet.yaw', -90, 90);
@@ -321,7 +331,7 @@ function buildFeet(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
     return clawW && !clawLabel ? s.union(clawW) : s;
   };
   const center = add(at, rotatePoint([0, -27 * sy, 3 * sz], rot));
-  return feature('feet', attach, parts, mirrorDetail([{ center, radius: 10 * Math.max(sx, sy), edgeLength: edge }], mirror));
+  return feature('feet', attach, parts, mirrorDetail([{ center, radius: 10 * Math.max(sx, sy), edgeLength: edge }], mirror), ground);
 }
 
 // --- hands ----------------------------------------------------------------
@@ -333,7 +343,7 @@ function buildHands(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   if (o.at === undefined) throw new ValidationError(`creature.hands: 'at' (the +X palm centre, just below the wrist) is required. ${DOC}`);
   const at = point3(o.at, 'creature.hands.at');
   const s = num(o.size, 1, 'creature.hands.size', 0.05);
-  const n = Math.round(num(o.fingers, 3, 'creature.hands.fingers', 1, 5));
+  const n = int(o.fingers, 3, 'creature.hands.fingers', 1, 5);
   const thumb = bool(o.thumb, true, 'creature.hands.thumb');
   const yaw = num(o.yaw, 0, 'creature.hands.yaw', -180, 180);
   const mirror = bool(o.mirror, true, 'creature.hands.mirror');
@@ -373,19 +383,24 @@ function crease(sdf: CreatureSdfApi, surfaceIn: unknown, pathIn: unknown, raw: u
   if (dl < 1e-9) throw new ValidationError(`creature.crease.dir must be a non-zero vector. ${DOC}`);
   const dir: Vec3 = [dirRaw[0] / dl, dirRaw[1] / dl, dirRaw[2] / dl];
   const isY = Math.abs(dir[0]) < 1e-9 && Math.abs(dir[2]) < 1e-9;
+  const b = surface.bounds();
+  const mid: Vec3 = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+  const halfDiag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) / 2;
   const seated = path.map((p, i) => {
     const arr = assertArray(p, `creature.crease(path[${i}])`);
     let q: Vec3;
     if (arr.length === 2) {
       if (!isY) throw new ValidationError(`creature.crease(path[${i}]): 2-D [x, z] points need dir along ±Y; pass [x, y, z] points for other directions. ${DOC}`);
       const [x, z] = assertNumberTuple(arr, 2, `creature.crease(path[${i}])`);
-      q = [x, 0, z];
+      q = [x, mid[1], z];   // through the surface's middle, wherever it sits in Y
     } else {
       q = point3(arr, `creature.crease(path[${i}])`);
     }
     // `dir` is the OUTWARD direction: surfacePoint marches along it from far
     // behind and keeps the first inside→outside crossing — the outer face.
-    const hit = surfacePoint(surface, q, dir);
+    // Reach from q far enough to span the whole bbox along the line.
+    const reach = Math.hypot(q[0] - mid[0], q[1] - mid[1], q[2] - mid[2]) + halfDiag;
+    const hit = surfacePoint(surface, q, dir, { reach });
     if (!hit) throw new ValidationError(`creature.crease(path[${i}]) = [${q.map((v) => +v.toFixed(2)).join(', ')}] misses the surface along dir [${dir.map((v) => +v.toFixed(2)).join(', ')}]. ${DOC}`);
     return [hit[0] - dir[0] * depth, hit[1] - dir[1] * depth, hit[2] - dir[2] * depth] as Vec3;
   });
@@ -395,7 +410,7 @@ function crease(sdf: CreatureSdfApi, surfaceIn: unknown, pathIn: unknown, raw: u
 // --- build ----------------------------------------------------------------
 
 const BUILD_KEYS = ['skin', 'features', 'parts', 'ground', 'skinLabel', 'edgeLength', 'detail'] as const;
-const MAX_DETAIL = 16;
+const MAX_DETAIL = 24;   // the core build's MAX_DETAIL_REGIONS
 
 function buildCreature(sdf: CreatureSdfApi, raw: unknown): unknown {
   const o = opts(raw, 'creature.build(opts)', BUILD_KEYS);
@@ -406,13 +421,26 @@ function buildCreature(sdf: CreatureSdfApi, raw: unknown): unknown {
     return f;
   });
   const parts = (o.parts === undefined ? [] : assertArray(o.parts, 'creature.build.parts')).map((p, i) => assertNode(p, `creature.build.parts[${i}]`));
-  const ground = o.ground === null ? null : num(o.ground, 0, 'creature.build.ground');
+  // Default clip plane: the feet's ground; with no feet, don't clip (a creature
+  // modelled around the origin would otherwise lose its lower half).
+  const feetGround = features.find((f) => f.ground !== undefined)?.ground;
+  const ground = o.ground === null || (o.ground === undefined && feetGround === undefined)
+    ? null : num(o.ground, feetGround ?? 0, 'creature.build.ground');
   const skinLabel = str(o.skinLabel, 'skin', 'creature.build.skinLabel');
-  const extraDetail = (o.detail === undefined ? [] : assertArray(o.detail, 'creature.build.detail')) as DetailSphere[];
+  const extraDetail = (o.detail === undefined ? [] : assertArray(o.detail, 'creature.build.detail')).map((d, i) => {
+    const name = `creature.build.detail[${i}]`;
+    const e = opts(d, name, ['center', 'radius', 'edgeLength']);
+    return { center: point3(e.center, `${name}.center`), radius: num(e.radius, NaN, `${name}.radius`, 1e-6),
+      edgeLength: num(e.edgeLength, NaN, `${name}.edgeLength`, 1e-3) } as DetailSphere;
+  });
+  for (const [i, d] of extraDetail.entries()) {
+    if (Number.isNaN(d.radius) || Number.isNaN(d.edgeLength)) throw new ValidationError(`creature.build.detail[${i}] needs center, radius and edgeLength. ${DOC}`);
+  }
 
   for (const f of features) skin = f.attach(skin);
   if (ground !== null) {
-    // Flat soles: keep everything at or above the ground plane.
+    // Flat soles: keep the skin (and unlabelled claws) at or above the ground
+    // plane. Labelled parts are NOT clipped — an intersect would drop their label.
     const b = skin.bounds();
     const w = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1]) * 2 + 10;
     const h = Math.max(b.max[2] - ground, 1) + 10;

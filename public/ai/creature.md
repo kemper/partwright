@@ -34,7 +34,7 @@ for free.
 ## The pattern
 
 ```js
-const { sdf, Manifold } = api;
+const { sdf } = api;
 const C = sdf.creature;
 const mir = (n) => n.mirrorPair('x');
 const E = (rx, ry, rz, x, y, z) => sdf.ellipsoid(rx, ry, rz).translate(x, y, z);
@@ -127,8 +127,9 @@ return model;   // a Manifold — .add() a base plinth here if you want one
 - **Arms hang free of the belly.** Keep the elbow/wrist capsules a little
   outside the belly's surface (blend k ≈ 2). An arm smoothed along its whole
   length looks like a relief carving.
-- **Flat soles.** `C.build` clips everything below `ground` (default 0), so the
-  figure stands and prints.
+- **Flat soles.** With feet, `C.build` clips the skin (and unlabelled claws)
+  at the feet's `ground`, so the figure stands and prints. Labelled parts
+  (horns, a labelled tail tip) are not clipped, so keep them above the ground.
 - **Hard parts are separate labels.** Eyeballs, nose tip, horns and inner ears
   are hard-unioned at the top level (`parts` / the features' own labels). Skin
   is one welded region. Never `smoothUnion` a labelled part into the skin: that
@@ -152,7 +153,7 @@ option's name. Lengths are in model units. Every `mirror` defaults to `true`.
 | `tilt` | `0` | Degrees. Rolls the eye about its view axis; + drops the outer corner. |
 | `yaw` | `0` | Degrees. + turns the eyes outward. |
 | `label` | `'eyes'` | Paint label of the eyeballs. |
-| `edgeLength` | `radius × 0.02` | Mesh size inside the eye's detail sphere. |
+| `edgeLength` | `max(0.08, radius × 0.02)` | Mesh size inside the eye's detail sphere. |
 
 ### `C.ears(opts)` → feature
 
@@ -188,8 +189,8 @@ option's name. Lengths are in model units. Every `mirror` defaults to `true`.
 | Option | Default | Meaning |
 |---|---|---|
 | `at` | — (required) | +X palm centre, just below the end of the forearm capsule. |
-| `size` | `1` | Scale (1 ≈ 8.8 units long palm + fingers). |
-| `fingers` | `3` | 1–5, spread front-to-back across the palm. |
+| `size` | `1` | Scale (1 ≈ 11 units from the top of the palm to the fingertips). |
+| `fingers` | `3` | 1–5, spread side to side (along X) across the palm, curling forward. |
 | `thumb` | `true` | Thumb forward on the inner side. |
 | `yaw` | `0` | Degrees about Z. |
 | `blend` | `2 × size` | smoothUnion k onto the arm. |
@@ -223,10 +224,10 @@ projection can't hit the arms.
 | `skin` | — (required) | The welded body SDF. |
 | `features` | `[]` | Features from `C.eyes/ears/feet/hands`, attached in order. |
 | `parts` | `[]` | Extra **labelled** SDF nodes (nose, horns, teeth…) to hard-union. |
-| `ground` | `0` | Clip plane for flat soles. `null` = don't clip. |
+| `ground` | the feet's `ground`; no clip without feet | Clip plane for flat soles (skin + unlabelled claws only). `null` = don't clip. |
 | `skinLabel` | `'skin'` | Paint label of the skin. |
 | `edgeLength` | auto | Global mesh size (0.5–0.8 for a ~100-unit creature). |
-| `detail` | `[]` | Extra refinement spheres (add one over the face). Features add theirs; the total limit is 16. |
+| `detail` | `[]` | Extra refinement spheres (add one over the face). Features add theirs; the total limit is 24. |
 
 Each feature also exposes `attach(skin)`, `parts` and `detail`, if you'd
 rather call `.build()` yourself.
@@ -301,15 +302,17 @@ crease points with them. Horns and tails are a tapered `sdf.tube` (see
 - **An eye or ear shows through the back/side of the head** → `at`/`root` is
   too far out. Pull it toward the centre, or shrink `radius`/`length`. Check
   the 3/4 and back views.
-- **`C.crease` throws "misses the surface"** → a point lies off the head's
-  silhouette along `dir`. Keep `[x, z]` points inside the face outline.
+- **`C.crease` throws "misses the surface"** → a point lies off the surface's
+  silhouette along `dir`. Keep `[x, z]` points inside the face outline as seen
+  from the front. The line is cast through the middle of the surface's
+  bounding box, so it works wherever the head sits in Y.
 - **A crease cuts too deep between points** → the groove runs *straight*
   between consecutive seated points, so on a strongly curved face it dips
   below the surface mid-span. Space points every few units along the line.
 - **Creases show on the back of the head** → you passed `dir` pointing
   inward. `dir` is the outward normal of the face being carved (front =
   `[0, −1, 0]`).
-- **"N detail spheres … limit is 16"** → each mirrored feature adds 2. Drop
+- **"N detail spheres … limit is 24"** → each mirrored feature adds 2. Drop
   some of your own `detail` entries, or pass `mirror: false` on a feature
   you're mirroring by hand.
 - **Genus in the hundreds / a "contained component"** → a thin shell (an ear)
