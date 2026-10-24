@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
 import { specToCode } from '../../src/figure/characterCodegen';
 import {
   DEFAULT_SPEC,
@@ -6,6 +7,7 @@ import {
   decodeSpecComment,
   normalizeSpec,
   CHARACTER_PRESETS,
+  validateSpec,
 } from '../../src/figure/characterSpec';
 
 describe('characterCodegen', () => {
@@ -119,5 +121,31 @@ describe('characterSpec normalize/decode', () => {
     normalizeSpec(JSON.parse('{"__proto__":{"polluted":true},"constructor":{"x":1}}'));
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('character presets', () => {
+  it('have unique ids and labels, none a substring of another', () => {
+    const ids = CHARACTER_PRESETS.map(p => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const labels = CHARACTER_PRESETS.map(p => p.label);
+    for (const a of labels) for (const b of labels) if (a !== b) expect(b.includes(a), `${a} in ${b}`).toBe(false);
+    for (const p of CHARACTER_PRESETS) expect(p.description.length, p.id).toBeGreaterThan(0);
+  });
+
+  it('each ship a baked thumbnail (npm run bake:character-presets)', () => {
+    for (const p of CHARACTER_PRESETS) {
+      expect(existsSync(`public/character-presets/${p.id}.webp`), p.id).toBe(true);
+    }
+  });
+
+  it('are all valid specs with the full default shape', () => {
+    for (const p of CHARACTER_PRESETS) {
+      const s = p.patch();
+      // validateSpec walks SPEC_FIELDS — the same tree the AI schema uses —
+      // so every enum, range and unknown key is checked from one source.
+      expect(validateSpec(s), p.id).toEqual([]);
+      expect(normalizeSpec(s), p.id).toEqual(s);
+    }
   });
 });
