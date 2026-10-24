@@ -6,7 +6,7 @@ Most requests you should just do: call the API (`applySurfaceTexture`, `scaleMod
 - they ask you to **show them** a tool ("show me how to paint the hat", "where's the resize tool?"),
 - the result is **subjective** and they should judge it live (texture depth, colour, character proportions).
 
-For those, **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values already in its fields and leaves it open. It **never applies anything** — the user previews, adjusts, and clicks Apply (or Cancel). The chat stays visible beside the panel (opening a tool from the AI doesn't step the AI panel aside).
+For those, **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values already in its fields and leaves it open. It **never applies anything** — the user previews, adjusts, and clicks Apply (or Cancel). On the desktop layout the chat stays visible beside the panel (opening a tool from the AI doesn't step the AI panel aside); on a phone, where the chat is full-screen, the tool steps it aside like a user open so the panel isn't hidden behind it.
 
 ```js
 // AI chat tool: openTool({id, prefill?, note?})  ·  console: partwright.openTool(id, prefill?, {note?})
@@ -20,6 +20,7 @@ await partwright.openTool('tool-surface',
 - `ignored` — valid keys that had no effect here (e.g. `preserveColor` on an unpainted model).
 - `{ error }` — unknown key, wrong type, or a value outside the field's own range (many surface ranges scale with the model size, so the error states the range for *this* model). Nothing opens on an error.
 - `note` (≤ 500 chars) shows at the top of the panel as **"Suggested by AI: …"**. Say what you set and what to try next.
+- In-app AI tool only: if your provider can't fill the free-form `prefill` object, pass the same values as a JSON string in `prefillJson` (used only when `prefill` is absent or empty; validated the same way).
 
 Opening a docked tool panel closes the one that was open (one at a time); Measure and Cross section are viewport modes that sit alongside.
 
@@ -33,6 +34,8 @@ partwright.getUiState()
 //      toolState: { …the open tool's CURRENT values… },
 //      tab, codeView, camera, selection: {arrange, parts}, surfacePending: {ops} | null }
 ```
+
+`activeTool` is the open docked panel; Measure / Cross section (viewport modes that sit alongside a panel) are reported only when no panel is open. `openModal` is the title of an open shell modal (settings, export options, …) — the small confirm / prompt dialogs aren't tracked.
 
 `toolState` uses the same keys as that tool's prefill, so after a hand-off you can see exactly what the user changed (`toolState.stitchWidth` went from 3 to 4.2) — useful for "what did I set?" questions or to write the final values into code.
 
@@ -105,7 +108,7 @@ Nothing is painted until the user clicks the model.
 
 ### `detect-parts` — Detect parts
 
-`detector` (a `listPartDetectors()` id), `params` (that detector's params — validated against its ParamSpecs). The user clicks Detect (or pins parts).
+`detector` (a `listPartDetectors()` id), `params` (that detector's params — validated against its ParamSpecs; with no `detector` they're checked against the method the panel shows). The user clicks Detect (or pins parts). If the panel is already open (e.g. an import-time proposal), the prefill and note land in place — its draft and context line are kept.
 
 ### `tool-measure` — Measure
 

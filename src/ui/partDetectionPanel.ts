@@ -73,6 +73,9 @@ import { detectorIds, getDetector, resolveParams } from '../segmentation/registr
 let closeOpen: (() => void) | null = null;
 /** The open panel's method + param values (for getUiState().toolState). */
 let currentPartsState: (() => Record<string, unknown>) | null = null;
+/** Stage a (validated) method + params + note on the OPEN panel without
+ *  rebuilding it — so an import-time proposal and its context line survive. */
+let applyPartsPrefillInPlace: ((detector: string | null, params: Record<string, unknown> | null, note?: string, source?: ToolOpenContext['source']) => void) | null = null;
 /** Which label-chip set the panel shows, and the user's custom chips — kept
  *  for this tab (not persisted) so reopening the panel keeps them. */
 let chipSetId: LabelPresetId = 'figure';
@@ -151,16 +154,35 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   let preDetector: string | null = null;
   let preParams: Record<string, unknown> | null = null;
   if (pre) {
-    const id = pre.detector ?? (closeOpen ? currentPartsState?.().detector as string | undefined : undefined) ?? 'auto-merge';
+    // With only params, resolve them against the method the panel will show:
+    // the open panel's, else the current draft's, else the panel default.
+    const known = ctl.listPartDetectors().detectors;
+    const draft = ctl.getPartDraft();
+    const fallback = known.some((x) => x.id === 'auto-merge') ? 'auto-merge' : known[0]?.id;
+    const id = pre.detector
+      ?? (closeOpen ? currentPartsState?.().detector as string | undefined : undefined)
+      ?? (isDraft(draft) ? draft.detector : undefined)
+      ?? fallback ?? '';
     const d = getDetector(id);
-    if (!d || !ctl.listPartDetectors().detectors.some((x) => x.id === id)) return { error: `unknown detector "${id}"` };
+    if (!d || !known.some((x) => x.id === id)) return { error: `unknown detector "${id}"` };
     try { preParams = pre.params ? resolveParams(d, pre.params) : null; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
-    preDetector = pre.detector ? id : null;
+    preDetector = id;
   }
+  const prefillOutcome = (): ToolOpenResult => {
+    const applied: Record<string, unknown> = {};
+    if (pre?.detector) applied.detector = preDetector;
+    if (pre?.params) applied.params = pre.params;
+    return { applied, ignored: [] };
+  };
   // Re-opening with a new context (a fresh import) replaces the open panel so
-  // the context line is never stale; a plain re-open keeps it as is.
+  // the context line is never stale. A prefill / note lands IN PLACE on the
+  // open panel (its draft, proposal and context line stay); a plain re-open
+  // keeps it as is.
   if (closeOpen) {
-    if (!opts?.context && !opts?.note && !pre) return { applied: {}, ignored: [] };
+    if (!opts?.context) {
+      if (pre || opts?.note) applyPartsPrefillInPlace?.(pre ? preDetector : null, preParams, opts?.note, opts?.source);
+      return prefillOutcome();
+    }
     closeOpen();
   }
   const info = ctl.listPartDetectors();
@@ -238,6 +260,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
       unsubscribe();
       closeOpen = null;
       currentPartsState = null;
+      applyPartsPrefillInPlace = null;
       // Dismissing an import-time proposal the user never touched means "no
       // thanks" — don't leave its colours on the model with no panel open.
       // An edited draft stays (reopen from Tools → Parts).
@@ -292,7 +315,14 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
     }
     body.appendChild(banner);
   }
-  if (opts?.note) body.appendChild(createToolNote(opts.note, opts.source));
+  let noteEl: HTMLElement | null = null;
+  const setNote = (note: string | undefined, source: ToolOpenContext['source']): void => {
+    if (!note) return;
+    const fresh = createToolNote(note, source);
+    if (noteEl) noteEl.replaceWith(fresh); else body.insertBefore(fresh, contextBanner?.nextSibling ?? body.firstChild);
+    noteEl = fresh;
+  };
+  setNote(opts?.note, opts?.source);
 
   function step(n: number, label: string): HTMLElement {
     const h = el('div', STEP);
@@ -1922,9 +1952,7 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   });
 
   algoSelect.addEventListener('change', () => { void onMethodChanged(); });
-  // Prefill (validated above): stage the method + params; Detect stays a click.
-  if (preDetector) algoSelect.value = preDetector;
-  buildParams(preParams ?? undefined);
+  buildParams();
   currentPartsState = () => {
     const params: Record<string, unknown> = {};
     for (const [k, io] of paramInputs) params[k] = io.get();
@@ -1950,10 +1978,22 @@ export function openPartDetectionPanel(ctl: PartDetectionApi, opts?: PartDetecti
   requestAnimationFrame(fitToWindow);
   // Opened mid-run (e.g. during the import-time pass): show it and its Cancel now.
   syncBusy();
-  const applied: Record<string, unknown> = {};
-  if (preDetector) applied.detector = preDetector;
-  if (pre?.params) applied.params = pre.params;
-  return { applied, ignored: [] };
+
+  /** Stage a validated method + params (Detect stays a click). Runs after
+   *  renderDraft(), which has synced the controls to the current draft and
+   *  recorded it — so syncControls won't overwrite the prefill until the draft
+   *  actually changes. */
+  function stagePrefill(detector: string | null, params: Record<string, unknown> | null): void {
+    if (!detector && !params) return;
+    if (detector) algoSelect.value = detector;
+    buildParams(params ?? undefined);
+    startCollapsed = false; // show the staged method + params
+    syncStart();
+    if (!isDraft(ctl.getPartDraft())) setTool(detectorOf(algoSelect.value).seeds === 'required' ? 'pin' : 'select');
+  }
+  applyPartsPrefillInPlace = (detector, params, note, source) => { stagePrefill(detector, params); setNote(note, source); };
+  stagePrefill(pre ? preDetector : null, preParams);
+  return prefillOutcome();
 }
 
 /** Wire Part Detection into the command palette, the viewport Tools menu,

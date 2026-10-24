@@ -7020,6 +7020,16 @@ async function main() {
     showToast(next ? 'Editor hints shown' : 'Editor hints hidden', { variant: 'neutral' });
   }
 
+  // Palette entries for tools whose toolbar button is a toggle keep that
+  // behaviour: running the command while the tool is open closes it.
+  const toggleRegisteredTool = (id: string): void => {
+    const tool = getTool(id);
+    let open = false;
+    try { open = !!tool?.isOpen(); } catch { open = false; }
+    if (open && tool?.close) tool.close();
+    else void openRegisteredTool(id);
+  };
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can't drift.
   registerCommands([
@@ -7058,13 +7068,13 @@ async function main() {
     // the same opener the Tools button and partwright.openTool use; the rest
     // still fire their overlay button by id (click() works inside a collapsed
     // popover).
-    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => { void openRegisteredTool('tool-measure'); }, enabled: viewportToolEnabled },
-    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => { void openRegisteredTool('tool-cross-section'); }, enabled: viewportToolEnabled },
-    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => { void openRegisteredTool('tool-paint'); }, enabled: viewportToolEnabled },
+    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => toggleRegisteredTool('tool-measure'), enabled: viewportToolEnabled },
+    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => toggleRegisteredTool('tool-cross-section'), enabled: viewportToolEnabled },
+    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => toggleRegisteredTool('tool-paint'), enabled: viewportToolEnabled },
     { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => document.getElementById('palette-manager-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => document.getElementById('image-paint-toggle')?.click(), enabled: viewportToolEnabled },
-    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => { void openRegisteredTool('tool-annotate'); }, enabled: viewportToolEnabled },
-    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => { void openRegisteredTool('tool-quality'); }, enabled: viewportToolEnabled },
+    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => toggleRegisteredTool('tool-annotate'), enabled: viewportToolEnabled },
+    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => toggleRegisteredTool('tool-quality'), enabled: viewportToolEnabled },
     { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point.
@@ -7073,7 +7083,7 @@ async function main() {
     { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => { void openRegisteredTool('tool-surface'); }, enabled: viewportToolEnabled },
     { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => { void openRegisteredTool('tool-resize'); }, enabled: viewportToolEnabled },
     { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => { void openRegisteredTool('tool-place'); }, enabled: viewportToolEnabled },
-    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => { void openRegisteredTool('tool-print'); }, enabled: viewportToolEnabled },
+    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => toggleRegisteredTool('tool-print'), enabled: viewportToolEnabled },
     { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
@@ -9395,12 +9405,12 @@ async function main() {
   initMeasureToggle(clipControls);
   // Prefill-less tools: registered so palette / API / getUiState see them
   // (their prefill support is follow-up work).
-  const toggleTool = (id: string, title: string, hint: string, toggleId: string, isOpen: () => boolean, close: () => void): ToolSpec => ({
-    id, title, hint, isOpen, close,
+  const toggleTool = (id: string, title: string, hint: string, toggleId: string, isOpen: () => boolean, close: () => void, overlay = false): ToolSpec => ({
+    id, title, hint, isOpen, close, overlay,
     open: () => { if (!isOpen()) document.getElementById(toggleId)?.click(); },
   });
   registerTool(toggleTool('tool-print', 'Print tools / check printability', 'Inspect', 'print-tools-toggle', isPrintToolsOpen, closePrintToolsMenu));
-  registerTool(toggleTool('tool-cross-section', 'Cross section', 'Inspect', 'clip-toggle', () => getClipState().enabled, () => { if (getClipState().enabled) { setClipping(false); syncClipUI(); } }));
+  registerTool(toggleTool('tool-cross-section', 'Cross section', 'Inspect', 'clip-toggle', () => getClipState().enabled, () => { if (getClipState().enabled) { setClipping(false); syncClipUI(); } }, true));
   initOrbitLockToggle(clipControls);
   initResetViewButton(clipControls);
 
@@ -17742,7 +17752,7 @@ async function main() {
       const out: Array<{ id: string; title: string; hint: string | null; kind: 'tool' | 'command'; enabled: boolean; open: boolean; prefill: Record<string, unknown> | null }> = [];
       for (const t of listTools()) {
         const c = byId.get(t.id);
-        out.push({ id: t.id, title: c?.title ?? t.title, hint: c?.hint ?? t.hint ?? null, kind: 'tool', enabled: c ? c.enabled : true, open: isOpen(t), prefill: t.prefillSchema ?? null });
+        out.push({ id: t.id, title: c?.title ?? t.title, hint: c?.hint ?? t.hint ?? null, kind: 'tool', enabled: c ? c.enabled : true, open: isOpen(t), prefill: t.prefillSchema ? structuredClone(t.prefillSchema) : null });
       }
       for (const c of cmds) {
         if (!getTool(c.id)) out.push({ id: c.id, title: c.title, hint: c.hint ?? null, kind: 'command', enabled: c.enabled, open: false, prefill: null });
@@ -19687,18 +19697,12 @@ async function main() {
       },
       isOpen: () => getMeasureState().active,
       close: () => { close(); },
+      overlay: true, // a viewport mode beside the docked panels
     });
 
     measureBtn.addEventListener('click', () => {
-      if (getMeasureState().active) {
-        close();
-      } else {
-        closeSimplifyMenu();
-        closePrintToolsMenu();
-        activateMeasure();
-        setMeasureLock(true);
-        measureBtn.className = activeClass;
-      }
+      if (getMeasureState().active) close();
+      else openMeasure();
     });
   }
 

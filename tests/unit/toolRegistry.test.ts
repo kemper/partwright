@@ -139,6 +139,26 @@ describe('registry + openTool', () => {
     await openTool('test-f'); // a user (ui) open still steps the AI panel aside
     expect(listener).toHaveBeenCalledTimes(1);
     panel.close();
+    // On a phone (narrow layout) the chat is full-screen: an AI open steps it aside too.
+    vi.stubGlobal('window', { matchMedia: () => ({ matches: false }) });
+    try {
+      await openTool('test-f', undefined, { source: 'ai' });
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      panel.close();
+    }
+  });
+
+  test('getOpenTool prefers the docked panel over an overlay mode', () => {
+    let measureOn = true;
+    let panelOn = false;
+    registerTool({ id: 'test-overlay', title: 'Overlay', overlay: true, isOpen: () => measureOn, open: () => {} });
+    registerTool({ id: 'test-docked', title: 'Docked', isOpen: () => panelOn, open: () => {} });
+    expect(getOpenTool()?.id).toBe('test-overlay');
+    panelOn = true;
+    expect(getOpenTool()?.id).toBe('test-docked');
+    measureOn = false; panelOn = false;
   });
 });
 
@@ -159,5 +179,41 @@ describe('AI tool gating for the UI hand-off tools', () => {
     const id = def.input_schema.properties.id as { enum?: string[] };
     expect(id.enum).toContain('test-g');
     expect(def.description).toContain('test-g — G tool: size');
+  });
+});
+
+describe('the agent Worker sees the UI tool catalogue', () => {
+  test('buildToolList uses a passed catalogue (the Worker has no registry)', () => {
+    const def = buildToolList(loadSettings().toggles, [{ id: 'worker-only', title: 'From main', prefillKeys: 'a, b' }])
+      .find(t => t.name === 'openTool')!;
+    expect((def.input_schema.properties.id as { enum?: string[] }).enum).toEqual(['worker-only']);
+    expect(def.description).toContain('worker-only — From main: a, b');
+  });
+
+  test('the Worker client snapshots the registry into the run_turn message', async () => {
+    vi.resetModules();
+    vi.doMock('../../src/geometry/engine', () => ({ cancelCurrentExecution: () => {} }));
+    const posted: Array<{ type: string; input?: { uiTools?: Array<{ id: string; title: string; prefillKeys: string }> } }> = [];
+    class FakeWorker {
+      onmessage: unknown = null;
+      onmessageerror: unknown = null;
+      onerror: unknown = null;
+      postMessage(m: (typeof posted)[number]) { posted.push(m); }
+      terminate() {}
+      addEventListener() {}
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    try {
+      // Fresh module graph: the client and the registry it snapshots share it.
+      const reg = await import('../../src/ui/toolRegistry');
+      reg.registerTool({ id: 'test-worker', title: 'W', prefillSchema: { size: { type: 'number' } }, isOpen: () => false, open: () => {} });
+      const client = await import('../../src/ai/agentWorkerClient');
+      void client.runTurn({ toggles: loadSettings().toggles, sessionId: 's', history: [], userBlocks: [] });
+      const msg = posted.find(m => m.type === 'run_turn');
+      expect(msg?.input?.uiTools).toEqual(expect.arrayContaining([{ id: 'test-worker', title: 'W', prefillKeys: 'size' }]));
+    } finally {
+      vi.unstubAllGlobals();
+      vi.doUnmock('../../src/geometry/engine');
+    }
   });
 });

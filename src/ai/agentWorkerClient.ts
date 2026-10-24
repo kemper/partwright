@@ -9,7 +9,7 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS, buildUiToolCatalog } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
@@ -193,6 +193,9 @@ export async function runTurn(
     history:            input.history,
     userBlocks:         input.userBlocks,
     aiConfig:           getConfig().ai,
+    // The tool registry lives on the main thread (panels register here), so
+    // snapshot it for openTool's id enum — the Worker's registry is empty.
+    uiTools:            buildUiToolCatalog(),
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

@@ -72,6 +72,10 @@ export interface ToolSpec {
   getState?(): Record<string, unknown> | null;
   isOpen(): boolean;
   close?(): void;
+  /** A viewport MODE that sits alongside the docked panels (Measure, Cross
+   *  section) rather than a docked panel itself. getOpenTool() reports the
+   *  docked panel first. */
+  overlay?: boolean;
 }
 
 const tools = new Map<string, ToolSpec>();
@@ -92,10 +96,24 @@ export function getTool(id: string): ToolSpec | undefined {
 
 /** The first registered tool whose panel is open, or null. */
 export function getOpenTool(): ToolSpec | null {
-  for (const t of tools.values()) {
-    try { if (t.isOpen()) return t; } catch { /* a half-initialised tool isn't open */ }
+  const open = (t: ToolSpec) => { try { return t.isOpen(); } catch { return false; } /* half-initialised = closed */ };
+  const all = [...tools.values()];
+  // The docked panel (at most one is open — the viewport panel registry
+  // enforces it) wins over an overlay mode that happens to be on too.
+  return all.find(t => !t.overlay && open(t)) ?? all.find(t => t.overlay && open(t)) ?? null;
+}
+
+/** Whether a programmatic open should leave the AI panel where it is. Only on
+ *  the desktop layout, where the chat sits BESIDE the tool; on the stacked
+ *  phone layout the chat is full-screen, so the tool must step it aside or it
+ *  would open hidden behind the chat. */
+function keepAiPanelBeside(): boolean {
+  try {
+    return typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      || window.matchMedia('(min-width: 768px)').matches;
+  } catch {
+    return true;
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +238,9 @@ export function checkRange(path: string, v: number, min: number, max: number, er
 // ---------------------------------------------------------------------------
 
 /** Open a registered tool by id: validate the prefill against its schema, then
- *  run its opener. Programmatic sources ('ai' / 'api') open silently (the AI
- *  panel stays put). Returns `{ ok, applied, ignored }` or `{ error }`. */
+ *  run its opener. On the desktop layout, programmatic sources ('ai' / 'api')
+ *  open silently (the AI panel stays beside the tool); on a phone the tool
+ *  steps the full-screen chat aside like a user open. Returns `{ ok, applied, ignored }` or `{ error }`. */
 export async function openTool(
   id: string,
   prefill?: unknown,
@@ -238,7 +257,7 @@ export async function openTool(
   const source = ctx.source ?? 'ui';
   const run = () => spec.open(hasPrefill ? checked.value : undefined, { ...ctx, source });
   try {
-    const r = await (source === 'ui' ? run() : runWithSilentPanelOpen(run));
+    const r = await (source !== 'ui' && keepAiPanelBeside() ? runWithSilentPanelOpen(run) : run());
     if (r && 'error' in r) return { error: `openTool("${id}"): ${r.error}` };
     return { ok: true, id, applied: r ? r.applied : checked.value, ignored: r ? r.ignored : [] };
   } catch (e) {

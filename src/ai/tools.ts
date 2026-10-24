@@ -1889,12 +1889,13 @@ Returns { ok, stats, metrics, version } or { error }.`,
   // --- UI control: open a tool panel for the user (hand-off) ---------------
   {
     name: 'openTool',
-    description: 'Open a tool panel FOR THE USER with its fields pre-set, and hand control over — it NEVER applies the operation; the user tweaks the values and clicks Apply themselves. Use this (instead of applying it yourself) when the user wants to tweak interactively, asks to "show me" a tool, or a look is subjective and they should dial it in. The chat stays visible beside the panel. `note` shows in the panel as "Suggested by AI: …" — say what you set and what to try. Unknown prefill keys and out-of-range values are rejected with an error naming each. Follow up with getUiState to see what the user changed. Prefill keys per id are listed below (full docs: readDoc("ui-control")).',
+    description: 'Open a tool panel FOR THE USER with its fields pre-set, and hand control over — it NEVER applies the operation; the user tweaks the values and clicks Apply themselves. Use this (instead of applying it yourself) when the user wants to tweak interactively, asks to "show me" a tool, or a look is subjective and they should dial it in. The chat stays visible beside the panel. `note` shows in the panel as "Suggested by AI: …" — say what you set and what to try. Unknown prefill keys and out-of-range values are rejected with an error naming each. If you cannot fill the `prefill` object (some providers drop free-form object fields), pass the same values as a JSON string in `prefillJson` instead. Follow up with getUiState to see what the user changed. Prefill keys per id are listed below (full docs: readDoc("ui-control")).',
     input_schema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'Tool id (e.g. "tool-surface", "tool-paint", "character-creator").' },
         prefill: { type: 'object', description: 'Optional field values for that tool, e.g. {tab:"knit", mode:"whole", stitchWidth:3} for tool-surface or {tool:"brush", color:"#ff3366", brush:{size:2}} for tool-paint.' },
+        prefillJson: { type: 'string', description: 'Alternative to prefill: the same object as a JSON string, e.g. "{\\"tab\\":\\"knit\\",\\"mode\\":\\"whole\\"}". Used only when prefill is absent or empty; validated the same way.' },
         note: { type: 'string', description: 'Optional one-line suggestion shown in the panel (≤ 500 chars).' },
       },
       required: ['id'],
@@ -2142,16 +2143,31 @@ const NOTES_GATED = new Set(['addSessionNote']);
  *  point there is to plan, not to rearrange the user's screen. */
 const UI_GATED = new Set(['openTool', 'closeTool']);
 
-/** The openTool definition with its `id` enum and per-tool prefill keys taken
- *  from the live tool registry (so a newly registered panel reaches the model
- *  without editing this file). Falls back to the static definition when no
- *  tools are registered (unit tests, early boot). */
-function withUiToolIds(def: ToolDefinition): ToolDefinition {
-  const tools = listUiTools();
-  if (tools.length === 0) return def;
+/** One registered UI tool as the model sees it: id, title and a one-line list
+ *  of its prefill keys. Plain data, so it can cross the agent-Worker boundary. */
+export interface UiToolCatalogEntry {
+  id: string;
+  title: string;
+  prefillKeys: string;
+}
+
+/** Snapshot the live tool registry. The registry only exists on the main
+ *  thread (panels register there), so the agent-Worker client builds this and
+ *  passes it in the `run_turn` message — the Worker's own registry is empty. */
+export function buildUiToolCatalog(): UiToolCatalogEntry[] {
   const keys = (s: PrefillSchema | undefined): string =>
     s ? Object.entries(s).map(([k, f]) => (f.type === 'object' && f.fields ? `${k}{${Object.keys(f.fields).join(',')}}` : k)).join(', ') : '(no prefill)';
-  const lines = tools.map(tl => `• ${tl.id} — ${tl.title}: ${keys(tl.prefillSchema)}`).join('\n');
+  return listUiTools().map(tl => ({ id: tl.id, title: tl.title, prefillKeys: keys(tl.prefillSchema) }));
+}
+
+/** The openTool definition with its `id` enum and per-tool prefill keys taken
+ *  from the tool catalogue (so a newly registered panel reaches the model
+ *  without editing this file). Falls back to the static definition when no
+ *  tools are known (unit tests, early boot). */
+function withUiToolIds(def: ToolDefinition, catalog: UiToolCatalogEntry[]): ToolDefinition {
+  const tools = catalog;
+  if (tools.length === 0) return def;
+  const lines = tools.map(tl => `• ${tl.id} — ${tl.title}: ${tl.prefillKeys}`).join('\n');
   const props = def.input_schema.properties as Record<string, Record<string, unknown>>;
   return {
     ...def,
@@ -2160,7 +2176,10 @@ function withUiToolIds(def: ToolDefinition): ToolDefinition {
   };
 }
 
-export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
+/** `uiTools` is the UI tool catalogue (see buildUiToolCatalog) — pass it when
+ *  building inside the agent Worker; on the main thread it defaults to the
+ *  live registry. */
+export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry[]): ToolDefinition[] {
   // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
   // can ground its plan in the actual session state — the open code, saved
   // versions, geometry stats, session notes, and docs — instead of guessing.
@@ -2194,7 +2213,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
-  }).map(t => (t.name === 'openTool' ? withUiToolIds(t) : t));
+  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : t));
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;
@@ -2983,8 +3002,21 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'layFlatModel':
       return api.layFlatModel(input);
     // --- UI control (hand-off) ---
-    case 'openTool':
-      return api.openTool(input.id, input.prefill, { ...(input.note !== undefined ? { note: input.note } : {}), source: 'ai' });
+    case 'openTool': {
+      // Providers whose schema subset can't populate a property-less object
+      // (Gemini) send the prefill as a JSON string instead.
+      let prefill = input.prefill;
+      const emptyPrefill = prefill === undefined || prefill === null
+        || (typeof prefill === 'object' && !Array.isArray(prefill) && Object.keys(prefill as object).length === 0);
+      if (emptyPrefill && typeof input.prefillJson === 'string' && input.prefillJson.trim() !== '') {
+        try {
+          prefill = JSON.parse(input.prefillJson);
+        } catch (e) {
+          return { error: `openTool: prefillJson is not valid JSON (${e instanceof Error ? e.message : String(e)})` };
+        }
+      }
+      return api.openTool(input.id, prefill, { ...(input.note !== undefined ? { note: input.note } : {}), source: 'ai' });
+    }
     case 'closeTool':
       return api.closeTool(input.id);
     case 'getUiState':

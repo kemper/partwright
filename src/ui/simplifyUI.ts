@@ -204,56 +204,72 @@ let contentEl: HTMLElement | null = null;
 
 /** Open the panel (if closed) and stage an (already schema-validated) prefill:
  *  curvature quality is previewed live (reverts on close unless applied, like a
- *  radio click); the simplify/enhance target is staged for the user's Apply. */
+ *  radio click); the simplify/enhance target is staged for the user's Apply.
+ *  Every value is checked against the bounds of the REQUESTED mode + knob
+ *  first — on an error nothing opens and no quality preview starts. */
 function openWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const meshKeys = ['mode', 'knob', 'targetTris', 'length', 'amount', 'preserveColor'] as const;
+  const wantsMesh = meshKeys.some(k => pre[k] !== undefined);
+  // The model the panel will operate on (peek without opening when closed).
+  let peek: SimplifyOpenInfo | null = isSimplifyOpen() ? info : null;
+  if (wantsMesh && !peek && handlers) {
+    const r = handlers.open(false);
+    peek = r.ok ? r.info : null;
+  }
+  const nextMode = (pre.mode as SimplifyMode | undefined) ?? mode;
+  const nextKnob = (pre.knob as KnobMode | undefined) ?? knobMode;
+  const errors: string[] = [];
+  if (peek) {
+    if (pre.targetTris !== undefined) {
+      if (nextKnob !== 'count') errors.push("targetTris needs knob 'count'");
+      else {
+        const base = peek.baseTriangles;
+        const lo = nextMode === 'simplify' ? Math.max(4, Math.min(base, Math.round(base * 0.02) || 4)) : base;
+        const hi = nextMode === 'simplify' ? base : Infinity;
+        checkRange('targetTris', pre.targetTris as number, lo, hi, errors);
+      }
+    }
+    if (pre.length !== undefined) {
+      if (nextKnob === 'count') errors.push("length needs knob 'edge' or 'size'");
+      else checkRange('length', pre.length as number, Number.MIN_VALUE, Infinity, errors);
+    }
+    if (pre.amount !== undefined && nextKnob !== 'size') errors.push("amount needs knob 'size'");
+  }
+  if (errors.length) return { error: errors.join('; ') };
+
   if (!isSimplifyOpen()) openPanel();
   setToolNote(contentEl, ctx.note, ctx.source);
   if (!p) return { applied: {}, ignored: [] };
   const applied: Record<string, unknown> = {};
   const ignored: string[] = [];
-  const errors: string[] = [];
-  if (p.curvatureQuality !== undefined) {
-    const radio = qualityRadios.find(r => r.value === p.curvatureQuality);
+  if (pre.curvatureQuality !== undefined) {
+    const radio = qualityRadios.find(r => r.value === pre.curvatureQuality);
     if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
-    applied.curvatureQuality = p.curvatureQuality;
+    applied.curvatureQuality = pre.curvatureQuality;
   }
-  const meshKeys = ['mode', 'knob', 'targetTris', 'length', 'amount', 'preserveColor'] as const;
   if (!info) {
-    for (const k of meshKeys) if (p[k] !== undefined) ignored.push(k); // no model to simplify
+    for (const k of meshKeys) if (pre[k] !== undefined) ignored.push(k); // no model to simplify
     return { applied, ignored };
   }
-  if (p.mode !== undefined || p.knob !== undefined) {
-    if (p.mode !== undefined) { mode = p.mode as SimplifyMode; applied.mode = mode; }
-    if (p.knob !== undefined) { knobMode = p.knob as KnobMode; applied.knob = knobMode; }
+  if (pre.mode !== undefined || pre.knob !== undefined) {
+    mode = nextMode; knobMode = nextKnob;
+    if (pre.mode !== undefined) applied.mode = mode;
+    if (pre.knob !== undefined) applied.knob = knobMode;
     syncModeUI();
   }
-  if (p.targetTris !== undefined) {
-    if (knobMode !== 'count') errors.push("targetTris needs knob 'count'");
-    else if (countEntry) {
-      const base = info.baseTriangles;
-      const lo = mode === 'simplify' ? Math.max(4, Math.min(base, Math.round(base * 0.02) || 4)) : base;
-      const hi = mode === 'simplify' ? base : Infinity;
-      if (checkRange('targetTris', p.targetTris as number, lo, hi, errors)) { countEntry.set(p.targetTris as number); applied.targetTris = countEntry.get(); }
-    }
+  if (pre.targetTris !== undefined && countEntry) { countEntry.set(pre.targetTris as number); applied.targetTris = countEntry.get(); }
+  if (pre.length !== undefined && lengthEntry) { lengthEntry.set(pre.length as number); applied.length = lengthEntry.get(); }
+  if (pre.amount !== undefined && amountSlider) {
+    amountSlider.value = String(pre.amount);
+    if (amountValueEl) amountValueEl.textContent = String(amountVal());
+    applied.amount = amountVal();
   }
-  if (p.length !== undefined) {
-    if (knobMode === 'count') errors.push("length needs knob 'edge' or 'size'");
-    else if (lengthEntry && checkRange('length', p.length as number, Number.MIN_VALUE, Infinity, errors)) { lengthEntry.set(p.length as number); applied.length = lengthEntry.get(); }
-  }
-  if (p.amount !== undefined) {
-    if (knobMode !== 'size') errors.push("amount needs knob 'size'");
-    else if (amountSlider) {
-      amountSlider.value = String(p.amount);
-      if (amountValueEl) amountValueEl.textContent = String(amountVal());
-      applied.amount = amountVal();
-    }
-  }
-  if (p.preserveColor !== undefined) {
-    if (info.hasColor && colorCheckbox) { colorCheckbox.checked = p.preserveColor as boolean; preserveColor = colorCheckbox.checked; applied.preserveColor = preserveColor; }
+  if (pre.preserveColor !== undefined) {
+    if (info.hasColor && colorCheckbox) { colorCheckbox.checked = pre.preserveColor as boolean; preserveColor = colorCheckbox.checked; applied.preserveColor = preserveColor; }
     else ignored.push('preserveColor');
   }
   updateApplyEnabled();
-  if (errors.length) return { error: errors.join('; ') };
   return { applied, ignored };
 }
 

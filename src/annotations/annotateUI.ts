@@ -6,6 +6,7 @@ import {
   deactivate as deactivatePen,
   isActive as isPenActive,
   setColor as setPenColor,
+  getColor as getPenColor,
   setWidth as setPenWidth,
   getWidth as getPenWidth,
   onActiveChange as onPenActiveChange,
@@ -86,8 +87,6 @@ let redoBtn: HTMLButtonElement | null = null;
 let selectionInfo: HTMLElement | null = null;
 /** Panel content (the AI note lands at its top). */
 let annotateContentEl: HTMLElement | null = null;
-/** The active draw colour (pen + text share it). */
-let currentColor: [number, number, number] = [0.95, 0.20, 0.45];
 /** Programmatic UI sync hooks set by createPickerPanel (openTool prefill). */
 let syncColorUI: ((c: [number, number, number]) => void) | null = null;
 let syncWidthUI: (() => void) | null = null;
@@ -135,7 +134,7 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
     open: (prefill, ctx) => openAnnotateWithPrefill(prefill, ctx),
     getState: () => (isAnyActive() ? {
       mode: isPenActive() ? 'pen' : isTextActive() ? 'text' : 'select',
-      color: currentColor, width: getPenWidth(), fontSize: getTextFontSize(),
+      color: getPenColor(), width: getPenWidth(), fontSize: getTextFontSize(),
     } : null),
     isOpen: isAnyActive,
     close: closeAnnotatePanel,
@@ -164,7 +163,7 @@ function openAnnotateWithPrefill(p: Record<string, unknown> | undefined, ctx: To
   setToolNote(annotateContentEl, ctx.note, ctx.source);
   if (pre.color !== undefined) {
     const c = pre.color as [number, number, number];
-    setPenColor(c); setTextColor(c); currentColor = c;
+    setPenColor(c); setTextColor(c);
     syncColorUI?.(c);
   }
   if (pre.width !== undefined) { setPenWidth(pre.width as number); syncWidthUI?.(); }
@@ -343,7 +342,6 @@ function createPickerPanel(): HTMLElement {
     swatch.addEventListener('click', () => {
       setPenColor(color);
       setTextColor(color);
-      currentColor = color;
       markActiveSwatch(grid, swatch);
       custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
     });
@@ -367,7 +365,6 @@ function createPickerPanel(): HTMLElement {
       const b = parseInt(hex.slice(5, 7), 16) / 255;
       setPenColor([r, g, b]);
       setTextColor([r, g, b]);
-      currentColor = [r, g, b];
       for (const child of Array.from(grid.children)) {
         (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
       }

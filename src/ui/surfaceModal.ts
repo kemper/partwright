@@ -1267,6 +1267,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
 
   // Rebuild the engrave ink mask from the text/image inputs, then preview. Async
   // (font fetch / image decode); reused for every preview/apply until inputs change.
+  /** Set by close() — async work that lands later must not touch the viewport. */
+  let panelClosed = false;
   async function rebuildEngraveMask(spec: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }) {
     engraveBuilding = true;
     engraveMask = null;
@@ -1282,6 +1284,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     } finally {
       engraveBuilding = false;
     }
+    // The panel may have closed (or never mounted — a rejected prefill) while
+    // the stamp rasterized: don't draw an outline or start a preview for it.
+    if (panelClosed) return;
     if (active === 'engrave') { refreshEngraveOutline(); schedulePreview(); }
   }
 
@@ -1433,6 +1438,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
   scrollBody.append(footer);
 
   const close = () => {
+    panelClosed = true;
     exitSelectionMode();
     stopScopePick();
     exitEngravePick();
@@ -1511,16 +1517,21 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
     }
   });
 
-  /** Apply an (already schema-validated) prefill to the freshly rendered tab:
-   *  mode, scope, colour, then each op field against its live control range. */
+  /** Apply an (already schema-validated) prefill to the freshly rendered tab.
+   *  Two passes: validate EVERY key first (mode, scope, colour, each op field
+   *  against its live control range) and only then stage anything, so a
+   *  rejected prefill leaves no half-applied state. Engrave `text` is staged
+   *  last, so its rasterization uses the prefilled font. */
   function applyPrefill(p: Record<string, unknown>): ToolOpenResult {
     const errors: string[] = [];
-    const applied: Record<string, unknown> = {};
     const ignored: string[] = [];
+    const steps: Array<() => void> = []; // staging, run only if nothing failed
+    let textStep: (() => void) | null = null;
+    const applied: Record<string, unknown> = {};
     if (p.tab !== undefined) applied.tab = active;
     if (p.mode !== undefined) {
       if (REGIONLESS_TABS.has(active)) ignored.push('mode');
-      else { setRegionMode(p.mode as 'whole' | 'region'); applied.mode = p.mode; }
+      else { steps.push(() => setRegionMode(p.mode as 'whole' | 'region')); applied.mode = p.mode; }
     }
     if (p.scope !== undefined) {
       const s = p.scope as Record<string, unknown>;
@@ -1529,31 +1540,37 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
       if (extra.length) errors.push(`scope: unknown key(s) ${extra.join(', ')} (use {label} or {point, radius})`);
       else if (!inCode) ignored.push('scope'); // scope only exists on the apply-as-code path
       else if (typeof s.label === 'string') {
+        const label = s.label;
         const names = (() => { try { return api.getLabelNames(); } catch { return []; } })();
-        if (!names.includes(s.label)) errors.push(`scope.label "${s.label}" is not a label in this model (labels: ${names.join(', ') || 'none'})`);
+        if (!names.includes(label)) errors.push(`scope.label "${label}" is not a label in this model (labels: ${names.join(', ') || 'none'})`);
         else {
-          if (regionMode !== 'whole') setRegionMode('whole');
-          setScopeMode('label');
-          scopeLabelSelect.value = s.label;
-          codeScope = { kind: 'label', label: s.label };
-          applied.scope = { label: s.label };
+          steps.push(() => {
+            if (regionMode !== 'whole') setRegionMode('whole');
+            setScopeMode('label');
+            scopeLabelSelect.value = label;
+            codeScope = { kind: 'label', label };
+          });
+          applied.scope = { label };
         }
       } else if (Array.isArray(s.point) && s.point.length === 3 && s.point.every(n => typeof n === 'number' && Number.isFinite(n))) {
+        const point: [number, number, number] = [s.point[0], s.point[1], s.point[2]];
         const radius = s.radius === undefined ? scopeRadius.get() : s.radius;
         if (typeof radius !== 'number' || !(radius > 0)) errors.push('scope.radius must be a positive number');
         else {
-          if (regionMode !== 'whole') setRegionMode('whole');
-          setScopeMode('point');
-          scopeRadius.set(radius);
-          codeScope = { kind: 'point', point: [s.point[0], s.point[1], s.point[2]], radius };
-          applied.scope = { point: codeScope.point, radius };
+          steps.push(() => {
+            if (regionMode !== 'whole') setRegionMode('whole');
+            setScopeMode('point');
+            scopeRadius.set(radius);
+            codeScope = { kind: 'point', point, radius };
+          });
+          applied.scope = { point, radius };
         }
       } else errors.push('scope must be {label: string} or {point: [x,y,z], radius?: number}');
-      updateScopeUI();
-      updateApplyBtn();
+      steps.push(() => { updateScopeUI(); updateApplyBtn(); });
     }
     if (p.preserveColor !== undefined) {
-      if (setPreserveColorUI) { setPreserveColorUI(p.preserveColor as boolean); applied.preserveColor = p.preserveColor; }
+      const setUI = setPreserveColorUI;
+      if (setUI) { steps.push(() => setUI(p.preserveColor as boolean)); applied.preserveColor = p.preserveColor; }
       else ignored.push('preserveColor');
     }
     const RESERVED = new Set(['tab', 'mode', 'scope', 'preserveColor']);
@@ -1561,14 +1578,17 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy', ope
       if (RESERVED.has(k)) continue;
       const f = tabFields[k];
       if (!f) { errors.push(`"${k}" is not a ${active} field (fields: ${Object.keys(tabFields).join(', ')})`); continue; }
-      if (f.kind === 'number') { if (checkRange(k, v as number, f.min, f.max, errors)) { f.set(v as number); applied[k] = f.get(); } }
-      else if (f.kind === 'boolean') { f.set(v as boolean); applied[k] = v; }
+      if (f.kind === 'number') {
+        if (checkRange(k, v as number, f.min, f.max, errors)) steps.push(() => { f.set(v as number); applied[k] = f.get(); });
+      } else if (f.kind === 'boolean') { steps.push(() => f.set(v as boolean)); applied[k] = v; }
       else if (f.kind === 'enum') {
         if (!f.values.includes(v as string)) errors.push(`${k} must be one of ${f.values.join(', ')} on the ${active} tab`);
-        else { f.set(v as string); applied[k] = v; }
-      } else { f.set(String(v)); applied[k] = v; }
+        else { steps.push(() => f.set(v as string)); applied[k] = v; }
+      } else { textStep = () => f.set(String(v)); applied[k] = v; } // string (engrave text): last
     }
     if (errors.length) return { error: errors.join('; ') };
+    for (const step of steps) step();
+    textStep?.();
     schedulePreview(); // setters don't fire onChange — refresh the preview once
     return { applied, ignored };
   }

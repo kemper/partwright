@@ -57,6 +57,11 @@ export function setColor(c: [number, number, number]): void {
   currentColor = [c[0], c[1], c[2]];
 }
 
+/** The active draw colour (pen strokes; text shares it via the panel). */
+export function getColor(): [number, number, number] {
+  return [currentColor[0], currentColor[1], currentColor[2]];
+}
+
 export function getWidth(): number {
   return currentWidth;
 }

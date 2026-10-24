@@ -5,6 +5,7 @@
 // Creator prefills, the "Suggested by AI" note, and rejection of bad keys.
 
 import { test, expect, type Page } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 async function waitForEngine(page: Page) {
   await page.waitForSelector('text=Ready', { timeout: 20_000 });
@@ -230,5 +231,68 @@ test.describe('AI opens a tool for the user', () => {
     const box = await page.getByRole('heading', { name: 'Surface modifiers' }).boundingBox();
     expect(box && box.x >= 0 && box.x + box.width <= 375).toBe(true);
     await page.screenshot({ path: `${SHOTS}/ai-open-tool-mobile.png` });
+  });
+
+  test('AI panel: stays beside the tool on desktop, steps aside on a phone', async ({ page }) => {
+    await setup(page, SPHERE);
+    await openAiPanel(page);
+    const open = () => page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool(
+      'tool-surface', { tab: 'fuzzy', mode: 'whole' }, { note: 'Fuzzy skin to start.' }));
+    expect((await open()).ok).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toBeVisible();
+    await expect(page.locator('#ai-panel')).toBeVisible(); // desktop: side by side
+
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.closeTool());
+    await page.setViewportSize({ width: 375, height: 812 });
+    await openAiPanel(page);
+    expect((await open()).ok).toBe(true);
+    // Phone: the full-screen chat steps aside so the tool isn't hidden behind it.
+    await expect(page.locator('#ai-panel')).toBeHidden();
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/ai-open-tool-mobile-ai-panel.png` });
+  });
+
+  test('rejected prefills stage nothing: engrave, quality', async ({ page }) => {
+    await setup(page, SPHERE);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      // One bad key → nothing staged, nothing opened.
+      const bad = await pw.openTool('tool-surface', { tab: 'engrave', text: 'HI', font: 'italic', bogusRange: 1 } as Record<string, unknown>);
+      const afterBad = pw.getUiState().activeTool;
+      // A valid engrave prefill stages text + font together.
+      const ok = await pw.openTool('tool-surface', { tab: 'engrave', text: 'HI', font: 'italic', raised: true });
+      const state = pw.getUiState().toolState;
+      pw.closeTool();
+      // Quality: an out-of-range target for the requested mode opens nothing.
+      const q = await pw.openTool('tool-quality', { mode: 'simplify', knob: 'count', targetTris: 10_000_000 });
+      const afterQ = pw.getUiState().activeTool;
+      return { bad, afterBad, ok, state, q, afterQ };
+    });
+    expect(out.bad.error).toMatch(/unknown key "bogusRange"/);
+    expect(out.afterBad).toBeNull();
+    expect(out.ok.ok).toBe(true);
+    expect(out.state).toMatchObject({ tab: 'engrave', text: 'HI', font: 'italic', raised: true });
+    expect(out.q.error).toMatch(/targetTris must be in/);
+    expect(out.afterQ).toBeNull();
+  });
+
+  test('detect parts: a prefill on the open panel lands in place', async ({ page }) => {
+    await setup(page, SPHERE);
+    const first = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool(
+      'detect-parts', { detector: 'crease-watershed' }, { note: 'Try crease watershed.' }));
+    expect(first.error).toBeUndefined();
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+    await panel.evaluate((el) => { (el as HTMLElement).dataset.marker = 'same-panel'; });
+
+    const second = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openTool(
+      'detect-parts', { params: { creaseWeight: 3 } }, { note: 'Raise the crease toll.' }));
+    expect(second.error).toBeUndefined();
+    // Same panel element (not closed + reopened), new note, params against the shown method.
+    await expect(panel).toHaveAttribute('data-marker', 'same-panel');
+    await expect(panel.getByText('Raise the crease toll.')).toBeVisible();
+    await expect(panel.getByText('Try crease watershed.')).toHaveCount(0);
+    const s = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getUiState());
+    expect(s.toolState).toMatchObject({ detector: 'crease-watershed', params: { creaseWeight: 3 } });
   });
 });

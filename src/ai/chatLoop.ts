@@ -138,6 +138,10 @@ export interface RunTurnInput {
    *  tool dispatch round-trips back to the main thread where
    *  window.partwright lives, while the loop itself stays in the Worker. */
   executeToolFn?: (name: string, input: Record<string, unknown>) => Promise<import('./tools').ToolExecResult>;
+  /** The UI tool catalogue for openTool's id enum (buildUiToolCatalog). The
+   *  agent Worker has no tool registry, so the Worker client snapshots it on
+   *  the main thread and passes it here; omitted = read the live registry. */
+  uiTools?: import('./tools').UiToolCatalogEntry[];
 }
 
 export interface RunTurnCallbacks {
@@ -226,7 +230,7 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
-  const tools = buildToolList(toggles);
+  const tools = buildToolList(toggles, input.uiTools);
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
