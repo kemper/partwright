@@ -437,19 +437,21 @@ await partwright.reopenParts({importIndex?})  // re-open parts saved on an impor
 await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Transient visual tint to show the user which one you mean (doesn't change the selection)
-partwright.setObjectPartHidden(name | {piece}, hidden = true)  // Hide/show a part/piece in the viewport only (code, versions, exports keep it) -> {ok, hidden}
-await partwright.deleteObjectPart(name | {piece})  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}
+partwright.setObjectPartHidden(name | {piece} | [..], hidden = true)  // Hide/show a part/piece (or a list) in the viewport only (code, versions, exports keep it) -> {ok, hidden}
+await partwright.deleteObjectPart(name | {piece} | [..])  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}; a list = one run + one version -> {ok, removed: [], calls: []}
 await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo it: removes that line, re-runs, saves -> {ok, restored, object, version?, note?}
 // Editing parts from the Objects list -- see #editing-parts-from-the-objects-list
 partwright.selectObjectPart(name | {piece} | {unlabeled:true} | null)    // Select like clicking it in the rail (tint; scopes the user's paint tools) -> {ok, selected, triangles}
-partwright.getSelectedObjectPart()       // -> {key, part?, piece?, description, isolated} | null
-partwright.isolateObjectPart(name | {piece} | null)   // Ghost everything else (visual only)
+partwright.selectObjectPart([name, ...] | [{piece}, ...])  // Select several parts (or several pieces) like Shift-click -- no paint scope -> {ok, selected: [keys], triangles}
+partwright.getSelectedObjectPart()       // -> {key, part?, piece?, description, isolated} | {keys, description, isolated} (several) | null
+partwright.isolateObjectPart(name | {piece} | [..] | null)   // Ghost everything else (visual only)
 partwright.getObjectPartInfo(name | {piece})          // -> {size:[x,y,z], area, triangleCount, pieces}
 partwright.setObjectPartColor(name, '#rrggbb')        // Fill a whole part (recolours its fill in place) / resetObjectPartColor(name)
 partwright.goToObjectPart(name)          // Reveal the part's label literal in the code editor -> {ok, line}
 await partwright.renameObjectPart(from, to)   // Rename in every code literal + re-key its paint, then runAndSave
 await partwright.bakeObjectPartColor(name)    // Write its colour into code as api.paint.label (manifold-js), drop the overlay, runAndSave
 await partwright.extractObjectPiece(index)    // Move a piece into a new object (piece filters; manifold-js)
+await partwright.extractObjectParts([name | {piece}, ...], {separate?})  // Move several parts/pieces into ONE new object, or one each with separate: true (manifold-js) -> {ok, objects, original, via}
 partwright.exportObjectPiece(index, filename?)   // Download one piece as STL
 partwright.reassignPaint(regionId, partName)  // Fix UNMATCHED paint (part renamed/removed) / keepUnmatchedPaint(regionId)
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,
@@ -683,6 +685,7 @@ The rail is a **selector, not a second editor**: selecting a part makes it the *
 - **Rename.** `renameObjectPart(from, to)` rewrites every string literal naming the part (its `api.label` / SCAD `label` / `BREP.label`, `api.paint.label`, surface `label:` scopes) **and re-keys the paint tied to it**, then saves. Prefer it over hand-editing a label name.
 - **Unmatched paint.** Paint keyed to a part (`byLabel`, or any `withinPart`) whose label disappears from the code is never silently dropped: it stays saved but paints nothing, and is flagged — `runAndSave` / `saveVersion` return `unmatchedPaint: [{regionId, name, label, hint?}]`, and the rail shows **Unmatched paint (N)** with *Reassign to… / Keep / Delete*. When one label vanished as another appeared in the same place, `hint` / `renameSuggestions` names the likely successor — fix with `reassignPaint(regionId, newName)`. `emptyPaint` lists geometric regions (slab, box…) that now cover nothing.
 - **Pieces.** `extractObjectPiece(i)` moves a piece into a new object; `exportObjectPiece(i)` downloads it as STL; to drop a stray one use `deleteObjectPart({ piece: i })` (below). Extract wraps the object's code in a *piece filter* (`// Partwright piece filter …` — the original code runs untouched inside, and the piece is matched by bounding box, so small edits keep tracking it). manifold-js only; fixing the geometry that made a stray piece is still better when you can.
+- **Several at once.** The user can Shift/Ctrl/⌘-click rows in the rail (or Shift-double-click in the viewport) to select several parts — or several pieces, never a mix — and then **Move to new** (all into one new object), **Split** (one new object each), Isolate, Hide or Delete them together. Their chat message then arrives prefixed with `[Selected in the Objects list: parts "a", "b" …]`. A multi-selection does *not* set the paint scope. Do the same with `selectObjectPart([...])`, `extractObjectParts([...], { separate })`, `isolateObjectPart([...])`, `setObjectPartHidden([...])` and `deleteObjectPart([...])` (one run, one version). `extractObjectParts` moves whole separate solids with piece filters (as above); parts fused to other geometry move with `api.removePart` lines instead — the original drops them and each new object drops every other part, so a part that only *cuts* (e.g. a labelled cavity) fills its cut where it's removed. It refuses when unlabeled geometry would be copied along, or when nothing would be left in the original.
 - **Look.** `isolateObjectPart(name)` ghosts everything else; `getObjectPartInfo(name)` gives size, area and the pieces it touches; `goToObjectPart(name)` shows the user its label in the code.
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.

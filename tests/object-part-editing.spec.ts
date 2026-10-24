@@ -160,4 +160,59 @@ return api.label(Manifold.cube([10, 10, 10], true), 'block').add(Manifold.cube([
     await expect.poll(async () => (await pw<{ pieces?: unknown[] }>(page, 'listObjectParts')).pieces?.length).toBe(1);
     expect(await pw<string>(page, 'getCode')).toContain('api.removePiece(');
   });
+
+  test('shift-click selects several parts; split moves each into its own object', async ({ page }) => {
+    await boot(page);
+    await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      await p.createSession('Blocks');
+      await p.runAndSave(`const { Manifold } = api;
+const block = (x) => Manifold.cube([10, 10, 10], true).translate([x, 0, 0]);
+return api.label(block(0), 'a', { color: '#ef4444' })
+  .add(api.label(block(20), 'b', { color: '#22c55e' }))
+  .add(api.label(block(40), 'c', { color: '#3b82f6' }));`, 'blocks');
+    });
+    const rail = page.locator('#parts-rail');
+    await rail.locator('[data-object-part="part:a"]').click();
+    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
+    const drawer = page.locator('#object-part-drawer');
+    await expect(drawer.locator('[data-selection-count]')).toHaveText('2 parts selected');
+    expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ keys: ['part:a', 'part:b'] });
+    // A multi-selection never scopes paint.
+    expect(await page.evaluate(() => import('/src/color/paintScope.ts').then(m => m.getPaintScope()))).toBeNull();
+    await page.mouse.move(1200, 1000);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: 'test-results/part-multiselect.png' });
+    // Shift-clicking a selected row takes it out again.
+    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
+    expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ key: 'part:a' });
+    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
+
+    await drawer.locator('[data-part-action="split-selection"]').click();
+    await page.getByRole('button', { name: 'Split', exact: true }).click();
+    await expect(rail.locator('[data-part-id]')).toHaveCount(3, { timeout: 20_000 });
+    const objects = await pw<{ name: string; isCurrent: boolean }[]>(page, 'listObjects');
+    expect(objects.map(o => o.name)).toEqual(['Object 1', 'Object 1 · a', 'Object 1 · b']);
+    expect((await pw<{ parts: { name: string }[]; lostParts: string[] }>(page, 'listObjectParts'))).toMatchObject({ parts: [{ name: 'b' }], lostParts: [] });
+    await page.mouse.move(1200, 1000);
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: 'test-results/part-multiselect-split.png' });
+    await pw(page, 'changeObject', 'Object 1');
+    await expect.poll(async () => (await pw<{ parts?: { name: string }[] }>(page, 'listObjectParts')).parts?.map(p => p.name).join(',')).toBe('c');
+  });
+
+  test('extractObjectParts moves a fused part with removal lines', async ({ page }) => {
+    await openMug(page);
+    const r = await pw<{ ok?: boolean; via?: string; error?: string }>(page, 'extractObjectParts', ['handle']);
+    expect(r.error).toBeUndefined();
+    expect(r.via).toBe('parts');
+    // The new object keeps only the handle.
+    expect((await pw<{ parts: { name: string }[] }>(page, 'listObjectParts')).parts.map(p => p.name)).toEqual(['handle']);
+    // The mug lost it.
+    await pw(page, 'changeObject', 'Object 1');
+    await expect.poll(async () => (await pw<{ parts?: { name: string }[] }>(page, 'listObjectParts')).parts?.some(p => p.name === 'handle')).toBe(false);
+    expect(await pw<string>(page, 'getCode')).toContain(`api.removePart("handle");`);
+    // Mixed or emptying selections are refused.
+    expect(await pw(page, 'extractObjectParts', ['body', { piece: 0 }])).toHaveProperty('error');
+  });
 });

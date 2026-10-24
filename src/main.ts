@@ -72,8 +72,9 @@ import { createSessionBar } from './ui/sessionBar';
 import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPartsView } from './ui/partList';
 import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
 import { summarizeObjectParts, triangleSetStats, extractSubMesh, type ObjectPartsSummary, type TriangleSetStats } from './geometry/meshPieces';
-import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, wrapWithPieceFilter, type PieceBox } from './geometry/objectPartCode';
-import { getSelectedPartKey, getSelectedPartName, setSelectedPartKey, onPartSelectionChange, describePartKey } from './ui/partSelection';
+import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, parsePieceFilter, type PieceBox } from './geometry/objectPartCode';
+import { planObjectPartsMove } from './geometry/objectPartMove';
+import { getSelectedPartKey, getSelectedPartKeys, getSelectedPartName, setSelectedPartKeys, onPartSelectionChange, describePartKey, describePartKeys, extendPartSelection, partSelectionSignature } from './ui/partSelection';
 import type { PartInfo } from './ui/objectPartsPanel';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive, showIsolation, clearIsolation, isIsolationActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
@@ -713,7 +714,9 @@ let objectPartsCache: { mesh: MeshData; labels: Map<string, Set<number>> | null;
 /** The mesh the viewport last displayed (with colours) — the tint/isolate
  *  overlays draw from it so they line up with what's on screen. */
 let lastDisplayedMesh: MeshData | null = null;
-/** The selection key currently isolated (others ghosted), or null. */
+/** The selection currently isolated (others ghosted) — its
+ *  partSelectionSignature, which is just the key for a single selection — or
+ *  null. */
 let isolatedPartKey: string | null = null;
 /** Where the current selection was made: a part stays valid while its label
  *  exists on the same object; a piece / unlabeled selection only for the very
@@ -951,8 +954,11 @@ function currentObjectPartsView(): ObjectPartsView | null {
   // A label that resolved to zero triangles (fully swallowed by a union, or a
   // cutter that never touched the solid) is listed as lost, not as a part —
   // alongside the labels the engine already reports as lost.
+  // A piece filter (Extract / Move to new object / Split) drops the pieces
+  // other labels live on by design, so a filtered object lists nothing as lost.
   const lost = new Set(currentLostLabels ?? []);
   for (const p of summary.parts) if (p.triangles.size === 0) lost.add(p.name);
+  if (lost.size > 0 && parsePieceFilter(getValue())) lost.clear();
   const hidden = hiddenKeysForCurrentObject();
   const unmatched = unmatchedPaintRegions();
   const unmatchedLabels = new Set(unmatched.map(u => u.label));
@@ -1019,25 +1025,33 @@ function setObjectPartHidden(key: string, hide: boolean): string[] | string {
   let keys = hiddenObjectParts.get(obj.id);
   if (!keys) { keys = new Set(); hiddenObjectParts.set(obj.id, keys); }
   if (hide) keys.add(key); else keys.delete(key);
-  if (hide && getSelectedPartKey() === key) selectObjectPart(null);
+  if (hide && getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
   reapplyHiddenObjectParts();
   refreshObjectParts();
   return [...keys];
 }
 
+/** The selection's triangles on `mesh` — the union of every selected key's. */
+function partKeysTrianglesOn(keys: readonly string[], mesh: MeshData): Set<number> {
+  if (keys.length === 1) return partKeyTrianglesOn(keys[0], mesh);
+  const out = new Set<number>();
+  for (const k of keys) for (const t of partKeyTrianglesOn(k, mesh)) out.add(t);
+  return out;
+}
+
 /** Draw the selection: the isolation (others ghosted) when isolating, else the
  *  tint — except while painting, where the tint would hide the strokes. */
 function refreshPartSelectionVisual(): void {
-  const key = getSelectedPartKey();
+  const keys = getSelectedPartKeys();
   const mesh = lastDisplayedMesh ?? currentMeshData;
-  if (key && isolatedPartKey === key && mesh) {
+  if (keys.length > 0 && isolatedPartKey === partSelectionSignature(keys) && mesh) {
     clearTriangleHighlight();
-    if (!isIsolationActive()) showIsolation(mesh, partKeyTrianglesOn(key, mesh));
+    if (!isIsolationActive()) showIsolation(mesh, partKeysTrianglesOn(keys, mesh));
     return;
   }
   if (isIsolationActive()) clearIsolation();
-  if (key && mesh && !isPaintOpen()) {
-    if (!isTriangleHighlightActive()) showTriangleHighlight(mesh, partKeyTrianglesOn(key, mesh));
+  if (keys.length > 0 && mesh && !isPaintOpen()) {
+    if (!isTriangleHighlightActive()) showTriangleHighlight(mesh, partKeysTrianglesOn(keys, mesh));
   } else {
     clearTriangleHighlight();
   }
@@ -1047,62 +1061,106 @@ function refreshPartSelectionVisual(): void {
  *  remainder (`unlabeled`) of the open object; null clears. Returns the
  *  selection's triangle count, or an error string for an unknown key. */
 function selectObjectPart(key: string | null): number | string {
-  if (key === null) {
+  return selectObjectParts(key === null ? [] : [key]);
+}
+
+/** Why `keys` can't be one selection (an unknown key, or a mix of parts and
+ *  pieces), or null. Several parts or several pieces can be selected at once;
+ *  the unlabeled remainder only on its own. */
+function partSelectionProblem(keys: readonly string[]): string | null {
+  for (const key of keys) if (!partKeyBaseTriangles(key)) return `Unknown part or piece "${key}".`;
+  if (keys.length > 1) {
+    if (keys.includes('unlabeled')) return 'The unlabeled geometry can only be selected on its own.';
+    const kind = keys[0].startsWith('part:') ? 'part:' : 'piece:';
+    if (keys.some(k => !k.startsWith(kind))) return 'Select several parts or several pieces — not a mix of both.';
+  }
+  return null;
+}
+
+/** Triangles (on the label mesh) a selection covers. */
+function selectionTriangleCount(keys: readonly string[]): number {
+  if (keys.length === 1) return partKeyBaseTriangles(keys[0])?.size ?? 0;
+  const all = new Set<number>();
+  for (const k of keys) for (const t of partKeyBaseTriangles(k) ?? []) all.add(t);
+  return all.size;
+}
+
+/** Select several parts — or several pieces — of the open object at once
+ *  (the rail's Shift-click); [] clears. Returns the selection's triangle
+ *  count, or an error string. */
+function selectObjectParts(input: readonly string[]): number | string {
+  const keys = [...new Set(input)];
+  if (keys.length === 0) {
     isolatedPartKey = null;
-    setSelectedPartKey(null);
+    setSelectedPartKeys([]);
     refreshPartSelectionVisual();
     refreshObjectParts();
     return 0;
   }
   if (!objectPartsMesh()) return 'No geometry loaded — run code first.';
-  const tris = partKeyBaseTriangles(key);
-  if (!tris) return `Unknown part or piece "${key}".`;
+  const problem = partSelectionProblem(keys);
+  if (problem) return problem;
+  const sig = partSelectionSignature(keys);
   selectionContext = { objectId: getCurrentPart()?.id ?? null, mesh: objectPartsMesh() };
-  if (isolatedPartKey && isolatedPartKey !== key) isolatedPartKey = key; // isolation follows the selection
+  if (isolatedPartKey && isolatedPartKey !== sig) isolatedPartKey = sig; // isolation follows the selection
   // Redraw from scratch: the previous selection's overlay may still be up.
   clearTriangleHighlight();
   clearIsolation();
-  setSelectedPartKey(key);
+  setSelectedPartKeys(keys);
   refreshPartSelectionVisual();
   refreshObjectParts();
-  return tris.size;
+  return selectionTriangleCount(keys);
+}
+
+/** Shift/Ctrl/⌘-click on `key`: add it to (or take it out of) the selection
+ *  — see extendPartSelection for the rules. */
+function toggleObjectPartInSelection(key: string): number | string {
+  return selectObjectParts(extendPartSelection(getSelectedPartKeys(), key));
 }
 
 /** Isolate (ghost everything else) a selection key — selecting it too — or
  *  null to show the whole object again. */
 function isolateObjectPart(key: string | null): number | string {
-  if (key === null) {
+  return isolateObjectParts(key === null ? null : [key]);
+}
+
+/** Isolate a selection of one or more keys (selecting it too); null / []
+ *  shows the whole object again. */
+function isolateObjectParts(input: readonly string[] | null): number | string {
+  const keys = [...new Set(input ?? [])];
+  if (keys.length === 0) {
     isolatedPartKey = null;
     clearIsolation();
     refreshPartSelectionVisual();
     refreshObjectParts();
     return 0;
   }
-  if (getSelectedPartKey() !== key) {
-    const r = selectObjectPart(key);
+  const sig = partSelectionSignature(keys);
+  if (partSelectionSignature(getSelectedPartKeys()) !== sig) {
+    const r = selectObjectParts(keys);
     if (typeof r === 'string') return r;
   }
-  isolatedPartKey = key;
+  isolatedPartKey = sig;
   clearTriangleHighlight();
   clearIsolation();
   refreshPartSelectionVisual();
   refreshObjectParts();
-  return partKeyBaseTriangles(key)?.size ?? 0;
+  return selectionTriangleCount(keys);
 }
 
-/** After every viewport mesh update: drop a selection that no longer applies
- *  (its part vanished, the object changed, or a piece's mesh was replaced),
- *  then redraw its visual, which the update swept. */
+/** After every viewport mesh update: drop selected keys that no longer apply
+ *  (a part vanished, the object changed, or a piece's mesh was replaced),
+ *  then redraw the selection's visual, which the update swept. */
 function syncPartSelectionAfterMeshUpdate(mesh: MeshData): void {
   lastDisplayedMesh = mesh;
-  const key = getSelectedPartKey();
-  if (key) {
-    let valid = (getCurrentPart()?.id ?? null) === selectionContext.objectId;
-    if (valid && key.startsWith('part:')) valid = (currentLabelMap?.get(key.slice(5))?.size ?? 0) > 0;
-    else if (valid) valid = objectPartsMesh() === selectionContext.mesh;
-    if (!valid) {
-      isolatedPartKey = null;
-      setSelectedPartKey(null);
+  const keys = getSelectedPartKeys();
+  if (keys.length > 0) {
+    const sameObject = (getCurrentPart()?.id ?? null) === selectionContext.objectId;
+    const sameMesh = objectPartsMesh() === selectionContext.mesh;
+    const keep = !sameObject ? [] : keys.filter(k => (k.startsWith('part:') ? (currentLabelMap?.get(k.slice(5))?.size ?? 0) > 0 : sameMesh));
+    if (keep.length !== keys.length) {
+      isolatedPartKey = keep.length > 0 && isolatedPartKey === partSelectionSignature(keys) ? partSelectionSignature(keep) : null;
+      setSelectedPartKeys(keep);
     }
   }
   refreshPartSelectionVisual();
@@ -1165,18 +1223,18 @@ function objectPartTargetKey(target: unknown, fn: string): string | null | { err
   return { error: `${fn}(target): pass a part name, { part: name }, { piece: index }, { unlabeled: true }, or null.` };
 }
 
-/** Shared checks for the code piece filters (extract / delete a piece). */
-function pieceFilterPrep(index: number, fn: string): { code: string; box: PieceBox; part?: string } | { error: string } {
-  if (getActiveLanguage() !== 'manifold-js') {
-    return { error: `${fn}: splitting pieces rewrites the code, which needs a JavaScript (manifold-js) object. Export the piece instead (exportObjectPiece).` };
+/** Parse an API list of part targets (each a part name / { part } / { piece }
+ *  / { unlabeled }) into selection keys, or an error object. */
+function objectPartTargetKeys(targets: unknown, fn: string): string[] | { error: string } {
+  if (!Array.isArray(targets)) return { error: `${fn}(targets): pass an array of part names, { part: name } or { piece: index } (see listObjectParts).` };
+  const keys: string[] = [];
+  for (const target of targets) {
+    const key = objectPartTargetKey(target, fn);
+    if (key === null) return { error: `${fn}(targets): null isn't a part or piece.` };
+    if (typeof key === 'object') return key;
+    keys.push(key);
   }
-  const summary = currentObjectPartsSummary();
-  const piece = Number.isInteger(index) ? summary?.pieces[index] : undefined;
-  if (!summary || !piece) return { error: `${fn}: no piece ${index} — see listObjectParts().pieces.` };
-  if (summary.pieces.length < 2) return { error: `${fn}: this object is a single piece.` };
-  const box = pieceBoxFor(index);
-  if (!box) return { error: `${fn}: piece ${index} has no geometry.` };
-  return { code: getValue(), box, ...(piece.part ? { part: piece.part } : {}) };
+  return keys;
 }
 
 let arrangeNamesCache: { code: string; names: string[] } | null = null;
@@ -6811,41 +6869,70 @@ async function main() {
     { ok: true; removed: string; call: string; version?: { id: string; index: number; label: string }; saveWarning?: string }
     | { error: string }
   > {
+    const r = await deleteObjectPartsOrPieces([target]);
+    if ('error' in r) return r;
+    const { removed, calls, ...rest } = r;
+    return { ...rest, removed: removed[0], call: calls[0] };
+  }
+
+  /** deleteObjectPartOrPiece for several targets at once (the rail's
+   *  multi-selection): every removal line goes in, then ONE run and ONE saved
+   *  version. All or nothing — if any target survives, the code is restored. */
+  async function deleteObjectPartsOrPieces(targets: ({ part: string } | { piece: number })[]): Promise<
+    { ok: true; removed: string[]; calls: string[]; version?: { id: string; index: number; label: string }; saveWarning?: string }
+    | { error: string }
+  > {
     if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
     if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (targets.length === 0) return { error: 'Nothing to delete.' };
     const lang = getActiveLanguage();
-    const blocker = objectPartDeleteBlocker('part' in target ? `part:${target.part}` : `piece:${target.piece}`);
-    if (blocker) return { error: blocker };
+    for (const target of targets) {
+      const blocker = objectPartDeleteBlocker('part' in target ? `part:${target.part}` : `piece:${target.piece}`);
+      if (blocker) return { error: blocker };
+    }
     const syntax = lang === 'scad' ? 'scad' : 'js';
     const summary = currentObjectPartsSummary();
     const mesh = objectPartsMesh();
     if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
 
-    let call: string;
-    let line: string;
-    let what: string;
-    if ('part' in target) {
-      const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
-      if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
-      call = removePartCall(part.name, syntax);
-      line = call;
-      what = `part "${part.name}"`;
-    } else {
-      if (summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
-      const piece = summary.pieces.find(p => p.index === target.piece);
-      if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
-      const point = pieceAnchorPoint(mesh, piece.triangles);
-      if (!point) return { error: `Piece ${target.piece} has no triangles.` };
-      call = removePieceCall(point, syntax);
-      // The call only records a point, so name the piece in a trailing comment
-      // (`//` in JS and OpenSCAD alike) — what Recover deleted shows for it.
-      line = `${call} ${removePieceComment(piece.index, piece.part ?? undefined)}`;
-      what = `piece ${target.piece + 1}`;
-    }
-
+    const calls: string[] = [];
+    const removed: string[] = [];
     const previousCode = getValue();
-    const nextCode = insertRemovalLine(previousCode, line);
-    if (nextCode === previousCode) return { error: `The code already removes ${what}.` };
+    let nextCode = previousCode;
+    const pieceTargets = targets.filter((x): x is { piece: number } => 'piece' in x);
+    if (pieceTargets.length > 0 && summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
+    if (pieceTargets.length > 0 && new Set(pieceTargets.map(x => x.piece)).size >= summary.pieces.length) {
+      return { error: 'That’s every piece — delete the object instead.' };
+    }
+    for (const target of targets) {
+      let call: string;
+      let line: string;
+      let what: string;
+      if ('part' in target) {
+        const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
+        if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
+        call = removePartCall(part.name, syntax);
+        line = call;
+        what = `part "${part.name}"`;
+      } else {
+        const piece = summary.pieces.find(p => p.index === target.piece);
+        if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
+        const point = pieceAnchorPoint(mesh, piece.triangles);
+        if (!point) return { error: `Piece ${target.piece} has no triangles.` };
+        call = removePieceCall(point, syntax);
+        // The call only records a point, so name the piece in a trailing comment
+        // (`//` in JS and OpenSCAD alike) — what Recover deleted shows for it.
+        line = `${call} ${removePieceComment(piece.index, piece.part ?? undefined)}`;
+        what = `piece ${target.piece + 1}`;
+      }
+      const withLine = insertRemovalLine(nextCode, line);
+      if (withLine === nextCode) return { error: `The code already removes ${what}.` };
+      nextCode = withLine;
+      calls.push(call);
+      removed.push(what);
+    }
+    const what = removed.length === 1 ? removed[0] : describePartKeys(targets.map(x => ('part' in x ? `part:${x.part}` : `piece:${x.piece}`)));
+
     const restore = async (why: string) => {
       setValue(previousCode);
       await runCodeSync(previousCode);
@@ -6856,18 +6943,17 @@ async function main() {
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') return restore(`Deleting ${what} broke the run: ${geo.error ?? 'run error'}.`);
     const after = currentObjectPartsSummary();
-    const stillThere = 'part' in target
-      ? !!after?.parts.some(p => p.name === target.part && p.triangles.size > 0)
-      : (after?.pieces.length ?? 0) >= summary.pieces.length;
-    if (stillThere) {
+    const partsLeft = targets.some(x => 'part' in x && !!after?.parts.some(p => p.name === x.part && p.triangles.size > 0));
+    const piecesLeft = pieceTargets.length > 0 && (after?.pieces.length ?? 0) > summary.pieces.length - pieceTargets.length;
+    if (partsLeft || piecesLeft) {
       return restore(`Couldn't delete ${what} from code — the code doesn't create it in a way the removal line can reach.`);
     }
     const saved = await saveCurrentVersion(`delete ${what}`);
     refreshRecoverable();
     return {
       ok: true,
-      removed: what,
-      call,
+      removed,
+      calls,
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
     };
@@ -7362,10 +7448,16 @@ async function main() {
     // failures surface as a toast.
     objectParts: {
       getView: () => currentObjectPartsView(),
-      getSelectedKey: () => getSelectedPartKey(),
+      getSelectedKeys: () => getSelectedPartKeys(),
       getIsolatedKey: () => isolatedPartKey,
-      select: (key) => { selectObjectPart(key); },
-      isolate: (key) => { isolateObjectPart(key); },
+      select: (key, opts) => {
+        const r = key !== null && opts?.extend ? toggleObjectPartInSelection(key) : selectObjectPart(key);
+        if (typeof r === 'string') showToast(r, { variant: 'warn' });
+      },
+      isolate: (keys) => {
+        const r = isolateObjectParts(keys);
+        if (typeof r === 'string') showToast(r, { variant: 'warn' });
+      },
       info: (key) => objectPartInfo(key),
       setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
       resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
@@ -7378,9 +7470,9 @@ async function main() {
         if (isReadOnlyViewer()) return;
         if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
       },
-      editWithAI: (key) => {
-        if (getSelectedPartKey() !== key) selectObjectPart(key);
-        prefillAiInput(`Change ${describePartKey(key)}: `);
+      editWithAI: (keys) => {
+        if (partSelectionSignature(getSelectedPartKeys()) !== partSelectionSignature(keys)) selectObjectParts(keys);
+        prefillAiInput(`Change ${describePartKeys(keys)}: `);
       },
       canArrange: (name) => {
         // Parsed from the code; cached per code string (the drawer redraws on
@@ -7404,6 +7496,41 @@ async function main() {
         const r = await partwrightAPI.extractObjectPiece(index);
         if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
       },
+      moveSelection: async (keys, separate) => {
+        if (isReadOnlyViewer()) return;
+        const what = describePartKeys(keys);
+        const many = separate && keys.length > 1;
+        const ok = await confirmDialog(many
+          ? `Split ${what} into ${keys.length} new objects, one each? The original's code is rewritten to leave them out — its version history keeps the code as it is now.`
+          : `Move ${what} into a new object? The original's code is rewritten to leave ${keys.length > 1 ? 'them' : 'it'} out — its version history keeps the code as it is now.`,
+        { title: many ? 'Split into objects' : 'Move to new object', confirmLabel: many ? 'Split' : 'Move' });
+        if (!ok) return;
+        const r = await moveObjectSelection(keys, separate, many ? 'Split into objects' : 'Move to new object');
+        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+        showToast(r.objects.length === 1 ? `Moved ${what} to "${r.objects[0].name}"` : `Split ${what} into ${r.objects.length} objects`, { variant: 'success' });
+      },
+      hideMany: (keys) => { railResult(partwrightAPI.setObjectPartHidden(keys.map(k => (k.startsWith('part:') ? k.slice(5) : { piece: Number(k.slice(6)) })), true)); },
+      deleteMany: async (keys) => {
+        const targets = keys.map(k => (k.startsWith('part:') ? { part: k.slice(5) } : { piece: Number(k.slice(6)) }));
+        selectObjectPart(null);
+        const objectId = getState().currentPart?.id;
+        const r = await deleteObjectPartsOrPieces(targets);
+        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+        showToast(`Deleted ${describePartKeys(keys)} — added ${r.calls.length} removal lines to the code.`, {
+          variant: 'success',
+          action: {
+            label: 'Undo',
+            run: () => {
+              void (async () => {
+                for (const call of r.calls) {
+                  const u = await restoreObjectPartOrPiece(call, objectId);
+                  if ('error' in u) { showToast(u.error, { variant: 'warn' }); return; }
+                }
+              })();
+            },
+          },
+        });
+      },
       exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
       setHidden: (key, hide) => {
         const r = setObjectPartHidden(key, hide);
@@ -7413,7 +7540,7 @@ async function main() {
         ? { show: false }
         : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
       deletePart: async (key) => {
-        if (getSelectedPartKey() === key) selectObjectPart(null);
+        if (getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
         const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
         const objectId = getState().currentPart?.id;
         const r = await deleteObjectPartOrPiece(target);
@@ -10114,23 +10241,25 @@ async function main() {
   // failed or empty run never delivers. Otherwise the stale part would keep
   // scoping paint and prefixing chat messages.
   onStateChange((state) => {
-    if (!getSelectedPartKey()) return;
+    if (getSelectedPartKeys().length === 0) return;
     if ((state.currentPart?.id ?? null) !== selectionContext.objectId) selectObjectPart(null);
   });
   onPartSelectionChange(() => {
-    if (!getSelectedPartKey()) isolatedPartKey = null;
+    if (getSelectedPartKeys().length === 0) isolatedPartKey = null;
     refreshPartSelectionVisual();
     refreshObjectParts();
   });
   // Double-click the model to select the part under the cursor (or the piece,
   // when that geometry isn't labelled); double-click empty space to clear.
+  // Shift/Ctrl/⌘-double-click adds it to (or takes it out of) the selection.
   // Skipped while a click-driven tool owns the viewport.
   getCanvas().addEventListener('dblclick', (e) => {
     // Click-driven tools own the viewport while they're on.
     if (isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()) return;
+    const extend = e.shiftKey || e.ctrlKey || e.metaKey;
     const hit = pickFace(e);
     if (!hit) {
-      if (getSelectedPartKey()) selectObjectPart(null);
+      if (!extend && getSelectedPartKeys().length > 0) selectObjectPart(null);
       return;
     }
     const shown = lastDisplayedMesh ?? currentMeshData;
@@ -10149,7 +10278,8 @@ async function main() {
       if (piece) key = `piece:${piece.index}`;
     }
     if (!key) return;
-    selectObjectPart(getSelectedPartKey() === key ? null : key);
+    if (extend) toggleObjectPartInSelection(key);
+    else selectObjectPart(getSelectedPartKey() === key ? null : key);
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
@@ -11366,6 +11496,48 @@ async function main() {
     if (r.passed === false) return r.failures?.join('; ') ?? 'assertions failed';
     if (r.geometry?.status === 'error') return r.geometry.error ?? 'the code failed to run';
     return null;
+  }
+
+  /** Move a selection of parts — or pieces — of the open object into one new
+   *  object (or, with `separate`, one new object each): the Objects list's
+   *  "Move to new object" / "Split into objects", extractObjectParts and
+   *  extractObjectPiece. Every rewrite is dry-run first, so a failure changes
+   *  nothing; then the original is saved without the selection and each new
+   *  object is created with its share. manifold-js only. The new (last) object
+   *  is left open. */
+  async function moveObjectSelection(keys: string[], separate: boolean, fn: string): Promise<
+    { ok: true; objects: { id: string; name: string }[]; original: { id: string; name: string }; via: 'pieces' | 'parts' } | { error: string }
+  > {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (getActiveLanguage() !== 'manifold-js') {
+      return { error: `${fn}: moving parts or pieces to another object rewrites the code, which needs a JavaScript (manifold-js) object. Export them instead.` };
+    }
+    const original = getCurrentPart();
+    if (!original) return { error: `${fn}: no object is open.` };
+    const summary = currentObjectPartsSummary();
+    if (!summary) return { error: 'No geometry loaded — run code first.' };
+    const plan = planObjectPartsMove(getValue(), summary, keys, { separate, boxOf: pieceBoxFor });
+    if ('error' in plan) return { error: `${fn}: ${plan.error}` };
+    // Every rewrite must run before anything is committed.
+    for (const code of [plan.dropCode, ...plan.objects.map(o => o.code)]) {
+      const pre = await preflightRewrite(code, fn);
+      if (pre) return pre;
+    }
+    const what = describePartKeys(keys);
+    const dropped = await partwrightAPI.runAndSave(plan.dropCode, separate && plan.objects.length > 1 ? `Split ${what} into objects` : `Move ${what} to a new object`);
+    const dropFailed = saveFailed(dropped);
+    if (dropFailed) return { error: `${fn}: ${dropFailed}` };
+    const objects: { id: string; name: string }[] = [];
+    for (const o of plan.objects) {
+      const created = await partwrightAPI.createObject(`${original.name} · ${o.name}`) as Record<string, unknown>;
+      if (created.error) return { error: `${fn}: ${String(created.error)}` };
+      const kept = await partwrightAPI.runAndSave(o.code, `${o.name} from ${original.name}`);
+      const keepFailed = saveFailed(kept);
+      if (keepFailed) return { error: `${fn}: the new object's code failed — ${keepFailed}` };
+      objects.push({ id: String(created.id), name: String(created.name) });
+    }
+    return { ok: true, objects, original: { id: original.id, name: original.name }, via: plan.via };
   }
 
   // Part detection (#1025): one controller drives the panel AND the console /
@@ -14197,21 +14369,28 @@ async function main() {
       const view = currentObjectPartsView();
       if (!obj || !view) return { error: 'No geometry loaded — run code first.' };
       const { codeActions: _codeActions, ...rest } = view;
-      return { object: { id: obj.id, name: obj.name }, ...rest, selected: getSelectedPartKey() };
+      return { object: { id: obj.id, name: obj.name }, ...rest, selected: getSelectedPartKey(), selection: getSelectedPartKeys() };
     },
 
     /** Hide (or, with `hidden: false`, show) one part (by label name) or piece
      *  (`{ piece: index }`, from listObjectParts) of the current object in the
      *  viewport — the eye toggle in the object list. View-only: code, versions
      *  and exports keep it. -> { ok, hidden: [keys] } or { error } */
-    setObjectPartHidden(target: string | { piece?: number }, hidden: boolean = true) {
+    setObjectPartHidden(target: string | { piece?: number } | (string | { piece?: number })[], hidden: boolean = true) {
       if (typeof hidden !== 'boolean') return { error: 'setObjectPartHidden(target, hidden): hidden must be true or false.' };
-      let key: string;
-      if (typeof target === 'string' && target.length > 0) key = `part:${target}`;
-      else if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) key = `piece:${target.piece}`;
-      else return { error: 'setObjectPartHidden(target, hidden): pass a part name or { piece: index } from listObjectParts().' };
-      const r = setObjectPartHidden(key, hidden);
-      return typeof r === 'string' ? { error: r } : { ok: true, hidden: r };
+      const keys: string[] = [];
+      for (const one of Array.isArray(target) ? target : [target]) {
+        if (typeof one === 'string' && one.length > 0) keys.push(`part:${one}`);
+        else if (one && typeof one === 'object' && Number.isInteger(one.piece) && (one.piece as number) >= 0) keys.push(`piece:${one.piece}`);
+        else return { error: 'setObjectPartHidden(target, hidden): pass a part name or { piece: index } from listObjectParts() (or an array of them).' };
+      }
+      if (keys.length === 0) return { error: 'setObjectPartHidden(target, hidden): the list is empty.' };
+      let r: string[] | string = [];
+      for (const key of keys) {
+        r = setObjectPartHidden(key, hidden);
+        if (typeof r === 'string') return { error: r };
+      }
+      return { ok: true, hidden: r };
     },
 
     /** Delete one part (by label name) or piece (`{ piece: index }`, from
@@ -14219,7 +14398,16 @@ async function main() {
      *  in the object list. Inserts `api.removePart('name')` /
      *  `api.removePiece([x,y,z])` at the top of the code, re-runs, and saves a
      *  version. -> { ok, removed, call, version? } or { error } */
-    async deleteObjectPart(target: string | { piece?: number }) {
+    async deleteObjectPart(target: string | { piece?: number } | (string | { piece?: number })[]) {
+      if (Array.isArray(target)) {
+        const list: ({ part: string } | { piece: number })[] = [];
+        for (const one of target) {
+          if (typeof one === 'string' && one.length > 0) list.push({ part: one });
+          else if (one && typeof one === 'object' && Number.isInteger(one.piece) && (one.piece as number) >= 0) list.push({ piece: one.piece as number });
+          else return { error: 'deleteObjectPart([targets]): each entry must be a part name or { piece: index } from listObjectParts().' };
+        }
+        return deleteObjectPartsOrPieces(list);
+      }
       if (typeof target === 'string' && target.length > 0) return deleteObjectPartOrPiece({ part: target });
       if (target && typeof target === 'object' && Number.isInteger(target.piece) && (target.piece as number) >= 0) {
         return deleteObjectPartOrPiece({ piece: target.piece as number });
@@ -14282,7 +14470,13 @@ async function main() {
      *  themselves to a selected PART, and the AI chat gets it as context.
      *  Pass a part name, `{ part }`, `{ piece: index }`, `{ unlabeled: true }`
      *  or null to clear. -> { ok, selected, triangles } or { error } */
-    selectObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null) {
+    selectObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null | (string | { part?: string; piece?: number })[]) {
+      if (Array.isArray(target)) {
+        const keys = objectPartTargetKeys(target, 'selectObjectPart');
+        if (!Array.isArray(keys)) return keys;
+        const r = selectObjectParts(keys);
+        return typeof r === 'string' ? { error: r } : { ok: true, selected: getSelectedPartKeys(), triangles: r };
+      }
       const key = objectPartTargetKey(target, 'selectObjectPart');
       if (typeof key === 'object' && key !== null) return key;
       const r = selectObjectPart(key);
@@ -14291,6 +14485,10 @@ async function main() {
 
     /** The current Objects-list selection -> { key, part?, piece?, description } | null. */
     getSelectedObjectPart() {
+      const keys = getSelectedPartKeys();
+      if (keys.length > 1) {
+        return { keys, description: describePartKeys(keys), isolated: isolatedPartKey === partSelectionSignature(keys) };
+      }
       const key = getSelectedPartKey();
       if (!key) return null;
       return {
@@ -14306,7 +14504,13 @@ async function main() {
      *  else is drawn as a translucent ghost. A fused part shares its solid with
      *  its neighbours, so it can be ghosted, not hidden. null shows all again.
      *  Visual only. -> { ok, triangles } or { error } */
-    isolateObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null) {
+    isolateObjectPart(target: string | { part?: string; piece?: number; unlabeled?: boolean } | null | (string | { part?: string; piece?: number })[]) {
+      if (Array.isArray(target)) {
+        const keys = objectPartTargetKeys(target, 'isolateObjectPart');
+        if (!Array.isArray(keys)) return keys;
+        const r = isolateObjectParts(keys);
+        return typeof r === 'string' ? { error: r } : { ok: true, triangles: r };
+      }
       const key = objectPartTargetKey(target, 'isolateObjectPart');
       if (typeof key === 'object' && key !== null) return key;
       const r = isolateObjectPart(key);
@@ -14429,28 +14633,34 @@ async function main() {
      *  original's version history keeps the unfiltered code. manifold-js only.
      *  -> { ok, object: { id, name }, original: { id, name } } or { error } */
     async extractObjectPiece(index: number) {
-      const prep = pieceFilterPrep(index, 'extractObjectPiece');
-      if ('error' in prep) return prep;
-      const original = getCurrentPart();
-      if (!original) return { error: 'extractObjectPiece: no object is open.' };
-      const keepCode = wrapWithPieceFilter(prep.code, 'keep', [prep.box]);
-      const dropCode = wrapWithPieceFilter(prep.code, 'drop', [prep.box]);
-      if (!keepCode || !dropCode) return { error: 'extractObjectPiece: the code has no top-level `return` to filter.' };
-      const label = prep.part ? `${original.name} · ${prep.part}` : `${original.name} · piece ${index + 1}`;
-      // Both rewrites must run before anything is committed.
-      const preKeep = await preflightRewrite(keepCode, 'extractObjectPiece');
-      if (preKeep) return preKeep;
-      const preDrop = await preflightRewrite(dropCode, 'extractObjectPiece');
-      if (preDrop) return preDrop;
-      const dropped = await partwrightAPI.runAndSave(dropCode, `Extract piece ${index + 1} to a new object`);
-      const dropFailed = saveFailed(dropped);
-      if (dropFailed) return { error: `extractObjectPiece: ${dropFailed}` };
-      const created = await partwrightAPI.createObject(label) as Record<string, unknown>;
-      if (created.error) return created;
-      const kept = await partwrightAPI.runAndSave(keepCode, `Piece ${index + 1} of ${original.name}`);
-      const keepFailed = saveFailed(kept);
-      if (keepFailed) return { error: `extractObjectPiece: the new object's code failed — ${keepFailed}` };
-      return { ok: true, object: { id: created.id, name: created.name }, original: { id: original.id, name: original.name } };
+      if (!Number.isInteger(index) || index < 0) return { error: `extractObjectPiece: no piece ${index} — see listObjectParts().pieces.` };
+      const r = await moveObjectSelection([`piece:${index}`], false, 'extractObjectPiece');
+      if ('error' in r) return r;
+      return { ok: true, object: r.objects[0], original: r.original };
+    },
+
+    /** Move several parts — or several pieces — of the current object into a
+     *  new object (the Objects list's "Move to new object"), or with
+     *  `{ separate: true }` into one new object each ("Split into objects").
+     *  `targets` is an array of part names / { part } / { piece: index } (from
+     *  listObjectParts), all parts or all pieces. Whole separate solids move
+     *  with piece filters around the code; parts fused to other geometry move
+     *  with api.removePart lines (the original drops them, each new object
+     *  drops every other part). manifold-js only; runs and saves every object.
+     *  -> { ok, objects: [{ id, name }], original: { id, name }, via } or { error } */
+    async extractObjectParts(targets: unknown, options?: { separate?: boolean }) {
+      const keys = objectPartTargetKeys(targets, 'extractObjectParts');
+      if (!Array.isArray(keys)) return keys;
+      const check = guard(() => {
+        const o = assertObject(options, 'extractObjectParts(options)', { optional: true });
+        if (o) {
+          assertNoUnknownKeys(o, ['separate'] as const, 'extractObjectParts(options)');
+          assertBoolean(o.separate, 'extractObjectParts(options.separate)', { optional: true });
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      return moveObjectSelection(keys, options?.separate === true, 'extractObjectParts');
     },
 
     /** Download one piece of the current object as an STL. -> { filename } or { error } */
@@ -18831,14 +19041,14 @@ async function main() {
         'setPartsView':      { signature: 'setPartsView({mode:"all"|"solo", parts?}) -- Solo view: only these parts (default: the selection) in colour, the rest grey', docs: '/ai/segmentation.md' },
         'getPartsView':      { signature: 'getPartsView() -- Current overlay view -> {mode, parts}', docs: '/ai/segmentation.md' },
         'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
-        'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
-        'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
+        'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece} | [..], hidden = true) -- Hide/show a part or piece (or a list) of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
+        'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece} | [..]) -- Delete a part or piece (or a list of them, in one run + version) of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?} ({ok, removed: [], calls: []} for a list)", docs: '/ai.md#objects-parts-and-pieces' },
         'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the removal line (api.removePart/api.removePiece, or remove_part/remove_piece in OpenSCAD), re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece} | {unlabeled: true} | null) -- Transient visual tint of a part/piece (does not change the selection) -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
-        'selectObjectPart': { signature: 'selectObjectPart(name | {part} | {piece: index} | {unlabeled: true} | null) -- Select a part/piece like clicking it in the object list: tinted, scopes the interactive paint tools, AI chat context -> {ok, selected, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
-        'getSelectedObjectPart': { signature: 'getSelectedObjectPart() -- The object-list selection -> {key, part?, piece?, description, isolated} | null', docs: '/ai.md#editing-parts-from-the-objects-list' },
-        'isolateObjectPart': { signature: 'isolateObjectPart(name | {part} | {piece} | {unlabeled: true} | null) -- Ghost everything else (visual only); null shows all -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'selectObjectPart': { signature: 'selectObjectPart(name | {part} | {piece: index} | {unlabeled: true} | null | [..]) -- Select a part/piece like clicking it in the object list: tinted, scopes the interactive paint tools, AI chat context. An array selects several parts (or several pieces) like Shift-click — a multi-selection does not scope paint -> {ok, selected, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'getSelectedObjectPart': { signature: 'getSelectedObjectPart() -- The object-list selection -> {key, part?, piece?, description, isolated} | {keys, description, isolated} (several) | null', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'isolateObjectPart': { signature: 'isolateObjectPart(name | {part} | {piece} | {unlabeled: true} | null | [..]) -- Ghost everything else (visual only); null shows all -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'getObjectPartInfo': { signature: 'getObjectPartInfo(name | {piece} | {unlabeled: true}) -- Size, area, triangle count, pieces touched -> {size, area, triangleCount, pieces}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'setObjectPartColor': { signature: "setObjectPartColor(name, '#rrggbb' | [r,g,b]) -- Fill a whole part (recolours its fill in place, else adds a byLabel region) -> {id, name, triangles}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'resetObjectPartColor': { signature: 'resetObjectPartColor(name) -- Remove the paint filling a part (back to its code colour) -> {ok, removed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
@@ -18846,6 +19056,7 @@ async function main() {
         'renameObjectPart': { signature: 'await renameObjectPart(from, to) -- Rename a part in code literals + its paint, then runAndSave -> {...runAndSave, renamed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'bakeObjectPartColor': { signature: "await bakeObjectPartColor(name) -- Write the part's colour into code as api.paint.label (manifold-js), drop its paint fill, runAndSave -> {...runAndSave, baked}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'extractObjectPiece': { signature: 'await extractObjectPiece(index) -- Move a piece into a new object (piece filters on both; manifold-js) -> {ok, object, original}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'extractObjectParts': { signature: 'await extractObjectParts([name | {part} | {piece}], {separate?}) -- Move several parts or pieces into one new object, or with separate: true one new object each (piece filters for whole solids, api.removePart lines for fused parts; manifold-js) -> {ok, objects, original, via}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'exportObjectPiece': { signature: 'exportObjectPiece(index, filename?) -- Download one piece as STL -> {filename}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'reassignPaint': { signature: 'reassignPaint(regionId, partName) -- Re-point (unmatched) paint at another part -> {ok, triangles}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'keepUnmatchedPaint': { signature: 'keepUnmatchedPaint(regionId) -- Mark unmatched paint as intentionally dormant this session -> {ok}', docs: '/ai.md#editing-parts-from-the-objects-list' },
