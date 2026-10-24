@@ -37,22 +37,51 @@ The spec (v2) mirrors this API:
 {
   body: { height, headsTall, build, sex, age, weight, muscle, bust, belly,
           proportions: 'realistic' | 'chibi' | 'funko',   // rig({ proportions }); realistic = none
-          headScale: null | number | { x, y, z } },        // null = the style's default
+          headScale: null | number | { x, y, z },          // null = the style's default
+          headSink /* 0–1.5 × neck: head on the shoulders (Funko ≈ 0.4) */,
+          mittens /* fingerless vinyl hands */ },
   pose: { preset, armL, armR, legL, legR: { raiseSide, raiseFwd, bend, twist }, spine, head,
-          hold: { kind: 'none' | 'ball', radius, cup: 'sides' | 'under', color } }, // color = ball panels
+          hold: { kind: 'none' | 'ball', radius, cup: 'sides' | 'under', color,  // color = ball panels
+                  cupL, cupR /* null = cup */, handScale /* 0.5–2.5 */ } },
   face: { shape, lids, gaze, nose, expression, lipShape, ears, brows,
           layout: { eyeSpread: null | 0.5–2, eyeHeight: null | −0.6–0.6 },
-          eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */ },
+          eyeSize /* 0.5–3 × the default radius */, mouth /* false = no lips */,
+          eyeStyle: 'iris' | 'bead', eyeAspect, highlight /* bead: 0 = no glint */,
+          browThickness /* 0.1–5 */, browWidth /* 0.3–2 */, jaw, chin, cheek /* head shape × */ },
   hair: { style /* … | 'mop' | 'anime' | 'shag' | 'captured' */, length, volume,
           lockShape, swoop /* anime only */, chunk, spike /* anime + shag */,
-          crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare /* shag only */,
+          crown /* 'spiky' | 'tousled' */, layers /* 1–3 */, raggedness, flare,
+          notched, crownSize, backWidth, tipWidth /* shag only */,
+          preset, spikiness, smooth, mirror, tilt, windowScale, capturedFringe /* captured only */,
           fringe, seed /* mop + anime + shag */ },
-  clothing: { top: { on, sleeve, length }, pants: { on, leg, rise, length }, feet: { on, kind } },
-  colors: { skin, eyes, iris, pupil, lips, brows, hair, top, pants, feet, base, ball },
+  clothing: {
+    top: { on, sleeve, length,
+           trim: { collar, cuffs },                      // contrast bands (colors.trim)
+           print: [{ text, where: 'chest' | 'back', size, x, z, color, font }] },  // F.emboss lettering
+    pants: { on, leg, rise, length: 'full' | 'shorts' | 'briefs', hem /* shorts: 0.2–1.2 of the thigh */ },
+    socks: { on, height /* of the shin */, stripes /* 0 = plain, 1 = band, n = hoops */, stripeSpan },
+    feet: { on, kind, style: 'fitted' | 'toy', size, height, cleats /* toy shoes: 0 | 2–12 */ },
+  },
+  colors: { skin, eyes, iris, pupil, lips, brows, hair, top, pants, feet, base, ball,
+            trim, socks, sockStripe, sole /* null = feet */, eyeHighlight },
   base: true,
   place: true,   // finish with F.place(model, rig, { face: '+X' }) — bottom at z = 0, facing +X
 }
 ```
+
+**Kit details, all spec-driven.** `top.trim` splits the top with `F.trimZone`
+(a neck-ring collar; cuffs at the short-sleeve hem or the wrist) into `top` +
+`trim`. Each `top.print` item is an `F.emboss` on the top: `size`, `x` (+ = the
+figure's left) and `z` (+ = up from the chest line) are in **chest
+half-widths** (`rig.r.chestX`), so they scale with the figure — a chest
+initial ≈ `{ text: 'N', x: 0.55, z: 0.24, size: 0.55 }`, a back number ≈
+`{ text: '10', where: 'back', size: 0.95 }`; each paints its own `color`
+(labels `print1`, `print2`, …). `socks` grow the shin skin proud from
+`1 − height` along the lower-leg bone into the shoe; `stripes` bands share the
+top `stripeSpan`. `feet.style: 'toy'` is the chunky vinyl sneaker (`size` ≈
+1.3, `cleats` 6 for a footballer). `pants.length: 'shorts'` cuts the leg square
+at `hem` × the thigh bone (0.9 ≈ just above the knee). Every one of these is
+emitted only when set, so older specs regenerate the same code.
 
 `body.proportions` switches the body plan (in the panel, **Style** also applies
 fitting defaults: `funko` = `headsTall 3`, `build 'slim'`, bead-black eyes at
@@ -68,8 +97,8 @@ with defaults that regenerate its original code — including `place: false`
 (the legacy builder frame: −Y front, soles at z = 0).
 
 Reach for the **hand-written recipe below** when you need anything the spec
-doesn't cover (props other than a ball, accessories, printed numbers/logos,
-trims and two-tone garments, custom shoes, multi-figure scenes).
+doesn't cover (props other than a ball, accessories, logos, garments other
+than top / pants / socks / shoes, multi-figure scenes).
 
 ### Figure from a photo — fill a spec, don't write code
 
@@ -82,22 +111,54 @@ a few points of it on `photoMatch`. The loop:
 
 1. **View the photo once.** Note style (realistic / chibi / Funko), hair,
    clothing, colours and anything held.
-2. **Fill in a CharacterSpec** — `proportions`, `headScale`, hair `style`
-   (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`
-   for a shaggy layered jet-black mop), sleeves / shorts (`pants.length:
-   'briefs'`) / footwear, `colors` sampled from the photo, `pose.hold` for a ball.
+2. **Fill in a CharacterSpec** — `proportions`, `headScale`, `headSink`, hair `style`
+   (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`/`backWidth`
+   for a shaggy layered jet-black mop; `'captured'` + `volume`/`capturedFringe` for the
+   captured Tsubasa hairdo), sleeves / knee shorts (`pants.length: 'shorts'`) /
+   socks / footwear (`style: 'toy'`, `cleats`), collar + cuff `trim`, chest / back
+   `print` lettering, bead eyes, `colors` sampled from the photo, `pose.hold`
+   (`cupL`/`cupR`, `handScale`) for a ball.
 3. **Call `buildCharacter(spec)`** (it saves a version; the code is not echoed).
 4. **Score with `photoMatch`** — text only (`exclude: ['base']`, the photo's
    camera; a placed figure faces +X, so azimuth 0 is the front, 180 the back).
 5. **Adjust spec fields from `worst[]`** — "hair 29% shorter" → `hair.length`,
-   "feet region smaller" → `feet.kind: 'boots'` / legs apart, "ball region
+   "skin 10% narrower across bands 2–4" (the lower face) → `face.jaw` / `cheek`,
+   "hair narrower from behind" → shag `backWidth` / `flare` or captured `volume`,
+   "feet region smaller" → `feet.size` / toy shoes / legs apart, "ball region
    larger" → `hold.radius`, a colour mismatch → that `colors` entry.
    `getCharacterSpec()` returns the current spec to edit.
 6. **Repeat**, looking at an image (`renderView`) only at checkpoints — every
    3–5 builds, and before finishing.
-7. **Drop to hand-written code only for what the spec can't express** (numbers,
-   logos, collar/cuff trims, custom shoes): `getCode()` gives the generated
-   figure code to extend — it stays ordinary, editable `api.sdf.figure` code.
+7. **Drop to hand-written code only for what the spec can't express** (logos,
+   accessories, other props): `getCode()` gives the generated figure code to
+   extend — it stays ordinary, editable `api.sdf.figure` code.
+
+**Worked example — the Captain Tsubasa Funko, spec only (≈1.2 k characters).**
+Scores 0.914 front / 0.899 back silhouette IoU against the toy's photos — level
+with the ≈5.7 k-character hand-written figure (0.912 / 0.911):
+
+```js
+buildCharacter({
+  body: { height: 100, proportions: 'funko', headsTall: 3, build: 'slim', sex: 'male',
+          headScale: { x: 2.3, y: 1.8, z: 2.1 }, headSink: 0.42, mittens: true },
+  pose: { legL: { raiseSide: 8, twist: 26 }, legR: { raiseSide: 8, twist: 26 },
+          hold: { kind: 'ball', radius: 10.5, cupR: 'under', handScale: 1.3, color: '#111111' } },
+  face: { shape: 'round', lids: 'none', nose: 'straight', brows: 'arched', ears: 'round', mouth: false,
+          eyeStyle: 'bead', eyeSize: 1.65, browThickness: 3, browWidth: 1.5, jaw: 1.4, cheek: 1.1 },
+  hair: { style: 'shag', seed: 11, spike: 0.55, flare: 0.8, backWidth: 0.7 },   // or { style: 'captured', volume: 0.7, capturedFringe: 0.7 }
+  clothing: {
+    top: { sleeve: 'short', trim: { collar: true, cuffs: true },
+           print: [{ text: 'N', x: 0.55, z: 0.24, size: 0.55, color: '#1f5fc8' },
+                   { text: '10', where: 'back', z: 0.08, size: 0.95, color: '#1f5fc8' }] },
+    pants: { length: 'shorts', hem: 0.94 },
+    socks: { on: true, height: 1.12 },                     // one blue band at the top (colors.sockStripe)
+    feet: { style: 'toy', size: 1.3, cleats: 6 },
+  },
+  colors: { skin: '#f0c9a2', eyes: '#0b0b0d', brows: '#0e0e10', hair: '#101012', top: '#f6f6f6',
+            trim: '#1f5fc8', pants: '#1f5fc8', socks: '#f6f6f6', sockStripe: '#1f5fc8',
+            feet: '#f4f4f4', sole: '#e6e6e6', base: '#8a8d92' },
+});
+```
 
 ## The one pattern
 
@@ -1566,8 +1627,11 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //     default to a fitting relief, the classic styles stay smooth. Mesh fine
 //     enough (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases
 //     away; thin 'boxBraids' want edgeLength ≤ ~0.35 so the strands don't break.
-F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
-//   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
+F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length, hem })
+//   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'shorts' | 'briefs'
+//   'shorts' = knee-length: the leg cut square across each thigh at `hem`
+//   (0.2..1.2 of the hip→knee bone, default 0.9 = just above the knee),
+//   perpendicular to the bone so it follows a posed leg.
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,
 //   trunks) — union it into a top and label the pair as one garment.
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long

@@ -5475,10 +5475,16 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  belt a torso-only conform surface (`union(top.torso, pants.hips)`). */
 function buildPantsParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; hips: Node; legs: Node | null } {
   const o = obj(opts, 'pants(opts)');
-  assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness', 'length'], 'pants(opts)');
+  assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness', 'length', 'hem'], 'pants(opts)');
   const leg = o.leg === undefined ? 'slim' : assertEnum(o.leg, ['slim', 'cargo'] as const, 'pants.leg');
   const rise = o.rise === undefined ? 'mid' : assertEnum(o.rise, ['low', 'mid', 'high'] as const, 'pants.rise');
-  const length = o.length === undefined ? 'full' : assertEnum(o.length, ['full', 'briefs'] as const, 'pants.length');
+  const length = o.length === undefined ? 'full' : assertEnum(o.length, ['full', 'shorts', 'briefs'] as const, 'pants.length');
+  // 'shorts' (#1059): the full pants cut square across each thigh at `hem`
+  // (a fraction of the hip→knee bone; 0.9 = just above the knee — Bermuda /
+  // soccer shorts). The cut is perpendicular to each thigh's own bone, so it
+  // follows a posed leg.
+  if (o.hem !== undefined && length !== 'shorts') throw new ValidationError("pants.hem only applies to length 'shorts'. See /ai/figure.md");
+  const hem = num(o.hem, 0.9, 'pants.hem', 0.2, 1.2);
   const j = rig.joints, r = rig.r;
   // Generous default: the knee weld bulge exceeds a thin shell and pokes
   // through as a bare-skin patch on bent legs.
@@ -5592,6 +5598,22 @@ function buildPantsParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; hi
     const pkt = (side: number): Node => sdf.roundedBox([r.upperLeg * 0.9, r.upperLeg * 0.4, r.upperLeg * 1.4], r.upperLeg * 0.18)
       .translate([side * (r.upperLeg + t) * 1.15, -r.upperLeg * 0.2, mix(j.lowerLegL[2], j.upperLegL[2], 0.5)]);
     pants = pants.smoothUnion(pkt(+1), r.upperLeg * 0.25).smoothUnion(pkt(-1), r.upperLeg * 0.25);
+  }
+  if (length === 'shorts') {
+    // Keep everything above the seat bottom plus, per leg, a wide disc slab
+    // along the thigh bone from above the hip down to the hem — a square cut
+    // perpendicular to the bone (the same construction as F.trimZone).
+    const R = (r.upperLeg + t) * flare * 2.4;
+    const thighKeep = (Hj: Vec3, K: Vec3): Node => {
+      const d = norm3(sub3(K, Hj)), L = len3(sub3(K, Hj));
+      const a = Math.abs(d[2]) < 0.9 ? cross3([0, 0, 1], d) : cross3([1, 0, 0], d);
+      const ex = norm3(a), ey = cross3(d, ex);
+      const s0 = -L, s1 = hem * L;
+      return sdf.cylinder(R, s1 - s0).rotate(eulerFromBasis(ex, ey, d)).translate(add3(Hj, scale3(d, (s0 + s1) / 2)));
+    };
+    const seatKeep = sdf.box([big, big, big]).translate([0, 0, seatBot + big / 2]);
+    const keep = sdf.union(seatKeep, thighKeep(j.upperLegL as Vec3, j.lowerLegL as Vec3), thighKeep(j.upperLegR as Vec3, j.lowerLegR as Vec3));
+    return { all: pants.union(coverage).intersect(keep), hips, legs: sdf.union(legL, legR).intersect(keep) };
   }
   return { all: pants.union(coverage), hips, legs: sdf.union(legL, legR) };
 }
