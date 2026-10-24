@@ -365,7 +365,7 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
-import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, type CropRect } from './tools/photoMatch';
+import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, combinePhotoMatches, type CropRect, type PhotoMatchResult } from './tools/photoMatch';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
 import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
@@ -753,6 +753,10 @@ async function decodeImageToRgba(src: string): Promise<{ width: number; height: 
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
   return { width: id.width, height: id.height, data: id.data };
 }
+
+/** Most reference views one photoMatch call scores (each is a full render +
+ *  score; structural cap, not a tuning knob). */
+const PHOTO_MATCH_MAX_VIEWS = 8;
 
 /** Resolve photoMatch's `image` argument: a data URL, or an attachment by id
  *  or label. Omitted → the only image attachment (error when 0 or several). */
@@ -12367,73 +12371,128 @@ async function main() {
     /** Text-only likeness score: how close the CURRENT model is to a reference
      *  photo, and where it's off — no image tokens needed. Renders the model
      *  flat (region colours, no lighting) from `view` (default front, ortho),
-     *  segments the photo (backdrop estimated from its border, or `bg`), and
+     *  segments the photo (backdrop estimated from its border — colour-model
+     *  fallback for busy backdrops — or `bg`, or a manual `mask`), and
      *  compares the normalised silhouettes and colour regions.
-     *  -> { silhouetteIoU, aspect, bands[], regions[], worst[], warnings[],
-     *       segmentation, view, image, regionNames, overlay? } or { error }.
+     *  -> { silhouetteIoU, aspect, bands[], outline[], regions[], worst[],
+     *       warnings[], segmentation, view, image, regionNames, overlay? }
+     *  With `views: [{ image, azimuth, elevation, … }]` every view is scored
+     *  against the same model: -> { silhouetteIoU (mean), minIoU, worst[],
+     *  warnings[], views: [per-view results] }. Or { error }.
      *  See /ai/reference-images.md#photo-match. */
     async photoMatch(options?: {
       image?: string; view?: { azimuth?: number; elevation?: number; ortho?: boolean };
       crop?: { x: number; y: number; w: number; h: number } | number[];
       bg?: string | number[]; bgTolerance?: number; size?: number; exclude?: string[];
       fit?: 'height' | 'box'; pixelAspect?: number; overlay?: boolean;
+      mask?: string; bgMode?: 'auto' | 'border' | 'grabcut'; bands?: number;
+      merge?: string[][]; ignore?: string[];
+      views?: Array<{
+        image?: string; azimuth?: number; elevation?: number; ortho?: boolean; label?: string;
+        crop?: { x: number; y: number; w: number; h: number } | number[];
+        bg?: string | number[]; bgTolerance?: number; mask?: string; pixelAspect?: number;
+      }>;
     }) {
       const check = guard(() => {
         const o = (options === undefined ? {} : assertObject(options, 'photoMatch(options)')!) as Record<string, unknown>;
-        assertNoUnknownKeys(o, ['image', 'view', 'crop', 'bg', 'bgTolerance', 'size', 'exclude', 'fit', 'pixelAspect', 'overlay'], 'photoMatch(options)');
-        const image = assertString(o.image, 'photoMatch(options).image', { optional: true });
-        let view = { azimuth: 0, elevation: 0, ortho: true };
-        if (o.view !== undefined) {
-          const v = assertObject(o.view, 'photoMatch(options).view')!;
-          assertNoUnknownKeys(v, ['azimuth', 'elevation', 'ortho'], 'photoMatch(options).view');
-          view = {
-            azimuth: assertNumber(v.azimuth, 'photoMatch(options).view.azimuth', { optional: true }) ?? 0,
-            elevation: assertNumber(v.elevation, 'photoMatch(options).view.elevation', { optional: true, min: -90, max: 90 }) ?? 0,
-            ortho: assertBoolean(v.ortho, 'photoMatch(options).view.ortho', { optional: true }) ?? true,
+        assertNoUnknownKeys(o, ['image', 'view', 'crop', 'bg', 'bgTolerance', 'size', 'exclude', 'fit', 'pixelAspect', 'overlay', 'mask', 'bgMode', 'bands', 'merge', 'ignore', 'views'], 'photoMatch(options)');
+        const parseCrop = (v: unknown, path: string): CropRect | null => {
+          if (v === undefined) return null;
+          if (Array.isArray(v)) {
+            const [x, y, w, h] = assertNumberTuple(v, 4, path);
+            return { x, y, w, h };
+          }
+          const c = assertObject(v, path)!;
+          assertNoUnknownKeys(c, ['x', 'y', 'w', 'h'], path);
+          return {
+            x: assertNumber(c.x, `${path}.x`, { min: 0 })!,
+            y: assertNumber(c.y, `${path}.y`, { min: 0 })!,
+            w: assertNumber(c.w, `${path}.w`, { min: 1 })!,
+            h: assertNumber(c.h, `${path}.h`, { min: 1 })!,
           };
-        }
-        let crop: CropRect | null = null;
-        if (o.crop !== undefined) {
-          if (Array.isArray(o.crop)) {
-            const [x, y, w, h] = assertNumberTuple(o.crop, 4, 'photoMatch(options).crop');
-            crop = { x, y, w, h };
-          } else {
-            const c = assertObject(o.crop, 'photoMatch(options).crop')!;
-            assertNoUnknownKeys(c, ['x', 'y', 'w', 'h'], 'photoMatch(options).crop');
-            crop = {
-              x: assertNumber(c.x, 'photoMatch(options).crop.x', { min: 0 })!,
-              y: assertNumber(c.y, 'photoMatch(options).crop.y', { min: 0 })!,
-              w: assertNumber(c.w, 'photoMatch(options).crop.w', { min: 1 })!,
-              h: assertNumber(c.h, 'photoMatch(options).crop.h', { min: 1 })!,
+        };
+        const parseBg = (v: unknown, path: string): string | [number, number, number] | null => {
+          if (v === undefined) return null;
+          if (Array.isArray(v)) return assertNumberTuple(v, 3, path) as [number, number, number];
+          const s = assertString(v, path)!;
+          if (!/^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(s)) throw new ValidationError(`${path} must be "#rrggbb" or [r,g,b] (0-255).`);
+          return s;
+        };
+        const parseTol = (v: unknown, path: string) => assertNumber(v, path, { optional: true, min: 0, max: 255 }) ?? null;
+        const parseAspect = (v: unknown, path: string) => assertNumber(v, path, { optional: true, min: 0.05, max: 20 }) ?? null;
+        const parseStrings = (v: unknown, path: string) => (v === undefined ? [] : assertArray(v, path).map((s, i) => assertString(s, `${path}[${i}]`)!));
+        const crop = parseCrop(o.crop, 'photoMatch(options).crop');
+        const bg = parseBg(o.bg, 'photoMatch(options).bg');
+        const bgTolerance = parseTol(o.bgTolerance, 'photoMatch(options).bgTolerance');
+        const pixelAspect = parseAspect(o.pixelAspect, 'photoMatch(options).pixelAspect');
+        const size = assertNumber(o.size, 'photoMatch(options).size', { optional: true, min: 64, max: 2048, integer: true }) ?? getConfig().import.photoMatchRenderSize;
+        const exclude = parseStrings(o.exclude, 'photoMatch(options).exclude');
+        const fit = o.fit === undefined ? 'height' : assertEnum(o.fit, ['height', 'box'] as const, 'photoMatch(options).fit');
+        const overlay = assertBoolean(o.overlay, 'photoMatch(options).overlay', { optional: true }) ?? false;
+        const bgMode = o.bgMode === undefined ? 'auto' : assertEnum(o.bgMode, ['auto', 'border', 'grabcut'] as const, 'photoMatch(options).bgMode');
+        const bands = assertNumber(o.bands, 'photoMatch(options).bands', { optional: true, min: 2, max: 60, integer: true }) ?? null;
+        const merge = o.merge === undefined ? [] : assertArray(o.merge, 'photoMatch(options).merge').map((g, i) => parseStrings(g, `photoMatch(options).merge[${i}]`));
+        const ignore = parseStrings(o.ignore, 'photoMatch(options).ignore');
+        type ViewSpec = { image?: string; view: { azimuth: number; elevation: number; ortho: boolean }; label?: string; crop: CropRect | null; bg: string | [number, number, number] | null; bgTolerance: number | null; mask?: string; pixelAspect: number | null };
+        let views: ViewSpec[];
+        if (o.views !== undefined) {
+          for (const k of ['image', 'view', 'mask'] as const) if (o[k] !== undefined) throw new ValidationError(`photoMatch(options): with views, put ${k} inside each view (views[i].${k === 'view' ? 'azimuth/elevation' : k}).`);
+          const arr = assertArray(o.views, 'photoMatch(options).views') as unknown[];
+          if (arr.length < 1 || arr.length > PHOTO_MATCH_MAX_VIEWS) throw new ValidationError(`photoMatch(options).views must hold 1–${PHOTO_MATCH_MAX_VIEWS} views.`);
+          // A crop is in ONE photo's pixels: broadcast it only when there is one photo.
+          if (o.crop !== undefined && arr.length > 1) throw new ValidationError('photoMatch(options): with several views, put crop inside each view (views[i].crop).');
+          views = arr.map((raw, i) => {
+            const p = `photoMatch(options).views[${i}]`;
+            const v = assertObject(raw, p)!;
+            assertNoUnknownKeys(v, ['image', 'azimuth', 'elevation', 'ortho', 'label', 'crop', 'bg', 'bgTolerance', 'mask', 'pixelAspect'], p);
+            // Several views must each name their photo — an omitted image
+            // would silently score every view against the same attachment.
+            if (arr.length > 1 && v.image === undefined) throw new ValidationError(`${p}.image is required when views holds several photos.`);
+            return {
+              image: assertString(v.image, `${p}.image`, { optional: true }),
+              view: {
+                azimuth: assertNumber(v.azimuth, `${p}.azimuth`, { optional: true }) ?? 0,
+                elevation: assertNumber(v.elevation, `${p}.elevation`, { optional: true, min: -90, max: 90 }) ?? 0,
+                ortho: assertBoolean(v.ortho, `${p}.ortho`, { optional: true }) ?? true,
+              },
+              label: assertString(v.label, `${p}.label`, { optional: true }),
+              crop: v.crop === undefined ? crop : parseCrop(v.crop, `${p}.crop`),
+              bg: v.bg === undefined ? bg : parseBg(v.bg, `${p}.bg`),
+              bgTolerance: v.bgTolerance === undefined ? bgTolerance : parseTol(v.bgTolerance, `${p}.bgTolerance`),
+              mask: assertString(v.mask, `${p}.mask`, { optional: true }),
+              pixelAspect: v.pixelAspect === undefined ? pixelAspect : parseAspect(v.pixelAspect, `${p}.pixelAspect`),
+            };
+          });
+        } else {
+          let view = { azimuth: 0, elevation: 0, ortho: true };
+          if (o.view !== undefined) {
+            const v = assertObject(o.view, 'photoMatch(options).view')!;
+            assertNoUnknownKeys(v, ['azimuth', 'elevation', 'ortho'], 'photoMatch(options).view');
+            view = {
+              azimuth: assertNumber(v.azimuth, 'photoMatch(options).view.azimuth', { optional: true }) ?? 0,
+              elevation: assertNumber(v.elevation, 'photoMatch(options).view.elevation', { optional: true, min: -90, max: 90 }) ?? 0,
+              ortho: assertBoolean(v.ortho, 'photoMatch(options).view.ortho', { optional: true }) ?? true,
             };
           }
+          views = [{
+            image: assertString(o.image, 'photoMatch(options).image', { optional: true }),
+            view, crop, bg, bgTolerance, pixelAspect,
+            mask: assertString(o.mask, 'photoMatch(options).mask', { optional: true }),
+          }];
         }
-        let bg: string | [number, number, number] | null = null;
-        if (o.bg !== undefined) {
-          if (Array.isArray(o.bg)) bg = assertNumberTuple(o.bg, 3, 'photoMatch(options).bg') as [number, number, number];
-          else {
-            bg = assertString(o.bg, 'photoMatch(options).bg')!;
-            if (!/^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(bg)) throw new ValidationError('photoMatch(options).bg must be "#rrggbb" or [r,g,b] (0-255).');
-          }
-        }
-        const bgTolerance = assertNumber(o.bgTolerance, 'photoMatch(options).bgTolerance', { optional: true, min: 0, max: 255 }) ?? null;
-        const size = assertNumber(o.size, 'photoMatch(options).size', { optional: true, min: 64, max: 2048, integer: true }) ?? getConfig().import.photoMatchRenderSize;
-        const exclude = o.exclude === undefined ? [] : assertArray(o.exclude, 'photoMatch(options).exclude').map((s, i) => assertString(s, `photoMatch(options).exclude[${i}]`)!);
-        const fit = o.fit === undefined ? 'height' : assertEnum(o.fit, ['height', 'box'] as const, 'photoMatch(options).fit');
-        const pixelAspect = assertNumber(o.pixelAspect, 'photoMatch(options).pixelAspect', { optional: true, min: 0.05, max: 20 }) ?? null;
-        const overlay = assertBoolean(o.overlay, 'photoMatch(options).overlay', { optional: true }) ?? false;
-        return { image, view, crop, bg, bgTolerance, size, exclude, fit, pixelAspect, overlay };
+        return { views, multi: o.views !== undefined, size, exclude, fit, overlay, bgMode, bands, merge, ignore };
       });
       if ('error' in check) return check;
       if (!currentMeshData) return { error: 'photoMatch: no geometry loaded — run code first.' };
-      const img = resolvePhotoMatchImage(check.image);
-      if ('error' in img) return img;
-      let reference: { width: number; height: number; data: Uint8ClampedArray };
-      try {
-        reference = await decodeImageToRgba(img.src);
-      } catch (e) {
-        return { error: `photoMatch: could not decode the image (${e instanceof Error ? e.message : String(e)}). Remote images must allow CORS — attach the photo or pass a data URL.` };
-      }
+      const decode = async (ref: string | undefined, what: string) => {
+        const img = resolvePhotoMatchImage(ref);
+        if ('error' in img) return img;
+        try {
+          return { ...img, rgba: await decodeImageToRgba(img.src) };
+        } catch (e) {
+          return { error: `photoMatch: could not decode the ${what} (${e instanceof Error ? e.message : String(e)}). Remote images must allow CORS — attach the photo or pass a data URL.` };
+        }
+      };
       const mesh = currentMeshData;
       // Regions: api.label parts (when the label map indexes this mesh), else
       // the distinct drawn colours. Colours = what the viewport draws.
@@ -12448,35 +12507,53 @@ async function main() {
       const painted = (triColors as (Uint8Array & { _painted?: Uint8Array }) | null)?._painted ?? null;
       const { regions, triRegion } = buildTriangleRegions(mesh.numTri, triColors, triLabel, labelNames, check.exclude, painted);
       const unknownExcl = check.exclude.filter(n => !labelNames.includes(n) && !regions.some(r => r.name === n));
-      const render = renderRegionLabels(mesh, triRegion, { ...check.view, size: check.size });
-      const tuning = photoMatchTuningFromConfig(getConfig().import);
-      const result = scorePhotoMatch({
-        reference, crop: check.crop, bg: check.bg, bgTolerance: check.bgTolerance,
-        model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
-        modelLabels: render.labels, regions, fit: check.fit, pixelAspect: check.pixelAspect,
-        debug: check.overlay, tuning,
-      });
-      let overlay: string | undefined;
-      if (result.debug) {
-        const ov = photoMatchOverlay(result.debug, regions.map(r => r.color || null));
-        const canvas = document.createElement('canvas');
-        canvas.width = ov.width; canvas.height = ov.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.putImageData(new ImageData(new Uint8ClampedArray(ov.data), ov.width, ov.height), 0, 0);
-          overlay = canvas.toDataURL('image/png');
+      const tuning = { ...photoMatchTuningFromConfig(getConfig().import), ...(check.bands ? { bands: check.bands } : {}) };
+      const results: Record<string, unknown>[] = [];
+      const scored: { label: string; result: PhotoMatchResult }[] = [];
+      for (const v of check.views) {
+        const img = await decode(v.image, 'image');
+        if ('error' in img) return img;
+        let mask: { width: number; height: number; data: Uint8ClampedArray } | null = null;
+        if (v.mask !== undefined) {
+          const m = await decode(v.mask, 'mask');
+          if ('error' in m) return { error: m.error.replace(/^photoMatch:/, 'photoMatch mask:') };
+          mask = m.rgba;
         }
-        delete result.debug;
+        const render = renderRegionLabels(mesh, triRegion, { ...v.view, size: check.size });
+        const result = scorePhotoMatch({
+          reference: img.rgba, crop: v.crop, bg: v.bg, bgTolerance: v.bgTolerance, mask, bgMode: check.bgMode,
+          model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
+          modelLabels: render.labels, regions, merge: check.merge, ignore: check.ignore,
+          fit: check.fit, pixelAspect: v.pixelAspect, debug: check.overlay, tuning,
+        });
+        let overlay: string | undefined;
+        if (result.debug) {
+          const ov = photoMatchOverlay(result.debug, regions.map(r => r.color || null));
+          const canvas = document.createElement('canvas');
+          canvas.width = ov.width; canvas.height = ov.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.putImageData(new ImageData(new Uint8ClampedArray(ov.data), ov.width, ov.height), 0, 0);
+            overlay = canvas.toDataURL('image/png');
+          }
+          delete result.debug;
+        }
+        if (unknownExcl.length) result.warnings.push(`exclude: no part named ${unknownExcl.join(', ')} (parts: ${labelNames.join(', ') || 'none'}).`);
+        const label = v.label ?? `${v.view.azimuth},${v.view.elevation}`;
+        scored.push({ label, result });
+        results.push({
+          ...(check.multi ? { label } : {}),
+          view: v.view,
+          image: { source: img.source, width: img.rgba.width, height: img.rgba.height },
+          ...(v.crop ? { crop: v.crop } : {}),
+          regionNames: regions.map(r => r.name),
+          ...result,
+          ...(overlay ? { overlay } : {}),
+        });
       }
-      if (unknownExcl.length) result.warnings.push(`exclude: no part named ${unknownExcl.join(', ')} (parts: ${labelNames.join(', ') || 'none'}).`);
-      return {
-        view: check.view,
-        image: { source: img.source, width: reference.width, height: reference.height },
-        ...(check.crop ? { crop: check.crop } : {}),
-        regionNames: regions.map(r => r.name),
-        ...result,
-        ...(overlay ? { overlay } : {}),
-      };
+      if (!check.multi) return results[0];
+      const combined = combinePhotoMatches(scored);
+      return { silhouetteIoU: combined.silhouetteIoU, minIoU: combined.minIoU, worst: combined.worst, warnings: combined.warnings, views: results };
     },
 
     /** Render multiple angles of the current model laid out in a single
@@ -17718,7 +17795,7 @@ async function main() {
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
-        'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, exclude?: [part], fit?: "height"|"box", pixelAspect?, size?, overlay?}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, 10 band widths, per-part IoU/area/offset/colour, worst[] findings. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
+        'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, bgMode?: "auto"|"border"|"grabcut", mask?, exclude?: [part], merge?: [[part,…]], ignore?: [part], bands?, fit?: "height"|"box", pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, crop?, bg?, mask?, pixelAspect?, label?}]}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, band widths + left/right edge offsets, outline[] diff ("photo-only at bands 2–4 left … → grow"), per-part IoU/area/offset/colour (lowConfidence when the photo cannot separate parts), worst[] findings. views[] scores several photos/angles at once (mean silhouetteIoU + per-view results). mask = manual silhouette (white = subject); bgMode grabcut for busy backdrops; merge/ignore parts the photo cannot tell apart. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         // Spending mode (AI budget)
         'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },

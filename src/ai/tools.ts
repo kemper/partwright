@@ -321,7 +321,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'photoMatch',
-    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without).',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
     input_schema: {
       type: 'object',
       properties: {
@@ -341,6 +341,30 @@ const ALL_TOOLS: ToolDefinition[] = [
         exclude: { type: 'array', items: { type: 'string' }, description: 'Part (label) names to leave out of the model render, e.g. ["base"] when the photo shows no stand.' },
         fit: { type: 'string', enum: ['height', 'box'], description: '"height" (default): common height, aspect kept. "box": also stretch the model to the photo width, comparing proportions only.' },
         pixelAspect: { type: 'number', description: 'Multiply the photo\'s widths by this before comparing (e.g. 0.6 for a horizontally stretched video frame). Default 1.' },
+        bands: { type: 'integer', description: 'Horizontal bands in the width/edge profile (default 10, 2–60). Use 20 for fine outline work.' },
+        merge: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Part groups scored as ONE region, e.g. [["jersey","ball","socks","shoes"]] when the photo cannot separate them.' },
+        ignore: { type: 'array', items: { type: 'string' }, description: 'Part names left out of the region findings (they still count toward the silhouette).' },
+        mask: { type: 'string', description: 'Manual subject silhouette for the photo (white = subject): an image attachment id/label or data:image/ URL. Overrides background estimation.' },
+        bgMode: { type: 'string', enum: ['auto', 'border', 'grabcut'], description: '"auto" (default): border-estimated backdrop, switching to a colour model when the border is busy. "grabcut": always use the colour model. "border": never switch.' },
+        views: {
+          type: 'array',
+          description: 'Score several photos/angles in one call (replaces image/view/mask). Each: {image, azimuth, elevation, ortho?, label?, crop?, bg?, bgTolerance?, mask?, pixelAspect?}; top-level crop/bg/bgTolerance/pixelAspect are defaults.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string' },
+              azimuth: { type: 'number' },
+              elevation: { type: 'number' },
+              ortho: { type: 'boolean' },
+              label: { type: 'string' },
+              crop: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+              bg: { type: 'string' },
+              bgTolerance: { type: 'number' },
+              mask: { type: 'string' },
+              pixelAspect: { type: 'number' },
+            },
+          },
+        },
       },
     },
   },

@@ -64,6 +64,23 @@ export interface PhotoMatchTuning {
   /** A region whose photo colour drifted further than this (CIE76 ΔE) from the
    *  model colour is reported as a colour mismatch. */
   colorShiftWarn: number;
+  /** Warn when the photo's subject is shorter than this (original photo px):
+   *  band/edge numbers finer than a few px are noise. */
+  minSubjectPx: number;
+  /** Regions whose photo colours converge closer than this (ΔE, lightness
+   *  weighted ½) — or that share a model colour AND touch — can't be told
+   *  apart in the photo: their shape findings are suppressed and they are
+   *  flagged `lowConfidence`. 0 disables the auto-detection. */
+  ambiguousDeltaE: number;
+  /** Outline diff: edge / interior offsets smaller than this (% of the figure
+   *  height) are not reported. */
+  outlineMinPct: number;
+  /** Outline diff: at most this many lines. */
+  outlineMaxLines: number;
+  /** Auto background mode: a border ring whose estimated tolerance reaches
+   *  this (RGB distance) is "busy" (halftone, scenery) — segmentation then
+   *  switches to the colour-model (GrabCut-lite) path. */
+  busyBorderTolerance: number;
 }
 
 const PHOTO_MATCH_DEFAULTS: PhotoMatchTuning = {
@@ -74,6 +91,11 @@ const PHOTO_MATCH_DEFAULTS: PhotoMatchTuning = {
   bands: 10,
   colorShiftWarn: 30,
   maxRegionDistance: 0.12,
+  minSubjectPx: 300,
+  ambiguousDeltaE: 12,
+  outlineMinPct: 1.5,
+  outlineMaxLines: 8,
+  busyBorderTolerance: 75,
 };
 
 /** Map the app-config `import.photoMatch*` fields onto the tuning knobs.
@@ -81,7 +103,8 @@ const PHOTO_MATCH_DEFAULTS: PhotoMatchTuning = {
 export function photoMatchTuningFromConfig(c: {
   photoMatchTargetHeight: number; photoMatchBgToleranceMin: number; photoMatchBgTolerance: number;
   photoMatchKmeansIterations: number; photoMatchBands: number; photoMatchColorShiftWarn: number;
-  photoMatchMaxRegionDistance: number;
+  photoMatchMaxRegionDistance: number; photoMatchMinSubjectPx: number; photoMatchAmbiguousDeltaE: number;
+  photoMatchOutlineMinPct: number; photoMatchOutlineMaxLines: number; photoMatchBusyBorderTolerance: number;
 }): PhotoMatchTuning {
   return {
     targetHeight: c.photoMatchTargetHeight,
@@ -91,6 +114,11 @@ export function photoMatchTuningFromConfig(c: {
     bands: c.photoMatchBands,
     colorShiftWarn: c.photoMatchColorShiftWarn,
     maxRegionDistance: c.photoMatchMaxRegionDistance,
+    minSubjectPx: c.photoMatchMinSubjectPx,
+    ambiguousDeltaE: c.photoMatchAmbiguousDeltaE,
+    outlineMinPct: c.photoMatchOutlineMinPct,
+    outlineMaxLines: c.photoMatchOutlineMaxLines,
+    busyBorderTolerance: c.photoMatchBusyBorderTolerance,
   };
 }
 
@@ -120,6 +148,23 @@ export interface PhotoMatchInput {
   /** 'height' (default): common height, aspect kept. 'box': the model is also
    *  stretched to the photo's bbox width, so only proportions are compared. */
   fit?: 'height' | 'box';
+  /** Manual subject mask for the reference: white (and opaque) = subject.
+   *  Same framing as `reference`, any resolution — `crop` is applied to it
+   *  scaled. Overrides background estimation (`bg` / `bgMode`). */
+  mask?: RgbaImage | null;
+  /** How the reference is segmented when no `mask`/`bg` is given:
+   *  'auto' (default) = backdrop estimated from the border ring, switching to
+   *  'grabcut' when that ring is busy (halftone, scenery) or the result is
+   *  implausible; 'border' = never switch; 'grabcut' = colour-model
+   *  segmentation (learns subject vs backdrop colours, border = backdrop). */
+  bgMode?: 'auto' | 'border' | 'grabcut';
+  /** Region groups scored as ONE region, e.g. [['jersey','ball','socks','shoes']]
+   *  — for parts the photo can't tell apart (white-on-white on a dim photo). */
+  merge?: readonly (readonly string[])[] | null;
+  /** Regions left out of the region analysis and findings (they still count
+   *  toward the silhouette and still claim their photo pixels). Naming a
+   *  member of a `merge` group ignores the whole group. */
+  ignore?: readonly string[] | null;
   /** Include the normalised region maps in the result (for an overlay image). */
   debug?: boolean;
   tuning?: Partial<PhotoMatchTuning>;
@@ -137,6 +182,18 @@ export interface PhotoMatchBand {
   /** Horizontal centre offset model − photo, % of height (+ = model right). */
   dx: number;
   iou: number;
+  /** Outer-edge offsets, OUTWARD-positive, % of height, mean over the band's
+   *  rows: > 0 = the model's edge sticks out past the photo's on that side
+   *  (model-only), < 0 = the photo extends further (photo-only — grow the
+   *  model there). Left/right are IMAGE sides (the viewer's). */
+  left: number;
+  right: number;
+  /** Interior mismatch, mean width per row in % of height: photo-only pixels
+   *  INSIDE the model's span (the model has a gap the photo doesn't) and
+   *  model-only pixels inside the photo's span (the photo has a gap — e.g.
+   *  between the legs — that the model fills). */
+  innerPhotoOnly: number;
+  innerModelOnly: number;
 }
 
 export interface PhotoMatchRegionResult {
@@ -162,6 +219,10 @@ export interface PhotoMatchRegionResult {
   /** Share of the figure's foreground, %. */
   modelShare: number;
   photoShare: number;
+  /** Set when the photo can't separate this region from another (photo
+   *  colours too close, or a shared colour + touching): its size/position
+   *  findings are suppressed. Merge or ignore the group to silence it. */
+  lowConfidence?: string;
 }
 
 export interface SegmentationInfo {
@@ -171,6 +232,12 @@ export interface SegmentationInfo {
   bbox: { x: number; y: number; w: number; h: number } | null;
   /** Silhouette touches these image edges — likely truncated by the crop. */
   touchesEdges: string[];
+  /** How the mask was obtained: 'border' (backdrop estimated from the border
+   *  ring), 'bg' (explicit colour), 'grabcut' (colour model), 'mask' (manual),
+   *  'render' (the model side). */
+  method?: string;
+  /** Subject bbox height in ORIGINAL image pixels (photo only). */
+  subjectPx?: number;
 }
 
 export interface PhotoMatchResult {
@@ -179,6 +246,10 @@ export interface PhotoMatchResult {
   bands: PhotoMatchBand[];
   regions: PhotoMatchRegionResult[];
   worst: string[];
+  /** Compact text outline diff: where the photo's outline sticks out past the
+   *  model's ("photo-only … → grow") or vice versa ("model-only … → trim"),
+   *  per band run and side, most severe first. */
+  outline: string[];
   segmentation: { photo: SegmentationInfo; model: SegmentationInfo };
   warnings: string[];
   /** The normalised canvas size the metrics were computed on. */
@@ -246,18 +317,23 @@ const dist2 = (a: ArrayLike<number>, ao: number, b: ArrayLike<number>, bo: numbe
 // ---------------------------------------------------------------------------
 // image helpers
 
-interface Rgb3 { width: number; height: number; rgb: Float32Array }
+interface Rgb3 {
+  width: number; height: number; rgb: Float32Array;
+  /** Original (cropped) image pixels per working pixel, vertically. */
+  scale: number;
+}
 
 /** Crop + area-downsample to at most `maxSide` px on the longer side (box
  *  filter: averages JPEG/WEBP noise before segmentation) → float RGB. */
+function clampCrop(width: number, height: number, crop: CropRect | null | undefined): CropRect {
+  if (!crop) return { x: 0, y: 0, w: width, h: height };
+  const x = Math.max(0, Math.min(width - 1, Math.round(crop.x)));
+  const y = Math.max(0, Math.min(height - 1, Math.round(crop.y)));
+  return { x, y, w: Math.max(1, Math.min(width - x, Math.round(crop.w))), h: Math.max(1, Math.min(height - y, Math.round(crop.h))) };
+}
+
 function prepare(img: RgbaImage, crop: CropRect | null | undefined, maxSide: number): Rgb3 {
-  let x0 = 0, y0 = 0, w = img.width, h = img.height;
-  if (crop) {
-    x0 = Math.max(0, Math.min(img.width - 1, Math.round(crop.x)));
-    y0 = Math.max(0, Math.min(img.height - 1, Math.round(crop.y)));
-    w = Math.max(1, Math.min(img.width - x0, Math.round(crop.w)));
-    h = Math.max(1, Math.min(img.height - y0, Math.round(crop.h)));
-  }
+  const { x: x0, y: y0, w, h } = clampCrop(img.width, img.height, crop);
   const f = Math.max(1, Math.max(w, h) / maxSide);
   const W = Math.max(1, Math.round(w / f)), H = Math.max(1, Math.round(h / f));
   const rgb = new Float32Array(W * H * 3);
@@ -281,7 +357,28 @@ function prepare(img: RgbaImage, crop: CropRect | null | undefined, maxSide: num
       rgb[o] = r / n; rgb[o + 1] = g / n; rgb[o + 2] = b / n;
     }
   }
-  return { width: W, height: H, rgb };
+  return { width: W, height: H, rgb, scale: h / H };
+}
+
+/** Sample a manual mask (white + opaque = subject) onto the prepared
+ *  reference grid. `crop` is in reference pixels; the mask may have its own
+ *  resolution (same framing), so the crop is scaled into mask pixels. */
+function prepareMask(mask: RgbaImage, refW: number, refH: number, crop: CropRect | null | undefined, W: number, H: number): Uint8Array {
+  const c = clampCrop(refW, refH, crop);
+  const sx = mask.width / refW, sy = mask.height / refH;
+  const out = new Uint8Array(W * H);
+  const d = mask.data;
+  for (let y = 0; y < H; y++) {
+    const my = Math.min(mask.height - 1, Math.floor((c.y + ((y + 0.5) * c.h) / H) * sy));
+    for (let x = 0; x < W; x++) {
+      const mx = Math.min(mask.width - 1, Math.floor((c.x + ((x + 0.5) * c.w) / W) * sx));
+      const o = (my * mask.width + mx) * 4;
+      const a = d[o + 3] === undefined ? 255 : d[o + 3];
+      const luma = 0.299 * d[o] + 0.587 * d[o + 1] + 0.114 * d[o + 2];
+      out[y * W + x] = a >= 128 && luma >= 128 ? 1 : 0;
+    }
+  }
+  return out;
 }
 
 /** Estimate the background colour(s) from a ring just inside the border
@@ -421,8 +518,10 @@ function components(mask: Uint8Array, W: number, H: number): { id: Int32Array; s
 }
 
 /** Clean a raw foreground mask: open (drop speckle) + close (seal cracks),
- *  keep the largest component plus anything within 2 px of it, fill holes. */
-function cleanMask(raw: Uint8Array, W: number, H: number): Uint8Array {
+ *  keep the largest component plus anything within 2 px of it (and, with
+ *  `keepFrac` > 0, every component at least that fraction of the largest),
+ *  fill holes. */
+function cleanMask(raw: Uint8Array, W: number, H: number, keepFrac = 0): Uint8Array {
   let m = morph(morph(raw, W, H, 1, false), W, H, 1, true);
   m = morph(morph(m, W, H, 1, true), W, H, 1, false);
   const { id, sizes } = components(m, W, H);
@@ -433,6 +532,7 @@ function cleanMask(raw: Uint8Array, W: number, H: number): Uint8Array {
   for (let p = 0; p < W * H; p++) if (id[p] === big) bigMask[p] = 1;
   const near = morph(bigMask, W, H, 2, true);
   const keep = new Uint8Array(sizes.length); keep[big] = 1;
+  if (keepFrac > 0) for (let c = 0; c < sizes.length; c++) if (sizes[c] >= sizes[big] * keepFrac) keep[c] = 1;
   for (let p = 0; p < W * H; p++) if (id[p] >= 0 && near[p]) keep[id[p]] = 1;
   const out = new Uint8Array(W * H);
   for (let p = 0; p < W * H; p++) if (id[p] >= 0 && keep[id[p]]) out[p] = 1;
@@ -604,6 +704,133 @@ function segment(img: Rgb3, colors: Rgb[], tol: number[], frame = 0, hysteresis 
   return cleanMask(mask, W, H);
 }
 
+/** GrabCut-lite refinement passes (structural: converges in 3–5). */
+const GRABCUT_ITERATIONS = 6;
+/** A photo silhouette covering less / more of the frame than this is
+ *  implausible: warned about, and (below the minimum) the auto mode retries
+ *  with the colour model. */
+const FG_FRACTION_MIN = 0.02;
+const FG_FRACTION_MAX = 0.85;
+/** Cap on a normalised silhouette's width/height, so an edge-on flat model (or
+ *  a degenerate photo bbox) can't allocate a huge comparison canvas. */
+const MAX_NORMALIZED_ASPECT = 10;
+/** Findings kept in a multi-view summary. */
+const COMBINED_MAX_WORST = 6;
+
+const fgFraction = (m: Uint8Array) => { let n = 0; for (let p = 0; p < m.length; p++) n += m[p]; return n / Math.max(1, m.length); };
+
+/** GrabCut-lite: colour-model segmentation for busy backdrops (halftone,
+ *  scenery) where no single backdrop colour exists. The border band is
+ *  definite background; everything inside starts as "probably subject". Each
+ *  pass builds 16³-bin colour histograms of the current subject and backdrop,
+ *  scores every inner pixel by log(p_subject / p_backdrop), box-blurs that
+ *  score (a cheap smoothness term standing in for the graph cut) and
+ *  re-labels. The result is cleaned like the border path (largest component +
+ *  hole fill). Returns the mask and the margin the border band occupies. */
+function segmentGrabcut(img: Rgb3, iterations = GRABCUT_ITERATIONS): { mask: Uint8Array; margin: number } {
+  const { width: W, height: H, rgb } = img;
+  const N = W * H;
+  const margin = frameInset(W, H) + Math.max(2, Math.round(Math.min(W, H) * 0.04));
+  const NB = 4096;
+  const bin = new Int32Array(N);
+  for (let p = 0; p < N; p++) {
+    const q = (v: number) => Math.max(0, Math.min(15, Math.floor(v / 16)));
+    bin[p] = (q(rgb[p * 3]) << 8) | (q(rgb[p * 3 + 1]) << 4) | q(rgb[p * 3 + 2]);
+  }
+  const hard = new Uint8Array(N);
+  let fg = new Uint8Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = y * W + x;
+    if (Math.min(x, y, W - 1 - x, H - 1 - y) < margin) hard[p] = 1; else fg[p] = 1;
+  }
+  // Histogram of the selected pixels, blurred ±1 bin per channel so unseen
+  // neighbouring shades still get probability, then normalised by its ACTUAL
+  // mass (edge bins lose kernel weight) into log-probabilities. An empty
+  // selection yields the flat prior, never a spuriously confident model.
+  const hist = (sel: (p: number) => boolean): Float64Array => {
+    let h = new Float64Array(NB);
+    for (let p = 0; p < N; p++) if (sel(p)) h[bin[p]]++;
+    for (let axis = 0; axis < 3; axis++) {
+      const sh = axis === 0 ? 0 : axis === 1 ? 4 : 8;
+      const o = new Float64Array(NB);
+      for (let i = 0; i < NB; i++) {
+        const c = (i >> sh) & 15;
+        let s = h[i] * 2;
+        if (c > 0) s += h[i - (1 << sh)];
+        if (c < 15) s += h[i + (1 << sh)];
+        o[i] = s;
+      }
+      h = o;
+    }
+    let mass = 0;
+    for (let i = 0; i < NB; i++) mass += h[i];
+    const eps = 0.5, tot = mass + eps * NB;
+    const out = new Float64Array(NB);
+    for (let i = 0; i < NB; i++) out[i] = Math.log((h[i] + eps) / tot);
+    return out;
+  };
+  const score = new Float32Array(N);
+  const tmp = new Float32Array(N);
+  const r = Math.max(1, Math.round(Math.min(W, H) / 160));
+  // Pass 0 has no subject model yet: a FLAT subject prior against the border
+  // band's histogram, so colours common on the border start as backdrop and
+  // rare ones as subject (a whole-interior subject init would be dominated by
+  // the backdrop and invert). Later passes learn both models.
+  const flat = new Float64Array(NB).fill(Math.log(1 / NB));
+  for (let it = 0; it < iterations; it++) {
+    const cur = fg;
+    const hf = it === 0 ? flat : hist((p) => cur[p] === 1), hb = hist(it === 0 ? (p) => hard[p] === 1 : (p) => cur[p] === 0);
+    for (let p = 0; p < N; p++) score[p] = hard[p] ? -8 : Math.max(-8, Math.min(8, hf[bin[p]] - hb[bin[p]]));
+    // Separable box blur of the score.
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let s = 0, c = 0;
+      for (let dx = -r; dx <= r; dx++) { const xx = x + dx; if (xx >= 0 && xx < W) { s += score[y * W + xx]; c++; } }
+      tmp[y * W + x] = s / c;
+    }
+    const next = new Uint8Array(N);
+    let changed = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x;
+      if (hard[p]) continue;
+      let s = 0, c = 0;
+      for (let dy = -r; dy <= r; dy++) { const yy = y + dy; if (yy >= 0 && yy < H) { s += tmp[yy * W + x]; c++; } }
+      next[p] = s / c > 0 ? 1 : 0;
+      if (next[p] !== cur[p]) changed++;
+    }
+    fg = next;
+    // No subject left: nothing to learn a subject model from — stop (the
+    // caller reports an empty silhouette instead of inventing one).
+    if (fgFraction(fg) === 0) return { mask: fg, margin };
+    if (changed < N * 0.001) break;
+  }
+  // Keep every sizeable piece, not just the largest: a part the backdrop's
+  // colour (blue shorts on a blue backdrop) cuts the figure in two.
+  const cleaned = cleanMask(fg, W, H, 0.04);
+  // Bridge the cut: within each column, fill a short vertical run of backdrop
+  // between two subject pixels of DIFFERENT pieces (jersey above, socks below
+  // the backdrop-coloured shorts). Gaps between the legs or under the arms
+  // have no subject below/above in the same column, so they stay open.
+  const { id, sizes } = components(cleaned, W, H);
+  if (sizes.length > 1) {
+    const bb = maskBBox(cleaned, W, H)!;
+    const maxGap = Math.round(bb.h * 0.25);
+    for (let x = 0; x < W; x++) {
+      let lastY = -1, lastId = -1;
+      for (let y = 0; y < H; y++) {
+        const p = y * W + x;
+        if (!cleaned[p]) continue;
+        if (lastY >= 0 && id[p] !== lastId && y - lastY - 1 <= maxGap) for (let yy = lastY + 1; yy < y; yy++) cleaned[yy * W + x] = 1;
+        lastY = y; lastId = id[p];
+      }
+    }
+  }
+  // A "subject" that fills the whole inner rectangle (touching the border band
+  // on all four sides) is the backdrop itself, not a figure: reject it.
+  const bb = maskBBox(cleaned, W, H);
+  if (bb && bb.x <= margin && bb.y <= margin && bb.x + bb.w >= W - margin && bb.y + bb.h >= H - margin) return { mask: new Uint8Array(N), margin };
+  return { mask: cleaned, margin };
+}
+
 /** Downsample (nearest) an exact label buffer to match `prepare`'s output. */
 function prepareLabels(labels: Int32Array, img: RgbaImage, W: number, H: number): Int32Array {
   const out = new Int32Array(W * H);
@@ -617,27 +844,59 @@ function prepareLabels(labels: Int32Array, img: RgbaImage, W: number, H: number)
 
 const WORK_SIDE = 640; // working resolution cap (longer side) before segmentation
 
+interface MatchRegion { name: string; members: number[]; colors: Rgb[]; color: Rgb | null }
+
 export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
   const T: PhotoMatchTuning = { ...PHOTO_MATCH_DEFAULTS, ...(input.tuning ?? {}) };
   const TH = Math.max(32, Math.round(T.targetHeight));
   const warnings: string[] = [];
-  const regions = (input.regions ?? []).map((r) => ({ name: r.name, color: parseColor(r.color) }));
+  const baseRegions = (input.regions ?? []).map((r) => ({ name: r.name, color: parseColor(r.color) }));
 
   // --- photo segmentation ---
   const ref = prepare(input.reference, input.crop, WORK_SIDE);
-  let refBg: { colors: Rgb[]; tol: number[] };
+  let refBg: { colors: Rgb[]; tol: number[] } = { colors: [], tol: [] };
+  let refMask: Uint8Array;
+  let method: string;
+  let margin = 0;
   const bgGiven = parseColor(input.bg ?? null);
-  if (bgGiven) refBg = { colors: [bgGiven], tol: [input.bgTolerance ?? T.bgTolerance] };
-  else {
+  const mode = input.bgMode ?? 'auto';
+  if (input.mask) {
+    refMask = prepareMask(input.mask, input.reference.width, input.reference.height, input.crop, ref.width, ref.height);
+    method = 'mask';
+  } else if (bgGiven) {
+    // An explicit bg trusts the caller's crop edge to edge.
+    refBg = { colors: [bgGiven], tol: [input.bgTolerance ?? T.bgTolerance] };
+    refMask = segment(ref, refBg.colors, refBg.tol, 0, false);
+    method = 'bg';
+  } else if (mode === 'grabcut') {
+    const g = segmentGrabcut(ref);
+    refMask = g.mask; margin = g.margin; method = 'grabcut';
+  } else {
     refBg = estimateBackground(ref, T.bgToleranceMin);
     if (input.bgTolerance != null) refBg.tol = refBg.tol.map(() => input.bgTolerance!);
+    // An auto-estimated backdrop also clears the outer frame zone (a border
+    // line there would otherwise join the subject and seal gaps like the one
+    // between the legs).
+    margin = frameInset(ref.width, ref.height);
+    refMask = segment(ref, refBg.colors, refBg.tol, margin, refBg.colors.length === 1);
+    method = 'border';
+    if (mode === 'auto' && input.bgTolerance == null) {
+      const busy = refBg.tol.some((x) => x >= T.busyBorderTolerance);
+      const f = fgFraction(refMask);
+      // Only a busy border or an (almost) empty result retries: a tight crop
+      // that fills the frame keeps the border result + its warning.
+      if (busy || f < FG_FRACTION_MIN) {
+        const g = segmentGrabcut(ref);
+        const gf = fgFraction(g.mask);
+        if (gf >= FG_FRACTION_MIN && gf <= FG_FRACTION_MAX) {
+          refMask = g.mask; margin = g.margin; method = 'grabcut'; refBg = { colors: [], tol: [] };
+          warnings.push(`photo backdrop is ${busy ? 'busy (no single border colour)' : 'not separable by its border colour'} — segmented with the colour model (bgMode 'grabcut'); if the outline still looks wrong, pass a manual mask.`);
+        }
+      }
+    }
   }
-  // An auto-estimated backdrop also clears the outer frame zone (a border line
-  // there would otherwise join the subject and seal gaps like the one between
-  // the legs). An explicit bg trusts the caller's crop edge to edge.
-  const refMask = segment(ref, refBg.colors, refBg.tol, bgGiven ? 0 : frameInset(ref.width, ref.height), !bgGiven && refBg.colors.length === 1);
 
-  // --- model segmentation ---
+  // --- model segmentation (labels = ORIGINAL region indices for now) ---
   const mod = prepare(input.model, null, WORK_SIDE);
   let modMask: Uint8Array;
   let modLabels: Int32Array;
@@ -656,8 +915,8 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     for (let p = 0; p < modMask.length; p++) {
       if (!modMask[p]) continue;
       let best = -1, bd = 40 * 40;
-      for (let i = 0; i < regions.length; i++) {
-        const c = regions[i].color; if (!c) continue;
+      for (let i = 0; i < baseRegions.length; i++) {
+        const c = baseRegions[i].color; if (!c) continue;
         const d = dist2(mod.rgb, p * 3, c, 0);
         if (d < bd) { bd = d; best = i; }
       }
@@ -665,33 +924,66 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     }
   }
 
-  const segPhoto = segInfo(refBg.colors, refBg.tol, refMask, ref.width, ref.height, bgGiven ? 0 : frameInset(ref.width, ref.height));
+  // --- merge groups → the regions actually scored ---
+  const { regions, remap } = mergeRegions(baseRegions, input.merge ?? [], modLabels, warnings);
+  for (let p = 0; p < modLabels.length; p++) if (modLabels[p] >= 0) modLabels[p] = remap[modLabels[p]];
+  const nR = regions.length;
+  const ignored = new Uint8Array(nR);
+  if (input.ignore?.length) {
+    const unknown: string[] = [];
+    for (const name of input.ignore) {
+      const j = regions.findIndex((r) => r.name === name || r.members.some((m) => baseRegions[m].name === name));
+      if (j < 0) unknown.push(name); else ignored[j] = 1;
+    }
+    if (unknown.length) warnings.push(`ignore: no region named ${unknown.join(', ')} (regions: ${regions.map((r) => r.name).join(', ') || 'none'}).`);
+  }
+
+  const segPhoto = segInfo(refBg.colors, refBg.tol, refMask, ref.width, ref.height, margin);
+  segPhoto.method = method;
   const segModel = segInfo(modBg.colors, modBg.tol, modMask, mod.width, mod.height);
+  segModel.method = 'render';
   const refBox = segPhoto.bbox, modBox = segModel.bbox;
   if (!refBox || !modBox) {
     const which = !refBox ? 'photo' : 'model render';
     return {
       silhouetteIoU: 0, aspect: { model: 0, photo: 0, ratio: 0 }, bands: [], regions: [],
-      worst: [`No foreground found in the ${which} — check bg/crop.`],
-      segmentation: { photo: segPhoto, model: segModel }, warnings: [`empty ${which} silhouette`],
+      worst: [`No foreground found in the ${which} — check ${input.mask ? 'the mask' : 'bg/crop'}.`], outline: [],
+      segmentation: { photo: segPhoto, model: segModel }, warnings: [...warnings, `empty ${which} silhouette`],
       normalized: { width: 0, height: 0, fit: input.fit === 'box' ? 'box' : 'height' },
     };
   }
+  segPhoto.subjectPx = Math.round(refBox.h * ref.scale);
+  if (T.minSubjectPx > 0 && segPhoto.subjectPx < T.minSubjectPx) {
+    warnings.push(`photo subject is only ${segPhoto.subjectPx} px tall (< ${T.minSubjectPx}) — one source pixel is ${r1(100 / segPhoto.subjectPx)}% of the height, so outline/band offsets below ~${r1(200 / segPhoto.subjectPx)}% are noise; use a larger reference for fine work.`);
+  }
   if (segPhoto.touchesEdges.length) warnings.push(`photo silhouette touches the ${segPhoto.touchesEdges.join('/')} edge — it may be truncated by the crop, which skews the normalisation (crop wider, or exclude the matching model part).`);
-  if (segPhoto.fgFraction > 0.85) warnings.push('photo foreground covers >85% of the frame — background estimation probably failed; pass bg (and bgTolerance) or a tighter crop.');
-  if (segPhoto.fgFraction < 0.02) warnings.push('photo foreground covers <2% of the frame — the subject was mostly classified as background; pass bg/bgTolerance or crop to the subject.');
+  if (method === 'mask') {
+    // A mask is trusted, but sanity-check the classic mistakes: an inverted
+    // mask (black subject on white) covers most of the frame and touches every
+    // edge; a mask cut from a different framing has a different aspect.
+    if (segPhoto.fgFraction > FG_FRACTION_MAX || segPhoto.touchesEdges.length === 4) warnings.push(`mask marks ${Math.round(segPhoto.fgFraction * 100)}% of the frame as subject${segPhoto.touchesEdges.length === 4 ? ' and touches all four edges' : ''} — is it inverted? White (opaque) must be the SUBJECT.`);
+    if (segPhoto.fgFraction < FG_FRACTION_MIN) warnings.push(`mask marks only ${r1(segPhoto.fgFraction * 100)}% of the frame as subject — check it is white-on-black and covers the crop.`);
+    const ma = input.mask!.width / input.mask!.height, ra = input.reference.width / input.reference.height;
+    if (Math.abs(ma / ra - 1) > 0.01) warnings.push(`mask aspect ${r3(ma)} differs from the photo's ${r3(ra)} — a mask must have the photo's framing (it is stretched onto the photo, so the outline is distorted).`);
+  } else {
+    if (segPhoto.fgFraction > FG_FRACTION_MAX) warnings.push('photo foreground covers >85% of the frame — background estimation probably failed; pass bg (and bgTolerance), a mask, or a tighter crop.');
+    if (segPhoto.fgFraction < FG_FRACTION_MIN) warnings.push('photo foreground covers <2% of the frame — the subject was mostly classified as background; pass bg/bgTolerance, a mask, or crop to the subject.');
+  }
 
-  const pixelAspect = input.pixelAspect && input.pixelAspect > 0 ? input.pixelAspect : 1;
+  const pixelAspect = input.pixelAspect && input.pixelAspect > 0 ? Math.max(0.05, Math.min(20, input.pixelAspect)) : 1;
   const refAspect = (refBox.w * pixelAspect) / refBox.h, modAspect = modBox.w / modBox.h;
   // fit 'height' (default): both scaled to a common height, aspect kept, so the
   // band widths carry the overall aspect error too. fit 'box': the model is
   // also stretched to the photo's width, so bands/regions compare PROPORTIONS
   // only — use it when the photo is stretched or strongly foreshortened.
   const boxFit = input.fit === 'box';
-  const refTw = Math.max(1, Math.round(refAspect * TH));
-  const modTw = boxFit ? refTw : Math.max(1, Math.round(modAspect * TH));
+  // Widths are capped (MAX_NORMALIZED_ASPECT × height): an edge-on flat model
+  // or a sliver-thin photo bbox must not allocate a huge canvas.
+  const capW = (a: number) => Math.max(1, Math.min(Math.round(MAX_NORMALIZED_ASPECT * TH), Math.round(a * TH)));
+  if (refAspect > MAX_NORMALIZED_ASPECT || modAspect > MAX_NORMALIZED_ASPECT) warnings.push(`silhouette is more than ${MAX_NORMALIZED_ASPECT}× wider than tall (${refAspect > MAX_NORMALIZED_ASPECT ? 'photo' : 'model'}) — width capped for the comparison; check the camera angle (an edge-on view of a flat part?).`);
+  const refTw = capW(refAspect);
+  const modTw = boxFit ? refTw : capW(modAspect);
   const CW = Math.max(refTw, modTw) + 8;
-  const nR = regions.length;
   const R = normalize(refMask, ref.width, ref.height, refBox, TH, refTw, CW, ref.rgb, null, nR);
   const M = normalize(modMask, mod.width, mod.height, modBox, TH, modTw, CW, null, modLabels, nR);
   if (!boxFit && Math.abs(modAspect / refAspect - 1) > 0.25) {
@@ -706,20 +998,37 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
 
   // --- region assignment on the photo ---
   // Group regions whose colours are near-identical (white jersey/socks/shoes):
-  // they share one k-means cluster and are split spatially afterwards.
+  // they share one k-means cluster and are split spatially afterwards. A
+  // merged region may carry several colours, so it can sit in several groups.
+  const visible = new Uint8Array(nR);
+  for (let p = 0; p < N; p++) if (M.labels[p] >= 0) visible[M.labels[p]] = 1;
   const groups: { color: Rgb; members: number[] }[] = [];
-  const regionGroup = new Int32Array(nR).fill(-1);
+  const scored = new Uint8Array(nR);
   for (let i = 0; i < nR; i++) {
-    const c = regions[i].color; if (!c) continue;
     // Only regions actually visible in this view seed a cluster.
-    let visible = false;
-    for (let p = 0; p < N && !visible; p++) if (M.labels[p] === i) visible = true;
-    if (!visible) continue;
-    let g = groups.findIndex((G) => deltaE(G.color, c) < 6);
-    if (g < 0) { g = groups.length; groups.push({ color: c, members: [] }); }
-    groups[g].members.push(i); regionGroup[i] = g;
+    if (!visible[i] || !regions[i].colors.length) continue;
+    scored[i] = 1;
+    for (const c of regions[i].colors) {
+      let g = groups.findIndex((G) => deltaE(G.color, c) < 6);
+      if (g < 0) { g = groups.length; groups.push({ color: c, members: [] }); }
+      if (!groups[g].members.includes(i)) groups[g].members.push(i);
+    }
   }
   const refRegion = new Int32Array(N).fill(-2);
+  const lowConf = new Map<number, Map<number, string>>(); // region → partner → reason
+  // Model area per region: a confusable partner only makes a region
+  // low-confidence when it is big enough to shift that region's numbers (an
+  // eye highlight swallowed by the hair doesn't make the HAIR unreliable).
+  const areaM = new Float64Array(nR);
+  for (let p = 0; p < N; p++) if (M.labels[p] >= 0) areaM[M.labels[p]]++;
+  const noteLow = (i: number, j: number, why: string) => {
+    if (i === j) return;
+    for (const [a, b] of [[i, j], [j, i]]) {
+      if (areaM[b] < 0.1 * areaM[a]) continue;
+      if (!lowConf.has(a)) lowConf.set(a, new Map());
+      if (!lowConf.get(a)!.has(b)) lowConf.get(a)!.set(b, why);
+    }
+  };
   if (groups.length) {
     const K = groups.length;
     const lab = new Float32Array(N * 3);
@@ -735,8 +1044,10 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       return a * a + b * b + c * c;
     };
     const asg = new Int32Array(N).fill(-1);
+    let cnt = new Int32Array(K);
     for (let it = 0; it <= Math.max(0, T.kmeansIterations); it++) {
-      const sum = new Float64Array(K * 3), cnt = new Int32Array(K);
+      const sum = new Float64Array(K * 3);
+      cnt = new Int32Array(K);
       for (const p of fgIdx) {
         let bk = 0, bd = Infinity;
         for (let k = 0; k < K; k++) { const d = d2(p, k); if (d < bd) { bd = d; bk = k; } }
@@ -753,6 +1064,7 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     // pentagons are not "hair") and stays unassigned (-1).
     const dt = new Map<number, Float32Array>();
     for (const g of groups) for (const i of g.members) {
+      if (dt.has(i)) continue;
       const m = new Uint8Array(N); for (let p = 0; p < N; p++) if (M.labels[p] === i) m[p] = 1;
       dt.set(i, chamfer(m, CW, TH));
     }
@@ -763,6 +1075,60 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       for (const i of g.members) { const d = dt.get(i)![p]; if (d < bd) { bd = d; bi = i; } }
       refRegion[p] = bd <= maxD ? bi : -1;
     }
+
+    // --- ambiguity: regions the photo can't tell apart ---
+    if (T.ambiguousDeltaE > 0) {
+      // (a) different colour clusters that converged onto near-identical
+      //     photo colours (white jersey vs pale skin on a dim photo).
+      for (let g = 0; g < K; g++) for (let h = g + 1; h < K; h++) {
+        if (!cnt[g] || !cnt[h]) continue;
+        const dE = Math.hypot((cen[g * 3] - cen[h * 3]) * wL, cen[g * 3 + 1] - cen[h * 3 + 1], cen[g * 3 + 2] - cen[h * 3 + 2]);
+        if (dE >= T.ambiguousDeltaE) continue;
+        for (const i of groups[g].members) for (const j of groups[h].members) noteLow(i, j, `photo colours ΔE ${Math.round(dE)}`);
+      }
+      // (a') a region whose photo pixels (those under the model region) look
+      //      like ANOTHER cluster's colour: that cluster swallows them (white
+      //      shorts on the photo vs blue in the model → the white jersey grows).
+      //      Only when the region's OWN colour found (almost) nothing in the
+      //      photo — a mis-shaped region that merely overlaps a neighbour
+      //      (too-big hair over the face) still has its own pixels and must
+      //      keep its findings: they are exactly what fixes it.
+      const labDist = (l: ArrayLike<number>, k: number) => Math.hypot((l[0] - cen[k * 3]) * wL, l[1] - cen[k * 3 + 1], l[2] - cen[k * 3 + 2]);
+      const ownPx = new Float64Array(nR);
+      for (const p of fgIdx) if (refRegion[p] >= 0) ownPx[refRegion[p]]++;
+      for (let i = 0; i < nR; i++) {
+        if (!scored[i] || ownPx[i] >= 0.25 * areaM[i]) continue;
+        let n = 0;
+        const m = [0, 0, 0];
+        for (let p = 0; p < N; p++) if (M.labels[p] === i && R.mask[p]) { m[0] += lab[p * 3]; m[1] += lab[p * 3 + 1]; m[2] += lab[p * 3 + 2]; n++; }
+        if (n < 8) continue;
+        m[0] /= n; m[1] /= n; m[2] /= n;
+        let own = Infinity, other = -1, od = Infinity;
+        for (let k = 0; k < K; k++) {
+          const d = labDist(m, k);
+          if (groups[k].members.includes(i)) own = Math.min(own, d);
+          else if (cnt[k] && d < od) { od = d; other = k; }
+        }
+        if (other >= 0 && od < T.ambiguousDeltaE && od < own) {
+          for (const j of groups[other].members) noteLow(i, j, `${regions[i].name} looks ${regions[j].name}-coloured in the photo, ΔE ${Math.round(od)}`);
+        }
+      }
+      // (b) regions sharing one colour cluster that TOUCH in the model: the
+      //     split between them is decided by distance to the model regions,
+      //     not by anything in the photo.
+      const touch = new Map<number, number>();
+      const add = (a: number, b: number) => { if (a < 0 || b < 0 || a === b) return; const k = Math.min(a, b) * nR + Math.max(a, b); touch.set(k, (touch.get(k) ?? 0) + 1); };
+      for (let y = 0; y < TH; y++) for (let x = 0; x < CW; x++) {
+        const p = y * CW + x;
+        if (x + 1 < CW) add(M.labels[p], M.labels[p + 1]);
+        if (y + 1 < TH) add(M.labels[p], M.labels[p + CW]);
+      }
+      const minTouch = Math.max(3, Math.round(TH * 0.02));
+      for (const g of groups) for (let a = 0; a < g.members.length; a++) for (let b = a + 1; b < g.members.length; b++) {
+        const i = g.members[a], j = g.members[b];
+        if ((touch.get(Math.min(i, j) * nR + Math.max(i, j)) ?? 0) >= minTouch) noteLow(i, j, 'same colour, touching');
+      }
+    }
   }
 
   // --- per-region stats ---
@@ -770,7 +1136,7 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
   for (let p = 0; p < N; p++) { refFg += R.mask[p]; modFg += M.mask[p]; }
   const regionResults: PhotoMatchRegionResult[] = [];
   for (let i = 0; i < nR; i++) {
-    if (regionGroup[i] < 0) continue;
+    if (!scored[i] || ignored[i]) continue;
     // Extent = 2nd..98th percentile of the region's columns/rows, so a few
     // stray pixels (JPEG specks, mask-closing slivers) can't inflate it.
     const st = (sel: (p: number) => boolean) => {
@@ -782,9 +1148,9 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       const span = (h: Int32Array) => {
         const lo = n * 0.02, hi = n * 0.98;
         let acc = 0, a = 0, b = h.length - 1;
-        for (let i = 0; i < h.length; i++) { acc += h[i]; if (acc > lo) { a = i; break; } }
+        for (let k = 0; k < h.length; k++) { acc += h[k]; if (acc > lo) { a = k; break; } }
         acc = 0;
-        for (let i = 0; i < h.length; i++) { acc += h[i]; if (acc >= hi) { b = i; break; } }
+        for (let k = 0; k < h.length; k++) { acc += h[k]; if (acc >= hi) { b = k; break; } }
         return Math.max(1, b - a + 1);
       };
       return { n, cx: n ? sx / n : 0, cy: n ? sy / n : 0, w: n ? span(hx) : 0, h: n ? span(hy) : 0 };
@@ -802,6 +1168,7 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     let cr = 0, cg = 0, cb = 0, cn = 0;
     for (let p = 0; p < N; p++) if (under(p)) { cr += R.rgb[p * 3]; cg += R.rgb[p * 3 + 1]; cb += R.rgb[p * 3 + 2]; cn++; }
     const photoColor: Rgb | null = cn ? [cr / cn, cg / cn, cb / cn] : null;
+    const low = lowConf.get(i);
     regionResults.push({
       name: regions[i].name,
       color: toHex(color),
@@ -817,15 +1184,33 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       dy: b.n ? r1(((a.cy - b.cy) / TH) * 100) : null,
       modelShare: r1((a.n / Math.max(1, modFg)) * 100),
       photoShare: r1((b.n / Math.max(1, refFg)) * 100),
+      ...(low ? { lowConfidence: `can't be separated in the photo from ${[...low.entries()].map(([j, why]) => `${regions[j].name} (${why})`).join(', ')}` } : {}),
     });
   }
+  if (lowConf.size) {
+    const pairs: string[] = [];
+    const seen = new Set<string>();
+    for (const [i, m] of lowConf) for (const [j, why] of m) {
+      if (ignored[i] && ignored[j]) continue;
+      const key = [i, j].sort((x, y) => x - y).join('~');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push(`${regions[Math.min(i, j)].name}~${regions[Math.max(i, j)].name} (${why})`);
+    }
+    if (pairs.length) {
+      const ex = [...seen][0].split('~').map((k) => JSON.stringify(regions[Number(k)].name)).join(',');
+      warnings.push(`low-confidence regions — the photo can't separate ${pairs.slice(0, 6).join('; ')}${pairs.length > 6 ? '; …' : ''}. Their size/position findings are suppressed; merge them (merge [[${ex}]]) or ignore them.`);
+    }
+  }
 
-  // --- bands ---
-  const B = Math.max(1, Math.round(T.bands));
+  // --- bands: widths, centre, outer edges, interior gaps ---
+  const B = Math.max(1, Math.min(Math.floor(TH / 2), Math.round(T.bands)));
   const bands: PhotoMatchBand[] = [];
+  const pctH = (v: number) => r1((v / TH) * 100);
   for (let k = 0; k < B; k++) {
     const ya = Math.floor((k * TH) / B), yb = Math.floor(((k + 1) * TH) / B);
     let rw = 0, rc = 0, rn = 0, mw = 0, mc = 0, mn = 0, bi = 0, bu = 0;
+    let sumL = 0, sumR = 0, nBoth = 0, inPhoto = 0, inModel = 0;
     const votes = new Map<number, number>();
     for (let y = ya; y < yb; y++) {
       let rl = -1, rr = -1, ml = -1, mr = -1;
@@ -838,18 +1223,31 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
       }
       if (rl >= 0) { rw += rr - rl + 1; rc += (rl + rr) / 2; rn++; }
       if (ml >= 0) { mw += mr - ml + 1; mc += (ml + mr) / 2; mn++; }
+      if (rl >= 0 && ml >= 0) {
+        sumL += rl - ml; sumR += mr - rr; nBoth++;
+        for (let x = Math.max(ml, rl); x <= Math.min(mr, rr); x++) {
+          const p = y * CW + x;
+          if (R.mask[p] && !M.mask[p]) inPhoto++;
+          else if (M.mask[p] && !R.mask[p]) inModel++;
+        }
+      }
     }
+    const rows = Math.max(1, yb - ya);
     const refWidth = rn ? rw / rn : 0, modelWidth = mn ? mw / mn : 0;
     const tot = [...votes.values()].reduce((s, v) => s + v, 0);
     const names = [...votes.entries()].sort((x, y) => y[1] - x[1]).filter(([, v], j) => j === 0 || v >= tot * 0.25).slice(0, 3).map(([i]) => regions[i].name);
     bands.push({
       band: k,
       name: names.join('/') || bandPosition(k, B),
-      refWidth: r1((refWidth / TH) * 100),
-      modelWidth: r1((modelWidth / TH) * 100),
+      refWidth: pctH(refWidth),
+      modelWidth: pctH(modelWidth),
       widthDiffPct: refWidth ? r1(((modelWidth - refWidth) / refWidth) * 100) : (modelWidth ? 100 : 0),
-      dx: rn && mn ? r1(((mc / mn - rc / rn) / TH) * 100) : 0,
+      dx: rn && mn ? pctH(mc / mn - rc / rn) : 0,
       iou: r3(bu ? bi / bu : 0),
+      left: nBoth ? pctH(sumL / nBoth) : 0,
+      right: nBoth ? pctH(sumR / nBoth) : 0,
+      innerPhotoOnly: pctH(inPhoto / rows),
+      innerModelOnly: pctH(inModel / rows),
     });
   }
 
@@ -861,11 +1259,119 @@ export function photoMatch(input: PhotoMatchInput): PhotoMatchResult {
     bands,
     regions: regionResults,
     worst,
+    outline: buildOutline(bands, T),
     segmentation: { photo: segPhoto, model: segModel },
     warnings,
     normalized: { width: CW, height: TH, fit: boxFit ? 'box' : 'height' },
     ...(input.debug ? { debug: { width: CW, height: TH, photo: photoMap(R.mask, refRegion), model: M.labels } } : {}),
   };
+}
+
+/** Collapse `merge` groups into single scored regions. Returns the scored
+ *  regions and the original-index → scored-index map. A merged region keeps
+ *  every distinct member colour (each seeds the photo clustering) and shows
+ *  the colour of its largest member. */
+function mergeRegions(base: { name: string; color: Rgb | null }[], merge: readonly (readonly string[])[], labels: Int32Array, warnings: string[]): { regions: MatchRegion[]; remap: Int32Array } {
+  const area = new Float64Array(base.length);
+  for (let p = 0; p < labels.length; p++) if (labels[p] >= 0 && labels[p] < base.length) area[labels[p]]++;
+  const groupOf = new Int32Array(base.length).fill(-1);
+  const unknown: string[] = [];
+  merge.forEach((group, g) => {
+    for (const name of group) {
+      const i = base.findIndex((r) => r.name === name);
+      if (i < 0) unknown.push(name);
+      else if (groupOf[i] < 0) groupOf[i] = g;
+    }
+  });
+  if (unknown.length) warnings.push(`merge: no region named ${unknown.join(', ')} (regions: ${base.map((r) => r.name).join(', ') || 'none'}).`);
+  const regions: MatchRegion[] = [];
+  const remap = new Int32Array(base.length).fill(-1);
+  const groupIndex = new Map<number, number>();
+  for (let i = 0; i < base.length; i++) {
+    const g = groupOf[i];
+    if (g >= 0 && groupIndex.has(g)) { remap[i] = groupIndex.get(g)!; regions[remap[i]].members.push(i); continue; }
+    remap[i] = regions.length;
+    if (g >= 0) groupIndex.set(g, regions.length);
+    regions.push({ name: base[i].name, members: [i], colors: [], color: null });
+  }
+  for (const r of regions) {
+    if (r.members.length > 1) r.name = r.members.map((m) => base[m].name).join('+');
+    const byArea = [...r.members].sort((a, b) => area[b] - area[a]);
+    for (const m of byArea) {
+      const c = base[m].color;
+      if (c && !r.colors.some((x) => x[0] === c[0] && x[1] === c[1] && x[2] === c[2])) r.colors.push(c);
+    }
+    r.color = r.colors[0] ?? null;
+  }
+  return { regions, remap };
+}
+
+/** Multi-view summary: mean / minimum silhouette IoU and the per-view
+ *  findings interleaved (each prefixed with its view label). */
+export interface PhotoMatchCombined {
+  /** Mean silhouette IoU over the views — the single number to watch. */
+  silhouetteIoU: number;
+  minIoU: number;
+  views: { label: string; silhouetteIoU: number }[];
+  worst: string[];
+  warnings: string[];
+}
+
+export function combinePhotoMatches(views: readonly { label: string; result: PhotoMatchResult }[], maxWorst = COMBINED_MAX_WORST): PhotoMatchCombined {
+  const ious = views.map((v) => v.result.silhouetteIoU);
+  const lists = views.map((v) => v.result.worst.filter((w) => w !== 'no significant mismatch found').map((w) => `[${v.label}] ${w}`));
+  const worst: string[] = [];
+  for (let k = 0; worst.length < maxWorst && lists.some((l) => k < l.length); k++) {
+    for (const l of lists) if (k < l.length && worst.length < maxWorst) worst.push(l[k]);
+  }
+  return {
+    silhouetteIoU: ious.length ? r3(ious.reduce((s, v) => s + v, 0) / ious.length) : 0,
+    minIoU: ious.length ? r3(Math.min(...ious)) : 0,
+    views: views.map((v) => ({ label: v.label, silhouetteIoU: v.result.silhouetteIoU })),
+    worst: worst.length ? worst : ['no significant mismatch found'],
+    // Identical warnings from several views (an unknown exclude name, the same
+    // small-reference note) are listed once, tagged with every view they hit.
+    warnings: (() => {
+      const by = new Map<string, string[]>();
+      for (const v of views) for (const w of v.result.warnings) { if (!by.has(w)) by.set(w, []); if (!by.get(w)!.includes(v.label)) by.get(w)!.push(v.label); }
+      return [...by].map(([w, labels]) => `[${labels.join(', ')}] ${w}`);
+    })(),
+  };
+}
+
+/** Text outline diff from the per-band edge offsets: runs of consecutive
+ *  bands where one outline sticks out past the other on the same side, most
+ *  severe first, capped at `outlineMaxLines`. */
+function buildOutline(bands: PhotoMatchBand[], T: PhotoMatchTuning): string[] {
+  type Pick = (b: PhotoMatchBand) => number; // signed: < 0 photo-only, > 0 model-only
+  const sides: { side: string; pick: Pick }[] = [
+    { side: 'left', pick: (b) => b.left },
+    { side: 'right', pick: (b) => b.right },
+    { side: 'inside', pick: (b) => (b.innerModelOnly >= b.innerPhotoOnly ? b.innerModelOnly : -b.innerPhotoOnly) },
+  ];
+  const out: { score: number; text: string }[] = [];
+  for (const { side, pick } of sides) {
+    let k = 0;
+    while (k < bands.length) {
+      const v = pick(bands[k]);
+      if (Math.abs(v) < T.outlineMinPct || bands[k].refWidth === 0) { k++; continue; }
+      const sign = Math.sign(v);
+      let j = k;
+      while (j + 1 < bands.length && bands[j + 1].refWidth > 0 && Math.sign(pick(bands[j + 1])) === sign && Math.abs(pick(bands[j + 1])) >= T.outlineMinPct) j++;
+      const run = bands.slice(k, j + 1);
+      const max = Math.max(...run.map((b) => Math.abs(pick(b))));
+      const names = [...new Set(run.flatMap((b) => b.name.split('/')))].slice(0, 3).join('/');
+      const range = k === j ? `band ${k}` : `bands ${k}–${j}`;
+      const kind = sign < 0 ? 'photo-only' : 'model-only';
+      const hint = side === 'inside'
+        ? (sign < 0 ? 'model has a gap the photo fills' : 'photo has a gap the model fills')
+        : (sign < 0 ? 'grow' : 'trim');
+      out.push({ score: max * Math.sqrt(run.length), text: `${kind} ${side === 'inside' ? `inside ${range}` : `at ${range} ${side}`}: ${run.length > 1 ? 'up to ' : ''}${r1(max)}% of height (${names}) → ${hint}` });
+      k = j + 1;
+    }
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, Math.max(0, Math.round(T.outlineMaxLines))).map((o) => o.text);
 }
 
 /** Render the debug maps as one RGBA strip of three panels — photo regions,
@@ -930,7 +1436,10 @@ function buildFindings(aspect: PhotoMatchResult['aspect'], bands: PhotoMatchBand
     // Long runs matter more; cap so one huge outlier band doesn't drown the rest.
     const mag = Math.min(Math.abs(avg), 60);
     // Band widths are the most robust signal (pure silhouette, no colour).
-    out.push({ score: mag * 1.5 * (1 + 0.15 * (run.length - 1)), text: `${names}: model ${pct(avg)} ${avg < 0 ? 'narrower' : 'wider'} across ${range} (${run.map((x) => `${x.modelWidth}/${x.refWidth}`).join(', ')} % of height, model/photo)` });
+    // Long runs (fine --bands) list their ends only, to keep the line short.
+    const vals = run.map((x) => `${x.modelWidth}/${x.refWidth}`);
+    const shown = vals.length > 4 ? [vals[0], vals[1], '…', vals[vals.length - 1]] : vals;
+    out.push({ score: mag * 1.5 * (1 + 0.15 * (run.length - 1)), text: `${names}: model ${pct(avg)} ${avg < 0 ? 'narrower' : 'wider'} across ${range} (${shown.join(', ')} % of height, model/photo)` });
     k = j + 1;
   }
   for (const b of bands) {
@@ -952,7 +1461,9 @@ function buildFindings(aspect: PhotoMatchResult['aspect'], bands: PhotoMatchBand
       if (r.modelShare >= 1 && r.photoColor == null) out.push({ score: 20 + r.modelShare, text: `${r.name}: present in the model (${r.modelShare}% of silhouette) but no matching colour found in the photo` });
       continue;
     }
-    if (!shapeOk) continue;
+    // A region the photo can't separate from its neighbour has no reliable
+    // shape — its size/position numbers measure the split, not the figure.
+    if (!shapeOk || r.lowConfidence) continue;
     // Magnitudes are scored in log space so "half the size" and "twice the
     // size" weigh the same.
     const logPct = (ratio: number) => Math.abs(Math.log(ratio)) * 100;
