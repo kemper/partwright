@@ -166,6 +166,7 @@ const HAIR_STYLES: [string, string][] = [
   ['bangs', 'Bangs'], ['ponytail', 'Ponytail'], ['afro', 'Afro'], ['braids', 'Braids'],
   ['spiked', 'Spiked'], ['locs', 'Locs'], ['cornrows', 'Cornrows'], ['boxBraids', 'Box braids'],
   ['mop', 'Mop (shaggy locks)'], ['anime', 'Anime (ribbon locks)'], ['shag', 'Shag (layered mop)'],
+  ['captured', 'Captured (Tsubasa)'],
 ];
 const STYLES: [Proportions, string][] = [['realistic', 'Realistic'], ['chibi', 'Chibi'], ['funko', 'Funko']];
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
