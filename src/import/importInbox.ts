@@ -14,7 +14,7 @@ import { reconcileInbox } from '../storage/inboxBuffer';
 const STORE = 'importInbox';
 const MAX_ENTRIES = 10;
 
-export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL' | 'STEP' | 'IMAGE' | 'VOX' | 'SVG';
+export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL' | '3MF' | 'STEP' | 'IMAGE' | 'VOX' | 'SVG';
 
 export interface ImportInboxEntry {
   id: string;
@@ -165,6 +165,7 @@ export function classifyImportSource(filename: string): ImportSource | null {
   if (lower.endsWith('.scad')) return 'SCAD';
   if (lower.endsWith('.js')) return 'JS';
   if (lower.endsWith('.stl')) return 'STL';
+  if (lower.endsWith('.3mf')) return '3MF';
   if (lower.endsWith('.step') || lower.endsWith('.stp')) return 'STEP';
   if (lower.endsWith('.vox')) return 'VOX';
   if (lower.endsWith('.svg')) return 'SVG';
