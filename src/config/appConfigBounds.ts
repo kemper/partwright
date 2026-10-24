@@ -106,6 +106,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     threeMfMaxTriangles: { min: 10_000, max: 200_000_000, integer: true },
     threeMfMaxEntryMB: { min: 16, max: 8192, integer: true },
     threeMfMaxColors: { min: 1, max: 4096, integer: true },
+    maxSplitObjects: { min: 2, max: 1000, integer: true },
     remoteFetchTimeoutMs: { min: 1_000, max: 120_000, integer: true },
     prefillImageSrcMaxChars: { min: 10_000, max: 50_000_000, integer: true },
     prefillImageMaxPixels: { min: 10_000, max: 200_000_000, integer: true },

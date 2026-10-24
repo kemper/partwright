@@ -267,6 +267,11 @@ export interface AppConfig {
     /** Max distinct colours a 3MF import is painted with. Files with more
      *  (per-triangle-coloured scans) import as mesh only, with a notice. */
     threeMfMaxColors: number;
+    /** Max objects one import may be split into (a multi-object 3MF imported
+     *  one object per 3MF object / plate, or an STL split into one object per
+     *  piece). Each becomes its own object with a version, so this bounds the
+     *  run time of a split import. */
+    maxSplitObjects: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -627,6 +632,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxTriangles: 20_000_000,
     threeMfMaxEntryMB: 1024,
     threeMfMaxColors: 256,
+    maxSplitObjects: 100,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,

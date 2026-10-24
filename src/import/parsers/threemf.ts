@@ -14,7 +14,11 @@
 // The result is ONE merged, world-space triangle mesh (build-item and component
 // transforms baked in, units converted to millimetres, XY recentred on the
 // origin) plus a per-triangle palette index — the shape the STL import path
-// already consumes, with colour layered on top as paint regions.
+// already consumes, with colour layered on top as paint regions. Each build
+// item's triangles are one contiguous run (`objects[i].firstTriangle`), tagged
+// with its slicer build plate where the project has a plate layout, so the
+// import flow can split the mesh into one object per 3MF object or per plate
+// (`src/import/meshImportSplit.ts`).
 //
 // Deliberately pure (no DOM: a hand-rolled XML tag scanner instead of
 // DOMParser, which also keeps a 40 MB Bambu object file fast), so the whole
@@ -33,6 +37,36 @@ export interface ThreeMFPaletteEntry {
 export interface ThreeMFObjectSummary {
   name: string;
   triangleCount: number;
+  /** Index of the object's first triangle in `mesh` / `triColor`. Objects are
+   *  contiguous runs, in build order, so `[firstTriangle, firstTriangle +
+   *  triangleCount)` is exactly this object's geometry. */
+  firstTriangle: number;
+  /** Id of the slicer build plate the object sits on (Bambu/Orca `plater_id`,
+   *  1-based — see `plates`). Absent when the file has no plate layout or
+   *  doesn't bind this instance to one. */
+  plate?: number;
+  /** The object's named parts, when it has two or more: Bambu/Orca `<part>`s,
+   *  PrusaSlicer volumes, or a plain 3MF's components. Each run is a
+   *  contiguous range of `mesh` triangles; names are unique within the object
+   *  (a part split across runs repeats its name). */
+  parts?: ThreeMFPartRun[];
+}
+
+/** A run of one named part's triangles in the merged mesh. */
+export interface ThreeMFPartRun {
+  name: string;
+  firstTriangle: number;
+  triangleCount: number;
+}
+
+/** One Bambu/Orca build plate. */
+export interface ThreeMFPlate {
+  /** `plater_id` (1-based). */
+  id: number;
+  /** The plate's name, or "Plate N" when the slicer left it blank. */
+  name: string;
+  /** The slicer's plate preview render (PNG bytes), when the package has one. */
+  thumbnail?: Uint8Array;
 }
 
 export interface ThreeMFParseResult {
@@ -53,6 +87,9 @@ export interface ThreeMFParseResult {
   title?: string;
   /** One entry per emitted build item (a model's printable objects). */
   objects: ThreeMFObjectSummary[];
+  /** Slicer build plates (Bambu/Orca projects), in plate order; empty when the
+   *  file has no plate layout. May include plates no object sits on. */
+  plates: ThreeMFPlate[];
   /** Modifier / negative / support parts that were skipped (not printed geometry). */
   skippedParts: number;
   /** Triangles whose slicer painting was split between filaments — coloured
@@ -411,13 +448,23 @@ function parseModelXml(xml: string): ModelFile {
 // ── Slicer project settings (Bambu / Orca / Prusa) ──────────────────────────
 
 interface SlicerPart { extruder: number; subtype: string; name?: string }
-interface SlicerVolume { first: number; last: number; extruder: number; printable: boolean }
+interface SlicerVolume { first: number; last: number; extruder: number; printable: boolean; name?: string }
 interface SlicerObject { extruder: number; name?: string; parts: Map<number, SlicerPart>; volumes: SlicerVolume[] }
+
+/** A `<plate>` of Bambu/Orca `model_settings.config`. */
+interface SlicerPlate {
+  id: number;
+  name: string;
+  thumbnailFile?: string;
+  /** The object instances bound to this plate. */
+  instances: { objectId: number; instanceId: number }[];
+}
 
 interface SlicerConfig {
   flavor: 'bambu' | 'prusa';
   filaments: ThreeMFPaletteEntry[];
   objects: Map<number, SlicerObject>;
+  plates: SlicerPlate[];
 }
 
 function intOr0(s: string | undefined): number {
@@ -425,17 +472,36 @@ function intOr0(s: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Bambu/Orca `Metadata/model_settings.config`: object → extruder + parts. */
-function parseBambuModelSettings(xml: string): Map<number, SlicerObject> {
+/** Bambu/Orca `Metadata/model_settings.config`: object → extruder + parts,
+ *  and the build plates with the object instances bound to each. */
+function parseBambuModelSettings(xml: string): { objects: Map<number, SlicerObject>; plates: SlicerPlate[] } {
   const objects = new Map<number, SlicerObject>();
+  const plates: SlicerPlate[] = [];
   let cur: SlicerObject | null = null;
   let part: SlicerPart | null = null;
   let partId = -1;
-  let inPlate = false;
+  let plate: SlicerPlate | null = null;
+  let instance: { objectId: number; instanceId: number } | null = null;
   scanXml(xml, {
     open(name, attrStr) {
-      if (name === 'plate') { inPlate = true; return; }
-      if (inPlate) return;
+      if (name === 'plate') {
+        plate = { id: plates.length + 1, name: '', instances: [] };
+        return;
+      }
+      if (plate) {
+        if (name === 'model_instance') { instance = { objectId: NaN, instanceId: 0 }; return; }
+        if (name !== 'metadata') return;
+        const a = parseAttrs(attrStr);
+        if (instance) {
+          if (a.key === 'object_id') instance.objectId = Number(a.value);
+          else if (a.key === 'instance_id') instance.instanceId = Number(a.value) || 0;
+        } else if (a.key === 'plater_id') {
+          const id = parseInt(a.value ?? '', 10);
+          if (Number.isFinite(id) && id > 0) plate.id = id;
+        } else if (a.key === 'plater_name' && a.value) plate.name = decodeEntities(a.value).trim();
+        else if (a.key === 'thumbnail_file' && a.value) plate.thumbnailFile = decodeEntities(a.value);
+        return;
+      }
       const a = parseAttrs(attrStr);
       if (name === 'object') {
         cur = { extruder: 0, parts: new Map(), volumes: [] };
@@ -450,12 +516,23 @@ function parseBambuModelSettings(xml: string): Map<number, SlicerObject> {
       }
     },
     close(name) {
-      if (name === 'plate') { inPlate = false; return; }
+      if (name === 'plate') {
+        if (plate) plates.push(plate);
+        plate = null;
+        return;
+      }
+      if (plate) {
+        if (name === 'model_instance' && instance) {
+          if (Number.isFinite(instance.objectId)) plate.instances.push(instance);
+          instance = null;
+        }
+        return;
+      }
       if (name === 'part' && cur && part) { cur.parts.set(partId, part); part = null; }
       else if (name === 'object') cur = null;
     },
   });
-  return objects;
+  return { objects, plates };
 }
 
 /** PrusaSlicer `Metadata/Slic3r_PE_model.config`: object → extruder + volume
@@ -475,6 +552,7 @@ function parsePrusaModelConfig(xml: string): Map<number, SlicerObject> {
       } else if (name === 'metadata' && cur) {
         if (vol) {
           if (a.key === 'extruder') vol.extruder = intOr0(a.value);
+          else if (a.key === 'name' && a.value) vol.name = decodeEntities(a.value);
           else if (a.key === 'volume_type') vol.printable = a.value === 'ModelPart';
           else if (a.key === 'modifier' && a.value === '1') vol.printable = false;
         } else if (a.key === 'extruder') cur.extruder = intOr0(a.value);
@@ -529,9 +607,11 @@ async function readSlicerConfig(zip: ZipArchive): Promise<SlicerConfig | null> {
   const bambuSettings = zip.find('Metadata/model_settings.config');
   const bambuProject = zip.find('Metadata/project_settings.config');
   if (bambuSettings || bambuProject) {
+    const settings = bambuSettings ? parseBambuModelSettings(await zip.readText(bambuSettings)) : null;
     return {
       flavor: 'bambu',
-      objects: bambuSettings ? parseBambuModelSettings(await zip.readText(bambuSettings)) : new Map(),
+      objects: settings?.objects ?? new Map(),
+      plates: settings?.plates ?? [],
       filaments: bambuProject ? parseBambuFilaments(await zip.readText(bambuProject)) : [],
     };
   }
@@ -541,6 +621,7 @@ async function readSlicerConfig(zip: ZipArchive): Promise<SlicerConfig | null> {
     return {
       flavor: 'prusa',
       objects: prusaModel ? parsePrusaModelConfig(await zip.readText(prusaModel)) : new Map(),
+      plates: [],
       filaments: prusaPrint ? parsePrusaFilaments(await zip.readText(prusaPrint)) : [],
     };
   }
@@ -548,6 +629,9 @@ async function readSlicerConfig(zip: ZipArchive): Promise<SlicerConfig | null> {
 }
 
 // ── Package entry ───────────────────────────────────────────────────────────
+
+/** Plate previews are ~512 px PNGs; anything far bigger isn't one. */
+const MAX_PLATE_THUMBNAIL_BYTES = 4 * 1048576;
 
 const FALLBACK_FILAMENT_COLORS = ['#f5f5f0', '#181818', '#c02525', '#e8c024', '#2452c0', '#808080', '#2e9d4a', '#e07a1f'];
 
@@ -574,6 +658,23 @@ async function findRootModelPath(zip: ZipArchive): Promise<string> {
   const any = zip.entries.find(e => /\.model$/i.test(e.name));
   if (any) return normPath(any.name);
   throw new Error('Not a 3MF file: no 3D model part found in the package.');
+}
+
+/** An object's part runs with unique names, or undefined when it has fewer
+ *  than two parts (one part is just the object). */
+function namedPartRuns(runs: { key: string; name: string; first: number; count: number }[]): ThreeMFPartRun[] | undefined {
+  const names = new Map<string, string>();
+  const used = new Set<string>();
+  for (const r of runs) {
+    if (names.has(r.key)) continue;
+    const base = r.name.trim() || 'Part';
+    let name = base;
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = `${base} (${n})`;
+    used.add(name.toLowerCase());
+    names.set(r.key, name);
+  }
+  if (names.size < 2) return undefined;
+  return runs.map(r => ({ name: names.get(r.key)!, firstTriangle: r.first, triangleCount: r.count }));
 }
 
 /** Parse a .3mf package. Throws a human-readable Error on unreadable input. */
@@ -640,7 +741,18 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   let skippedParts = 0;
   let splitPaintedTriangles = 0;
 
-  interface Ctx { settingsObject: SlicerObject | undefined; part: SlicerPart | undefined }
+  /** `partKey` / `partName`: the build item's part being emitted (a first-
+   *  level component), for the object's part runs. */
+  interface Ctx { settingsObject: SlicerObject | undefined; part: SlicerPart | undefined; partKey?: string; partName?: string }
+
+  // The current build item's part runs (keyed so two same-named parts stay apart).
+  let partRuns: { key: string; name: string; first: number; count: number }[] = [];
+  const notePartTri = (key: string, name: string): void => {
+    const tri = triVerts.length / 3;
+    const last = partRuns[partRuns.length - 1];
+    if (last && last.key === key && last.first + last.count === tri) last.count++;
+    else partRuns.push({ key, name, first: tri, count: 1 });
+  };
 
   const emitMesh = (file: ModelFile, o: MeshObject, m: Mat, ctx: Ctx, settingsObjectId: number, meshId: number): void => {
     const s = file.unitScale;
@@ -668,16 +780,21 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     const numTri = o.tris.length / 3;
     for (let t = 0; t < numTri; t++) {
       let extruder = objExtruder;
+      let volume: SlicerVolume | null = null;
       if (vols.length > 0) {
         while (volIdx < vols.length - 1 && t > vols[volIdx].last) volIdx++;
         const v = vols[volIdx];
         if (t >= v.first && t <= v.last) {
           if (!v.printable) { skippedVols.add(volIdx); continue; }
           if (v.extruder) extruder = v.extruder;
+          volume = v;
         }
       }
       const a = o.tris[t * 3], b = o.tris[t * 3 + 1], c = o.tris[t * 3 + 2];
       if (a >= nv || b >= nv || c >= nv) throw new Error('3MF triangle references a vertex index out of range.');
+      // A component part names its triangles; inside one, a Prusa volume does.
+      if (ctx.partKey !== undefined) notePartTri(ctx.partKey, ctx.partName ?? 'Part');
+      else if (volume && vols.length > 1) notePartTri(`v${meshId}:${volIdx}`, volume.name ?? `Part ${volIdx + 1}`);
       if (flip) triVerts.push(base + a, base + c, base + b);
       else triVerts.push(base + a, base + b, base + c);
 
@@ -703,28 +820,57 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     if (!file || !o) throw new Error(`3MF references a missing object (id ${objectId}).`);
     if (o.type === 'support' || o.type === 'other') { skippedParts++; return; }
     if (o.kind === 'mesh') { emitMesh(file, o, m, ctx, settingsObjectId, objectId); return; }
-    for (const c of o.components) {
+    o.components.forEach((c, k) => {
       // Bambu: a first-level component is a "part" of the settings object.
       let part = ctx.part;
       if (!part && ctx.settingsObject) {
         part = ctx.settingsObject.parts.get(c.objectId);
-        if (part && part.subtype !== 'normal_part') { skippedParts++; continue; }
+        if (part && part.subtype !== 'normal_part') { skippedParts++; return; }
       }
-      emit(c.path ? normPath(c.path) : filePath, c.objectId, compose(c.transform, m), { settingsObject: ctx.settingsObject, part }, settingsObjectId, depth + 1);
-    }
+      const childPath = c.path ? normPath(c.path) : filePath;
+      // The build item's own components are its parts, named by the slicer's
+      // part settings, else the component object's name.
+      const named = depth === 0
+        ? { partKey: `c${k}`, partName: part?.name ?? files.get(childPath)?.objects.get(c.objectId)?.name ?? `Part ${k + 1}` }
+        : { partKey: ctx.partKey, partName: ctx.partName };
+      emit(childPath, c.objectId, compose(c.transform, m), { settingsObject: ctx.settingsObject, part, ...named }, settingsObjectId, depth + 1);
+    });
   };
 
+  // Plate binding: Bambu writes one build item per object instance, in
+  // instance order, and each plate's <model_instance> names (object_id,
+  // instance_id) — so the k-th item of an object is its instance k.
+  const plateOf = new Map<string, number>();
+  for (const pl of slicer?.plates ?? []) {
+    for (const inst of pl.instances) {
+      const key = `${inst.objectId}:${inst.instanceId}`;
+      if (!plateOf.has(key)) plateOf.set(key, pl.id);
+    }
+  }
+  const instanceCount = new Map<number, number>();
+
   for (const item of root.build) {
+    const instanceId = instanceCount.get(item.objectId) ?? 0;
+    instanceCount.set(item.objectId, instanceId + 1);
     // printable="0" items sit on the plate but the slicer doesn't print them.
     if (!item.printable) { skippedParts++; continue; }
     const startTri = triVerts.length / 3;
+    partRuns = [];
     const filePath = item.path ? normPath(item.path) : rootPath;
     const settingsObject = slicer?.flavor === 'bambu' ? slicer.objects.get(item.objectId) : undefined;
     emit(filePath, item.objectId, item.transform, { settingsObject, part: undefined }, item.objectId, 0);
+    const triangleCount = triVerts.length / 3 - startTri;
+    // Every part of it was a modifier / support — nothing to list.
+    if (triangleCount === 0) continue;
     const o = files.get(filePath)?.objects.get(item.objectId);
+    const plate = plateOf.get(`${item.objectId}:${instanceId}`);
+    const parts = namedPartRuns(partRuns);
     objects.push({
       name: settingsObject?.name ?? o?.name ?? `Object ${item.objectId}`,
-      triangleCount: triVerts.length / 3 - startTri,
+      triangleCount,
+      firstTriangle: startTri,
+      ...(plate !== undefined ? { plate } : {}),
+      ...(parts ? { parts } : {}),
     });
   }
 
@@ -770,6 +916,16 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     vertProperties[i + 2] = compact[i + 2];
   }
 
+  const plates: ThreeMFPlate[] = [];
+  for (const pl of slicer?.plates ?? []) {
+    const plate: ThreeMFPlate = { id: pl.id, name: pl.name || `Plate ${pl.id}` };
+    const thumb = zip.find(pl.thumbnailFile ?? `Metadata/plate_${pl.id}.png`);
+    if (thumb && thumb.uncompressedSize <= MAX_PLATE_THUMBNAIL_BYTES) {
+      try { plate.thumbnail = await zip.read(thumb); } catch { /* a preview is optional */ }
+    }
+    plates.push(plate);
+  }
+
   return {
     mesh: { vertProperties, triVerts: new Uint32Array(triVerts), numVert, numTri, numProp: 3 },
     triColor: new Int32Array(triColor),
@@ -779,6 +935,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     application: root.metadata.get('Application'),
     title: root.metadata.get('Title') || undefined,
     objects,
+    plates,
     skippedParts,
     splitPaintedTriangles,
   };
