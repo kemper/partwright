@@ -154,6 +154,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
   ui: {
     editorHintsEnabled: BOOL,
     hintRotationMs: { min: 3_000, max: 60_000, integer: true },
+    toolDialogOpenWaitMs: { min: 500, max: 60_000, integer: true },
     toastDurationMs: { min: 500, max: 15_000, integer: true },
     undoToastDurationMs: { min: 2000, max: 60_000, integer: true },
     deletedObjectRetentionDays: { min: 1, max: 365, integer: true },

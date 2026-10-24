@@ -6,6 +6,7 @@
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
+import { drainToolAppliedNotes } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -3356,7 +3357,13 @@ async function sendMessage(): Promise<void> {
   const capturedText = text;
   const capturedImages = [...state.pendingImages];
 
-  const blocks: ChatBlock[] = [];
+  // "[UI] user applied …" lines for panels the AI opened and the user then
+  // applied from (toolRegistry.notifyToolApplied) — one leading text block,
+  // so the model sees what the user settled on. Per-tab memory only.
+  const uiNotes = drainToolAppliedNotes();
+  const uiNoteBlocks: ChatBlock[] = uiNotes.length ? [{ type: 'text', text: uiNotes.join('\n') }] : [];
+
+  const blocks: ChatBlock[] = [...uiNoteBlocks];
   if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
@@ -3402,7 +3409,7 @@ async function sendMessage(): Promise<void> {
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
       const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
@@ -3413,7 +3420,7 @@ async function sendMessage(): Promise<void> {
         + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
         + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
         + '---\n\n';
-      planBlocks = [];
+      planBlocks = [...uiNoteBlocks];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {

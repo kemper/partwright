@@ -30,6 +30,8 @@ export type PrefillField =
   | { type: 'numberOrVec3'; min?: number; description?: string }
   /** `[r, g, b]` in 0..1 or a `#rrggbb` / `#rgb` hex string — normalized to `[r, g, b]`. */
   | { type: 'color'; description?: string }
+  /** An array of strings or integers (e.g. object names, version indices). */
+  | { type: 'list'; of: 'string' | 'integer'; maxItems?: number; description?: string }
   /** A nested object. With `fields`, its keys are validated too (unknown keys
    *  rejected); without, it is free-form and the opener validates it. */
   | { type: 'object'; fields?: PrefillSchema; description?: string };
@@ -79,10 +81,18 @@ export interface ToolSpec {
 }
 
 const tools = new Map<string, ToolSpec>();
+/** Who opened each tool last — per-tab memory only (never persisted/shared). */
+const openedBy = new Map<string, NonNullable<ToolOpenContext['source']>>();
 
-/** Register (or replace, by id) a tool. */
+/** Register (or replace, by id) a tool. The stored spec wraps `open` so the
+ *  registry remembers who opened each tool last (see notifyToolApplied). */
 export function registerTool(spec: ToolSpec): void {
-  tools.set(spec.id, spec);
+  const open: ToolSpec['open'] = async (prefill, ctx) => {
+    const r = await spec.open(prefill, ctx);
+    if (!(r && 'error' in r)) openedBy.set(spec.id, ctx.source ?? 'ui');
+    return r;
+  };
+  tools.set(spec.id, { ...spec, open });
 }
 
 /** All registered tools, in registration order. */
@@ -178,6 +188,12 @@ function checkField(field: PrefillField, v: unknown, path: string, errors: strin
       const c = parsePrefillColor(v);
       if (!c) { errors.push(`${path} must be [r, g, b] in 0..1 or a "#rrggbb" hex string`); return undefined; }
       return c;
+    }
+    case 'list': {
+      const ok = Array.isArray(v) && v.every(x => (field.of === 'string' ? typeof x === 'string' : Number.isInteger(x)));
+      if (!ok) { errors.push(`${path} must be an array of ${field.of === 'string' ? 'strings' : 'integers'}`); return undefined; }
+      if (field.maxItems !== undefined && v.length > field.maxItems) { errors.push(`${path} must have at most ${field.maxItems} items`); return undefined; }
+      return [...v];
     }
     case 'object': {
       if (!isPlainObject(v)) { errors.push(`${path} must be an object`); return undefined; }
@@ -294,4 +310,74 @@ export function setToolNote(host: HTMLElement | null, note: string | null | unde
   const banner = createToolNote(note, source);
   banner.classList.add('mb-2');
   host.prepend(banner);
+}
+
+// ---------------------------------------------------------------------------
+// "[UI] user applied …" notes — when the user applies / commits from a panel
+// the AI opened, the AI panel adds a one-line note to its NEXT turn so the
+// model learns what the user settled on. Per-tab module memory only: nothing
+// is persisted or broadcast, so another tab's chat never sees it.
+// ---------------------------------------------------------------------------
+
+/** Most notes kept between turns (latest per tool wins; oldest dropped). */
+const MAX_PENDING_APPLIED_NOTES = 6;
+/** Longest note line (the values summary is truncated past this). */
+const MAX_APPLIED_NOTE_CHARS = 400;
+
+const pendingApplied = new Map<string, string>();
+
+function fmtValue(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? String(Number(v.toPrecision(4))) : null;
+  if (typeof v === 'boolean') return String(v);
+  if (typeof v === 'string') return JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}…` : v);
+  if (Array.isArray(v)) {
+    const parts = v.slice(0, 4).map(fmtValue);
+    return parts.every(p => p !== null) ? `[${parts.join(', ')}${v.length > 4 ? ', …' : ''}]` : null;
+  }
+  if (typeof v === 'object') {
+    const inner = Object.entries(v as Record<string, unknown>)
+      .map(([k, x]) => { const s = fmtValue(x); return s === null ? null : `${k}: ${s}`; })
+      .filter((s): s is string => s !== null);
+    return inner.length ? `{${inner.join(', ')}}` : null;
+  }
+  return null;
+}
+
+/** Pure: `[UI] user applied <title>: <lead> {k: v, …}` from a tool's
+ *  getState() snapshot. `lead` is the state's `tab` / `tool`, or `what`. */
+export function formatToolAppliedNote(title: string, state: Record<string, unknown> | null, what?: string): string {
+  const s = state ?? {};
+  const leadKey = typeof s.tab === 'string' ? 'tab' : typeof s.tool === 'string' ? 'tool' : null;
+  const lead = what ?? (leadKey ? String(s[leadKey]) : '');
+  const rest = what === undefined ? Object.fromEntries(Object.entries(s).filter(([k]) => k !== leadKey)) : s;
+  const vals = fmtValue(rest);
+  let line = `[UI] user applied ${title}${lead ? `: ${lead}` : ''}${vals ? ` ${vals}` : ''}`;
+  if (line.length > MAX_APPLIED_NOTE_CHARS) line = `${line.slice(0, MAX_APPLIED_NOTE_CHARS - 1)}…`;
+  return line;
+}
+
+/** A panel calls this when the user applies / commits from it (BEFORE it
+ *  closes, so getState() still reads the panel). Records a note only when the
+ *  AI opened that tool; `what` overrides the lead (e.g. "paint stroke"). */
+export function notifyToolApplied(id: string, what?: string): void {
+  if (openedBy.get(id) !== 'ai') return;
+  const spec = tools.get(id);
+  if (!spec) return;
+  let state: Record<string, unknown> | null = null;
+  try { state = spec.getState?.() ?? null; } catch { state = null; }
+  pendingApplied.delete(id); // re-insert so the latest is newest
+  pendingApplied.set(id, formatToolAppliedNote(spec.title, state, what));
+  while (pendingApplied.size > MAX_PENDING_APPLIED_NOTES) {
+    const oldest = pendingApplied.keys().next().value;
+    if (oldest === undefined) break;
+    pendingApplied.delete(oldest);
+  }
+}
+
+/** Take (and clear) the pending "[UI] user applied …" lines, oldest first. */
+export function drainToolAppliedNotes(): string[] {
+  const out = [...pendingApplied.values()];
+  pendingApplied.clear();
+  return out;
 }

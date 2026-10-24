@@ -320,6 +320,10 @@ export interface AppConfig {
     photoMatchBusyBorderTolerance: number;
   };
   ui: {
+    /** openTool on an export / publish dialog: how long to wait for the dialog
+     *  to appear (a pre-export "unsaved objects" confirm can come first) before
+     *  reporting the prefill as staged-for-when-it-opens (ms). */
+    toolDialogOpenWaitMs: number;
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
     /** How long a toast carrying an action button (e.g. a delete's "Undo")
@@ -620,6 +624,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     photoMatchBusyBorderTolerance: 75,
   },
   ui: {
+    toolDialogOpenWaitMs: 4000,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
     deletedObjectRetentionDays: 30,
