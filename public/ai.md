@@ -531,8 +531,9 @@ Always present (cheap mesh-quality signals — read them *instead of* paying for
 Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
 - **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
+- **`engineMemory: "N MB / 4096 MB (P%)"`** — manifold-js runs only: how far this run grew the geometry kernel's WebAssembly heap toward its hard ~4 GB ceiling. See [Memory budget](#memory-budget).
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), **interpenetrating components**, and **high geometry-kernel memory** (see [Memory budget](#memory-budget)). Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
@@ -744,6 +745,17 @@ Segments: OMIT the segment argument so curves inherit the user's quality
 ```
 
 **Default segment count:** Partwright seeds `setCircularSegments()` (and `$fn` for OpenSCAD) from the user's Modeling Quality preset (gear icon in the toolbar) before each run. Presets are Low (16) / Medium (32) / High (64) / Very High (128, the default) / Ultra (1024), plus a **Custom** option for an exact count (3–4096). So curves render smooth out of the box without any explicit configuration — and a user who wants ultra-smooth output picks **Ultra** (or a Custom value) once and it persists. **An explicit segments argument always overrides this preset for that primitive**, so leave it off unless you specifically want a different resolution than the user chose. The current preset is reported in the per-turn "Session toggle state" suffix; honor it. You can still call `setCircularSegments(n)` or pass an explicit count to override on a per-script or per-call basis when a design genuinely needs it.
+
+### Memory budget
+
+The manifold-js kernel runs in WebAssembly, whose heap is capped at **~4 GB** and never shrinks. A model that needs more fails with `memory access out of bounds` ("The geometry kernel ran out of memory"); the engine resets itself, but the run is lost. Memory scales with *triangles × copies × booleans*, so the usual culprit is many rounded parts (chain links, beads, rivets, spokes) at the default Very High (128-segment) quality: one sphere is ~8k triangles and a cylinder ~500, so a few hundred rounded parts through unions add up fast.
+
+- **Watch `engineMemory`** in the stats as you scale a design up. When a live run (`run`/`runAndSave`) crosses the high-memory threshold (default 50%), its `warnings[]` says so: that is the signal to lighten the model *before* the next step up faults. Isolated runs (`runIsolated`/`runAndAssert`) report `engineMemory` but don't warn, so read it yourself there. The engine also resets once idle after such a run so the next one starts on a fresh heap (except for runs that use `api.BREP`, which would otherwise reload OpenCASCADE every time).
+- **Prove the pattern small first:** build 3 links / 4 spokes, read `engineMemory` and `triangleCount`, then scale. Memory grows roughly linearly with the count, so a run at 30% will not survive 4× the parts.
+- **Small or hidden round features may take an explicit low segment count** (a 2 mm pin at 16 segments is indistinguishable from 128). This is the one good reason to override the user's preset downward. Leave visible, large curves on the preset.
+- **`Manifold.compose([...])` for parts that don't touch** — it just concatenates, with no boolean. Union only what has to fuse.
+- **Don't query intermediates inside a build loop** (`.volume()`, `.boundingBox()`, `.numTri()`, `.status()`): that meshes every step, and every intermediate stays in memory until the run ends.
+- **On an out-of-memory error**, don't retry the same code. Reduce the count or segments by at least half, or split the model into separate objects.
 
 ### Constructors and instance methods
 
