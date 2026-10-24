@@ -22,6 +22,7 @@ import { getRenderBudget } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 import { specJsonSchema } from '../figure/characterSpec';
+import { computeCodeDiff } from './codeDiff';
 
 export interface ToolDefinition {
   name: string;
@@ -1014,13 +1015,18 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'query',
-    description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox. Returns only the keys you asked for. Cheaper than separate calls. Returns `stale: true` in both the top-level result and `stats` when the editor code changed since the last run — geometry reflects the previous execution.',
+    description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox, containment (pieces hidden fully inside other pieces — invisible, wasted geometry), pointsInside (is each [x,y,z] inside the solid?), componentBounds (per-piece bbox/volume/triangle count, largest first), zProfile (features and transitions up the Z axis — radii, areas, steps). Returns only the keys you asked for, plus current `stats`. Cheaper than separate calls. Returns `stale: true` in both the top-level result and `stats` when the editor code changed since the last run — geometry reflects the previous execution.',
     input_schema: {
       type: 'object',
       properties: {
         sliceAt: { type: 'array', items: { type: 'number' }, description: 'Z heights to slice at.' },
         decompose: { type: 'boolean', description: 'Include component breakdown.' },
         boundingBox: { type: 'boolean', description: 'Include bounding box.' },
+        containment: { type: 'boolean', description: 'Include `containment`: warnings for components fully enclosed by another component ([] = none).' },
+        pointsInside: { type: 'array', maxItems: 200, items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Points [[x,y,z], …] to test; result `pointsInside` is [{point, inside}] (may be ambiguous within ~1e-5 of the surface).' },
+        componentBounds: { type: 'boolean', description: 'Include `componentBounds`: per-piece {index, volume, triangleCount, vertexCount, bbox:{min,max,size,center}}, sorted by volume.' },
+        zProfile: { type: 'boolean', description: 'Include `zProfile`: {features, transitions, summary} sampled up the Z axis.' },
+        zProfileSamples: { type: 'integer', minimum: 2, maximum: 500, description: 'Number of Z samples for zProfile (default chosen by the analyzer).' },
       },
     },
   },
@@ -1132,7 +1138,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObject',
-    description: "Delete an object and all its versions. It moves to the session's Recover deleted bin (restoreObject brings it back until it expires). If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
+    description: "Delete an object and all its versions. This is recoverable: the object moves to the session's Recover deleted bin, and restoreObject brings it back with every version until it expires (listDeleted shows the bin). If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1973,6 +1979,145 @@ Returns { ok, stats, metrics, version } or { error }.`,
       properties: { summary: { type: 'string', description: 'Optional one-line summary of the completed work.' } },
     },
   },
+  // ── Tools wrapping existing window.partwright methods (#1085 PR1) ─────────
+  // Kept in one contiguous block; gated in the sets below.
+  {
+    name: 'listAnnotations',
+    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}] }. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        maxPointsPerStroke: { type: 'integer', minimum: 0, maximum: 500, description: 'Downsample each stroke polyline to at most this many points (endpoints kept). 0 omits points entirely (bbox/centroid are still returned). Default 16.' },
+      },
+    },
+  },
+  {
+    name: 'diffVersions',
+    description: 'Compare two saved versions of the current object — the programmatic form of the Diff tab. Use to answer "what changed between v2 and v5?" or to find a regression before rolling back. Returns { a: {id, index, label}, b: {...}, codeChanged, codeDiff: {changed, added, removed, diff} (a compact line diff: "- " = only in a, "+ " = only in b), statDiff (per-stat delta of the geometry data: volume, bbox, componentCount, …) }. Pass includeCode: true to also get both full sources (expensive on long files). Version indices come from listVersions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        a: { type: 'integer', minimum: 1, description: '1-based index of the first ("before") version.' },
+        b: { type: 'integer', minimum: 1, description: '1-based index of the second ("after") version.' },
+        maxDiffLines: { type: 'integer', minimum: 1, maximum: 2000, description: 'Cap on the changed lines shown in codeDiff.diff. Default 80.' },
+        includeCode: { type: 'boolean', description: 'Also return both versions\' full code. Default false.' },
+      },
+      required: ['a', 'b'],
+    },
+  },
+  {
+    name: 'getMeasurement',
+    description: 'Measure the model. Always returns the USER\'s interactive measurement — the two points they clicked with the Measure tool (📏) and the distance between them — as interactive: {active, point1, point2, distance}; use it when the user asks "how far apart are the points I clicked?". Optionally also: from + to → the straight-line distance between two 3D points (between: {from, to, distance, delta}); at → cast a vertical ray at an XY position and return every surface Z hit there (heights, wall thicknesses). Pure read, no side effects.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'First point [x,y,z] for a point-to-point distance (needs `to`).' },
+        to: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Second point [x,y,z] for a point-to-point distance (needs `from`).' },
+        at: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: 'XY position [x,y]: probe straight down the Z axis and return every surface hit there.' },
+      },
+    },
+  },
+  {
+    name: 'getViewState',
+    description: 'Read what the user is currently looking at: the active editor tab (interactive / gallery / versions / diff / notes / …), the code-pane mode (hidden / mini / full), and the live viewport camera {azimuth, elevation, distance, target}. Use to answer "what am I looking at?" or to pick a renderView angle that matches the user\'s view (azimuth 0 = from −Y). Pure read.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getPalette',
+    description: 'Read the filament palette — the color slots a multi-color model maps onto the printer\'s AMS/MMU. Returns { active: {id, name, capacity, constrained, slots: [{id, name, hex, td}]}, palettes: [{id, name, active}] }. When constrained is true (or the user mentions their filaments), paint with these slot hex colors so the model prints with spools the user actually has; capacity is the max color count. Pure read.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getUnits',
+    description: 'Read the declared unit system: "mm", "cm", "in", or "unitless". It is a per-tab preference of this browser window (not saved in the session), and metadata only: exports record it; coordinates are never rescaled. Returns { unit }.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setUnits',
+    description: 'Declare the unit system. It is a per-tab preference of this browser window (not saved in the session) and metadata only — it does NOT rescale the model (use scaleModel to resize). Use when the user states their units ("this is in inches") so exports from this window carry the right unit. Returns { unit }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        unit: { type: 'string', enum: ['mm', 'cm', 'in', 'unitless'], description: 'The unit system.' },
+      },
+      required: ['unit'],
+    },
+  },
+  {
+    name: 'mirrorModel',
+    description: 'Mirror the current model across a plane through its own center (axis x = flip left/right, y = front/back, z = top/bottom) and save a new version — a sibling of placeModel / rotateModel. Same write-back modes as placeModel: \'auto\' (default) keeps a manifold-js model parametric (an editable transform wrapped around the source) when safe, otherwise bakes to a mesh; SCAD/BREP/painted/voxel models can only bake. Undo with loadVersion. Returns { ok, geometry, warnings? } or { error }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: "The axis to flip along (the mirror plane is perpendicular to it). Default 'x'." },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'renameVersion',
+    description: 'Rename (relabel) a saved version of the current object — e.g. the user says "call v3 \'final\'". Changes only the gallery label; code and geometry are untouched. Returns { ok, id, index, label } or { error }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', minimum: 1, description: '1-based version index from listVersions.' },
+        label: { type: 'string', description: 'The new label.' },
+      },
+      required: ['index', 'label'],
+    },
+  },
+  {
+    name: 'deleteVersion',
+    description: 'Permanently delete a saved version of the current object. IRREVERSIBLE — the user is asked to confirm first; only call this when the user explicitly asked to delete that version. Refuses to delete the last remaining version. If the deleted version was active, the nearest earlier version becomes active and is re-rendered. Returns { ok, deleted: {id, index, label}, newCurrent } or { error }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', minimum: 1, description: '1-based version index from listVersions.' },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'setObjectGroup',
+    description: 'Put one or more objects into a named group in the Objects list (an organizing folder — it changes neither geometry nor export), or take them out of their group with an empty group. Address objects by name or id (from listObjects). Returns { grouped, group }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        objects: { type: 'array', items: { type: 'string' }, description: 'Object names or ids (from listObjects).' },
+        group: { type: 'string', description: 'Group name. Required; an empty string removes the objects from any group.' },
+      },
+      required: ['objects', 'group'],
+    },
+  },
+  {
+    name: 'updateSessionNote',
+    description: 'Rewrite an existing session note (id from listSessionNotes / getSessionContext). Use to correct a note that has gone stale — a [TODO] that is now done, a [MEASUREMENT] that changed — instead of appending a contradicting note. Keep the [PREFIX] convention. Returns { success }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Note id from listSessionNotes.' },
+        text: { type: 'string', description: 'The replacement note text.' },
+      },
+      required: ['id', 'text'],
+    },
+  },
+  {
+    name: 'deleteSessionNote',
+    description: 'Delete a session note that is wrong or obsolete (id from listSessionNotes). Prefer updateSessionNote when the note only needs correcting. Returns { success }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Note id from listSessionNotes.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'listSessions',
+    description: 'List the user\'s saved sessions (projects) in this browser: [{id, name, updated}] (updated = epoch ms). Use to answer "which of my sessions has the gear?" or to point the user at another session by name. Read-only: you cannot open or switch sessions from chat — ask the user to open one from the landing page.',
+    input_schema: { type: 'object', properties: {} },
+  },
 ];
 
 /** Tools whose effect is scoped to a single OBJECT — they read or mutate the
@@ -2002,6 +2147,8 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
   'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
+  // Version-history + transform tools added with #1085.
+  'mirrorModel', 'diffVersions', 'renameVersion', 'deleteVersion',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
   'extractObjectPiece', 'reassignPaint',
 ]);
@@ -2118,6 +2265,20 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  // evalAgainstImport was missing from every gate, so buildToolList never
+  // offered it and /reconstruct could not verify its own remake. Pure read.
+  'evalAgainstImport',
+  // #1085: reads + metadata setters wrapping existing window.partwright methods.
+  'listAnnotations',
+  'diffVersions',
+  'getMeasurement',
+  'getViewState',
+  'getPalette',
+  'getUnits',
+  'setUnits',
+  'listSessions',
+  // Object-list organization, like its siblings createObject/renameObject.
+  'setObjectGroup',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -2125,7 +2286,52 @@ const ALWAYS_AVAILABLE = new Set([
 export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importImageAsRelief',
   'importSvgAsRelief',
+  // Irreversible: a deleted version has no recycle bin (unlike deleteObject).
+  'deleteVersion',
 ]);
+
+/** The phrase the confirm prompt shows ("The AI wants to <label>. Allow this?").
+ *  Built from the call's input so the user sees exactly what will happen — for
+ *  deleteVersion that is the version number, its label and the object, e.g.
+ *  "permanently delete version 3 'final' of object Lid". Never throws: any
+ *  lookup failure falls back to the less specific wording. */
+export async function confirmToolLabel(name: string, input: Record<string, unknown> = {}): Promise<string> {
+  if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
+  if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
+  if (name === 'deleteVersion') {
+    const index = typeof input.index === 'number' ? input.index : null;
+    let what = index !== null ? `version ${index}` : 'a saved version';
+    let objectName: string | null = null;
+    try {
+      const api = getApi();
+      const target = (input.object ?? input.part) as string | number | undefined;
+      const objects = api.listObjects() as ObjectRow[] | undefined;
+      const row = Array.isArray(objects) && objects.length > 0
+        ? (target != null ? matchObjectRow(objects, target) : objects.find(o => o.isCurrent))
+        : undefined;
+      objectName = row ? row.name : target != null ? String(target) : null;
+      // listVersions() reads the CURRENT object, so only look the label up when
+      // the call targets it (a targeted delete switches focus only once allowed).
+      if (index !== null && (target == null || row?.isCurrent)) {
+        const versions = await api.listVersions() as Array<{ index: number; label?: string }> | undefined;
+        const v = Array.isArray(versions) ? versions.find(x => x.index === index) : undefined;
+        if (v?.label) what += ` '${v.label}'`;
+      }
+    } catch { /* keep the generic wording */ }
+    return `permanently delete ${what}${objectName ? ` of object ${objectName}` : ''}`;
+  }
+  return `run "${name}"`;
+}
+
+/** The tool result the model gets when the user declines a confirm prompt. */
+export function declinedToolMessage(name: string): string {
+  if (name === 'deleteVersion') return '[Declined by user — the version was NOT deleted. Only delete versions the user explicitly asked to remove]';
+  return '[Declined by user — only call import tools when the user has explicitly requested an import]';
+}
+
+/** Result for a confirm-required tool when no confirmation prompt can be shown
+ *  (no UI callback wired for this turn). Confirmation fails CLOSED. */
+export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the user\'s confirmation and no confirmation prompt is available. Ask the user to do it from the UI instead]';
 
 /** Pure-read tools the model may call during plan mode to ground its plan in
  *  the current session state (open code, versions, geometry, notes, docs).
@@ -2146,6 +2352,10 @@ const PLAN_MODE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'evalAgainstImport',
+  // #1085 pure reads.
+  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'getPalette', 'getUnits', 'listSessions',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -2171,8 +2381,14 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  'evalAgainstImport',
+  // #1085 pure reads.
+  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'getPalette', 'getUnits', 'listSessions',
   // Visual-only view state; re-applying it is idempotent.
   'highlightObjectPart', 'setObjectPartHidden', 'isolateObjectPart',
+  // Metadata-only setter; re-applying the same unit is idempotent.
+  'setUnits',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated', 'renderParts',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -2180,7 +2396,10 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter']);
+const SAVE_GATED = new Set(['renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion']);
+/** SAVE_GATED tools that touch version history WITHOUT executing new code, so
+ *  they only need the saveVersions scope (not runCode). */
+const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion']);
 /** Part-detection draft tools (#1025): they prepare paint, so they ride the
  *  paint scope, but a draft never touches the session (only acceptParts,
  *  above, commits) — so they are NOT model-changing for auto-review. The
@@ -2193,6 +2412,8 @@ const PAINT_GATED = new Set(['setObjectPartColor', 'reassignPaint', 'paintRegion
  *  A turn that called none of these only inspected or answered, so there is
  *  nothing for an automatic review to grade. */
 export function isModelChangingTool(name: string): boolean {
+  // renameVersion is save-gated but only relabels a version — nothing to review.
+  if (name === 'renameVersion') return false;
   return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 /** Tools that ship a PNG back to the model via a multimodal content
@@ -2207,7 +2428,11 @@ const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated']);
 const AUTORESUME_GATED = new Set(['finish']);
 /** Gated by the Session-notes scope toggle. When off, the budget keeps the
  *  model from spending a tool round-trip writing notes the chat already holds. */
-const NOTES_GATED = new Set(['addSessionNote']);
+const NOTES_GATED = new Set(['addSessionNote', 'updateSessionNote', 'deleteSessionNote']);
+
+/** Every tool the model can ever be offered, in schema order. Exported for the
+ *  gating-invariant unit test (a tool in no gate is silently never offered). */
+export const ALL_TOOL_NAMES: readonly string[] = ALL_TOOLS.map(t => t.name);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
@@ -2228,12 +2453,12 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
     if (RUN_GATED.has(t.name)) return toggles.scope.runCode;
     if (SAVE_GATED.has(t.name)) {
-      // loadVersion (rewind) and saveVersion (snapshot) don't execute code,
-      // so they only need the saveVersions scope. Gating loadVersion here also
+      // loadVersion (rewind), saveVersion (snapshot) and renameVersion /
+      // deleteVersion (SAVE_NON_RUNNING) don't execute new code, so they only
+      // need the saveVersions scope. Gating loadVersion here also
       // keeps the model from rewinding state when the user has paused commits.
       // runAndSave runs first, so it additionally needs the runCode scope.
-      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion';
-      return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
+      return SAVE_NON_RUNNING.has(t.name) ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
     if (PARTS_GATED.has(t.name)) return toggles.scope.paintFaces;
@@ -2255,12 +2480,118 @@ function renderPartsArgs(input: Record<string, unknown>): Record<string, unknown
   return views === undefined ? rest : { ...rest, views };
 }
 
+/** The `query` tool's keys that the console `query()` takes directly. The rest
+ *  (containment / pointsInside / componentBounds / zProfile) fan out to their
+ *  own console methods, so one tool call still answers a multi-part question. */
+const QUERY_BASE_KEYS = ['sliceAt', 'decompose', 'boundingBox'] as const;
+const QUERY_EXTRA_KEYS = ['containment', 'pointsInside', 'componentBounds', 'zProfile', 'zProfileSamples'] as const;
+/** Cap on `pointsInside` per call — mirrors the schema's maxItems. */
+const QUERY_MAX_POINTS = 200;
+
+function executeQuery(api: PartwrightAPI, input: Record<string, unknown>): unknown {
+  // Reject unknown keys up front, like the console query() does — otherwise a
+  // typo'd key (e.g. `bbox`) would silently answer nothing.
+  const known = new Set<string>([...QUERY_BASE_KEYS, ...QUERY_EXTRA_KEYS]);
+  const unknown = Object.keys(input).filter(k => !known.has(k));
+  if (unknown.length > 0) {
+    return { error: `query: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: ${[...known].join(', ')}.` };
+  }
+  let points: Array<[number, number, number]> | undefined;
+  if (input.pointsInside !== undefined) {
+    if (!Array.isArray(input.pointsInside)) return { error: 'query: pointsInside must be an array of [x,y,z] points.' };
+    if (input.pointsInside.length > QUERY_MAX_POINTS) return { error: `query: pointsInside takes at most ${QUERY_MAX_POINTS} points (got ${input.pointsInside.length}).` };
+    for (let i = 0; i < input.pointsInside.length; i++) {
+      const p = input.pointsInside[i] as unknown;
+      if (!Array.isArray(p) || p.length !== 3 || !p.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        return { error: `query: pointsInside[${i}] must be a [x,y,z] array of 3 finite numbers (got ${JSON.stringify(p)}).` };
+      }
+    }
+    points = input.pointsInside as Array<[number, number, number]>;
+  }
+  const base: Record<string, unknown> = {};
+  for (const k of QUERY_BASE_KEYS) if (input[k] !== undefined) base[k] = input[k];
+  const result = api.query(base) as Record<string, unknown> | undefined;
+  if (!result || typeof result !== 'object' || 'error' in result) return result;
+  if (input.containment === true) result.containment = api.checkContainment() ?? [];
+  if (points) result.pointsInside = points.map(point => ({ point, inside: api.pointInside(point) }));
+  if (input.componentBounds === true) result.componentBounds = api.componentBounds();
+  if (input.zProfile === true) result.zProfile = api.analyzeProfile(input.zProfileSamples);
+  return result;
+}
+
+/** Upper bound for listAnnotations' maxPointsPerStroke — mirrors the schema max. */
+const MAX_POINTS_PER_STROKE = 500;
+
+interface AnnotationStroke {
+  id: string;
+  color: unknown;
+  width: number;
+  pointCount: number;
+  points: Array<[number, number, number]>;
+  camera?: unknown;
+}
+
+/** Shrink a freehand stroke for the model: bbox + centroid always, and the
+ *  polyline evenly downsampled to `maxPoints` (endpoints kept; 0 drops it). A
+ *  raw stroke carries hundreds of points the model does not need to locate it. */
+function summarizeStroke(s: AnnotationStroke, maxPoints: number): Record<string, unknown> {
+  const pts = Array.isArray(s.points) ? s.points : [];
+  let bbox: { min: [number, number, number]; max: [number, number, number] } | null = null;
+  let centroid: [number, number, number] | null = null;
+  if (pts.length > 0) {
+    const min: [number, number, number] = [Infinity, Infinity, Infinity];
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    const sum = [0, 0, 0];
+    for (const p of pts) {
+      for (let i = 0; i < 3; i++) {
+        if (p[i] < min[i]) min[i] = p[i];
+        if (p[i] > max[i]) max[i] = p[i];
+        sum[i] += p[i];
+      }
+    }
+    const r = (v: number) => Math.round(v * 1000) / 1000;
+    bbox = { min: [r(min[0]), r(min[1]), r(min[2])], max: [r(max[0]), r(max[1]), r(max[2])] };
+    centroid = [r(sum[0] / pts.length), r(sum[1] / pts.length), r(sum[2] / pts.length)];
+  }
+  let points: Array<[number, number, number]> | undefined;
+  if (maxPoints > 0) {
+    if (pts.length <= maxPoints) points = pts;
+    else if (maxPoints === 1) points = [pts[0]];
+    else {
+      points = [];
+      for (let i = 0; i < maxPoints; i++) points.push(pts[Math.round((i * (pts.length - 1)) / (maxPoints - 1))]);
+    }
+  }
+  return {
+    id: s.id,
+    color: s.color,
+    width: s.width,
+    pointCount: s.pointCount ?? pts.length,
+    bbox,
+    centroid,
+    ...(points ? { points } : {}),
+    ...(s.camera !== undefined ? { camera: s.camera } : {}),
+  };
+}
+
 function getApi(): PartwrightAPI {
   const w = window as unknown as { partwright?: PartwrightAPI };
   if (!w.partwright) {
     throw new Error('window.partwright is not ready — the Partwright engine has not finished initializing.');
   }
   return w.partwright;
+}
+
+type ObjectRow = { id: string; name: string; order: number; isCurrent: boolean };
+
+/** Resolve an object target (id, name, or 0-based index in list order) against
+ *  listObjects() rows. Shared by focusTargetObject and the confirm prompt. */
+function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRow | undefined {
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) return undefined;
+    return [...objects].sort((a, b) => a.order - b.order)[target];
+  }
+  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
 }
 
 /** Switch focus to the object an object-scoped tool named via its `object`
@@ -2271,17 +2602,14 @@ function getApi(): PartwrightAPI {
  *  in-progress editor draft on it. Returns an error string on a bad target, or
  *  null on success. */
 async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
-  const objects = api.listObjects() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
+  const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
     return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
   }
-  let match: { id: string; isCurrent: boolean } | undefined;
-  if (typeof target === 'number') {
-    if (!Number.isInteger(target) || target < 0) return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
-    match = [...objects].sort((a, b) => a.order - b.order)[target];
-  } else {
-    match = objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
+  if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
+    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
   }
+  const match = matchObjectRow(objects, target);
   if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
   if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
   const switched = await api.changeObject(match.id) as { error?: string } | undefined;
@@ -2296,7 +2624,10 @@ async function focusTargetObject(api: PartwrightAPI, target: string | number): P
  *  them back to the model for self-correction. Tools that return an
  *  image (renderView today) bypass the JSON path and return a structured
  *  ToolExecResult directly. */
-export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
+  // Work on a shallow copy: the object-target handling below deletes keys, and
+  // the caller's object is reused verbatim when the chat loop retries a call.
+  const input: Record<string, unknown> = { ...(rawInput ?? {}) };
   try {
     // `finish` is a control sentinel, not a window.partwright call — the agent
     // loop reads it to end the turn. Acknowledge it without touching the API.
@@ -2858,7 +3189,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'runAndExplain':
       return api.runAndExplain(input.code as string);
     case 'query':
-      return api.query(input);
+      return executeQuery(api, input);
     case 'modifyAndTest': {
       const mtPatches = input.patches as Array<{ find: string; replace: string }> | undefined;
       return api.modifyAndTest((code: unknown) => {
@@ -3056,6 +3387,88 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.rotateModel(input);
     case 'layFlatModel':
       return api.layFlatModel(input);
+    // ── #1085 PR1: thin wrappers over existing window.partwright methods ────
+    case 'listAnnotations': {
+      const maxPts = typeof input.maxPointsPerStroke === 'number' && Number.isFinite(input.maxPointsPerStroke)
+        ? Math.min(MAX_POINTS_PER_STROKE, Math.max(0, Math.floor(input.maxPointsPerStroke)))
+        : 16;
+      const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
+      const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
+      return {
+        count: api.getAnnotationCount(),
+        strokes: strokes.map(s => summarizeStroke(s, maxPts)),
+        texts,
+      };
+    }
+    case 'diffVersions': {
+      const r = await api.diffVersions({ index: input.a }, { index: input.b }) as Record<string, unknown>;
+      if (!r || typeof r !== 'object' || 'error' in r) return r;
+      const a = r.a as { id: string; index: number; label: string; code: string };
+      const b = r.b as { id: string; index: number; label: string; code: string };
+      const maxLines = typeof input.maxDiffLines === 'number' && Number.isFinite(input.maxDiffLines)
+        ? Math.min(2000, Math.max(1, Math.floor(input.maxDiffLines)))
+        : 80;
+      return {
+        a: { id: a.id, index: a.index, label: a.label },
+        b: { id: b.id, index: b.index, label: b.label },
+        codeChanged: r.codeChanged,
+        codeDiff: computeCodeDiff(a.code, b.code, maxLines),
+        statDiff: r.statDiff,
+        ...(input.includeCode === true ? { codeA: a.code, codeB: b.code } : {}),
+      };
+    }
+    case 'getMeasurement': {
+      if ((input.from === undefined) !== (input.to === undefined)) {
+        return { error: 'getMeasurement: pass both `from` and `to` for a point-to-point distance.' };
+      }
+      const out: Record<string, unknown> = { interactive: api.getMeasurement() };
+      if (input.from !== undefined) {
+        const from = input.from as [number, number, number];
+        const to = input.to as [number, number, number];
+        const distance = api.measureBetween(from, to);
+        out.between = { from, to, distance, delta: [to[0] - from[0], to[1] - from[1], to[2] - from[2]] };
+      }
+      if (input.at !== undefined) {
+        out.at = api.measureAt(input.at) ?? { error: 'No mesh loaded — run the model first.' };
+      }
+      return out;
+    }
+    case 'getViewState':
+      return api.getViewState();
+    case 'getPalette':
+      return { active: api.getPalette(), palettes: api.listPalettes() };
+    case 'getUnits':
+      return { unit: api.getUnits() };
+    case 'setUnits':
+      api.setUnits(input.unit);
+      return { unit: api.getUnits() };
+    case 'mirrorModel':
+      return api.mirrorModel(input);
+    case 'renameVersion':
+      return api.renameVersion({ index: input.index }, input.label);
+    case 'deleteVersion':
+      return api.deleteVersion({ index: input.index });
+    case 'setObjectGroup':
+      // A missing or wrong-typed group must not silently ungroup: only a string
+      // (empty = ungroup) or an explicit null is accepted.
+      if (input.group !== null && typeof input.group !== 'string') {
+        return { error: 'setObjectGroup: `group` is required — a group name, or an empty string (or null) to remove the objects from their group.' };
+      }
+      return api.setObjectGroup(input.objects, typeof input.group === 'string' && input.group.trim() ? input.group : null);
+    case 'updateSessionNote':
+    case 'deleteSessionNote': {
+      // The console methods write by id without checking it belongs to the
+      // ACTIVE session — an unknown id is a silent no-op and a stale id from
+      // another tab's session would edit that session's notes. Only touch notes
+      // this session lists.
+      const notes = await api.listSessionNotes() as Array<{ id: string }> | undefined;
+      if (typeof input.id !== 'string' || !Array.isArray(notes) || !notes.some(n => n.id === input.id)) {
+        return { error: `${name}: no note with id ${JSON.stringify(input.id)} in the active session. Call listSessionNotes to see valid ids.` };
+      }
+      return name === 'updateSessionNote' ? api.updateSessionNote(input.id, input.text) : api.deleteSessionNote(input.id);
+    }
+    case 'listSessions':
+      return api.listSessions();
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
