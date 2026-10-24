@@ -43,6 +43,10 @@ export interface ExportWarningInfo {
    *  applied to the current code (the Re-apply pill is up) — the export would
    *  carry the untextured base mesh. */
   surfaceStale?: boolean;
+  /** Names of paint regions keyed to a part (api.label) that no longer exists
+   *  in the current code — they paint nothing, so the export is missing that
+   *  colour. Fix from the Objects list ("Unmatched paint"). */
+  unmatchedPaint?: string[];
   /** Set when one or more parts have unsaved edits (or were never saved). A
    *  multi-part export bakes each part's LAST SAVED version, so unsaved work
    *  (e.g. fresh paint) is silently left out and never-saved parts are skipped
@@ -71,6 +75,7 @@ export function hasExportWarning(info: ExportWarningInfo): boolean {
   return info.unitless || !info.isManifold || info.componentCount > 1
     || info.colorOverBudget != null || info.colorDropped === true
     || info.surfaceStale === true || hasPrintabilityChecks(info)
+    || (info.unmatchedPaint?.length ?? 0) > 0
     || (info.unsavedParts != null && info.unsavedParts.count > 0);
 }
 
@@ -99,7 +104,8 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
     // picks a unit right here in the modal.
     const otherWarning = !info.isManifold || info.componentCount > 1
       || info.colorOverBudget != null || info.colorDropped === true
-      || info.surfaceStale === true || hasPrintabilityChecks(info);
+      || info.surfaceStale === true || hasPrintabilityChecks(info)
+      || (info.unmatchedPaint?.length ?? 0) > 0;
     let unitsResolved = !info.unitless;
 
     if (info.unitless) {
@@ -242,6 +248,19 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
         '<strong>Surface textures not applied.</strong> This model declares <span class="font-mono">api.surface.*</span> textures ' +
         'that haven\'t been computed for the current code — the export would contain the <strong>untextured base mesh</strong>. ' +
         'Cancel and press <strong>Run</strong> (or the ⟳ Re-apply pill) first to texture it.';
+      shell.body.appendChild(block);
+    }
+
+    if (info.unmatchedPaint && info.unmatchedPaint.length > 0) {
+      const names = info.unmatchedPaint;
+      const block = document.createElement('div');
+      block.dataset.warning = 'unmatched-paint';
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const shown = names.slice(0, 4).map(n => `<span class="font-mono">${escapeHtml(n)}</span>`).join(', ');
+      block.innerHTML =
+        `<strong>Unmatched paint.</strong> ${names.length === 1 ? 'One paint region is' : `${names.length} paint regions are`} tied to a part the code no longer has ` +
+        `(${shown}${names.length > 4 ? ', …' : ''}), so ${names.length === 1 ? 'it paints' : 'they paint'} nothing in this export. ` +
+        'Reassign or delete them under <strong>Unmatched paint</strong> in the Objects list.';
       shell.body.appendChild(block);
     }
 
