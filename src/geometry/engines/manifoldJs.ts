@@ -946,6 +946,13 @@ export const manifoldJsEngine: Engine = {
         };
       }
 
+      // Labels from `BREP.toManifold(...)` calls during this run: each queued
+      // its originalID → name registry, so they resolve from the final mesh's
+      // provenance (through any booleans) exactly like `api.label` ones.
+      for (const registry of consumeBrepToManifoldLabels()) {
+        for (const [id, name] of registry) labelRegistry.set(id, name);
+      }
+
       // Labels present before api.removePiece drops pieces — a label that lived
       // only on removed pieces is gone, not "lost", so its colour is dropped too.
       let labelsBeforePieceRemoval: Map<string, Set<number>> | undefined;
@@ -955,15 +962,9 @@ export const manifoldJsEngine: Engine = {
       }
 
       const mesh = result.getMesh();
-      // Merge any BREP-side labels that flowed through `BREP.toManifold(...)`
-      // calls during this run. Each call queued a `Map<label, Set<triangleId>>`
-      // built against the welded BREP tessellation — the same mesh-data we
-      // then handed to `Manifold.ofMesh`. As long as the user didn't run
-      // further booleans on the resulting Manifold (which would remap
-      // triangle ids), the ids are still valid in the final mesh. If the
-      // same label name comes from both BREP and an `api.label` call, the
-      // triangle sets union — friendliest answer.
-      const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
+      // A name used by both a BREP label and an `api.label` call unions — the
+      // registry maps several ids to the same name.
+      const labelMap = resolveLabelMap(mesh, labelRegistry);
       if (labelsBeforePieceRemoval) {
         for (const [name, before] of labelsBeforePieceRemoval) {
           if (before.size > 0 && !labelMap?.get(name)?.size) {
@@ -1081,35 +1082,11 @@ export const manifoldJsEngine: Engine = {
   },
 };
 
-/** Union-merge any number of `Map<label, Set<triangleId>>` into a single
- *  map. The primary use case is folding BREP `BREP.toManifold` labels in
- *  alongside manifold-js `api.label` labels so `paintByLabel` sees both —
- *  see the run() caller. Returns `undefined` only when every input was
- *  undefined / empty (keeps the existing "no labels this run" sentinel). */
-function mergeLabelMaps(
-  primary: Map<string, Set<number>> | undefined,
-  extras: ReadonlyArray<Map<string, Set<number>>>,
-): Map<string, Set<number>> | undefined {
-  if (extras.length === 0) return primary;
-  const out: Map<string, Set<number>> = primary ?? new Map();
-  for (const m of extras) {
-    for (const [name, tris] of m) {
-      let set = out.get(name);
-      if (!set) {
-        set = new Set<number>();
-        out.set(name, set);
-      }
-      for (const t of tris) set.add(t);
-    }
-  }
-  return out.size === 0 ? undefined : out;
-}
-
 /** Walk the result mesh's `runOriginalID` + `runIndex` arrays and bucket
  *  triangles by the human-readable name registered for each id at
  *  `api.label()` time. Multiple runs may carry the same id (a labelled
  *  shape used in two places of the union) — the bucket merges them. */
-function resolveLabelMap(
+export function resolveLabelMap(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mesh: any,
   registry: Map<number, string>,

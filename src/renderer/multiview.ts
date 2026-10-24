@@ -347,6 +347,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
+  /** Frame this world box instead of the whole mesh (zoom onto a part).
+   *  The rest of the mesh still renders — anything in front occludes. */
+  frame?: { min: [number, number, number]; max: [number, number, number] };
 }): THREE.Camera {
   const elevation = (options.elevation ?? 30) * Math.PI / 180;
   const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
@@ -364,9 +367,14 @@ export function buildViewCamera(meshData: MeshData, options: {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+  const meshDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  if (options.frame) {
+    [minX, minY, minZ] = options.frame.min;
+    [maxX, maxY, maxZ] = options.frame.max;
+  }
   const center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
   const bsize = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ);
-  const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z) || meshDim || 1;
   const dist = maxDim * 2;
 
   // Spherical to cartesian (Z-up)
@@ -381,7 +389,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   // matching the standard slicer/CAD build-plate orientation.
   const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
   const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
-  const { near, far } = clipPlanes(maxDim);
+  const { near } = clipPlanes(maxDim);
+  // A framed (zoomed) view still has the whole mesh behind the focus box.
+  const { far } = clipPlanes(Math.max(maxDim, meshDim));
 
   let camera: THREE.Camera;
   if (options.ortho) {
@@ -411,6 +421,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   ortho?: boolean;
   size?: number;
   edges?: EdgeMode;
+  frame?: { min: [number, number, number]; max: [number, number, number] };
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 

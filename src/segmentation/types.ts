@@ -87,6 +87,12 @@ export interface SegSeed {
    *  on the draft's pins, so a later `setColor` is never overridden by a
    *  re-run. */
   color?: string;
+  /** Cap on how far this seed may grow, as a GEODESIC distance along the
+   *  surface (world units). For a part with no groove of its own to stop at
+   *  — a seed on a collar or sock band would otherwise flood the shirt or
+   *  leg. Omitted = uncapped. (Usually paint such bands with
+   *  `paintAlongBoundary` instead.) */
+  maxRadius?: number;
 }
 
 /** One declared detector parameter. The panel controls, the

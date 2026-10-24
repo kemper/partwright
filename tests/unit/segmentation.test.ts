@@ -342,6 +342,78 @@ describe('part draft edits', () => {
     expect(s.parts.length).toBe(2);
   });
 
+  it('brush (triangles) moves the brushed triangles into the target and fixes them', () => {
+    const r = fresh();
+    const s = r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.3, 0.09], [0.2, 0.4, 0.09], [0.2, 0.5, 0.09], [0.2, 0.6, 0.09]], radius: 0.06 }]);
+    expect(s.quality.islandCount).toBe(1); // a brushed stripe of "right" inside "left"
+    // Fixed: a pin edit nearby does not undo it.
+    const s2 = r.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.05, 0.5, 0.135] } }]);
+    expect(s2.parts.find((p) => p.name === 'right')!.triCount).toBe(s.parts.find((p) => p.name === 'right')!.triCount);
+    // Triangle indices work too, and a new name makes a new part.
+    const s3 = r.edit([{ op: 'brush', to: 'dot', triangles: [0, 1] }]);
+    expect(s3.parts.find((p) => p.name === 'dot')!.triCount).toBe(2);
+  });
+
+  it('brush (patches) merges every touched part whole, pins included', () => {
+    const r = fresh();
+    r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'blob', radius: 0.05 }]);
+    const s = r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.5, 0.09]], radius: 0.03, mode: 'patches' }]);
+    expect(s.parts.map((p) => p.name)).toEqual(['left', 'right']);
+    // touching "left" too swallows it whole, and its pins follow
+    const s2 = r.edit([{ op: 'brush', to: 'right', points: [[0.1, 0.5, 0.12]], radius: 0.04, mode: 'patches' }]);
+    expect(s2.parts.map((p) => p.name)).toEqual(['right']);
+    expect(s2.seeds.every((sd) => sd.label === 'right')).toBe(true);
+  });
+
+  it('brush validates its input', () => {
+    const r = fresh();
+    expect(() => r.edit([{ op: 'brush', to: 'right' }])).toThrow(/points|triangles/);
+    expect(() => r.edit([{ op: 'brush', to: 'right', points: [[0.2, 0.5, 0.09]] }])).toThrow(/radius/);
+    expect(() => r.edit([{ op: 'brush', to: 'right', triangles: [1e9] }])).toThrow(/triangle index/);
+  });
+
+  it('auto-absorb never folds hand fixes or pinned parts', () => {
+    const r = new SegmentationRunner(groove(21), { autoAbsorbFrac: 0.05 });
+    r.detect({ algorithm: 'crease-watershed', seeds: seeds3 });
+    const s = r.edit([{ op: 'reassign', point: [0.2, 0.5, 0.09], to: 'right', radius: 0.05 }]);
+    expect(s.quality.islandCount).toBe(1); // hand fixes are never absorbed
+    const tiny = r.edit([{ op: 'addSeed', seed: { label: 'tiny', point: [0.5, 0.5, 0] } }]);
+    expect(tiny.parts.some((p) => p.name === 'tiny')).toBe(true); // its own pin holds it
+  });
+
+  describe('auto-absorb only takes unclaimed specks', () => {
+    // A groove plus a small square bump: auto patches give two big halves and
+    // two small patches (≈2.9% and ≈1.5% of the surface).
+    const bumpy = () => heightfield(61, (x, y) => 0.25 * Math.abs(x - 0.5) + Math.max(0, 0.06 - Math.max(Math.abs(x - 0.2), Math.abs(y - 0.2))) * 3);
+    const AUTO = { algorithm: 'auto-merge', params: { patchSizePct: 6, mergeBelowDeg: 8, minPatchPct: 0 } };
+    const smallest = (s: { parts: { name: string; areaFrac: number }[] }) => [...s.parts].sort((a, b) => a.areaFrac - b.areaFrac)[0];
+
+    it('folds a placeholder patch below the threshold at detection', () => {
+      const plain = new SegmentationRunner(bumpy()).detect(AUTO);
+      const absorbed = new SegmentationRunner(bumpy(), { autoAbsorbFrac: 0.02 }).detect(AUTO);
+      expect(absorbed.parts.length).toBe(plain.parts.length - 1);
+    });
+
+    it('keeps a renamed patch when a pin re-grows nearby (and after seedsFromParts)', () => {
+      const r = new SegmentationRunner(bumpy());
+      const s = r.detect(AUTO);
+      const eye = smallest(s);
+      expect(eye.areaFrac).toBeLessThan(0.02);
+      r.edit([{ op: 'rename', id: eye.name, name: 'eye' }]);
+      r.draft!.autoAbsorbFrac = 0.02;
+      const after = r.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.1, 0.8, 0.1] } }]);
+      expect(after.parts.some((p) => p.name === 'eye')).toBe(true);
+      // A placeholder patch with only automatic pins is kept too.
+      const r2 = new SegmentationRunner(bumpy());
+      const s2 = r2.detect(AUTO);
+      const tiny = smallest(s2).name;
+      r2.edit([{ op: 'seedsFromParts' }]);
+      r2.draft!.autoAbsorbFrac = 0.02;
+      const after2 = r2.edit([{ op: 'addSeed', seed: { label: 'left', point: [0.1, 0.8, 0.1] } }]);
+      expect(after2.parts.some((p) => p.name === tiny)).toBe(true);
+    });
+  });
+
   it('addSeed re-runs the detector and keeps colours by name', () => {
     const r = fresh();
     r.edit([{ op: 'setColor', id: 'left', color: '#00ff00' }]);

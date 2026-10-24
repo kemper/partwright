@@ -49,6 +49,8 @@ export interface PartListCallbacks {
   getObjectPartDelete: (key: string) => { show: boolean; reason?: string };
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
+  /** Open the "Recover deleted" modal (deleted objects + removed parts). */
+  onOpenRecoverDeleted: () => void;
 }
 
 /** What the open object's expandable section lists. Mirrors
@@ -90,6 +92,27 @@ let lastClickedId: string | null = null;
 // (not persisted), so it's cleared when the active session changes.
 const collapsedGroups = new Set<string>();
 let lastSessionId: string | null = null;
+// How many deleted objects + removed parts "Recover deleted" lists (null until
+// main reports it). Pushed in via setRecoverableCount; the footer link reads it.
+let recoverableCount: number | null = null;
+
+/** Update the count on the rail's "Recover deleted" link (computed by main.ts,
+ *  which owns the bin + code reads). Patches the live link without a re-render. */
+export function setRecoverableCount(n: number): void {
+  recoverableCount = n;
+  const link = railEl?.querySelector<HTMLButtonElement>('#btn-recover-deleted');
+  if (link) applyRecoverLabel(link);
+}
+
+function applyRecoverLabel(link: HTMLButtonElement): void {
+  const n = recoverableCount ?? 0;
+  link.textContent = recoverableCount === null ? '↺ Recover deleted' : `↺ Recover deleted (${n})`;
+  link.classList.toggle('text-zinc-600', n === 0);
+  link.classList.toggle('text-zinc-400', n > 0);
+  link.title = n > 0
+    ? `Bring back deleted objects and removed parts/pieces (${n} recoverable)`
+    : 'Bring back deleted objects and removed parts/pieces (nothing to recover yet)';
+}
 
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
@@ -102,6 +125,14 @@ export function createPartList(container: HTMLElement, callbacks: PartListCallba
       keywords: 'grid contact sheet preview thumbnails every object part',
       enabled: () => getState().parts.length > 0,
       run: () => { openPartsOverview((id) => cb.onSelectPart(id)); },
+    },
+    {
+      id: 'parts.recoverDeleted',
+      title: 'Recover deleted…',
+      hint: 'Objects',
+      keywords: 'undelete undo restore trash bin recycle deleted removed object part piece',
+      enabled: () => !!getState().session,
+      run: () => cb.onOpenRecoverDeleted(),
     },
   ]);
   render(getState());
@@ -218,6 +249,17 @@ function render(state: SessionState): void {
       list.appendChild(buildGroupNode(node, state, list));
     }
   }
+
+  // "Recover deleted" — always shown (greyed at 0) so the way back from a
+  // delete is discoverable after its Undo toast has faded. It ends the
+  // scrolling list rather than pinning a footer: the rail can be very short
+  // (stacked under the sidebar nav), and a fixed footer would eat its rows.
+  const recover = document.createElement('button');
+  recover.id = 'btn-recover-deleted';
+  recover.className = 'w-full text-left px-3 py-1 mt-1 min-h-[44px] md:min-h-0 rounded text-[11px] [@media(hover:hover)]:hover:bg-zinc-700/40 [@media(hover:hover)]:hover:text-zinc-200 transition-colors';
+  applyRecoverLabel(recover);
+  recover.addEventListener('click', () => cb.onOpenRecoverDeleted());
+  list.appendChild(recover);
 
   // Bulk-action footer — only present while one or more parts are checked.
   if (selected.size > 0) {
@@ -427,21 +469,17 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     beginRename(name, part);
   });
 
-  // Delete. On the session's only object this resets it to a fresh, empty
-  // object instead (a session always keeps one), so say so in the confirm.
+  // Delete — no confirm: it moves to "Recover deleted" (with an Undo toast). On
+  // the session's only object this resets it to a fresh, empty object instead
+  // (a session always keeps one).
   const isLast = partCount <= 1;
-  const del = iconBtn('✕', isLast ? 'Delete this object (resets to a blank object)' : 'Delete this object'); // ✕
+  const del = iconBtn('✕', isLast ? 'Delete this object (resets to a blank object; recoverable)' : 'Delete this object (recoverable from Recover deleted)'); // ✕
   // Visible by default so it's reachable on touch (no hover); only fade-until-
   // hover on hover-capable devices.
   del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
-  del.addEventListener('click', async (e) => {
+  del.addEventListener('click', (e) => {
     e.stopPropagation();
-    const msg = isLast
-      ? `Delete object "${part.name}" and all of its versions? It will be replaced with a blank "Object 1". This cannot be undone.`
-      : `Delete object "${part.name}" and all of its versions? This cannot be undone.`;
-    if (await confirmDialog(msg, { title: 'Delete object', confirmLabel: 'Delete', danger: true })) {
-      void cb.onDeletePart(part.id);
-    }
+    void cb.onDeletePart(part.id);
   });
   row.appendChild(del);
 
@@ -492,7 +530,7 @@ function buildObjectPartsSection(): HTMLElement {
     n.textContent = text;
     section.appendChild(n);
   };
-  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; hidden?: boolean; deleteLabel?: string; deleteConfirm?: string }) => {
+  const item = (key: string, name: string, count: number, opts: { color?: string; italic?: boolean; title: string; hidden?: boolean; deleteLabel?: string }) => {
     // The row wraps the select button and its delete ✕ — a button can't nest
     // inside another button.
     const row = document.createElement('div');
@@ -537,11 +575,10 @@ function buildObjectPartsSection(): HTMLElement {
       });
       row.appendChild(eye);
     }
-    const delState = opts.deleteLabel && opts.deleteConfirm ? cb.getObjectPartDelete(key) : { show: false };
-    if (delState.show && opts.deleteLabel && opts.deleteConfirm) {
-      const { deleteLabel, deleteConfirm } = opts;
+    const delState = opts.deleteLabel ? cb.getObjectPartDelete(key) : { show: false };
+    if (delState.show && opts.deleteLabel) {
       const reason = delState.reason;
-      const del = iconBtn('✕', reason ?? deleteLabel); // ✕
+      const del = iconBtn('✕', reason ?? opts.deleteLabel); // ✕
       del.dataset.deleteObjectPart = key;
       // Visible on touch; fades in on hover/focus on pointer devices. A blocked
       // delete stays clickable-looking-but-dim so its tooltip explains why.
@@ -550,12 +587,12 @@ function buildObjectPartsSection(): HTMLElement {
         del.setAttribute('aria-disabled', 'true');
         del.className = del.className.replace('text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700', 'text-zinc-600 cursor-not-allowed');
       }
-      del.addEventListener('click', async (e) => {
+      // No confirm — the delete is one code line, undoable from its toast or
+      // from Recover deleted.
+      del.addEventListener('click', (e) => {
         e.stopPropagation();
         if (reason) { showToast(reason, { variant: 'neutral' }); return; }
-        if (await confirmDialog(deleteConfirm, { title: deleteLabel, confirmLabel: 'Delete', danger: true })) {
-          void cb.onDeleteObjectPart(key);
-        }
+        void cb.onDeleteObjectPart(key);
       });
       row.appendChild(del);
     }
@@ -575,8 +612,7 @@ function buildObjectPartsSection(): HTMLElement {
       color: p.color,
       title: `Highlight part "${p.name}" (${p.triangleCount} triangles)`,
       hidden: !!p.hidden,
-      deleteLabel: 'Delete part',
-      deleteConfirm: `Delete part "${p.name}"? This adds api.removePart(${JSON.stringify(p.name)}) to the top of the code and saves a new version — earlier versions keep the part.`,
+      deleteLabel: 'Delete part — adds a removal line to the top of the code (recoverable)',
     });
   }
   if (view.parts.length > 0 && view.unlabeledTriangleCount > 0) {
@@ -607,8 +643,7 @@ function buildObjectPartsSection(): HTMLElement {
       item(`piece:${piece.index}`, name, piece.triangleCount, {
         title: `Highlight piece ${piece.index + 1}${piece.part ? ` (mostly "${piece.part}")` : ''}`,
         hidden: !!piece.hidden,
-        deleteLabel: 'Delete piece',
-        deleteConfirm: `Delete piece ${piece.index + 1}${piece.part ? ` ("${piece.part}")` : ''}? This adds an api.removePiece([x, y, z]) line to the top of the code and saves a new version — earlier versions keep the piece.`,
+        deleteLabel: 'Delete piece — adds a removal line to the top of the code (recoverable)',
       });
     }
   }
@@ -800,8 +835,8 @@ function buildActionBar(state: SessionState): HTMLElement {
       ? 'Delete this object and all of its versions?'
       : `Delete ${ids.length} objects and all of their versions?`;
     const msg = wouldEmptySession
-      ? `${base} They will be replaced with a blank "Object 1". This cannot be undone.`
-      : `${base} This cannot be undone.`;
+      ? `${base} They will be replaced with a blank "Object 1". You can bring them back from Recover deleted.`
+      : `${base} You can bring them back from Recover deleted.`;
     if (!(await confirmDialog(msg, { title: 'Delete objects', confirmLabel: 'Delete', danger: true }))) return;
     clearSelection();
     render(getState()); // hide the bar immediately; the delete re-renders on commit
@@ -884,7 +919,7 @@ function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLEleme
     // Insert the indicator into the SAME container as the row it precedes, so a
     // drop into a group's indented body reads back as that group.
     if (beforeRow && beforeRow.parentElement) beforeRow.parentElement.insertBefore(indicator, beforeRow);
-    else list.appendChild(indicator);
+    else list.insertBefore(indicator, list.querySelector('#btn-recover-deleted'));
   });
 
   const finish = (e: PointerEvent) => {

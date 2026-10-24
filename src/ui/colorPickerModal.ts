@@ -29,6 +29,14 @@ export interface ColorPickerOptions {
   /** Called when the picker closes for any reason (after `onPick` on commit,
    *  or on cancel). */
   onClose?: () => void;
+  /** Extra one-click swatches shown under the palette (e.g. natural skin and
+   *  hair tones for figure parts). Not filament slots. */
+  extraSwatches?: ExtraSwatches;
+}
+
+export interface ExtraSwatches {
+  title: string;
+  colors: readonly { name: string; hex: string }[];
 }
 
 function normalizeHex(hex: string): string {
@@ -123,6 +131,18 @@ export function openColorPicker(opts: ColorPickerOptions): void {
   const paletteGrid = document.createElement('div');
   paletteGrid.className = 'grid grid-cols-8 gap-1.5';
   body.append(paletteLabel, paletteGrid);
+
+  // ── Extra swatches (caller-supplied, e.g. natural tones) ─────────────────
+  if (opts.extraSwatches && opts.extraSwatches.colors.length) {
+    const extraLabel = document.createElement('div');
+    extraLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+    extraLabel.textContent = opts.extraSwatches.title;
+    const extraGrid = document.createElement('div');
+    extraGrid.className = 'grid grid-cols-8 gap-1.5';
+    extraGrid.dataset.testid = 'color-picker-extra';
+    for (const c of opts.extraSwatches.colors) extraGrid.appendChild(swatchButton(c.hex, `${c.name} (${c.hex})`, true));
+    body.append(extraLabel, extraGrid);
+  }
 
   // ── Recent colours ────────────────────────────────────────────────────────
   const recentLabel = document.createElement('div');
@@ -254,6 +274,8 @@ export interface ColorSwatchOptions {
   className?: string;
   /** Optional `data-action` attribute for tests / hooks. */
   dataAction?: string;
+  /** Extra swatches for the picker (see ColorPickerOptions.extraSwatches). */
+  extraSwatches?: ExtraSwatches;
 }
 
 const DEFAULT_SWATCH_CLASS =
@@ -282,6 +304,7 @@ export function createColorSwatch(opts: ColorSwatchOptions): { el: HTMLButtonEle
     openColorPicker({
       initialHex: hex,
       title: opts.modalTitle ?? opts.title,
+      extraSwatches: opts.extraSwatches,
       onPick: (picked) => { setHex(picked); opts.onPick(picked); },
     });
   });

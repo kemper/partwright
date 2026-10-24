@@ -37,7 +37,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
-import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -69,7 +69,8 @@ import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
-import { createPartList, refreshObjectParts, type ObjectPartsView } from './ui/partList';
+import { createPartList, refreshObjectParts, setRecoverableCount, type ObjectPartsView } from './ui/partList';
+import { openRecoverDeletedModal, refreshRecoverDeletedModal, type RecoverDeletedController } from './ui/recoverDeletedModal';
 import { summarizeObjectParts, type ObjectPartsSummary } from './geometry/meshPieces';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
@@ -152,6 +153,7 @@ import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
 import { initPartDetectionUI, openPartDetectionPanel } from './ui/partDetectionPanel';
+import { isFusedPiecesDraft } from './segmentation/labelPresets';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -179,7 +181,10 @@ function registerExportFromBuilt(built: BuiltExport, source: string): void {
 }
 import type { MeshData, MeshResult, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
-import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
+import { probeAtXY, probeRay, probePixel, probePixels, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
+import { findFacesKeyError } from './color/findFacesOptions';
+import { capPolylinePoints, partBoundaryLoops, resamplePolyline } from './color/partBoundary';
+import { validPaintRefine, type PersistedPaintRefine } from './color/paintRefinePersist';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
@@ -219,15 +224,15 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
 import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
@@ -296,6 +301,10 @@ import {
   renamePart,
   deletePart,
   deleteParts,
+  listDeletedObjects,
+  countDeletedObjects,
+  restoreDeletedObjects,
+  purgeDeletedObjects,
   reorderParts,
   setPartGroup,
   partSaveState,
@@ -358,7 +367,7 @@ import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, combinePhotoMatches, type CropRect, type PhotoMatchResult } from './tools/photoMatch';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
-import { insertRemovalLine, removePartCall, removePieceCall, pieceAnchorPoint } from './editor/removalCode';
+import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
@@ -1645,14 +1654,31 @@ async function refineForRehydrate(
   const paintGen = paintGeneration;
   const superseded = (): boolean => gen !== rehydrateGeneration || paintGen !== paintGeneration;
   const abort = new AbortController();
+  // No time limit: a heavily painted file can take minutes to rebuild. The
+  // worker reports each step, so the bar moves and the elapsed time ticks;
+  // the user decides when to stop waiting (Cancel / Escape).
+  const started = performance.now();
+  let fraction = 0;
+  let step = 'Rebuilding smooth paint edges…';
   const progressId = startProgress({
     title: 'Restoring paint',
-    message: 'Rebuilding smooth paint edges…',
-    indeterminate: true,
+    message: step,
+    hint: 'Smooth brush strokes are rebuilt one by one. Cancel opens the model without them; the saved paint is kept.',
     onCancel: () => abort.abort(),
   });
+  const refresh = (): void => {
+    updateProgress(progressId, fraction, `${step} · ${Math.round((performance.now() - started) / 1000)}s`);
+  };
+  const ticker = window.setInterval(refresh, 1000);
   try {
-    const r = await refineInWorker({ base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal });
+    const r = await refineInWorker({
+      base, input: base, descriptors, patternContexts: workerPatternContexts(descriptors, base), signal: abort.signal,
+      onProgress: (done, total, label) => {
+        fraction = total > 0 ? done / total : 0;
+        step = label;
+        refresh();
+      },
+    });
     if (superseded()) return null;
     const parentToChildren = childrenByParent(r.childToParent);
     recordMeshLineage(r.mesh, base, parentToChildren);
@@ -1669,8 +1695,102 @@ async function refineForRehydrate(
     const { mesh, parentToChildren } = refineMeshForRegions(base, descriptors);
     return { mesh, parentToChildren, strokeTris: null };
   } finally {
+    window.clearInterval(ticker);
     endProgress(progressId);
   }
+}
+
+/** FNV-1a over every label's name and its SORTED triangle ids (membership,
+ *  not just size — two runs whose labels cover different triangles of the
+ *  same counts must key apart). Memoized per label map. */
+const labelHashCache = new WeakMap<Map<string, Set<number>>, string>();
+function labelMembershipHash(labels: Map<string, Set<number>> | null): string {
+  if (!labels) return '';
+  const hit = labelHashCache.get(labels);
+  if (hit !== undefined) return hit;
+  let h = 0x811c9dc5;
+  const mix = (x: number) => { h ^= x & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 8) & 0xff; h = Math.imul(h, 0x01000193); h ^= (x >>> 16) & 0xff; h = Math.imul(h, 0x01000193); h ^= x >>> 24; h = Math.imul(h, 0x01000193); };
+  for (const name of [...labels.keys()].sort()) {
+    for (let i = 0; i < name.length; i++) mix(name.charCodeAt(i));
+    mix(0xffffffff);
+    const ids = Int32Array.from(labels.get(name)!).sort();
+    for (let i = 0; i < ids.length; i++) mix(ids[i]);
+    mix(0xfffffffe);
+  }
+  const out = `${labels.size}-${(h >>> 0).toString(36)}`;
+  labelHashCache.set(labels, out);
+  return out;
+}
+
+/** Content key of a smooth-paint refinement: the refine algorithm version,
+ *  the base mesh's content (incl. its colours), the refine-driving
+ *  descriptors (in region order) and the run's label membership (pattern
+ *  scopes resolve through labels). Same inputs → same refined mesh, so a
+ *  cached refine under this key can stand in for the rebuild. */
+function paintRefineKey(base: MeshData, refineDescriptors: RegionDescriptor[]): string {
+  return `r${REFINE_ALGO_VERSION}-${simpleHash(`${meshContentKey(base)}|${JSON.stringify(refineDescriptors)}|${labelMembershipHash(currentLabelMap)}`)}`;
+}
+
+/** Keys this tab already wrote to (or read from) the local refine cache, so
+ *  repeated saves of an unchanged painted model don't rewrite the entry. */
+const knownCachedRefines = new Set<string>();
+
+/** Cache the live smooth-paint refined mesh in the local IndexedDB cache
+ *  (`paintRefineCache`), keyed by content. Best-effort and fire-and-forget,
+ *  in its own transaction AFTER any version save has committed: a quota error
+ *  just skips caching, it never fails the save. Called after saves and after a
+ *  restore that had to rebuild (an imported / evicted session caches once). */
+function cacheCurrentPaintRefine(): void {
+  const r = currentPaintRefineForCache();
+  if (!r || knownCachedRefines.has(r.key)) return;
+  knownCachedRefines.add(r.key);
+  void putPaintRefineCache(r, getConfig().renderer.paintRefineCacheMaxMB * 1024 * 1024).then((ok) => {
+    if (!ok) knownCachedRefines.delete(r.key);
+  });
+}
+
+/** The smooth-paint refined mesh worth caching, or undefined. Only when the
+ *  live working mesh IS the refinement of the current refine set over the
+ *  run's base mesh (no stroke in flight, no smooth image stamp — those replay
+ *  on top of the restored mesh — and under the size cap). */
+function currentPaintRefineForCache(): PersistedPaintRefine | undefined {
+  const base = paintBaseMesh;
+  const mesh = currentMeshData;
+  if (!base || !mesh || mesh === base) return undefined;
+  if (mesh.numTri > getConfig().renderer.paintRefinePersistMaxTriangles) return undefined;
+  const refine = currentRefineList();
+  if (refine.length === 0 || !refineSetUnchanged()) return undefined;
+  if (getRegions().some((r) => r.descriptor.kind === 'imagePaint' && r.descriptor.smooth)) return undefined;
+  const lineage = meshLineage.get(mesh);
+  if (!lineage || lineage.root !== base) return undefined;
+  return {
+    key: paintRefineKey(base, refine),
+    mesh: { vertProperties: mesh.vertProperties, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: mesh.numProp },
+    toRoot: lineage.toRoot,
+  };
+}
+
+/** A cached refinement of `base` under these descriptors, ready to use in
+ *  place of refineForRehydrate — or null (miss, stale, malformed). The base
+ *  mesh's per-triangle colours (`triColors` + `_painted`, e.g. a voxel or
+ *  coloured import) aren't cached; they're carried onto the refined mesh
+ *  through `toRoot` exactly as buildRefinedMesh does. */
+async function cachedRefineFor(
+  base: MeshData,
+  descriptors: RegionDescriptor[],
+): Promise<{ mesh: MeshData; parentToChildren: Map<number, number[]>; strokeTris: null } | null> {
+  const refine = descriptors.filter(descriptorRefines);
+  if (refine.length === 0) return null;
+  const key = paintRefineKey(base, refine);
+  const hit = await getPaintRefineCache(key, getConfig().renderer.paintRefineCacheTouchMinutes * 60_000);
+  if (!hit || hit.key !== key || !validPaintRefine(hit, base.numTri)) return null;
+  const m = hit.mesh;
+  const plain: MeshData = { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
+  const mesh = propagateTriColors(base, plain, hit.toRoot);
+  const parentToChildren = childrenByParent(hit.toRoot);
+  recordMeshLineage(mesh, base, parentToChildren);
+  knownCachedRefines.add(key);
+  return { mesh, parentToChildren, strokeTris: null };
 }
 
 async function rehydrateColorRegions(geometryData: Record<string, unknown> | null): Promise<{ carried: string[]; dropped: string[] }> {
@@ -1719,8 +1839,15 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // and a takeover leaves them for the next run to resolve.
   const waits = standardDescriptors.some(descriptorRefines);
   if (waits) stageUnresolvedColorRegions(geometryData);
-  const refined = await refineForRehydrate(base, standardDescriptors, gen);
+  // A smooth image stamp replays on top of the standard refinement, so such a
+  // version is never cached (see currentPaintRefineForCache) — skip the lookup.
+  const restored = waits && smoothImageStamps.length === 0 ? await cachedRefineFor(base, standardDescriptors) : null;
+  if (gen !== rehydrateGeneration) return report;
+  const refined = restored ?? await refineForRehydrate(base, standardDescriptors, gen);
   if (!refined) return report;
+  if (restored) {
+    errorLog.capture({ level: 'info', source: 'storage', message: `Restored smooth paint from the local mesh cache (${restored.mesh.numTri.toLocaleString()} triangles) — no rebuild needed.` });
+  }
   if (waits) {
     suspendReconcile = true;
     clearRegions();
@@ -1802,6 +1929,9 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
   markMeshRefineState();
+  // Rebuilt from scratch (an imported, evicted or never-cached version): cache
+  // it so the next open restores instantly.
+  if (waits && !restored) cacheCurrentPaintRefine();
 
   syncLockState();
 
@@ -2540,6 +2670,7 @@ async function saveCurrentVersion(label?: string): Promise<
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
     // away and back doesn't trigger a recompile. The code/geometry didn't
@@ -4733,7 +4864,7 @@ async function main() {
     if (!ctl || !cfg.autoDetectOnImport || !target || target.numTri > cfg.autoDetectMaxTriangles) { openConvert(true); return; }
     const targetKey = importMeshKey(target);
     showToast('Looking for separate parts…', { variant: 'neutral', source: 'parts' });
-    const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; parts?: unknown[]; partsTruncated?: number; error?: string };
+    const r = await ctl.autoDetectParts({ importIndex }) as { proposed?: boolean; proposedBy?: string; parts?: { triCount: number }[]; partsTruncated?: number; error?: string };
     // The user moved on while detection ran (another version, object or
     // session) — don't pop a panel over a different model.
     const now = getActiveImports()[importIndex];
@@ -4746,8 +4877,15 @@ async function main() {
     }
     if (!r.proposed) { openConvert(true); return; }
     const count = (r.parts?.length ?? 0) + (r.partsTruncated ?? 0);
+    // One or two pieces on a big mesh: the pieces are real, but the largest
+    // is a fused figure — say both, so the banner never reads as "2 parts"
+    // next to a "one fused solid" warning (#1050). The panel opens with a
+    // label chip armed in that case.
+    const fused = isFusedPiecesDraft(r.proposedBy ?? '', r.parts ?? [], cfg.fusedPieceMinTris);
     openPartDetectionPanel(ctl, {
-      context: `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
+      context: fused
+        ? `Imported ${filename}: found ${count} separate parts, and the largest is one fused solid, so its regions (hair, face…) aren't split yet. Label them with the chips below, or Accept to keep the ${count} parts as they are.`
+        : `Imported ${filename}: found ${count} separate parts. Name them and Accept to paint each one on its own, or pick Auto patches or Crease watershed under Start for finer parts.`,
       secondaryAction: {
         label: 'Convert to code instead',
         run: () => { void ctl.discardParts(); openConvert(false); },
@@ -6084,11 +6222,13 @@ async function main() {
     if (!summary || !mesh) return { error: 'No geometry loaded — run code first.' };
 
     let call: string;
+    let line: string;
     let what: string;
     if ('part' in target) {
       const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
       if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
       call = removePartCall(part.name, syntax);
+      line = call;
       what = `part "${part.name}"`;
     } else {
       if (summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
@@ -6097,11 +6237,14 @@ async function main() {
       const point = pieceAnchorPoint(mesh, piece.triangles);
       if (!point) return { error: `Piece ${target.piece} has no triangles.` };
       call = removePieceCall(point, syntax);
+      // The call only records a point, so name the piece in a trailing comment
+      // (`//` in JS and OpenSCAD alike) — what Recover deleted shows for it.
+      line = `${call} ${removePieceComment(piece.index, piece.part ?? undefined)}`;
       what = `piece ${target.piece + 1}`;
     }
 
     const previousCode = getValue();
-    const nextCode = insertRemovalLine(previousCode, call);
+    const nextCode = insertRemovalLine(previousCode, line);
     if (nextCode === previousCode) return { error: `The code already removes ${what}.` };
     const restore = async (why: string) => {
       setValue(previousCode);
@@ -6120,6 +6263,7 @@ async function main() {
       return restore(`Couldn't delete ${what} from code — the code doesn't create it in a way the removal line can reach.`);
     }
     const saved = await saveCurrentVersion(`delete ${what}`);
+    refreshRecoverable();
     return {
       ok: true,
       removed: what,
@@ -6127,6 +6271,257 @@ async function main() {
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
     };
+  }
+
+  // === Recover deleted ===
+  /** How close (ms) a blank object's creation must be to an object's deletion
+   *  to count as the placeholder that delete-the-last-object reset made. */
+  const RESET_PLACEHOLDER_WINDOW_MS = 60_000;
+  /** Coalesces the rail count refresh across a burst of state/mesh events. */
+  const RECOVERABLE_REFRESH_DEBOUNCE_MS = 150;
+  // Two kinds of deletion come back through one modal (src/ui/recoverDeletedModal.ts):
+  // OBJECTS, which a delete moves into the session's deleted-objects bin
+  // (sessionManager.restoreDeletedObjects), and PARTS / PIECES, which a delete
+  // writes into the object's code as a removal line — `api.removePart` /
+  // `api.removePiece` (JS, BREP, voxel, imports) or `remove_part` /
+  // `remove_piece` (OpenSCAD) — restored by removing the line
+  // (restoreObjectPartOrPiece).
+
+  /** Whether `part` is a pristine blank object — never saved and still the
+   *  untouched starter — so a restore may replace it (the placeholder
+   *  "Object 1" that deleting the last object leaves behind). */
+  async function isUntouchedBlankPart(part: Part): Promise<boolean> {
+    const state = getState();
+    if (state.currentPart?.id === part.id) {
+      return state.versionCount === 0 && isStarterCode(getValue()) && !hasColorRegions();
+    }
+    return (await partSaveState(part)) === 'empty';
+  }
+
+  /** Restore binned objects (with their versions) into the active session. When
+   *  the session's only object is the placeholder a delete-the-last-object
+   *  reset made for one of these objects (created alongside that delete) and
+   *  is still untouched, it is dropped in the same step and the first restored
+   *  object opens. */
+  async function restoreObjectsFromBin(ids: string[]): Promise<{ restored: Part[]; droppedBlank: boolean } | { error: string }> {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    const { parts, currentPart } = getState();
+    const sole = parts.length === 1 ? parts[0] : null;
+    const deletedAts = (await listDeletedObjects()).filter(e => ids.includes(e.id)).map(e => e.deletedAt);
+    const isPlaceholder = !!sole && deletedAts.some(at => Math.abs(sole.created - at) < RESET_PLACEHOLDER_WINDOW_MS) && (await isUntouchedBlankPart(sole));
+    const dropBlankPartId = isPlaceholder ? sole.id : undefined;
+    const before = currentPart?.id;
+    const r = await restoreDeletedObjects(ids, { dropBlankPartId });
+    if (!r) return { error: 'Nothing to restore — it is no longer in Recover deleted (expired, or already restored in another tab).' };
+    if (getState().currentPart?.id !== before) {
+      // The open object (the dropped blank) is gone — don't stash its buffer.
+      await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
+      await restoreDraftIfNewer();
+    }
+    refreshRecoverable();
+    return { restored: r.restored, droppedBlank: !!r.droppedBlankId };
+  }
+
+  /** Restore a part/piece removed in code: switch to `objectId` when given and
+   *  not open, take out the removal line whose canonical call is `call`, re-run
+   *  and save a version. A run error puts the old code back. If nothing comes
+   *  back (the label or the geometry at the piece's point changed since), the
+   *  line was already a no-op, so dropping it is still kept — with a note. */
+  async function restoreObjectPartOrPiece(call: string, objectId?: string): Promise<
+    { ok: true; restored: string; object: { id: string; name: string }; version?: { id: string; index: number; label: string }; saveWarning?: string; note?: string }
+    | { error: string }
+  > {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (objectId && getState().currentPart?.id !== objectId) {
+      if (!getState().parts.some(p => p.id === objectId)) return { error: 'That object no longer exists in this session.' };
+      await selectPart(objectId);
+    }
+    const obj = getState().currentPart;
+    if (!obj) return { error: 'No object is open.' };
+    const previousCode = getValue();
+    const entry = findRemovalLines(previousCode).find(r => r.call === call);
+    if (!entry) return { error: `"${obj.name}" has no ${call} line in its code — it may already be restored.` };
+    const what = removalTitle(entry);
+    const piecesBefore = currentObjectPartsSummary()?.pieces.length ?? 0;
+    const nextCode = removeRemovalLine(previousCode, call);
+    setValue(nextCode);
+    if (!(await runCodeSync(nextCode))) {
+      setValue(previousCode);
+      return { error: 'Run was superseded by a concurrent execution — retry.' };
+    }
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') {
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `Restoring ${what} broke the run: ${geo.error ?? 'run error'}. The code was restored.` };
+    }
+    const after = currentObjectPartsSummary();
+    const back = entry.kind === 'part'
+      ? !!after?.parts.some(p => p.name === entry.name && p.triangles.size > 0)
+      : (after?.pieces.length ?? 0) > piecesBefore;
+    const saved = await saveCurrentVersion(`restore ${what}`);
+    refreshRecoverable();
+    return {
+      ok: true,
+      restored: what,
+      object: { id: obj.id, name: obj.name },
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+      ...(back ? {} : { note: entry.kind === 'part'
+        ? `Nothing came back — no api.label(…, ${JSON.stringify(entry.name)}) in the code produces geometry any more. The no-op removal line was dropped.`
+        : 'Nothing came back — no piece touches that point any more. The no-op removal line was dropped.' }),
+    };
+  }
+
+  function removalTitle(r: RemovalLine): string {
+    return r.kind === 'part' ? `part "${r.name}"` : (r.label ?? `piece at [${r.point.join(', ')}]`);
+  }
+
+  // Removal lines of the session's NON-open objects, read from each one's latest
+  // version and cached (they can't change until the object is opened, at which
+  // point its live editor code is used instead and the entry is dropped).
+  let removalCacheSession: string | null = null;
+  const otherObjectRemovals = new Map<string, RemovalLine[]>();
+  async function objectRemovals(part: Part): Promise<RemovalLine[]> {
+    if (getState().currentPart?.id === part.id) {
+      otherObjectRemovals.delete(part.id);
+      return findRemovalLines(getValue());
+    }
+    const cached = otherObjectRemovals.get(part.id);
+    if (cached) return cached;
+    const latest = await getLatestVersion(part.id);
+    const lines = latest ? findRemovalLines(latest.code) : [];
+    otherObjectRemovals.set(part.id, lines);
+    return lines;
+  }
+
+  /** Everything Recover deleted lists for the active session. */
+  async function listRecoverable(): Promise<{ objects: Awaited<ReturnType<typeof listDeletedObjects>>; parts: { object: Part; removal: RemovalLine }[] }> {
+    const sid = getState().session?.id ?? null;
+    if (sid !== removalCacheSession) { removalCacheSession = sid; otherObjectRemovals.clear(); }
+    if (!sid) return { objects: [], parts: [] };
+    const objects = await listDeletedObjects();
+    const parts: { object: Part; removal: RemovalLine }[] = [];
+    for (const object of getState().parts) {
+      for (const removal of await objectRemovals(object)) parts.push({ object, removal });
+    }
+    return { objects, parts };
+  }
+
+  /** The rail link's count: an index count of the bin (no version blobs) plus
+   *  the removal lines in the session's objects (cached for non-open ones). */
+  async function countRecoverable(): Promise<number> {
+    const sid = getState().session?.id ?? null;
+    if (sid !== removalCacheSession) { removalCacheSession = sid; otherObjectRemovals.clear(); }
+    if (!sid) return 0;
+    let n = await countDeletedObjects();
+    for (const object of getState().parts) n += (await objectRemovals(object)).length;
+    return n;
+  }
+
+  let recoverableTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Recount what Recover deleted lists (debounced) for the rail link, and
+   *  re-render the modal if it's open. */
+  function refreshRecoverable(): void {
+    if (recoverableTimer) clearTimeout(recoverableTimer);
+    recoverableTimer = setTimeout(() => {
+      recoverableTimer = null;
+      void countRecoverable().then(setRecoverableCount).catch(() => {});
+      refreshRecoverDeletedModal();
+    }, RECOVERABLE_REFRESH_DEBOUNCE_MS);
+  }
+
+  const recoverController: RecoverDeletedController = {
+    async list() {
+      const r = await listRecoverable();
+      const retentionMs = getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+      const currentId = getState().currentPart?.id;
+      return {
+        objects: r.objects.map(o => {
+          const latest = o.versions.reduce<Version | null>((best, v) => (!best || v.index > best.index ? v : best), null);
+          return {
+            id: o.id,
+            name: o.part.name,
+            ...(o.part.group ? { group: o.part.group } : {}),
+            versionCount: o.versions.length,
+            deletedAt: o.deletedAt,
+            expiresAt: o.deletedAt + retentionMs,
+            thumbnail: latest?.thumbnail ?? null,
+          };
+        }),
+        parts: r.parts.map(({ object, removal }) => ({
+          objectId: object.id,
+          objectName: object.name,
+          kind: removal.kind,
+          title: removalTitle(removal),
+          call: removal.call,
+          current: object.id === currentId,
+        })),
+      };
+    },
+    async restoreObject(id) {
+      const r = await restoreObjectsFromBin([id]);
+      return 'error' in r ? r.error : null;
+    },
+    async restorePart(objectId, call) {
+      const r = await restoreObjectPartOrPiece(call, objectId);
+      if ('error' in r) return r.error;
+      return r.note ? { note: r.note } : null;
+    },
+    async purgeObject(id) {
+      if (recoverController.readOnly()) return 'This tab is read-only.';
+      await purgeDeletedObjects([id]);
+      refreshRecoverable();
+      return null;
+    },
+    async emptyBin() {
+      if (recoverController.readOnly()) return 'This tab is read-only.';
+      await purgeDeletedObjects();
+      refreshRecoverable();
+      return null;
+    },
+    readOnly: () => isReadOnlyViewer() || isSharedPreview(),
+    retentionDays: () => getConfig().ui.deletedObjectRetentionDays,
+  };
+
+  function openRecoverDeleted(): void {
+    if (!getState().session) { showToast('Open a session first.', { variant: 'warn' }); return; }
+    openRecoverDeletedModal(recoverController);
+  }
+
+  /** Persist the open object's editor buffer as its draft — before a delete,
+   *  so the bin keeps the unsaved work too. */
+  async function stashCurrentDraft(): Promise<void> {
+    const { session, currentPart } = getState();
+    if (session && currentPart) {
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
+    }
+  }
+
+  /** The toast after deleting objects from the rail: an Undo that brings them
+   *  back (reopening `reopenId`, the object that was open, if it's among them)
+   *  — or, when storage was too full to keep them in the bin, a warning. */
+  function offerObjectUndo(ids: string[], names: string[], opts: { reopenId?: string; permanent?: boolean } = {}): void {
+    const what = names.length === 1 ? `object "${names[0]}"` : `${names.length} objects`;
+    if (opts.permanent) {
+      showToast(`Deleted ${what} permanently — browser storage is too full to keep it in Recover deleted.`, { variant: 'warn' });
+      return;
+    }
+    showToast(`Deleted ${what}.`, {
+      variant: 'neutral',
+      action: {
+        label: 'Undo',
+        run: () => {
+          void restoreObjectsFromBin(ids).then(async (r) => {
+            if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+            const reopen = opts.reopenId;
+            if (reopen && getState().currentPart?.id !== reopen && getState().parts.some(p => p.id === reopen)) await selectPart(reopen);
+          });
+        },
+      },
+    });
   }
 
   /** Load the blank-object code (an empty model) into the editor for the fresh
@@ -6317,24 +6712,38 @@ async function main() {
     onDeletePart: async (partId: string) => {
       if (isReadOnlyViewer()) return;
       const wasCurrent = getState().currentPart?.id === partId;
+      // The open object's unsaved buffer goes into the bin with it, so an
+      // Undo / Recover brings back exactly what was on screen.
+      if (wasCurrent) await stashCurrentDraft();
       const result = await deletePart(partId);
       if (result?.reset) {
         await loadBlankPartIntoEditor();
       } else if (result && wasCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
+      }
+      if (result) {
+        offerObjectUndo([partId], [result.deleted.name], { ...(wasCurrent ? { reopenId: partId } : {}), permanent: !!result.permanent });
+        refreshRecoverable();
       }
     },
     onDeleteParts: async (partIds: string[]) => {
       if (isReadOnlyViewer()) return;
+      const names = getState().parts.filter(p => partIds.includes(p.id)).map(p => p.name);
+      const openId = getState().currentPart?.id;
+      if (openId && partIds.includes(openId)) await stashCurrentDraft();
       const result = await deleteParts(partIds);
       // Only reload the editor when the active part was among those removed
       // (deleteParts reports this via newCurrent).
       if (result?.reset) {
         await loadBlankPartIntoEditor();
       } else if (result && result.newCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
         await restoreDraftIfNewer();
+      }
+      if (result) {
+        offerObjectUndo(result.deletedIds, names, { ...(openId && result.deletedIds.includes(openId) ? { reopenId: openId } : {}), permanent: !!result.permanent });
+        refreshRecoverable();
       }
     },
     onMergeParts: async (partIds: string[]) => {
@@ -6356,9 +6765,22 @@ async function main() {
     onDeleteObjectPart: async (key: string) => {
       setObjectPartHighlight(null);
       const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+      const objectId = getState().currentPart?.id;
       const r = await deleteObjectPartOrPiece(target);
       if ('error' in r) showToast(r.error, { variant: 'warn' });
-      else showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, { variant: 'success' });
+      else {
+        showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
+          variant: 'success',
+          action: {
+            label: 'Undo',
+            run: () => {
+              void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
+                if ('error' in u) showToast(u.error, { variant: 'warn' });
+              });
+            },
+          },
+        });
+      }
     },
     getHighlightKey: () => getObjectPartHighlightKey(),
     onHighlight: (key: string | null) => { setObjectPartHighlight(key); },
@@ -6368,7 +6790,12 @@ async function main() {
     },
     onViewAllParts: () => { void openAssembly(); },
     onToggleCollapse: () => togglePartsRail(),
+    onOpenRecoverDeleted: () => openRecoverDeleted(),
   });
+  // Keep the rail's "Recover deleted (N)" count current: session/object
+  // changes, and every run (a hand-edited removal line changes the list).
+  onStateChange(() => refreshRecoverable());
+  refreshRecoverable();
 
   // Keep the editor title showing the active part's name (falls back to the
   // generic filename when no part/session is open). The element is looked up on
@@ -7878,7 +8305,7 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); });
+  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -12806,18 +13233,105 @@ async function main() {
       const part = resolvePartTarget(target, 'deleteObject');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
+      if (wasCurrent) await stashCurrentDraft();
       const result = await deletePart(part.id);
       if (!result) return { error: `Could not delete object "${part.name}".` };
       if (result.reset) {
         await loadBlankPartIntoEditor();
       } else if (wasCurrent) {
-        await loadPartIntoEditor(getState().currentVersion);
+        await loadPartIntoEditor(getState().currentVersion, { skipDraftSave: true });
       }
+      refreshRecoverable();
       return {
         deleted: { id: result.deleted.id, name: result.deleted.name },
         newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
         ...(result.reset ? { reset: true } : {}),
+        ...(result.permanent ? { permanent: true, note: 'Browser storage was too full to keep it in Recover deleted, so it was deleted permanently.' } : {}),
       };
+    },
+
+    /** What "Recover deleted" lists for the active session: OBJECTS in the
+     *  deleted-objects bin (restorable until `expiresAt`) and PARTS / PIECES
+     *  removed in code (an `api.removePart` / `api.removePiece` line in one of
+     *  the session's JS objects). Pass an object's `id`/`name` to
+     *  restoreObject(), a part's `call` (or name) to restoreObjectPart(). */
+    async listDeleted() {
+      if (!getState().session) return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      const r = await listRecoverable();
+      const retentionMs = getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+      return {
+        objects: r.objects.map(o => ({
+          id: o.id,
+          name: o.part.name,
+          ...(o.part.group ? { group: o.part.group } : {}),
+          versionCount: o.versions.length,
+          deletedAt: new Date(o.deletedAt).toISOString(),
+          expiresAt: new Date(o.deletedAt + retentionMs).toISOString(),
+        })),
+        parts: r.parts.map(({ object, removal }) => ({
+          object: { id: object.id, name: object.name },
+          kind: removal.kind,
+          ...(removal.kind === 'part' ? { name: removal.name } : { point: removal.point, ...(removal.label ? { label: removal.label } : {}) }),
+          call: removal.call,
+        })),
+      };
+    },
+
+    /** Restore an object from Recover deleted (by id or name, from
+     *  listDeleted().objects), with all of its versions, at its old place in
+     *  the list. If the session's only object is an untouched blank (left by
+     *  deleting the last object) it is replaced. -> { restored, droppedBlank }
+     *  or { error } */
+    async restoreObject(target: string | { id?: string; name?: string }) {
+      if (!getState().session) return { error: 'restoreObject: no active session.' };
+      const want = typeof target === 'string' ? target : (target && typeof target === 'object' ? (target.id ?? target.name) : undefined);
+      if (typeof want !== 'string' || want.length === 0) {
+        return { error: 'restoreObject(target): pass a deleted object\'s id or name, or { id } / { name }, from listDeleted().objects.' };
+      }
+      const bin = await listDeletedObjects();
+      const byId = bin.find(o => o.id === want);
+      const byName = bin.filter(o => o.part.name === want);
+      if (!byId && byName.length > 1) return { error: `restoreObject: ${byName.length} deleted objects are named ${JSON.stringify(want)} — pass the id from listDeleted().` };
+      const entry = byId ?? byName[0];
+      if (!entry) return { error: `restoreObject: no deleted object matching ${JSON.stringify(want)}. Use listDeleted() to see what can be restored.` };
+      const r = await restoreObjectsFromBin([entry.id]);
+      if ('error' in r) return r;
+      return {
+        restored: r.restored.map(p => ({ id: p.id, name: p.name })),
+        ...(r.droppedBlank ? { droppedBlank: true } : {}),
+      };
+    },
+
+    /** Permanently delete objects from Recover deleted (ids or names from
+     *  listDeleted().objects); no argument empties the bin. -> { purged } */
+    async purgeDeletedObjects(targets?: string[]) {
+      if (!getState().session) return { error: 'purgeDeletedObjects: no active session.' };
+      if (targets !== undefined && (!Array.isArray(targets) || targets.some(x => typeof x !== 'string'))) {
+        return { error: 'purgeDeletedObjects(targets?): pass an array of deleted-object ids or names, or nothing to empty the bin.' };
+      }
+      if (isReadOnlyViewer() || isSharedPreview()) return { error: 'This tab is read-only.' };
+      let ids: string[] | undefined;
+      if (targets) {
+        const bin = await listDeletedObjects();
+        ids = [];
+        for (const want of targets) {
+          const byId = bin.find(o => o.id === want);
+          const byName = bin.filter(o => o.part.name === want);
+          if (!byId && byName.length > 1) return { error: `purgeDeletedObjects: ${byName.length} deleted objects are named ${JSON.stringify(want)} — pass ids from listDeleted().` };
+          const hit = byId ?? byName[0];
+          if (hit) ids.push(hit.id);
+        }
+      }
+      const purged = await purgeDeletedObjects(ids);
+      refreshRecoverable();
+      return { purged };
+    },
+
+    /** Open the Recover deleted modal (the rail's "Recover deleted" link). */
+    showRecoverDeleted() {
+      if (!getState().session) return { error: 'No active session.' };
+      openRecoverDeleted();
+      return { ok: true };
     },
 
     /** Save current state as a new version in the active session.
@@ -12880,6 +13394,7 @@ async function main() {
     setPartsView(options: unknown) { return partDetection.setPartsView(options); },
     getPartsView() { return partDetection.getPartsView(); },
     partAt(point: unknown) { return partDetection.partAt(point); },
+    previewSeeds(seeds?: unknown, options?: unknown) { return partDetection.previewSeeds(seeds, options); },
 
     /** The current object's PARTS — its `api.label` regions (SCAD `label()`,
      *  `BREP.label`), tracked through every boolean so they survive fusing into
@@ -12921,6 +13436,38 @@ async function main() {
         return deleteObjectPartOrPiece({ piece: target.piece as number });
       }
       return { error: 'deleteObjectPart(target): pass a part name or { piece: index } from listObjectParts().' };
+    },
+
+    /** Bring back a part or piece deleted with deleteObjectPart / the ✕ — the
+     *  inverse: removes its removal line (`api.removePart` / `api.removePiece`,
+     *  or OpenSCAD `remove_part` / `remove_piece`), re-runs
+     *  and saves a version. Pass a part name (looked up in the open object,
+     *  then the session's other objects), a removal `call` from
+     *  listDeleted().parts, or `{ object, part }` / `{ object, call }`. Opens
+     *  the owning object when it isn't the open one.
+     *  -> { ok, restored, object, version?, note? } or { error } */
+    async restoreObjectPart(target: string | { object?: string; part?: string; call?: string }) {
+      if (!getState().session) return { error: 'restoreObjectPart: no active session.' };
+      let objectRef: string | undefined;
+      let part: string | undefined;
+      let call: string | undefined;
+      if (typeof target === 'string' && target.length > 0) {
+        if (findRemovalLines(target).length > 0) call = target; else part = target;
+      } else if (target && typeof target === 'object') {
+        ({ object: objectRef, part, call } = target);
+        if ((part === undefined) === (call === undefined)) return { error: 'restoreObjectPart({ object?, part | call }): pass exactly one of part / call.' };
+      } else {
+        return { error: 'restoreObjectPart(target): pass a part name, a removal call from listDeleted().parts, or { object, part | call }.' };
+      }
+      if (call !== undefined) call = findRemovalLines(call)[0]?.call ?? call;
+      const r = await listRecoverable();
+      const currentId = getState().currentPart?.id;
+      let hits = r.parts.filter(p => (call !== undefined ? p.removal.call === call : p.removal.kind === 'part' && p.removal.name === part));
+      if (objectRef !== undefined) hits = hits.filter(p => p.object.id === objectRef || p.object.name === objectRef);
+      if (hits.length > 1) hits = hits.some(p => p.object.id === currentId) ? hits.filter(p => p.object.id === currentId) : hits;
+      if (hits.length === 0) return { error: `restoreObjectPart: nothing removed matches ${JSON.stringify(call ?? part)}. Use listDeleted().parts to see what can be restored.` };
+      if (hits.length > 1) return { error: `restoreObjectPart: ${JSON.stringify(call ?? part)} is removed in ${hits.length} objects (${hits.map(h => h.object.name).join(', ')}) — pass { object, ${call !== undefined ? 'call' : 'part'} }.` };
+      return restoreObjectPartOrPiece(hits[0].removal.call, hits[0].object.id);
     },
 
     /** Tint one part (by label name) or piece (`{ piece: index }`, from
@@ -13176,6 +13723,7 @@ async function main() {
 
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -13357,6 +13905,7 @@ async function main() {
 
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      if (version) cacheCurrentPaintRefine();
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -14110,6 +14659,63 @@ async function main() {
       };
     },
 
+    /** Batch `probePixel`: many pixels of ONE rendered view in one call (one
+     *  camera, one cached BVH, one ray each). `pixels` entries are `[x, y]` or
+     *  `{x, y}`; `view` is the renderView options of the image (same rules as
+     *  probePixel). Returns `{ results, hitCount, missCount, modelPixelBounds? }`
+     *  with one result per pixel in input order: `{ pixel, hit: true, point,
+     *  normal, distance, triangleId }` or `{ pixel, hit: false }`.
+     *  `modelPixelBounds` (where the model projects, `{minX, minY, maxX,
+     *  maxY}`) is present when any pixel missed; it is `null` when the model
+     *  doesn't project into the view at all (off-screen / degenerate mesh). Use it to trace a stroke or a seam from a render: pick
+     *  10–50 pixels along it, probe them all, pass the points on. */
+    probePixels(pixels: unknown, view?: unknown) {
+      return guard(() => {
+        const list = assertArray(pixels, 'probePixels(pixels)');
+        const max = getConfig().renderer.probePixelsMaxPixels;
+        if (list.length === 0) throw new ValidationError('probePixels(pixels): pass at least one pixel ([x, y] or {x, y}).');
+        if (list.length > max) throw new ValidationError(`probePixels(pixels): at most ${max} pixels per call (got ${list.length}).`);
+        const v = view === undefined ? {} : assertObject(view, 'probePixels(pixels, view)')!;
+        assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixels(pixels, view)');
+        const elevation = assertNumber(v.elevation, 'probePixels(pixels, view).elevation', { optional: true, min: -90, max: 90 });
+        const azimuth = assertNumber(v.azimuth, 'probePixels(pixels, view).azimuth', { optional: true });
+        const ortho = assertBoolean(v.ortho, 'probePixels(pixels, view).ortho', { optional: true });
+        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? 500;
+        const pts: [number, number][] = list.map((p, i) => {
+          let xy: number[];
+          if (Array.isArray(p)) xy = assertNumberTuple(p, 2, `probePixels(pixels)[${i}]`);
+          else {
+            const o = assertObject(p, `probePixels(pixels)[${i}]`)!;
+            assertNoUnknownKeys(o, ['x', 'y'], `probePixels(pixels)[${i}]`);
+            xy = [assertNumber(o.x, `probePixels(pixels)[${i}].x`)!, assertNumber(o.y, `probePixels(pixels)[${i}].y`)!];
+          }
+          if (xy[0] < 0 || xy[0] >= size || xy[1] < 0 || xy[1] >= size) {
+            throw new ValidationError(`probePixels(pixels)[${i}] [${xy[0]}, ${xy[1]}] is outside the ${size}×${size} view. Pixel (0,0) is top-left, (${size - 1},${size - 1}) bottom-right.`);
+          }
+          return [xy[0], xy[1]];
+        });
+        if (!currentMeshData) throw new ValidationError('probePixels: no geometry loaded — run code first.');
+        const camera = buildViewCamera(currentMeshData, { elevation, azimuth, ortho });
+        const raw = probePixels(currentMeshData, camera, pts, size);
+        let hitCount = 0;
+        let bounds: PixelMiss['modelPixelBounds'] | undefined;
+        const results = raw.map((r, i) => {
+          if ('hit' in r) {
+            bounds = r.modelPixelBounds;
+            return { pixel: pts[i], hit: false as const };
+          }
+          hitCount++;
+          return { pixel: pts[i], hit: true as const, ...r };
+        });
+        return {
+          results,
+          hitCount,
+          missCount: results.length - hitCount,
+          ...(bounds !== undefined ? { modelPixelBounds: bounds } : {}),
+        };
+      });
+    },
+
     /** Paint a connected patch starting from a seed point on the
      *  surface, expanding through adjacent triangles only as far as the
      *  surface stays within `maxDeviationDeg` of the seed's normal.
@@ -14499,11 +15105,16 @@ async function main() {
     },
 
     /** Paint a specific set of triangle indices as a single region.
-     *  Useful for paintbrush-style selections produced programmatically. */
-    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string }) {
+     *  Useful for paintbrush-style selections produced programmatically.
+     *  `withinPart` clips the ids to one part (an api.label region, incl.
+     *  accepted detected parts) — ids outside it are dropped; nothing left is
+     *  an error. */
+    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string; withinPart?: string }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintFaces requires {triangleIds, color}' };
-      const { triangleIds, color, name } = opts;
+      const { triangleIds, color, name, withinPart } = opts;
+      const scopeErr = validateWithinPart(withinPart, 'paintFaces');
+      if (scopeErr) return { error: scopeErr };
       if (!Array.isArray(triangleIds) || triangleIds.length === 0) return { error: 'triangleIds must be a non-empty array of integers' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
@@ -14516,13 +15127,17 @@ async function main() {
         ids.push(id);
       }
 
-      const triangles = new Set<number>(ids);
+      if (withinPart !== undefined) return commitPaintFromSet(new Set<number>(ids), color as [number, number, number], name, 'paintbrush', withinPart, 'paintFaces');
+      // Stored ids index the BASE mesh (that is how a reload / re-run resolves
+      // a `triangles` region), so ids of a refined paint mesh are recorded as
+      // their base triangles — and painted as such now, so live == reload.
+      const { ids: baseIds, live: triangles } = baseTriangleIds(new Set<number>(ids));
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'paintbrush',
-        { kind: 'triangles', ids: [...triangles] },
+        { kind: 'triangles', ids: baseIds },
         triangles,
       );
 
@@ -14531,6 +15146,133 @@ async function main() {
       syncLockState();
 
       return { id: region.id, name: region.name, triangles: triangles.size };
+    },
+
+    /** The triangles of one PART of the current model — an `api.label`
+     *  region (SCAD `label()`, `BREP.label`), including the parts an import
+     *  gets from detectParts → acceptParts. Ids index the CURRENT paint mesh
+     *  (after any smooth-paint refinement), so they go straight to
+     *  `paintFaces({ triangleIds })` or `findFaces`. Returns `{ name, count,
+     *  area, bbox, triangleIds, truncated? }`; `maxResults` (default 5000) caps
+     *  the id list, `count` is always the full size. Use `withinPart` on the
+     *  paint calls to scope paint to a part without fetching ids. */
+    getPartTriangles(name: unknown, options?: unknown) {
+      return guard(() => {
+        const part = assertString(name, 'getPartTriangles(name)')!;
+        const o = options === undefined ? {} : assertObject(options, 'getPartTriangles(name, options)')!;
+        assertNoUnknownKeys(o, ['maxResults'], 'getPartTriangles(name, options)');
+        const limit = assertNumber(o.maxResults, 'getPartTriangles(name, options).maxResults', { optional: true, integer: true, min: 1 }) ?? 5000;
+        if (!currentMeshData) throw new ValidationError('getPartTriangles: no geometry loaded — run code first.');
+        const err = validateWithinPart(part, 'getPartTriangles');
+        if (err) throw new ValidationError(err);
+        const tris = partTrianglesOnMesh(part, currentMeshData) ?? new Set<number>();
+        const stats = regionTriangleStats(tris, currentMeshData);
+        const ids = [...tris].sort((x, y) => x - y);
+        const { vertProperties: vp, triVerts: tv, numProp: P } = currentMeshData;
+        let area = 0;
+        for (const t of ids) {
+          const i0 = tv[t * 3] * P, i1 = tv[t * 3 + 1] * P, i2 = tv[t * 3 + 2] * P;
+          const ux = vp[i1] - vp[i0], uy = vp[i1 + 1] - vp[i0 + 1], uz = vp[i1 + 2] - vp[i0 + 2];
+          const wx = vp[i2] - vp[i0], wy = vp[i2 + 1] - vp[i0 + 1], wz = vp[i2 + 2] - vp[i0 + 2];
+          area += 0.5 * Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+        }
+        return {
+          name: part,
+          count: ids.length,
+          area: +area.toFixed(6),
+          bbox: stats.bbox,
+          triangleIds: ids.slice(0, limit),
+          ...(ids.length > limit ? { truncated: true } : {}),
+        };
+      });
+    },
+
+    /** The seam between two parts (labels) as ordered polylines of surface
+     *  points: `{ loops: [{ points, closed, length, pointCount }], count }`,
+     *  longest first. A collar that runs right round the neck is one closed
+     *  loop; a seam a third part interrupts is open. Points lie on the mesh
+     *  edges the two parts share (the base mesh of the run). `maxPointsPerLoop`
+     *  (default 256) resamples long loops evenly for a compact answer.
+     *  Pair with paintAlongBoundary to paint a band (collar, cuff, hem). */
+    partBoundary(a: unknown, b: unknown, options?: unknown) {
+      return guard(() => {
+        const r = resolveBoundaryParts(a, b, 'partBoundary');
+        const o = options === undefined ? {} : assertObject(options, 'partBoundary(a, b, options)')!;
+        assertNoUnknownKeys(o, ['maxPointsPerLoop'], 'partBoundary(a, b, options)');
+        const maxPts = assertNumber(o.maxPointsPerLoop, 'partBoundary(a, b, options).maxPointsPerLoop', { optional: true, integer: true, min: 2, max: 100_000 }) ?? 256;
+        const loops = partBoundaryLoops(r.mesh, r.setA, r.setB);
+        return {
+          between: [r.a, r.b],
+          count: loops.length,
+          loops: loops.map((l) => {
+            const pts = capPolylinePoints(l.points, l.closed, l.length, maxPts);
+            const round = (p: [number, number, number]) => p.map((c) => Math.round(c * 1e4) / 1e4) as [number, number, number];
+            return { closed: l.closed, length: +l.length.toFixed(4), pointCount: l.points.length, points: pts.map(round) };
+          }),
+        };
+      });
+    },
+
+    /** Paint a band along the seam between two parts — a collar, cuff, hem,
+     *  sock band, belt edge: features with no sculpted groove of their own
+     *  that part detection can't (and shouldn't) seed. Each seam loop becomes
+     *  one smooth `paintStroke` (densified along the loop, so the band's edge
+     *  is a clean curve, and the subdivision clips it exactly).
+     *  `between: [a, b]` names two parts (labels); `width` is the band width
+     *  in mesh units; `side` is where the band lies: `"a"` / `"b"` (the whole
+     *  width on that part, its edge exactly on the seam) or `"both"`
+     *  (default — centred on the seam). `resolution`/`maxEdge`/`surface`/
+     *  `depth`/`wrapAngleDeg` are paintStroke's. Loops shorter than `width`
+     *  (seam specks) are skipped unless they are the only loop.
+     *  -> `{ regions: [{id, name, triangles}], loops, skippedLoops? }` or `{ error }`. */
+    paintAlongBoundary(opts: unknown) {
+      return guard(() => {
+        const o = assertObject(opts, 'paintAlongBoundary(opts)')!;
+        assertNoUnknownKeys(o, ['between', 'width', 'color', 'side', 'name', 'resolution', 'maxEdge', 'surface', 'depth', 'wrapAngleDeg'], 'paintAlongBoundary(opts)');
+        const between = assertArray(o.between, 'paintAlongBoundary(opts).between');
+        if (between.length !== 2) throw new ValidationError('paintAlongBoundary(opts).between must be [partA, partB].');
+        const r = resolveBoundaryParts(between[0], between[1], 'paintAlongBoundary');
+        const width = assertNumber(o.width, 'paintAlongBoundary(opts).width', { min: 0 })!;
+        if (!(width > 0)) throw new ValidationError('paintAlongBoundary(opts).width must be > 0 (mesh units).');
+        const color = assertNumberTuple(o.color, 3, 'paintAlongBoundary(opts).color') as [number, number, number];
+        const side = o.side === undefined ? 'both' : assertEnum(o.side, ['a', 'b', 'both'] as const, 'paintAlongBoundary(opts).side');
+        const name = assertString(o.name, 'paintAlongBoundary(opts).name', { optional: true }) ?? `${r.a}/${r.b} band`;
+        const loops = partBoundaryLoops(r.mesh, r.setA, r.setB);
+        if (loops.length === 0) throw new ValidationError(`paintAlongBoundary: parts "${r.a}" and "${r.b}" do not touch — there is no seam between them.`);
+        // Loops come longest first: drop seam specks shorter than the band,
+        // then keep at most the configured number of loops (each is one
+        // main-thread stroke).
+        const kept = loops.filter((l, i) => i === 0 || l.length >= width).slice(0, getConfig().ui.boundaryPaintMaxLoops);
+        const radius = side === 'both' ? width / 2 : width;
+        const withinPart = side === 'a' ? r.a : side === 'b' ? r.b : undefined;
+        const step = radius * getConfig().ui.paintStrokePathSpacing;
+        const regions: { id: number; name: string; triangles: number }[] = [];
+        const failures: string[] = [];
+        // All loops are one undo step.
+        runAsUndoGroup(() => kept.forEach((l, i) => {
+          const res = partwrightAPI.paintStroke({
+            points: resamplePolyline(l.points, l.closed, step),
+            radius,
+            color,
+            name: kept.length > 1 ? `${name} ${i + 1}` : name,
+            ...(withinPart ? { withinPart } : {}),
+            ...(o.resolution !== undefined ? { resolution: o.resolution as number } : {}),
+            ...(o.maxEdge !== undefined ? { maxEdge: o.maxEdge as number } : {}),
+            ...(o.surface !== undefined ? { surface: o.surface as string } : {}),
+            ...(o.depth !== undefined ? { depth: o.depth as number } : {}),
+            ...(o.wrapAngleDeg !== undefined ? { wrapAngleDeg: o.wrapAngleDeg as number } : {}),
+          });
+          if ('error' in res) failures.push(String(res.error));
+          else regions.push({ id: res.id, name: res.name, triangles: res.triangles });
+        }));
+        if (regions.length === 0) throw new ValidationError(`paintAlongBoundary: nothing was painted — ${failures[0] ?? 'the stroke missed the surface'}`);
+        return {
+          regions,
+          loops: kept.length,
+          ...(loops.length > kept.length ? { skippedLoops: loops.length - kept.length } : {}),
+          ...(failures.length ? { failures } : {}),
+        };
+      });
     },
 
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
@@ -16073,7 +16815,13 @@ async function main() {
      *  - `normalTolerance`: cosine threshold (default `0.95`, ≈18°)
      *  - `color`: `[r,g,b]` — triangle is currently painted this color (RGB 0..1, matched to ±0.01)
      *  - `region`: number — only triangles inside the listRegions() entry with this `id`
+     *  - `withinPart`: string — only triangles of this part (an api.label region,
+     *    incl. accepted detected parts; see getPartTriangles)
      *  - `maxResults`: cap output (default `5000`)
+     *
+     *  Omit a key to skip that filter. A key passed explicitly as
+     *  `undefined`/`null`, or an unknown key, is an error — `{ region: undefined }`
+     *  used to match the whole mesh silently.
      */
     findFaces(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
@@ -16081,6 +16829,7 @@ async function main() {
       normalTolerance?: number;
       color?: [number, number, number];
       region?: number;
+      withinPart?: string;
       maxResults?: number;
       /** See paintInBox.coverageMode. Applies to the `box` predicate
        *  only; the normal / color / region predicates are per-triangle
@@ -16093,8 +16842,12 @@ async function main() {
       if (typeof opts !== 'object' || opts === null) {
         return { error: 'findFaces requires an options object — see /ai.md#color-regions' };
       }
+      const keyErr = findFacesKeyError(opts as Record<string, unknown>);
+      if (keyErr) return { error: keyErr };
 
-      const { box, normal, normalTolerance, color, region, maxResults, coverageMode, maxTriangleArea } = opts;
+      const { box, normal, normalTolerance, color, region, maxResults, coverageMode, maxTriangleArea, withinPart } = opts;
+      const partErr = validateWithinPart(withinPart, 'findFaces');
+      if (partErr) return { error: partErr };
       const coverageErr = validateCoverageMode(coverageMode);
       if (coverageErr) return { error: coverageErr };
       const areaErr = validateMaxTriangleArea(maxTriangleArea);
@@ -16147,6 +16900,10 @@ async function main() {
         const found = getRegions().find(r => r.id === region);
         if (!found) return { error: `findFaces.region: no region with id=${region}. Use listRegions() to see ids.` };
         regionTriangles = found.triangles;
+      }
+      if (withinPart !== undefined) {
+        const partTris = partTrianglesOnMesh(withinPart, currentMeshData) ?? new Set<number>();
+        regionTriangles = regionTriangles ? intersectWithScope(partTris, regionTriangles).triangles : partTris;
       }
 
       const limit = maxResults ?? 5000;
@@ -16949,8 +17706,8 @@ async function main() {
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
-        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale} / pose {hold:{kind:"ball"}} / face {layout} / hair {style:"anime"|"mop"|...} / clothing / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
-        'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
+        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
+        'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2; every detail field is filled) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -16971,14 +17728,18 @@ async function main() {
         'changeObject':    { signature: 'await changeObject(name|id|index) -- Switch active object (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renameObject':    { signature: 'await renameObject(name|id|index, newName) -- Rename an object', docs: '/ai.md#console-api--windowpartwright' },
         'setObjectGroup':  { signature: 'await setObjectGroup(target|target[], group|null) -- Group objects under a collapsible header in the object list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
-        'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteObject':    { signature: 'await deleteObject(name|id|index) -- Delete an object and its versions (moved to Recover deleted; restoreObject brings it back)', docs: '/ai.md#console-api--windowpartwright' },
+        'listDeleted':     { signature: 'await listDeleted() -- What Recover deleted lists: binned objects {id, name, versionCount, deletedAt, expiresAt} + parts/pieces removed in code {object, kind, name|point, label?, call}', docs: '/ai.md#recover-deleted' },
+        'restoreObject':   { signature: 'await restoreObject(id|name) -- Restore a deleted object with all its versions -> {restored, droppedBlank?}', docs: '/ai.md#recover-deleted' },
+        'purgeDeletedObjects': { signature: 'await purgeDeletedObjects(ids|names?) -- Permanently delete binned objects (no arg empties the bin) -> {purged}', docs: '/ai.md#recover-deleted' },
+        'showRecoverDeleted': { signature: 'showRecoverDeleted() -- Open the Recover deleted modal', docs: '/ai.md#recover-deleted' },
         'listPartDetectors': { signature: 'listPartDetectors() -- Part-detection algorithms with params, defaults, bestFor, seed needs + the editParts op list -> {detectors, featureOptions, editOps, labelPresets:[{id, title, labels:[{name, color}]}]} (labelPresets = the Part Detection panel label chips: names + default colours for seeds)', docs: '/ai/segmentation.md' },
         'detectParts':       { signature: 'await detectParts({algorithm, seeds?:[{label, point:[x,y,z], color?:"#rrggbb"}], params?, featureOptions?, importIndex?}) -- Split an imported mesh into parts (draft; nothing saved). A seed colour becomes its part\'s colour. Shows a coloured overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}', docs: '/ai/segmentation.md' },
         'autoDetectParts':   { signature: 'await autoDetectParts({importIndex?}) -- Seedless proposal (what an interactive STL import runs): previews each automatic detector, cheapest first; the first that splits the mesh into 2..segmentation.autoDetectMaxParts parts REPLACES the current draft -> {proposed:true, proposedBy, tried, parts, quality} | {proposed:false, tried, reason} (draft untouched; one solid piece: use a seeded detectParts)', docs: '/ai/segmentation.md' },
         'getPartDraft':      { signature: 'getPartDraft() -- Current part draft summary (or {draft:null})', docs: '/ai/segmentation.md' },
-        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method', docs: '/ai/segmentation.md' },
-        'renderParts':       { signature: 'renderParts({views?:["front","right","back","iso",...], size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks) -> {image, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
-        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft -> {results:[{quality, partCount}], image}', docs: '/ai/segmentation.md' },
+        'editParts':         { signature: 'await editParts({ops:[{op:"merge"|"rename"|"setColor"|"delete"|"reassign"|"brush"|"split"|"absorbSmall"|"smoothBoundaries"|"addSeed"|"removeSeed"|"moveSeed"|"seedsFromParts"|"lock"|"focus"|"setEdgeSmoothing"|"reorder"|"clear"|"rerun"|"undo", ...}]}) -- Batch-edit the draft (atomic) -> draft summary. addSeed {seed:{label, point, color?}} colours the part; clear {algorithm?} also switches the draft\'s method; brush {to, points+radius | triangles, mode?:"triangles"|"patches"} is one brush stroke (patches = brush-merge whole parts)', docs: '/ai/segmentation.md' },
+        'renderParts':       { signature: 'renderParts({views?:["front",...|{azimuth,elevation}], azimuth?, elevation?, focus?:part, size?, numbered?}) -- Numbered colour render of the draft parts (set-of-marks); custom angles and focus (zoom onto one part) -> {image, views, focus?, legend:[{id,name,visibleIn}], hiddenParts?}', docs: '/ai/segmentation.md' },
+        'comparePartDetectors': { signature: 'await comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) -- Run 1-6 configs side by side WITHOUT touching the draft; tiles are captioned with the detector + the params that differ -> {results:[{caption, quality, partCount}], image}', docs: '/ai/segmentation.md' },
         'setPartsOverlay':   { signature: 'setPartsOverlay(visible) -- Show/hide the draft overlay in the viewport', docs: '/ai/segmentation.md' },
         'acceptParts':       { signature: 'await acceptParts({label?, smoothEdges?, applyColors?}) -- Commit the draft as named parts on the import (labels via api.importWithParts) + save a version; each part keeps the colour it shows (explicit, else its overlay colour) as its model colour (applyColors:false = labels only); with edge smoothing on the import is re-meshed along the smooth boundaries -> {ok, parts, version, labels, smoothEdges?}', docs: '/ai/segmentation.md' },
         'discardParts':      { signature: 'await discardParts() -- Drop the draft and its overlay', docs: '/ai/segmentation.md' },
@@ -16987,7 +17748,8 @@ async function main() {
         'showPartPresetPreview': { signature: 'showPartPresetPreview(index | null) -- Show one preset result in the viewport (null = back to the draft)', docs: '/ai/segmentation.md' },
         'applyPartPreset':   { signature: 'await applyPartPreset(index) -- Make a previewPartPresets result the draft -> draft summary', docs: '/ai/segmentation.md' },
         'getPartSeeds':      { signature: 'getPartSeeds() -- The parts\' pins (the panel markers; auto = placed by the draft) -> [{label, point, auto?}]', docs: '/ai/segmentation.md' },
-        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z], color?}]) -- Replace the working seeds (does not re-run detection)', docs: '/ai/segmentation.md' },
+        'setPartSeeds':      { signature: 'setPartSeeds([{label, point:[x,y,z], color?, maxRadius?}]) -- Replace the working seeds (does not re-run detection); maxRadius caps a seed\'s geodesic growth', docs: '/ai/segmentation.md' },
+        'previewSeeds':      { signature: 'previewSeeds(seeds?, {importIndex?}) -- Check seeds before detecting: nearest triangle, surface point, distance, miss flag, and the draft part there -> {seeds:[{label, triangle, point, distance, onSurface, miss?, part?}], misses}', docs: '/ai/segmentation.md' },
         'openPartsPanel':    { signature: 'openPartsPanel() -- Open the Part Detection panel', docs: '/ai/segmentation.md' },
         'getPartSelection':  { signature: 'getPartSelection() -- Selected draft parts (shared with the panel and the model) -> {parts:[{id,name}]}', docs: '/ai/segmentation.md' },
         'setPartSelection':  { signature: 'setPartSelection([id|name, ...] | null, {mode?:"replace"|"add"|"toggle"|"remove"}) -- Select draft parts (highlighted in the viewport)', docs: '/ai/segmentation.md' },
@@ -16996,6 +17758,7 @@ async function main() {
         'partAt':            { signature: 'partAt([x,y,z]) -- The draft part nearest a world point -> {id, name}', docs: '/ai/segmentation.md' },
         'setObjectPartHidden': { signature: 'setObjectPartHidden(name | {piece}, hidden = true) -- Hide/show a part or piece of the current object in the viewport only (code, versions and exports keep it) -> {ok, hidden}', docs: '/ai.md#objects-parts-and-pieces' },
         'deleteObjectPart': { signature: "await deleteObjectPart(name | {piece}) -- Delete a part or piece of the current JS object: adds api.removePart('name') / api.removePiece([x,y,z]) to the code, re-runs and saves -> {ok, removed, call, version?}", docs: '/ai.md#objects-parts-and-pieces' },
+        'restoreObjectPart': { signature: "await restoreObjectPart(name | call | {object, part|call}) -- Undo deleteObjectPart: removes the removal line (api.removePart/api.removePiece, or remove_part/remove_piece in OpenSCAD), re-runs and saves -> {ok, restored, object, version?, note?}", docs: '/ai.md#recover-deleted' },
         'listObjectParts': { signature: 'listObjectParts() -- Parts (api.label regions) + pieces (disconnected solids) of the current object, as the object list shows them -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}', docs: '/ai.md#objects-parts-and-pieces' },
         'highlightObjectPart': { signature: 'highlightObjectPart(name | {piece: index} | {unlabeled: true} | null) -- Tint one part (or piece) of the current object in the viewport, like clicking it in the object list; null clears -> {ok, triangles}', docs: '/ai.md#objects-parts-and-pieces' },
         // Deprecated pre-rename aliases ("parts" are now "objects")
@@ -17040,6 +17803,7 @@ async function main() {
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixels':     { signature: 'probePixels([[x,y] | {x,y}, ...], view) -- Batch probePixel: many pixels of one rendered view in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds present on any miss; null = model not in view)', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
@@ -17137,14 +17901,17 @@ async function main() {
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
         'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?, withinPart?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
-        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
+        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?, withinPart?}) -- Paint specific triangle indices (withinPart clips them to one part)', docs: '/ai/colors.md' },
+        'getPartTriangles': { signature: 'getPartTriangles(name, {maxResults?}) -- Triangle ids of one part (api.label / accepted detected part) on the current paint mesh -> {name, count, area, bbox, triangleIds, truncated?}', docs: '/ai/colors.md' },
+        'partBoundary':    { signature: 'partBoundary(a, b, {maxPointsPerLoop?}) -- The seam between two parts as ordered loops of surface points -> {loops:[{points, closed, length, pointCount}], count}', docs: '/ai/colors.md' },
+        'paintAlongBoundary': { signature: 'paintAlongBoundary({between:[a,b], width, color, side?:"a"|"b"|"both", name?, resolution?, maxEdge?}) -- Paint a smooth band along the seam between two parts (collar, cuff, hem) -> {regions, loops}', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?, withinPart?}) -- Paint planar slab range', docs: '/ai/colors.md' },
         'paintPattern':    { signature: 'paintPattern({pattern:"soccer"|"stripes"|"spots"|"patches"|"gradient"|"checker", colors:[base, mark, third?], withinPart?, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, smooth?, resolution?, maxEdge?, name?}) -- Algorithmic colourway over a part. soccer = ball panels fit to the part; smooth:true (soccer/stripes/checker) clips seams sub-triangle -> {id, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere?}', docs: '/ai/colors.md' },
         'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?, withinPart?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withinPart?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
-        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai/colors.md' },
+        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, withinPart?, maxResults?}) -- Query triangle ids by geometry/color filters (omit a key to skip it; an explicit undefined/null or unknown key is an error)', docs: '/ai/colors.md' },
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai/colors.md' },
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
@@ -17934,12 +18701,13 @@ async function main() {
   ) {
     if (!currentMeshData) return { error: 'No geometry loaded' };
     const regionName = name ?? `Region ${getRegions().length + 1}`;
+    const base = baseTriangleIds(triangles);
     const region = addRegion(
       regionName,
       color,
       source,
-      scopedDescriptor({ kind: 'triangles', ids: [...triangles] }, withinPart),
-      triangles,
+      scopedDescriptor({ kind: 'triangles', ids: base.ids }, withinPart),
+      base.live,
     );
     const emptyErr = emptyScopeError(region, withinPart, method);
     if (emptyErr) return emptyErr;
@@ -17947,6 +18715,38 @@ async function main() {
     syncLockState();
     const stats = regionTriangleStats(region.triangles, currentMeshData);
     return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** A `triangles` descriptor stores BASE-mesh ids (rehydrate and re-runs
+   *  resolve it through the base → refined map). When the paint mesh has been
+   *  refined by smooth paint, map the given current-mesh ids to their base
+   *  triangles and return the full current-mesh set those cover, so the live
+   *  region matches what a reload resolves. Unrefined (or unrelated) meshes
+   *  pass through unchanged. */
+  function baseTriangleIds(tris: Set<number>): { ids: number[]; live: Set<number> } {
+    const mesh = currentMeshData;
+    const lineage = mesh ? meshLineage.get(mesh) : undefined;
+    if (!mesh || !lineage || lineage.root !== paintBaseMesh) return { ids: [...tris], live: tris };
+    const roots = new Set<number>();
+    for (const t of tris) roots.add(lineage.toRoot[t]);
+    roots.delete(-1);
+    const live = new Set<number>();
+    for (let t = 0; t < lineage.toRoot.length; t++) if (roots.has(lineage.toRoot[t])) live.add(t);
+    return { ids: [...roots], live };
+  }
+
+  /** Resolve two part names for the boundary calls: both must be labels of
+   *  the current run and differ. Triangle sets index the run's label mesh. */
+  function resolveBoundaryParts(a: unknown, b: unknown, method: string): { a: string; b: string; setA: Set<number>; setB: Set<number>; mesh: MeshData } {
+    const na = assertString(a, `${method}: part a`)!;
+    const nb = assertString(b, `${method}: part b`)!;
+    if (na === nb) throw new ValidationError(`${method}: the two parts must differ (got "${na}" twice).`);
+    for (const nm of [na, nb]) {
+      const e = validateWithinPart(nm, method);
+      if (e) throw new ValidationError(e);
+    }
+    if (!currentLabelMesh || !currentLabelMap) throw new ValidationError(`${method}: no geometry loaded — run code first.`);
+    return { a: na, b: nb, setA: currentLabelMap.get(na)!, setB: currentLabelMap.get(nb)!, mesh: currentLabelMesh };
   }
 
   /** Validate a paint method's `withinPart` option: the name of a part (label)

@@ -168,7 +168,7 @@ export interface Version {
  *  (part, language): switching parts or the toolbar language toggle stashes the
  *  outgoing code here and restores the target slot's. Persisted so a reload
  *  doesn't lose in-progress work. Cascade-deleted with the session (sessionId
- *  index); individual part drafts are also pruned when the part is deleted. */
+ *  index); a deleted part's drafts move to the deleted-objects bin with it. */
 export interface SessionDraft {
   /** Composite key: `${sessionId}:${partId}:${language}` (with partId) or
    *  legacy `${sessionId}:${language}` (pre-per-part drafts). The cascade
@@ -205,7 +205,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 8;
+const DB_VERSION = 10;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -304,6 +304,29 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('exportInbox')) {
         db.createObjectStore('exportInbox', { keyPath: 'id' });
+      }
+      // v9: the "Recently deleted" bin for objects. Deleting an object moves its
+      // part row, versions and drafts into one entry here (keyed by the part id,
+      // indexed by sessionId for the per-session list + session-delete cascade)
+      // so it can be restored later. Entries expire after
+      // `ui.deletedObjectRetentionDays`. Never exported or shared.
+      if (!db.objectStoreNames.contains('deletedObjects')) {
+        const store = db.createObjectStore('deletedObjects', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
+        // Lets the rail count a session's unexpired entries without loading
+        // their (heavy) versions — see countDeletedObjects.
+        store.createIndex('sessionId_deletedAt', ['sessionId', 'deletedAt'], { unique: false });
+      }
+      // v10: local cache of smooth-paint refined meshes, keyed by a CONTENT key
+      // (base mesh + refine descriptors + labels — see paintRefineKey in
+      // main.ts), so reopening a painted version skips rebuilding every smooth
+      // edge. Not tied to a session or version and never exported: an entry
+      // is valid for any version with the same content. The
+      // [lastUsed, bytes] index lets eviction walk entries oldest-first and
+      // sum their sizes with a key cursor, without loading the meshes.
+      if (!db.objectStoreNames.contains('paintRefineCache')) {
+        const store = db.createObjectStore('paintRefineCache', { keyPath: 'key' });
+        store.createIndex('lastUsed_bytes', ['lastUsed', 'bytes'], { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -670,6 +693,8 @@ export async function deleteSession(id: string): Promise<void> {
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
   // `reliefSources` only exists from v7 — guard like `drafts` above.
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
+  // `deletedObjects` (the object bin) only exists from v9.
+  if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
   // The relief source blob is keyed by sessionId, so a direct key delete clears
@@ -702,6 +727,7 @@ export async function deleteSession(id: string): Promise<void> {
     deleteByIndex('aiChats'),
   ];
   if (db.objectStoreNames.contains('drafts')) cascades.push(deleteByIndex('drafts'));
+  if (db.objectStoreNames.contains('deletedObjects')) cascades.push(deleteByIndex('deletedObjects'));
   await Promise.all(cascades);
   // Wait for the entire transaction to commit
   await txComplete(txn);
@@ -795,40 +821,141 @@ export async function updatePartGroups(ids: string[], group: string | null): Pro
   await txComplete(store.transaction);
 }
 
-export async function deletePart(id: string): Promise<void> {
-  await deleteParts([id]);
+// === Recently deleted objects (the bin) ===
+
+/** An object moved to the bin: its part row plus everything that was deleted
+ *  with it (versions + per-part editor drafts), kept verbatim so a restore puts
+ *  back exactly what was there — ids, version indices and unsaved work. */
+export interface DeletedObject {
+  /** The deleted part's id (an object can only be in the bin once). */
+  id: string;
+  sessionId: string;
+  part: Part;
+  versions: Version[];
+  drafts: SessionDraft[];
+  deletedAt: number;
 }
 
 /**
- * Delete several parts (and cascade-delete their versions) atomically in a
- * single transaction, so a multi-select bulk delete either fully commits or
- * fully rolls back. No-op for an empty list.
+ * Move several parts into the bin in one transaction: each part's row, its
+ * versions and its drafts become one {@link DeletedObject} entry and are removed
+ * from the live stores, so every reader of parts/versions keeps working
+ * unchanged. Requests are chained from callbacks (no awaits mid-transaction).
+ * No-op for an empty list or ids that don't exist.
  */
-export async function deleteParts(ids: string[]): Promise<void> {
+export async function trashParts(ids: string[], deletedAt: number = Date.now()): Promise<void> {
   if (ids.length === 0) return;
   const db = await openDB();
-  const txn = db.transaction(['parts', 'versions'], 'readwrite');
+  const txn = db.transaction(['parts', 'versions', 'drafts', 'deletedObjects'], 'readwrite');
   const partStore = txn.objectStore('parts');
-  const vIdx = txn.objectStore('versions').index('partId');
+  const versionStore = txn.objectStore('versions');
+  const draftStore = txn.objectStore('drafts');
+  const bin = txn.objectStore('deletedObjects');
   for (const id of ids) {
-    partStore.delete(id);
-    // Cascade-delete the part's versions. Awaiting each cursor keeps the shared
-    // transaction alive (its requests resolve in the IDB callbacks above).
-    await new Promise<void>((resolve, reject) => {
-      const vReq = vIdx.openCursor(IDBKeyRange.only(id));
+    const partReq = partStore.get(id);
+    partReq.onsuccess = () => {
+      const part = partReq.result as Part | undefined;
+      if (!part) return;
+      const vReq = versionStore.index('partId').getAll(IDBKeyRange.only(id));
       vReq.onsuccess = () => {
-        const cursor = vReq.result;
-        if (cursor) {
-          cursor.delete();
-          cursor.continue();
-        } else {
-          resolve();
-        }
+        const versions = vReq.result as Version[];
+        const dReq = draftStore.index('sessionId').getAll(IDBKeyRange.only(part.sessionId));
+        dReq.onsuccess = () => {
+          const prefix = `${part.sessionId}:${id}:`;
+          const drafts = (dReq.result as SessionDraft[]).filter(d => d.id.startsWith(prefix));
+          const entry: DeletedObject = { id, sessionId: part.sessionId, part, versions, drafts, deletedAt };
+          bin.put(entry);
+          partStore.delete(id);
+          for (const v of versions) versionStore.delete(v.id);
+          for (const d of drafts) draftStore.delete(d.id);
+        };
       };
-      vReq.onerror = () => reject(vReq.error);
-    });
+    };
   }
   await txComplete(txn);
+}
+
+/** How many bin entries of one session were deleted at or after `since` — a
+ *  key-only index count, so the rail's badge never loads the entries' versions. */
+export async function countDeletedObjects(sessionId: string, since: number): Promise<number> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('deletedObjects')) return 0;
+  const store = await tx('deletedObjects', 'readonly');
+  return reqToPromise(store.index('sessionId_deletedAt').count(IDBKeyRange.bound([sessionId, since], [sessionId, Infinity])));
+}
+
+/** Permanently delete parts and their versions + drafts (no bin) — the
+ *  fallback when moving them to the bin would exceed the storage quota. */
+export async function hardDeleteParts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const db = await openDB();
+  const txn = db.transaction(['parts', 'versions', 'drafts'], 'readwrite');
+  const partStore = txn.objectStore('parts');
+  const versionStore = txn.objectStore('versions');
+  const draftStore = txn.objectStore('drafts');
+  for (const id of ids) {
+    const partReq = partStore.get(id);
+    partReq.onsuccess = () => {
+      const part = partReq.result as Part | undefined;
+      if (!part) return;
+      partStore.delete(id);
+      const vReq = versionStore.index('partId').getAllKeys(IDBKeyRange.only(id));
+      vReq.onsuccess = () => { for (const k of vReq.result) versionStore.delete(k); };
+      const dReq = draftStore.index('sessionId').getAllKeys(IDBKeyRange.only(part.sessionId));
+      dReq.onsuccess = () => {
+        const prefix = `${part.sessionId}:${id}:`;
+        for (const k of dReq.result) if (String(k).startsWith(prefix)) draftStore.delete(k);
+      };
+    };
+  }
+  await txComplete(txn);
+}
+
+/** The bin entries for one session, newest first. */
+export async function listDeletedObjects(sessionId: string): Promise<DeletedObject[]> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('deletedObjects')) return [];
+  const store = await tx('deletedObjects', 'readonly');
+  const rows = await reqToPromise(store.index('sessionId').getAll(IDBKeyRange.only(sessionId))) as DeletedObject[];
+  return rows.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/**
+ * Move bin entries back into the live stores in one transaction — the part row
+ * (with `order` overridden per `orders` when given), its versions and drafts,
+ * verbatim — and drop the entries. Returns the restored parts; ids not in the
+ * bin are skipped.
+ */
+export async function untrashParts(ids: string[], orders: Map<string, number> = new Map()): Promise<Part[]> {
+  if (ids.length === 0) return [];
+  const db = await openDB();
+  const txn = db.transaction(['parts', 'versions', 'drafts', 'deletedObjects'], 'readwrite');
+  const bin = txn.objectStore('deletedObjects');
+  const restored: Part[] = [];
+  for (const id of ids) {
+    const req = bin.get(id);
+    req.onsuccess = () => {
+      const entry = req.result as DeletedObject | undefined;
+      if (!entry) return;
+      const order = orders.get(id);
+      const part: Part = order === undefined ? entry.part : { ...entry.part, order };
+      txn.objectStore('parts').put(part);
+      for (const v of entry.versions) txn.objectStore('versions').put(v);
+      for (const d of entry.drafts) txn.objectStore('drafts').put(d);
+      bin.delete(id);
+      restored.push(part);
+    };
+  }
+  await txComplete(txn);
+  return restored;
+}
+
+/** Permanently delete bin entries (by part id). */
+export async function purgeDeletedObjects(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const store = await tx('deletedObjects', 'readwrite');
+  for (const id of ids) store.delete(id);
+  await txComplete(store.transaction);
 }
 
 // === Versions ===
@@ -1156,7 +1283,10 @@ export async function clearAllData(): Promise<void> {
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
+  if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
+  if (db.objectStoreNames.contains('paintRefineCache')) stores.push('paintRefineCache');
   const txn = db.transaction(stores, 'readwrite');
+  if (db.objectStoreNames.contains('paintRefineCache')) txn.objectStore('paintRefineCache').clear();
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
   txn.objectStore('notes').clear();
@@ -1167,6 +1297,7 @@ export async function clearAllData(): Promise<void> {
   txn.objectStore('aiChats').clear();
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
   if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
+  if (db.objectStoreNames.contains('deletedObjects')) txn.objectStore('deletedObjects').clear();
   await txComplete(txn);
 }
 
@@ -1205,18 +1336,6 @@ export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
 export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   store.delete(draftId(sessionId, language, partId));
-  await txComplete(store.transaction);
-}
-
-/** Delete all per-part drafts for a given part. Called when a part is removed
- *  so its stashed buffers don't accumulate. */
-export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
-  const all = await listDrafts(sessionId);
-  const prefix = `${sessionId}:${partId}:`;
-  const toDelete = all.filter(d => d.id.startsWith(prefix));
-  if (toDelete.length === 0) return;
-  const store = await tx('drafts', 'readwrite');
-  for (const d of toDelete) store.delete(d.id);
   await txComplete(store.transaction);
 }
 
@@ -1296,4 +1415,84 @@ export async function clearInboxStore(store: InboxStore): Promise<void> {
   const txn = db.transaction(store, 'readwrite');
   txn.objectStore(store).clear();
   await txComplete(txn);
+}
+
+// === Smooth-paint refined-mesh cache (v9) ===
+//
+// Content-keyed, local-only, best-effort. Entries are evicted least-recently-
+// used first down to a total-bytes budget. Nothing references them, so a
+// deleted session's entries simply age out through the same LRU (clearAllData
+// and the Data-tab wipe clear the store outright).
+
+export interface PaintRefineCacheEntry {
+  key: string;
+  mesh: { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number };
+  /** Source triangle on the base mesh, per refined triangle. */
+  toRoot: Int32Array;
+  /** Buffer bytes (vertProperties + triVerts + toRoot) — the eviction weight. */
+  bytes: number;
+  /** ms epoch of the last write or (coarse) read. */
+  lastUsed: number;
+}
+
+/** Look a refined mesh up by content key. A hit whose `lastUsed` is older
+ *  than `touchAfterMs` is re-stamped (that rewrites the row, so reads only
+ *  touch it occasionally). Never throws: any failure reads as a miss. */
+export async function getPaintRefineCache(key: string, touchAfterMs: number): Promise<PaintRefineCacheEntry | null> {
+  try {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains('paintRefineCache')) return null;
+    const txn = db.transaction('paintRefineCache', 'readwrite');
+    const store = txn.objectStore('paintRefineCache');
+    let hit: PaintRefineCacheEntry | null = null;
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const row = req.result as PaintRefineCacheEntry | undefined;
+      if (!row) return;
+      hit = row;
+      const now = Date.now();
+      // Chained from the get's callback — no await between get and put.
+      if (now - row.lastUsed > touchAfterMs) store.put({ ...row, lastUsed: now });
+    };
+    await txComplete(txn);
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
+/** Cache a refined mesh, then evict least-recently-used entries until the
+ *  store fits `maxTotalBytes`. Its own transaction, best-effort: returns
+ *  false (and caches nothing) when the entry alone is over budget or the
+ *  write fails (e.g. QuotaExceededError) — never throws. */
+export async function putPaintRefineCache(
+  entry: Omit<PaintRefineCacheEntry, 'bytes' | 'lastUsed'>,
+  maxTotalBytes: number,
+): Promise<boolean> {
+  const bytes = entry.mesh.vertProperties.byteLength + entry.mesh.triVerts.byteLength + entry.toRoot.byteLength;
+  if (bytes > maxTotalBytes) return false;
+  try {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains('paintRefineCache')) return false;
+    const txn = db.transaction('paintRefineCache', 'readwrite');
+    const store = txn.objectStore('paintRefineCache');
+    const row: PaintRefineCacheEntry = { ...entry, bytes, lastUsed: Date.now() };
+    const putReq = store.put(row);
+    putReq.onsuccess = () => {
+      // Newest first: keep entries while they fit, delete the older rest.
+      let total = 0;
+      const cur = store.index('lastUsed_bytes').openKeyCursor(null, 'prev');
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return;
+        total += (c.key as [number, number])[1];
+        if (total > maxTotalBytes) store.delete(c.primaryKey);
+        c.continue();
+      };
+    };
+    await txComplete(txn);
+    return true;
+  } catch {
+    return false;
+  }
 }

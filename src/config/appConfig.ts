@@ -205,6 +205,22 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Triangle count above which the smooth-paint REFINED mesh (the mesh
+     *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
+     *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
+     *  mesh lets reopening a painted version skip rebuilding every smooth
+     *  edge; above the cap reopening rebuilds the edges as before. Costs
+     *  roughly 20 bytes per triangle. 0 = never cache. */
+    paintRefinePersistMaxTriangles: number;
+    /** Total size (MB) of the local smooth-paint mesh cache (IndexedDB
+     *  `paintRefineCache`). Least-recently-used entries are evicted past it. */
+    paintRefineCacheMaxMB: number;
+    /** A cache hit older than this many minutes is re-stamped as recently
+     *  used (each re-stamp rewrites the entry, so reads only touch it now and
+     *  then). */
+    paintRefineCacheTouchMinutes: number;
+    /** Most pixels one `probePixels` call may cast (one ray each). */
+    probePixelsMaxPixels: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
      *  full-quality render, the Worker meshes a throwaway coarse pass at this
      *  multiple of the model's march `edgeLength` (and skips detail regions) so
@@ -306,6 +322,14 @@ export interface AppConfig {
   ui: {
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
+    /** How long a toast carrying an action button (e.g. a delete's "Undo")
+     *  stays on screen (ms) — longer than a plain toast so the button can be
+     *  reached. After it fades, "Recover deleted" in the Objects list still
+     *  restores the item. */
+    undoToastDurationMs: number;
+    /** Days a deleted object stays in the "Recover deleted" bin before it is
+     *  permanently purged (checked whenever the bin is read). */
+    deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
@@ -361,6 +385,11 @@ export interface AppConfig {
      *  points, as a fraction of the radius. Smaller = smoother band edge,
      *  more samples. */
     paintStrokePathSpacing: number;
+    /** `paintAlongBoundary` paints at most this many seam loops (the longest
+     *  ones); the rest are reported as `skippedLoops`. Each loop is one smooth
+     *  stroke on the main thread, so a noisy seam with hundreds of specks
+     *  would otherwise stall the tab. */
+    boundaryPaintMaxLoops: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -465,6 +494,24 @@ export interface AppConfig {
     /** Part panel label chips: a chip's pin counts as "missed" (its part
      *  came out empty or a speck) below this fraction of the surface area. */
     chipMissAreaFrac: number;
+    /** previewSeeds: a seed farther than this many median edge lengths from
+     *  the surface counts as a miss (it is still snapped to the nearest
+     *  triangle when detection runs, which is usually not what was meant). */
+    seedMissEdgeLengths: number;
+    /** renderParts `focus`: padding around the focused part's bounding box,
+     *  as a fraction of its largest dimension. */
+    focusPadding: number;
+    /** Detection folds "specks" — regions under this fraction of the surface
+     *  with no pin of any kind, no hand fix, and whose part nobody named,
+     *  coloured or locked — into the neighbour they border most. 0 = off. */
+    autoAbsorbSpeckFrac: number;
+    /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
+     *  (the panel opens with the first label chip armed) when its largest
+     *  piece has at least this many triangles. */
+    fusedPieceMinTris: number;
+    /** Phone layout (below 768 px): the part panel is a bottom sheet this
+     *  fraction of the window height, so the model stays visible above it. */
+    mobileSheetHeightFrac: number;
   };
 }
 
@@ -532,6 +579,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    paintRefinePersistMaxTriangles: 1_000_000,
+    paintRefineCacheMaxMB: 256,
+    paintRefineCacheTouchMinutes: 60,
+    probePixelsMaxPixels: 4096,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
@@ -566,6 +617,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   },
   ui: {
     toastDurationMs: 2200,
+    undoToastDurationMs: 8000,
+    deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
@@ -584,6 +637,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paletteHistoryMax: 48,
     paintStrokeResolution: 16,
     paintStrokePathSpacing: 0.25,
+    boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
@@ -618,6 +672,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     seedTagScreenFraction: 0.026,
     fixBrushRadiusFrac: 0.012,
     chipMissAreaFrac: 0.0005,
+    seedMissEdgeLengths: 3,
+    focusPadding: 0.15,
+    autoAbsorbSpeckFrac: 0.002,
+    fusedPieceMinTris: 2000,
+    mobileSheetHeightFrac: 0.45,
   },
 };
 
