@@ -32,12 +32,13 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { viewportToolsMount } from './popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
-import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
+import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, saveQualitySettingsSilent, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
 import { getConfig } from '../config/appConfig';
 import type { Language } from '../geometry/engine';
 import { createSliderEntry, type SliderEntry } from './sliderEntry';
+import { registerTool, setToolNote, checkRange, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -136,7 +137,8 @@ export interface SimplifyHandlers {
    *  hard cap as a backstop. */
   estimateRefine(edgeLength: number): number;
   /** Restore the baseline mesh to the viewport (with original colors). */
-  reset(): void;
+  /** Restores the baseline mesh's colours; resolves when they're back. */
+  reset(): void | Promise<void>;
   /** Bake the mesh currently on screen into a new saved version. */
   save(): Promise<SimplifySaveResult>;
 }
@@ -198,6 +200,94 @@ let applyAbort: AbortController | null = null;
 let prevWireframeVisible: boolean | null = null;
 /** Whether color preservation is currently requested. */
 let preserveColor = true;
+/** The panel's padded content area (the AI note lands at its top). */
+let contentEl: HTMLElement | null = null;
+
+/** Open the panel (if closed) and stage an (already schema-validated) prefill:
+ *  curvature quality is previewed live (reverts on close unless applied, like a
+ *  radio click); the simplify/enhance target is staged for the user's Apply.
+ *  Every value is checked against the bounds of the REQUESTED mode + knob
+ *  first — on an error nothing opens and no quality preview starts. */
+function openWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const meshKeys = ['mode', 'knob', 'targetTris', 'length', 'amount', 'preserveColor'] as const;
+  const wantsMesh = meshKeys.some(k => pre[k] !== undefined);
+  // The model the panel will operate on (peek without opening when closed).
+  let peek: SimplifyOpenInfo | null = isSimplifyOpen() ? info : null;
+  if (wantsMesh && !peek && handlers) {
+    const r = handlers.open(false);
+    peek = r.ok ? r.info : null;
+  }
+  const nextMode = (pre.mode as SimplifyMode | undefined) ?? mode;
+  const nextKnob = (pre.knob as KnobMode | undefined) ?? knobMode;
+  const errors: string[] = [];
+  if (peek) {
+    if (pre.targetTris !== undefined) {
+      if (nextKnob !== 'count') errors.push("targetTris needs knob 'count'");
+      else {
+        const base = peek.baseTriangles;
+        const lo = nextMode === 'simplify' ? Math.max(4, Math.min(base, Math.round(base * 0.02) || 4)) : base;
+        const hi = nextMode === 'simplify' ? base : Infinity;
+        checkRange('targetTris', pre.targetTris as number, lo, hi, errors);
+      }
+    }
+    if (pre.length !== undefined) {
+      if (nextKnob === 'count') errors.push("length needs knob 'edge' or 'size'");
+      else checkRange('length', pre.length as number, Number.MIN_VALUE, Infinity, errors);
+    }
+    if (pre.amount !== undefined && nextKnob !== 'size') errors.push("amount needs knob 'size'");
+  }
+  if (errors.length) return { error: errors.join('; ') };
+
+  if (!isSimplifyOpen()) openPanel();
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (!p) return { applied: {}, ignored: [] };
+  const applied: Record<string, unknown> = {};
+  const ignored: string[] = [];
+  if (pre.curvatureQuality !== undefined) {
+    const radio = qualityRadios.find(r => r.value === pre.curvatureQuality);
+    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+    applied.curvatureQuality = pre.curvatureQuality;
+  }
+  if (!info) {
+    for (const k of meshKeys) if (pre[k] !== undefined) ignored.push(k); // no model to simplify
+    return { applied, ignored };
+  }
+  if (pre.mode !== undefined || pre.knob !== undefined) {
+    mode = nextMode; knobMode = nextKnob;
+    if (pre.mode !== undefined) applied.mode = mode;
+    if (pre.knob !== undefined) applied.knob = knobMode;
+    syncModeUI();
+  }
+  if (pre.targetTris !== undefined && countEntry) { countEntry.set(pre.targetTris as number); applied.targetTris = countEntry.get(); }
+  if (pre.length !== undefined && lengthEntry) { lengthEntry.set(pre.length as number); applied.length = lengthEntry.get(); }
+  if (pre.amount !== undefined && amountSlider) {
+    amountSlider.value = String(pre.amount);
+    if (amountValueEl) amountValueEl.textContent = String(amountVal());
+    applied.amount = amountVal();
+  }
+  if (pre.preserveColor !== undefined) {
+    if (info.hasColor && colorCheckbox) { colorCheckbox.checked = pre.preserveColor as boolean; preserveColor = colorCheckbox.checked; applied.preserveColor = preserveColor; }
+    else ignored.push('preserveColor');
+  }
+  updateApplyEnabled();
+  return { applied, ignored };
+}
+
+function simplifyState(): Record<string, unknown> {
+  const q = loadQualitySettings();
+  return {
+    curvatureQuality: q.quality,
+    mode,
+    knob: knobMode,
+    targetTris: knobMode === 'count' ? currentTarget() : null,
+    length: knobMode === 'count' ? null : lengthVal(),
+    amount: knobMode === 'size' ? amountVal() : null,
+    preserveColor,
+    baseTriangles: info?.baseTriangles ?? null,
+    pending: qualityPending() || meshPending(),
+  };
+}
 
 export function initSimplifyUI(
   controlsContainer: HTMLElement,
@@ -208,6 +298,24 @@ export function initSimplifyUI(
   isScadLang = opts.initialLang === 'scad';
   onCancelRender = opts.onCancelRender ?? null;
   initQualityLogic(opts.initialLang);
+  registerTool({
+    id: 'tool-quality',
+    title: 'Quality: simplify / enhance',
+    hint: 'Tools',
+    prefillSchema: {
+      curvatureQuality: { type: 'enum', values: QUALITY_OPTIONS.map(o => o.id), description: 'Curvature quality preset — previewed live, kept only on Apply.' },
+      mode: { type: 'enum', values: ['simplify', 'enhance'], description: 'Reduce or increase triangle count.' },
+      knob: { type: 'enum', values: ['count', 'edge', 'size'], description: 'How the target is expressed.' },
+      targetTris: { type: 'number', integer: true, min: 4, description: "Target triangle count (knob 'count'; simplify ≤ base, enhance ≥ base)." },
+      length: { type: 'number', description: "Edge length / tolerance / size threshold in mesh units (knob 'edge' or 'size')." },
+      amount: { type: 'number', integer: true, min: 1, max: 6, description: "Strength / detail levels (knob 'size')." },
+      preserveColor: { type: 'boolean', description: 'Keep paint (painted models only).' },
+    },
+    open: (prefill, ctx) => openWithPrefill(prefill, ctx),
+    getState: () => (isSimplifyOpen() ? simplifyState() : null),
+    isOpen: isSimplifyOpen,
+    close: () => { if (isSimplifyOpen()) closePanel(); },
+  });
 
   simplifyBtn = document.createElement('button');
   simplifyBtn.id = 'simplify-toggle';
@@ -254,6 +362,26 @@ export function notifyQualityLangChanged(lang: Language): void {
   if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
 }
 
+/** Commit a curvature quality from outside the panel (the
+ *  `partwright.setCurvatureQuality` API) and re-baseline the panel's
+ *  commit/preview state so closing an open panel doesn't revert it. By default
+ *  it applies like Apply does (the quality listener re-runs the model);
+ *  `silent` skips that re-run for a caller that runs the model itself and
+ *  awaits the result. */
+export function commitCurvatureQuality(next: QualitySettings, opts: { silent?: boolean } = {}): void {
+  if (opts.silent) saveQualitySettingsSilent({ ...next });
+  else saveQualityForLang({ ...next });
+  committedQuality = { ...loadQualitySettings() };
+  syncQualityRadios();
+  updateApplyEnabled();
+}
+
+/** Whether a Quality-panel simplify/enhance is mid-flight (the API refuses to
+ *  start a second one on the same baseline). */
+export function isSimplifyApplying(): boolean {
+  return applying;
+}
+
 /** Call when a code run starts (true) or ends (false) so the Stop button
  *  shows only while a render is actually in progress (SCAD mode only). */
 export function setQualityRenderState(isRendering: boolean): void {
@@ -298,6 +426,7 @@ function toggle(): void {
     closePanel();
   } else {
     openPanel();
+    setToolNote(contentEl, null);
   }
 }
 
@@ -478,6 +607,7 @@ function meshPending(): boolean {
 }
 
 function closePanel(): void {
+  setToolNote(contentEl, null);
   revertQualityPreview();
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onSimplifyEscape);
@@ -713,6 +843,7 @@ function buildPanel(): HTMLElement {
   const c = document.createElement('div');
   c.className = 'p-2.5';
   p.appendChild(c);
+  contentEl = c;
 
   // --- Curvature quality section ---
   const qualitySection = document.createElement('div');

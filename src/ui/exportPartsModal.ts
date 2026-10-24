@@ -12,6 +12,44 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { buildPartTree, groupNames } from './partTree';
 import { DEFAULT_PACK_STRATEGY, type BambuPlateLayout, type PackStrategy } from '../export/threemfProject';
+import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { armDialogConfirm } from './dialogConfirmGuard';
+
+/** Pre-set values for the NEXT object picker (from `openTool('export-objects')`).
+ *  The picker only opens staged — the user still clicks Export. */
+export interface ExportPartsPrefill {
+  /** Object names or ids to tick (default: the current object). */
+  objects?: string[];
+  printer?: string;
+  nozzle?: string;
+  filament?: string;
+  plateLayout?: BambuPlateLayout;
+  packStrategy?: PackStrategy;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
+
+let stagedPrefill: { prefill: ExportPartsPrefill; settle: (r: ToolOpenResult) => void } | null = null;
+let openPicker: { state: () => Record<string, unknown>; close: () => void } | null = null;
+
+/** Stage a prefill for the next showExportPartsModal call. Resolves once that
+ *  picker has opened with it ({applied, ignored}) or rejected it ({error} — the
+ *  picker then never shows, so nothing is exported). */
+export function stageExportPartsPrefill(prefill: ExportPartsPrefill): Promise<ToolOpenResult> {
+  stagedPrefill?.settle({ error: 'superseded by a newer prefill' });
+  return new Promise(resolve => { stagedPrefill = { prefill, settle: resolve }; });
+}
+
+/** Drop a staged prefill nobody consumed (the export ended before its picker). */
+export function clearExportPartsPrefill(reason: string): void {
+  if (!stagedPrefill) return;
+  stagedPrefill.settle({ error: reason });
+  stagedPrefill = null;
+}
+
+export function isExportPartsOpen(): boolean { return openPicker !== null; }
+export function getExportPartsState(): Record<string, unknown> | null { return openPicker?.state() ?? null; }
+export function closeExportPartsModal(): void { openPicker?.close(); }
 
 export interface ExportPartChoice {
   id: string;
@@ -76,7 +114,52 @@ export function showExportPartsModal(
   const showPacking = !!bambu || !!opts.packing;
   const twoPane = showPacking;
   return new Promise((resolve) => {
+    // Consume a staged openTool prefill: validate EVERY key against this
+    // picker's real objects / options before building anything, so a bad
+    // prefill never shows a picker (and can't lead to an export).
+    const staged = stagedPrefill;
+    stagedPrefill = null;
+    let pre: { ids: string[] | null; applied: Record<string, unknown>; ignored: string[]; p: ExportPartsPrefill } | null = null;
+    if (staged) {
+      const p = staged.prefill;
+      const errors: string[] = [];
+      const ignored: string[] = [];
+      const applied: Record<string, unknown> = {};
+      let ids: string[] | null = null;
+      if (p.objects) {
+        ids = [];
+        for (const want of p.objects) {
+          const hit = parts.find(x => x.id === want) ?? parts.find(x => x.name.toLowerCase() === want.toLowerCase());
+          if (!hit) errors.push(`objects: "${want}" is not an object of this session (objects: ${parts.map(x => `"${x.name}"`).join(', ')})`);
+          else if (!ids.includes(hit.id)) ids.push(hit.id);
+        }
+        if (ids.length === 0 && p.objects.length === 0) errors.push('objects must name at least one object');
+        applied.objects = ids.map(id => parts.find(x => x.id === id)!.name);
+      }
+      const pick = (key: 'printer' | 'nozzle' | 'filament', allowed: string[] | undefined) => {
+        const v = p[key];
+        if (v === undefined) return;
+        if (!allowed) { ignored.push(key); return; }
+        if (!allowed.includes(v)) errors.push(`${key} must be one of ${allowed.join(', ')}`);
+        else applied[key] = v;
+      };
+      pick('printer', bambu?.printers.map(x => x.id));
+      pick('nozzle', bambu?.nozzles);
+      pick('filament', bambu?.filaments.map(x => x.id));
+      if (p.plateLayout !== undefined) {
+        if (!bambu) ignored.push('plateLayout');
+        else if (p.plateLayout === 'group' && groupNames(parts).length === 0) errors.push('plateLayout "group" needs grouped objects');
+        else applied.plateLayout = p.plateLayout;
+      }
+      if (p.packStrategy !== undefined) {
+        if (!showPacking) ignored.push('packStrategy'); else applied.packStrategy = p.packStrategy;
+      }
+      if (errors.length) { staged.settle({ error: errors.join('; ') }); resolve(null); return; }
+      pre = { ids, applied, ignored, p };
+    }
+
     let result: ExportPartsResult | null = null;
+    let disarmConfirm: () => void = () => {};
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
     const objectUrls: string[] = [];
 
@@ -88,11 +171,16 @@ export function showExportPartsModal(
       // single-column width.
       ...(twoPane ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
       onClose: () => {
-        document.removeEventListener('keydown', onEnter);
+        disarmConfirm();
         for (const url of objectUrls) URL.revokeObjectURL(url);
+        openPicker = null;
         resolve(result);
       },
     });
+    if (pre?.p.note) {
+      const note = createToolNote(pre.p.note, pre.p.source);
+      shell.body.appendChild(note);
+    }
 
     const sub = document.createElement('p');
     sub.className = 'text-[11px] text-zinc-400 leading-relaxed';
@@ -149,7 +237,7 @@ export function showExportPartsModal(
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = part.id === activePartId;
+      cb.checked = pre?.ids ? pre.ids.includes(part.id) : part.id === activePartId;
       cb.className = 'w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
       cb.dataset.id = part.id;
       checks.push(cb);
@@ -242,9 +330,9 @@ export function showExportPartsModal(
     let nozzleSel: HTMLSelectElement | null = null;
     let filamentSel: HTMLSelectElement | null = null;
     // Selected plate layout (Bambu only). Default: one part per plate.
-    let plateLayout: BambuPlateLayout = 'separate';
+    let plateLayout: BambuPlateLayout = (pre?.applied.plateLayout as BambuPlateLayout | undefined) ?? 'separate';
     // Selected packing strategy (any 3MF). Default: compact centred grid.
-    let packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY;
+    let packStrategy: PackStrategy = (pre?.applied.packStrategy as PackStrategy | undefined) ?? DEFAULT_PACK_STRATEGY;
     const hasGroups = groupNames(parts).length > 0;
 
     /** A titled radio group in the options pane; each option carries a one-line hint.
@@ -310,9 +398,9 @@ export function showExportPartsModal(
       h.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-400 mb-0.5';
       h.textContent = 'Bambu Studio settings';
       optionsParent.appendChild(h);
-      printerSel = mkSelect('Printer', bambu.printers.map(p => ({ value: p.id, label: p.label })), bambu.defaultPrinter);
-      nozzleSel = mkSelect('Nozzle', bambu.nozzles.map(n => ({ value: n, label: `${n} mm` })), bambu.defaultNozzle);
-      filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), bambu.defaultFilament);
+      printerSel = mkSelect('Printer', bambu.printers.map(p => ({ value: p.id, label: p.label })), (pre?.applied.printer as string | undefined) ?? bambu.defaultPrinter);
+      nozzleSel = mkSelect('Nozzle', bambu.nozzles.map(n => ({ value: n, label: `${n} mm` })), (pre?.applied.nozzle as string | undefined) ?? bambu.defaultNozzle);
+      filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), (pre?.applied.filament as string | undefined) ?? bambu.defaultFilament);
 
       // ── Plate layout: how the selected parts spread across build plates ──
       // The "group per plate" option only appears when the session actually has
@@ -385,12 +473,23 @@ export function showExportPartsModal(
     for (const c of checks) c.addEventListener('change', sync);
     exportBtn.addEventListener('click', confirm);
 
-    function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); confirm(); }
-    }
-    document.addEventListener('keydown', onEnter);
-
     sync();
-    exportBtn.focus();
+    // Enter-to-confirm; an AI-staged open is guarded (no Export focus, Enter
+    // arms only after the user interacts inside the picker).
+    disarmConfirm = armDialogConfirm({ within: shell.body, primary: exportBtn, onConfirm: confirm, guarded: !!staged });
+    openPicker = {
+      state: () => ({
+        // The export this picker belongs to (export-objects' `format` key).
+        format: bambu ? '3mf-bambu' : showPacking ? '3mf' : (/\bto (\w+)$/.exec(title)?.[1]?.toLowerCase() ?? null),
+        objects: selectedIds().map(id => parts.find(x => x.id === id)?.name ?? id),
+        ...(printerSel ? { printer: printerSel.value } : {}),
+        ...(nozzleSel ? { nozzle: nozzleSel.value } : {}),
+        ...(filamentSel ? { filament: filamentSel.value } : {}),
+        ...(bambu ? { plateLayout } : {}),
+        ...(showPacking ? { packStrategy } : {}),
+      }),
+      close: () => { result = null; shell.close(); },
+    };
+    if (staged && pre) staged.settle({ applied: pre.applied, ignored: pre.ignored });
   });
 }

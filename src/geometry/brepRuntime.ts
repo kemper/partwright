@@ -1330,6 +1330,13 @@ export function clearPendingBrepImports(): void {
  *  queued by BREP.toManifold calls during the just-finished run. The
  *  manifold-js engine merges them into its own labelRegistry, so the labels
  *  resolve from the final mesh's provenance like `api.label` ones. */
+/** The pending registries WITHOUT consuming them — so a `{ label }` selector
+ *  in the same run (api.sculpt / deform `select:`) can see `BREP.label` parts
+ *  before the post-run merge into the sandbox's label registry. */
+export function peekBrepToManifoldLabels(): readonly Map<number, string>[] {
+  return pendingToManifoldLabels;
+}
+
 export function consumeBrepToManifoldLabels(): Map<number, string>[] {
   const out = pendingToManifoldLabels;
   pendingToManifoldLabels = [];

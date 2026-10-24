@@ -108,6 +108,8 @@ const SDF_STATIC: Completion[] = [
   fn('noise', '({seed?, frequency?, octaves?, lacunarity?, gain?, ridged?})', 'Seeded fBm noise field — pass the returned (x,y,z)=>number to node.displace() for organic texture (rock/bark/coral).'),
   fn('lsystem', '({axiom, rules, iterations, angle?, length?, radius?, radiusScale?, blend?, label?, leaf?})', 'Grow a fractal plant/coral/branching structure into an SDF node of welded capsules. Optional foliage spheres via leaf.'),
   fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),
+  val('figure', 'namespace', 'Posable humanoid figure builder — rig + parts (people / characters / busts). See /ai/figure.md.', 'variable'),
+  val('creature', 'namespace', 'Creature feature kit — eyes / muzzle / ears / feet / hands / crease / build for creatures & mascots. See /ai/creature.md.', 'variable'),
 ];
 
 const SDF_INSTANCE: Completion[] = [

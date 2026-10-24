@@ -29,6 +29,14 @@ export function describeValue(val: unknown): string {
   return `${typeof val}(${String(val)})`;
 }
 
+/** Run argument asserts and return a failure as `{ error }`, or null when they
+ *  all pass — the short form of the guard() pattern for a value-returning
+ *  API method: `const bad = argError(() => assertX(...)); if (bad) return bad;` */
+export function argError(fn: () => unknown): { error: string } | null {
+  const r = guard(() => { fn(); return null; });
+  return r;
+}
+
 /** Run a validation function; if it throws ValidationError, return { error } instead. */
 export function guard<T>(fn: () => T): T | { error: string } {
   try {

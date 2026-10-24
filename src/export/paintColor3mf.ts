@@ -89,3 +89,71 @@ export function decodePaintColorState(hex: string): number {
   const v = nibbleAt(8) | (nibbleAt(12) << 4);
   return 17 + v;
 }
+
+/**
+ * The dominant filament state of a full `paint_color` / `mmu_segmentation`
+ * string, including the split-node form slicers write when a brush stroke cut
+ * through a triangle. The tree is walked depth-first (node, then its children);
+ * every leaf contributes its share of the parent's area (approximated as an even
+ * split across the 2–4 children) to its state, and the state with the largest
+ * share wins. Partwright colours whole triangles, so a triangle the slicer split
+ * between filaments takes the filament that covers most of it.
+ *
+ * Returns 0 (NONE → inherit the part/object extruder) for '' and for a tree that
+ * is entirely unpainted. Malformed / truncated input degrades to whatever was
+ * decoded so far rather than throwing — an import must not fail on one odd
+ * triangle. Accepts upper- or lower-case hex.
+ */
+export function dominantPaintColorState(hex: string): number {
+  if (!hex) return 0;
+  // Nibble stream: chars read right-to-left, each char one nibble.
+  const nibbles: number[] = [];
+  for (let i = hex.length - 1; i >= 0; i--) {
+    const d = parseInt(hex[i], 16);
+    if (Number.isNaN(d)) return 0;
+    nibbles.push(d);
+  }
+  // Fast path: a single unsplit leaf (the overwhelmingly common case).
+  if (nibbles.length === 1 && (nibbles[0] & 0b11) === 0) {
+    const xx = nibbles[0] >> 2;
+    return xx === 0b11 ? 0 : xx;
+  }
+
+  const weights = new Map<number, number>();
+  let pos = 0;
+  const next = (): number => (pos < nibbles.length ? nibbles[pos++] : -1);
+  // Explicit stack instead of recursion — split trees can be deep.
+  const stack: number[] = [1];
+  while (stack.length > 0) {
+    const weight = stack.pop()!;
+    const code = next();
+    if (code < 0) break;
+    const splitSides = code & 0b11;
+    if (splitSides !== 0) {
+      const children = splitSides + 1;
+      for (let c = 0; c < children; c++) stack.push(weight / children);
+      continue;
+    }
+    let state = code >> 2;
+    if (state === 0b11) {
+      const ext = next();
+      if (ext < 0) break;
+      if (ext === 0b1110) {
+        const lo = next(), hi = next();
+        if (lo < 0 || hi < 0) break;
+        state = 17 + (lo | (hi << 4));
+      } else {
+        state = 3 + ext;
+      }
+    }
+    // State 0 (unpainted) competes too: a triangle mostly left unpainted keeps
+    // the inherited extruder.
+    weights.set(state, (weights.get(state) ?? 0) + weight);
+  }
+  let best = 0;
+  let bestW = 0;
+  for (const [state, w] of weights) {
+    if (w > bestW) { best = state; bestW = w; }
+  }
+  return best;
+}
