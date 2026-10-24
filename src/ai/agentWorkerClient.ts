@@ -9,7 +9,7 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool, CONFIRM_REQUIRED_TOOLS, declinedToolMessage } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, declinedToolMessage } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
@@ -22,6 +22,10 @@ let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
 let resolveCurrentTurn: ((h: ChatMessage[]) => void) | null = null;
 let rejectCurrentTurn: ((e: Error) => void) | null = null;
+let currentSignal: AbortSignal | null = null;
+/** Bumped per runTurn — lets a confirm prompt detect that the turn it was
+ *  raised for ended (or was replaced) while the user was deciding. */
+let turnSeq = 0;
 
 // Surface the agent Worker's liveness + whether a turn is in flight in the
 // worker-health panel.
@@ -71,17 +75,31 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       name: string;
       input: Record<string, unknown>;
     };
-    if (CONFIRM_REQUIRED_TOOLS.has(name) && currentCallbacks?.confirmTool) {
-      const allowed = await currentCallbacks.confirmTool(name, input);
-      if (!allowed) {
-        getWorker().postMessage({
-          type: 'tool_result',
-          callId,
-          result: {
-            content: declinedToolMessage(name),
-            isError: true,
-          },
-        });
+    if (CONFIRM_REQUIRED_TOOLS.has(name)) {
+      const w = getWorker();
+      const seq = turnSeq;
+      const signal = currentSignal;
+      const confirm = currentCallbacks?.confirmTool;
+      const turnLive = () => seq === turnSeq && resolveCurrentTurn !== null && !signal?.aborted;
+      let content: string | null = null;
+      if (!confirm) {
+        // No prompt can be shown: fail CLOSED rather than run unconfirmed.
+        content = CONFIRM_UNAVAILABLE_MESSAGE;
+      } else if (!turnLive()) {
+        content = '[aborted by user]';
+      } else {
+        // Pause the Worker's tool-call timeout while the user decides.
+        w.postMessage({ type: 'tool_confirm_pending', callId });
+        let allowed = false;
+        try { allowed = await confirm(name, input); } catch { allowed = false; }
+        w.postMessage({ type: 'tool_confirm_done', callId });
+        // Stop / a finished or replaced turn while the prompt was up: an Allow
+        // that raced the abort must not still run the tool.
+        if (!turnLive()) content = '[aborted by user]';
+        else if (!allowed) content = declinedToolMessage(name);
+      }
+      if (content !== null) {
+        w.postMessage({ type: 'tool_result', callId, result: { content, isError: true } });
         return;
       }
     }
@@ -152,6 +170,7 @@ function cleanup() {
   resolveCurrentTurn = null;
   rejectCurrentTurn = null;
   currentCallbacks = null;
+  currentSignal = null;
 }
 
 /** Forward blocks queued by the user mid-turn into the Worker so the
@@ -174,6 +193,8 @@ export async function runTurn(
 ): Promise<ChatMessage[]> {
   const w = getWorker();
   currentCallbacks = callbacks;
+  currentSignal = input.signal ?? null;
+  turnSeq++;
 
   // Forward abort: when the caller aborts (Stop button), tell the Worker.
   if (input.signal) {

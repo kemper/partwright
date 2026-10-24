@@ -6,8 +6,10 @@
  *  changed in the source — the cheapest way for an agent to confirm a
  *  patch landed (a no-op patch shows `changed: false`). LCS-based so
  *  insertions/deletions align; output is capped to keep the token cost of
- *  a large rewrite bounded. */
-export function computeCodeDiff(before: string, after: string, maxLines = 60): { changed: boolean; added: number; removed: number; diff: string | null } {
+ *  a large rewrite bounded — both the number of changed lines shown and each
+ *  line's length (a voxel bake or baked mesh puts one enormous data line in the
+ *  code, which would otherwise dump the whole payload into the diff). */
+export function computeCodeDiff(before: string, after: string, maxLines = 60, maxLineChars = 200): { changed: boolean; added: number; removed: number; diff: string | null } {
   if (before === after) return { changed: false, added: 0, removed: 0, diff: null };
   const a = before.split('\n');
   const b = after.split('\n');
@@ -43,6 +45,10 @@ export function computeCodeDiff(before: string, after: string, maxLines = 60): {
   }
   while (i < n) { lines.push(`- ${a[i]}`); removed++; i++; }
   while (j < m) { lines.push(`+ ${b[j]}`); added++; j++; }
+  for (let k = 0; k < lines.length; k++) {
+    // +2 for the "- " / "+ " marker the line already carries.
+    if (lines[k].length > maxLineChars + 2) lines[k] = `${lines[k].slice(0, maxLineChars + 2)}… (${lines[k].length - 2} chars)`;
+  }
   const diff = lines.length > maxLines
     ? `${lines.slice(0, maxLines).join('\n')}\n… (${lines.length - maxLines} more changed lines)`
     : lines.join('\n');

@@ -1004,10 +1004,10 @@ const ALL_TOOLS: ToolDefinition[] = [
         decompose: { type: 'boolean', description: 'Include component breakdown.' },
         boundingBox: { type: 'boolean', description: 'Include bounding box.' },
         containment: { type: 'boolean', description: 'Include `containment`: warnings for components fully enclosed by another component ([] = none).' },
-        pointsInside: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Points [[x,y,z], …] to test; result `pointsInside` is [{point, inside}] (may be ambiguous within ~1e-5 of the surface).' },
+        pointsInside: { type: 'array', maxItems: 200, items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Points [[x,y,z], …] to test; result `pointsInside` is [{point, inside}] (may be ambiguous within ~1e-5 of the surface).' },
         componentBounds: { type: 'boolean', description: 'Include `componentBounds`: per-piece {index, volume, triangleCount, vertexCount, bbox:{min,max,size,center}}, sorted by volume.' },
         zProfile: { type: 'boolean', description: 'Include `zProfile`: {features, transitions, summary} sampled up the Z axis.' },
-        zProfileSamples: { type: 'integer', minimum: 1, maximum: 500, description: 'Number of Z samples for zProfile (default chosen by the analyzer).' },
+        zProfileSamples: { type: 'integer', minimum: 2, maximum: 500, description: 'Number of Z samples for zProfile (default chosen by the analyzer).' },
       },
     },
   },
@@ -1930,12 +1930,12 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'getUnits',
-    description: 'Read the session\'s declared unit system: "mm", "cm", "in", or "unitless". Units are metadata only (export files record them; coordinates are never rescaled). Returns { unit }.',
+    description: 'Read the declared unit system: "mm", "cm", "in", or "unitless". It is a per-tab preference of this browser window (not saved in the session), and metadata only: exports record it; coordinates are never rescaled. Returns { unit }.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'setUnits',
-    description: 'Declare the session\'s unit system. Metadata only — it does NOT rescale the model (use scaleModel to resize). Use when the user states their units ("this is in inches") so exports carry the right unit. Returns { unit }.',
+    description: 'Declare the unit system. It is a per-tab preference of this browser window (not saved in the session) and metadata only — it does NOT rescale the model (use scaleModel to resize). Use when the user states their units ("this is in inches") so exports from this window carry the right unit. Returns { unit }.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1986,7 +1986,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
       type: 'object',
       properties: {
         objects: { type: 'array', items: { type: 'string' }, description: 'Object names or ids (from listObjects).' },
-        group: { type: 'string', description: 'Group name. An empty string removes the objects from any group.' },
+        group: { type: 'string', description: 'Group name. Required; an empty string removes the objects from any group.' },
       },
       required: ['objects', 'group'],
     },
@@ -2164,11 +2164,36 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'deleteVersion',
 ]);
 
-/** The phrase the confirm prompt shows ("The AI wants to <label>. Allow this?"). */
-export function confirmToolLabel(name: string): string {
+/** The phrase the confirm prompt shows ("The AI wants to <label>. Allow this?").
+ *  Built from the call's input so the user sees exactly what will happen — for
+ *  deleteVersion that is the version number, its label and the object, e.g.
+ *  "permanently delete version 3 'final' of object Lid". Never throws: any
+ *  lookup failure falls back to the less specific wording. */
+export async function confirmToolLabel(name: string, input: Record<string, unknown> = {}): Promise<string> {
   if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
   if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
-  if (name === 'deleteVersion') return 'permanently delete a saved version';
+  if (name === 'deleteVersion') {
+    const index = typeof input.index === 'number' ? input.index : null;
+    let what = index !== null ? `version ${index}` : 'a saved version';
+    let objectName: string | null = null;
+    try {
+      const api = getApi();
+      const target = (input.object ?? input.part) as string | number | undefined;
+      const objects = api.listObjects() as ObjectRow[] | undefined;
+      const row = Array.isArray(objects) && objects.length > 0
+        ? (target != null ? matchObjectRow(objects, target) : objects.find(o => o.isCurrent))
+        : undefined;
+      objectName = row ? row.name : target != null ? String(target) : null;
+      // listVersions() reads the CURRENT object, so only look the label up when
+      // the call targets it (a targeted delete switches focus only once allowed).
+      if (index !== null && (target == null || row?.isCurrent)) {
+        const versions = await api.listVersions() as Array<{ index: number; label?: string }> | undefined;
+        const v = Array.isArray(versions) ? versions.find(x => x.index === index) : undefined;
+        if (v?.label) what += ` '${v.label}'`;
+      }
+    } catch { /* keep the generic wording */ }
+    return `permanently delete ${what}${objectName ? ` of object ${objectName}` : ''}`;
+  }
   return `run "${name}"`;
 }
 
@@ -2177,6 +2202,10 @@ export function declinedToolMessage(name: string): string {
   if (name === 'deleteVersion') return '[Declined by user — the version was NOT deleted. Only delete versions the user explicitly asked to remove]';
   return '[Declined by user — only call import tools when the user has explicitly requested an import]';
 }
+
+/** Result for a confirm-required tool when no confirmation prompt can be shown
+ *  (no UI callback wired for this turn). Confirmation fails CLOSED. */
+export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the user\'s confirmation and no confirmation prompt is available. Ask the user to do it from the UI instead]';
 
 /** Pure-read tools the model may call during plan mode to ground its plan in
  *  the current session state (open code, versions, geometry, notes, docs).
@@ -2329,20 +2358,43 @@ function renderPartsArgs(input: Record<string, unknown>): Record<string, unknown
  *  (containment / pointsInside / componentBounds / zProfile) fan out to their
  *  own console methods, so one tool call still answers a multi-part question. */
 const QUERY_BASE_KEYS = ['sliceAt', 'decompose', 'boundingBox'] as const;
+const QUERY_EXTRA_KEYS = ['containment', 'pointsInside', 'componentBounds', 'zProfile', 'zProfileSamples'] as const;
+/** Cap on `pointsInside` per call — mirrors the schema's maxItems. */
+const QUERY_MAX_POINTS = 200;
 
 function executeQuery(api: PartwrightAPI, input: Record<string, unknown>): unknown {
+  // Reject unknown keys up front, like the console query() does — otherwise a
+  // typo'd key (e.g. `bbox`) would silently answer nothing.
+  const known = new Set<string>([...QUERY_BASE_KEYS, ...QUERY_EXTRA_KEYS]);
+  const unknown = Object.keys(input).filter(k => !known.has(k));
+  if (unknown.length > 0) {
+    return { error: `query: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: ${[...known].join(', ')}.` };
+  }
+  let points: Array<[number, number, number]> | undefined;
+  if (input.pointsInside !== undefined) {
+    if (!Array.isArray(input.pointsInside)) return { error: 'query: pointsInside must be an array of [x,y,z] points.' };
+    if (input.pointsInside.length > QUERY_MAX_POINTS) return { error: `query: pointsInside takes at most ${QUERY_MAX_POINTS} points (got ${input.pointsInside.length}).` };
+    for (let i = 0; i < input.pointsInside.length; i++) {
+      const p = input.pointsInside[i] as unknown;
+      if (!Array.isArray(p) || p.length !== 3 || !p.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        return { error: `query: pointsInside[${i}] must be a [x,y,z] array of 3 finite numbers (got ${JSON.stringify(p)}).` };
+      }
+    }
+    points = input.pointsInside as Array<[number, number, number]>;
+  }
   const base: Record<string, unknown> = {};
   for (const k of QUERY_BASE_KEYS) if (input[k] !== undefined) base[k] = input[k];
   const result = api.query(base) as Record<string, unknown> | undefined;
   if (!result || typeof result !== 'object' || 'error' in result) return result;
   if (input.containment === true) result.containment = api.checkContainment() ?? [];
-  if (Array.isArray(input.pointsInside)) {
-    result.pointsInside = (input.pointsInside as unknown[]).map(point => ({ point, inside: api.pointInside(point) }));
-  }
+  if (points) result.pointsInside = points.map(point => ({ point, inside: api.pointInside(point) }));
   if (input.componentBounds === true) result.componentBounds = api.componentBounds();
   if (input.zProfile === true) result.zProfile = api.analyzeProfile(input.zProfileSamples);
   return result;
 }
+
+/** Upper bound for listAnnotations' maxPointsPerStroke — mirrors the schema max. */
+const MAX_POINTS_PER_STROKE = 500;
 
 interface AnnotationStroke {
   id: string;
@@ -2372,7 +2424,7 @@ function summarizeStroke(s: AnnotationStroke, maxPoints: number): Record<string,
       }
     }
     const r = (v: number) => Math.round(v * 1000) / 1000;
-    bbox = { min, max };
+    bbox = { min: [r(min[0]), r(min[1]), r(min[2])], max: [r(max[0]), r(max[1]), r(max[2])] };
     centroid = [r(sum[0] / pts.length), r(sum[1] / pts.length), r(sum[2] / pts.length)];
   }
   let points: Array<[number, number, number]> | undefined;
@@ -2404,6 +2456,18 @@ function getApi(): PartwrightAPI {
   return w.partwright;
 }
 
+type ObjectRow = { id: string; name: string; order: number; isCurrent: boolean };
+
+/** Resolve an object target (id, name, or 0-based index in list order) against
+ *  listObjects() rows. Shared by focusTargetObject and the confirm prompt. */
+function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRow | undefined {
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) return undefined;
+    return [...objects].sort((a, b) => a.order - b.order)[target];
+  }
+  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
+}
+
 /** Switch focus to the object an object-scoped tool named via its `object`
  *  target, so the op runs against that object rather than whatever the user
  *  last selected in the object list. `target` is an object name, id, or 0-based
@@ -2412,17 +2476,14 @@ function getApi(): PartwrightAPI {
  *  in-progress editor draft on it. Returns an error string on a bad target, or
  *  null on success. */
 async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
-  const objects = api.listObjects() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
+  const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
     return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
   }
-  let match: { id: string; isCurrent: boolean } | undefined;
-  if (typeof target === 'number') {
-    if (!Number.isInteger(target) || target < 0) return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
-    match = [...objects].sort((a, b) => a.order - b.order)[target];
-  } else {
-    match = objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
+  if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
+    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
   }
+  const match = matchObjectRow(objects, target);
   if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
   if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
   const switched = await api.changeObject(match.id) as { error?: string } | undefined;
@@ -2437,7 +2498,10 @@ async function focusTargetObject(api: PartwrightAPI, target: string | number): P
  *  them back to the model for self-correction. Tools that return an
  *  image (renderView today) bypass the JSON path and return a structured
  *  ToolExecResult directly. */
-export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
+  // Work on a shallow copy: the object-target handling below deletes keys, and
+  // the caller's object is reused verbatim when the chat loop retries a call.
+  const input: Record<string, unknown> = { ...(rawInput ?? {}) };
   try {
     // `finish` is a control sentinel, not a window.partwright call — the agent
     // loop reads it to end the turn. Acknowledge it without touching the API.
@@ -3158,7 +3222,9 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.layFlatModel(input);
     // ── #1085 PR1: thin wrappers over existing window.partwright methods ────
     case 'listAnnotations': {
-      const maxPts = typeof input.maxPointsPerStroke === 'number' ? Math.max(0, Math.floor(input.maxPointsPerStroke)) : 16;
+      const maxPts = typeof input.maxPointsPerStroke === 'number' && Number.isFinite(input.maxPointsPerStroke)
+        ? Math.min(MAX_POINTS_PER_STROKE, Math.max(0, Math.floor(input.maxPointsPerStroke)))
+        : 16;
       const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
       const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
       return {
@@ -3172,7 +3238,9 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (!r || typeof r !== 'object' || 'error' in r) return r;
       const a = r.a as { id: string; index: number; label: string; code: string };
       const b = r.b as { id: string; index: number; label: string; code: string };
-      const maxLines = typeof input.maxDiffLines === 'number' ? input.maxDiffLines : 80;
+      const maxLines = typeof input.maxDiffLines === 'number' && Number.isFinite(input.maxDiffLines)
+        ? Math.min(2000, Math.max(1, Math.floor(input.maxDiffLines)))
+        : 80;
       return {
         a: { id: a.id, index: a.index, label: a.label },
         b: { id: b.id, index: b.index, label: b.label },
@@ -3214,11 +3282,24 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'deleteVersion':
       return api.deleteVersion({ index: input.index });
     case 'setObjectGroup':
+      // A missing or wrong-typed group must not silently ungroup: only a string
+      // (empty = ungroup) or an explicit null is accepted.
+      if (input.group !== null && typeof input.group !== 'string') {
+        return { error: 'setObjectGroup: `group` is required — a group name, or an empty string (or null) to remove the objects from their group.' };
+      }
       return api.setObjectGroup(input.objects, typeof input.group === 'string' && input.group.trim() ? input.group : null);
     case 'updateSessionNote':
-      return api.updateSessionNote(input.id, input.text);
-    case 'deleteSessionNote':
-      return api.deleteSessionNote(input.id);
+    case 'deleteSessionNote': {
+      // The console methods write by id without checking it belongs to the
+      // ACTIVE session — an unknown id is a silent no-op and a stale id from
+      // another tab's session would edit that session's notes. Only touch notes
+      // this session lists.
+      const notes = await api.listSessionNotes() as Array<{ id: string }> | undefined;
+      if (typeof input.id !== 'string' || !Array.isArray(notes) || !notes.some(n => n.id === input.id)) {
+        return { error: `${name}: no note with id ${JSON.stringify(input.id)} in the active session. Call listSessionNotes to see valid ids.` };
+      }
+      return name === 'updateSessionNote' ? api.updateSessionNote(input.id, input.text) : api.deleteSessionNote(input.id);
+    }
     case 'listSessions':
       return api.listSessions();
     default:

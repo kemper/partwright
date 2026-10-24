@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, declinedToolMessage, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -195,8 +195,10 @@ export interface RunTurnCallbacks {
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
   /** Called before executing a tool that requires explicit user permission
-   *  (import tools). Return true to allow, false to decline. If absent, all
-   *  tools execute without a prompt. */
+   *  (CONFIRM_REQUIRED_TOOLS: imports, deleteVersion). Return true to allow,
+   *  false to decline. If absent, a confirm-required tool is declined when this
+   *  loop runs the real executeTool; with a custom executeToolFn (the agent
+   *  Worker's main-thread proxy) the confirmation is left to that layer. */
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
@@ -732,14 +734,25 @@ async function executeAllWithRetry(
       onEachResult?.(aborted, i);
       continue;
     }
-    if (CONFIRM_REQUIRED_TOOLS.has(tc.name) && callbacks.confirmTool) {
-      const allowed = await callbacks.confirmTool(tc.name, tc.input);
-      if (!allowed) {
-        const declined: PersistedToolResult = {
-          toolUseId: tc.id,
-          content: declinedToolMessage(tc.name),
-          isError: true,
-        };
+    if (CONFIRM_REQUIRED_TOOLS.has(tc.name)) {
+      // Confirmation is enforced by whichever layer runs the REAL executeTool.
+      // Inside the agent Worker, executeToolFn proxies to the main thread and
+      // agentWorkerClient shows the prompt there, so the Worker's loop (which
+      // can't hold a UI callback) delegates. Running the real executeTool here
+      // with no prompt to show fails CLOSED.
+      let content: string | null = null;
+      if (callbacks.confirmTool) {
+        let allowed = false;
+        try { allowed = await callbacks.confirmTool(tc.name, tc.input); } catch { allowed = false; }
+        // Stop pressed while the prompt was up: an Allow click that raced the
+        // abort must not still run the tool.
+        if (signal?.aborted) content = '[aborted by user]';
+        else if (!allowed) content = declinedToolMessage(tc.name);
+      } else if (!executeToolFn) {
+        content = CONFIRM_UNAVAILABLE_MESSAGE;
+      }
+      if (content !== null) {
+        const declined: PersistedToolResult = { toolUseId: tc.id, content, isError: true };
         results.push(declined);
         callbacks.onToolResult?.(tc.id, tc.name, declined);
         onEachResult?.(declined, i);

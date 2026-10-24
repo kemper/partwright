@@ -18,6 +18,8 @@ import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { createModalShell } from './modalShell';
+import { BUTTON_CANCEL, BUTTON_DANGER, BUTTON_PRIMARY } from './styleConstants';
 import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
@@ -3487,46 +3489,47 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
-/** Show a blocking overlay asking the user to allow or decline an AI-initiated
- *  import. Resolves true (allow) or false (decline). */
-function showToolConfirmation(toolName: string): Promise<boolean> {
+/** Ask the user to allow or decline a confirm-required AI tool call (imports,
+ *  deleteVersion). Resolves true (allow) or false (decline). Built on
+ *  modalShell, so Escape / click-outside / ✕ decline and focus moves into the
+ *  dialog (onto Decline — the safe default for an irreversible action). An
+ *  abort of the turn (Stop, tab take-over) dismisses the prompt as a decline. */
+async function showToolConfirmation(toolName: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const label = await confirmToolLabel(toolName, input);
+  if (signal?.aborted) return false;
   return new Promise(resolve => {
-    const label = confirmToolLabel(toolName);
-
-    const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
-
-    const card = document.createElement('div');
-    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+    let allowed = false;
+    const onAbort = () => { allowed = false; shell.close(); };
+    const shell = createModalShell({
+      title: 'Allow this AI action?',
+      maxWidth: 'sm',
+      onClose: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(allowed);
+      },
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const msg = document.createElement('p');
-    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.className = 'text-sm text-zinc-200';
+    msg.setAttribute('data-testid', 'ai-tool-confirm-message');
     msg.textContent = `The AI wants to ${label}. Allow this?`;
-
-    const btns = document.createElement('div');
-    btns.className = 'flex gap-2 justify-end';
+    shell.body.appendChild(msg);
 
     const declineBtn = document.createElement('button');
-    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.className = BUTTON_CANCEL;
     declineBtn.textContent = 'Decline';
+    declineBtn.addEventListener('click', () => { allowed = false; shell.close(); });
 
     const allowBtn = document.createElement('button');
-    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.className = toolName === 'deleteVersion' ? BUTTON_DANGER : BUTTON_PRIMARY;
     allowBtn.textContent = 'Allow';
+    allowBtn.addEventListener('click', () => { allowed = true; shell.close(); });
 
-    btns.appendChild(declineBtn);
-    btns.appendChild(allowBtn);
-    card.appendChild(msg);
-    card.appendChild(btns);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    const done = (allowed: boolean) => {
-      overlay.remove();
-      resolve(allowed);
-    };
-    allowBtn.addEventListener('click', () => done(true));
-    declineBtn.addEventListener('click', () => done(false));
+    shell.footer.appendChild(declineBtn);
+    shell.footer.appendChild(allowBtn);
+    declineBtn.focus();
   });
 }
 
@@ -3679,7 +3682,7 @@ async function runTurnWithStallRetry(
         renderTranscript();
         renderCostMeter();
       },
-      confirmTool: (toolName) => showToolConfirmation(toolName),
+      confirmTool: (toolName, toolInput) => showToolConfirmation(toolName, toolInput, controller.signal),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

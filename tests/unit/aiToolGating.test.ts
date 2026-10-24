@@ -18,7 +18,9 @@ import {
   buildToolList,
   executeTool,
   isModelChangingTool,
+  confirmToolLabel,
 } from '../../src/ai/tools';
+import { computeCodeDiff } from '../../src/ai/codeDiff';
 import { loadSettings, setToggles } from '../../src/ai/settings';
 import type { ChatToggles } from '../../src/ai/types';
 
@@ -244,7 +246,7 @@ describe('AI tool dispatch', () => {
   });
 
   test('version, unit, group and note tools forward the right arguments', async () => {
-    const calls = stubApi({ getUnits: () => 'in' });
+    const calls = stubApi({ getUnits: () => 'in', listSessionNotes: () => [{ id: 'n1' }, { id: 'n2' }] });
     await executeTool('renameVersion', { index: 3, label: 'final' });
     await executeTool('deleteVersion', { index: 2 });
     await executeTool('setObjectGroup', { objects: ['Lid', 'Base'], group: '' });
@@ -259,5 +261,75 @@ describe('AI tool dispatch', () => {
     expect(by('deleteSessionNote')).toEqual(['n2']);
     expect(by('setUnits')).toEqual(['in']);
     expect(units).toEqual({ unit: 'in' });
+  });
+
+  test('note edit/delete refuse ids that are not in the active session', async () => {
+    const calls = stubApi({ listSessionNotes: () => [{ id: 'mine' }] });
+    const upd = JSON.parse((await executeTool('updateSessionNote', { id: 'other-tab', text: 'x' })).content);
+    const del = JSON.parse((await executeTool('deleteSessionNote', { id: 'other-tab' })).content);
+    expect(upd.error).toMatch(/no note with id "other-tab"/);
+    expect(del.error).toMatch(/no note with id "other-tab"/);
+    expect(calls.some(c => c.method === 'updateSessionNote' || c.method === 'deleteSessionNote')).toBe(false);
+  });
+
+  test('setObjectGroup needs an explicit group; null and a name pass through', async () => {
+    const calls = stubApi();
+    const missing = JSON.parse((await executeTool('setObjectGroup', { objects: ['Lid'] })).content);
+    const wrong = JSON.parse((await executeTool('setObjectGroup', { objects: ['Lid'], group: 3 })).content);
+    expect(missing.error).toMatch(/group/);
+    expect(wrong.error).toMatch(/group/);
+    expect(calls.filter(c => c.method === 'setObjectGroup')).toHaveLength(0);
+    await executeTool('setObjectGroup', { objects: ['Lid'], group: null });
+    await executeTool('setObjectGroup', { objects: ['Lid'], group: 'Hardware' });
+    expect(calls.filter(c => c.method === 'setObjectGroup').map(c => c.args[1])).toEqual([null, 'Hardware']);
+  });
+
+  test('query rejects unknown keys and malformed pointsInside before touching the API', async () => {
+    const calls = stubApi();
+    const unknown = JSON.parse((await executeTool('query', { bbox: true, boundingBox: true })).content);
+    expect(unknown.error).toMatch(/unknown key\(s\) "bbox"/);
+    const bad = JSON.parse((await executeTool('query', { pointsInside: [[0, 0]] })).content);
+    expect(bad.error).toMatch(/pointsInside\[0\]/);
+    const many = JSON.parse((await executeTool('query', { pointsInside: Array.from({ length: 201 }, () => [0, 0, 0]) })).content);
+    expect(many.error).toMatch(/at most 200/);
+    expect(calls.some(c => c.method === 'query' || c.method === 'pointInside')).toBe(false);
+  });
+
+  test('diffVersions clamps maxDiffLines and truncates very long lines', async () => {
+    const long = 'x'.repeat(5000);
+    stubApi({
+      diffVersions: () => ({
+        // Diff: "+ <long line>" then "- old" — two changed lines.
+        a: { id: 'a', index: 1, label: 'v1', code: 'keep\nold' },
+        b: { id: 'b', index: 2, label: 'v2', code: `${long}\nkeep` },
+        codeChanged: true,
+        statDiff: {},
+      }),
+    });
+    const r = JSON.parse((await executeTool('diffVersions', { a: 1, b: 2, maxDiffLines: 0 })).content);
+    const shown = (r.codeDiff.diff as string).split('\n');
+    // Clamped to 1 changed line, plus the "more changed lines" footer.
+    expect(shown).toHaveLength(2);
+    expect(shown[0].length).toBeLessThan(260);
+    expect(shown[0]).toMatch(/… \(5000 chars\)$/);
+    expect(computeCodeDiff('a', 'b').diff).toBe('- a\n+ b');
+  });
+
+  test('executeTool does not mutate the caller\'s input (retries reuse it)', async () => {
+    stubApi({ listObjects: () => [{ id: 'o1', name: 'Lid', order: 0, isCurrent: true }] });
+    const input = { object: 'Lid', boundingBox: true };
+    await executeTool('query', input);
+    expect(input).toEqual({ object: 'Lid', boundingBox: true });
+  });
+
+  test('confirmToolLabel names the version, its label and the object', async () => {
+    stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }, { id: 'o2', name: 'Lid', order: 1, isCurrent: false }],
+      listVersions: () => [{ index: 3, label: 'final' }],
+    });
+    expect(await confirmToolLabel('deleteVersion', { index: 3 })).toBe("permanently delete version 3 'final' of object Base");
+    // A non-current target: listVersions() reads the current object, so the label is omitted.
+    expect(await confirmToolLabel('deleteVersion', { index: 3, object: 'Lid' })).toBe('permanently delete version 3 of object Lid');
+    expect(await confirmToolLabel('importImageAsRelief', {})).toBe('import an image as a 3D relief');
   });
 });
