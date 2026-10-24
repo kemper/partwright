@@ -4,9 +4,9 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox' | 'deletedObjects' | 'paintRefineCache';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiEndpoints' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox' | 'deletedObjects' | 'paintRefineCache';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiEndpoints', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
@@ -16,6 +16,7 @@ export const STORE_LABELS: Record<StoreName, string> = {
   drafts: 'Editor drafts',
   reliefSources: 'Relief source images',
   aiKeys: 'AI API keys',
+  aiEndpoints: 'Saved AI endpoints',
   aiChats: 'AI chat messages',
   aiAttachments: 'Image attachments',
   importInbox: 'Recent imports',
@@ -186,7 +187,8 @@ export async function wipeData(sel: WipeSelection): Promise<void> {
   // as orphaned rows. db.ts's deleteSession/clearAllData already sweep them.
   if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache');
   if (sel.chats) stores.push('aiChats');
-  if (sel.apiKeys) stores.push('aiKeys');
+  // Saved endpoints carry their API keys, so they go with the keys.
+  if (sel.apiKeys) stores.push('aiKeys', 'aiEndpoints');
   if (sel.attachments) stores.push('aiAttachments');
   await clearStores(stores);
   if (sel.modelingData) await deleteDatabaseBestEffort('mainifold');

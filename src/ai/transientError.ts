@@ -1,6 +1,8 @@
 /** Classification of provider stream errors into transient (worth retrying as-is)
- *  vs fatal (would just fail again). Pure logic, no dependencies — kept out of
- *  chatLoop so it can be unit-tested in the node tier. */
+ *  vs fatal (would just fail again). Pure logic (its one import, cliProxy, is
+ *  pure too) — kept out of chatLoop so it can be unit-tested in the node tier. */
+
+import { isSubscriptionAuthError } from './cliProxy';
 
 /** Pull an HTTP status code out of a thrown provider error. The Anthropic SDK
  *  attaches a numeric `.status`; the raw-fetch providers (OpenAI/Gemini/custom)
@@ -26,6 +28,9 @@ export function httpStatusOf(err: unknown): number | null {
 export function isTransientError(err: unknown): boolean {
   const e = err as { name?: unknown; message?: unknown };
   if (e?.name === 'AbortError') return false; // user/stop abort — never retry
+  // A bridge that lost its subscription login answers the same until the
+  // user logs in again — CLIProxyAPI reports some of these as 500s.
+  if (typeof e?.message === 'string' && isSubscriptionAuthError(e.message)) return false;
   const status = httpStatusOf(err);
   if (status !== null) {
     // 408 timeout, 409 conflict, 425 too-early, 429 rate-limit, all 5xx

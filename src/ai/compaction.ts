@@ -13,6 +13,7 @@ import { summarizeLocal } from './local';
 import { recordEvent } from './diagnostics';
 import { turnCostUsd } from './cost';
 import { getKey } from './db';
+import { resolveCustomApiKey } from './customEndpoints';
 import type { ChatMessage, ChatToggles, Provider } from './types';
 
 /** Per-provider cheap model used for compaction. The big models cost too
@@ -137,7 +138,7 @@ export async function proposeCompaction(
       if (!ctx.toggles.customBaseUrl.trim()) throw new Error('Custom endpoint URL required for compaction.');
       if (!ctx.toggles.customModel.trim()) throw new Error('A model id is required for the custom endpoint.');
       compactionModel = ctx.toggles.customModel;
-      const key = ctx.apiKey ?? (await getKey('custom'))?.apiKey ?? '';
+      const key = ctx.apiKey ?? await resolveCustomApiKey(ctx.toggles.customBaseUrl);
       const r = await summarizeCustom(key, compactionModel, COMPACTION_SYSTEM, prompt, ctx.toggles.customBaseUrl);
       text = r.text;
       usage = r.usage;
