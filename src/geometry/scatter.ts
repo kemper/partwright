@@ -117,6 +117,9 @@ export function sampleMeshSurface(mesh: MeshLike, opts: SampleOpts): SurfaceSamp
       else hi = mid;
     }
     const t = lo;
+    // A masked-out face has zero weight but can still be hit when rng() is
+    // exactly 0 (the search lands on index 0) — skip it.
+    if (opts.triMask && !opts.triMask[t]) continue;
     // Uniform point in the triangle (sqrt trick).
     const r1 = Math.sqrt(rng());
     const r2 = rng();
@@ -280,12 +283,16 @@ export function createScatter(module: any) {
 
     const seed = opts.seed ?? 1;
     const targetMesh = target.getMesh();
+    const triMask = whereSel ? selectTrianglesActive(targetMesh, whereSel, 'scatter.where') : undefined;
+    if (triMask && !triMask.some(Boolean)) {
+      throw new Error('meshOps: scatter.where: the selector matched no faces of the target — check the part name, region or where bounds.');
+    }
     const samples = sampleMeshSurface(targetMesh, {
       count: opts.count,
       seed,
       minSpacing: opts.minSpacing,
       where: typeof opts.where === 'function' ? opts.where : undefined,
-      triMask: whereSel ? selectTrianglesActive(targetMesh, whereSel, 'scatter.where') : undefined,
+      triMask,
     });
     if (samples.length === 0) {
       throw new Error('meshOps: scatter: no placement samples survived the where/minSpacing constraints — nothing to place.');

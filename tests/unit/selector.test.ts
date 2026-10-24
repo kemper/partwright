@@ -44,6 +44,13 @@ describe('selectors (#1093)', () => {
     expect(sel({ label: ['floor', 'wall'], except: { where: { facing: '+x' } } })).toEqual([1, 1, 0, 0]);
   });
 
+  it('a bare except selects everything else; nesting is bounded', () => {
+    expect(sel({ except: { label: 'floor' } })).toEqual([0, 0, 1, 1]);
+    const loop: Record<string, unknown> = { label: 'floor' };
+    loop.except = loop;
+    expect(() => parseSelector(loop, 'op')).toThrow(/nest at most/);
+  });
+
   it('rejects bad selectors and unknown parts with actionable errors', () => {
     expect(() => parseSelector({ lable: 'x' }, 'op')).toThrow(/unknown selector key "lable"/);
     expect(() => parseSelector({ where: { facing: 'sideways' } }, 'op')).toThrow(/facing/);
@@ -78,7 +85,7 @@ describe('selectors (#1093)', () => {
     const b = selectionBounds(MESH, w);
     expect(b.min).toEqual([20, 0, 0]);
     expect(b.max).toEqual([20, 10, 10]);
-    expect(b.centroid).toEqual([20, 5, 5]);
+    expect(b.center).toEqual([20, 5, 5]);
   });
 
   it('weight lookup matches warp doubles against getMesh Float32 positions', () => {
@@ -91,6 +98,20 @@ describe('selectors (#1093)', () => {
     };
     const lookup = weightLookup(mesh, new Float32Array([1, 1, 1, 1]));
     for (const x of xs) expect(lookup([x, x / 3, -x])).toBe(1);
+  });
+
+  it('a faded rotation rotates along the arc (no chord pinch)', () => {
+    // Half weight on a 90° turn = a 45° turn at full radius, not a point on
+    // the chord at 0.707 r.
+    const half = makeTransformFn([0, 0, 0], [1, 1, 1], [0, 0, 90], [0, 0, 0], () => 0.5);
+    const p = [10, 0, 0];
+    half(p);
+    expect(Math.hypot(p[0], p[1])).toBeCloseTo(10, 6);
+    expect(Math.atan2(p[1], p[0]) * 180 / Math.PI).toBeCloseTo(45, 6);
+    const none = makeTransformFn([0, 0, 0], [2, 2, 2], [0, 0, 90], [5, 0, 0], () => 0);
+    const q = [1, 2, 3];
+    none(q);
+    expect(q).toEqual([1, 2, 3]);
   });
 
   it('makeTransformFn scales and rotates about the pivot, then translates', () => {

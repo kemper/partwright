@@ -278,6 +278,15 @@ export function createDeformOps(_module: any) {
     return select ? selectionWeights(refined, select, blend, name) : null;
   }
 
+  /** The extent the default refine density is measured over: the selection's
+   *  bounds on the unrefined shape when scoped (a limb a tenth of the body's
+   *  size still gets ~2° per edge), else the shape's bounding box. */
+  function extentFor(shape: any, opts: any, name: string): { min: Vec3; max: Vec3 } {
+    const { select } = parseSelectOpts(opts, name);
+    if (!select) return shape.boundingBox();
+    return selectionWeights(shape, select, 0, name).bounds;
+  }
+
   interface WrapOpts {
     /** Cylinder radius the shape's y=0 plane wraps onto. */
     radius: number;
@@ -331,6 +340,9 @@ export function createDeformOps(_module: any) {
   interface BendOpts {
     /** Total bend angle in degrees; positive bends the ends toward +Y. */
     angle: number;
+    /** With `select`: which X end of the selection stays fixed (default 'min',
+     *  where a limb usually meets the body). */
+    anchor?: 'min' | 'max' | 'center';
     segmentLength?: number;
     refine?: boolean;
     /** Deform only this part of the shape (a selector — see /ai/deform.md). */
@@ -345,19 +357,40 @@ export function createDeformOps(_module: any) {
   function bend(shape: any, opts: BendOpts): any {
     need(isManifold(shape), 'bend(shape, opts): shape must be a Manifold');
     need(opts && typeof opts === 'object', 'bend: opts object with { angle } is required');
-    rejectUnknown(opts as any, ['angle', 'segmentLength', 'refine', 'select', 'blend'], 'bend');
+    rejectUnknown(opts as any, ['angle', 'segmentLength', 'refine', 'select', 'blend', 'anchor'], 'bend');
     parseSelectOpts(opts as any, 'bend');
     need(isFiniteNum(opts.angle) && opts.angle !== 0, 'bend.angle must be a non-zero number (degrees)');
     need(Math.abs(opts.angle) <= 360, 'bend.angle must be within ±360 degrees');
+    const anchor = opts.anchor ?? 'min';
+    need(anchor === 'min' || anchor === 'max' || anchor === 'center', "bend.anchor must be 'min', 'max' or 'center'");
+    need(opts.anchor === undefined || opts.select !== undefined, 'bend.anchor only applies together with select (an unscoped bend pivots about the centre)');
     const bb = shape.boundingBox();
-    const spanX = Math.max(bb.max[0] - bb.min[0], 1e-9);
+    const ext = extentFor(shape, opts, 'bend');
+    const spanX = Math.max(ext.max[0] - ext.min[0], 1e-9);
     const segDefault = spanX / Math.max(4, Math.abs(opts.angle) / 2); // ~2° per edge
     const refined = refineFor(shape, opts.segmentLength ?? segDefault, opts.refine, 'bend');
     const sel = selection(refined, opts, 'bend');
-    // A selection bends over its own X extent (bend one limb, not the body).
-    const lo = sel ? sel.bounds.min : bb.min, hi = sel ? sel.bounds.max : bb.max;
-    const fn = makeBendFn(lo[0], hi[0], (lo[1] + hi[1]) / 2, opts.angle * DEG);
-    return refined.warp(sel ? weightedWarp(fn, sel.weightOf) : fn);
+    if (!sel) return refined.warp(makeBendFn(bb.min[0], bb.max[0], (bb.min[1] + bb.max[1]) / 2, opts.angle * DEG));
+    // A selection bends over its own X extent (bend one limb, not the body),
+    // then is moved rigidly so its `anchor` end stays put — the end where a limb
+    // meets the body (default: min X). makeBendFn alone pivots about the
+    // centre, which would tear the limb's root off its socket.
+    const b = sel.bounds;
+    const yRef = (b.min[1] + b.max[1]) / 2;
+    const base = makeBendFn(b.min[0], b.max[0], yRef, opts.angle * DEG);
+    const ax = anchor === 'min' ? b.min[0] : anchor === 'max' ? b.max[0] : (b.min[0] + b.max[0]) / 2;
+    const d = Math.max((b.max[0] - b.min[0]) * 1e-4, 1e-6);
+    const pa = [ax, yRef, 0], p1 = [ax - d, yRef, 0], p2 = [ax + d, yRef, 0];
+    base(pa); base(p1); base(p2);
+    const phi = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
+    const cs = Math.cos(-phi), sn = Math.sin(-phi);
+    const fn = (v: number[]) => {
+      base(v);
+      const dx = v[0] - pa[0], dy = v[1] - pa[1];
+      v[0] = ax + dx * cs - dy * sn;
+      v[1] = yRef + dx * sn + dy * cs;
+    };
+    return refined.warp(weightedWarp(fn, sel.weightOf));
   }
 
   interface TwistOpts {
@@ -387,22 +420,30 @@ export function createDeformOps(_module: any) {
     const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
     const bb = shape.boundingBox();
     const h0 = bb.min[axisIdx], h1 = bb.max[axisIdx];
-    const span = Math.max(h1 - h0, 1e-9);
+    const ext = extentFor(shape, opts, 'twist');
+    const span = Math.max(ext.max[axisIdx] - ext.min[axisIdx], 1e-9);
     const segDefault = span / Math.max(4, Math.abs(opts.degrees) / 2);
     const refined = refineFor(shape, opts.segmentLength ?? segDefault, opts.refine, 'twist');
     const sel = selection(refined, opts, 'twist');
     if (!sel) return refined.warp(makeTwistFn(axisIdx as 0 | 1 | 2, h0, h1, opts.degrees * DEG));
     // A selection twists over its own extent, about an axis through its own
-    // centroid (an arm twists about itself, not about the world origin).
-    const b = sel.bounds;
-    const twistFn = makeTwistFn(axisIdx as 0 | 1 | 2, b.min[axisIdx], b.max[axisIdx], opts.degrees * DEG);
-    const c = b.centroid;
-    const fn = (v: number[]) => {
-      for (let k = 0; k < 3; k++) if (k !== axisIdx) v[k] -= c[k];
-      twistFn(v);
-      for (let k = 0; k < 3; k++) if (k !== axisIdx) v[k] += c[k];
-    };
-    return refined.warp(weightedWarp(fn, sel.weightOf));
+    // bounding-box centre (an arm twists about itself, not the world origin).
+    // The fade weights the ANGLE, not the position: interpolating positions
+    // would pull fade-zone vertices along the chord and pinch the surface.
+    const b = sel.bounds, c = b.center;
+    const s0 = b.min[axisIdx], sSpan = Math.max(b.max[axisIdx] - s0, 1e-9);
+    const [i, j] = axisIdx === 2 ? [0, 1] : axisIdx === 0 ? [1, 2] : [2, 0];
+    const total = opts.degrees * DEG;
+    return refined.warp((v: number[]) => {
+      const w = sel.weightOf(v);
+      if (w <= 0) return;
+      const t = Math.min(1, Math.max(0, (v[axisIdx] - s0) / sSpan));
+      const a = total * t * w;
+      const cs = Math.cos(a), sn = Math.sin(a);
+      const p = v[i] - c[i], q = v[j] - c[j];
+      v[i] = c[i] + p * cs - q * sn;
+      v[j] = c[j] + p * sn + q * cs;
+    });
   }
 
   interface TaperOpts {
@@ -456,7 +497,8 @@ export function createDeformOps(_module: any) {
       cI = opts.center[0];
       cJ = opts.center[1];
     }
-    const span = Math.max(bb.max[axisIdx] - bb.min[axisIdx], 1e-9);
+    const ext = extentFor(shape, opts, 'taper');
+    const span = Math.max(ext.max[axisIdx] - ext.min[axisIdx], 1e-9);
     // Taper is linear, so curvature is mild — refine at ~1/12 of the extent.
     const refined = refineFor(shape, opts.segmentLength ?? span / 12, opts.refine, 'taper');
     const sel = selection(refined, opts, 'taper');

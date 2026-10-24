@@ -12,6 +12,7 @@
 //   { label: 'body', where: { facing: '+y' } }   several keys AND together
 //   [{ label: 'hand' }, { label: 'arm' }]        an array ORs its entries
 //   { label: 'body', except: { label: 'base' } } subtract another selector
+//   { except: { label: 'base' } }                everything except the base
 //
 // Resolution is triangle-first (a triangle is in when its label run / its
 // centroid / its normal match), then spread to the triangles' vertices, then
@@ -87,7 +88,7 @@ function parseBounds(v: unknown, name: string): [number | null, number | null, n
   return v as [number | null, number | null, number | null];
 }
 
-function parseTerm(raw: unknown, name: string): SelectorTerm {
+function parseTerm(raw: unknown, name: string, depth: number): SelectorTerm {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     fail(name, 'a selector is an object like { label: "arm" }, { region: { center, radius } } or { where: { facing: "up" } } (or an array of them)');
   }
@@ -144,19 +145,28 @@ function parseTerm(raw: unknown, name: string): SelectorTerm {
     if (!where.facing && !where.min && !where.max) fail(`${name}.where`, 'needs at least one of facing, min, max or box');
     term.where = where;
   }
-  if (o.except !== undefined) term.except = parseSelector(o.except, `${name}.except`);
-  if (!term.label && !term.region && !term.where) fail(name, 'a selector needs at least one of label, region or where');
+  if (o.except !== undefined) term.except = parseSelectorAt(o.except, `${name}.except`, depth + 1);
+  if (!term.label && !term.region && !term.where && !term.except) fail(name, 'a selector needs at least one of label, region, where or except');
   return term;
 }
 
 /** Validate and normalize a selector (object or array of objects). Throws an
  *  actionable error naming the op (`name`) on bad input. */
 export function parseSelector(raw: unknown, name: string): Selector {
+  return parseSelectorAt(raw, name, 0);
+}
+
+/** Selectors nest only through `except`; anything deeper is a mistake (or a
+ *  self-referencing object), so stop with a clear error instead of a stack overflow. */
+const MAX_SELECTOR_DEPTH = 8;
+
+function parseSelectorAt(raw: unknown, name: string, depth: number): Selector {
+  if (depth > MAX_SELECTOR_DEPTH) fail(name, `selectors nest at most ${MAX_SELECTOR_DEPTH} levels deep through except`);
   if (Array.isArray(raw)) {
     if (raw.length === 0) fail(name, 'an empty selector array selects nothing');
-    return raw.map((t, i) => parseTerm(t, `${name}[${i}]`));
+    return raw.map((t, i) => parseTerm(t, `${name}[${i}]`, depth));
   }
-  return [parseTerm(raw, name)];
+  return [parseTerm(raw, name, depth)];
 }
 
 function labelNamesOf(sel: Selector, out = new Set<string>()): Set<string> {
@@ -260,32 +270,42 @@ export function vertexWeights(mesh: SelectorMesh, triMask: Uint8Array, blend = 0
   if (!(blend > 0)) return w;
   // Feather: distance from each unselected vertex to the nearest selected one,
   // via a uniform grid with cell = blend (only the 27 neighbouring cells can
-  // hold a vertex closer than `blend`).
+  // hold a vertex closer than `blend`). Numeric cell keys (a spatial hash —
+  // collisions only add candidates, never wrong distances), and vertices
+  // outside the selection's bounds grown by `blend` are skipped outright.
   const vp = mesh.vertProperties, np = mesh.numProp;
-  const cells = new Map<string, number[]>();
-  const key = (i: number, j: number, k: number) => `${i},${j},${k}`;
+  const cells = new Map<number, number[]>();
+  const key = (i: number, j: number, k: number) => ((i * 73856093) ^ (j * 19349663) ^ (k * 83492791)) | 0;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (let v = 0; v < nv; v++) {
     if (w[v] !== 1) continue;
+    for (let a = 0; a < 3; a++) {
+      const x = vp[v * np + a];
+      if (x < lo[a]) lo[a] = x;
+      if (x > hi[a]) hi[a] = x;
+    }
     const k = key(Math.floor(vp[v * np] / blend), Math.floor(vp[v * np + 1] / blend), Math.floor(vp[v * np + 2] / blend));
     let bucket = cells.get(k);
     if (!bucket) { bucket = []; cells.set(k, bucket); }
     bucket.push(v);
   }
+  const b2 = blend * blend;
   for (let v = 0; v < nv; v++) {
     if (w[v] === 1) continue;
     const x = vp[v * np], y = vp[v * np + 1], z = vp[v * np + 2];
+    if (x < lo[0] - blend || x > hi[0] + blend || y < lo[1] - blend || y > hi[1] + blend || z < lo[2] - blend || z > hi[2] + blend) continue;
     const ci = Math.floor(x / blend), cj = Math.floor(y / blend), ck = Math.floor(z / blend);
-    let best = blend * blend;
-    for (let dk = -1; dk <= 1; dk++) for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+    let best = b2;
+    search: for (let dk = -1; dk <= 1; dk++) for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
       const bucket = cells.get(key(ci + di, cj + dj, ck + dk));
       if (!bucket) continue;
       for (const s of bucket) {
         const dx = x - vp[s * np], dy = y - vp[s * np + 1], dz = z - vp[s * np + 2];
         const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < best) best = d2;
+        if (d2 < best) { best = d2; if (best === 0) break search; }
       }
     }
-    if (best < blend * blend) w[v] = falloff(Math.sqrt(best) / blend);
+    if (best < b2) w[v] = falloff(Math.sqrt(best) / blend);
   }
   return w;
 }
@@ -304,13 +324,25 @@ export function weightLookup(mesh: SelectorMesh, weights: Float32Array): (v: Arr
   const nv = weights.length;
   const f = Math.fround;
   const k = (x: number, y: number, z: number) => `${f(x)},${f(y)},${f(z)}`;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (let v = 0; v < nv; v++) {
     if (weights[v] <= 0) continue;
+    for (let a = 0; a < 3; a++) {
+      const x = f(vp[v * np + a]);
+      if (x < lo[a]) lo[a] = x;
+      if (x > hi[a]) hi[a] = x;
+    }
     const key = k(vp[v * np], vp[v * np + 1], vp[v * np + 2]);
     const prev = map.get(key);
     if (prev === undefined || weights[v] > prev) map.set(key, weights[v]);
   }
-  return (v) => map.get(k(v[0], v[1], v[2])) ?? 0;
+  // Most vertices of a big mesh lie far from the selection: reject them on the
+  // (Float32-rounded) bounds before building a string key.
+  return (v) => {
+    const x = f(v[0]), y = f(v[1]), z = f(v[2]);
+    if (x < lo[0] || x > hi[0] || y < lo[1] || y > hi[1] || z < lo[2] || z > hi[2]) return 0;
+    return map.get(`${x},${y},${z}`) ?? 0;
+  };
 }
 
 /** Wrap a warp callback so each vertex moves `weight` of the way to where `fn`
@@ -330,11 +362,12 @@ export function weightedWarp(fn: (v: number[]) => void, weightOf: (v: ArrayLike<
   };
 }
 
-/** Bounds + centroid of the fully-selected vertices (weight 1). */
-export function selectionBounds(mesh: SelectorMesh, weights: Float32Array): { min: Vec3; max: Vec3; centroid: Vec3; count: number } {
+/** Bounds + bounding-box centre of the fully-selected vertices (weight 1).
+ *  The box centre is the stable pivot: a vertex average would lean toward
+ *  densely tessellated areas (common on scans). */
+export function selectionBounds(mesh: SelectorMesh, weights: Float32Array): { min: Vec3; max: Vec3; center: Vec3; count: number } {
   const vp = mesh.vertProperties, np = mesh.numProp;
   const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
-  const sum: Vec3 = [0, 0, 0];
   let count = 0;
   for (let v = 0; v < weights.length; v++) {
     if (weights[v] !== 1) continue;
@@ -342,12 +375,11 @@ export function selectionBounds(mesh: SelectorMesh, weights: Float32Array): { mi
       const x = vp[v * np + k];
       if (x < min[k]) min[k] = x;
       if (x > max[k]) max[k] = x;
-      sum[k] += x;
     }
     count++;
   }
-  const centroid: Vec3 = count ? [sum[0] / count, sum[1] / count, sum[2] / count] : [0, 0, 0];
-  return { min, max, centroid, count };
+  const center: Vec3 = count ? [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2] : [0, 0, 0];
+  return { min, max, center, count };
 }
 
 // ---------------------------------------------------------------------------

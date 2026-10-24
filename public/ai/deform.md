@@ -38,11 +38,12 @@ move the triangles around.
 { label: 'arm' }                               // an api.label part — or a detected part of an import (api.importWithParts)
 { label: ['hair', 'brows'] }                   // any of several parts
 { region: { center: [0, 0, 40], radius: 8 } }  // a ball
-{ where: { facing: 'up', tolerance: 20 } }     // faces pointing a way: 'up' | 'down' | '+x' | '-x' | '+y' | '-y' | [x, y, z]
+{ where: { facing: 'up', tolerance: 20 } }     // faces pointing a way: 'up' | 'down' | '+x' | '-x' | '+y' | '-y' | [x, y, z]; tolerance in degrees, default 30
 { where: { min: [null, null, 30] } }           // faces above z = 30 (null = unbounded); also max, or box: { min, max }
 { label: 'body', where: { facing: '+y' } }     // several keys AND together
 [{ label: 'hand' }, { label: 'arm' }]          // an array ORs its entries
 { label: 'body', except: { label: 'base' } }   // subtract another selector
+{ except: { label: 'base' } }                  // everything except the base
 ```
 
 A face is selected when its label, centroid and normal match. `blend: d` fades
@@ -53,21 +54,23 @@ does nothing.
 
 ```js
 // Soft-selection transform (Blender's proportional editing): move / scale /
-// rotate just the selection, about its own centroid unless you pass pivot.
+// rotate just the selection, about the centre of its bounding box unless you pass pivot.
 m = api.sculpt.transform(m, { select: { label: 'head' }, scale: 1.4, blend: 3 });
 m = api.sculpt.transform(m, { select: { label: 'arm' }, rotate: [0, -25, 0], pivot: [10, 0, 22] });
 m = api.sculpt.transform(m, { select: { where: { min: [null, null, 40] } }, translate: [0, 0, 5], blend: 4 }); // stretch the top
 
 m = api.twist(m, { select: { label: 'arm' }, degrees: 90, axis: 'x' });   // over the arm's own extent and axis
+m = api.bend(m, { select: { label: 'arm' }, angle: 60 });                  // the arm's min-X end (its root) stays put; anchor: 'max' | 'center'
 m = api.taper(m, { select: { label: 'leg' }, scaleTop: 0.6, blend: 2 });
 m = api.sculpt.inflate(m, { at: [0, -9, 36], radius: 6, amount: 2, select: { label: 'head' } }); // can't bleed onto the neck
 const studs = api.scatter(m, stud, { count: 40, where: { label: 'shell', where: { facing: 'up' } } });
 ```
 
 Facts to respect:
-- **The selection deforms over its own bounds.** `twist` / `taper` / `bend` measure the selection's extent, and twist turns about the selection's own centre line, so one arm twists about itself and not the world origin.
+- **The selection deforms over its own bounds.** `twist` / `taper` / `bend` measure the selection's extent (and refine to its size), and twist turns about the centre line of the selection's bounding box, so one arm twists about itself and not the world origin. A scoped `bend` keeps the selection's min-X end fixed (`anchor: 'min'`, the default), so a limb stays on its socket. Pass `anchor: 'max'` or `'center'` to change that.
 - **A hard edge (no `blend`) moves whole triangles at the seam.** Triangles straddling the boundary stretch. Big scales or rotations of a part fused into the body read better with a `blend` of a few units.
-- **`blend` refines the mesh** to about `blend / 3` edges so the fade has vertices, and that refine covers the whole shape. Keep `blend` reasonable on huge imports, or pass `segmentLength`.
+- **The fade weights the motion, not the position.** In the blend zone `sculpt.transform` and `twist` turn by a fraction of the angle (and scale or move by a fraction), so the surface follows the arc instead of pinching inward. `bend` and `taper` fade by position.
+- **Only `sculpt.transform` refines for `blend`.** It refines to about `blend / 3` edges so the fade has vertices, over the whole shape, and errors before building a mesh over the ~3M-triangle budget. Keep `blend` reasonable on huge imports, or pass `segmentLength`. The brushes and deforms refine by their own radius or span as before.
 - **Labels carry through.** The ops warp vertices without remeshing, so every `api.label` part keeps its faces, and `paintByLabel` / `withinPart` still work afterwards. This is unlike `round` / `smoothWeld`.
 - **Imports:** after `acceptParts`, an imported mesh's detected parts are labels (`api.importWithParts(0)`), so `select: { label: 'hair' }` works on STL figurines too. That's the way to "make the head bigger" on an upload.
 
@@ -114,7 +117,8 @@ const spikes = api.scatter(base, spike, {
   scale: [0.8, 1.2],   // uniform per-instance scale (number or [min, max] range)
   offset: -0.5,        // along the normal; NEGATIVE sinks the base in so the union fuses
   minSpacing: 4,       // Poisson-ish minimum distance between anchors
-  where: (p, n) => n[2] > 0.2,  // optional predicate: position + unit normal
+  where: (p, n) => n[2] > 0.2,  // optional: a predicate (position + unit normal)…
+  // where: { label: 'shell', where: { facing: 'up' } },  // …or a selector object (see "Selecting part of a shape")
 });
 return api.expectUnion([base, spikes], { expectComponents: 1 });
 ```

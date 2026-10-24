@@ -108,18 +108,29 @@ export function makeFlattenFn(at: Vec3, radius: number, n: Vec3, strength: numbe
 }
 
 /** Soft-selection transform: scale (uniform or per-axis) and rotate (degrees,
- *  X then Y then Z — Manifold.rotate's order) about `pivot`, then translate. */
-export function makeTransformFn(pivot: Vec3, scale: Vec3, rotateDeg: Vec3, translate: Vec3): (v: number[]) => void {
-  const [ax, ay, az] = rotateDeg.map(d => (d * Math.PI) / 180);
-  const cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay), cz = Math.cos(az), sz = Math.sin(az);
+ *  X then Y then Z — Manifold.rotate's order) about `pivot`, then translate.
+ *  `weightOf` (default: 1 everywhere) scales the transform's PARAMETERS per
+ *  vertex — angle·w, 1+(s−1)·w, offset·w — so a fade zone rotates along the
+ *  arc instead of being pulled along the chord (which pinches the surface). */
+export function makeTransformFn(
+  pivot: Vec3, scale: Vec3, rotateDeg: Vec3, translate: Vec3,
+  weightOf: (v: ArrayLike<number>) => number = () => 1,
+): (v: number[]) => void {
+  const rad = rotateDeg.map(d => (d * Math.PI) / 180);
   return (v) => {
-    let x = (v[0] - pivot[0]) * scale[0], y = (v[1] - pivot[1]) * scale[1], z = (v[2] - pivot[2]) * scale[2];
+    const w = weightOf(v);
+    if (w <= 0) return;
+    const ax = rad[0] * w, ay = rad[1] * w, az = rad[2] * w;
+    const cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay), cz = Math.cos(az), sz = Math.sin(az);
+    let x = (v[0] - pivot[0]) * (1 + (scale[0] - 1) * w);
+    let y = (v[1] - pivot[1]) * (1 + (scale[1] - 1) * w);
+    let z = (v[2] - pivot[2]) * (1 + (scale[2] - 1) * w);
     let t = y * cx - z * sx; z = y * sx + z * cx; y = t; // about X
     t = x * cy + z * sy; z = -x * sy + z * cy; x = t;    // about Y
     t = x * cz - y * sz; y = x * sz + y * cz; x = t;     // about Z
-    v[0] = x + pivot[0] + translate[0];
-    v[1] = y + pivot[1] + translate[1];
-    v[2] = z + pivot[2] + translate[2];
+    v[0] = x + pivot[0] + translate[0] * w;
+    v[1] = y + pivot[1] + translate[1] * w;
+    v[2] = z + pivot[2] + translate[2] * w;
   };
 }
 
@@ -213,7 +224,8 @@ export function createSculptOps(_module: any) {
   /** Move / scale / rotate the SELECTED part of a shape in place — Blender's
    *  proportional editing. The selection moves rigidly; with `blend` the
    *  surface within `blend` units of it follows partway, so the edit fades in
-   *  instead of tearing at the seam. Pivot defaults to the selection's centroid. */
+   *  instead of tearing at the seam. Pivot defaults to the centre of the
+   *  selection's bounding box. */
   function transform(shape: any, opts: TransformOpts): any {
     const name = 'sculpt.transform';
     need(isManifold(shape), `${name}(shape, opts): shape must be a Manifold`);
@@ -237,10 +249,25 @@ export function createSculptOps(_module: any) {
     // Only the fade zone needs extra vertices; a hard selection moves whole
     // triangles as they are. An explicit segmentLength always refines.
     const seg = opts.segmentLength ?? (blend > 0 ? blend / 3 : undefined);
-    const refined = seg !== undefined ? refineFor(shape, seg * 5, { ...opts, segmentLength: seg }, name) : shape;
+    need(!(opts.refine === true && seg === undefined), `${name}.refine: true needs a segmentLength (or a blend, which refines to blend / 3)`);
+    let refined = shape;
+    if (seg !== undefined && opts.refine !== false) {
+      need(isFiniteNum(seg) && seg > 0, `${name}.segmentLength must be > 0`);
+      // The refine covers the whole shape, so estimate its size BEFORE building
+      // it (an equilateral triangle of edge s has area ≈ 0.433·s²): a small
+      // blend on a big import fails here by name instead of exhausting memory.
+      const estimate = shape.surfaceArea() / (0.433 * seg * seg);
+      if (estimate > REFINE_TRI_BUDGET) {
+        throw new Error(
+          `meshOps: ${name}: blend ${blend} refines the whole shape to ~${seg.toFixed(3)}-unit edges ≈ ${Math.round(estimate / 1000)}k triangles ` +
+          `(budget ${REFINE_TRI_BUDGET / 1000}k). Use a larger blend, pass a larger segmentLength, or refine: false.`,
+        );
+      }
+      refined = refineFor(shape, seg * 5, { ...opts, segmentLength: seg }, name);
+    }
     const sel = selectionWeights(refined, select!, blend, name);
-    const pivot = (opts.pivot as Vec3 | undefined) ?? sel.bounds.centroid;
-    return refined.warp(weightedWarp(makeTransformFn(pivot, scale, rotate, translate), sel.weightOf));
+    const pivot = (opts.pivot as Vec3 | undefined) ?? sel.bounds.center;
+    return refined.warp(makeTransformFn(pivot, scale, rotate, translate, sel.weightOf));
   }
 
   return { grab, inflate, flatten, transform };

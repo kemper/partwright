@@ -16,7 +16,7 @@ import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
 import { setSelectorLabels } from '../selector';
-import { getBrepNamespace, setBrepRemovedParts, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
+import { getBrepNamespace, setBrepRemovedParts, peekBrepToManifoldLabels, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../import/importParts';
 import type { RegionDescriptor } from '../../color/regions';
@@ -925,14 +925,16 @@ export const manifoldJsEngine: Engine = {
       setBrepRemovedParts(removedParts);
       // Selector `label` terms (sculpt / deform / scatter `select:`) resolve
       // against this run's labels — read live, so a label declared just before
-      // the op that selects it is found.
+      // the op that selects it is found. BREP.label parts (BREP.toManifold)
+      // only merge into labelRegistry after the run, so peek at those too.
+      const allLabelRegistries = () => [labelRegistry, ...peekBrepToManifoldLabels()];
       setSelectorLabels({
         ids: (name) => {
           const ids: number[] = [];
-          for (const [id, n] of labelRegistry) if (n === name) ids.push(id);
+          for (const reg of allLabelRegistries()) for (const [id, n] of reg) if (n === name) ids.push(id);
           return ids.length > 0 ? ids : null;
         },
-        names: () => [...new Set(labelRegistry.values())],
+        names: () => [...new Set(allLabelRegistries().flatMap(reg => [...reg.values()]))],
       });
       result = fn(api);
 

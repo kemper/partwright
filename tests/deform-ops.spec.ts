@@ -148,9 +148,12 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
       ].join('\n');
       const r = await api.run(code) as { error?: string } | undefined;
       const geo = await api.getGeometryData();
+      // The ops warp vertices without remeshing, so every label keeps its faces.
+      const parts = await (window as unknown as { partwright: { listObjectParts: () => { parts?: { name: string; triangleCount: number }[] } } }).partwright.listObjectParts();
+      const partTris = Object.fromEntries((parts.parts ?? []).map(p => [p.name, p.triangleCount]));
       const bad = await api.run("const { Manifold } = api; return api.sculpt.transform(api.label(Manifold.cube(5), 'a'), { select: { label: 'nope' }, scale: 2 });") as { error?: string } | undefined;
       const badGeo = await api.getGeometryData() as { error?: string } | null;
-      return { runError: (r && r.error) || null, geo, badError: (bad && bad.error) || badGeo?.error || '' };
+      return { runError: (r && r.error) || null, geo, partTris, badError: (bad && bad.error) || badGeo?.error || '' };
     });
 
     expect(out.runError).toBeNull();
@@ -160,6 +163,9 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     const bb = out.geo!.boundingBox!;
     expect(bb.y[1] - bb.y[0]).toBeCloseTo(25.2, 0);
     expect(bb.z[0]).toBeCloseTo(0, 3);
+    expect(out.partTris.head).toBeGreaterThan(0);
+    expect(out.partTris.arm).toBeGreaterThan(0);
+    expect(out.partTris.body).toBeGreaterThan(0);
     // An unknown part is a loud, actionable error — not a silent no-op.
     expect(out.badError).toContain('no part "nope"');
   });

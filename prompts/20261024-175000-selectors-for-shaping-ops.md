@@ -51,3 +51,31 @@ decimal-grid position key missed some selected vertices. Keying on
 **Out of scope for this PR (tracked in #1093)**: `round` / `smoothWeld` region
 scoping (lattice-based), label carry-through on remeshing ops, `api.editPart`,
 and `diffVersions`.
+
+## Assistant (review round)
+
+A read-only review found nothing blocking and six should-fix items. All six
+are fixed in this follow-up:
+
+- **No pinch in the fade zone.** `sculpt.transform` and scoped `twist` now
+  weight the transform's parameters per vertex (angle·w, 1+(s−1)·w,
+  offset·w). Interpolating positions moved fade-zone vertices along the
+  chord: at 90° and w = 0.5 the surface sat at 0.707 r. `bend` and `taper`
+  keep position blending, since taper is linear and bend has no clean
+  partial-angle form.
+- **Scoped `bend` keeps its root on.** The bend is rigidly re-placed so the
+  selection's `anchor` end (default `min`) keeps its position and tangent.
+  The plain bend pivots about the centre, which tore a limb off its socket.
+- **Refine density follows the selection.** It is measured on the unrefined
+  shape, so a small limb still gets about 2° per edge.
+- **`blend` cost.** The search uses numeric spatial-hash keys, a bbox prefilter
+  on both the feather search and the warp lookup, and an early exit at
+  distance 0. Before refining, `sculpt.transform` estimates the triangle count
+  (area / 0.433·s²) and throws by name if it is over budget.
+- **BREP labels.** `BREP.toManifold` labels are visible to `{label}` during
+  the run (`peekBrepToManifoldLabels`).
+- **Nits.** The pivot is the bbox centre, not the vertex average (which leans
+  toward dense scan areas). The twist parameter `t` is clamped. A bare
+  `except` means "everything else". Nesting is limited to 8 levels.
+  Scatter skips masked-out faces and has a selector-specific "matched no
+  faces" error.
