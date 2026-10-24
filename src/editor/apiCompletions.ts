@@ -109,7 +109,7 @@ const SDF_STATIC: Completion[] = [
   fn('lsystem', '({axiom, rules, iterations, angle?, length?, radius?, radiusScale?, blend?, label?, leaf?})', 'Grow a fractal plant/coral/branching structure into an SDF node of welded capsules. Optional foliage spheres via leaf.'),
   fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),
   val('figure', 'namespace', 'Posable humanoid figure builder — rig + parts (people / characters / busts). See /ai/figure.md.', 'variable'),
-  val('creature', 'namespace', 'Creature feature kit — eyes / ears / feet / hands / crease / build for creatures & mascots. See /ai/creature.md.', 'variable'),
+  val('creature', 'namespace', 'Creature feature kit — eyes / muzzle / ears / feet / hands / crease / build for creatures & mascots. See /ai/creature.md.', 'variable'),
 ];
 
 const SDF_INSTANCE: Completion[] = [

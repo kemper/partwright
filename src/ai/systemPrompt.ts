@@ -39,8 +39,9 @@ api.sdf.figure builder — a deterministic posable rig + parts (no coordinate
 guessing, always one component) — and call readDoc("figure") FIRST. For a
 CREATURE / monster / mascot / toy animal (big eyes, horns, bat ears, claws —
 anything the humanoid rig can't express) call readDoc("creature") FIRST: the
-api.sdf.creature kit gives socketed eyes, cupped ears, clawed feet, hands and
-surface-seated mouth creases, plus a complete worked example. For other
+api.sdf.creature kit gives perfectly round lidded eyes, a puffy cat muzzle that
+pushes out of the face, lobed bat ears, clawed feet and hands, plus a complete
+worked example. For other
 organic forms call readDoc("sdf") FIRST (the smooth-blend vocabulary).
 Do NOT assemble an organic figure from a union of constant-radius spheres,
 cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
@@ -352,7 +353,7 @@ Available tools you'll use most:
   prompt doesn't have room for. Available names:
   curves (smooth shapes / lofts / airfoils),
   figure (api.sdf.figure — posable humanoid rig: people / characters / heroes / busts),
-  creature (api.sdf.creature — creatures / monsters / mascots / toy animals: socketed eyes, cupped ears, clawed feet, mouth creases),
+  creature (api.sdf.creature — creatures / monsters / mascots / toy animals: round lidded eyes, puffy cat muzzle, lobed bat ears, clawed feet),
   sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),

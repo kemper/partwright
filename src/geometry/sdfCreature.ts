@@ -8,18 +8,24 @@
 // several render passes to get right (distilled from the Ned figurine,
 // examples/creature_ned.js):
 //
-//   eyes   — a steep-walled aperture cut into the skin + a raised lid rim + an
-//            optional hooded upper lid + an eyeball CLIPPED to the opening. The
-//            steep wall crosses the eyeball at an angle, so the eye edge meshes
-//            crisp (a socket ellipsoid nearly parallel to the eyeball grazes it
-//            and stair-steps), and the clip stops the eyeball poking out the
-//            side of a narrow skull.
+//   eyes   — round eyes: an eyelid shell hugging the eyeball, a steep-walled
+//            round opening cut through it, and an eyeball CLIPPED to the
+//            opening. The lid edge is concentric with the black disc (a perfect
+//            circle — no grey socket wall, no bite where a cheek stands proud);
+//            the steep wall meshes a crisp edge (a socket ellipsoid nearly
+//            parallel to the eyeball grazes it and stair-steps); the clip stops
+//            the eyeball poking out the side of a narrow skull.
+//   muzzle — a puffy cat-like muzzle seated on the face: overhanging upper-lip
+//            pads over a tucked lower lip, so the mouth line is the shadow of
+//            that overhang (a "w" that curls up at the corners), a philtrum
+//            cleft, a rounded-triangle cat nose, optional whisker dots.
 //   crease — a groove (mouth line, philtrum, fold, toe split) SEATED on the real
 //            built surface via surfacePoint, so it never floats off the face or
 //            tunnels through to the back of the head.
-//   ears   — a cupped membrane ear: a sphere SHELL clipped to a tapered leaf
-//            outline (constant thickness, concave face forward), with an inner
-//            membrane + raised veins as a separate paint label.
+//   ears   — a lobed bat/cat ear: a cylinder SHELL (cupped across the width)
+//            clipped to an asymmetric leaf — straight top edge, a rounded lobe
+//            near the root, a pointed tip — with an inner membrane + ribs
+//            fanning from the root as a separate paint label.
 //   feet   — a long flat foot with toe pads, toe-split creases and claws.
 //   hands  — a small relaxed hanging hand (palm + tapered fingers + thumb).
 //   build  — attaches every feature in order, flattens the soles onto the
@@ -69,6 +75,7 @@ export interface CreatureSdfApi {
   ellipsoid(rx: number, ry: number, rz: number): Node;
   box(size: Vec3 | number): Node;
   capsule(a: Vec3, b: Vec3, radius: number): Node;
+  cylinder(radius: number, height: number): Node;
   tube(path: Vec3[], radius: number, opts?: object): Node;
   union(...nodes: Node[]): Node;
 }
@@ -100,6 +107,10 @@ export interface CreatureNamespace {
   feet(opts: object): CreatureFeature;
   /** Small relaxed hanging hands (palm + fingers + thumb). */
   hands(opts: object): CreatureFeature;
+  /** A puffy cat-like muzzle seated on the face: overhanging upper-lip pads,
+   *  a tucked lower lip, a "w" mouth line that curls up at the corners, a
+   *  philtrum cleft and an optional cat nose + whisker dots. */
+  muzzle(opts: object): CreatureFeature;
   /** Carve a soft groove along `path`, seated on `surface`'s real outer face.
    *  Returns the carved surface. */
   crease(surface: Node, path: unknown[], opts?: object): Node;
@@ -181,11 +192,11 @@ function buildEyes(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   if (o.at === undefined) throw new ValidationError(`creature.eyes: 'at' (the +X eyeball centre [x, y, z]) is required. ${DOC}`);
   const at = point3(o.at, 'creature.eyes.at');
   const r = num(o.radius, 6, 'creature.eyes.radius', 0.1);
-  const aspect = (o.aspect === undefined || o.aspect === null ? [1.06, 0.98, 1] : assertNumberTuple(o.aspect, 3, 'creature.eyes.aspect')) as Vec3;
+  const aspect = (o.aspect === undefined || o.aspect === null ? [1, 1, 1] : assertNumberTuple(o.aspect, 3, 'creature.eyes.aspect')) as Vec3;
   if (aspect.some((a) => !(a > 0))) throw new ValidationError(`creature.eyes.aspect must be three positive multipliers, got [${aspect.join(', ')}]. ${DOC}`);
   const opening = num(o.opening, 0.85, 'creature.eyes.opening', 0.3, 0.98);
   const rim = num(o.rim, 1, 'creature.eyes.rim', 0, 3);
-  const hood = num(o.hood, 0.7, 'creature.eyes.hood', 0, 2);
+  const hood = num(o.hood, 0, 'creature.eyes.hood', 0, 2);
   const tilt = num(o.tilt, 0, 'creature.eyes.tilt', -60, 60);
   const yaw = num(o.yaw, 0, 'creature.eyes.yaw', -60, 60);
   const label = str(o.label, 'eyes', 'creature.eyes.label');
@@ -198,23 +209,29 @@ function buildEyes(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   // the view axis (+ drops the outer corner of the +X eye); `yaw` turns it out.
   const place = (n: Node): Node => mirrorNode(n.rotate(rot).translate(at), mirror);
   const ball = sdf.ellipsoid(ax, ay, az);
-  // The aperture runs deep along the view axis → its wall crosses the eyeball
-  // steeply, which meshes a crisp eye edge.
-  const aperture = sdf.ellipsoid(ax * opening, ay * 1.4, az * opening).translate(0, -ay * 1.2, 0);
   const clip = sdf.ellipsoid(ax, ay * 1.4, az).translate(0, -ay * 1.2, 0);
   const eyeball = place(ball.intersect(clip)).label(label);
 
-  const rimNode = rim > 0 ? place(sdf.ellipsoid(ax * 1.1, ay * 0.54 * rim, az * 1.15).translate(0, -ay * 0.54, 0)) : null;
   const hoodNode = hood > 0
     ? place(sdf.ellipsoid(ax * 1.12, ay * 0.62, az * 0.58 * hood).rotate(0, -10, 0).translate(0, -ay * 0.48, az * 0.73))
     : null;
-  const cut = place(aperture);
+  // EYELIDS: a thin shell hugging the eyeball (concentric with it), blended into
+  // the face, with a round opening cut through it. The lid's cut edge is the
+  // slim rim — concentric with the black disc, so the eye stays a perfect
+  // circle with no grey socket wall and no bite where a cheek or nose bridge
+  // stands proud. (A broad rim blob blended with a big k instead merges both
+  // eyes into a goggle-shaped plateau — the "mask" look.)
+  const lt = r * 0.12 * rim;
+  const lid = lt > 0 ? place(sdf.ellipsoid(ax + lt, ay + lt, az + lt)) : null;
+  // The aperture runs deep along the view axis → its wall crosses the eyeball
+  // steeply, which meshes a crisp eye edge.
+  const aperture = place(sdf.ellipsoid(ax * opening, ay * 1.4, az * opening).translate(0, -ay * 1.2, 0));
 
   const attach = (skin: Node): Node => {
     let s = skin;
-    if (rimNode) s = s.smoothUnion(rimNode, r * 0.68);
     if (hoodNode) s = s.smoothUnion(hoodNode, r * 0.6);
-    return s.smoothSubtract(cut, r * 0.12);
+    if (lid) s = s.smoothUnion(lid, r * 0.3);
+    return s.smoothSubtract(aperture, Math.max(lt, r * 0.04) * 0.5);
   };
   const center = add(at, rotatePoint([0, -ay * 0.55, 0], rot));
   return feature('eyes', attach, [eyeball], mirrorDetail([{ center, radius: r * 1.1, edgeLength: edge }], mirror));
@@ -222,14 +239,15 @@ function buildEyes(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
 
 // --- ears -----------------------------------------------------------------
 
-const EAR_KEYS = ['root', 'length', 'width', 'cup', 'thickness', 'lift', 'sweep', 'veins', 'inner', 'innerLabel', 'mirror', 'blend', 'edgeLength'] as const;
+const EAR_KEYS = ['root', 'length', 'width', 'belly', 'cup', 'thickness', 'lift', 'sweep', 'veins', 'inner', 'innerLabel', 'mirror', 'blend', 'edgeLength'] as const;
 
 function buildEars(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const o = opts(raw, 'creature.ears(opts)', EAR_KEYS);
   if (o.root === undefined) throw new ValidationError(`creature.ears: 'root' (where the +X ear meets the head) is required. ${DOC}`);
   const root = point3(o.root, 'creature.ears.root');
   const L = num(o.length, 30, 'creature.ears.length', 1);
-  const W = num(o.width, L * 0.68, 'creature.ears.width', 0.5);
+  const W = num(o.width, L * 0.55, 'creature.ears.width', 0.5);
+  const belly = num(o.belly, 1, 'creature.ears.belly', 0, 2);
   const cup = num(o.cup, 1, 'creature.ears.cup', 0.2, 3);
   const t = num(o.thickness, Math.max(0.8, L * 0.045), 'creature.ears.thickness', 0.2);
   const lift = num(o.lift, 16, 'creature.ears.lift', -90, 90);
@@ -242,33 +260,59 @@ function buildEars(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const edge = num(o.edgeLength, Math.max(0.1, t * 0.18), 'creature.ears.edgeLength', 0.02);
 
   // Local frame: the ear runs +X from its root, membrane in the XZ plane, the
-  // cup's concave face toward −Y (forward). A sphere SHELL clipped to a tapered
-  // leaf outline gives a constant-thickness curved membrane.
-  const half = W / 2;
-  const cupR = (L * 0.49) / cup;
-  const cupC: Vec3 = [L * 0.45, -cupR, 0];
-  const keepBack = sdf.box([L * 3, half, L * 3]).translate(0, half / 6, 0);
-  const outline = sdf.tube([[-L * 0.09, 0, 0], [L * 0.45, 0, half * 0.07], [L, 0, half * 0.2]], half, { taper: 0.05 });
-  const skinEar = sdf.sphere(cupR).translate(cupC).shell(t).smoothIntersect(outline, t * 0.5).intersect(keepBack);
+  // cup's concave face toward −Y (forward). The outline is an asymmetric LEAF:
+  // a narrow-ish root high on the head, a straight top edge out to a pointed
+  // tip at (L, 0), and a lower edge that bellies into a rounded LOBE about a
+  // third of the way out, then runs straight to the tip. Built as a prism
+  // along Y; a cylinder SHELL clipped to it gives a constant-thickness cupped
+  // membrane.
+  const a = W * 0.42, b = W * 0.2;                  // root span above / below the root point
+  const lobeX = L * 0.33, lobeZ = -(b + (W * 0.58 - b) * belly);   // the lobe's lowest point
+  const d = -lobeZ - b;
+  const Rl = Math.max((lobeX * lobeX + d * d) / (2 * Math.max(d, 1e-3)), 1e-3);
+  const big = L * 4;
+  // Region on the "below" side of the line through p at `ang`° (from +X toward
+  // +Z), pulled `inset` toward the inside. `below: false` gives the other side.
+  const half = (px: number, pz: number, ang: number, inset: number, below = true): Node => {
+    const t2 = (below ? ang : ang + 180) * DEG;
+    const nx = -Math.sin(t2), nz = Math.cos(t2);     // outward normal of the kept side
+    return sdf.box([big, big, big]).translate(0, 0, -big / 2).rotate(0, -(below ? ang : ang + 180), 0)
+      .translate(px - nx * inset, 0, pz - nz * inset);
+  };
+  const leaf = (inset: number, x0: number): Node => {
+    const top = half(0, a, Math.atan2(-a, L) / DEG, inset);
+    const lobe = sdf.cylinder(Math.max(Rl - inset, 0.1), big).rotate(90, 0, 0).translate(lobeX, 0, lobeZ + Rl);
+    const toTip = half(lobeX, lobeZ, Math.atan2(-lobeZ, L - lobeX) / DEG, inset, false)
+      .intersect(sdf.box([big, big, big]).translate(lobeX + big / 2, 0, 0));
+    const keepX = sdf.box([big, big, big]).translate(x0 + big / 2, 0, 0);
+    return top.smoothIntersect(lobe.smoothUnion(toTip, t * 1.5), t * 0.8).smoothIntersect(keepX, t * 0.6);
+  };
+  // Cupped ACROSS the width (a cylinder along the ear), straight along its
+  // length — a sphere cup smaller than the leaf falls away before the tip.
+  const cupR = (W * 0.9) / cup;
+  const zMid = (a + lobeZ) / 2;
+  const cupCyl = (rad: number): Node => sdf.cylinder(rad, big).rotate(0, 90, 0).translate(L / 2, -cupR, zMid);
+  const keepBack = sdf.box([big, W, big]);
+  const skinEar = cupCyl(cupR).shell(t).smoothIntersect(leaf(0, -L * 0.09), t * 0.5).intersect(keepBack);
   const rot: Vec3 = [0, -lift, sweep];
   const place = (n: Node): Node => mirrorNode(n.rotate(rot).translate(root), mirror);
 
   const parts: Node[] = [];
   if (inner) {
-    const innerOutline = sdf.tube([[0, 0, 0], [L * 0.45, 0, half * 0.07], [L - t * 1.6, 0, half * 0.2]], Math.max(half - t * 1.25, half * 0.5), { taper: 0.06 });
-    // The membrane's back half sits INSIDE the ear shell (a ~0.5 t overlap).
-    // A thin overlap between two separately-meshed, near-parallel surfaces
-    // flickers through itself at a coarse grid and the hard union fills with
-    // tiny tunnels (genus in the hundreds).
-    let membrane = sdf.sphere(cupR - t * 0.4).translate(cupC).shell(t * 0.8).smoothIntersect(innerOutline, t * 0.38).intersect(keepBack);
+    // Inset from the rim, and starting OUTSIDE the skull so the membrane's
+    // root edge is a clean curve on the ear rather than a ragged seam on the head.
+    const innerOutline = leaf(t * 1.3, L * 0.1);
+    let membrane = cupCyl(cupR - t * 0.4).shell(t * 0.8).smoothIntersect(innerOutline, t * 0.38).intersect(keepBack);
     if (veins > 0) {
       // Veins are chunky (≥ ~1.5 grid cells across at the usual 0.5–0.8 grid)
       // and smooth-welded into the membrane: thin hard-unioned strips march into
       // a tangle of tiny handles (genus in the hundreds) at a coarse grid.
-      const veinShell = sdf.sphere(cupR - t * 0.9).translate(cupC).shell(t * 0.6);
+      const veinShell = cupCyl(cupR - t * 0.9).shell(t * 0.6).intersect(keepBack);
       for (let i = 0; i < veins; i++) {
-        const ang = veins === 1 ? 0 : lerp(-15, 15, spread(veins, i));
-        const fan = sdf.box([L, L, t]).translate(L / 2, 0, 0).rotate(0, -ang, 0).translate(t * 0.6, 0, 0);
+        // fan from the root toward the rim: from the lower lobe up toward the tip
+        const lo = Math.atan2(lobeZ * 0.8, lobeX) / DEG, hi = Math.atan2(a * 0.1, L) / DEG;
+        const ang = veins === 1 ? (lo + hi) / 2 : lerp(lo, hi, spread(veins, i));
+        const fan = sdf.box([L, L, t]).translate(L / 2, 0, 0).rotate(0, -ang, 0).translate(L * 0.06, 0, (a - b) / 4);
         membrane = membrane.smoothUnion(fan.intersect(veinShell).intersect(innerOutline), t * 0.3);
       }
     }
@@ -364,6 +408,89 @@ function buildHands(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
   const center = add(at, rotatePoint([0, -1 * s, -2.5 * s], [0, 0, yaw]));
   return feature('hands', (skin) => skin.smoothUnion(placed, blend), [],
     mirrorDetail([{ center, radius: 7 * s, edgeLength: edge }], mirror));
+}
+
+// --- muzzle ---------------------------------------------------------------
+
+const MUZZLE_KEYS = ['at', 'width', 'puff', 'smile', 'lowerLip', 'cleft', 'mouth', 'dots', 'nose', 'noseSize', 'noseLabel', 'edgeLength'] as const;
+
+function buildMuzzle(sdf: CreatureSdfApi, raw: unknown): CreatureFeature {
+  const o = opts(raw, 'creature.muzzle(opts)', MUZZLE_KEYS);
+  if (o.at === undefined) throw new ValidationError(`creature.muzzle: 'at' ([x, z] of the upper-lip centre on the face, seen from the front) is required. ${DOC}`);
+  const [cx, cz] = assertNumberTuple(o.at, 2, 'creature.muzzle.at');
+  const W = num(o.width, 20, 'creature.muzzle.width', 0.5);
+  const puff = num(o.puff, 1, 'creature.muzzle.puff', 0, 3);
+  const smile = num(o.smile, 1, 'creature.muzzle.smile', -1, 3);
+  const lower = num(o.lowerLip, 1, 'creature.muzzle.lowerLip', 0, 2);
+  const cleft = num(o.cleft, 1, 'creature.muzzle.cleft', 0, 3);
+  const mouth = bool(o.mouth, true, 'creature.muzzle.mouth');
+  const dots = int(o.dots, 0, 'creature.muzzle.dots', 0, 4);
+  const nose = bool(o.nose, true, 'creature.muzzle.nose');
+  const noseSize = num(o.noseSize, 1, 'creature.muzzle.noseSize', 0.2, 4);
+  const noseLabel = str(o.noseLabel, 'nose', 'creature.muzzle.noseLabel');
+  const s = W / 20;
+  const edge = num(o.edgeLength, Math.max(0.06, 0.18 * s), 'creature.muzzle.edgeLength', 0.02);
+  const front: Vec3 = [0, -1, 0];
+  const parts: Node[] = [];
+  const detail: DetailSphere[] = [];
+
+  const attach = (skin: Node): Node => {
+    // Everything is placed relative to the REAL face surface at `at`, so the
+    // muzzle sits on the face instead of floating in front of / inside it.
+    const b = skin.bounds();
+    const midY = (b.min[1] + b.max[1]) / 2;
+    const reach = (b.max[1] - b.min[1]) + 10;
+    const anchor = surfacePoint(skin, [cx, midY, cz], front, { reach });
+    if (!anchor) throw new ValidationError(`creature.muzzle.at [${cx}, ${cz}] misses the face (seen from the front). ${DOC}`);
+    const y0 = anchor[1];
+    const E = (rx: number, ry: number, rz: number, x: number, dy: number, dz: number) =>
+      sdf.ellipsoid(rx * s, ry * s, rz * s).translate(cx + x * s, y0 + dy * s, cz + dz * s);
+    // Upper lip: a broad snout base + two plump pads that overhang the lower lip.
+    const snout = E(10, 7, 6.8, 0, 0.4 + 2.5 * (1 - puff), 0);
+    const pad = sdf.ellipsoid(5.6 * s, 4.6 * s, 4.4 * s).rotate(0, 0, -10)
+      .translate(cx + 4.4 * s, y0 - 4.0 * s * puff, cz + 0.1 * s);
+    const pads = pad.union(pad.translate(-cx, 0, 0).mirror('x').translate(cx, 0, 0));
+    const upper = snout.smoothUnion(pads, 1.2 * s);
+    let out = skin.smoothUnion(upper, 4 * s);
+    if (lower > 0) {
+      // Set back under the pads and joined with a TIGHT blend — the junction
+      // is the mouth line's shadow.
+      const lip = E(4.4 * lower, 2.8 * lower, 2.3 * lower, 0, -2.7 * puff, -3.9).smoothUnion(E(5, 3.6, 3.4, 0, 1.3, -7.3), 2 * s);
+      out = out.smoothUnion(lip, 0.5 * s);
+    }
+    if (cleft > 0) out = crease(sdf, out, [[cx, cz + 4.3 * s], [cx, cz - 1.8 * s]], { radius: 0.6 * s * cleft, depth: 0.2 * s, soft: 0.8 * s });
+    if (mouth) {
+      // The "w": dips under each pad, rises at the cleft, curls up at the corners.
+      const w: Array<[number, number]> = [[10, 0.3 * smile], [9.3, -1.2 - 1.5 * (1 - smile)], [7.5, -3.2], [5, -4.2], [2.5, -4.3], [0, -3.6]];
+      const path = [...w.map(([x, z]) => [cx - x * s, cz + z * s]), ...w.slice(0, -1).reverse().map(([x, z]) => [cx + x * s, cz + z * s])];
+      out = crease(sdf, out, path, { radius: 0.55 * s, depth: 0.35 * s, soft: 0.6 * s });
+    }
+    for (let row = 0; row < dots; row++) {
+      for (let col = 0; col < 3; col++) {
+        for (const side of [1, -1]) {
+          const q: Vec3 = [cx + side * (3 + col * 1.9) * s, midY, cz + (1.4 - row * 1.4) * s];
+          const hit = surfacePoint(out, q, front, { reach });
+          if (hit) out = out.smoothSubtract(sdf.sphere(0.3 * s).translate(hit[0], hit[1] + 0.12 * s, hit[2]), 0.25 * s);
+        }
+      }
+    }
+    parts.length = 0;
+    if (nose) {
+      // Rounded-triangle cat nose (an ellipsoid cut to a V at the bottom), seated
+      // just above the cleft on the real bridge surface.
+      const ns = s * noseSize;
+      const seat = surfacePoint(out, [cx, midY, cz + 5.4 * s], front, { reach }) ?? [cx, y0 - 4 * s, cz + 5.4 * s];
+      const shape = sdf.ellipsoid(3.4 * ns, 2.4 * ns, 2.4 * ns)
+        .smoothIntersect(sdf.box(20 * ns).rotate(0, 45, 0).translate(0, 0, (-2.1 + 14.14) * ns), 0.7 * ns)
+        .rotate(-15, 0, 0).translate(seat[0], seat[1] - 0.6 * ns, seat[2]);
+      parts.push(shape.label(noseLabel));
+    }
+    detail.length = 0;
+    detail.push({ center: [cx, y0 - 3 * s, cz], radius: 13 * s, edgeLength: edge });
+    return out;
+  };
+  // parts / detail are filled in by attach() (they depend on where the face is).
+  return feature('muzzle', attach, parts, detail);
 }
 
 // --- crease ---------------------------------------------------------------
@@ -462,6 +589,7 @@ export function createCreatureNamespace(sdf: CreatureSdfApi): CreatureNamespace 
     ears: (o) => buildEars(sdf, o),
     feet: (o) => buildFeet(sdf, o),
     hands: (o) => buildHands(sdf, o),
+    muzzle: (o) => buildMuzzle(sdf, o),
     crease: (surface, path, o) => crease(sdf, surface, path, o),
     build: (o) => buildCreature(sdf, o),
   };

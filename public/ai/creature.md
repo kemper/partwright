@@ -8,17 +8,21 @@ express those proportions, so the body is hand-built from **ellipsoid masses
 welded with `smoothUnion`** (`readDoc("sdf")`). The masses are the easy part.
 What makes a creature read as *sculpted* rather than *primitive soup* is the
 **features**: the eyes, mouth, ears, hands and feet. Hand-rolling those is
-where in-app attempts usually fail. Typical results are eyes that stair-step
-or poke out of the skull, a mouth "engraved" as an outline, flat-plate ears,
-and a face that reads as a mask glued onto a ball.
+where in-app attempts usually fail. Typical results are:
+- eyes that aren't round, stair-step, or poke out of the skull,
+- a mouth that is just a groove engraved along a line, where the subject has a
+  puffy muzzle that pushes out of the face,
+- flat-plate or generic ears that miss the subject's silhouette and slope,
+- a face that reads as a mask glued onto a ball.
 
 `api.sdf.creature` (`C` below) packages a proven recipe for each of those:
 
 | Helper | What it gives you |
 |---|---|
-| `C.eyes({ at, radius, … })` | Eyes set in **steep-walled apertures** with a raised lid rim and an optional hooded upper lid; the eyeball is **clipped to the opening**, so the edge meshes crisp and the eyeball can't poke out the side of the skull. |
-| `C.crease(surface, path, …)` | A soft groove (mouth line, philtrum, fold, wrinkle) **seated on the real surface**. It can't float off the face or tunnel through to the back of the head. |
-| `C.ears({ root, length, … })` | **Cupped membrane ears** (bat / cat / fennec / imp): a constant-thickness curved shell clipped to a tapered leaf outline, concave face forward, plus a separately-painted inner membrane with raised veins. |
+| `C.eyes({ at, radius, … })` | **Perfectly round** glossy eyes in soft **eyelids**: a thin shell hugging the eyeball, cut by a round, steep-walled opening. The lid edge is a slim rim concentric with the black disc, so the eye stays round, with no grey socket wall and no bite where a cheek or brow stands proud. The eyeball is clipped to the opening, so it can't poke out the side of the skull. |
+| `C.muzzle({ at, width, … })` | A **puffy cat-like muzzle that pushes out of the face** (Dr Seuss / cat / gremlin), seated on the real face. Two plump upper-lip pads overhang a tucked lower lip, so the mouth line is the shadow of that overhang: a "w" that curls up into the cheeks. It also gives a philtrum cleft, a rounded-triangle **cat nose** (its own `'nose'` label) and optional whisker dots. |
+| `C.crease(surface, path, …)` | A soft groove (fold, wrinkle, toe split, extra lip line) **seated on the real surface**. It can't float off the face or tunnel through to the back of the head. |
+| `C.ears({ root, length, … })` | **Lobed bat / cat / imp ears**. The silhouette is an asymmetric leaf: a straight top edge out to a pointed tip, and a rounded lobe near the root (`belly`). It's a constant-thickness shell cupped across its width, with a separately-painted inner membrane whose ribs fan from the root. |
 | `C.feet({ at, length, … })` | Long flat feet with toe pads, toe-split creases and claws. Soles land on the ground plane. |
 | `C.hands({ at, size, … })` | Small relaxed hanging hands: palm, tapered fingers and thumb. |
 | `C.build({ skin, features, parts, … })` | Attaches every feature, **flattens the soles**, labels the skin, **collects every feature's detail sphere** and meshes everything in one call. Returns a Manifold. |
@@ -45,30 +49,23 @@ const belly = E(26, 22, 23, 0, -1, 37);
 const chest = E(18, 15.5, 14, 0, 1, 56);
 const legs  = mir(sdf.capsule([11.5, 1, 20], [12.5, -1, 6], 8));
 
-// 2. HEAD — ONE deep skull + features only 1–2 units proud of it.
-let head = E(18.5, 18.5, 16, 0, 0, hc + 3)                       // cranium
-  .smoothUnion(E(21.5, 17.5, 12.5, 0, -2, hc - 5), 11)           // jowls / cheeks
-  .smoothUnion(mir(E(4.8, 3.8, 3.6, 3.6, -17.8, hc - 10.5)), 2.5) // muzzle pads
-  .smoothUnion(E(13, 4, 3.6, 0, -15.5, hc + 8), 7);              // brow
+// 2. HEAD — ONE tapered egg (wide jowls, narrower crown) + soft cheek pads.
+const skull = sdf.ellipsoid(23, 21, 19).taper(-0.01, 'z').translate(0, -2, hc + 1);
+const head  = skull.smoothUnion(mir(E(9, 5.5, 7, 10.5, -16.5, hc - 8.5)), 6);
 
-// 3. CREASES on the head — [x, z] points, projected onto the FRONT face.
-head = C.crease(head, [[-7.6, hc - 11.2], [-2.4, hc - 13.4], [0, hc - 13.1], [2.4, hc - 13.4], [7.6, hc - 11.2]],
-  { radius: 0.9, depth: 0.7 });
-
-// 4. WELD the skin (body + head + arms + tail).
+// 3. WELD the skin (body + head + arms).
 const arms = mir(sdf.capsule([17, 1, 62], [28, 1, 48], 4.6).smoothUnion(sdf.capsule([28, 1, 48], [30, -3.5, 36.5], 3.8), 2));
 const skin = belly.smoothUnion(chest, 9).smoothUnion(legs, 5).smoothUnion(head, 9).smoothUnion(arms, 2);
 
-// 5. FEATURES — +X side, mirrored for you.
-const eyes  = C.eyes({ at: [8.3, -13.3, hc + 1.5], radius: 6.6 });
-const ears  = C.ears({ root: [14, 3, hc + 6], length: 44, lift: 18 });
-const feet  = C.feet({ at: [13, -3], length: 36 });
-const hands = C.hands({ at: [30.5, -5, 32.5] });
+// 4. FEATURES — +X side, mirrored for you; each seats itself on the real face.
+const muzzle = C.muzzle({ at: [0, hc - 11], width: 22 });            // + the 'nose' part
+const eyes   = C.eyes({ at: [10, -14.6, hc + 3], radius: 6.8 });
+const ears   = C.ears({ root: [16, 3, hc + 6], length: 36, width: 26, lift: 8 });
+const feet   = C.feet({ at: [13, -3], length: 36 });
+const hands  = C.hands({ at: [30.5, -5, 32.5] });
 
-// 6. BUILD — attaches features, flattens soles, labels 'skin', meshes with all detail spheres.
-const nose = E(2.9, 2.3, 2.2, 0, -21.4, hc - 4.6).label('nose');
-const model = C.build({ skin, features: [eyes, ears, feet, hands], parts: [nose],
-  edgeLength: 0.6, detail: [{ center: [0, -14, hc - 3], radius: 17, edgeLength: 0.22 }] });
+// 5. BUILD — attaches features, flattens soles, labels 'skin', meshes with all detail spheres.
+const model = C.build({ skin, features: [muzzle, eyes, ears, feet, hands], edgeLength: 0.6 });
 
 api.paint.label('skin', '#eeeeee');
 api.paint.label('eyes', '#060606');
@@ -96,34 +93,49 @@ return model;   // a Manifold — .add() a base plinth here if you want one
    close, high-resolution face shot**. The **3/4 view is the one that catches
    the two classic creature defects**: a face that reads as a flat mask (see
    the rules below) and an eyeball poking out of the side of the skull.
-4. **Score against the photo** with `photoMatch` (text only, see
-   `readDoc("reference-images")`) and adjust masses from its `worst[]`. Look
-   at renders only at checkpoints.
+4. **Compare side by side with the photo at the same angle**, feature by
+   feature:
+   - Are the eyes round discs?
+   - Does the muzzle push out of the face in profile?
+   - Does the ear silhouette match? Check where it leaves the head, the slope
+     of its top edge, where the lobe sits and how pointed the tip is.
+   - Is the ear span about right relative to the head width?
+
+   Also score with `photoMatch` (text only, see `readDoc("reference-images")`)
+   and adjust masses from its `worst[]`. Look at renders only at checkpoints.
 
 ## Rules that make it look sculpted (each one cost a render loop to learn)
 
-- **One deep skull, features barely proud of it.** Start the head from one
-  big cranium (+ a wider jowl ellipsoid for the cheeks, welded with a **large
-  k ≈ 10**). Brow, cheek pads, muzzle and lids should stand only **1–2 units**
-  proud of that skull. Features stacked far in front of a small skull read as
-  a **flat mask** with a hard rim from 3/4.
-- **Big blends on soft features.** Brow k ≈ 7, cheeks ≈ 4, lids ≈ 0.6 × eye
-  radius (what `C.eyes` uses). A small k on a wide ellipsoid leaves a visible
-  "hood line" across the forehead.
-- **Eyes = aperture + clipped eyeball, never a socket ellipsoid around a
-  sphere.** A socket nearly parallel to the eyeball grazes it, and that edge
-  stair-steps at any mesh resolution. `C.eyes` cuts a hole that runs deep
-  along the view axis, so the lid crosses the eyeball steeply (a crisp edge).
-  Place `at` so the eyeball's front sits just behind the face surface. Too
-  deep and the eyes disappear (a `0-triangle` label warning); too shallow and
-  they bulge.
-- **A mouth is a crease, not an outline.** One `C.crease` along the lip line
-  (small: about the eye spacing), a shallow philtrum crease from the nose
-  down, and optional soft nasolabial folds. Add a small pouty lower-lip
-  ellipsoid below the line. A box/arc *cut* from the face reads as engraved
-  text.
-- **Ears are cupped shells, not flat plates.** `C.ears` gives the curvature
-  and the rim. Set `lift` / `sweep` from the reference.
+- **One skull shape, not a stack.** Build the head from ONE tapered egg
+  (`ellipsoid(...).taper(-0.01, 'z')`: wide jowls, narrower crown). Then add
+  soft cheek pads with a large k (≈ 6) on top.
+  - Two overlapping skull ellipsoids (a cranium plus a wider jowl) leave a
+    visible "hood" crease where one emerges from the other.
+  - Brows or rims stacked 2–3 units in front of the skull read as a flat mask
+    with a hard rim from 3/4.
+- **Eyes = lids around a clipped eyeball.** Use `C.eyes`; never a socket
+  ellipsoid around a sphere or a broad rim blob.
+  - A socket nearly parallel to the eyeball grazes it, and that edge
+    stair-steps.
+  - A big rim blob with a large k merges both eyes into a goggle plateau.
+  - `C.eyes` hugs the eyeball with a thin lid shell and cuts a round, deep
+    opening through it, so the eye is a crisp, perfect circle.
+  - Place `at` so the eyeball's front sits about 1 unit in front of the
+    face.
+- **A muzzle is volume, not a groove.** A creature mouth reads from the
+  upper-lip pads pushing out of the face and overhanging the lower lip. The
+  mouth line is the shadow of that overhang. Use `C.muzzle`: `puff` pushes it
+  out further, `smile` curls the corners. Engraving a line or an arc into a
+  flat face reads as a drawing, not a mouth.
+- **Ears: match the silhouette and the slope.** `C.ears` gives a lobed leaf.
+  Set it from the reference:
+  - `lift`: the slope of the ear axis (≈ 0–10 for ears that stick straight
+    out, 20–30 for perky ones).
+  - `belly`: the size of the lower lobe. Too much belly squares off the tip.
+  - `length` / `width`: tip-to-tip span ≈ 1.6–1.8 × head width for a
+    big-eared creature.
+  - `root`: high on the side of the head, so the top edge leaves the head near
+    the crown and the lobe sits around eye level.
 - **Arms hang free of the belly.** Keep the elbow/wrist capsules a little
   outside the belly's surface (blend k ≈ 2). An arm smoothed along its whole
   length looks like a relief carving.
@@ -144,16 +156,35 @@ option's name. Lengths are in model units. Every `mirror` defaults to `true`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `at` | — (required) | +X eyeball centre `[x, y, z]`. |
+| `at` | — (required) | +X eyeball centre `[x, y, z]`. Put the eyeball's front ~1 unit in front of the face. |
 | `radius` | `6` | Eyeball radius. |
-| `aspect` | `[1.06, 0.98, 1]` | Per-axis multipliers on `radius` (x = width, y = depth, z = height). |
-| `opening` | `0.85` | Aperture radius as a fraction of the eyeball (0.3–0.98). Smaller = more lid, more "deep-set". |
-| `rim` | `1` | Lid-rim thickness multiplier (0 = no rim). |
-| `hood` | `0.7` | Heavy upper lid (0 = none, 1 = heavy and sleepy, 2 = very heavy). |
+| `aspect` | `[1, 1, 1]` (round) | Per-axis multipliers on `radius` (x = width, y = depth, z = height). |
+| `opening` | `0.85` | Radius of the round opening as a fraction of the eyeball (0.3–0.98). Smaller = more lid, more "deep-set". |
+| `rim` | `1` | Eyelid thickness multiplier (× 0.12 × radius; 0 = no lid). |
+| `hood` | `0` | Heavy upper lid (0 = none, 1 = heavy and sleepy, 2 = very heavy). |
 | `tilt` | `0` | Degrees. Rolls the eye about its view axis; + drops the outer corner. |
 | `yaw` | `0` | Degrees. + turns the eyes outward. |
 | `label` | `'eyes'` | Paint label of the eyeballs. |
 | `edgeLength` | `max(0.08, radius × 0.02)` | Mesh size inside the eye's detail sphere. |
+
+### `C.muzzle(opts)` → feature
+
+| Option | Default | Meaning |
+|---|---|---|
+| `at` | — (required) | `[x, z]` of the upper-lip centre as seen from the front (just below the nose). The muzzle finds the face surface there itself. |
+| `width` | `20` | Span of the two upper-lip pads (≈ the eye-centre distance). Everything scales with it. |
+| `puff` | `1` | How far the pads push out of the face (0 = flush, 2 = very Seuss). |
+| `smile` | `1` | Corner curl (0 = straight, negative = frown, 2 = big grin). |
+| `lowerLip` | `1` | Size of the tucked lower lip (0 = none). |
+| `cleft` | `1` | Philtrum cleft width (0 = none). |
+| `mouth` | `true` | Crease the "w" mouth line under the pads. |
+| `dots` | `0` | Rows of whisker dots on each pad (0–4), for texture. |
+| `nose` | `true` | Add a rounded-triangle cat nose seated above the cleft (its own label). |
+| `noseSize` | `1` | Nose scale. |
+| `noseLabel` | `'nose'` | The nose's paint label. |
+
+Its `parts` (the nose) and `detail` sphere are filled in when it attaches,
+because they depend on where the face actually is.
 
 ### `C.ears(opts)` → feature
 
@@ -161,12 +192,13 @@ option's name. Lengths are in model units. Every `mirror` defaults to `true`.
 |---|---|---|
 | `root` | — (required) | Where the +X ear meets the head. Put it ~2–4 units inside the skull. |
 | `length` | `30` | Root → tip. |
-| `width` | `0.68 × length` | Widest span of the leaf. |
-| `cup` | `1` | Cup curvature (0.2 = nearly flat, 3 = deep bowl). |
+| `width` | `0.55 × length` | Span of the leaf at its root (the lobe adds more below). |
+| `belly` | `1` | Size of the rounded lower lobe (0 = straight lower edge, 2 = big lobe; too much squares off the tip). |
+| `cup` | `1` | Curvature across the width (0.2 = nearly flat, 3 = deep channel). |
 | `thickness` | `0.045 × length` (≥ 0.8) | Membrane thickness (keep ≥ 0.8 for printing). |
 | `lift` | `16` | Degrees the ear rises above horizontal. |
 | `sweep` | `12` | Degrees the tip sweeps back. |
-| `veins` | `3` | Raised veins fanning across the inner membrane (0–9). |
+| `veins` | `3` | Raised ribs fanning from the root across the inner membrane (0–9). |
 | `inner` | `true` | Add the inner membrane as its own paint label. |
 | `innerLabel` | `'innerEar'` | That label's name. |
 | `blend` | `1.6 × thickness` | smoothUnion k onto the skull. |
@@ -222,7 +254,7 @@ projection can't hit the arms.
 | Option | Default | Meaning |
 |---|---|---|
 | `skin` | — (required) | The welded body SDF. |
-| `features` | `[]` | Features from `C.eyes/ears/feet/hands`, attached in order. |
+| `features` | `[]` | Features from `C.muzzle/eyes/ears/feet/hands`, attached in order (put `muzzle` first). |
 | `parts` | `[]` | Extra **labelled** SDF nodes (nose, horns, teeth…) to hard-union. |
 | `ground` | the feet's `ground`; no clip without feet | Clip plane for flat soles (skin + unlabelled claws only). `null` = don't clip. |
 | `skinLabel` | `'skin'` | Paint label of the skin. |
@@ -235,70 +267,83 @@ rather call `.build()` yourself.
 ## Worked example — Ned (twenty one pilots)
 
 The complete figurine (also `examples/creature_ned.js`). It is one manifold
-piece of about 290k triangles, and it builds in about 30 s.
+piece of about 300k triangles, and it builds in about 30 s.
 
 ```js
 const { sdf, Manifold } = api;
 const C = sdf.creature;
+const P = api.params({
+  earColor: { type: 'select', default: 'blue', options: ['blue', 'peach'], label: 'Inner ear color' },
+});
 const mir = (n) => n.mirrorPair('x');
 const E = (rx, ry, rz, x, y, z) => sdf.ellipsoid(rx, ry, rz).translate(x, y, z);
-const hc = 80;
+const hc = 80; // head centre height
 
+// ===== BODY — a bottom-heavy egg, short stumpy legs =====
 const belly = E(26, 22, 23, 0, -1, 37);
 const chest = E(18, 15.5, 14, 0, 1, 56);
 const legs = mir(sdf.capsule([11.5, 1, 20], [12.5, -1, 6], 8));
 
-const cranium = E(18.5, 18.5, 16, 0, 0, hc + 3);
-const jowls = E(21.5, 17.5, 12.5, 0, -2, hc - 5);
-const cheekPads = mir(E(8, 5, 6.5, 8.8, -15, hc - 6.5));
-const muzzle = mir(E(4.8, 3.8, 3.6, 3.6, -17.8, hc - 10.5));
-const chin = E(6, 4, 3.4, 0, -15.5, hc - 16.5);
-const brow = E(13, 4, 3.6, 0, -15.5, hc + 8);
-const bridge = sdf.capsule([0, -17.5, hc + 4], [0, -20, hc - 3.5], 2.2);
-let head = cranium.smoothUnion(jowls, 11).smoothUnion(cheekPads, 4).smoothUnion(muzzle, 2.5)
-  .smoothUnion(chin, 3).smoothUnion(brow, 7).smoothUnion(bridge, 3);
-head = C.crease(head, [[-7.6, hc - 11.2], [-5, hc - 12.6], [-2.4, hc - 13.4], [0, hc - 13.1],
-  [2.4, hc - 13.4], [5, hc - 12.6], [7.6, hc - 11.2]], { radius: 0.9, depth: 0.7, soft: 1.3 });
-head = C.crease(head, [[0, hc - 8], [0, hc - 12.6]], { radius: 0.8, depth: 0, soft: 1.6 });
-for (const s of [1, -1]) {
-  head = C.crease(head, [[4.8 * s, hc - 4.2], [8.4 * s, hc - 7.6], [9.4 * s, hc - 11]], { radius: 0.6, depth: 0, soft: 2 });
-}
-head = head.smoothUnion(E(4.2, 2.6, 1.9, 0, -16.6, hc - 14.6), 1.2);
+// ===== HEAD — ONE tapered egg (wide jowls, narrower crown) =====
+// Two overlapping skull ellipsoids leave a visible "hood" crease where one
+// emerges from the other; features stacked far in front of the skull read as a
+// flat mask from 3/4. The face details come from the kit below.
+const skull = sdf.ellipsoid(23, 21, 19).taper(-0.01, 'z').translate(0, -2, hc + 1);
+const cheekPads = mir(E(9, 5.5, 7, 10.5, -16.5, hc - 8.5));
+const chin = E(6, 4, 3.4, 0, -19, hc - 19);
+const bridge = sdf.capsule([0, -21, hc + 4], [0, -23.5, hc - 4], 2.2);
+let head = skull.smoothUnion(cheekPads, 6).smoothUnion(chin, 3).smoothUnion(bridge, 3);
 
+// ===== ARMS — thin, hanging free of the belly =====
 const arms = mir(sdf.capsule([17, 1, 62], [28, 1, 48], 4.6).smoothUnion(sdf.capsule([28, 1, 48], [30, -3.5, 36.5], 3.8), 2));
 const tail = sdf.tube([[0, 16, 26], [0, 23, 30], [0, 28, 37], [0, 29.5, 44]], 5, { taper: 0.12 });
+
 const skin = belly.smoothUnion(chest, 9).smoothUnion(legs, 5).smoothUnion(head, 9)
   .smoothUnion(arms, 2).smoothUnion(tail, 3);
 
-const eyes = C.eyes({ at: [8.3, -13.3, hc + 1.5], radius: 6.6, hood: 1 });
-const ears = C.ears({ root: [14, 3, hc + 6], length: 44, width: 30, lift: 18, sweep: 10 });
+// ===== FEATURES (each mirrored; each brings its own detail spheres) =====
+const eyes = C.eyes({ at: [10, -14.6, hc + 3], radius: 6.8 });
+const ears = C.ears({ root: [16, 3, hc + 6], length: 36, width: 26, lift: 8, sweep: 12, cup: 1.2, veins: 4 });
 const feet = C.feet({ at: [13, -3], length: 36, width: 22, height: 10, yaw: 14 });
 const hands = C.hands({ at: [30.5, -5, 32.5] });
-const nose = sdf.ellipsoid(2.9, 2.3, 2.2).rotate(-18, 0, 0).translate(0, -21.4, hc - 4.6).label('nose');
-const horns = mir(sdf.tube([[8.6, -1, hc + 13.5], [9.6, -0.5, hc + 19], [11.6, 0.8, hc + 24]], 2.5, { taper: 0.14 })).label('horns');
+const muzzle = C.muzzle({ at: [0, hc - 11], width: 22 });   // also adds the 'nose' part
 
-const model = C.build({ skin, features: [eyes, ears, feet, hands], parts: [nose, horns],
-  edgeLength: 0.6, detail: [{ center: [0, -14, hc - 3], radius: 17, edgeLength: 0.22 }] });
+// ===== HARD PARTS =====
+const horns = mir(sdf.tube([[9.6, -1.5, hc + 15.5], [10.8, -1, hc + 21], [13, 0.3, hc + 26]], 2.7, { taper: 0.14 })).label('horns');
+
+const model = C.build({
+  skin,
+  features: [muzzle, eyes, ears, feet, hands],
+  parts: [horns],
+  edgeLength: 0.6,
+  detail: [{ center: [0, -15, hc - 2], radius: 18, edgeLength: 0.25 }], // cheeks + brow
+});
+
 api.paint.label('skin', '#eeeeee');
 api.paint.label('eyes', '#060606');
 api.paint.label('nose', '#e8b4a0');
 api.paint.label('horns', '#3e2c22');
-api.paint.label('innerEar', '#a9d4ea');
+api.paint.label('innerEar', P.earColor === 'blue' ? '#a9d4ea' : '#f2c4ae');
 // plinth top 0.4 ABOVE the ground so the flat soles overlap it (coplanar faces leave slivers)
 const base = Manifold.cylinder(4, 1, 1, 96).scale([42, 38, 1]).translate([0, -6, -3.6]);
 return model.add(api.label(base, 'base', { color: '#1b1b1d' }));
 ```
 
 Adapting it to another creature is mostly a matter of re-measuring: scale the
-belly/chest/head ellipsoids to the new ratios, then move `at`/`root` and the
-crease points with them. Horns and tails are a tapered `sdf.tube` (see
-`readDoc("sdf")#tube`).
+belly/chest/skull ellipsoids to the new ratios, then move `at`/`root` with
+them and re-tune the muzzle `width`/`puff` and the ear `lift`/`belly`. Horns
+and tails are a tapered `sdf.tube` (see `readDoc("sdf")#tube`).
 
 ## Gotchas
 
 - **`eyes` label paints 0 triangles** → the eyeball sits behind the skin.
-  Move `at` forward (−Y) until its front is ~0.5 behind the lid surface, or
+  Move `at` forward (−Y) until its front is ~1 unit in front of the face, or
   reduce `hood`.
+- **A grey ring between the black disc and the lid** → the eyeball sits too
+  deep, so the socket wall shows. Move `at` forward, or lower `opening`.
+- **`C.muzzle` throws "misses the face"** → `at` is outside the head's
+  outline as seen from the front. It is `[x, z]` on the face, not a 3-D
+  point.
 - **An eye or ear shows through the back/side of the head** → `at`/`root` is
   too far out. Pull it toward the centre, or shrink `radius`/`length`. Check
   the 3/4 and back views.

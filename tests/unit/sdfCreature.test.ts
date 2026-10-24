@@ -13,6 +13,7 @@ const api = {
   ellipsoid: sdfT.primEllipsoid,
   box: sdfT.primBox,
   capsule: sdfT.primCapsule,
+  cylinder: sdfT.primCylinder,
   tube: sdfT.primTube,
   union: (...nodes: SdfNode[]) => nodes.reduce((a, b) => sdfT.opUnion(a, b)),
 } as unknown as CreatureSdfApi;
@@ -93,6 +94,21 @@ describe('creature.crease', () => {
 });
 
 describe('creature.ears / feet / hands', () => {
+  it('ears are a pointed leaf: solid near the root and mid-span, nothing past the tip', () => {
+    const skin = api.sphere(1).translate(0, 0, 200) as unknown as SdfNode;
+    const ears = C.ears({ root: [0, 0, 0], length: 40, lift: 0, sweep: 0, cup: 0.2, mirror: false });
+    const s = ears.attach(skin as never);
+    const onShell = (x: number, z: number) => {
+      let best = Infinity;
+      for (let y = -8; y <= 8; y += 0.1) best = Math.min(best, ev(s, [x, y, z]));
+      return best;
+    };
+    expect(onShell(12, 0)).toBeLessThan(0);      // mid-ear
+    expect(onShell(12, -9)).toBeLessThan(0);     // the lower lobe
+    expect(onShell(46, 0)).toBeGreaterThan(0);   // past the tip
+    expect(onShell(36, 8)).toBeGreaterThan(0);   // above the straight top edge near the tip
+  });
+
   it('ears add a labelled inner membrane unless inner: false', () => {
     const ears = C.ears({ root: [14, 0, 60], length: 30 });
     expect(ears.parts.map(labelOf)).toEqual(['innerEar']);
@@ -125,6 +141,41 @@ describe('creature.ears / feet / hands', () => {
     expect(ev(s, [30, -5, 30])).toBeLessThan(0);
     expect(ev(s, [-30, -5, 30])).toBeLessThan(0);
     expect(hands.detail).toHaveLength(2);
+  });
+});
+
+describe('creature.muzzle', () => {
+  const head = api.sphere(20).translate(0, -30, 60) as unknown as SdfNode;   // a face far from y = 0
+  const front = (z: number) => {
+    for (let y = -60; y < 0; y += 0.05) if (ev(head, [0, y, z]) < 0) return y;
+    throw new Error('no face');
+  };
+
+  it('seats on the real face and pushes the upper lip OUT of it', () => {
+    const m = C.muzzle({ at: [0, 55], width: 12 });
+    const s = m.attach(head as never);
+    const y0 = front(55);
+    // A point 1.5 in front of the old face, beside the cleft, is now inside the pads.
+    expect(ev(s, [2.6, y0 - 1.5, 55])).toBeLessThan(0);
+    expect(ev(head, [2.6, y0 - 1.5, 55])).toBeGreaterThan(0);
+  });
+
+  it('adds a labelled cat nose and a detail sphere once attached', () => {
+    const m = C.muzzle({ at: [0, 55], width: 12 });
+    expect(m.parts).toHaveLength(0);
+    m.attach(head as never);
+    expect(m.parts.map(labelOf)).toEqual(['nose']);
+    expect(m.detail).toHaveLength(1);
+    const plain = C.muzzle({ at: [0, 55], width: 12, nose: false, noseLabel: 'snout' });
+    plain.attach(head as never);
+    expect(plain.parts).toHaveLength(0);
+  });
+
+  it('validates its options and refuses a point off the face', () => {
+    expect(() => C.muzzle({})).toThrow(/'at'/);
+    expect(() => C.muzzle({ at: [0, 55], dots: 1.5 })).toThrow(/dots/);
+    expect(() => C.muzzle({ at: [0, 55, 0] })).toThrow(/muzzle\.at/);
+    expect(() => C.muzzle({ at: [80, 55] }).attach(head as never)).toThrow(/misses the face/);
   });
 });
 

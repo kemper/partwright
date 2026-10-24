@@ -2352,8 +2352,8 @@ export interface SdfNamespace {
    *  arms, legs, head, face, hair, clothing) that snap to named landmarks.
    *  See /ai/figure.md. The default medium for people/characters/creatures. */
   figure: FigureNamespace;
-  /** Creature feature kit — socketed eyes, cupped ears, clawed feet, hands,
-   *  surface-seated creases and a one-call build for hand-built creatures and
+  /** Creature feature kit — round lidded eyes, a puffy cat muzzle, lobed ears,
+   *  clawed feet, hands, surface-seated creases and a one-call build for hand-built creatures and
    *  mascots the humanoid rig doesn't cover. See /ai/creature.md. */
   creature: CreatureNamespace;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
