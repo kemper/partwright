@@ -20,6 +20,7 @@ import {
   isModelChangingTool,
   confirmToolLabel,
   preConfirmToolResult,
+  declinedToolMessage,
 } from '../../src/ai/tools';
 import { computeCodeDiff } from '../../src/ai/codeDiff';
 import { loadSettings, setToggles } from '../../src/ai/settings';
@@ -364,6 +365,16 @@ describe('AI tool dispatch', () => {
     expect(input).toEqual({ object: 'Lid', boundingBox: true });
   });
 
+  test('an { error } result is flagged isError; a success is not', async () => {
+    stubApi({ getUnits: () => 'mm', replaceColor: () => ({ error: 'replaceColor(opts.from) must have exactly 3 elements' }), listRegions: () => [] });
+    const bad = await executeTool('replaceColor', { from: [1], to: [0, 0, 1] });
+    expect(bad.isError).toBe(true);
+    expect(JSON.parse(bad.content).error).toMatch(/exactly 3/);
+    expect((await executeTool('getUnits', {})).isError).toBe(false);
+    // Arrays and nested errors are not top-level failures.
+    expect((await executeTool('listRegions', {})).isError).toBe(false);
+  });
+
   test('editPalette routes each op and rejects keys the op does not take', async () => {
     const calls = stubApi({ getPalette: () => ({ id: 'p1', slots: [] }) });
     const add = JSON.parse((await executeTool('editPalette', { op: 'addFilament', name: 'PLA Red', hex: '#ff0000' })).content);
@@ -416,6 +427,36 @@ describe('AI tool dispatch', () => {
     expect(await confirmToolLabel('exportModel', { format: '3mf-objects' })).toBe('download a Bambu Studio / OrcaSlicer 3MF project of every object in this session');
     expect(await confirmToolLabel('exportModel', { format: 'glb', objects: ['o2', 'Base'] })).toBe('download a GLB file of objects "Lid", "Base"');
     expect(await confirmToolLabel('importImageAsVoxels', { imageRef: 2 })).toBe('turn reference image 2 into voxel art in a NEW session');
+    expect(await confirmToolLabel('importImageAsVoxels', { src: 'data:image/png;base64,AAAA' })).toBe('turn an embedded image into voxel art in a NEW session');
+    expect(await confirmToolLabel('exportModel', { format: 'stl', objects: ['Lid', 'Base'], filename: 'kit' })).toBe('download a .zip of STL files of objects "Lid", "Base" named "kit"');
+  });
+
+  test('a painted single-object OBJ export is labelled as a .zip', async () => {
+    stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }],
+      listRegions: () => [{ id: 1 }],
+      getModelColors: () => ({ count: 0 }),
+    });
+    expect(await confirmToolLabel('exportModel', { format: 'obj' })).toBe('download a .zip of an OBJ file and its .mtl colours of object "Base"');
+  });
+
+  test('export / voxel declines say nothing happened', () => {
+    expect(declinedToolMessage('exportModel')).toMatch(/nothing was downloaded/);
+    expect(declinedToolMessage('importImageAsVoxels')).toMatch(/no voxel session was created/);
+  });
+
+  test('pre-confirm uses the live API to refuse unknown objects and missing reference images', () => {
+    stubApi({
+      listObjects: () => [{ id: 'o1', name: 'Base', order: 0, isCurrent: true }],
+      getImages: () => [{ src: 'data:image/png;base64,AAAA' }],
+    });
+    expect(JSON.parse(preConfirmToolResult('exportModel', { format: 'glb', objects: ['Nope'] })!.content).error).toMatch(/"Nope"/);
+    expect(preConfirmToolResult('exportModel', { format: 'glb', objects: ['Base'] })).toBeNull();
+    expect(JSON.parse(preConfirmToolResult('importImageAsVoxels', { imageRef: 3 })!.content).error).toMatch(/index 3/);
+    expect(preConfirmToolResult('importImageAsVoxels', { imageRef: 1 })).toBeNull();
+    // null means "not given".
+    expect(preConfirmToolResult('exportModel', { format: 'stl', objects: null, filename: null })).toBeNull();
+    expect(preConfirmToolResult('importImageAsVoxels', { imageRef: null, src: 'https://example.com/a.png' })).toBeNull();
   });
 
   test('preConfirmToolResult refuses doomed calls before the prompt', () => {

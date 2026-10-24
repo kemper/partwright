@@ -2185,7 +2185,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'listCatalog',
-    description: "List the built-in example catalog (the /catalog page): premade models with id, name, description, tags and language. Use it to suggest a starting point (\"is there a gear example?\"). Read-only — you cannot open an entry from chat; tell the user its name so they can open it from the Catalog page. Optional `query` (matched against name, description and tags) and `tag` filters. Returns { total, count, entries }.",
+    description: "List the built-in example catalog (the /catalog page): premade models with id, name, description, tags and language. Use it to suggest a starting point (\"is there a gear example?\"). Read-only — you cannot open an entry from chat; tell the user its name so they can open it from the Catalog page. Optional `query` (matched against name, description and tags) and `tag` filters. Returns { total, matched, count, entries } — total = whole catalog, matched = entries passing the filters, count = entries returned (capped by limit).",
     input_schema: {
       type: 'object',
       properties: {
@@ -2579,6 +2579,8 @@ export async function confirmToolLabel(name: string, input: Record<string, unkno
 /** The tool result the model gets when the user declines a confirm prompt. */
 export function declinedToolMessage(name: string): string {
   if (name === 'deleteVersion') return '[Declined by user — the version was NOT deleted. Only delete versions the user explicitly asked to remove]';
+  if (name === 'exportModel') return '[Declined by user — nothing was downloaded. Only export when the user asks for a file; otherwise tell them they can use the Export menu]';
+  if (name === 'importImageAsVoxels') return '[Declined by user — no voxel session was created. Only convert an image when the user asks for voxel art]';
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
@@ -2705,7 +2707,8 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
   if (name === 'setAppConfig') return `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`;
   if (name === 'exportModel') return describeExport(input);
   if (name === 'importImageAsVoxels') {
-    const what = typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : typeof input.src === 'string' && /^data:/i.test(input.src) ? 'an attached image' : String(input.src ?? 'an image').slice(0, 200);
+    // A data: URL in `src` was written by the model, not attached by the user.
+    const what = typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : typeof input.src === 'string' && /^data:/i.test(input.src) ? 'an embedded image' : String(input.src ?? 'an image').slice(0, 200);
     return `turn ${what} into voxel art in a NEW session`;
   }
   if (name === 'importFromUrl') {
@@ -3035,7 +3038,13 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
       return result as ToolExecResult;
     }
-    return { content: JSON.stringify(result, null, 2), isError: false };
+    // A value-returning API method reports failure as `{ error }` instead of
+    // throwing (ai.md#argument-validation): flag it as an error result so the
+    // model and the loop (finishBatchErrored) see a failure, as they did when
+    // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
+    const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
+      && typeof (result as { error?: unknown }).error === 'string';
+    return { content: JSON.stringify(result, null, 2), isError: failed };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
@@ -3857,6 +3866,9 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'renderSection':
       return executeRenderSection(api, input);
     case 'setReferenceGeometry': {
+      // Intentionally UI_GATED (no runCode scope needed): the code runs in the
+      // isolated sandbox for a view-only ghost — never saved, exported or
+      // merged into the model — like runIsolated's throwaway render.
       const { code, color, ...rest } = input;
       const opts: Record<string, unknown> = { ...rest };
       if (color !== undefined) {
@@ -3873,7 +3885,9 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'importImageAsVoxels': {
       const src = resolveVoxelImageSource(api, input);
       if (typeof src !== 'string') return src;
-      const { imageRef: _ref, src: _src, ...opts } = input;
+      const { imageRef: _ref, src: _src, ...rest } = input;
+      // An explicit null means "not given", like the schema's optional fields.
+      const opts = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null));
       return api.importImageAsVoxels(src, opts);
     }
     case 'listCatalog':
@@ -3922,13 +3936,28 @@ export function preConfirmToolResult(name: string, input: Record<string, unknown
     const what = typeof input.url === 'string' ? codeBearingImportKind(input.url) : null;
     return what ? refuse(geometryOnlyRefusalMessage(what)) : null;
   }
+  // The live API exists only on the main thread; inside the agent Worker these
+  // lookups are skipped (agentWorkerClient re-runs this check on the main
+  // thread before its prompt).
+  let api: PartwrightAPI | null = null;
+  try { api = getApi(); } catch { api = null; }
   if (name === 'exportModel') {
     const err = exportInputError(input);
-    return err ? refuse(err) : null;
+    if (err) return refuse(err);
+    if (api && Array.isArray(input.objects)) {
+      const r = resolveObjectIds(api, input.objects as string[]);
+      if ('error' in r) return refuse(`exportModel: ${r.error}`);
+    }
+    return null;
   }
   if (name === 'importImageAsVoxels') {
     const err = voxelImageInputError(input);
-    return err ? refuse(err) : null;
+    if (err) return refuse(err);
+    if (api && typeof input.imageRef === 'number') {
+      const src = resolveVoxelImageSource(api, input);
+      if (typeof src !== 'string') return refuse(src.error);
+    }
+    return null;
   }
   return null;
 }
@@ -3948,10 +3977,10 @@ function exportInputError(input: Record<string, unknown>): string | null {
   if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
     return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
   }
-  if (input.filename !== undefined && (typeof input.filename !== 'string' || input.filename.trim() === '')) {
+  if (input.filename != null && (typeof input.filename !== 'string' || input.filename.trim() === '')) {
     return 'exportModel: filename must be a non-empty string when given.';
   }
-  if (input.objects !== undefined) {
+  if (input.objects != null) {
     if (!Array.isArray(input.objects) || input.objects.length === 0 || input.objects.some(o => typeof o !== 'string' || o === '')) {
       return 'exportModel: objects must be a non-empty array of object names or ids (from listObjects).';
     }
@@ -3979,12 +4008,28 @@ function resolveObjectIds(api: PartwrightAPI, targets: string[]): { ids: string[
 /** The confirm-prompt phrase for exportModel: the format and which objects. */
 function describeExport(input: Record<string, unknown>): string {
   const format = (EXPORT_FORMATS as readonly string[]).includes(input.format as string) ? input.format as ExportFormat : null;
-  const what = format ? EXPORT_FORMAT_LABEL[format] : 'a file';
+  let api: PartwrightAPI | null = null;
+  try { api = getApi(); } catch { api = null; }
   let rows: ObjectRow[] = [];
-  try { rows = (getApi().listObjects() as ObjectRow[] | undefined) ?? []; } catch { rows = []; }
+  try { rows = (api?.listObjects() as ObjectRow[] | undefined) ?? []; } catch { rows = []; }
+  const several = Array.isArray(input.objects) && input.objects.length > 0;
+  let what = format ? EXPORT_FORMAT_LABEL[format] : 'a file';
+  // Say when the download is really a .zip, so the user isn't surprised.
+  if (format === 'stl' && several) what = 'a .zip of STL files';
+  if (format === 'obj') {
+    let painted = several;
+    if (!several) {
+      try {
+        const regions = api?.listRegions() as unknown[] | undefined;
+        const model = api?.getModelColors() as { count?: number } | undefined;
+        painted = (Array.isArray(regions) && regions.length > 0) || (model?.count ?? 0) > 0;
+      } catch { painted = false; }
+    }
+    if (painted) what = several ? 'an OBJ file (a .zip with its .mtl if any object is painted)' : 'a .zip of an OBJ file and its .mtl colours';
+  }
   let which: string;
-  if (Array.isArray(input.objects) && input.objects.length > 0) {
-    const names = input.objects.map(o => matchObjectRow(rows, o as string)?.name ?? String(o));
+  if (several) {
+    const names = (input.objects as unknown[]).map(o => matchObjectRow(rows, o as string)?.name ?? String(o));
     which = `of ${names.length === 1 ? 'object' : 'objects'} ${names.map(n => `"${n}"`).join(', ')}`;
   } else if (format === '3mf-objects') {
     which = 'of every object in this session';
@@ -3992,16 +4037,17 @@ function describeExport(input: Record<string, unknown>): string {
     const cur = rows.find(r => r.isCurrent);
     which = cur ? `of object "${cur.name}"` : 'of the current model';
   }
-  return `download ${what} ${which}`;
+  const named = typeof input.filename === 'string' && input.filename.trim() ? ` named "${input.filename.trim().slice(0, 120)}"` : '';
+  return `download ${what} ${which}${named}`;
 }
 
 async function executeExportModel(api: PartwrightAPI, input: Record<string, unknown>): Promise<unknown> {
   const err = exportInputError(input);
   if (err) return { error: err };
   const format = input.format as ExportFormat;
-  const filename = input.filename as string | undefined;
+  const filename = (input.filename ?? undefined) as string | undefined;
   let ids: string[] | undefined;
-  if (input.objects !== undefined) {
+  if (input.objects != null) {
     const r = resolveObjectIds(api, input.objects as string[]);
     if ('error' in r) return { error: `exportModel: ${r.error}` };
     ids = r.ids;
@@ -4090,8 +4136,8 @@ function executeEditPalette(api: PartwrightAPI, input: Record<string, unknown>):
 /** Shape errors in an importImageAsVoxels call's image source (checked before
  *  the confirm prompt). Model-supplied URLs must be http(s) or data:image. */
 function voxelImageInputError(input: Record<string, unknown>): string | null {
-  const hasRef = input.imageRef !== undefined;
-  const hasSrc = input.src !== undefined;
+  const hasRef = input.imageRef != null;
+  const hasSrc = input.src != null;
   if (hasRef === hasSrc) return 'importImageAsVoxels: pass exactly one of imageRef (1-based index from getReferenceImages) or src (an http(s) or data:image URL).';
   if (hasRef && (typeof input.imageRef !== 'number' || !Number.isInteger(input.imageRef) || input.imageRef < 1)) {
     return 'importImageAsVoxels: imageRef must be a 1-based integer index from getReferenceImages.';

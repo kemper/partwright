@@ -5785,7 +5785,8 @@ async function main() {
     partIds?: string[],
     filename?: string,
   ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true });
+    const bad = argError(() => assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true }));
+    if (bad) return bad;
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
@@ -5802,7 +5803,8 @@ async function main() {
     partIds?: string[],
     filename?: string,
   ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true });
+    const bad = argError(() => assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true }));
+    if (bad) return bad;
     const r = await bakePartsForExport(partIds);
     if ('error' in r) return r;
     let built: BuiltExport;
@@ -5891,7 +5893,8 @@ async function main() {
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
   async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true });
+    const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
+    if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
@@ -5902,7 +5905,8 @@ async function main() {
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
   async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true });
+    const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
+    if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     return {
@@ -12180,6 +12184,7 @@ async function main() {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
         assertObject(opts, 'importImageAsVoxels(opts)', { optional: true });
+        if (opts) assertNoUnknownKeys(opts as Record<string, unknown>, ['maxSize', 'mode', 'depth', 'maxHeight', 'baseThickness', 'invert', 'alphaThreshold', 'colorMode', 'flatColor', 'gamma', 'brightness', 'contrast', 'saturation', 'posterizeColors', 'palette', 'constrainToPalette', 'removeBackground', 'backgroundColor', 'codeStyle'], 'importImageAsVoxels(opts)');
         if (opts.maxSize !== undefined) assertNumber(opts.maxSize, 'importImageAsVoxels(opts.maxSize)', { min: 1, integer: true });
         if (opts.mode !== undefined) assertEnum(opts.mode, ['billboard', 'heightmap'], 'importImageAsVoxels(opts.mode)');
         if (opts.depth !== undefined) assertNumber(opts.depth, 'importImageAsVoxels(opts.depth)', { min: 1, integer: true });
@@ -17577,10 +17582,11 @@ async function main() {
       };
     },
 
-    /** Geodesic airbrush: spray a soft speckle along world-space surface points.
+    /** Airbrush: spray a soft speckle along world-space surface points.
      *  Coverage fades from the core out via a deterministic per-triangle dither
-     *  (each triangle stays one printable colour). Always surface-following — it
-     *  never bleeds through a thin/hollow wall. `strength` (0..1, default 0.4) is
+     *  (each triangle stays one printable colour). `surface` 'slab' (default)
+     *  sprays within `depth` of the stroke; 'geodesic' follows surface
+     *  connectivity, so it never bleeds through a thin/hollow wall. `strength` (0..1, default 0.4) is
      *  the core density, `softness` (0..1, default 0.5) the feather fraction,
      *  `seed` (default 1) makes the speckle reproducible. `shape` is
      *  circle|square|diamond; `resolution`/`maxEdge` set the speckle grain. */

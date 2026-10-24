@@ -1190,8 +1190,8 @@ function createBrushControls(): HTMLElement {
   wrapHelp.textContent = 'Stops at corners ←——→ Wraps around edges';
   wrap.appendChild(wrapHelp);
 
-  // Spray (airbrush) — soft geodesic speckle instead of a solid fill. Forces
-  // geodesic (a spray can't punch through a wall) and reveals strength/softness.
+  // Spray (airbrush) — soft speckle instead of a solid fill, on whichever
+  // Surface (slab / geodesic) is selected; reveals strength/softness.
   const sprayLabel = document.createElement('div');
   sprayLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
   sprayLabel.textContent = 'Spray (airbrush)';
@@ -1199,7 +1199,7 @@ function createBrushControls(): HTMLElement {
 
   const sprayToggle = document.createElement('button');
   sprayToggle.id = 'brush-spray-toggle';
-  sprayToggle.title = 'Airbrush: paint a soft speckle that fades out at the edges instead of a solid fill. Always follows the surface (geodesic).';
+  sprayToggle.title = 'Airbrush: paint a soft speckle that fades out at the edges instead of a solid fill. Uses the Surface mode above — pick Geodesic to keep it from reaching through thin walls.';
   wrap.appendChild(sprayToggle);
 
   // Strength + softness — shown only while spraying. 0..1 shown as a percent.

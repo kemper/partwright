@@ -41,6 +41,11 @@ const toolReply = (id: string, name: string, input: unknown) => sse([
   ...end('tool_use'),
 ]);
 
+const CONFIRM_CASES = [
+  { tool: 'exportModel', input: { format: '3mf', filename: 'cube-kit' }, ask: 'Export this as a 3MF', label: 'download a 3MF file of object "Object 1" named "cube-kit"' },
+  { tool: 'importImageAsVoxels', input: { src: 'https://example.com/cat.png', maxSize: 16 }, ask: 'Make voxel art from this picture', label: 'turn https://example.com/cat.png into voxel art in a NEW session' },
+];
+
 test.describe('AI remaining tools (#1085 PR5)', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* */ } });
@@ -130,10 +135,13 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
 
     expect(out.exportStl.data).toMatchObject({ ok: true, format: 'stl' });
     expect(out.exportStep.data.error).toMatch(/BREP/);
+    // An { error } result reaches the model as an error result.
+    expect(out.exportStep.isError).toBe(true);
 
     expect(out.voxels.data.voxelCount).toBeGreaterThan(0);
     expect(typeof out.voxels.data.sessionId).toBe('string');
     expect(out.badScheme.data.error).toMatch(/http\(s\) URL or a data:image/);
+    expect(out.badScheme.isError).toBe(true);
   });
 
   test('a call that would be refused anyway never prompts the user', async ({ page }) => {
@@ -179,7 +187,7 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
     expect(out.results[0]).toContain('contains model code');
   });
 
-  test('exportModel prompt names the format and the object; Escape declines', async ({ page }) => {
+  for (const c of CONFIRM_CASES) test(`${c.tool} prompt names what will happen; Escape declines`, async ({ page }) => {
     test.setTimeout(150_000);
     let chatCalls = 0;
     await page.route('https://api.anthropic.com/**', async route => {
@@ -187,7 +195,7 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
       const body = route.request().postDataJSON() as { messages: Array<{ role: string; content: unknown }> };
       const last = body.messages[body.messages.length - 1];
       const lastIsToolResult = Array.isArray(last.content) && (last.content as Array<{ type: string }>).some(b => b.type === 'tool_result');
-      const reply = lastIsToolResult ? textReply(`end${chatCalls}`, `Done ${chatCalls}.`) : toolReply(`t${chatCalls}`, 'exportModel', { format: '3mf' });
+      const reply = lastIsToolResult ? textReply(`end${chatCalls}`, `Done ${chatCalls}.`) : toolReply(`t${chatCalls}`, c.tool, c.input);
       await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream', 'access-control-allow-origin': '*' }, body: reply });
     });
 
@@ -222,18 +230,22 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
 
     let downloads = 0;
     page.on('download', () => { downloads++; });
+    const sessionBefore = await page.evaluate(() => (window as unknown as { partwright: { getSessionState: () => { session: { id: string } | null } } }).partwright.getSessionState().session?.id);
     const input = page.locator('#ai-panel textarea');
-    await input.fill('Export this as a 3MF');
+    await input.fill(c.ask);
     await input.press('Enter');
 
     const message = page.getByTestId('ai-tool-confirm-message');
     await expect(message).toBeVisible({ timeout: 30_000 });
-    await expect(message).toHaveText('The AI wants to download a 3MF file of object "Object 1". Allow this?');
-    await page.screenshot({ path: 'test-results/ai-export-model-confirm.png' });
+    await expect(message).toHaveText(`The AI wants to ${c.label}. Allow this?`);
+    await page.screenshot({ path: `test-results/ai-${c.tool}-confirm.png` });
 
     await page.keyboard.press('Escape');
     await expect(message).toBeHidden();
     await expect(page.locator('#ai-panel').getByText(/^Done \d+\.$/)).toHaveCount(1, { timeout: 30_000 });
     expect(downloads).toBe(0);
+    // Declined: nothing downloaded, no new session opened.
+    const sessionAfter = await page.evaluate(() => (window as unknown as { partwright: { getSessionState: () => { session: { id: string } | null } } }).partwright.getSessionState().session?.id);
+    expect(sessionAfter).toBe(sessionBefore);
   });
 });

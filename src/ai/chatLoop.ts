@@ -23,7 +23,7 @@ import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
-import { isTransientError } from './transientError';
+import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
@@ -773,9 +773,11 @@ async function executeAllWithRetry(
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
     // succeeded before erroring would double-apply it; the retry budget is for
-    // transient read/render/run failures, not state changes.
+    // transient read/render/run failures, not state changes — and a
+    // deterministic failure (a validation { error }, a bad id) would just fail
+    // again, so only a transient-looking one is re-run.
     const retryable = RETRY_SAFE_TOOLS.has(tc.name);
-    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
+    while (result.isError && retryable && isTransientToolFailure(result.content) && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }
