@@ -368,6 +368,10 @@ export interface AppConfig {
     deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
+    /** 3MF export "Filament colors" step: the merge tolerance (CIE76 ΔE) it opens
+     *  with — painted colours closer than this to a more-used colour are merged
+     *  into one filament. 0 = keep every distinct shade. */
+    exportColorMergeTolerance: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
     /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
@@ -671,6 +675,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     undoToastDurationMs: 8000,
     deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
+    exportColorMergeTolerance: 10,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,

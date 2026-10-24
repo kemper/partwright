@@ -166,6 +166,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     maxPendingAppliedNotes: { min: 1, max: 50, integer: true },
     maxAppliedNoteChars: { min: 80, max: 4_000, integer: true },
     toastDurationMs: { min: 500, max: 15_000, integer: true },
+    exportColorMergeTolerance: { min: 0, max: 30, integer: true },
     undoToastDurationMs: { min: 2000, max: 60_000, integer: true },
     deletedObjectRetentionDays: { min: 1, max: 365, integer: true },
     paneSlideMs: { min: 0, max: 600, integer: true },
