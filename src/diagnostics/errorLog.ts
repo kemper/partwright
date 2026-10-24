@@ -26,6 +26,7 @@ export type ErrorSource =
   | 'app'
   | 'character'
   | 'assembly'
+  | 'parts'
   | 'uncaught';
 
 export interface LogEntry {

@@ -37,7 +37,7 @@ async function dragBrush(page: import('playwright/test').Page, ox = 0, oy = 0) {
   await page.evaluate(async ({ ox, oy }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pw = (window as any).partwright;
-    const canvas = document.querySelector('canvas')!;
+    const canvas = document.querySelector('#viewport-container canvas')!;
     const r = canvas.getBoundingClientRect();
     const cx = r.left + r.width / 2 + ox, cy = r.top + r.height / 2 + oy;
     const fire = (t: string, x: number, y: number) =>

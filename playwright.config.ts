@@ -23,8 +23,11 @@ function detectChromiumExecutable(): string | undefined {
     .filter(d => /^chromium-\d+$/.test(d))
     .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
   for (const d of dirs) {
-    const candidate = join(sandboxRoot, d, 'chrome-linux', 'chrome');
-    if (existsSync(candidate)) return candidate;
+    // Older images ship `chrome-linux/`, newer ones `chrome-linux64/`.
+    for (const sub of ['chrome-linux', 'chrome-linux64']) {
+      const candidate = join(sandboxRoot, d, sub, 'chrome');
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return undefined;
 }
@@ -46,6 +49,10 @@ if (shard) {
   // eslint-disable-next-line no-console
   console.info(`[playwright.config] E2E_SHARD ${shard.index}/${shard.total}: ${shardFiles!.length} spec files`);
 }
+
+// E2E_PORT lets several checkouts (e.g. parallel agent worktrees) run specs at
+// once without reusing each other's dev server on the default port.
+const port = Number(process.env.E2E_PORT || 5173);
 
 export default defineConfig({
   testDir: './tests',
@@ -69,7 +76,7 @@ export default defineConfig({
     : [['list']],
   timeout: 30_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${port}`,
     trace: 'on-first-retry',
     // Default Desktop Chrome (1280x720) clips the bottom of the AI panel
     // (toggle strip + input row land below the fold), making low-pill
@@ -88,8 +95,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    command: port === 5173 ? 'npm run dev' : `npm run dev -- --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },

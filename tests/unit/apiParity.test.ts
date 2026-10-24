@@ -110,8 +110,11 @@ function extractHelpKeys(src: string): Set<string> {
   const start = src.indexOf(marker);
   if (start === -1) throw new Error('Could not find help() methods table in main.ts');
 
-  // The table is large (~8 000 chars). Take 60 000 to be safe.
-  const chunk = src.slice(start, start + 60_000);
+  // Read up to the table's closing `};` rather than a fixed window: the table
+  // passed 60 000 chars in Oct 2026 and a fixed slice silently dropped the
+  // last entries, failing the parity check for methods that WERE documented.
+  const end = src.slice(start).search(/\n\s*\};/);
+  const chunk = src.slice(start, end === -1 ? undefined : start + end);
 
   // Match 'keyName': { signature: ... patterns.
   const keys = new Set<string>();

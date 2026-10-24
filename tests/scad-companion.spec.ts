@@ -6,7 +6,11 @@ import { test, expect } from 'playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    try {
+      localStorage.setItem('partwright-tour-completed', '1');
+      // Companion tabs live in the full editor, not the compact code map.
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ codeView: 'full' }));
+    } catch { /* ignore */ }
   });
 });
 

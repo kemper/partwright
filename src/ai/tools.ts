@@ -14,12 +14,14 @@
 // Argument validation lives on the API side (src/validation/apiValidation.ts)
 // so the same checks apply to console/MCP callers, not just the model.
 
+import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
 import { getRenderBudget } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
+import { specJsonSchema } from '../figure/characterSpec';
 
 export interface ToolDefinition {
   name: string;
@@ -61,11 +63,40 @@ export const SUBDOC_NAMES_LIST = [
   'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
-  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform',
+  'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
 ] as const;
+
+/** Part-detection schema pieces, derived from the detector registry so a new
+ *  detector or param reaches the AI tools without editing this file. */
+const PART_DETECTOR_IDS = detectorIds();
+const PART_PARAMS_SCHEMA = paramsJsonSchema();
+
+/** AI tools pass part refs as strings (one JSON type keeps the schema inside
+ *  Gemini's subset); turn numeric strings back into the 1-based ids the API
+ *  takes, leaving names alone. */
+function normalizePartOps(ops: unknown): unknown {
+  if (!Array.isArray(ops)) return ops;
+  const ref = (v: unknown) => (typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : v);
+  return ops.map((op) => {
+    if (!op || typeof op !== 'object') return op;
+    const o = { ...(op as Record<string, unknown>) };
+    if ('id' in o) o.id = ref(o.id);
+    if ('to' in o) o.to = ref(o.to);
+    if (Array.isArray(o.ids)) o.ids = o.ids.map(ref);
+    // focus with no id (or "none") clears the focus.
+    if (o.op === 'focus' && (o.id === undefined || o.id === '' || o.id === 'none')) o.id = null;
+    return o;
+  });
+}
+
+/** A part-ref list from an AI tool call (strings; all-digit = 1-based id). */
+function partRefs(v: unknown): unknown[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? Number(x.trim()) : x));
+}
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -272,6 +303,91 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'buildCharacter',
+    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (the Tsubasa Funko hairdo: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        spec: specJsonSchema(),
+        label: { type: 'string', description: 'Version label (default "Character").' },
+      },
+      required: ['spec'],
+    },
+  },
+  {
+    name: 'getCharacterSpec',
+    description: 'Read the Character Creator spec embedded in the current code (its `// @character` header; older v1 specs are migrated). Returns {spec, version} — the full normalized spec, every detail field included (trim, print, socks, toy shoes, bead eyes, head sink, hair knobs) — or {error} when the code was not generated by buildCharacter. Edit fields and pass the spec back to buildCharacter.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'listCharacterPresets',
+    description: 'List the Character Creator starting characters (the panel\'s preset cards: child, elder, chibi, Funko soccer star, vinyl toy, anime hero, elf, mannequin, …) as [{id, label, description}]. Pass id to get that preset\'s full spec — a ready starting point to tweak and hand to buildCharacter.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'A preset id from the list; returns {id, label, description, spec}.' } },
+    },
+  },
+  {
+    name: 'randomCharacter',
+    description: 'Build a random but coherent figure (the panel\'s 🎲 Random: a body-plan style — realistic / chibi / funko — and age drive proportions; hair, clothing, pose and colours are drawn from the spec\'s options) and commit it as a version. Returns {seed, spec, geometry, version}; the same seed re-creates the same character, and the spec can be tweaked and passed to buildCharacter.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seed: { type: 'integer', minimum: 0, maximum: 4294967295, description: 'Reproducible roll (omit for a fresh one).' },
+        label: { type: 'string', description: 'Version label (default "Random character").' },
+      },
+    },
+  },
+  {
+    name: 'photoMatch',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Reference photo: an image attachment id or label (from getAttachments / getReferenceImages), or a data:image/ URL. Omit when exactly one image is attached.' },
+        view: {
+          type: 'object',
+          description: 'Camera for the model render, matching the photo. Default {azimuth: 0, elevation: 0, ortho: true} (front).',
+          properties: {
+            azimuth: { type: 'number', description: 'Degrees. 0 = front (camera at -Y), 90 = right (+X), 180 = back, 270 = left.' },
+            elevation: { type: 'number', description: 'Degrees, 0 = horizon, positive = looking down.' },
+            ortho: { type: 'boolean', description: 'Orthographic projection (default true).' },
+          },
+        },
+        crop: { type: 'object', description: 'Optional crop of the photo in its pixels {x, y, w, h} — isolate one view of a multi-view sheet or cut away clutter.', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+        bg: { type: 'string', description: 'Photo background colour "#rrggbb" when auto-estimation fails (busy or vignetted backdrops).' },
+        bgTolerance: { type: 'number', description: 'RGB distance around bg (or the estimated backdrop) that counts as background.' },
+        exclude: { type: 'array', items: { type: 'string' }, description: 'Part (label) names to leave out of the model render, e.g. ["base"] when the photo shows no stand.' },
+        fit: { type: 'string', enum: ['height', 'box'], description: '"height" (default): common height, aspect kept. "box": also stretch the model to the photo width, comparing proportions only.' },
+        pixelAspect: { type: 'number', description: 'Multiply the photo\'s widths by this before comparing (e.g. 0.6 for a horizontally stretched video frame). Default 1.' },
+        bands: { type: 'integer', description: 'Horizontal bands in the width/edge profile (default 10, 2–60). Use 20 for fine outline work.' },
+        merge: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Part groups scored as ONE region, e.g. [["jersey","ball","socks","shoes"]] when the photo cannot separate them.' },
+        ignore: { type: 'array', items: { type: 'string' }, description: 'Part names left out of the region findings (they still count toward the silhouette).' },
+        mask: { type: 'string', description: 'Manual subject silhouette for the photo (white = subject): an image attachment id/label or data:image/ URL. Overrides background estimation.' },
+        bgMode: { type: 'string', enum: ['auto', 'border', 'grabcut'], description: '"auto" (default): border-estimated backdrop, switching to a colour model when the border is busy. "grabcut": always use the colour model. "border": never switch.' },
+        views: {
+          type: 'array',
+          description: 'Score several photos/angles in one call (replaces image/view/mask). Each: {image, azimuth, elevation, ortho?, label?, crop?, bg?, bgTolerance?, mask?, pixelAspect?}; top-level crop/bg/bgTolerance/pixelAspect are defaults.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string' },
+              azimuth: { type: 'number' },
+              elevation: { type: 'number' },
+              ortho: { type: 'boolean' },
+              label: { type: 'string' },
+              crop: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } } },
+              bg: { type: 'string' },
+              bgTolerance: { type: 'number' },
+              mask: { type: 'string' },
+              pixelAspect: { type: 'number' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'probePixel',
     description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId, nextStep}. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct. A background pixel does NOT fail — it returns {hit:false, modelPixelBounds, hint} reporting where the model projects in this view, so just re-aim inside those bounds and probe again (pixel estimates off a render carry ±10-20px error, so the occasional miss is normal). THIN FEATURES: if the same feature keeps missing (e.g. a rim, a wire, a thin stripe) and the model only occupies a small fraction of the frame on the minor axis, the miss-hint suggests doubling the renderView `size` — each pixel then covers half the real area, so the same ±20px aim error stays on the feature.',
     input_schema: {
@@ -293,6 +409,27 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'probePixels',
+    description: 'Batch probePixel: probe MANY pixels of one renderView image in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?}. Use to trace a seam, a stroke path or several seeds off a render in one round-trip instead of N probePixel calls. The view must match the renderView call.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
+        view: {
+          type: 'object',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+            size: { type: 'integer' },
+          },
+        },
+      },
+      required: ['pixels', 'view'],
+    },
+  },
+  {
     name: 'paintConnected',
     description: 'Flood-fill paint from a surface seed, gated by deviation from the SEED normal (not adjacent-face). This is what paintRegion should have been on smooth meshes — paintRegion compares adjacent pairs and is bimodal (all or nothing) on capsules / spheres / organic surfaces, paintConnected keeps the reference fixed at the seed so 30° gives you "this region of the surface facing roughly this way", regardless of how curved the connecting topology is. Best paired with probePixel — probe a pixel in a render, hand the {point, normal} straight to paintConnected.',
     input_schema: {
@@ -310,6 +447,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxDeviationDeg: { type: 'number', description: 'Maximum angle (degrees) a neighbor\'s normal may deviate from the seed normal. Default 30. Use larger values to follow curved features; smaller values to stay on a single facet.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['seed', 'color'],
     },
@@ -408,6 +546,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         radius: { type: 'number' },
         normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: preview the selection clipped to that part, as a withinPart paint will be.' },
         withImage: { type: 'boolean', description: 'Default false (stats-only, free). Pass true to also return the highlighted thumbnail when the count is surprising or you want a visual sanity check.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'How a triangle is tested for containment. Default "centroid" (cheap, historical). "fully_inside" excludes long radial fan triangles whose centroid is in the selection but whose vertices extend outside — the right choice for painting on cylinder/revolve geometry.' },
         maxTriangleArea: { type: 'number', description: 'Backstop against fan-topology bleed: skip any triangle whose world area exceeds this. Set it ~3-5× the typical triangle area of the feature you intend to paint.' },
@@ -486,6 +625,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional normal hint to disambiguate at edges.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
         tolerance: { type: 'number', description: 'Coplanarity angle tolerance in degrees.' },
       },
       required: ['point', 'color'],
@@ -500,8 +640,51 @@ const ALL_TOOLS: ToolDefinition[] = [
         triangleIds: { type: 'array', items: { type: 'integer' } },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: ids outside that part are dropped.' },
       },
       required: ['triangleIds', 'color'],
+    },
+  },
+  {
+    name: 'getPartTriangles',
+    description: 'Triangle ids of one PART (an api.label region, incl. parts accepted from detectParts) on the current paint mesh -> {name, count, area, bbox, triangleIds, truncated?}. Mostly for inspection — to paint inside a part pass `withinPart` to the paint tools instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Part (label) name (listLabels / listObjectParts).' },
+        maxResults: { type: 'integer', minimum: 1, description: 'Cap on returned ids (default 5000); count is always the full size.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'partBoundary',
+    description: 'The seam between two parts (labels) as ordered polylines of surface points -> {loops:[{points, closed, length, pointCount}], count}, longest first. A collar running round the neck is one closed loop. Use to measure a seam or place things along it; to PAINT a band along it use paintAlongBoundary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        a: { type: 'string', description: 'First part (label) name.' },
+        b: { type: 'string', description: 'Second part (label) name.' },
+        maxPointsPerLoop: { type: 'integer', minimum: 2, description: 'Resample long loops to at most this many points (default 256).' },
+      },
+      required: ['a', 'b'],
+    },
+  },
+  {
+    name: 'paintAlongBoundary',
+    description: 'Paint a smooth band along the seam between two parts — collars, cuffs, hems, sock bands, belt edges: features with NO sculpted groove of their own, which part detection cannot find and seeds should not be used for. Each seam loop becomes a smooth paintStroke (clean curved edges). side "a"/"b" puts the whole width on that part with the band edge exactly on the seam; "both" (default) centres it on the seam. -> {regions:[{id,name,triangles}], loops}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        between: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 2, description: '[partA, partB] — two touching parts (labels).' },
+        width: { type: 'number', description: 'Band width in model units.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] 0..1' },
+        side: { type: 'string', enum: ['a', 'b', 'both'], description: 'Where the band lies (default "both").' },
+        name: { type: 'string' },
+        resolution: { type: 'number', description: 'paintStroke smoothness (target edge = width / resolution).' },
+        maxEdge: { type: 'number', description: 'Absolute target edge length (overrides resolution).' },
+      },
+      required: ['between', 'width', 'color'],
     },
   },
   {
@@ -518,24 +701,26 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['point', 'radius', 'color'],
     },
   },
   {
     name: 'paintStroke',
-    description: 'Paint a SMOOTH brush stroke along a path of surface points, subdividing the mesh under the stroke so the painted edge is rounded (not stair-stepped along triangle boundaries). This is the only paint tool that changes the tessellation — it is more expensive than the region selectors, so reach for `paintNear`/`paintInBox`/`paintConnected`/`paintRegion` first and use this ONLY when a visibly rounded painted edge matters (e.g. a curved racing stripe, a soft-edged logo patch). Get `points` from `probePixel` against a rendered view (render → pick pixels along the desired stroke → probePixel each → pass the world-space hits here). `radius` is in mesh units. `resolution` sets smoothness (target triangle edge = radius / resolution; higher = smoother + more triangles), default 256, range 2–1024. For absolute control, `maxEdge` overrides it with a target edge length in mesh units (e.g. maxEdge 0.1 for crisp 0.1-unit edges). `shape` is circle (default), square, or diamond.',
+    description: 'Paint a SMOOTH brush stroke along a path of surface points, subdividing the mesh under the stroke so the painted edge is rounded (not stair-stepped along triangle boundaries). This is the only paint tool that changes the tessellation — it is more expensive than the region selectors, so reach for `paintNear`/`paintInBox`/`paintConnected`/`paintRegion` first and use this ONLY when a visibly rounded painted edge matters (e.g. a curved racing stripe, a soft-edged logo patch). Get `points` from `probePixel` against a rendered view (render → pick pixels along the desired stroke → probePixel each → pass the world-space hits here). `radius` is in mesh units. `points` is a path: gaps between consecutive points are filled automatically, so a few corner points paint a continuous band. `resolution` sets smoothness (target triangle edge = radius / resolution; higher = smoother + more triangles), default 16, range 2–1024 (the edge is clipped exactly, so 16 already gives a smooth curve). For absolute control, `maxEdge` overrides it with a target edge length in mesh units (e.g. maxEdge 0.1 for crisp 0.1-unit edges). `shape` is circle (default), square, or diamond.',
     input_schema: {
       type: 'object',
       properties: {
         points: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Ordered world-space surface points [[x,y,z], ...] along the stroke path (from probePixel). A single point stamps a rounded dot.' },
         radius: { type: 'number', description: 'Brush radius in mesh units (must be > 0).' },
-        resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 256, clamped 2–1024.' },
+        resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 16, clamped 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target edge length (mesh units). Takes precedence over resolution.' },
         shape: { type: 'string', enum: ['circle', 'square', 'diamond'], description: 'Brush footprint shape. Default "circle".' },
         wrapAngleDeg: { type: 'number', description: 'Wrap tolerance (0–180): the max edge bend, in degrees, paint may flow across. The stroke follows gentle curves/bumps but stops at sharper folds — 90 stops at right-angle corners (so paint on one face of a box stays off the adjacent faces), 180 (default) wraps across any edge. Lower it to keep a stroke on a single face.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['points', 'radius', 'color'],
     },
@@ -557,6 +742,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         detail: { type: 'number', description: 'Triangle rows across the stamp; higher = crisper (default 96). 0 = flat stamp on the existing tessellation.' },
         removeBackground: { type: 'boolean', description: 'Drop the image background so only the subject paints. Default true.' },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the stamp to that part so it cannot spill onto neighbouring parts.' },
       },
       required: [],
     },
@@ -574,6 +760,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['box', 'color'],
     },
@@ -596,6 +783,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
@@ -617,11 +805,36 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
         smooth: { type: 'boolean', description: 'Smooth the slab edges by subdividing the mesh along them. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
       },
       required: ['offset', 'thickness', 'color'],
+    },
+  },
+  {
+    name: 'paintPattern',
+    description: 'Paint an algorithmic colour PATTERN over a part in ONE call: "soccer" (truncated-icosahedron ball — 12 pentagons in colors[1] on colors[0], fitted to the part), "stripes", "spots", "patches", "gradient", "checker". Scope it with withinPart (a label / detected part). smooth:true (soccer, stripes, checker) clips the colour seams sub-triangle so edges are crisp, saved as one small descriptor — NEVER fake pattern edges with many paintStroke calls (that bloats the session and still leaves pinholes). Soccer recipe: {pattern:"soccer", withinPart:"ball", colors:["#ffffff","#111111"], smooth:true}. Returns {id, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere?}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', enum: ['soccer', 'stripes', 'spots', 'patches', 'gradient', 'checker'] },
+        colors: { type: 'array', items: { type: 'string' }, description: 'Palette as hex strings: [base, mark, third?]. Soccer: [white, black].' },
+        withinPart: { type: 'string', description: 'Part (label) to paint — e.g. a detected part after detectParts → acceptParts, or an api.label region (listLabels). Soccer fits the ball to this part.' },
+        scope: { type: 'object', description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).' },
+        scale: { type: 'number', description: 'Feature size (stripe period / spot spacing / checker cell). Default ~1/8 of the model diagonal. Unused by soccer.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Stripe axis (bands run across it). Default z.' },
+        warp: { type: 'number', description: 'Noise wiggle 0..1 for stripes/patches/checker edges.' },
+        coverage: { type: 'number', description: 'Stripe duty / spot radius / base fraction (0..1). Soccer: pentagon size factor, 1 = standard ball, up to 1.45.' },
+        seed: { type: 'number' },
+        anchors: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'gradient: extremity points. soccer: anchors[0] = a world point one pentagon is centred toward (default +X of the ball centre); anchors[1] sets the roll (default +Z).' },
+        smooth: { type: 'boolean', description: 'Clip seams sub-triangle along the analytic pattern boundary (soccer / stripes / checker only). Default false.' },
+        resolution: { type: 'number', description: 'Smoothing detail: target edge = model diagonal / resolution. Default: soccer radius/100, else diagonal/256.' },
+        maxEdge: { type: 'number', description: 'Absolute target edge length for the smoothed seam (overrides resolution).' },
+        name: { type: 'string' },
+      },
+      required: ['pattern', 'colors'],
     },
   },
   {
@@ -634,6 +847,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         searchRadius: { type: 'number', description: 'How far to look for a face. Default ~1.0.' },
         name: { type: 'string' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['point', 'color'],
     },
@@ -648,7 +862,8 @@ const ALL_TOOLS: ToolDefinition[] = [
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         normalTolerance: { type: 'number' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
-        region: { type: 'string' },
+        region: { type: 'integer', description: 'Region id from listRegions().' },
+        withinPart: { type: 'string', description: 'Only triangles of this part (label).' },
         maxResults: { type: 'integer' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test for the `box` predicate. Default "centroid". Use "fully_inside" on cylinder/revolve meshes to exclude long radial triangles.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this.' },
@@ -917,7 +1132,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'deleteObject',
-    description: "Delete an object and all its versions. Refuses to delete a session's last remaining object. If the active object is deleted, an adjacent object becomes active. Address it by name, id (from listObjects), or 0-based index.",
+    description: "Delete an object and all its versions. It moves to the session's Recover deleted bin (restoreObject brings it back until it expires). If the active object is deleted, an adjacent object becomes active. Deleting a session's only object resets it to a fresh, empty \"Object 1\" (result has reset: true). Address it by name, id (from listObjects), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
@@ -925,6 +1140,232 @@ const ALL_TOOLS: ToolDefinition[] = [
         id: { type: 'string', description: 'Deprecated alias for `object` — an object id from listObjects().' },
       },
     },
+  },
+  {
+    name: 'listDeleted',
+    description: 'List what can be undeleted in this session (the Recover deleted modal): objects in the deleted-objects bin {id, name, versionCount, deletedAt, expiresAt} and parts/pieces removed in code by deleteObjectPart {object, kind, name | point+label, call}. Use before restoreObject / restoreObjectPart.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'restoreObject',
+    description: "Undelete an object from the Recover deleted bin (id or name from listDeleted().objects) with all of its versions, back at its old place in the object list. If the session's only object is an untouched blank (left by deleting the last object) it is replaced. Returns {restored, droppedBlank?}.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        object: { type: 'string', description: 'Deleted object id or name from listDeleted().objects.' },
+      },
+      required: ['object'],
+    },
+  },
+  {
+    name: 'listPartDetectors',
+    description: 'List the part-detection algorithms (see detectParts) with their params, defaults, whether they need seeds, and bestFor guidance, plus the editParts op list. Read before detecting parts on an imported mesh.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'detectParts',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'Detector id from listPartDetectors.' },
+        seeds: {
+          type: 'array',
+          description: 'Named seed points (required by seeded detectors).',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'Part name this seed belongs to.' },
+              point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
+              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
+              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
+            },
+            required: ['label', 'point'],
+          },
+        },
+        params: PART_PARAMS_SCHEMA,
+        featureOptions: {
+          type: 'object',
+          description: 'Shared surface analysis. Usually omit.',
+          properties: {
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+          },
+        },
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+      required: ['algorithm'],
+    },
+  },
+  {
+    name: 'autoDetectParts',
+    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
+      },
+    },
+  },
+  {
+    name: 'reopenParts',
+    description: 'Re-open the parts saved on an import (by acceptParts) as the draft, with the seeds that produced them, so they can be refined (editParts / detectParts) and accepted again.',
+    input_schema: { type: 'object', properties: { importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' } } },
+  },
+  {
+    name: 'previewPartPresets',
+    description: 'Run every preset of a detector (listPartDetectors shows them) WITHOUT changing the draft — locked parts and a focus are honoured — and return them ranked best-first by a groove/island score, with a contact-sheet image. Pick one with applyPartPreset. Also fills the panel\'s preset strip for the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'Detector (default: the draft\'s, else auto-merge).' },
+        seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } }, description: 'Seeds for a seeded detector (default: the current seeds).' },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] },
+        importIndex: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+  {
+    name: 'applyPartPreset',
+    description: 'Make one of the previewPartPresets results the draft (by its index in that ranked list).',
+    input_schema: { type: 'object', properties: { index: { type: 'integer', minimum: 0 } }, required: ['index'] },
+  },
+  {
+    name: 'setPartSelection',
+    description: 'Select draft parts so the user sees which ones you mean: they are highlighted on the model and ticked in the Part Detection panel (where the user can merge/solo/lock them from the action bar). parts: ids ("4") or names; omit or [] to clear. mode: replace (default) / add / toggle / remove.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: ['replace', 'add', 'toggle', 'remove'] },
+      },
+    },
+  },
+  {
+    name: 'setPartsView',
+    description: 'Solo view: mode "solo" shows only the given parts (default: the selection) in colour and greys out the rest — use it to show the user exactly what one part covers; mode "all" restores every colour.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['all', 'solo'] },
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part ids ("4") or names.' },
+      },
+      required: ['mode'],
+    },
+  },
+  {
+    name: 'partAt',
+    description: 'Which draft part is at a world point (e.g. from probePixel) -> {id, name}.',
+    input_schema: { type: 'object', properties: { point: { type: 'array', items: { type: 'number' }, description: '[x, y, z]' } }, required: ['point'] },
+  },
+  {
+    name: 'previewSeeds',
+    description: 'Check seeds BEFORE detectParts: for each seed, the triangle it lands on, the nearest surface point, its distance off the surface, a miss flag (too far off — detection would snap it somewhere unintended), and (with a draft) the part there now -> {seeds:[...], misses, hint?}. Omit seeds to check the current pins.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, maxRadius: { type: 'number' } }, required: ['label', 'point'] } },
+        importIndex: { type: 'integer', minimum: 0 },
+      },
+    },
+  },
+  {
+    name: 'openPartsPanel',
+    description: 'Open the Part Detection panel for the user (detectParts and reopenParts already open it). Use when handing a draft over for manual refinement.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getPartDraft',
+    description: 'Summary of the current part-detection draft (parts, quality, seeds), or {draft:null}.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'editParts',
+    description: 'Edit the part draft with a batch of ops (atomic — a bad op rolls the batch back). Part refs are the 1-based ids from the summary/renderParts legend, or part names (pass ids as strings like "4"; an all-digit string is always read as an id, so give parts non-numeric names). Parts own PINS (shown on the model): every part has at least one (automatic pins sit in each region; seeds you add are placed pins). Ops: {op:"merge", ids:[...], name?} (the merged part keeps all their pins) · {op:"rename", id, name} (renaming to another part\'s name merges them) · {op:"setColor", id, color:"#rrggbb"} (becomes the part\'s model colour on accept) · {op:"delete", id} (→ unassigned) · {op:"reassign", point, to (id or a NEW name), radius?} (no radius = the connected region under the point; reassigned triangles become FIXED — pin moves never undo them) · {op:"brush", to (id or a NEW name), points:[[x,y,z]…] + radius, and/or triangles:[source triangle indices], mode?:"triangles"|"patches"} (a brush stroke as ONE undo step: "triangles" (default) moves the triangles within radius of the stroke into "to" and fixes them; "patches" moves every part the stroke touches into "to" WHOLE, pins included — a brush-merge) · {op:"split", id, seeds:[{label,point}…]} · {op:"absorbSmall", minAreaFrac} · {op:"smoothBoundaries", iterations?} · {op:"addSeed", seed:{label,point,color?}} (adds a pin for that part — a NEW name makes a new part — and re-grows only the parts around it; color sets the part\'s colour) · {op:"removeSeed", index} · {op:"moveSeed", index, point} (indexes into the summary\'s seeds) · {op:"seedsFromParts"} (reset every part to automatic pins; switches a seedless draft to crease-watershed) · {op:"lock", id, locked?} (locked parts keep their triangles when detection re-runs) · {op:"focus", id} / {op:"focus"} (later detections only change that part\'s area; no id clears) · {op:"setEdgeSmoothing", iterations 0–20} (smooth sub-triangle boundaries; acceptParts cuts the mesh along them; 0 = off) · {op:"reorder", id, position} (1-based; order = label order on accept) · {op:"clear", algorithm?} (remove every part and pin; with algorithm also switch the draft\'s method; undoable) · {op:"rerun"} (re-detect the whole model) · {op:"undo"}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ops: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['merge', 'rename', 'setColor', 'delete', 'reassign', 'brush', 'split', 'absorbSmall', 'smoothBoundaries', 'addSeed', 'removeSeed', 'moveSeed', 'seedsFromParts', 'lock', 'focus', 'setEdgeSmoothing', 'reorder', 'clear', 'rerun', 'undo'] },
+              id: { type: 'string', description: 'Part id ("4") or name.' },
+              ids: { type: 'array', items: { type: 'string' }, description: 'merge: part ids or names.' },
+              name: { type: 'string' },
+              color: { type: 'string', description: '#rrggbb' },
+              point: { type: 'array', items: { type: 'number' }, description: '[x,y,z]' },
+              to: { type: 'string', description: 'reassign / brush target: part id or a new part name.' },
+              radius: { type: 'number' },
+              points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'brush: the stroke, [[x,y,z], …] on the surface (with radius).' },
+              triangles: { type: 'array', items: { type: 'integer' }, description: 'brush: source (import) triangle indices to move.' },
+              mode: { type: 'string', enum: ['triangles', 'patches'], description: 'brush: "triangles" (default) moves the brushed triangles; "patches" moves every touched part whole.' },
+              seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, maxRadius: { type: 'number' } } } },
+              seed: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } }, color: { type: 'string', description: 'Optional "#rrggbb" for the pin\'s part.' }, maxRadius: { type: 'number', description: 'Optional geodesic growth cap (model units).' } } },
+              algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS], description: 'clear: also switch the draft to this method (start a seeded method fresh).' },
+              index: { type: 'integer' },
+              minAreaFrac: { type: 'number' },
+              iterations: { type: 'integer' },
+              locked: { type: 'boolean', description: 'lock: false unlocks.' },
+              minRegionFrac: { type: 'number', description: 'seedsFromParts: regions smaller than this fraction of their part get no seed (default 0.01).' },
+              position: { type: 'integer', description: 'reorder: new 1-based position.' },
+            },
+            required: ['op'],
+          },
+        },
+      },
+      required: ['ops'],
+    },
+  },
+  {
+    name: 'renderParts',
+    description: 'Render the part draft in colour with each part\'s id number drawn on a visible spot in every view (plus a legend) and return the image. Use after detectParts/editParts to check every part landed right — compare against the reference image; parts hidden from all views are listed in hiddenParts. Named views assume a model facing −Y (front = azimuth 0); for a figure facing +X use angles [{azimuth:90,elevation:5}] for its front. focus zooms the camera onto one part (small parts: eyes, buttons).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        views: { type: 'array', items: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] }, description: 'Default ["front","right","back","iso"].' },
+        angles: { type: 'array', items: { type: 'object', properties: { azimuth: { type: 'number' }, elevation: { type: 'number' } } }, description: 'Custom camera angles instead of named views (degrees; azimuth 0 = from −Y, 90 = from +X; elevation −90..90).' },
+        focus: { type: 'string', description: 'Part id ("4") or name: frame the camera on that part\'s bounding box.' },
+        size: { type: 'integer', minimum: 128, maximum: 1600, description: 'Tile px (default 480).' },
+        numbered: { type: 'boolean', description: 'Draw part numbers (default true).' },
+      },
+    },
+  },
+  {
+    name: 'comparePartDetectors',
+    description: 'Run 1–6 detector configurations side by side WITHOUT replacing the draft; returns a quality table and a contact-sheet image (one numbered view per config). Use to choose a detector/params before committing to one.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        configs: { type: 'array', items: { type: 'object', properties: { algorithm: { type: 'string', enum: [...PART_DETECTOR_IDS] }, seeds: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, point: { type: 'array', items: { type: 'number' } } } } }, params: PART_PARAMS_SCHEMA }, required: ['algorithm'] } },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom', 'iso', 'backIso'] },
+        size: { type: 'integer', minimum: 128, maximum: 800 },
+      },
+      required: ['configs'],
+    },
+  },
+  {
+    name: 'setPartsOverlay',
+    description: 'Show or hide the part-draft overlay in the viewport.',
+    input_schema: { type: 'object', properties: { visible: { type: 'boolean' } }, required: ['visible'] },
+  },
+  {
+    name: 'acceptParts',
+    description: 'Commit the part draft: the parts are stored on the import and the code switches to api.importWithParts(i), so every part becomes a real label (paintByLabel, listObjectParts, the object rail) and each part keeps the colour it shows as its model colour (its setColor / seed colour, else its overlay colour). Saves a version. Show the user renderParts and get their OK first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Version label (default "Detected parts").' },
+        smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
+        applyColors: { type: 'boolean', description: 'Default true: every part\'s visible colour becomes its model colour. false saves labels only (no colours).' },
+      },
+    },
+  },
+  {
+    name: 'discardParts',
+    description: 'Drop the part draft and its overlay.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'listObjectParts',
@@ -941,6 +1382,41 @@ const ALL_TOOLS: ToolDefinition[] = [
         piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
         unlabeled: { type: 'boolean', description: 'true = tint the geometry no part covers.' },
         clear: { type: 'boolean', description: 'true = remove the highlight.' },
+      },
+    },
+  },
+  {
+    name: 'setObjectPartHidden',
+    description: 'Hide (or show again) one part (by api.label name) or piece (0-based index) of the current object in the viewport — the eye toggle in the object list. View only: the code, versions and exports still include it; useful to see inside or behind a part. Hidden state lasts until shown again (piece hides reset when the pieces change). Pass exactly one of part / piece; hidden defaults to true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+        hidden: { type: 'boolean', description: 'true = hide (default), false = show again.' },
+      },
+    },
+  },
+  {
+    name: 'deleteObjectPart',
+    description: "Delete one part (by label name) or one piece (0-based index) of the current object, as listed by listObjectParts — the same as its ✕ in the object list. Inserts a removal line at the top of the code (api.removePart('name') / api.removePiece([x,y,z]) in JS, BREP and voxel objects; remove_part(\"name\"); / remove_piece([x,y,z]); in OpenSCAD), re-runs, and saves a version (earlier versions keep the part). A part detected on an imported mesh is cut out and its opening capped. Refuses piece deletes on BREP objects and on a single-piece object, and restores the code if the target doesn't actually go away. Pass exactly one of part / piece.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part (api.label) name from listObjectParts.' },
+        piece: { type: 'integer', minimum: 0, description: '0-based piece index from listObjectParts.' },
+      },
+    },
+  },
+  {
+    name: 'restoreObjectPart',
+    description: "Undo deleteObjectPart: bring back a part or piece removed in code by taking out its removal line (api.removePart / api.removePiece, or remove_part / remove_piece in OpenSCAD), re-running and saving a version. Pass `part` (an api.label name) or `call` (the removal call from listDeleted().parts — required for pieces), plus `object` when the same removal exists in several objects. Opens the owning object if it isn't the current one. Returns {ok, restored, object, version?, note?} — `note` means nothing came back (the label/geometry changed since) and the no-op line was just dropped.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Removed part (api.label) name.' },
+        call: { type: 'string', description: 'Removal call from listDeleted().parts, e.g. api.removePiece([1, 2, 3]); or remove_piece([1, 2, 3]);' },
+        object: { type: 'string', description: 'Optional owning object name or id (from listDeleted().parts).' },
       },
     },
   },
@@ -1009,6 +1485,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         zMax: { type: 'number', description: 'End of the band along the chosen axis.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
         normalCone: {
           type: 'object',
           description: 'Further restrict to triangles whose normal is within angleDeg of the given axis.',
@@ -1436,14 +1913,15 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
-  'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
+  'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintPreview', 'paintExplain',
+  'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
-  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
+  'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
-  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
+  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -1459,6 +1937,8 @@ for (const tool of ALL_TOOLS) {
 }
 
 const ALWAYS_AVAILABLE = new Set([
+  'listPartDetectors',
+  'getPartDraft',
   'getActiveLanguage',
   'setActiveLanguage',
   'getCode',
@@ -1492,6 +1972,11 @@ const ALWAYS_AVAILABLE = new Set([
   // are always-available and need a region id to target.
   'listRegions',
   'probePixel',
+  'probePixels',
+  'getPartTriangles',
+  'partBoundary',
+  'partAt',
+  'previewSeeds',
   'paintPreview',
   'paintExplain',
   'forkVersion',
@@ -1506,8 +1991,18 @@ const ALWAYS_AVAILABLE = new Set([
   'changeObject',
   'renameObject',
   'deleteObject',
+  'listDeleted',
+  'restoreObject',
   'listObjectParts',
   'highlightObjectPart',
+  // Text-only likeness score: renders offscreen but returns no image, so it is
+  // NOT views-gated — it exists precisely so likeness checks skip images.
+  'photoMatch',
+  // Pure read of the current code's `// @character` header.
+  'getCharacterSpec',
+  // Pure read of the built-in Character Creator presets.
+  'listCharacterPresets',
+  'setObjectPartHidden',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1543,8 +2038,9 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
+  'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   // Idempotent renders of the CURRENT saved geometry — no code execution, no
   // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
   'renderView', 'renderViews',
@@ -1567,19 +2063,26 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
-  'getPrinterSettings', 'getReliefSwapGuide',
-  // A visual-only tint; re-applying it is idempotent.
-  'highlightObjectPart',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
+  'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
+  // Visual-only view state; re-applying it is idempotent.
+  'highlightObjectPart', 'setObjectPartHidden',
   // Idempotent renders (produce a snapshot; no persistent mutation)
-  'renderView', 'renderViews', 'runIsolated',
+  'renderView', 'renderViews', 'runIsolated', 'renderParts',
   // Run-without-commit (re-running the same code reproduces the same state)
   'runCode', 'runAndAssert', 'runAndExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter']);
+/** Part-detection draft tools (#1025): they prepare paint, so they ride the
+ *  paint scope, but a draft never touches the session (only acceptParts,
+ *  above, commits) — so they are NOT model-changing for auto-review. The
+ *  image-returning ones additionally need the Views vision toggle. */
+const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
+const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -1628,6 +2131,8 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (PARTS_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (PARTS_VIEW_GATED.has(t.name)) return toggles.scope.paintFaces && toggles.vision.views;
     if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
@@ -1636,6 +2141,14 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;
+
+/** The renderParts tool takes custom angles as `angles` (a Gemini-safe
+ *  schema: no string-or-object union); the API takes them as `views`. */
+function renderPartsArgs(input: Record<string, unknown>): Record<string, unknown> {
+  const { angles, views, ...rest } = input;
+  if (Array.isArray(angles) && angles.length > 0) return { ...rest, views: Array.isArray(views) ? [...views, ...angles] : angles };
+  return views === undefined ? rest : { ...rest, views };
+}
 
 function getApi(): PartwrightAPI {
   const w = window as unknown as { partwright?: PartwrightAPI };
@@ -2094,6 +2607,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         detail: input.detail,
         removeBackground: input.removeBackground,
         name: input.name,
+        withinPart: input.withinPart,
       });
     }
     case 'paintInBox':
@@ -2102,6 +2616,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintInOrientedBox(input);
     case 'paintSlab':
       return api.paintSlab(input);
+    case 'paintPattern':
+      return api.paintPattern(input);
     case 'paintNearestRegion':
       return api.paintNearestRegion(input);
     case 'findFaces':
@@ -2120,6 +2636,45 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintByLabels(input.items as unknown[]);
     case 'probePixel':
       return api.probePixel(input);
+    case 'probePixels':
+      return api.probePixels(input.pixels, input.view);
+    case 'getPartTriangles':
+      return api.getPartTriangles(input.name, input.maxResults !== undefined ? { maxResults: input.maxResults } : undefined);
+    case 'partBoundary':
+      return api.partBoundary(input.a, input.b, input.maxPointsPerLoop !== undefined ? { maxPointsPerLoop: input.maxPointsPerLoop } : undefined);
+    case 'paintAlongBoundary':
+      return api.paintAlongBoundary(input);
+    case 'photoMatch':
+      return await api.photoMatch(input);
+    case 'buildCharacter': {
+      // Always commits (the chat AI's work should leave a version), and drops
+      // the generated code from the result — it is a few KB the model only
+      // needs if it falls back to hand-editing (getCode), which keeps the
+      // spec → build → photoMatch loop token-cheap.
+      const r = await api.buildCharacter(input.spec, { save: true, label: (input.label as string | undefined) ?? 'Character' }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
+    case 'getCharacterSpec':
+      return api.getCharacterSpec();
+    case 'listCharacterPresets': {
+      const presets = api.listCharacterPresets() as Array<{ id: string; label: string; description: string; spec: unknown }>;
+      if (input.id === undefined) return presets.map(({ id, label, description }) => ({ id, label, description }));
+      const hit = presets.find(p => p.id === input.id);
+      return hit ?? { error: `listCharacterPresets: unknown id ${JSON.stringify(input.id)} — one of ${presets.map(p => p.id).join(', ')}` };
+    }
+    case 'randomCharacter': {
+      // Commits like buildCharacter and drops the generated code (token-cheap).
+      const r = await api.randomCharacter({ seed: input.seed, save: true, label: input.label }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'paintConnected':
       return api.paintConnected(input);
     case 'getFeatureCentroids':
@@ -2227,6 +2782,73 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'deleteObject':
     case 'deletePart':
       return api.deleteObject((input.object ?? input.part ?? input.id) as string | number);
+    case 'listPartDetectors':
+      return api.listPartDetectors();
+    case 'detectParts': {
+      const result = await api.detectParts(input);
+      // Hand the draft to the user: the panel opens so they can refine it.
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'reopenParts': {
+      const result = await api.reopenParts(input);
+      if (result && typeof result === 'object' && !('error' in result)) api.openPartsPanel();
+      return result;
+    }
+    case 'applyPartPreset':
+      return api.applyPartPreset(input.index);
+    case 'setPartSelection': {
+      const refs = partRefs(input.parts) ?? [];
+      return api.setPartSelection(refs.length ? refs : null, input.mode === undefined ? undefined : { mode: input.mode });
+    }
+    case 'setPartsView': {
+      const refs = partRefs(input.parts);
+      return api.setPartsView(refs ? { mode: input.mode, parts: refs } : { mode: input.mode });
+    }
+    case 'partAt':
+      return api.partAt(input.point);
+    case 'previewSeeds':
+      return api.previewSeeds(input.seeds, input.importIndex !== undefined ? { importIndex: input.importIndex } : undefined);
+    case 'openPartsPanel':
+      return api.openPartsPanel();
+    case 'autoDetectParts': {
+      const result = await api.autoDetectParts(input) as Record<string, unknown>;
+      // A proposal is a draft too: hand it to the user like detectParts does.
+      if (result && typeof result === 'object' && result.proposed === true) api.openPartsPanel();
+      return result;
+    }
+    case 'getPartDraft':
+      return api.getPartDraft();
+    case 'editParts':
+      return api.editParts({ ops: normalizePartOps(input.ops) });
+    case 'renderParts':
+    case 'comparePartDetectors':
+    case 'previewPartPresets': {
+      const result = (name === 'renderParts'
+        ? await api.renderParts(renderPartsArgs(input))
+        : name === 'previewPartPresets'
+          ? await api.previewPartPresets(input)
+          : await api.comparePartDetectors(input.configs, {
+            ...(input.view !== undefined ? { view: input.view } : {}),
+            ...(input.size !== undefined ? { size: input.size } : {}),
+          })) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return {
+        content: `${name}: ${JSON.stringify(result)}`,
+        isError: false,
+        image: { ...img, label: name },
+      } satisfies ToolExecResult;
+    }
+    case 'setPartsOverlay':
+      return api.setPartsOverlay(input.visible);
+    case 'acceptParts':
+      return api.acceptParts(input);
+    case 'discardParts':
+      return api.discardParts();
     case 'listObjectParts':
       return api.listObjectParts();
     case 'highlightObjectPart': {
@@ -2236,6 +2858,28 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       if (input.unlabeled === true) return api.highlightObjectPart({ unlabeled: true });
       return { error: 'highlightObjectPart: pass one of part, piece, unlabeled:true, or clear:true.' };
     }
+    case 'setObjectPartHidden': {
+      const hidden = input.hidden === undefined ? true : input.hidden === true;
+      if (typeof input.part === 'string') return api.setObjectPartHidden(input.part, hidden);
+      if (typeof input.piece === 'number') return api.setObjectPartHidden({ piece: input.piece }, hidden);
+      return { error: 'setObjectPartHidden: pass one of part (name) or piece (index).' };
+    }
+    case 'deleteObjectPart': {
+      if (typeof input.part === 'string') return api.deleteObjectPart(input.part);
+      if (typeof input.piece === 'number') return api.deleteObjectPart({ piece: input.piece });
+      return { error: 'deleteObjectPart: pass one of part (name) or piece (index).' };
+    }
+    case 'restoreObjectPart': {
+      const target: Record<string, unknown> = {};
+      if (typeof input.part === 'string') target.part = input.part;
+      if (typeof input.call === 'string') target.call = input.call;
+      if (typeof input.object === 'string') target.object = input.object;
+      return api.restoreObjectPart(target);
+    }
+    case 'listDeleted':
+      return api.listDeleted();
+    case 'restoreObject':
+      return api.restoreObject(input.object);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

@@ -10,8 +10,13 @@ import type { MeshData } from '../geometry/types';
 import { taubinSmooth } from '../geometry/voxel/smooth';
 import { subdivideToMaxEdge, extractPositions, bboxOf } from './meshSubdivide';
 
+/** Hard ceiling on Taubin pass pairs. Each pass is a cheap O(edges) sweep, so
+ *  this only guards against a typo'd huge count, not a real cost cliff. */
+export const SMOOTH_MAX_ITERATIONS = 100;
+
 export interface SmoothOptions {
-  /** Number of Taubin λ/μ pass pairs — more = rounder. Default 4. */
+  /** Number of Taubin λ/μ pass pairs — more = rounder. Default 4, max
+   *  {@link SMOOTH_MAX_ITERATIONS}. */
   iterations?: number;
   /** Densify before smoothing so sharp corners can round. Default true. */
   subdivide?: boolean;
@@ -21,7 +26,7 @@ export interface SmoothOptions {
 
 /** Smooth/round a mesh, returning a new position-only MeshData. */
 export function smoothSurface(mesh: MeshData, opts: SmoothOptions = {}): MeshData {
-  const iterations = Math.max(1, Math.min(20, Math.floor(opts.iterations ?? 4)));
+  const iterations = Math.max(1, Math.min(SMOOTH_MAX_ITERATIONS, Math.floor(opts.iterations ?? 4)));
 
   // Normalize to a position-only mesh (taubinSmooth assumes numProp === 3).
   let base: MeshData;

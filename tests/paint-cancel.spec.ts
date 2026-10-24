@@ -57,7 +57,7 @@ test.describe('paint cancellation + waitForPaint', () => {
 
     // Drive a stroke through the canvas; mouseup commits → async worker job.
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -111,7 +111,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -169,7 +169,7 @@ test.describe('paint cancellation + waitForPaint', () => {
 
     // Drive a stroke; the worker starts subdividing immediately on mouseup.
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -239,7 +239,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
 
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -306,7 +306,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
 
     const stroke = (x0: number) => page.evaluate((x0v) => {
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2 + x0v, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -346,5 +346,56 @@ test.describe('paint cancellation + waitForPaint', () => {
     expect(result.regions).toBe(2);
     // The non-smooth stroke didn't change the mesh topology (no re-subdivision).
     expect(result.tris).toBe(triAfterSmooth);
+  });
+});
+
+test.describe('paint restore progress', () => {
+  test('reloading a version with smooth strokes shows step progress, then the paint', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.__setProgressModalDelay(0);
+      // Turn off the local smooth-paint cache (#1074) so the reload below
+      // really rebuilds the strokes instead of restoring the cached mesh.
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, renderer: { ...c.renderer, paintRefineCacheMaxMB: 0 } });
+      await pw.createSession('restore progress');
+      await pw.runAndSave(`const { Manifold } = api; return Manifold.sphere(10, 160);`, 'base');
+      for (let k = 0; k < 3; k++) {
+        const z = -5 + k * 5;
+        const rr = Math.sqrt(100 - z * z);
+        const points: number[][] = [];
+        for (let i = 0; i < 24; i++) {
+          const a = (i / 23) * Math.PI;
+          points.push([rr * Math.cos(a), rr * Math.sin(a), z]);
+        }
+        const r = pw.paintStroke({ points, radius: 0.8, color: [1, 0, 0], maxEdge: 0.15 });
+        if (r?.error) throw new Error(r.error);
+      }
+      const sv = await pw.runAndSave(pw.getCode(), 'painted');
+      // Re-run so the reload below has to rebuild the strokes from their recipes.
+      await pw.run(pw.getCode());
+      const paintedTri = pw.getMesh().numTri;
+
+      // Record every message the restore modal shows while the version reloads.
+      const seen: string[] = [];
+      const mo = new MutationObserver(() => {
+        const el = document.querySelector('#progress-modal');
+        const text = el?.textContent ?? '';
+        if (text && !seen.includes(text)) seen.push(text);
+      });
+      mo.observe(document.body, { subtree: true, childList: true, characterData: true });
+      await pw.loadVersion({ index: sv.version.index });
+      mo.disconnect();
+      return { seen, paintedTri, reloadedTri: pw.getMesh().numTri, regions: pw.listRegions().length };
+    });
+    expect(out.seen.some(t => t.includes('Restoring paint'))).toBe(true);
+    // Real step progress ("… 2 of 3 · 0s"), not just an endless spinner.
+    expect(out.seen.some(t => / of 3 · \d+s/.test(t))).toBe(true);
+    expect(out.reloadedTri).toBe(out.paintedTri);
+    expect(out.regions).toBe(3);
+    await expect(page.locator('#progress-modal')).toBeHidden();
   });
 });

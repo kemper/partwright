@@ -26,6 +26,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     import: { ...c.import },
     ui: { ...c.ui },
     geometry: { ...c.geometry },
+    segmentation: { ...c.segmentation },
   };
 }
 
@@ -780,6 +781,42 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
         <Field
+          label="Cache smooth-paint mesh up to"
+          unit="tris"
+          tooltip="Smooth paint (brush strokes, smooth slabs/boxes/cylinders, smooth patterns) subdivides the mesh under its edges. That refined mesh is cached locally in this browser (never in exports or share links) so reopening a painted version skips rebuilding every smooth edge. Above this triangle count it is not cached (reopening rebuilds the edges, which can take a while). 0 = never cache. Costs roughly 20 bytes per triangle."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefinePersistMaxTriangles}
+          value={c.renderer.paintRefinePersistMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'paintRefinePersistMaxTriangles', v)}
+        />
+        <Field
+          label="Smooth-paint mesh cache size"
+          unit="MB"
+          tooltip="Total size of the local smooth-paint mesh cache. When it is full, the least recently used meshes are dropped (their versions just rebuild their smooth edges on the next open)."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheMaxMB}
+          value={c.renderer.paintRefineCacheMaxMB}
+          min={0} max={4096} integer
+          onChange={v => set('renderer', 'paintRefineCacheMaxMB', v)}
+        />
+        <Field
+          label="Smooth-paint cache touch interval"
+          unit="min"
+          tooltip="Reopening a cached version marks its mesh as recently used at most this often (marking rewrites the entry). Lower = more precise least-recently-used eviction, more writes."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.paintRefineCacheTouchMinutes}
+          value={c.renderer.paintRefineCacheTouchMinutes}
+          min={0} max={10_080} integer
+          onChange={v => set('renderer', 'paintRefineCacheTouchMinutes', v)}
+        />
+        <Field
+          label="probePixels batch limit"
+          unit="px"
+          tooltip="The most pixels one partwright.probePixels call may cast a ray through. Each pixel is one ray against the model."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.probePixelsMaxPixels}
+          value={c.renderer.probePixelsMaxPixels}
+          min={1} max={100_000} integer
+          onChange={v => set('renderer', 'probePixelsMaxPixels', v)}
+        />
+        <Field
           label="SDF fast-preview coarsening"
           unit="×"
           hint="Higher = faster but rougher preview. Set to 1 to disable the preview pass."
@@ -920,6 +957,136 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={500} max={100_000} integer
           onChange={v => set('import', 'reconstructEvalSamples', v)}
         />
+        <Field
+          label="Photo match: target height"
+          unit="px"
+          hint="Height both silhouettes are resampled to before comparing."
+          tooltip="The photo-match score crops the photo's and the model's silhouettes to their bounding boxes and resamples both to this height before measuring overlap, band widths and regions. Higher catches finer detail but costs more time."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchTargetHeight}
+          value={c.import.photoMatchTargetHeight}
+          min={48} max={1024} integer
+          onChange={v => set('import', 'photoMatchTargetHeight', v)}
+        />
+        <Field
+          label="Photo match: background tolerance floor"
+          unit="RGB"
+          hint="Minimum colour distance from the backdrop that counts as subject."
+          tooltip="The photo's backdrop colour is estimated from a ring inside its border, and the tolerance adapts to the backdrop's noise above this floor. Keep it low so dark hair on a black backdrop still counts as subject; raise it for noisy, compressed photos."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBgToleranceMin}
+          value={c.import.photoMatchBgToleranceMin}
+          min={1} max={120} integer
+          onChange={v => set('import', 'photoMatchBgToleranceMin', v)}
+        />
+        <Field
+          label="Photo match: explicit-bg tolerance"
+          unit="RGB"
+          hint="Tolerance around a bg colour passed without its own bgTolerance."
+          tooltip="When a caller names the photo's background colour but no tolerance, pixels within this RGB distance of it count as background."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBgTolerance}
+          value={c.import.photoMatchBgTolerance}
+          min={1} max={200} integer
+          onChange={v => set('import', 'photoMatchBgTolerance', v)}
+        />
+        <Field
+          label="Photo match: k-means iterations"
+          unit="passes"
+          hint="Refinement passes when matching the model's colours to the photo."
+          tooltip="The photo's subject pixels are clustered with k-means, seeded with the model's region colours, so each region finds its pixels in the photo despite shading. More passes let the clusters adapt further to the photo's lighting."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchKmeansIterations}
+          value={c.import.photoMatchKmeansIterations}
+          min={0} max={50} integer
+          onChange={v => set('import', 'photoMatchKmeansIterations', v)}
+        />
+        <Field
+          label="Photo match: bands"
+          unit="bands"
+          hint="Horizontal bands in the width profile."
+          tooltip="The silhouette is split into this many horizontal bands, top to bottom, and each band's width and centre are compared between photo and model."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBands}
+          value={c.import.photoMatchBands}
+          min={2} max={40} integer
+          onChange={v => set('import', 'photoMatchBands', v)}
+        />
+        <Field
+          label="Photo match: colour mismatch threshold"
+          unit="ΔE"
+          hint="Colour difference above which a region is flagged."
+          tooltip="A model region whose colour differs from the photo's colour in the same place by more than this (CIE ΔE, lightness weighted half to forgive shading) is reported as a colour mismatch."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchColorShiftWarn}
+          value={c.import.photoMatchColorShiftWarn}
+          min={5} max={150} integer
+          onChange={v => set('import', 'photoMatchColorShiftWarn', v)}
+        />
+        <Field
+          label="Photo match: region reach"
+          unit="× height"
+          hint="How far a photo pixel may be from a model region of its colour and still count toward it."
+          tooltip="Photo pixels are credited to the nearest model region of the same colour, but only within this distance (as a fraction of the figure's height). Pixels further away are photo details the model has no counterpart for — e.g. a ball's black patches are not hair — and are left out of the region statistics."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchMaxRegionDistance}
+          value={c.import.photoMatchMaxRegionDistance}
+          min={0.01} max={1} step={0.01}
+          onChange={v => set('import', 'photoMatchMaxRegionDistance', v)}
+        />
+        <Field
+          label="Photo match: render size"
+          unit="px"
+          hint="Size of the flat model render compared against the photo."
+          tooltip="The model is rendered flat (no lighting, region colours only) at this size from the requested camera before the comparison."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchRenderSize}
+          value={c.import.photoMatchRenderSize}
+          min={128} max={2048} integer
+          onChange={v => set('import', 'photoMatchRenderSize', v)}
+        />
+        <Field
+          label="Photo match: minimum subject height"
+          unit="px"
+          hint="Warn when the photo's subject is shorter than this."
+          tooltip="A reference whose subject is only a couple of hundred pixels tall can't resolve fine outline detail — a one-pixel edge error becomes several percent of the height. Below this size the score adds a warning so agents don't chase noise."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchMinSubjectPx}
+          value={c.import.photoMatchMinSubjectPx}
+          min={0} max={4000} integer
+          onChange={v => set('import', 'photoMatchMinSubjectPx', v)}
+        />
+        <Field
+          label="Photo match: ambiguous-colour threshold"
+          unit="ΔE"
+          hint="Regions whose photo colours are closer than this are low-confidence."
+          tooltip="When two parts look the same colour in the photo (white jersey vs white ball on a dim photo), the photo can't say where one ends and the other begins, so their size/position findings are unreliable. Such regions — and same-coloured parts that touch — are flagged low-confidence and their shape findings suppressed. 0 turns the detection off."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchAmbiguousDeltaE}
+          value={c.import.photoMatchAmbiguousDeltaE}
+          min={0} max={60} step={0.5}
+          onChange={v => set('import', 'photoMatchAmbiguousDeltaE', v)}
+        />
+        <Field
+          label="Photo match: outline threshold"
+          unit="% height"
+          hint="Smallest edge offset the outline diff reports."
+          tooltip="The outline diff lists where the photo's outline sticks out past the model's (photo-only) or the model's past the photo's (model-only), per band and side. Offsets smaller than this percentage of the figure height are ignored."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchOutlineMinPct}
+          value={c.import.photoMatchOutlineMinPct}
+          min={0.1} max={20} step={0.1}
+          onChange={v => set('import', 'photoMatchOutlineMinPct', v)}
+        />
+        <Field
+          label="Photo match: outline lines"
+          unit="lines"
+          hint="Maximum number of outline-diff lines."
+          tooltip="Caps the textual outline diff so the output stays compact; the most severe offsets are kept."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchOutlineMaxLines}
+          value={c.import.photoMatchOutlineMaxLines}
+          min={1} max={40} integer
+          onChange={v => set('import', 'photoMatchOutlineMaxLines', v)}
+        />
+        <Field
+          label="Photo match: busy-background threshold"
+          unit="RGB"
+          hint="Border noise above which the background is treated as busy."
+          tooltip="The photo's backdrop is normally estimated from a ring inside its border. When that ring is so varied (halftone, scenery) that its estimated tolerance reaches this value (the estimate itself tops out at 90), the automatic mode switches to a colour-model segmentation (GrabCut-lite) that learns subject vs backdrop colours instead. It also switches when the border estimate finds almost no subject."
+          defaultValue={APP_CONFIG_DEFAULTS.import.photoMatchBusyBorderTolerance}
+          value={c.import.photoMatchBusyBorderTolerance}
+          min={10} max={90} integer
+          onChange={v => set('import', 'photoMatchBusyBorderTolerance', v)}
+        />
       </Section>
 
       <Section title="Geometry warnings">
@@ -955,6 +1122,236 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
       </Section>
 
+      <Section title="Part detection">
+        <ToggleField
+          label="Detect parts on STL import"
+          hint="After importing an STL, look for separate parts automatically. When it finds some (e.g. one body per colour), the Detect parts panel opens on them; otherwise the convert-to-code prompt offers a Detect parts button."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectOnImport}
+          value={c.segmentation.autoDetectOnImport}
+          onChange={v => set('segmentation', 'autoDetectOnImport', v)}
+        />
+        <Field
+          label="Auto-detect triangle limit"
+          unit="triangles"
+          hint="Larger imports skip the automatic pass."
+          tooltip="The automatic import-time pass analyses the whole surface before the next-step prompt appears, which takes a few seconds on very large scans (about 1 s for 460k triangles). Imports above this size skip it; the Detect parts button still works."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxTriangles}
+          value={c.segmentation.autoDetectMaxTriangles}
+          min={10_000} max={20_000_000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxTriangles', v)}
+        />
+        <Field
+          label="Auto-detect part limit"
+          unit="parts"
+          hint="Proposals with more parts are dropped."
+          tooltip="An automatic proposal with more parts than this (an assembly, or a scan with loose debris) is not shown; the convert-to-code prompt appears instead. Running Separate pieces yourself is not limited."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoDetectMaxParts}
+          value={c.segmentation.autoDetectMaxParts}
+          min={2} max={1000} integer
+          onChange={v => set('segmentation', 'autoDetectMaxParts', v)}
+        />
+        <Field
+          label="Absorb-specks threshold"
+          unit="of surface"
+          hint="Islands smaller than this fraction are folded into neighbours."
+          tooltip="The Part Detection panel's Absorb specks action reassigns every disconnected fragment of a part whose area is below this fraction of the whole surface to the neighbouring part it touches most. 0.002 = 0.2%. Raise it to clean up larger leaks; lower it to keep small genuine parts such as buttons or pupils."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.absorbMinAreaFrac}
+          value={c.segmentation.absorbMinAreaFrac}
+          min={0} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'absorbMinAreaFrac', v)}
+        />
+        <Field
+          label="Tidy-edges passes"
+          unit="passes"
+          hint="Boundary clean-up passes per Tidy edges click."
+          tooltip="Each pass switches a boundary triangle to the part held by a majority of its neighbours, shaving single-triangle stair-steps and spurs. More passes give smoother but slightly shifted boundaries."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.smoothBoundaryIterations}
+          value={c.segmentation.smoothBoundaryIterations}
+          min={1} max={20} integer
+          onChange={v => set('segmentation', 'smoothBoundaryIterations', v)}
+        />
+        <Field
+          label="Parts listed in summaries"
+          unit="parts"
+          hint="Console/AI part lists truncate beyond this."
+          tooltip="detectParts / editParts / getPartDraft list at most this many parts (the rest are counted in partsTruncated) so an over-segmented mesh doesn't flood the AI's context."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.maxListedParts}
+          value={c.segmentation.maxListedParts}
+          min={10} max={1000} integer
+          onChange={v => set('segmentation', 'maxListedParts', v)}
+        />
+        <Field
+          label="Undo depth"
+          unit="edits"
+          hint="Edit batches the part draft can undo."
+          tooltip="How many editParts batches (merge, rename, reassign, re-run…) a part-detection draft keeps for Undo. Each step holds a copy of the per-triangle part map, so very high values use more memory on large meshes."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.undoDepth}
+          value={c.segmentation.undoDepth}
+          min={1} max={200} integer
+          onChange={v => set('segmentation', 'undoDepth', v)}
+        />
+        <Field
+          label="Part-number placement grid"
+          unit="cells"
+          hint="Resolution used to find where each part is visible."
+          tooltip="renderParts draws each part's number on a spot where that part is visible. Visibility is decided on a coarse depth grid this many cells across; raise it to label smaller visible slivers, lower it for speed."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.labelGridResolution}
+          value={c.segmentation.labelGridResolution}
+          min={40} max={600} integer
+          onChange={v => set('segmentation', 'labelGridResolution', v)}
+        />
+        <Field
+          label="Seed miss distance"
+          unit="edges"
+          hint="previewSeeds flags seeds farther than this from the surface."
+          tooltip="previewSeeds reports a seed as a miss when it lies farther than this many median edge lengths from the model's surface (detection would still snap it to the nearest triangle, usually not the intended spot)."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedMissEdgeLengths}
+          value={c.segmentation.seedMissEdgeLengths}
+          min={0.5} max={100} step={0.5}
+          onChange={v => set('segmentation', 'seedMissEdgeLengths', v)}
+        />
+        <Field
+          label="Focused render padding"
+          unit="×"
+          hint="Margin around a part when renderParts focuses on it."
+          tooltip="renderParts({ focus: 'part' }) frames the camera on that part's bounding box, padded by this fraction of its largest dimension."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.focusPadding}
+          value={c.segmentation.focusPadding}
+          min={0} max={2} step={0.05}
+          onChange={v => set('segmentation', 'focusPadding', v)}
+        />
+        <Field
+          label="Live re-detect delay"
+          unit="ms"
+          hint="Live mode waits this long after your last change."
+          tooltip="With Live on in the Part Detection panel, detection re-runs automatically once you stop moving seeds or changing settings for this long. Raise it on very large meshes so a re-run doesn't start mid-adjustment."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.liveDebounceMs}
+          value={c.segmentation.liveDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'liveDebounceMs', v)}
+        />
+        <Field
+          label="Edge-smoothness delay"
+          unit="ms"
+          hint="Wait after the Edge smoothness slider before recomputing."
+          tooltip="Smooth part edges are recomputed (in the background) once the Edge smoothness slider has been still for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgeSmoothingDebounceMs}
+          value={c.segmentation.edgeSmoothingDebounceMs}
+          min={0} max={5000} integer
+          onChange={v => set('segmentation', 'edgeSmoothingDebounceMs', v)}
+        />
+        <Field
+          label="Preset thumbnail size"
+          unit="px"
+          hint="Size of the preset filmstrip tiles."
+          tooltip="The Presets strip renders each preset's result as a small thumbnail of this size. Larger tiles show more detail but take longer to draw."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.presetThumbSize}
+          value={c.segmentation.presetThumbSize}
+          min={64} max={320} integer
+          onChange={v => set('segmentation', 'presetThumbSize', v)}
+        />
+        <Field
+          label="Default edge smoothness"
+          unit="passes"
+          hint="Edge-smoothing passes a new part draft starts with."
+          tooltip="Smooth part edges draw boundaries through triangles so stair-stepped boundaries curve, and Accept cuts the mesh along them. This is the starting value of the panel's Edge smoothness slider (and of drafts the AI creates). 0 = keep boundaries on triangle edges and never re-mesh on accept."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.defaultEdgeSmoothing}
+          value={c.segmentation.defaultEdgeSmoothing}
+          min={0} max={20} integer
+          onChange={v => set('segmentation', 'defaultEdgeSmoothing', v)}
+        />
+        <Field
+          label="Keep boundaries on sharp folds"
+          unit="°"
+          hint="Smoothing leaves boundaries on folds this sharp alone."
+          tooltip="Where a part boundary runs along an edge whose faces meet at least this many degrees apart (a hard edge such as a box corner), it already sits on the seam, so smooth edges leave it there. Sculpted grooves on scans usually fold 30–60° per edge, so they still smooth at the default 60°. Lower it to keep more boundaries in place; 0 smooths every boundary."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.edgePinCreaseDeg}
+          value={c.segmentation.edgePinCreaseDeg}
+          min={0} max={90} step={1}
+          onChange={v => set('segmentation', 'edgePinCreaseDeg', v)}
+        />
+        <Field
+          label="Convert-to-seeds speck size"
+          unit="of part"
+          hint="Smaller regions of a part get no seed of their own."
+          tooltip="Convert to seeds drops one seed in each separate region of every part. Regions smaller than this fraction of their part are skipped, so stray specks follow the part's main seed. 0.01 = 1%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedsFromPartsMinRegionFrac}
+          value={c.segmentation.seedsFromPartsMinRegionFrac}
+          min={0} max={0.5} step={0.005}
+          onChange={v => set('segmentation', 'seedsFromPartsMinRegionFrac', v)}
+        />
+        <Field
+          label="Seed dot size"
+          unit="of model"
+          hint="Seed-marker dot radius, as a fraction of the model's size."
+          tooltip="Seed dots are sized from the model's bounding-box diagonal so they read the same on a small figurine and a large scan. 0.008 = 0.8% of the diagonal."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedDotFraction}
+          value={c.segmentation.seedDotFraction}
+          min={0.001} max={0.05} step={0.001}
+          onChange={v => set('segmentation', 'seedDotFraction', v)}
+        />
+        <Field
+          label="Seed label size"
+          unit="of view"
+          hint="Seed name-tag height, as a fraction of the viewport height."
+          tooltip="Seed name tags stay the same size on screen however far you zoom. 0.026 ≈ 2.6% of the viewport height."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.seedTagScreenFraction}
+          value={c.segmentation.seedTagScreenFraction}
+          min={0.01} max={0.08} step={0.002}
+          onChange={v => set('segmentation', 'seedTagScreenFraction', v)}
+        />
+        <Field
+          label="Fix brush size"
+          unit="of model"
+          hint="Radius of the part panel's Fix brush."
+          tooltip="The Fix tool paints triangles into a chosen part with a round brush this big (a fraction of the model's bounding-box diagonal). Fixed triangles stay put when pins move. 0.012 = 1.2%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.fixBrushRadiusFrac}
+          value={c.segmentation.fixBrushRadiusFrac}
+          min={0.002} max={0.1} step={0.001}
+          onChange={v => set('segmentation', 'fixBrushRadiusFrac', v)}
+        />
+        <Field
+          label="Label chip miss threshold"
+          unit="of surface"
+          hint="A label chip's pin counts as missed below this part size."
+          tooltip="When a label-chip pin grows a part smaller than this fraction of the model's surface (or none at all), the chip shows “missed — click again” and a warning. 0.0005 = 0.05%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.chipMissAreaFrac}
+          value={c.segmentation.chipMissAreaFrac}
+          min={0} max={0.05} step={0.0005}
+          onChange={v => set('segmentation', 'chipMissAreaFrac', v)}
+        />
+        <Field
+          label="Auto-absorb specks below"
+          unit="of surface"
+          hint="Detection folds tiny stray regions into their neighbour."
+          tooltip="After detection (and after each pin re-grow), regions smaller than this fraction of the model's surface join the neighbouring part they border most — only when nothing claims them: no pin, no Fix-brush stroke, and a part nobody named, coloured or locked. 0 turns it off. 0.002 = 0.2%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.autoAbsorbSpeckFrac}
+          value={c.segmentation.autoAbsorbSpeckFrac}
+          min={0} max={0.05} step={0.0005}
+          onChange={v => set('segmentation', 'autoAbsorbSpeckFrac', v)}
+        />
+        <Field
+          label="Fused figure threshold"
+          unit="triangles"
+          hint="When to open the part panel ready to label a fused figure."
+          tooltip="If the import-time Separate-pieces pass finds only 1–2 pieces and the largest has at least this many triangles, the mesh is treated as a fused figure: the part panel opens with the first label chip armed, so the first click on the model labels it."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.fusedPieceMinTris}
+          value={c.segmentation.fusedPieceMinTris}
+          min={0} max={1_000_000} step={100} integer
+          onChange={v => set('segmentation', 'fusedPieceMinTris', v)}
+        />
+        <Field
+          label="Phone panel height"
+          unit="of window"
+          hint="Height of the part panel's bottom sheet below 768 px."
+          tooltip="On narrow screens the Detect parts panel docks to the bottom as a sheet this fraction of the window height, so the model stays visible and clickable above it. 0.45 = 45%."
+          defaultValue={APP_CONFIG_DEFAULTS.segmentation.mobileSheetHeightFrac}
+          value={c.segmentation.mobileSheetHeightFrac}
+          min={0.25} max={0.9} step={0.05}
+          onChange={v => set('segmentation', 'mobileSheetHeightFrac', v)}
+        />
+      </Section>
+
       <Section title="UI">
         <ToggleField
           label="Show editor hints"
@@ -984,6 +1381,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Undo toast duration"
+          unit="ms"
+          hint="How long a toast with an Undo button (after deleting) stays on screen."
+          tooltip="Deleting an object, part or piece shows a toast with an Undo button. It stays up longer than a plain toast so the button is reachable. After it fades, Recover deleted in the Objects list still brings the item back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.undoToastDurationMs}
+          value={c.ui.undoToastDurationMs}
+          min={2000} max={60_000} integer
+          onChange={v => set('ui', 'undoToastDurationMs', v)}
+        />
+        <Field
+          label="Keep deleted objects"
+          unit="days"
+          hint="How long deleted objects stay recoverable before they are permanently removed."
+          tooltip="Deleting an object moves it (with all of its versions) to the Recover deleted bin for this session. Entries older than this are purged permanently the next time the bin is read. Removed parts and pieces live in the code, so they never expire."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.deletedObjectRetentionDays}
+          value={c.ui.deletedObjectRetentionDays}
+          min={1} max={365} integer
+          onChange={v => set('ui', 'deletedObjectRetentionDays', v)}
+        />
+        <Field
           label="Pane slide"
           unit="ms"
           hint="How long the side panes (AI panel, code editor) take to slide open/closed."
@@ -992,6 +1409,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paneSlideMs}
           min={0} max={600} integer
           onChange={v => set('ui', 'paneSlideMs', v)}
+        />
+        <Field
+          label="Mini code map width"
+          unit="px"
+          hint="Width of the compact code map the code pane shows by default."
+          tooltip="The code pane starts as a narrow, syntax-colored map of the file — hover it to peek at the code, click to open the full editor there. This sets how wide that strip is. Wider shows more of each line; narrower leaves more room for the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeMinimapWidthPx}
+          value={c.ui.codeMinimapWidthPx}
+          min={80} max={320} integer
+          onChange={v => set('ui', 'codeMinimapWidthPx', v)}
         />
         <Field
           label="Default palette capacity"
@@ -1010,6 +1437,34 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paletteHistoryMax}
           min={8} max={256} integer
           onChange={v => set('ui', 'paletteHistoryMax', v)}
+        />
+        <Field
+          label="Paint stroke detail"
+          hint="Default paintStroke resolution: target edge = radius ÷ this."
+          tooltip="How finely a console/AI paintStroke approximates curves when the call gives no resolution. The painted edge is cut exactly either way, so higher values only smooth curves further, at the cost of more triangles that every saved session must rebuild when it opens."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintStrokeResolution}
+          value={c.ui.paintStrokeResolution}
+          min={2} max={1024} integer
+          onChange={v => set('ui', 'paintStrokeResolution', v)}
+        />
+        <Field
+          label="Paint stroke path spacing"
+          hint="Gap filled between paintStroke path points, as a fraction of the radius."
+          tooltip="paintStroke and paintAirbrush treat their points as a path and fill the gaps so the band is continuous. This sets the largest gap left between samples, relative to the brush radius. Smaller values give a smoother band edge at the cost of more samples."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintStrokePathSpacing}
+          value={c.ui.paintStrokePathSpacing}
+          min={0.05} max={1}
+          onChange={v => set('ui', 'paintStrokePathSpacing', v)}
+        />
+        <Field
+          label="Boundary paint loop limit"
+          unit="loops"
+          hint="paintAlongBoundary paints at most this many seam loops."
+          tooltip="paintAlongBoundary paints one smooth stroke per seam loop between two parts. A noisy seam can break into many small loops; only the longest this many are painted and the rest are reported as skippedLoops."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.boundaryPaintMaxLoops}
+          value={c.ui.boundaryPaintMaxLoops}
+          min={1} max={200} integer
+          onChange={v => set('ui', 'boundaryPaintMaxLoops', v)}
         />
         <Field
           label="Tooltip delay"

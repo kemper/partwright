@@ -24,8 +24,12 @@ import {
   updatePart as dbUpdatePart,
   updatePartOrders as dbUpdatePartOrders,
   updatePartGroups as dbUpdatePartGroups,
-  deletePart as dbDeletePart,
-  deleteParts as dbDeleteParts,
+  trashParts as dbTrashParts,
+  untrashParts as dbUntrashParts,
+  listDeletedObjects as dbListDeletedObjects,
+  countDeletedObjects as dbCountDeletedObjects,
+  hardDeleteParts as dbHardDeleteParts,
+  purgeDeletedObjects as dbPurgeDeletedObjects,
   addNote as dbAddNote,
   listNotes as dbListNotes,
   deleteNote as dbDeleteNote,
@@ -34,13 +38,13 @@ import {
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
   listDrafts as dbListDrafts,
-  deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
   type Part,
   type Version,
   type VersionOperation,
+  type DeletedObject,
   type SessionNote,
   type AttachedImage,
   type SessionAttachment,
@@ -62,7 +66,8 @@ import {
   loadFromSerialized as loadAnnotations,
   type SerializedAnnotation,
 } from '../annotations/annotations';
-import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
+import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
@@ -71,6 +76,8 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
 import { appPath } from '../deployment';
+import { getConfig } from '../config/appConfig';
+import { isQuotaError } from './quota';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -196,8 +203,15 @@ import { appPath } from '../deployment';
  *           sharing a group are threaded together under a collapsible header in
  *           the part list. Additive; older readers ignore it (parts import
  *           ungrouped).
+ *  - `1.20` — imported meshes gain optional detected **parts**
+ *           (`versions[].importedMeshes[].parts`): `{ names, colors,
+ *           triPart (base64 Int32Array, one part index per source triangle,
+ *           −1 unassigned), source? }`, committed by part detection's
+ *           `acceptParts` and turned into real labels by
+ *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
+ *           still imports). Additive; older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.19';
+export const SCHEMA_VERSION = '1.20';
 
 const CURRENT_MAJOR = 1;
 
@@ -370,6 +384,17 @@ export interface ExportedImportedMesh {
   vertProperties: string;
   /** base64 of the Uint32Array triangle-index buffer. */
   triVerts: string;
+  /** Detected parts committed on this mesh. @since 1.20 */
+  parts?: ExportedImportedMeshParts;
+}
+
+/** {@link ImportedMeshParts} with `triPart` base64-encoded. @since 1.20 */
+export interface ExportedImportedMeshParts {
+  names: string[];
+  colors: (string | null)[];
+  /** base64 of the Int32Array part-index-per-triangle buffer. */
+  triPart: string;
+  source?: ImportedMeshParts['source'];
 }
 
 /** A {@link PersistedSurfaceTexture} with its typed-array buffers
@@ -390,7 +415,7 @@ export interface ExportedSurfaceTexture {
 }
 
 /** Encode a typed array's bytes as base64. */
-function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array): string {
+function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array | Int32Array): string {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   let bin = '';
   const CHUNK = 0x8000; // avoid call-stack limits on String.fromCharCode.apply
@@ -419,7 +444,32 @@ function serializeImportedMeshes(meshes: ImportedMesh[] | undefined): ExportedIm
     numProp: m.numProp,
     vertProperties: typedArrayToBase64(m.vertProperties),
     triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.parts ? {
+      parts: {
+        names: [...m.parts.names],
+        colors: [...m.parts.colors],
+        triPart: typedArrayToBase64(m.parts.triPart),
+        ...(m.parts.source ? { source: m.parts.source } : {}),
+      },
+    } : {}),
   }));
+}
+
+/** Validating decode of exported parts; undefined (parts dropped, mesh kept)
+ *  when malformed or mismatched with the mesh. */
+function deserializeImportParts(raw: ExportedImportedMeshParts | undefined, numTri: number): ImportedMeshParts | undefined {
+  if (!raw || typeof raw !== 'object' || typeof raw.triPart !== 'string') return undefined;
+  try {
+    const parts = normalizeImportParts({
+      names: raw.names,
+      colors: raw.colors,
+      triPart: new Int32Array(base64ToArrayBuffer(raw.triPart)),
+      source: raw.source,
+    }, numTri);
+    return parts ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function serializeSurfaceTexture(tex: PersistedSurfaceTexture | undefined): ExportedSurfaceTexture | undefined {
@@ -476,6 +526,8 @@ function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): 
         vertProperties: new Float32Array(base64ToArrayBuffer(m.vertProperties)),
         triVerts: new Uint32Array(base64ToArrayBuffer(m.triVerts)),
       });
+      const parts = deserializeImportParts(m.parts, out[out.length - 1].triVerts.length / 3);
+      if (parts) out[out.length - 1].parts = parts;
     } catch {
       // Skip a mesh we can't decode rather than failing the whole import.
     }
@@ -518,7 +570,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft, DeletedObject } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -912,12 +964,20 @@ export async function createPart(name?: string): Promise<Part | null> {
   const order = currentState.parts.reduce((m, p) => Math.max(m, p.order), -1) + 1;
   const partName = (name && name.trim()) || suggestPartName(currentState.parts);
   const part = await dbCreatePart(currentState.session.id, partName, order);
-  await dbUpdateSession(currentState.session.id, { currentPartId: part.id });
+  await activateFreshPart(part, [...currentState.parts, part]);
+  return part;
+}
 
+/** Make a just-created, version-less `part` the active one, with `parts` as the
+ *  session's new part list. Clears the per-version mirrors (annotations,
+ *  imports, companion files) so nothing from the previous part carries over. */
+async function activateFreshPart(part: Part, parts: Part[]): Promise<void> {
+  if (!currentState.session) return;
+  await dbUpdateSession(currentState.session.id, { currentPartId: part.id });
   currentState = {
     ...currentState,
     session: { ...currentState.session, currentPartId: part.id },
-    parts: [...currentState.parts, part],
+    parts,
     currentPart: part,
     currentVersion: null,
     versionCount: 0,
@@ -928,7 +988,120 @@ export async function createPart(name?: string): Promise<Part | null> {
   broadcastPartChange();
   updateURL();
   notify();
-  return part;
+}
+
+/** The active session's "Recently deleted" objects, newest first. Entries
+ *  older than `ui.deletedObjectRetentionDays` are purged as a side effect, so
+ *  the bin never outlives its retention window by more than one read. */
+export async function listDeletedObjects(): Promise<DeletedObject[]> {
+  if (!currentState.session) return [];
+  const all = await dbListDeletedObjects(currentState.session.id);
+  const cutoff = binCutoff();
+  const expired = all.filter(e => e.deletedAt < cutoff);
+  // A read-only viewer tab never writes the shared session.
+  if (expired.length > 0 && !isViewerTab()) await dbPurgeDeletedObjects(expired.map(e => e.id));
+  return all.filter(e => e.deletedAt >= cutoff);
+}
+
+/** How many unexpired objects the active session's bin holds — cheap (an
+ *  index count, no version blobs), for the rail's "Recover deleted (N)". */
+export async function countDeletedObjects(): Promise<number> {
+  if (!currentState.session) return 0;
+  return dbCountDeletedObjects(currentState.session.id, binCutoff());
+}
+
+function binCutoff(): number {
+  return Date.now() - getConfig().ui.deletedObjectRetentionDays * 86_400_000;
+}
+
+export interface RestoreDeletedResult {
+  /** Parts put back into the session, in their restored display order. */
+  restored: Part[];
+  /** Id of the untouched blank object that was dropped because a restore made
+   *  it redundant (the placeholder a delete-the-last-object reset created). */
+  droppedBlankId?: string;
+}
+
+/**
+ * Put bin entries back into the active session: each object returns with its
+ * versions and drafts at (about) its original place in the list, keeping its
+ * group. `dropBlankPartId` names a placeholder object to discard in the same
+ * step — the blank "Object 1" a delete-the-last-object reset left behind — when
+ * the caller has verified it is still untouched. Doesn't change the current
+ * object. Returns null when nothing matched.
+ */
+export async function restoreDeletedObjects(ids: string[], opts: { dropBlankPartId?: string } = {}): Promise<RestoreDeletedResult | null> {
+  if (!currentState.session) return null;
+  const sid = currentState.session.id;
+  const entries = (await dbListDeletedObjects(sid)).filter(e => ids.includes(e.id));
+  if (entries.length === 0) return null;
+  const dropId = opts.dropBlankPartId && currentState.parts.some(p => p.id === opts.dropBlankPartId)
+    ? opts.dropBlankPartId : undefined;
+  const survivors = currentState.parts.filter(p => p.id !== dropId);
+  // Merge by each object's stored order (a restored object sorts before a live
+  // one at the same order — it held that slot first), then renumber 0..n-1.
+  const merged = [...survivors.map(p => ({ part: p, restored: false })), ...entries.map(e => ({ part: e.part, restored: true }))]
+    .sort((a, b) => a.part.order - b.part.order || Number(b.restored) - Number(a.restored));
+  const orders = new Map(merged.map((m, i) => [m.part.id, i] as const));
+  const restored = await dbUntrashParts(entries.map(e => e.id), orders);
+  // Another tab (or a concurrent Undo) restored them first: change nothing.
+  if (restored.length === 0) return null;
+  await dbUpdatePartOrders(survivors.map(p => ({ id: p.id, order: orders.get(p.id)! })));
+  if (dropId) await dbTrashParts([dropId]).then(() => dbPurgeDeletedObjects([dropId]));
+  const restoredIds = new Set(restored.map(p => p.id));
+  const parts = merged
+    .filter(m => !m.restored || restoredIds.has(m.part.id))
+    .map(m => ({ ...m.part, order: orders.get(m.part.id)! }));
+  const current = dropId && currentState.currentPart?.id === dropId ? null : currentState.currentPart;
+  currentState = {
+    ...currentState,
+    parts,
+    currentPart: current ? parts.find(p => p.id === current.id) ?? current : current,
+  };
+  // The dropped blank was the current object: open the first restored one.
+  if (!current && restored.length > 0) await changePart(restored[0].id);
+  else { broadcastPartChange(); updateURL(); notify(); }
+  return { restored: parts.filter(p => restoredIds.has(p.id)), ...(dropId ? { droppedBlankId: dropId } : {}) };
+}
+
+/** Permanently delete bin entries of the active session (by object id). Pass
+ *  no ids to empty the whole bin. Returns how many entries were removed. */
+export async function purgeDeletedObjects(ids?: string[]): Promise<number> {
+  if (!currentState.session) return 0;
+  const entries = await dbListDeletedObjects(currentState.session.id);
+  const targets = ids ? entries.filter(e => ids.includes(e.id)) : entries;
+  await dbPurgeDeletedObjects(targets.map(e => e.id));
+  return targets.length;
+}
+
+/**
+ * Delete every part in `targets` (which must cover the whole session) and
+ * replace them with one fresh, empty part carrying the default name — the
+ * "delete the last object" path, which resets the session to a blank object
+ * instead of refusing. The fresh part is created before the old ones are
+ * removed so an interruption can never leave the session with zero parts.
+ */
+async function replaceAllPartsWithFresh(targets: Part[]): Promise<{ fresh: Part; recoverable: boolean } | null> {
+  if (!currentState.session) return null;
+  const sid = currentState.session.id;
+  const fresh = await dbCreatePart(sid, DEFAULT_PART_NAME, 0);
+  const recoverable = await trashOrDelete(targets.map(p => p.id));
+  await activateFreshPart(fresh, [fresh]);
+  return { fresh, recoverable };
+}
+
+/** Move parts to the bin; if that would exceed the storage quota (the move
+ *  briefly holds two copies), delete them permanently instead so the delete
+ *  still happens. Returns whether they are recoverable. */
+async function trashOrDelete(ids: string[]): Promise<boolean> {
+  try {
+    await dbTrashParts(ids);
+    return true;
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+    await dbHardDeleteParts(ids);
+    return false;
+  }
 }
 
 /**
@@ -1032,23 +1205,33 @@ export interface DeletePartResult {
   /** The part that became active after deletion (only set when the deleted part
    *  was the current one). */
   newCurrent: Part | null;
+  /** True when the deleted part was the session's last one and `newCurrent` is
+   *  the fresh, empty part that replaced it. */
+  reset?: boolean;
+  /** True when storage was too full to keep it in the bin, so it was deleted
+   *  permanently (not recoverable). */
+  permanent?: boolean;
 }
 
 /**
- * Delete a part and all its versions. Refuses to remove the last remaining part
- * (a session always keeps at least one). When the active part is deleted, the
+ * Delete a part and all its versions — moved to the "Recently deleted" bin
+ * (see {@link restoreDeletedObjects}), not erased. When the active part is deleted, the
  * adjacent part — preferring the previous one in display order — becomes active.
- * Returns null if the delete was refused or the part wasn't found.
+ * Deleting the session's last part resets it instead: the part is replaced by a
+ * fresh, empty one with the default name (reported as `newCurrent`), since a
+ * session always keeps at least one. Returns null if the part wasn't found.
  */
 export async function deletePart(partId: string): Promise<DeletePartResult | null> {
   if (!currentState.session) return null;
   const parts = currentState.parts;
   const target = parts.find(p => p.id === partId);
   if (!target) return null;
-  if (parts.length <= 1) return null; // keep at least one part
+  if (parts.length <= 1) {
+    const r = await replaceAllPartsWithFresh([target]);
+    return r ? { deleted: target, newCurrent: r.fresh, reset: true, ...(r.recoverable ? {} : { permanent: true }) } : null;
+  }
 
-  await dbDeletePart(partId);
-  void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
+  const recoverable = await trashOrDelete([partId]);
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -1058,14 +1241,14 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
     const next = remaining[pos - 1] ?? remaining[0];
     currentState = { ...currentState, parts: remaining };
     await changePart(next.id);
-    return { deleted: target, newCurrent: next };
+    return { deleted: target, newCurrent: next, ...(recoverable ? {} : { permanent: true }) };
   }
 
   currentState = { ...currentState, parts: remaining };
   broadcastPartChange();
   updateURL();
   notify();
-  return { deleted: target, newCurrent: null };
+  return { deleted: target, newCurrent: null, ...(recoverable ? {} : { permanent: true }) };
 }
 
 export interface DeletePartsResult {
@@ -1074,15 +1257,21 @@ export interface DeletePartsResult {
   /** The part that became active after deletion (only set when the active part
    *  was among those deleted). */
   newCurrent: Part | null;
+  /** True when every part was deleted and `newCurrent` is the fresh, empty
+   *  part that replaced them. */
+  reset?: boolean;
+  /** True when storage was too full to keep them in the bin (deleted
+   *  permanently). */
+  permanent?: boolean;
 }
 
 /**
- * Delete several parts and all their versions in one atomic transaction. Mirrors
- * the single-part rule: a session must keep at least one part, so the call is
- * refused (returns null) if the selection covers every remaining part. When the
- * active part is among those deleted, the nearest survivor above it in display
- * order — else the first remaining — becomes active. Returns null if nothing
- * matched or the delete was refused.
+ * Delete several parts and all their versions in one atomic transaction (moved
+ * to the "Recently deleted" bin, like {@link deletePart}). When
+ * the active part is among those deleted, the nearest survivor above it in
+ * display order — else the first remaining — becomes active. Mirrors the
+ * single-part rule: a selection covering every part resets the session to one
+ * fresh, empty part (reported as `newCurrent`). Returns null if nothing matched.
  */
 export async function deleteParts(partIds: string[]): Promise<DeletePartsResult | null> {
   if (!currentState.session) return null;
@@ -1090,12 +1279,13 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   const idSet = new Set(partIds);
   const targets = parts.filter(p => idSet.has(p.id));
   if (targets.length === 0) return null;
-  if (targets.length >= parts.length) return null; // keep at least one part
+  if (targets.length >= parts.length) {
+    const r = await replaceAllPartsWithFresh(targets);
+    return r ? { deletedIds: targets.map(p => p.id), newCurrent: r.fresh, reset: true, ...(r.recoverable ? {} : { permanent: true }) } : null;
+  }
 
   const deletedSet = new Set(targets.map(p => p.id));
-  await dbDeleteParts(targets.map(p => p.id));
-  const sid = currentState.session.id;
-  for (const id of deletedSet) void dbDeletePartDrafts(sid, id).catch(() => {});
+  const recoverable = await trashOrDelete(targets.map(p => p.id));
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;
@@ -1109,14 +1299,14 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
     }
     currentState = { ...currentState, parts: remaining };
     await changePart(next.id);
-    return { deletedIds: [...deletedSet], newCurrent: next };
+    return { deletedIds: [...deletedSet], newCurrent: next, ...(recoverable ? {} : { permanent: true }) };
   }
 
   currentState = { ...currentState, parts: remaining };
   broadcastPartChange();
   updateURL();
   notify();
-  return { deletedIds: [...deletedSet], newCurrent: null };
+  return { deletedIds: [...deletedSet], newCurrent: null, ...(recoverable ? {} : { permanent: true }) };
 }
 
 /** One entry of a reorder layout: a part id, optionally reassigned to a group.

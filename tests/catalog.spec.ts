@@ -190,7 +190,7 @@ test.describe('Catalog page (static) — navigation', () => {
     await expect(firstTile).toHaveAttribute('href', /^\/editor\?catalog=/);
     await firstTile.click();
     await expect(page).toHaveURL(/\/editor/, { timeout: 30_000 });
-    await expect(page.locator('.cm-content')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('#code-pane')).toBeVisible({ timeout: 30_000 });
   });
 
   test('the editor still soft-renders the in-app catalog (no reload)', async ({ page }) => {

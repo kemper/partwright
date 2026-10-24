@@ -205,6 +205,22 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Triangle count above which the smooth-paint REFINED mesh (the mesh
+     *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
+     *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
+     *  mesh lets reopening a painted version skip rebuilding every smooth
+     *  edge; above the cap reopening rebuilds the edges as before. Costs
+     *  roughly 20 bytes per triangle. 0 = never cache. */
+    paintRefinePersistMaxTriangles: number;
+    /** Total size (MB) of the local smooth-paint mesh cache (IndexedDB
+     *  `paintRefineCache`). Least-recently-used entries are evicted past it. */
+    paintRefineCacheMaxMB: number;
+    /** A cache hit older than this many minutes is re-stamped as recently
+     *  used (each re-stamp rewrites the entry, so reads only touch it now and
+     *  then). */
+    paintRefineCacheTouchMinutes: number;
+    /** Most pixels one `probePixels` call may cast (one ray each). */
+    probePixelsMaxPixels: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
      *  full-quality render, the Worker meshes a throwaway coarse pass at this
      *  multiple of the model's march `edgeLength` (and skips detail regions) so
@@ -270,10 +286,60 @@ export interface AppConfig {
     /** Surface samples per mesh for convertToCode / evalAgainstImport
      *  chamfer+hausdorff reports (more = tighter noise floor, slower). */
     reconstructEvalSamples: number;
+    /** Photo match (`photoMatch` / `model:preview --match-photo`): the common
+     *  height (px) the photo and model silhouettes are resampled to before
+     *  comparing. Higher = finer detail, slower. */
+    photoMatchTargetHeight: number;
+    /** Photo match: floor of the auto-estimated background tolerance (RGB
+     *  distance). The estimate adapts above it to the backdrop's noise; keep it
+     *  low so dark hair on a black backdrop stays foreground. */
+    photoMatchBgToleranceMin: number;
+    /** Photo match: tolerance (RGB distance) around an explicit `bg` colour
+     *  when the caller passes no `bgTolerance`. */
+    photoMatchBgTolerance: number;
+    /** Photo match: k-means refinement iterations over the photo's colours
+     *  (seeded with the model's region colours). */
+    photoMatchKmeansIterations: number;
+    /** Photo match: number of horizontal bands in the width profile. */
+    photoMatchBands: number;
+    /** Photo match: colour difference (ΔE) above which a region is reported as
+     *  a colour mismatch. */
+    photoMatchColorShiftWarn: number;
+    /** Photo match: a photo pixel is credited to a model region of its colour
+     *  only within this distance (fraction of the figure height); further
+     *  away it's a photo detail with no model counterpart. */
+    photoMatchMaxRegionDistance: number;
+    /** Photo match: size (px) of the flat model render compared against the
+     *  photo. */
+    photoMatchRenderSize: number;
+    /** Photo match: warn when the photo's subject is shorter than this
+     *  (original photo pixels) — too small to judge fine outline detail. */
+    photoMatchMinSubjectPx: number;
+    /** Photo match: regions whose photo colours converge closer than this ΔE
+     *  (or that share a model colour and touch) are flagged low-confidence and
+     *  their shape findings suppressed. 0 disables the auto-detection. */
+    photoMatchAmbiguousDeltaE: number;
+    /** Photo match: outline-diff offsets below this (% of figure height) are
+     *  not reported. */
+    photoMatchOutlineMinPct: number;
+    /** Photo match: maximum number of outline-diff lines. */
+    photoMatchOutlineMaxLines: number;
+    /** Photo match: in auto background mode, a border whose estimated
+     *  tolerance reaches this RGB distance counts as busy and switches to the
+     *  colour-model (GrabCut-lite) segmentation. */
+    photoMatchBusyBorderTolerance: number;
   };
   ui: {
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
+    /** How long a toast carrying an action button (e.g. a delete's "Undo")
+     *  stays on screen (ms) — longer than a plain toast so the button can be
+     *  reached. After it fades, "Recover deleted" in the Objects list still
+     *  restores the item. */
+    undoToastDurationMs: number;
+    /** Days a deleted object stays in the "Recover deleted" bin before it is
+     *  permanently purged (checked whenever the bin is read). */
+    deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
@@ -320,6 +386,20 @@ export interface AppConfig {
     defaultPaletteCapacity: number;
     /** Max colours kept in the palette's recent-colour history ring. */
     paletteHistoryMax: number;
+    /** Default `paintStroke` smoothness: target boundary edge = radius /
+     *  this. The painted edge is clipped exactly, so this only sets how finely
+     *  a curve is approximated; higher values add triangles every saved
+     *  session must rebuild on open. */
+    paintStrokeResolution: number;
+    /** Gap filled between consecutive `paintStroke` / `paintAirbrush` path
+     *  points, as a fraction of the radius. Smaller = smoother band edge,
+     *  more samples. */
+    paintStrokePathSpacing: number;
+    /** `paintAlongBoundary` paints at most this many seam loops (the longest
+     *  ones); the rest are reported as `skippedLoops`. Each loop is one smooth
+     *  stroke on the main thread, so a noisy seam with hundreds of specks
+     *  would otherwise stall the tab. */
+    boundaryPaintMaxLoops: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -338,6 +418,9 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Width (px) of the code pane in its compact "mini" mode — the
+     *  syntax-colored code map shown by default instead of the full editor. */
+    codeMinimapWidthPx: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -361,6 +444,84 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+  };
+  segmentation: {
+    /** Part detection: after an interactive STL import, try the automatic
+     *  detectors (`autoDetectParts`). When they split the mesh (e.g. a
+     *  multi-body figure, one body per colour) the Part Detection panel opens
+     *  on the proposal; otherwise the usual convert-to-code ask appears, with
+     *  a "Detect parts…" button. Off = always the convert ask. */
+    autoDetectOnImport: boolean;
+    /** Part detection: imports above this many triangles skip the automatic
+     *  import-time pass (it would delay the next-step prompt on huge scans);
+     *  the convert ask's "Detect parts…" button still works. */
+    autoDetectMaxTriangles: number;
+    /** Part detection: an automatic proposal with more parts than this is
+     *  dropped (an assembly or a scan with loose debris, not colour bodies).
+     *  Explicit `detectParts` calls are not limited. */
+    autoDetectMaxParts: number;
+    /** Part detection: islands below this fraction of the total surface area
+     *  are folded into their neighbours by the panel's "Absorb specks" action
+     *  (the absorbSmall edit op default). */
+    absorbMinAreaFrac: number;
+    /** Part detection: majority-filter passes the panel's "Smooth edges"
+     *  action runs over part boundaries (smoothBoundaries default). */
+    smoothBoundaryIterations: number;
+    /** Part detection: parts listed in console/AI summaries before the list
+     *  is truncated (keeps tool results small on over-segmented meshes). */
+    maxListedParts: number;
+    /** Part detection: edit batches kept for Undo in a draft. */
+    undoDepth: number;
+    /** Part detection: cells per side of the coarse depth buffer that decides
+     *  where renderParts draws each part's number (higher = finds smaller
+     *  visible slivers, slightly slower). */
+    labelGridResolution: number;
+    /** Live mode: wait this long (ms) after the last seed/setting change
+     *  before re-running detection. */
+    liveDebounceMs: number;
+    /** Wait this long (ms) after the last Edge-smoothness change before
+     *  recomputing the smooth part edges. */
+    edgeSmoothingDebounceMs: number;
+    /** Preset filmstrip tile size (px). */
+    presetThumbSize: number;
+    /** Edge-smoothing passes a new part draft starts with (0 = triangle
+     *  edges; acceptParts then keeps the original mesh). */
+    defaultEdgeSmoothing: number;
+    /** Smooth edges leave a part boundary alone where it runs along a fold
+     *  at least this sharp (°, groove or ridge) — a hard edge such as a CAD
+     *  box edge already IS the seam. Sculpted grooves (often 30–60° per edge
+     *  on scans) still smooth at the default. */
+    edgePinCreaseDeg: number;
+    /** "Convert to seeds": regions smaller than this fraction of their part
+     *  get no seed of their own. */
+    seedsFromPartsMinRegionFrac: number;
+    /** Seed-marker dot radius as a fraction of the model's diagonal. */
+    seedDotFraction: number;
+    /** Seed-marker name-tag height as a fraction of the viewport height. */
+    seedTagScreenFraction: number;
+    /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
+    fixBrushRadiusFrac: number;
+    /** Part panel label chips: a chip's pin counts as "missed" (its part
+     *  came out empty or a speck) below this fraction of the surface area. */
+    chipMissAreaFrac: number;
+    /** previewSeeds: a seed farther than this many median edge lengths from
+     *  the surface counts as a miss (it is still snapped to the nearest
+     *  triangle when detection runs, which is usually not what was meant). */
+    seedMissEdgeLengths: number;
+    /** renderParts `focus`: padding around the focused part's bounding box,
+     *  as a fraction of its largest dimension. */
+    focusPadding: number;
+    /** Detection folds "specks" — regions under this fraction of the surface
+     *  with no pin of any kind, no hand fix, and whose part nobody named,
+     *  coloured or locked — into the neighbour they border most. 0 = off. */
+    autoAbsorbSpeckFrac: number;
+    /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
+     *  (the panel opens with the first label chip armed) when its largest
+     *  piece has at least this many triangles. */
+    fusedPieceMinTris: number;
+    /** Phone layout (below 768 px): the part panel is a bottom sheet this
+     *  fraction of the window height, so the model stays visible above it. */
+    mobileSheetHeightFrac: number;
   };
 }
 
@@ -428,6 +589,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    paintRefinePersistMaxTriangles: 1_000_000,
+    paintRefineCacheMaxMB: 256,
+    paintRefineCacheTouchMinutes: 60,
+    probePixelsMaxPixels: 4096,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
@@ -449,9 +614,24 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     filamentConfidenceWarnThreshold: 0.9,
     reconstructCellBudget: 6_000_000,
     reconstructEvalSamples: 4000,
+    photoMatchTargetHeight: 160,
+    photoMatchBgToleranceMin: 10,
+    photoMatchBgTolerance: 40,
+    photoMatchKmeansIterations: 8,
+    photoMatchBands: 10,
+    photoMatchColorShiftWarn: 30,
+    photoMatchMaxRegionDistance: 0.12,
+    photoMatchRenderSize: 512,
+    photoMatchMinSubjectPx: 300,
+    photoMatchAmbiguousDeltaE: 12,
+    photoMatchOutlineMinPct: 1.5,
+    photoMatchOutlineMaxLines: 8,
+    photoMatchBusyBorderTolerance: 75,
   },
   ui: {
     toastDurationMs: 2200,
+    undoToastDurationMs: 8000,
+    deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
@@ -468,11 +648,15 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     scadDefaultQuality: 32,
     defaultPaletteCapacity: 4,
     paletteHistoryMax: 48,
+    paintStrokeResolution: 16,
+    paintStrokePathSpacing: 0.25,
+    boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,
@@ -481,6 +665,31 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+  },
+  segmentation: {
+    autoDetectOnImport: true,
+    autoDetectMaxTriangles: 2_000_000,
+    autoDetectMaxParts: 40,
+    absorbMinAreaFrac: 0.002,
+    smoothBoundaryIterations: 2,
+    maxListedParts: 80,
+    undoDepth: 20,
+    labelGridResolution: 160,
+    liveDebounceMs: 450,
+    edgeSmoothingDebounceMs: 250,
+    presetThumbSize: 112,
+    defaultEdgeSmoothing: 3,
+    edgePinCreaseDeg: 60,
+    seedsFromPartsMinRegionFrac: 0.01,
+    seedDotFraction: 0.008,
+    seedTagScreenFraction: 0.026,
+    fixBrushRadiusFrac: 0.012,
+    chipMissAreaFrac: 0.0005,
+    seedMissEdgeLengths: 3,
+    focusPadding: 0.15,
+    autoAbsorbSpeckFrac: 0.002,
+    fusedPieceMinTris: 2000,
+    mobileSheetHeightFrac: 0.45,
   },
 };
 

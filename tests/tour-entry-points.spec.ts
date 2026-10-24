@@ -23,7 +23,7 @@ test.describe('Guided tour entry points', () => {
 
     const tooltip = page.locator('.tour-tooltip');
     await expect(tooltip).toBeVisible({ timeout: 30000 });
-    await expect(tooltip).toContainText('Code Editor');
+    await expect(tooltip).toContainText('Model Code');
     await expect(tooltip.getByRole('button', { name: 'Next' })).toBeVisible();
 
     // Skip tears the overlay down.
@@ -45,6 +45,6 @@ test.describe('Guided tour entry points', () => {
     await expect(page).toHaveURL(/\/editor/, { timeout: 30000 });
     const tooltip = page.locator('.tour-tooltip');
     await expect(tooltip).toBeVisible({ timeout: 30000 });
-    await expect(tooltip).toContainText('Code Editor');
+    await expect(tooltip).toContainText('Model Code');
   });
 });

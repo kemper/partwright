@@ -98,6 +98,27 @@ test.describe('paint by vision', () => {
     expect(typeof probe.nextStep).toBe('string');
   });
 
+  test('probePixel hits from a side (non-polar) view on an off-origin model', async () => {
+    // Regression: buildViewCamera aimed the camera with lookAt but never
+    // refreshed its world matrix, so every non-top-down probe cast along the
+    // default orientation and missed. Only elevation 90 was covered before.
+    const probes = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run('return api.Manifold.cube([20, 20, 20], true).translate([40, 29, 40]);');
+      return [0, 90, 180, 270].map((azimuth) =>
+        pw.probePixel({ pixel: [100, 100], view: { elevation: 10, azimuth, ortho: true, size: 200 } }));
+    });
+    for (const probe of probes) {
+      expect(probe.error).toBeUndefined();
+      expect(probe.hit).toBeUndefined(); // a hit, not a miss
+      // The centre ray lands on a side face of the cube (x or y = centre ± 10).
+      const [x, y] = probe.point;
+      expect(Math.abs(Math.abs(x - 40) - 10) < 0.01 || Math.abs(Math.abs(y - 29) - 10) < 0.01).toBe(true);
+    }
+  });
+
   test('paintConnected floods from a seed gated by deviation from the seed normal', async () => {
     // Cube: 6 flat faces each 90° from the next. paintConnected with
     // a 30° deviation from the top-face seed should pick up the entire

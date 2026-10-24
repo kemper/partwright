@@ -107,7 +107,7 @@ test.describe('smooth paintbrush — UI interactions', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       const before = pw.getMesh().numTri;
-      const canvas = document.querySelector('canvas')!;
+      const canvas = document.querySelector('#viewport-container canvas')!;
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
@@ -423,7 +423,7 @@ test.describe('smooth paintbrush — shared page', () => {
       expect(out.offModel.error).toBeTruthy(); // nothing within the footprint
     });
 
-    test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async () => {
+    test('paintStroke resolution defaults to 16, is settable, and maxEdge overrides', async () => {
       await resetCube(page);
       const out = await page.evaluate(async () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -439,10 +439,10 @@ test.describe('smooth paintbrush — shared page', () => {
         const abs = pw.paintStroke({ points: [[0, 0, 2]], radius: 8, maxEdge: 0.5, color: [1, 0, 0] });
         return { def, defTri, coarse, coarseTri, abs };
       });
-      expect(out.def.resolution).toBe(64);           // default
-      expect(out.def.maxEdge).toBeCloseTo(8 / 64, 5);
+      expect(out.def.resolution).toBe(16);           // default
+      expect(out.def.maxEdge).toBeCloseTo(8 / 16, 5);
       expect(out.coarse.resolution).toBe(32);        // settable
-      expect(out.defTri).toBeGreaterThan(out.coarseTri); // 64 is finer than 32
+      expect(out.coarseTri).toBeGreaterThan(out.defTri); // 32 is finer than the default 16
       expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
     });
 

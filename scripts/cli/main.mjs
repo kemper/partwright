@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
+import { runSegment } from './segment.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
 
 const coerce = (s) => { if (s === 'true') return true; if (s === 'false') return false; const n = Number(s); return Number.isNaN(n) ? s : n; };
@@ -268,6 +269,28 @@ async function cmdFetch(argv) {
   console.log(json({ ok: true, out, bytes: buf.length, contentType: res.headers.get('content-type') || 'unknown' }));
 }
 
+// Part detection on an STL (#1025): detector → colour-coded PNG + quality JSON.
+async function cmdSegment(argv) {
+  const a = parse(argv, ['json']);
+  const file = a._[0];
+  if (!file) { console.error('usage: partwright segment <mesh.stl> --algo <id> [--seeds seeds.json] [-p k=v] [--smooth r] [--png out] [--views …] [--size N]'); process.exit(1); }
+  const { views, error: viewErr } = resolveViews(a.view, a.views);
+  if (viewErr) { console.error(viewErr); process.exit(1); }
+  const out = await runSegment(resolve(file), { algorithm: a.algo || 'crease-watershed', params: a.params, seedsFile: a.seeds, smoothRadius: a.smooth });
+  const s = out.summary;
+  const result = {
+    ok: true, detector: s.detectorId, params: s.params, ms: out.ms,
+    parts: s.parts.map((p) => ({ id: p.id, name: p.name, triCount: p.triCount, areaFrac: p.areaFrac, regions: p.regions, displayColor: p.displayColor })),
+    unassigned: s.unassigned, quality: s.quality,
+  };
+  if (!a.json) {
+    const png = a.png || join(dirname(resolve(file)), `${basename(file).replace(/\.[^.]+$/, '')}.parts.png`);
+    await composePng(out.positions, out.triVerts, out.triColors, out.bbox, Number(a.size) || 512, views ?? undefined).toFile(png);
+    result.png = png;
+  }
+  console.log(json(result));
+}
+
 // Discovery — list the window.partwright methods reachable via `call`.
 async function cmdMethods(argv) {
   const a = parse(argv);
@@ -291,6 +314,9 @@ Phase 1 (stateless, no browser — fast inner loop):
                                [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
                                photo → palette-snapped voxel model + preview
   partwright fetch   <url>     [--out file]              download a remote image to disk (for photo)
+  partwright segment <mesh.stl> [--algo crease-watershed|pieces] [--seeds seeds.json] [-p k=v]
+                               [--smooth radius] [--png out] [--views …] [--size N] [--json]
+                               detect named parts → colour-coded PNG + quality JSON
 
 Phase 2 (headless-browser daemon — full fidelity + state):
   partwright iterate <file.js> [--out png] [--views all] [-p k=v]
@@ -311,6 +337,7 @@ export async function main(argv) {
     case 'compare': return cmdCompare(rest);
     case 'photo': return cmdPhoto(rest);
     case 'fetch': return cmdFetch(rest);
+    case 'segment': return cmdSegment(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);
