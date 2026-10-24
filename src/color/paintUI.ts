@@ -86,6 +86,7 @@ import {
   addRegion,
   replaceRegionColors,
   getDistinctRegionColors,
+  getModelRegions,
 } from './regions';
 import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
 import { getPaintScope, onPaintScopeChange, setPaintScope } from './paintScope';
@@ -104,6 +105,7 @@ import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
+import { NATURAL_TONE_SWATCHES } from './naturalTones';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -397,6 +399,30 @@ function createPickerPanel(): HTMLElement {
   onPaintLabelsChange(renderScope);
   onPaintScopeChange(renderScope);
 
+  // === Labels list ===
+  // Surfaces the named features `api.label(shape, name)` registered in the
+  // current run (and an import's accepted parts). Hovering a row highlights
+  // the label's triangles on the model (same translucent overlay the regions
+  // list uses); clicking paints them with the active color via a byLabel
+  // descriptor — identical to what `partwright.paintByLabel` produces from a
+  // script. It sits right under the tools (#1050): with detected parts it is
+  // the main way to paint, so it shouldn't be below every tool's controls.
+  const labelList = document.createElement('div');
+  labelList.id = 'paint-label-list';
+  labelList.className = 'mb-2.5 border-b border-zinc-700 pb-2';
+  content.appendChild(labelList);
+  updateLabelList(labelList);
+  // Deferred a microtask: a run sets the labels just before the model colours
+  // they show (setModelColorRegions doesn't notify), and both land together.
+  let labelListQueued = false;
+  const queueLabelList = () => {
+    if (labelListQueued) return;
+    labelListQueued = true;
+    queueMicrotask(() => { labelListQueued = false; updateLabelList(labelList); });
+  };
+  onPaintLabelsChange(queueLabelList);
+  onRegionsChange(queueLabelList);
+
   // === Palette (filament slots) ===
   // The swatch grid is driven by the shared colour palette, so each swatch maps
   // to a filament/AMS slot. Painting with a swatch attributes the region to that
@@ -426,19 +452,6 @@ function createPickerPanel(): HTMLElement {
   replaceControls = createReplaceControls();
   content.appendChild(replaceControls);
 
-  // === Labels list ===
-  // Surfaces the named features `api.label(shape, name)` registered in the
-  // current run. Hovering a row highlights the label's triangles on the model
-  // (same translucent overlay the regions list uses); clicking paints them
-  // with the active color via a byLabel descriptor — identical to what
-  // `partwright.paintByLabel` produces from a script.
-  const labelList = document.createElement('div');
-  labelList.id = 'paint-label-list';
-  labelList.className = 'mt-2 border-t border-zinc-700 pt-2';
-  content.appendChild(labelList);
-  updateLabelList(labelList);
-  onPaintLabelsChange(() => updateLabelList(labelList));
-  onRegionsChange(() => updateLabelList(labelList));
 
   // === Region list ===
   // Flows inside the single scroll area; the sticky footer keeps the actions
@@ -1665,9 +1678,52 @@ function updateLabelList(container: HTMLElement): void {
     if (r.descriptor.kind === 'byLabel') paintedLabels.add(r.descriptor.label);
   }
 
-  for (const label of labels) {
-    container.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
-  }
+  const rowsHost = document.createElement('div');
+  const renderRows = () => {
+    releaseLabelHover();
+    rowsHost.replaceChildren();
+    const q = labelFilter.trim().toLowerCase();
+    const shown = q ? labels.filter((l) => l.name.toLowerCase().includes(q)) : labels;
+    for (const label of shown) rowsHost.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
+    if (shown.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'text-[10px] text-zinc-500';
+      none.textContent = `No label matches “${labelFilter.trim()}”.`;
+      rowsHost.appendChild(none);
+    }
+  };
+  // Many labels (a detailed figure): a filter box, kept for the session.
+  if (labels.length > LABEL_FILTER_MIN) {
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.id = 'paint-label-filter';
+    filter.placeholder = 'Filter labels…';
+    filter.setAttribute('aria-label', 'Filter labels');
+    filter.value = labelFilter;
+    filter.className = 'w-full mb-1 px-1.5 py-0.5 min-h-11 md:min-h-0 rounded text-[11px] bg-zinc-900/60 text-zinc-200 border border-zinc-700';
+    filter.addEventListener('input', () => { labelFilter = filter.value; renderRows(); });
+    container.appendChild(filter);
+  } else labelFilter = '';
+  container.appendChild(rowsHost);
+  renderRows();
+}
+
+/** Swatch fill for a label with no colour yet (shown with a dashed border). */
+const UNCOLORED_LABEL_RGB: [number, number, number] = [0.42, 0.42, 0.45];
+
+/** The Labels list grows a filter box above this many labels. A layout
+ *  convention (one screenful of rows), not a tuning knob. */
+const LABEL_FILTER_MIN = 6;
+/** The Labels filter text (survives the list re-rendering on every run). */
+let labelFilter = '';
+
+/** The colour a label shows as: the newest paint on it, else the colour the
+ *  model gives it (api.label({color}), an accepted part's colour), else null. */
+function labelOwnColor(name: string): [number, number, number] | null {
+  const painted = [...getRegions()].reverse().find((r) => r.descriptor.kind === 'byLabel' && r.descriptor.label === name);
+  if (painted) return painted.color;
+  const model = getModelRegions().find((r) => r.name === name);
+  return model ? model.color : null;
 }
 
 // The "Pattern" row's apply hook — registered by main.ts (it routes to the
@@ -1830,12 +1886,17 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
   // click from bubbling to the row's paint-with-active-colour handler). Picking
   // a colour recolours this part's existing byLabel region in place, or commits
   // a fresh one — the same descriptor partwright.paintByLabel emits.
+  // The swatch shows the label's OWN colour (its paint, else its model
+  // colour), never the active brush colour (#1050): a list of parts that all
+  // show the brush colour reads as "everything is that colour".
+  const own = labelOwnColor(label.name);
   const swatch = createColorSwatch({
-    initialHex: rgbToHex(lastPainted ? lastPainted.color : getColor()),
-    title: lastPainted ? `Recolour the whole "${label.name}" part` : `Set the colour of the whole "${label.name}" part`,
+    initialHex: rgbToHex(own ?? UNCOLORED_LABEL_RGB),
+    title: lastPainted || own ? `Recolour the whole "${label.name}" part` : `Set the colour of the whole "${label.name}" part (no colour yet)`,
     modalTitle: `Colour for "${label.name}"`,
-    className: 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer',
+    className: `w-3.5 h-3.5 shrink-0 rounded-sm border ${own ? 'border-zinc-500' : 'border-dashed border-zinc-400'} hover:border-white/60 cursor-pointer`,
     dataAction: 'set-label-color',
+    extraSwatches: NATURAL_TONE_SWATCHES,
     onPick: (hex) => {
       if (label.triangles.size === 0) return;
       const rgb: [number, number, number] = [
@@ -1997,4 +2058,12 @@ registerExclusiveMode('paint', forceDeactivate);
 /** True if the paint menu is open (paint mode is active). */
 export function isPaintOpen(): boolean {
   return isActive();
+}
+
+/** Open the Paint panel scoped to one part ("Paint within: <part>"), e.g.
+ *  the Part Detection panel's next step after accepting parts. null opens it
+ *  on the whole model. */
+export function openPaintWithin(part: string | null): void {
+  if (!isActive()) togglePaintMode();
+  setPaintScope(part);
 }

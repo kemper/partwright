@@ -337,10 +337,8 @@ test.describe('Multi-part sessions', () => {
     const row = list.locator('[data-part-id]');
     await expect(row).toHaveCount(1);
     await row.hover();
+    // No confirm: the object goes to Recover deleted (see recover-deleted.spec).
     await row.getByTitle(/Delete this object/).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toContainText('blank "Object 1"');
-    await dialog.getByRole('button', { name: 'Delete' }).click();
 
     await expect(page.locator('#editor-title')).toHaveText('Object 1');
     await expect.poll(() => page.evaluate(() =>

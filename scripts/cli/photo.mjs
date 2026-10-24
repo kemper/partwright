@@ -84,7 +84,7 @@ export async function runPhoto(file, opts = {}) {
   const { rgb: palette, names } = opts.palette ?? { rgb: DEFAULT_PALETTE.map((p) => hexToRgb(p.hex)), names: DEFAULT_PALETTE.map((p) => p.name) };
   const image = await loadImageData(file, { max, crop: opts.crop });
 
-  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   try {
     const i2v = await server.ssrLoadModule('/src/import/imageToVoxel.ts');
     const mesher = await server.ssrLoadModule('/src/geometry/voxel/mesher.ts');

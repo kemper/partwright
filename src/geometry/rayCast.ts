@@ -275,8 +275,13 @@ export function probePixel(
     return { hit: false, modelPixelBounds };
   }
 
-  const hit = intersections[0];
-  const result: PixelHit = {
+  const result = toPixelHit(intersections[0]);
+  material.dispose();
+  return result;
+}
+
+function toPixelHit(hit: THREE.Intersection): PixelHit {
+  return {
     point: [
       Math.round(hit.point.x * 1000) / 1000,
       Math.round(hit.point.y * 1000) / 1000,
@@ -288,6 +293,40 @@ export function probePixel(
     distance: Math.round(hit.distance * 1000) / 1000,
     triangleId: hit.faceIndex ?? -1,
   };
+}
+
+/** Batch twin of {@link probePixel}: many pixels through ONE camera. The
+ *  raycast geometry (and its BVH) is built — or fetched from the per-mesh
+ *  cache — once, and one raycaster is reused for every ray, so probing 50
+ *  pixels costs about one probe plus 50 BVH traversals. Each result is the
+ *  same `PixelHit` / `PixelMiss` the single call returns, in input order;
+ *  the model's pixel bounds are projected at most once and shared by every
+ *  miss. */
+export function probePixels(
+  meshData: MeshData,
+  camera: THREE.Camera,
+  pixels: [number, number][],
+  size: number,
+): (PixelHit | PixelMiss)[] {
+  const geometry = raycastGeometry(meshData);
+  const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const tempMesh = new THREE.Mesh(geometry, material);
+  camera.updateMatrixWorld();
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+  let bounds: PixelBounds | null | undefined;
+  const out: (PixelHit | PixelMiss)[] = [];
+  for (const [px, py] of pixels) {
+    ndc.set((px / size) * 2 - 1, -((py / size) * 2 - 1));
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObject(tempMesh);
+    if (hits.length === 0) {
+      if (bounds === undefined) bounds = projectBoundsToPixels(geometry, camera, size);
+      out.push({ hit: false, modelPixelBounds: bounds });
+    } else {
+      out.push(toPixelHit(hits[0]));
+    }
+  }
   material.dispose();
-  return result;
+  return out;
 }

@@ -135,6 +135,11 @@ export interface RefinePipelineResult {
   brushStrokeTriangles: Map<number, Uint32Array>;
 }
 
+/** Progress callback for a refine: `done` of `total` steps finished, with a
+ *  short human-readable label for the step now running. A step is one refining
+ *  descriptor's stroke build, its subdivision pass, or its footprint lookup. */
+export type RefineProgress = (done: number, total: number, label: string) => void;
+
 /** Refine `input` under `descriptors` (built against `base` for stroke
  *  resolution) and resolve every brushStroke descriptor's footprint triangles
  *  on the refined mesh.
@@ -149,13 +154,20 @@ export function refineMeshPipeline(
   input: MeshData,
   descriptors: RegionDescriptor[],
   patternContext?: PatternContextProvider,
+  onProgress?: RefineProgress,
 ): RefinePipelineResult {
+  const refining = descriptors.filter(descriptorRefines).length;
+  const strokeCount = descriptors.filter(d => d.kind === 'brushStroke').length;
+  const total = strokeCount + refining + strokeCount;
+  let done = 0;
   // Build refine regions once, remembering the resolved brush strokes so we
   // can resolve their footprint triangles on the refined mesh below without
   // rebuilding the geodesic field / normals a second time.
   const brushStrokes = new Map<number, BrushStroke>();
   const regions = collectRefineRegions(descriptors, base, (d) => {
+    onProgress?.(done, total, `Tracing stroke ${brushStrokes.size + 1} of ${strokeCount}`);
     const stroke = buildBrushStrokeFromDescriptor(d, base);
+    done++;
     const idx = descriptors.indexOf(d);
     brushStrokes.set(idx, stroke);
     return stroke;
@@ -169,10 +181,14 @@ export function refineMeshPipeline(
     };
   }
 
-  const { mesh, childToParent } = buildRefinedMesh(input, regions);
+  const { mesh, childToParent } = buildRefinedMesh(input, regions, onProgress && ((i, n) => {
+    onProgress(done + i, total, `Smoothing edge ${i + 1} of ${n}`);
+  }));
+  done += regions.length;
 
   const brushStrokeTriangles = new Map<number, Uint32Array>();
   for (const [idx, stroke] of brushStrokes) {
+    onProgress?.(done++, total, 'Finding painted triangles');
     const tris = strokeFootprintTriangles(mesh, stroke);
     brushStrokeTriangles.set(idx, Uint32Array.from(tris));
   }

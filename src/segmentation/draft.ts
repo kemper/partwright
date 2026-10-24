@@ -64,6 +64,20 @@ export function overlayColor(index: number, explicit: string | null | undefined)
   return explicit ?? PALETTE[index % PALETTE.length];
 }
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+/** Whether `c` is a `#rrggbb` colour. */
+export function isHexColor(c: unknown): c is string {
+  return typeof c === 'string' && HEX_COLOR.test(c);
+}
+
+/** The colours acceptParts saves on the import, one per part: what the
+ *  user sees — the explicit colour, else the overlay colour — so accepting
+ *  never turns uncoloured parts plain. `applyColors: false` saves none
+ *  (labels only). */
+export function acceptColors(parts: readonly { color: string | null; displayColor: string }[], applyColors = true): (string | null)[] {
+  return parts.map((p) => (applyColors ? (p.color ?? p.displayColor).toLowerCase() : null));
+}
+
 export interface PartSummary {
   /** 1-based id shown on the overlay legend. */
   id: number;
@@ -131,6 +145,11 @@ export interface DraftSummary {
 
 export type PartRef = number | string;
 
+/** What a `brush` edit moves into its target part: the brushed `triangles`
+ *  themselves (fixed, like the Fix brush), or every part it touched, whole
+ *  (`patches` — a brush-merge). */
+export type BrushMode = 'triangles' | 'patches';
+
 /** Batch edit operations (editParts). Part refs are 1-based ids or names. */
 export type PartEditOp =
   | { op: 'merge'; ids: PartRef[]; name?: string }
@@ -138,6 +157,7 @@ export type PartEditOp =
   | { op: 'setColor'; id: PartRef; color: string | null }
   | { op: 'delete'; id: PartRef }
   | { op: 'reassign'; point: [number, number, number]; to: PartRef; radius?: number }
+  | { op: 'brush'; to: PartRef; points?: [number, number, number][]; triangles?: number[]; radius?: number; mode?: BrushMode }
   | { op: 'split'; id: PartRef; seeds: SegSeed[] }
   | { op: 'absorbSmall'; minAreaFrac: number }
   | { op: 'smoothBoundaries'; iterations?: number }
@@ -149,7 +169,7 @@ export type PartEditOp =
   | { op: 'focus'; id: PartRef | null }
   | { op: 'setEdgeSmoothing'; iterations: number }
   | { op: 'reorder'; id: PartRef; position: number }
-  | { op: 'clear' }
+  | { op: 'clear'; algorithm?: string }
   | { op: 'rerun' }
   | { op: 'undo' };
 
@@ -169,6 +189,7 @@ interface Snapshot {
    *  restore the one the restored partition was measured on. */
   features: MeshFeatures;
   fixedTri: Int32Array | null;
+  placeholderNames: string[];
 }
 
 /** A crease at least this sharp (°) counts as a real seam for the
@@ -199,6 +220,14 @@ export class PartDraftModel {
   /** Automatic pins skip regions smaller than this fraction of their part
    *  (appConfig.segmentation.seedsFromPartsMinRegionFrac, threaded in). */
   anchorMinRegionFrac = 0.01;
+  /** Detection and pin re-grows fold "specks" — regions smaller than this
+   *  fraction of the surface that nothing claims (see absorbSpecks) — into
+   *  the neighbour they border most (appConfig.segmentation.autoAbsorbSpeckFrac,
+   *  threaded in). 0 = off. */
+  autoAbsorbFrac = 0;
+  /** Part names a seedless detector made up ("patch 3"); renaming or
+   *  naming a part in a merge makes its name the user's. */
+  placeholderNames = new Set<string>();
   /** Overlay colour remembered per part name, so colours stay put across
    *  edits (see displayColors). */
   private colorMemo = new Map<string, string>();
@@ -235,6 +264,7 @@ export class PartDraftModel {
     this.names = [];
     this.colors = [];
     this.adoptResult(result);
+    this.applySeedColors(run.seeds);
     this.syncAnchors();
   }
 
@@ -266,7 +296,9 @@ export class PartDraftModel {
     c.lockedNames = new Set(this.lockedNames);
     c.focusMask = this.focusMask ? this.focusMask.slice() : null;
     c.fixedTri = this.fixedTri ? this.fixedTri.slice() : null;
+    c.placeholderNames = new Set(this.placeholderNames);
     c.anchorMinRegionFrac = this.anchorMinRegionFrac;
+    c.autoAbsorbFrac = this.autoAbsorbFrac;
     c.colorMemo = new Map(this.colorMemo);
     c.edgeSmoothing = this.edgeSmoothing;
     c.cache = this.cache;
@@ -281,6 +313,9 @@ export class PartDraftModel {
     const count = Math.max(maxIdx + 1, result.partNames?.length ?? 0);
     this.names = Array.from({ length: count }, (_, i) => result.partNames?.[i] ?? `part ${i + 1}`);
     this.colors = Array.from({ length: count }, () => null);
+    // Names nobody chose (a seedless detector's "patch 3", or a fallback
+    // "part N") — the only parts auto-absorb may fold away.
+    this.placeholderNames = new Set(this.names.filter((_, i) => result.genericNames || result.partNames?.[i] === undefined));
     this.diagnostics = result.diagnostics;
     this.compact();
   }
@@ -478,7 +513,10 @@ export class PartDraftModel {
         // now-empty merged parts) leaves it in place; name it afterwards so the
         // new name may reuse a merged part's name.
         this.compact();
-        if (op.name !== undefined) this.names[keep] = this.uniqueNameFor(keep, op.name);
+        if (op.name !== undefined) {
+          this.names[keep] = this.uniqueNameFor(keep, op.name);
+          this.placeholderNames.delete(this.names[keep]);
+        }
         if (anyLocked) this.lockedNames.add(this.names[keep]);
         // The merged part owns every merged part's pins.
         for (const sd of this.seeds) if (mergedNames.has(sd.label)) sd.label = this.names[keep];
@@ -494,6 +532,8 @@ export class PartDraftModel {
         if (holder >= 0 && holder !== i) { this.applyOp({ op: 'merge', ids: [holder + 1, i + 1], name: nm }); return; }
         const was = this.names[i];
         this.names[i] = nm;
+        this.placeholderNames.delete(was);
+        this.placeholderNames.delete(nm);
         if (this.lockedNames.delete(was)) this.lockedNames.add(nm);
         for (const sd of this.seeds) if (sd.label === was) sd.label = nm;
         const memo = this.colorMemo.get(was);
@@ -536,14 +576,37 @@ export class PartDraftModel {
         this.compact();
         return;
       }
+      case 'brush': {
+        const hit = this.brushTriangles(op.points ?? [], op.radius, op.triangles ?? []);
+        const target = this.resolveOrCreate(op.to);
+        if (op.mode === 'patches') {
+          // Brush-merge: every part the brush touched moves in whole, pins and
+          // locks included (like merge); brushed unassigned triangles join too.
+          const touched = new Set<number>();
+          for (const t of hit) { const L = this.triPart[t]; if (L >= 0 && L !== target) touched.add(L); }
+          const mergedNames = new Set([...touched].map((L) => this.names[L]));
+          const targetName = this.names[target];
+          if ([...mergedNames].some((nm) => this.lockedNames.has(nm))) this.lockedNames.add(targetName);
+          for (let t = 0; t < this.triPart.length; t++) if (touched.has(this.triPart[t])) this.triPart[t] = target;
+          if (this.fixedTri) for (let t = 0; t < this.fixedTri.length; t++) if (touched.has(this.fixedTri[t])) this.fixedTri[t] = target;
+          for (const t of hit) if (this.triPart[t] < 0) this.triPart[t] = target;
+          for (const sd of this.seeds) if (mergedNames.has(sd.label)) sd.label = targetName;
+          this.compact();
+          this.pruneLocks();
+        } else {
+          for (const t of hit) { this.triPart[t] = target; this.fix(t, target); }
+          this.compact();
+        }
+        return;
+      }
       case 'split': {
         const i = this.resolvePart(op.id);
         if (!Array.isArray(op.seeds) || op.seeds.length < 2) throw new Error('split needs at least two seeds ({ label, point })');
         const allow = new Uint8Array(this.triPart.length);
         for (let t = 0; t < allow.length; t++) if (this.triPart[t] === i) allow[t] = 1;
-        const { names, seedTris, seedLabels } = resolveSeeds(this.features, op.seeds, allow);
+        const { names, seedTris, seedLabels, seedMaxRadius } = resolveSeeds(this.features, op.seeds, allow);
         if (names.length < 2) throw new Error('split needs seeds with at least two distinct labels');
-        const g = growFromSeeds(this.features, seedTris, seedLabels, this.growthOptions(allow));
+        const g = growFromSeeds(this.features, seedTris, seedLabels, { ...this.growthOptions(allow), seedMaxRadius });
         const map = names.map((nm, k) => (k === 0 ? i : this.createPart(nm)));
         if (names[0] !== this.names[i]) this.names[i] = names[0];
         for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = map[g.triLabel[t]];
@@ -551,7 +614,13 @@ export class PartDraftModel {
         // The split's seeds become the new parts' pins.
         const splitNames = new Set(names);
         this.seeds = this.seeds.filter((sd) => !(sd.auto && splitNames.has(sd.label)));
-        for (const sd of op.seeds) if (sd.label.trim()) this.seeds.push({ label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] });
+        for (const sd of op.seeds) {
+          if (!sd.label.trim()) continue;
+          const pin: SegSeed = { label: cleanName(sd.label), point: [sd.point[0], sd.point[1], sd.point[2]] };
+          if (validRadius(sd.maxRadius)) pin.maxRadius = sd.maxRadius;
+          this.seeds.push(pin);
+        }
+        this.applySeedColors(op.seeds);
         return;
       }
       case 'absorbSmall': {
@@ -571,6 +640,7 @@ export class PartDraftModel {
         if (!op.seed || typeof op.seed.label !== 'string' || !Array.isArray(op.seed.point) || op.seed.point.length !== 3) {
           throw new Error('addSeed.seed must be { label, point: [x,y,z] }');
         }
+        if (op.seed.color !== undefined && !isHexColor(op.seed.color)) throw new Error('addSeed.seed.color must be "#rrggbb"');
         const sd = cloneSeed(op.seed);
         sd.label = cleanName(sd.label);
         delete sd.auto;
@@ -580,6 +650,7 @@ export class PartDraftModel {
         // part. Either way only the parts around the pin re-grow (with
         // rerun:false the new part waits, empty, for a later re-grow).
         this.createPart(sd.label);
+        this.applySeedColors([op.seed]);
         if (op.rerun !== false) this.regrowAround([sd.label, this.partNameAt(sd.point)]);
         return;
       }
@@ -595,7 +666,7 @@ export class PartDraftModel {
         const was = this.seeds[op.index];
         this.assertPinPlaceable(was.label, op.point);
         // A moved pin is the user's now, even if the draft placed it.
-        this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]] };
+        this.seeds[op.index] = { label: was.label, point: [op.point[0], op.point[1], op.point[2]], ...(validRadius(was.maxRadius) ? { maxRadius: was.maxRadius } : {}) };
         if (op.rerun !== false) this.regrowAround([was.label, this.partNameAt(was.point), this.partNameAt(op.point)]);
         return;
       }
@@ -640,7 +711,15 @@ export class PartDraftModel {
         this.permute(order);
         return;
       }
-      case 'clear':
+      case 'clear': {
+        // With an algorithm the draft also switches method (the panel starts
+        // a seeded method fresh instead of mixing pins into auto patches).
+        if (op.algorithm !== undefined) {
+          const d = getDetector(op.algorithm);
+          if (!d) throw new Error(`Unknown detector "${op.algorithm}"`);
+          this.detectorId = d.id;
+          this.params = resolveParams(d, {});
+        }
         this.triPart.fill(-1);
         this.names = [];
         this.colors = [];
@@ -649,6 +728,7 @@ export class PartDraftModel {
         this.lockedNames.clear();
         this.focusMask = null;
         return;
+      }
       case 'rerun':
         this.rerun();
         return;
@@ -727,7 +807,10 @@ export class PartDraftModel {
           nm = `${prefix} ${k}`;
         }
         let j = index.get(nm);
-        if (j === undefined) { j = this.names.length; this.names.push(nm); this.colors.push(null); index.set(nm, j); }
+        if (j === undefined) {
+          j = this.names.length; this.names.push(nm); this.colors.push(null); index.set(nm, j);
+          if (result.genericNames || raw === undefined) this.placeholderNames.add(nm);
+        }
         return j;
       });
       for (let t = 0; t < this.triPart.length; t++) {
@@ -739,6 +822,7 @@ export class PartDraftModel {
       this.compact();
     }
     this.colors = this.names.map((nm, i) => keepColors.get(nm) ?? this.colors[i] ?? null);
+    this.applySeedColors(seeds);
     this.detectorId = d.id;
     this.params = { ...params };
     this.featureOptions = { ...featureOptions };
@@ -765,6 +849,7 @@ export class PartDraftModel {
       if (!allow) this.fixedTri = null;
       else for (let t = 0; t < this.fixedTri.length; t++) if (allow[t]) this.fixedTri[t] = -1;
     }
+    this.absorbSpecks(allow);
     this.pruneLocks();
     this.syncAnchors();
   }
@@ -824,6 +909,86 @@ export class PartDraftModel {
   // ------------------------------------------------------------------ pins
 
   /** Triangle a pin sits on (its resolved triangle, else the nearest). */
+  /** Triangles a brush covers: listed triangles, plus every triangle whose
+   *  centroid lies within `radius` of a brush point on the same piece as that
+   *  point (a stroke never jumps a gap to another body). */
+  private brushTriangles(points: readonly (readonly number[])[], radius: number | undefined, triangles: readonly number[]): Set<number> {
+    if (points.length === 0 && triangles.length === 0) throw new Error('brush needs points (with a radius) or triangles');
+    const f = this.features;
+    const hit = new Set<number>();
+    for (const t of triangles) {
+      if (!Number.isInteger(t) || t < 0 || t >= f.triCount) throw new Error(`brush.triangles: ${t} is not a triangle index (0–${f.triCount - 1})`);
+      hit.add(t);
+    }
+    if (points.length === 0) return hit;
+    if (!(typeof radius === 'number' && radius > 0)) throw new Error('brush.radius must be > 0 when points are given');
+    for (const p of points) {
+      if (!Array.isArray(p) || p.length !== 3 || p.some((x) => !Number.isFinite(x))) throw new Error('brush.points must be [x, y, z] triples');
+    }
+    // One piece for the whole mesh (the common fused figurine) needs no
+    // nearest-triangle lookup per point.
+    const pieceOf = f.pieceCount > 1 ? points.map((p) => f.pieceOfTri[Math.max(0, nearestTriangle(f, p as [number, number, number]))]) : null;
+    const r2 = radius * radius;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const p of points) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[k] - radius); hi[k] = Math.max(hi[k], p[k] + radius); }
+    const c = f.triCentroid;
+    const reached = new Uint8Array(points.length);
+    for (let t = 0; t < f.triCount; t++) {
+      const x = c[t * 3], y = c[t * 3 + 1], z = c[t * 3 + 2];
+      if (x < lo[0] || x > hi[0] || y < lo[1] || y > hi[1] || z < lo[2] || z > hi[2]) continue;
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const dx = x - p[0], dy = y - p[1], dz = z - p[2];
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
+        if (pieceOf && f.pieceOfTri[t] !== pieceOf[i]) continue;
+        hit.add(t);
+        reached[i] = 1;
+      }
+    }
+    // A dab smaller than the triangles it lands on (a coarse CAD mesh) still
+    // takes the triangle under it.
+    for (let i = 0; i < points.length; i++) {
+      if (reached[i]) continue;
+      const t = nearestTriangle(f, points[i] as [number, number, number]);
+      if (t >= 0) hit.add(t);
+    }
+    return hit;
+  }
+
+  /** Fold specks (see autoAbsorbFrac) into their neighbours. A speck is a
+   *  small region with no pin of any kind (placed or automatic) whose part
+   *  nobody named, coloured or locked: protected triangles weigh as much as
+   *  the whole surface, so their regions are never specks. Hand-fixed
+   *  triangles and anything outside `allow` are protected too. */
+  private absorbSpecks(allow: Uint8Array | null = null): void {
+    if (!(this.autoAbsorbFrac > 0)) return;
+    const f = this.features;
+    const total = f.totalArea || 1;
+    const w = Float64Array.from(f.triArea);
+    for (const sd of this.seeds) {
+      const t = this.pinTriangle(sd);
+      if (t >= 0) w[t] = total;
+    }
+    const keep = this.names.map((nm, i) => !this.placeholderNames.has(nm) || this.colors[i] !== null || this.lockedNames.has(nm));
+    for (let t = 0; t < w.length; t++) {
+      const L = this.triPart[t];
+      if ((L >= 0 && keep[L]) || (this.fixedTri && this.fixedTri[t] >= 0) || (allow && !allow[t])) w[t] = total;
+    }
+    if (absorbSmallRegions(this.triPart, this.adjacency, w, this.autoAbsorbFrac * total) > 0) this.compact();
+  }
+
+  /** Apply the speck pass to a fresh draft (the runner sets autoAbsorbFrac
+   *  after constructing the model), keeping the pins in step. */
+  absorbSpecksNow(): void {
+    if (!(this.autoAbsorbFrac > 0)) return;
+    // A fresh detection's automatic pins are stand-ins, not claims: drop
+    // them for the pass (syncAnchors puts them back on what's left).
+    this.seeds = this.seeds.filter((sd) => !sd.auto);
+    this.absorbSpecks();
+    this.pruneLocks();
+    this.syncAnchors();
+  }
+
   private pinTriangle(sd: SegSeed): number {
     if (typeof sd.triangle === 'number' && sd.triangle >= 0 && sd.triangle < this.triPart.length) return sd.triangle;
     // Resolve once and remember: the lookup is a linear scan of the mesh.
@@ -898,16 +1063,16 @@ export class PartDraftModel {
     }
     // A focus confines every edit, pin edits included.
     if (this.focusMask) for (let t = 0; t < allow.length; t++) if (!this.focusMask[t]) allow[t] = 0;
-    const seedTris: number[] = [], seedLabels: number[] = [];
+    const seedTris: number[] = [], seedLabels: number[] = [], seedRadii: number[] = [];
     const taken = new Set<number>();
     const seeded = new Set<number>();
     // Placed pins first: where a placed pin and an automatic pin land on the
     // same triangle, the placed one wins (an auto pin is only a stand-in).
     pinsHere.sort((x, y) => Number(!!x.sd.auto) - Number(!!y.sd.auto));
-    for (const { L, t } of pinsHere) {
+    for (const { sd, L, t } of pinsHere) {
       if (!allow[t] || taken.has(t)) continue;
       taken.add(t);
-      seedTris.push(t); seedLabels.push(L);
+      seedTris.push(t); seedLabels.push(L); seedRadii.push(validRadius(sd.maxRadius) ? sd.maxRadius : Infinity);
       seeded.add(L);
     }
     // A part whose pins all sit on its own fixed triangles grows from those
@@ -919,14 +1084,15 @@ export class PartDraftModel {
           if (fixed[t] !== L || taken.has(t)) continue;
           allow[t] = 1;
           taken.add(t);
-          seedTris.push(t); seedLabels.push(L);
+          seedTris.push(t); seedLabels.push(L); seedRadii.push(Infinity);
         }
       }
     }
     if (seedTris.length === 0) { this.compact(); return; }
-    const g = growFromSeeds(f, seedTris, seedLabels, this.growthOptions(allow));
+    const g = growFromSeeds(f, seedTris, seedLabels, { ...this.growthOptions(allow), seedMaxRadius: seedRadii });
     for (let t = 0; t < allow.length; t++) if (allow[t] && g.triLabel[t] >= 0) this.triPart[t] = g.triLabel[t];
     this.compact();
+    this.absorbSpecks(allow);
   }
 
   /** Throw a clear error when a pin for part `label` can't take effect
@@ -1045,6 +1211,17 @@ export class PartDraftModel {
     return this.resolvePart(ref);
   }
 
+  /** Seeds that carry a colour colour their part (by name; a part the
+   *  seeds did not produce is left alone). The colour is not kept on the
+   *  stored pin — see SegSeed.color. */
+  private applySeedColors(seeds: readonly SegSeed[]): void {
+    for (const sd of seeds) {
+      if (!isHexColor(sd.color) || typeof sd.label !== 'string' || !sd.label.trim()) continue;
+      const i = this.names.indexOf(cleanName(sd.label));
+      if (i >= 0) this.colors[i] = sd.color.toLowerCase();
+    }
+  }
+
   private createPart(name: string): number {
     const nm = cleanName(name);
     const existing = this.names.indexOf(nm);
@@ -1093,6 +1270,7 @@ export class PartDraftModel {
       detectorId: this.detectorId, params: { ...this.params }, featureOptions: { ...this.featureOptions }, edgeSmoothing: this.edgeSmoothing,
       features: this.features,
       fixedTri: this.fixedTri ? this.fixedTri.slice() : null,
+      placeholderNames: [...this.placeholderNames],
     };
   }
 
@@ -1100,6 +1278,7 @@ export class PartDraftModel {
     this.triPart = s.triPart; this.names = s.names; this.colors = s.colors; this.seeds = s.seeds; this.diagnostics = s.diagnostics;
     this.lockedNames = new Set(s.locked); this.focusMask = s.focusMask;
     this.detectorId = s.detectorId; this.params = s.params; this.featureOptions = s.featureOptions; this.edgeSmoothing = s.edgeSmoothing; this.features = s.features; this.fixedTri = s.fixedTri;
+    this.placeholderNames = new Set(s.placeholderNames);
   }
 }
 
@@ -1113,7 +1292,12 @@ function cloneSeed(s: SegSeed): SegSeed {
   const out: SegSeed = { label: s.label, point: [s.point[0], s.point[1], s.point[2]] };
   if (typeof s.triangle === 'number') out.triangle = s.triangle;
   if (s.auto) out.auto = true;
+  if (validRadius(s.maxRadius)) out.maxRadius = s.maxRadius;
   return out;
+}
+
+function validRadius(r: unknown): r is number {
+  return typeof r === 'number' && Number.isFinite(r) && r > 0;
 }
 
 function cleanName(name: unknown): string {

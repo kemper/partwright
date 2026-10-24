@@ -13,7 +13,7 @@ export interface AdjacencyGraph {
 }
 
 /** Build a triangle adjacency graph from mesh data.
- *  O(Σ valence²) with Map-based vertex lookup — effectively O(numTri) for the
+ *  O(Σ valence²) with a hashed vertex lookup — effectively O(numTri) for the
  *  bounded-valence meshes we deal with. */
 export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
   const { triVerts, numTri, numVert, vertProperties, numProp } = mesh;
@@ -34,38 +34,54 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
   // The flood-fill callers (`findColorRegion`, `findCoplanarRegion`,
   // `findConnectedFromSeed`) gate every step by color or normal, so the looser
   // corner adjacency can't over-select beyond what those thresholds allow.
-  const posId = new Map<string, number>();
-  const vertCanon = new Int32Array(numVert);
-  for (let v = 0; v < numVert; v++) {
-    const key = `${vertProperties[v * numProp]},${vertProperties[v * numProp + 1]},${vertProperties[v * numProp + 2]}`;
-    let id = posId.get(key);
-    if (id === undefined) { id = posId.size; posId.set(key, id); }
-    vertCanon[v] = id;
-  }
+  const vertCanon = canonicalVertexIds(vertProperties, numVert, numProp);
+  let numCanon = 0;
+  for (let v = 0; v < numVert; v++) if (vertCanon[v] >= numCanon) numCanon = vertCanon[v] + 1;
 
-  // Vertex (canonical position) → triangles touching it.
-  const vertToTris = new Map<number, number[]>();
+  // Vertex (canonical position) → triangles touching it, as CSR arrays. Typed
+  // arrays instead of a Map of number[] keep this to a few allocations on a
+  // 700k-triangle mesh, where the old Map/Set version took several seconds of
+  // main-thread time (paint mode pre-warms this on every mesh change).
+  const vtStart = new Uint32Array(numCanon + 1);
+  for (let i = 0; i < numTri * 3; i++) vtStart[vertCanon[triVerts[i]] + 1]++;
+  for (let c = 0; c < numCanon; c++) vtStart[c + 1] += vtStart[c];
+  const vtTris = new Uint32Array(numTri * 3);
+  const cursor = vtStart.slice(0, numCanon);
   for (let t = 0; t < numTri; t++) {
-    for (let k = 0; k < 3; k++) {
-      const pid = vertCanon[triVerts[t * 3 + k]];
-      let list = vertToTris.get(pid);
-      if (!list) { list = []; vertToTris.set(pid, list); }
-      list.push(t);
-    }
+    for (let k = 0; k < 3; k++) vtTris[cursor[vertCanon[triVerts[t * 3 + k]]]++] = t;
   }
 
-  // Build neighbor lists: every pair of triangles sharing a vertex is adjacent.
-  const neighbors: Set<number>[] = new Array(numTri);
-  for (let i = 0; i < numTri; i++) neighbors[i] = new Set();
-
-  for (const tris of vertToTris.values()) {
-    for (let i = 0; i < tris.length; i++) {
-      for (let j = i + 1; j < tris.length; j++) {
-        if (tris[i] === tris[j]) continue;
-        neighbors[tris[i]].add(tris[j]);
-        neighbors[tris[j]].add(tris[i]);
+  // Every pair of triangles sharing a vertex is adjacent. Two passes over each
+  // triangle's corner fans (count, then fill) with a stamp array for dedupe,
+  // so all neighbour lists share one flat buffer.
+  const stamp = new Int32Array(numTri).fill(-1);
+  const nbStart = new Uint32Array(numTri + 1);
+  for (let t = 0; t < numTri; t++) {
+    let count = 0;
+    stamp[t] = t;
+    for (let k = 0; k < 3; k++) {
+      const c = vertCanon[triVerts[t * 3 + k]];
+      for (let j = vtStart[c]; j < vtStart[c + 1]; j++) {
+        const u = vtTris[j];
+        if (stamp[u] !== t) { stamp[u] = t; count++; }
       }
     }
+    nbStart[t + 1] = nbStart[t] + count;
+  }
+  const nbFlat = new Uint32Array(nbStart[numTri]);
+  stamp.fill(-1);
+  const neighbors: Uint32Array[] = new Array(numTri);
+  for (let t = 0; t < numTri; t++) {
+    let w = nbStart[t];
+    stamp[t] = t;
+    for (let k = 0; k < 3; k++) {
+      const c = vertCanon[triVerts[t * 3 + k]];
+      for (let j = vtStart[c]; j < vtStart[c + 1]; j++) {
+        const u = vtTris[j];
+        if (stamp[u] !== t) { stamp[u] = t; nbFlat[w++] = u; }
+      }
+    }
+    neighbors[t] = nbFlat.subarray(nbStart[t], nbStart[t + 1]);
   }
 
   // Compute triangle normals
@@ -113,10 +129,55 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
   }
 
   return {
-    neighbors: neighbors.map(s => new Uint32Array(s)),
+    neighbors,
     normals,
     centroids,
   };
+}
+
+/** Map each vertex to a dense id shared by every vertex at the exact same
+ *  position (same float values; +0/-0 and all NaNs count as equal). Open-addressing
+ *  hash over the coordinate bit patterns — no string keys. */
+function canonicalVertexIds(vertProperties: Float32Array, numVert: number, numProp: number): Int32Array {
+  const bits = new Uint32Array(vertProperties.buffer, vertProperties.byteOffset, vertProperties.length);
+  const key = (v: number, a: number): number => {
+    const b = bits[v * numProp + a];
+    if (b === 0x80000000) return 0; // -0 → +0
+    if ((b & 0x7f800000) === 0x7f800000 && (b & 0x7fffff) !== 0) return 0x7fc00000; // any NaN → one NaN
+    return b;
+  };
+  let size = 1;
+  while (size < numVert * 2) size <<= 1;
+  const mask = size - 1;
+  const table = new Int32Array(size).fill(-1); // slot → representative vertex
+  const canonOfRep = new Int32Array(numVert);
+  const out = new Int32Array(numVert);
+  let next = 0;
+  for (let v = 0; v < numVert; v++) {
+    const x = key(v, 0), y = key(v, 1), z = key(v, 2);
+    // Mix every bit before masking: grid-aligned coordinates (voxels,
+    // integer-sized CAD) have all-zero low mantissa bits, so a hash that only
+    // multiplies would put them in a handful of slots and probe quadratically.
+    let h = Math.imul(x, 0x9e3779b1);
+    h = Math.imul(h ^ y ^ (h >>> 15), 0x85ebca6b);
+    h = Math.imul(h ^ z ^ (h >>> 13), 0xc2b2ae35);
+    h = (h ^ (h >>> 16)) & mask;
+    for (;;) {
+      const r = table[h];
+      if (r === -1) {
+        table[h] = v;
+        canonOfRep[v] = next;
+        out[v] = next++;
+        break;
+      }
+      if (key(r, 0) === x && key(r, 1) === y && key(r, 2) === z) {
+        out[v] = canonOfRep[r];
+        break;
+      }
+      h = (h + 1) & mask;
+    }
+  }
+  return out;
 }
 
 /** BFS from a seed triangle, crossing each edge only when the bend angle

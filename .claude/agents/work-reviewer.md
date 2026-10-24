@@ -113,9 +113,9 @@ against these references:
   `styleConstants.ts` — flag ad-hoc `z-[...]` values.
 - **Visual proof**: if the diff changes anything a user sees (UI, styling,
   copy, renderer output, catalog visuals), end your report with a one-line
-  reminder that the PR body needs a `## Visual proof` section with screenshots
-  pinned to a commit SHA (CLAUDE.md → "Visual proof in the PR"). You can't see
-  the PR body, so this is a reminder, not a finding.
+  reminder that the PR needs its Visual proof comment, posted with
+  `npm run pr:screenshots` (CLAUDE.md → "Visual proof in the PR"). You can't see
+  the PR, so this is a reminder, not a finding.
 
 ## Output format
 

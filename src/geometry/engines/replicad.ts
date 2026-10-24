@@ -1,7 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, type BrepShape } from '../brepRuntime';
-import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
+import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, ofMeshWithLabels, type BrepShape } from '../brepRuntime';
+import { getManifoldModule, manifoldJsEngine, resolveLabelMap } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
 
@@ -246,14 +246,18 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     // only `shape` and the lastShape replacement are still live.
     disposeBrepAllocationsExcept(consumeBrepAllocations(), liveShape);
     const brepMesh = liveShape.toMesh();
+    // Pull BREP-side labels off the returned shape so `paintByLabel` works
+    // in replicad-language sessions without the user having to also build
+    // the geometry as labeled Manifolds. Their triangle ids index the BREP
+    // tessellation (`brepMesh`), which `Manifold.ofMesh` canonicalizes —
+    // reorders — so each label rides into ofMesh as its own provenance run
+    // and is resolved back from the canonical mesh's `runOriginalID`.
+    const brepLabels = extractLabelMap(liveShape);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let manifold: any = null;
+    let registry = new Map<number, string>();
     try {
-      manifold = Manifold.ofMesh({
-        numProp: brepMesh.numProp,
-        vertProperties: brepMesh.vertProperties,
-        triVerts: brepMesh.triVerts,
-      });
+      ({ manifold, registry } = ofMeshWithLabels(Manifold, brepMesh, brepLabels));
     } catch {
       // Fall through to raw-mesh return below.
     }
@@ -261,16 +265,6 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     // Replace the previously-retained shape so STEP export can find this one.
     disposeLast();
     lastShape = liveShape;
-
-    // Pull BREP-side labels off the returned shape so `paintByLabel` works
-    // in replicad-language sessions without the user having to also build
-    // the geometry as labeled Manifolds. Empty map → undefined (engine
-    // convention for "no labels this run"). Triangle ids are the pre-
-    // Manifold-roundtrip ids; manifold-js's canonicalizer can reorder, but
-    // for this engine the BREP→Manifold step happens only via ofMesh
-    // (no boolean ops on the resulting Manifold) so ordering is preserved.
-    const brepLabels = extractLabelMap(liveShape);
-    const labelMap = brepLabels.size > 0 ? brepLabels : undefined;
     // Model-declared colors from `BREP.label(s, name, { color })`. Resolved
     // against `labelMap` on the main thread into the same derived "model color"
     // underlay manifold-js `api.label` colors produce. Empty → undefined.
@@ -280,6 +274,8 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     if (manifold) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const canonical = (manifold as any).getMesh();
+      const resolved = resolveLabelMap(canonical, registry);
+      const labelMap = resolved && resolved.size > 0 ? resolved : undefined;
       return {
         mesh: {
           vertProperties: canonical.vertProperties as Float32Array,
@@ -297,7 +293,10 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
         paramsSchema: paramCapture.collectSchema(),
       };
     }
-    // Non-manifold tessellation — render the raw triangles.
+    // Non-manifold tessellation — render the raw triangles, which the
+    // tessellation-order label ids index directly. Empty → undefined (engine
+    // convention for "no labels this run").
+    const labelMap = brepLabels.size > 0 ? brepLabels : undefined;
     return {
       mesh: {
         vertProperties: brepMesh.vertProperties,

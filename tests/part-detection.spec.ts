@@ -24,6 +24,17 @@ return Manifold.cube([20, 20, 10]).add(Manifold.cube([10, 10, 10]).translate([5,
   await page.waitForSelector('text=Ready', { timeout: 30_000 });
 }
 
+/** Where a world point lands on screen (the viewport's current camera). */
+async function screenXY(page: Page, p: [number, number, number]): Promise<{ x: number; y: number }> {
+  return page.evaluate(async (pt) => {
+    const vp = await import('/src/renderer/viewport.ts');
+    const cam = vp.getCamera();
+    const v = cam.position.clone().set(pt[0], pt[1], pt[2]).project(cam);
+    const r = vp.getCanvas().getBoundingClientRect();
+    return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+  }, p);
+}
+
 test.describe('Part detection', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
@@ -206,7 +217,9 @@ test.describe('Part detection', () => {
     await page.getByLabel('Name of part 1').press('Alt+ArrowDown');
     await page.waitForFunction((nm) => ((window as unknown as { partwright: PW }).partwright.getPartDraft() as { parts: { name: string }[] }).parts[1]?.name === nm, first);
 
-    // Presets: clicking a tile applies it and closes the strip.
+    // Presets: with a draft, the Start details are folded — unfold them,
+    // then clicking a tile applies it and closes the strip.
+    await panel.getByRole('button', { name: '▸ Detection settings' }).click();
     await panel.getByRole('button', { name: '▶ Try presets' }).click();
     await page.waitForFunction(() => document.querySelectorAll('[aria-label="Preset results"] button[data-index]').length >= 2, undefined, { timeout: 60_000 });
     await page.locator('[aria-label="Preset results"] button[data-index="0"]').click();
@@ -217,6 +230,264 @@ test.describe('Part detection', () => {
     await panel.getByRole('button', { name: 'Discard' }).click();
     await expect.poll(async () => (await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartSeeds()) as unknown[]).length).toBe(0);
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft())).toEqual({ draft: null });
+  });
+
+  test('label chips: pick a chip, click the model, accept keeps the chip colours', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    // Start from an auto-patches draft: picking a chip must switch to a seeded
+    // method and start fresh rather than mix pins into the patches.
+    const auto = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({ algorithm: 'auto-merge', params: { mergeBelowDeg: 30 } })) as { error?: string };
+    expect(auto.error).toBeUndefined();
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+
+    await panel.locator('[data-chip="hair"]').click();
+    await expect(panel.getByLabel('Detection method')).toHaveValue('crease-watershed');
+    await expect(panel.getByText(/Started fresh for Crease watershed/)).toBeVisible();
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('aria-pressed', 'true');
+    const cleared = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as { detector: string; parts: unknown[] };
+    expect(cleared.detector).toBe('crease-watershed');
+    expect(cleared.parts).toHaveLength(0);
+
+    /** Click the model where a world point projects (no typing involved). */
+    const clickAt = async (p: [number, number, number]) => {
+      const xy = await page.evaluate(async (pt) => {
+        const vp = await import('/src/renderer/viewport.ts');
+        const cam = vp.getCamera();
+        const v = cam.position.clone().set(pt[0], pt[1], pt[2]).project(cam);
+        const r = vp.getCanvas().getBoundingClientRect();
+        return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+      }, p);
+      await page.mouse.click(xy.x, xy.y);
+    };
+    const partsNow = () => page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.getPartDraft() as { parts?: { name: string; color: string | null }[] }).parts ?? []);
+
+    // Top of the upper block → "hair".
+    await clickAt([10, 10, 20]);
+    await expect.poll(async () => (await partsNow()).map((p) => [p.name, p.color]), { timeout: 30_000 }).toEqual([['hair', '#4a2e1c']]);
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('data-chip-state', 'owned');
+
+    // Key 2 picks the "face" chip; then the lower block's top → "face".
+    await page.keyboard.press('2');
+    await expect(panel.locator('[data-chip="face"]')).toHaveAttribute('aria-pressed', 'true');
+    await clickAt([2, 2, 10]);
+    await expect.poll(async () => (await partsNow()).map((p) => p.name).sort(), { timeout: 30_000 }).toEqual(['face', 'hair']);
+    expect((await partsNow()).find((p) => p.name === 'face')!.color).toBe('#e8b98f');
+
+    // Accept: the next step replaces the Accept button, colours carry through.
+    await panel.getByRole('button', { name: 'Accept parts' }).click();
+    await expect(panel.locator('[data-parts-saved]')).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByRole('button', { name: 'Accept parts' })).toBeHidden();
+    await expect(panel.getByRole('button', { name: 'Edit parts' })).toBeVisible();
+    const saved = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts()) as { parts: { name: string; color?: string }[] };
+    expect(Object.fromEntries(saved.parts.map((p) => [p.name, p.color]))).toMatchObject({ hair: '#4a2e1c', face: '#e8b98f' });
+
+    // Open Paint lands scoped to the chosen part.
+    await panel.getByLabel('Part to paint within').selectOption('face');
+    await panel.getByRole('button', { name: 'Open Paint' }).click();
+    await expect(page.locator('#paint-within-part')).toHaveValue('face');
+    // The Labels list shows each part in its OWN colour, not the brush's.
+    const faceSwatch = page.locator('#paint-label-list [data-label-name="face"] button[data-action="set-label-color"]');
+    await expect(faceSwatch).toHaveCSS('background-color', 'rgb(232, 185, 143)');
+  });
+
+  /** Import the block, detect base + top, and open the panel at a size
+   *  where the model is clear of the docked panel. */
+  async function openBlockPanel(page: Page) {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [2, 2, 0] }, { label: 'top', point: [10, 10, 20] }],
+    }));
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+    return panel;
+  }
+  const draftTris = async (page: Page) => Object.fromEntries(((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft())) as { parts: { name: string; triCount: number }[] }).parts.map((p) => [p.name, p.triCount]));
+
+  const selectionNames = async (page: Page) => ((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartSelection())) as { parts: { name: string }[] }).parts.map((p) => p.name).sort();
+  const dragOn = async (page: Page, from: [number, number, number], to: [number, number, number], mod?: 'Alt' | 'Shift') => {
+    const a = await screenXY(page, from);
+    const b = await screenXY(page, to);
+    if (mod) await page.keyboard.down(mod);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i++) await page.mouse.move(a.x + (b.x - a.x) * i / 12, a.y + (b.y - a.y) * i / 12);
+    await page.mouse.up();
+    if (mod) await page.keyboard.up(mod);
+  };
+  const clickOn = async (page: Page, p: [number, number, number]) => { const xy = await screenXY(page, p); await page.mouse.click(xy.x, xy.y); };
+  const BASE_FRONT: [number, number, number] = [16, 0, 3];
+  const TOP_FRONT: [number, number, number] = [9, 5, 17];
+
+  test('select brush: grab the selected part and paint more of it; Alt-drag merges whole parts; other drags orbit', async ({ page }) => {
+    test.setTimeout(180_000);
+    const panel = await openBlockPanel(page);
+    // A draft folds the Start details into a summary line; the chips stay.
+    await expect(panel.locator('#parts-start-details')).toBeHidden();
+    await expect(panel.getByRole('button', { name: '▸ Detection settings' })).toBeVisible();
+    await expect(panel.locator('[data-chip="hair"]')).toBeVisible();
+
+    const before = await draftTris(page);
+    // A drag from a part that is NOT selected orbits: the draft is unchanged.
+    const camera = () => page.evaluate(async () => (await import('/src/renderer/viewport.ts')).getCamera().position.toArray().map((v) => Math.round(v * 100)));
+    const cam0 = await camera();
+    await dragOn(page, BASE_FRONT, TOP_FRONT);
+    await expect.poll(camera).not.toEqual(cam0);
+    expect(await draftTris(page)).toEqual(before);
+    await page.getByRole('button', { name: 'Reset View' }).click();
+    await page.waitForTimeout(800);
+
+    // Select the base, then drag from it up onto the top block: those
+    // triangles join the base.
+    await clickOn(page, BASE_FRONT);
+    await expect.poll(() => selectionNames(page)).toEqual(['base']);
+    await dragOn(page, BASE_FRONT, TOP_FRONT);
+    await expect.poll(async () => (await draftTris(page)).base, { timeout: 30_000 }).toBeGreaterThan(before.base);
+    expect((await draftTris(page)).top).toBeLessThan(before.top);
+    expect(await selectionNames(page)).toEqual([]);
+    // One stroke is one undo step.
+    await panel.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await draftTris(page)).base, { timeout: 30_000 }).toBe(before.base);
+
+    // Alt-drag from the selected top block down onto the base: the base joins "top" whole.
+    await clickOn(page, [13, 5, 17]);
+    await expect.poll(() => selectionNames(page)).toEqual(['top']);
+    await dragOn(page, [13, 5, 17], BASE_FRONT, 'Alt');
+    await expect.poll(async () => Object.keys(await draftTris(page)), { timeout: 30_000 }).toEqual(['top']);
+
+    // The API twin validates its input.
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.editParts({ ops: [{ op: 'brush', to: 'top', points: [[1, 2, 3]] }] })) as { error?: string };
+    expect(bad.error).toMatch(/radius/);
+  });
+
+  test('Shift-drag adds to the selection', async ({ page }) => {
+    test.setTimeout(120_000);
+    await openBlockPanel(page);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setPartSelection(['base']));
+    await dragOn(page, [13, 5, 17], [11, 5, 15], 'Shift');
+    await expect.poll(() => selectionNames(page)).toEqual(['base', 'top']);
+  });
+
+  test('type a name to rename (exact text; a taken name merges); shortcuts stay; M merges, R renames, Enter accepts', async ({ page }) => {
+    test.setTimeout(180_000);
+    const panel = await openBlockPanel(page);
+    const names = async () => Object.keys(await draftTris(page)).sort();
+    const TOP: [number, number, number] = [13, 7, 20];
+    const BASE: [number, number, number] = [17, 3, 10];
+    const pop = page.locator('[data-rename-popover]');
+
+    // Click the top block, then just type: the popover opens at the cursor.
+    await clickOn(page, TOP);
+    await expect.poll(() => selectionNames(page)).toEqual(['top']);
+    await page.keyboard.type('eyes');
+    await expect(pop).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['base', 'eyes']);
+    await expect(pop).toHaveCount(0);
+
+    // Shortcut letters stay shortcuts with one part selected: S solos.
+    await clickOn(page, TOP);
+    await expect.poll(() => selectionNames(page)).toEqual(['eyes']);
+    await page.keyboard.press('s');
+    await expect(pop).toHaveCount(0);
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartsView()) as { mode: string }).mode).toBe('solo');
+    await page.keyboard.press('s');
+
+    // Esc cancels without renaming (and doesn't close the panel).
+    await page.keyboard.type('zz');
+    await expect(pop).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(pop).toHaveCount(0);
+    await expect(panel).toBeVisible();
+    expect(await names()).toEqual(['base', 'eyes']);
+
+    // Enter takes the exact text: "eye" does not merge into "eyes".
+    await clickOn(page, BASE);
+    await expect.poll(() => selectionNames(page)).toEqual(['base']);
+    await page.keyboard.type('eye');
+    await expect(pop.getByRole('option').first()).toHaveAttribute('data-name', 'eyes');
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['eye', 'eyes']);
+
+    // R renames the part under the cursor; a taken name merges.
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setPartSelection(null));
+    const baseXY = await screenXY(page, BASE);
+    await page.mouse.move(baseXY.x - 3, baseXY.y);
+    await page.mouse.move(baseXY.x, baseXY.y);
+    // Hovering names the part (its row highlights) before R.
+    await expect(panel.locator('[data-part-name="eye"]')).toHaveClass(/bg-zinc-700\/50/);
+    await page.keyboard.press('r');
+    await expect(pop).toBeVisible();
+    await expect(pop.getByLabel('Part name')).toHaveValue('');
+    await page.keyboard.type('eyes');
+    await page.keyboard.press('Enter');
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['eyes']);
+
+    // M merges the selection (after undoing that merge).
+    await panel.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(names, { timeout: 30_000 }).toEqual(['eye', 'eyes']);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setPartSelection(['eye', 'eyes']));
+    await page.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('m');
+    await expect.poll(names, { timeout: 30_000 }).toHaveLength(1);
+
+    // Enter accepts.
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('[data-parts-saved]')).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('phone: the panel is a bottom sheet with compact rows', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [2, 2, 0] }, { label: 'top', point: [10, 10, 20] }],
+    }));
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.openPartsPanel());
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible();
+    await expect.poll(async () => {
+      const b = await panel.boundingBox();
+      return b ? [Math.round(b.x), Math.round(b.width), Math.round(b.y + b.height)] : null;
+    }).toEqual([0, 375, 812]);
+    const box = (await panel.boundingBox())!;
+    expect(box.height).toBeLessThan(812 * 0.5);
+    // Compact rows: lock / solo / remove fold into ⋯.
+    await expect(panel.getByRole('button', { name: 'Lock top' })).toBeHidden();
+    await panel.getByRole('button', { name: 'More for top' }).click();
+    await page.getByRole('menuitem', { name: 'Solo' }).click();
+    expect((await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartsView()) as { mode: string }).mode).toBe('solo');
+  });
+
+  test('acceptParts applyColors:false saves labels only; seed colours validate', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 30_000 });
+    await importSteppedBlock(page);
+    const bad = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed', seeds: [{ label: 'base', point: [10, 10, 0], color: 'red' }],
+    })) as { error?: string };
+    expect(bad.error).toMatch(/color/);
+    const det = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed',
+      seeds: [{ label: 'base', point: [10, 10, 0], color: '#123456' }, { label: 'top', point: [10, 10, 20] }],
+    })) as { parts: { name: string; color: string | null }[] };
+    expect(det.parts.find((p) => p.name === 'base')!.color).toBe('#123456');
+    const acc = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.acceptParts({ applyColors: false })) as { parts?: { color: string | null }[]; error?: string };
+    expect(acc.error).toBeUndefined();
+    expect(acc.parts!.every((p) => p.color === null)).toBe(true);
   });
 
   test('detectParts without an import explains what to do', async ({ page }) => {

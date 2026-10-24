@@ -229,6 +229,61 @@ export function composeContactSheet(results, size, view = { az: -50, el: 28 }) {
   return tileGrid(tiles, size);
 }
 
+// Flat, unlit, aliased render for the photo-match score: every pixel holds the
+// REGION index of the front-most triangle (-2 = background, -1 = unlabeled),
+// so regions that share a display colour stay distinguishable. `triRegion` is
+// one entry per triangle (from buildTriangleRegions); -3 drops the triangle
+// (an excluded label, e.g. a display base the photo doesn't show). The camera
+// is the same orthographic (az, el) frame as composePng, framed to the kept
+// triangles' projected bounds. Returns { width, height, labels }.
+export function renderRegionImage(positions, triVerts, triRegion, size, view) {
+  const b = basis(view.az, view.el);
+  const nt = triVerts.length / 3;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let t = 0; t < nt; t++) {
+    if (triRegion[t] === -3) continue;
+    for (let k = 0; k < 3; k++) {
+      const vi = triVerts[t * 3 + k];
+      const p = [positions[vi * 3], positions[vi * 3 + 1], positions[vi * 3 + 2]];
+      const px = dot(p, b.right), py = dot(p, b.up);
+      if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
+    }
+  }
+  const labels = new Int32Array(size * size).fill(-2);
+  if (!Number.isFinite(x0)) return { width: size, height: size, labels };
+  const sc = (size * 0.9) / Math.max(x1 - x0, y1 - y0, 1e-9);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, half = size / 2;
+  const zbuf = new Float32Array(size * size).fill(Infinity);
+  const project = (vi) => {
+    const p = [positions[vi * 3], positions[vi * 3 + 1], positions[vi * 3 + 2]];
+    return { x: half + (dot(p, b.right) - cx) * sc, y: half - (dot(p, b.up) - cy) * sc, z: dot(p, b.fwd) };
+  };
+  for (let t = 0; t < nt; t++) {
+    const region = triRegion[t];
+    if (region === -3) continue;
+    const A = project(triVerts[t * 3]), B = project(triVerts[t * 3 + 1]), C = project(triVerts[t * 3 + 2]);
+    const area = (B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y);
+    if (Math.abs(area) < 1e-12) continue;
+    const minX = Math.max(0, Math.floor(Math.min(A.x, B.x, C.x))), maxX = Math.min(size - 1, Math.ceil(Math.max(A.x, B.x, C.x)));
+    const minY = Math.max(0, Math.floor(Math.min(A.y, B.y, C.y))), maxY = Math.min(size - 1, Math.ceil(Math.max(A.y, B.y, C.y)));
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const sx = x + 0.5, sy = y + 0.5; // sample at pixel centres
+        const w0 = ((B.x - sx) * (C.y - sy) - (C.x - sx) * (B.y - sy)) / area;
+        const w1 = ((C.x - sx) * (A.y - sy) - (A.x - sx) * (C.y - sy)) / area;
+        const w2 = 1 - w0 - w1;
+        if (w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6) continue;
+        const z = w0 * A.z + w1 * B.z + w2 * C.z;
+        const idx = y * size + x;
+        if (z >= zbuf[idx]) continue;
+        zbuf[idx] = z;
+        labels[idx] = region;
+      }
+    }
+  }
+  return { width: size, height: size, labels };
+}
+
 // Human-readable per-island breakdown for `--explain-components` (printed to
 // stderr so the stdout JSON contract stays clean). `stats.components` is capped
 // at the top 16 by volume; the header notes when more islands exist.
@@ -301,12 +356,15 @@ function installPublicFetchShim() {
 // preview() pays only the model build (~50-300ms) instead of ~2s of server
 // startup. Caller must close().
 export async function createPreviewSession() {
-  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   installPublicFetchShim();
   const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
   return {
     preview: (code, { params = {}, lang = 'manifold-js', palette = undefined } = {}) =>
       mod.previewModel(code, { params, lang, palette }),
+    /** Load another app TS module through the same SSR server (e.g. the pure
+     *  photo-match scorer), so the CLI reuses app code instead of copying it. */
+    load: (path) => server.ssrLoadModule(path),
     close: () => server.close(),
   };
 }

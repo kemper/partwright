@@ -22,8 +22,30 @@ export function normalizeImportParts(raw: unknown, numTri: number): ImportedMesh
     return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : null;
   });
   const out: ImportedMeshParts = { names: names as string[], colors, triPart: r.triPart };
-  if (r.source && typeof r.source === 'object' && typeof r.source.detectorId === 'string') out.source = r.source;
+  if (r.source && typeof r.source === 'object' && typeof r.source.detectorId === 'string') {
+    out.source = { ...r.source };
+    if (r.source.seeds !== undefined) {
+      const seeds = Array.isArray(r.source.seeds) ? r.source.seeds.flatMap((s) => normalizeSeed(s)) : [];
+      out.source.seeds = seeds;
+    }
+  }
   return out;
+}
+
+type SavedSeed = NonNullable<NonNullable<ImportedMeshParts['source']>['seeds']>[number];
+
+/** Keep a saved pin's known fields (incl. `maxRadius` and `color`) when they
+ *  are well-formed; drop the pin when its label/point are not. */
+function normalizeSeed(raw: unknown): SavedSeed[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const s = raw as Partial<SavedSeed>;
+  if (typeof s.label !== 'string' || !s.label.trim()) return [];
+  if (!Array.isArray(s.point) || s.point.length !== 3 || s.point.some((v) => typeof v !== 'number' || !Number.isFinite(v))) return [];
+  const out: SavedSeed = { label: s.label, point: [s.point[0], s.point[1], s.point[2]] };
+  if (s.auto === true) out.auto = true;
+  if (typeof s.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(s.color)) out.color = s.color.toLowerCase();
+  if (typeof s.maxRadius === 'number' && Number.isFinite(s.maxRadius) && s.maxRadius > 0) out.maxRadius = s.maxRadius;
+  return [out];
 }
 
 export interface PartRun {
