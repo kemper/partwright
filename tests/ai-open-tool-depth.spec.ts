@@ -13,7 +13,7 @@ async function waitForEngine(page: Page) {
   );
 }
 
-type Result = { ok?: boolean; error?: string; applied?: Record<string, unknown>; ignored?: string[] };
+type Result = { ok?: boolean; error?: string; applied?: Record<string, unknown>; ignored?: string[]; pending?: boolean; message?: string };
 type PW = {
   createSession: (n?: string) => Promise<unknown>;
   run: (code: string) => Promise<unknown>;
@@ -72,6 +72,8 @@ test.describe('AI opens a tool — prefill depth', () => {
     const api = pw(page);
     const bad = await api.open('tool-image-paint', { src: 'no-such-attachment' });
     expect(bad.error).toMatch(/src must be a data:image\/ URL/);
+    // Plain http (e.g. localhost / LAN) is refused before any request.
+    expect((await api.open('tool-image-paint', { src: 'http://localhost:9/x.png' })).error).toMatch(/https:\/\/ URL.*http: URL/);
     expect((await api.ui()).activeTool).toBeNull();
 
     const src = await makeDataUrl(page);
@@ -159,6 +161,12 @@ test.describe('AI opens a tool — prefill depth', () => {
     const still = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPrinterSettings());
     expect(still).toMatchObject({ bed: saved.bed, nozzleWidth: saved.nozzleWidth, overhangAngleDeg: saved.overhangAngleDeg });
     await page.screenshot({ path: `${SHOTS}/pr6-print-staged.png` });
+    // Check printability checks the staged values WITHOUT saving them.
+    await panel.getByRole('button', { name: 'Check printability' }).click();
+    await expect(panel.locator('#print-report')).not.toBeEmpty();
+    await expect(panel.locator('[data-print-staged]')).toBeVisible();
+    const afterCheck = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPrinterSettings());
+    expect(afterCheck).toMatchObject({ bed: saved.bed, nozzleWidth: saved.nozzleWidth, overhangAngleDeg: saved.overhangAngleDeg });
     await panel.getByRole('button', { name: 'Use these' }).click();
     const after = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPrinterSettings());
     expect(after).toMatchObject({ bed: [220, 220, 250], nozzleWidth: 0.6, overhangAngleDeg: 50 });
@@ -203,6 +211,13 @@ test.describe('AI opens a tool — prefill depth', () => {
     const dlg = page.getByRole('dialog', { name: 'Export session' });
     await expect(dlg).toBeVisible();
     expect((await api.ui()).toolState).toMatchObject({ includeChat: false, includeThumbnails: true, includeNotes: true });
+    // A stray Enter / Space (the user still typing in the chat) must not
+    // export from a dialog the AI opened — Export isn't focused and Enter is
+    // disarmed until the user interacts with the dialog.
+    await expect(dlg.getByRole('button', { name: 'Export' })).not.toBeFocused();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await expect(dlg).toBeVisible();
     await dlg.getByRole('button', { name: 'Cancel' }).click();
 
     expect((await api.open('export-objects', { objects: ['nope'] })).error).toMatch(/"nope" is not an object/);
@@ -210,12 +225,25 @@ test.describe('AI opens a tool — prefill depth', () => {
     expect((await api.open('export-objects', { nozzle: '0.5' })).error).toMatch(/nozzle must be one of/);
     const eo = await api.open('export-objects', { format: '3mf-bambu', nozzle: '0.6', plateLayout: 'grid' }, 'Packed, 0.6 nozzle.');
     expect(eo.error).toBeUndefined();
-    // A pre-export "unsaved objects" confirm can come first — the user answers
-    // it; the picker then opens with the staged values.
+    // A pre-export "unsaved objects" confirm can come first — openTool then
+    // says so (pending) and a second staged open is refused; the confirm is
+    // guarded too (stray Enter doesn't export). The user answers it; the
+    // picker then opens with the staged values.
     const confirm = page.getByRole('dialog', { name: 'Export 3MF?' });
-    if (await confirm.isVisible()) await confirm.getByRole('button', { name: 'Export anyway' }).click();
-    await expect(page.getByRole('dialog', { name: /Export objects to 3MF/ })).toBeVisible();
-    expect((await api.ui()).toolState).toMatchObject({ nozzle: '0.6', plateLayout: 'grid' });
+    if (await confirm.isVisible()) {
+      expect(eo.pending).toBe(true);
+      expect(eo.message).toMatch(/waiting for the user/);
+      expect((await api.open('export-session')).error).toMatch(/still waiting for the user/);
+      await page.keyboard.press('Enter');
+      await expect(confirm).toBeVisible();
+      await confirm.getByRole('button', { name: 'Export anyway' }).click();
+    }
+    const picker = page.getByRole('dialog', { name: /Export objects to 3MF/ });
+    await expect(picker).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(picker).toBeVisible();    await expect(page.getByRole('dialog', { name: /Export objects to 3MF/ })).toBeVisible();
+    expect((await api.ui()).toolState).toMatchObject({ format: '3mf-bambu', nozzle: '0.6', plateLayout: 'grid' });
+    expect((await api.open('export-objects', { plateLayout: 'group' })).error).toMatch(/already open|grouped objects/);
     expect((await api.open('export-objects', { format: 'stl' })).error).toMatch(/already open|2\+ objects/);
     await page.getByRole('dialog', { name: /Export objects to 3MF/ }).getByRole('button', { name: 'Cancel' }).click();
 
@@ -285,7 +313,7 @@ test.describe('AI opens a tool — prefill depth', () => {
     await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(0, { timeout: 30_000 });
     const notes = await page.evaluate(async () => (await import('/src/ui/toolRegistry.ts')).drainToolAppliedNotes());
     expect(notes).toHaveLength(1);
-    expect(notes[0]).toMatch(/^\[UI\] user applied Surface textures: smooth \{.*iterations: 3/);
+    expect(notes[0]).toMatch(/^\[UI · app note\] user applied Surface textures: smooth \{.*iterations: 3/);
   });
 
   test('image paint at phone width', async ({ page }) => {

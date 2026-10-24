@@ -18,7 +18,7 @@ import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
-import { getRenderBudget } from './settings';
+import { getRenderBudget, loadSettings } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 import { specJsonSchema } from '../figure/characterSpec';
@@ -3659,6 +3659,13 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         if (prefill === null || typeof prefill !== 'object' || Array.isArray(prefill)) {
           return { error: `openTool: prefillJson must encode a JSON object like {"tab":"knit"} (got ${prefill === null ? 'null' : Array.isArray(prefill) ? 'an array' : typeof prefill})` };
         }
+      }
+      // Customize `values` move the sliders, which RE-RUNS the model — the same
+      // effect as runCode, so it needs the Run-code scope (the rest of
+      // openTool only stages UI and is always allowed).
+      if (input.id === 'tool-customize' && prefill && typeof prefill === 'object'
+        && (prefill as Record<string, unknown>).values !== undefined && !loadSettings().toggles.scope.runCode) {
+        return { error: 'openTool("tool-customize"): prefill.values re-runs the model, which needs the "Run code" scope — it is off for this chat. Open the panel without values (and say which to try in the note), or ask the user to turn Run code on.' };
       }
       return api.openTool(input.id, prefill, { ...(input.note !== undefined ? { note: input.note } : {}), source: 'ai' });
     }

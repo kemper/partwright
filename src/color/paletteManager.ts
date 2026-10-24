@@ -44,7 +44,7 @@ import {
 } from './regions';
 import { getSlotId, setSlot } from './paintMode';
 import { openPhotoColorPicker } from './photoColorPicker';
-import { registerTool, createToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
+import { registerTool, createToolNote, createSuggestionRow, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 let open = false;
 
@@ -118,30 +118,23 @@ export function openPaletteManager(): void {
     if (s.capacity !== undefined) parts.push(`${s.capacity} printer slot${s.capacity === 1 ? '' : 's'}`);
     if (s.constrained !== undefined) parts.push(s.constrained ? 'constrain painting to the palette' : 'stop constraining to the palette');
     if (parts.length === 0) return;
-    const row = document.createElement('div');
-    row.dataset.paletteSuggestion = '';
-    row.className = 'flex items-center gap-2 rounded border border-violet-500/40 bg-violet-500/10 px-2.5 py-2';
-    const text = document.createElement('span');
-    text.className = 'flex-1 min-w-0 text-[11px] text-zinc-200 leading-snug';
-    text.textContent = `Suggested: ${parts.join(' · ')}`;
-    const apply = document.createElement('button');
-    apply.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] bg-blue-600/80 text-white hover:bg-blue-500 transition-colors';
-    apply.textContent = 'Apply';
-    apply.addEventListener('click', () => {
-      if (s.paletteId) setActivePalette(s.paletteId);
-      if (s.capacity !== undefined) setPaletteCapacity(s.capacity);
-      if (s.constrained !== undefined) setPaletteConstrained(s.constrained);
-      capInput.value = String(getPaletteCapacity());
-      constrainBox.checked = isPaletteConstrained();
-      refreshAll();
-      row.remove();
-      notifyToolApplied('tool-palette');
+    const row = createSuggestionRow({
+      text: `Suggested: ${parts.join(' · ')}`,
+      dismissLabel: 'Dismiss',
+      onDismiss: () => row.remove(),
+      primaryLabel: 'Apply',
+      onPrimary: () => {
+        if (s.paletteId) setActivePalette(s.paletteId);
+        if (s.capacity !== undefined) setPaletteCapacity(s.capacity);
+        if (s.constrained !== undefined) setPaletteConstrained(s.constrained);
+        capInput.value = String(getPaletteCapacity());
+        constrainBox.checked = isPaletteConstrained();
+        refreshAll();
+        notifyToolApplied('tool-palette'); // before the row goes: getState reads the live values
+        row.remove();
+      },
     });
-    const dismiss = document.createElement('button');
-    dismiss.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60 transition-colors';
-    dismiss.textContent = 'Dismiss';
-    dismiss.addEventListener('click', () => row.remove());
-    row.append(text, apply, dismiss);
+    row.dataset.paletteSuggestion = '';
     suggestHost.appendChild(row);
   };
 

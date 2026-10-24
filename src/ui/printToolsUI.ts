@@ -17,14 +17,16 @@ import { viewportInspectMount } from './popoverMenu';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
-import { registerTool, setToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { registerTool, setToolNote, createSuggestionRow, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 export interface PrintToolsHandlers {
   /** Snapshot state + close sibling overlays when the user opens the panel. */
   open(userInitiated: boolean): { hasModel: boolean };
   getSettings(): PrinterSettings;
   setSettings(partial: Partial<PrinterSettings>): PrinterSettings;
-  check(): PrintabilityReport | { error: string };
+  /** Run the printability check; `overrides` checks unsaved (staged) form
+   *  values without saving them. */
+  check(overrides?: { bed: [number, number, number]; nozzleWidth: number; overhangAngleDeg: number }): PrintabilityReport | { error: string };
 }
 
 const BTN_INACTIVE = TOOL_TOGGLE_IDLE;
@@ -141,21 +143,15 @@ function openPrintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolO
   if (pre.nozzleWidth !== undefined && nozzleInput) nozzleInput.value = String(pre.nozzleWidth);
   if (pre.overhangAngleDeg !== undefined && overhangInput) overhangInput.value = String(pre.overhangAngleDeg);
   clearStaged();
-  const row = document.createElement('div');
+  const row = createSuggestionRow({
+    text: 'Suggested settings — not saved yet.',
+    dismissLabel: 'Discard',
+    onDismiss: () => { clearStaged(); loadSettingsIntoForm(); },
+    primaryLabel: 'Use these',
+    onPrimary: () => { commitSettings(); },
+  });
   row.dataset.printStaged = '';
-  row.className = 'flex items-center gap-1.5 mb-3 rounded border border-violet-500/40 bg-violet-500/10 px-2 py-1.5';
-  const txt = document.createElement('span');
-  txt.className = 'flex-1 text-[11px] text-zinc-200 leading-snug';
-  txt.textContent = 'Suggested settings — not saved yet.';
-  const use = document.createElement('button');
-  use.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] bg-blue-600/80 text-white hover:bg-blue-500 transition-colors';
-  use.textContent = 'Use these';
-  use.addEventListener('click', () => { commitSettings(); });
-  const discard = document.createElement('button');
-  discard.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60 transition-colors';
-  discard.textContent = 'Discard';
-  discard.addEventListener('click', () => { clearStaged(); loadSettingsIntoForm(); });
-  row.append(txt, use, discard);
+  row.classList.add('mb-3');
   stagedRow = row;
   presetSel?.before(row);
   return { applied: pre, ignored: [] };
@@ -350,9 +346,9 @@ function buildPanel(): HTMLElement {
   checkBtn.textContent = 'Check printability';
   checkBtn.addEventListener('click', () => {
     if (!handlers) return;
-    // Check what the form shows: confirming staged suggestions by clicking.
-    if (stagedRow) commitSettings();
-    const r = handlers.check();
+    // Check what the form shows. Staged (AI-suggested, unsaved) values are
+    // checked as overrides — they're saved only via "Use these" / an edit.
+    const r = handlers.check(stagedRow ? readForm() : undefined);
     renderReport(r);
   });
   c.appendChild(checkBtn);

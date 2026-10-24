@@ -10,7 +10,7 @@ import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/view
 import { addRegion, getRegions } from './regions';
 import { dropIfClippedEmpty, withPaintScope } from './paintScope';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
-import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
+import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields, notifyUserPaint } from './paintAccessors';
 
 export type SlabAxis = 'x' | 'y' | 'z';
 
@@ -275,6 +275,7 @@ function onPointerUp(event: PointerEvent): void {
     const thickness = Math.max(dragStart, dragEnd) - offset;
     if (thickness > 0) {
       commitSlab(offset, thickness);
+      notifyUserPaint();
     }
   }
 
@@ -291,7 +292,7 @@ function onPointerCancel(event: PointerEvent): void {
   if (dragging && dragStart !== null && dragEnd !== null) {
     const offset = Math.min(dragStart, dragEnd);
     const thickness = Math.max(dragStart, dragEnd) - offset;
-    if (thickness > 0) commitSlab(offset, thickness);
+    if (thickness > 0) { commitSlab(offset, thickness); notifyUserPaint(); }
   }
   dragging = false;
   dragStart = null;

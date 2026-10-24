@@ -6,6 +6,7 @@ import type { ExportOptions } from '../storage/sessionManager';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { armDialogConfirm } from './dialogConfirmGuard';
 
 /** The include-flag keys an `openTool('export-session')` prefill may set. */
 export const EXPORT_SESSION_FLAGS = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat'] as const;
@@ -109,11 +110,12 @@ export function showExportOptionsDialog(
       if (versions.length > 1) applied.versions = [...staged.prefill.versions]; else ignored.push('versions');
     }
     let result: ExportOptions | null = null;
+    let disarmConfirm: () => void = () => {};
     const shell = createModalShell({
       title: 'Export session',
       scrollable: true,
       onClose: () => {
-        document.removeEventListener('keydown', onEnter);
+        disarmConfirm();
         openDialog = null;
         resolve(result);
       },
@@ -247,13 +249,9 @@ export function showExportOptionsDialog(
     }
 
     // Modal shell handles Escape; we add Enter-to-confirm so the keyboard
-    // flow matches the previous standalone implementation.
-    function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); confirm(); }
-    }
-    document.addEventListener('keydown', onEnter);
-
-    exportBtn.focus();
+    // flow matches the previous standalone implementation. An AI-staged open
+    // is guarded: no Export focus, Enter arms only after the user interacts.
+    disarmConfirm = armDialogConfirm({ within: shell.body, primary: exportBtn, onConfirm: confirm, guarded: !!staged });
     openDialog = {
       state: () => {
         const out: Record<string, unknown> = {};

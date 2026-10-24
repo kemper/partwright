@@ -21,6 +21,7 @@ import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { formatDimension, getUnits, setUnits, type UnitSystem } from '../geometry/units';
 import { escapeHtml } from './htmlUtils';
 import type { PrintabilityCheck } from '../geometry/printability';
+import { armDialogConfirm } from './dialogConfirmGuard';
 
 export interface ExportWarningInfo {
   /** True when the active unit system is 'unitless'. */
@@ -81,13 +82,19 @@ export function hasExportWarning(info: ExportWarningInfo): boolean {
  * `hasExportWarning` first and only call this when there's something to warn
  * about.
  */
+let confirmGuarded = false;
+/** While an AI/API-opened export flow runs (openTool export-objects), the
+ *  pre-export confirm opens guarded — see armDialogConfirm. */
+export function guardExportConfirm(on: boolean): void { confirmGuarded = on; }
+
 export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfirmResult> {
   return new Promise((resolve) => {
     let result: ExportConfirmResult = 'cancel';
+    let disarmConfirm: () => void = () => {};
     const shell = createModalShell({
       title: `Export ${info.format}?`,
       onClose: () => {
-        document.removeEventListener('keydown', onEnter);
+        disarmConfirm();
         resolve(result);
       },
     });
@@ -291,11 +298,11 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
     }
     updateExportLabel();
 
-    function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); result = 'export'; shell.close(); }
-    }
-    document.addEventListener('keydown', onEnter);
-
-    exportBtn.focus();
+    // Enter-to-confirm. Reached from an AI-opened export (guardNextExportConfirm)
+    // it's guarded: no Export focus, Enter arms only after the user interacts.
+    disarmConfirm = armDialogConfirm({
+      within: shell.body, primary: exportBtn, guarded: confirmGuarded,
+      onConfirm: () => { result = 'export'; shell.close(); },
+    });
   });
 }

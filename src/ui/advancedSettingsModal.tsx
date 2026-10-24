@@ -894,6 +894,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1_000} max={120_000} integer
           onChange={v => set('import', 'remoteFetchTimeoutMs', v)}
         />
+        <Field cfgKey="import.prefillImageSrcMaxChars"
+          label="AI image prefill: max src length"
+          unit="chars"
+          hint="Longest image src (e.g. a data URL) an AI can hand to a tool it opens for you."
+          tooltip="When the AI opens Image paint, the relief wizard or image → voxel for you with an image already loaded, it passes the image as a data URL, an https URL or an attachment id. Longer src strings are rejected before anything is fetched or decoded."
+          defaultValue={APP_CONFIG_DEFAULTS.import.prefillImageSrcMaxChars}
+          value={c.import.prefillImageSrcMaxChars}
+          min={10_000} max={50_000_000} integer
+          onChange={v => set('import', 'prefillImageSrcMaxChars', v)}
+        />
+        <Field cfgKey="import.prefillImageMaxPixels"
+          label="AI image prefill: max pixels"
+          unit="px"
+          hint="Largest image (width × height) an AI-opened tool will decode."
+          tooltip="Images the AI stages into a tool are checked for size before they're decoded into memory; anything with more pixels than this is rejected with an error instead of opening the tool."
+          defaultValue={APP_CONFIG_DEFAULTS.import.prefillImageMaxPixels}
+          value={c.import.prefillImageMaxPixels}
+          min={10_000} max={200_000_000} integer
+          onChange={v => set('import', 'prefillImageMaxPixels', v)}
+        />
         <Field cfgKey="import.filamentMatchThreshold"
           label="Filament match threshold"
           hint="Color-distance threshold for filament swap matching (lower = stricter)."
@@ -1354,6 +1374,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.toolDialogOpenWaitMs}
           min={500} max={60_000} integer
           onChange={v => set('ui', 'toolDialogOpenWaitMs', v)}
+        />
+        <Field cfgKey="ui.maxPendingAppliedNotes"
+          label="AI applied-notes kept"
+          unit="notes"
+          hint="How many “[UI · app note] user applied …” notes wait for the AI's next turn."
+          tooltip="When you apply something from a tool the AI opened for you, a one-line note tells the AI what you settled on at the start of its next turn. Only the latest note per tool is kept; past this many, the oldest are dropped."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.maxPendingAppliedNotes}
+          value={c.ui.maxPendingAppliedNotes}
+          min={1} max={50} integer
+          onChange={v => set('ui', 'maxPendingAppliedNotes', v)}
+        />
+        <Field cfgKey="ui.maxAppliedNoteChars"
+          label="AI applied-note length"
+          unit="chars"
+          hint="Longest “[UI · app note] user applied …” note line (truncated past it)."
+          tooltip="Caps how much of the tool's settings each applied-note carries into the AI's next turn, so a panel with many settings can't bloat the prompt."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.maxAppliedNoteChars}
+          value={c.ui.maxAppliedNoteChars}
+          min={80} max={4_000} integer
+          onChange={v => set('ui', 'maxAppliedNoteChars', v)}
         />
         <Field cfgKey="ui.toastDurationMs"
           label="Toast duration"

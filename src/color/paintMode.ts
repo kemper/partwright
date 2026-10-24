@@ -13,7 +13,7 @@ import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOve
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
-import { setPaintAccessors } from './paintAccessors';
+import { setPaintAccessors, notifyUserPaint } from './paintAccessors';
 import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
 import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
@@ -925,6 +925,7 @@ function onPointerUp(event: PointerEvent): void {
       return;
     }
     commitBrushStroke();
+    notifyUserPaint();
     brushPainting = false;
     brushSession = null;
     strokeSamples = [];
@@ -997,6 +998,7 @@ function onPointerUp(event: PointerEvent): void {
 
   clearHighlight();
   if (onRegionPainted) onRegionPainted();
+  notifyUserPaint();
 }
 
 function onPointerCancel(event: PointerEvent): void {
@@ -1006,6 +1008,7 @@ function onPointerCancel(event: PointerEvent): void {
   // commit whatever stroke is in progress, mirroring the old mouseleave edge.
   if (currentTool === 'brush' && hasActiveStroke()) {
     commitBrushStroke();
+    notifyUserPaint();
   }
   brushPainting = false;
   brushSession = null;

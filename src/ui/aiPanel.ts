@@ -6,7 +6,7 @@
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
-import { drainToolAppliedNotes } from './toolRegistry';
+import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -372,6 +372,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // Pending "[UI · app note] user applied …" lines describe the previous
+  // session's model — don't carry them into this one.
+  if (!state.inFlight) clearToolAppliedNotes();
   // If a turn is in flight the session change was triggered by the model
   // calling createSession mid-turn. Don't reload/re-render now — the
   // callbacks (onUserPersisted etc.) are keeping state.history current
@@ -2234,6 +2237,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     if (b.type === 'text') {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
+      // App-generated "[UI · app note] user applied …" context: a muted system
+      // line, not a blue bubble that would read as the user's own words.
+      if (msg.role === 'user' && b.text.startsWith(UI_APPLIED_NOTE_PREFIX)) {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] italic text-zinc-500 whitespace-pre-wrap break-words';
+        line.dataset.uiAppNote = '';
+        line.textContent = b.text;
+        wrap.appendChild(line);
+        continue;
+      }
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
@@ -3357,7 +3370,7 @@ async function sendMessage(): Promise<void> {
   const capturedText = text;
   const capturedImages = [...state.pendingImages];
 
-  // "[UI] user applied …" lines for panels the AI opened and the user then
+  // "[UI · app note] user applied …" lines for panels the AI opened and the user then
   // applied from (toolRegistry.notifyToolApplied) — one leading text block,
   // so the model sees what the user settled on. Per-tab memory only.
   const uiNotes = drainToolAppliedNotes();

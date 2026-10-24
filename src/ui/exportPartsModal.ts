@@ -13,6 +13,7 @@ import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { buildPartTree, groupNames } from './partTree';
 import { DEFAULT_PACK_STRATEGY, type BambuPlateLayout, type PackStrategy } from '../export/threemfProject';
 import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { armDialogConfirm } from './dialogConfirmGuard';
 
 /** Pre-set values for the NEXT object picker (from `openTool('export-objects')`).
  *  The picker only opens staged — the user still clicks Export. */
@@ -158,6 +159,7 @@ export function showExportPartsModal(
     }
 
     let result: ExportPartsResult | null = null;
+    let disarmConfirm: () => void = () => {};
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
     const objectUrls: string[] = [];
 
@@ -169,7 +171,7 @@ export function showExportPartsModal(
       // single-column width.
       ...(twoPane ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
       onClose: () => {
-        document.removeEventListener('keydown', onEnter);
+        disarmConfirm();
         for (const url of objectUrls) URL.revokeObjectURL(url);
         openPicker = null;
         resolve(result);
@@ -471,15 +473,14 @@ export function showExportPartsModal(
     for (const c of checks) c.addEventListener('change', sync);
     exportBtn.addEventListener('click', confirm);
 
-    function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); confirm(); }
-    }
-    document.addEventListener('keydown', onEnter);
-
     sync();
-    exportBtn.focus();
+    // Enter-to-confirm; an AI-staged open is guarded (no Export focus, Enter
+    // arms only after the user interacts inside the picker).
+    disarmConfirm = armDialogConfirm({ within: shell.body, primary: exportBtn, onConfirm: confirm, guarded: !!staged });
     openPicker = {
       state: () => ({
+        // The export this picker belongs to (export-objects' `format` key).
+        format: bambu ? '3mf-bambu' : showPacking ? '3mf' : (/\bto (\w+)$/.exec(title)?.[1]?.toLowerCase() ?? null),
         objects: selectedIds().map(id => parts.find(x => x.id === id)?.name ?? id),
         ...(printerSel ? { printer: printerSel.value } : {}),
         ...(nozzleSel ? { nozzle: nozzleSel.value } : {}),

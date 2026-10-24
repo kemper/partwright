@@ -50,7 +50,7 @@ import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, reques
 import type { PreprocessOptions } from '../relief/types';
 import { createSliderEntry } from '../ui/sliderEntry';
 import { registerTool, setToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
-import { resolvePrefillImageSrc, loadPrefillImageBlob, blobToImageData, PREFILL_IMAGE_SRC_MAX } from '../ui/prefillImage';
+import { resolvePrefillImageSrc, loadPrefillImageBlob, blobToImageData } from '../ui/prefillImage';
 
 // Max resolution for stamping — higher = crisper stamp detail.
 const STAMP_MAX = 1024;
@@ -199,7 +199,7 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
  *  into the panel and sets the knobs; nothing is stamped until the user clicks
  *  the model. */
 const IMAGE_PAINT_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', maxLength: PREFILL_IMAGE_SRC_MAX, description: 'Image to stamp: a data:image/ URL, an http(s) URL (CORS-enabled host), or an image attachment id/label. Only downloaded into this tab.' },
+  src: { type: 'string', description: 'Image to stamp: a data:image/ URL, an https:// URL (CORS-enabled host), or an image attachment id/label (SVG ok). Only downloaded into this tab; kept as the saved image only once the user stamps it.' },
   removeBackground: { type: 'boolean', description: 'Treat the background colour as transparent.' },
   bgColor: { type: 'color', description: 'Background colour to remove ([r,g,b] 0..1 or "#rrggbb"); implies removeBackground.' },
   smooth: { type: 'boolean', description: 'Subdivide the stamp footprint for crisp edges.' },
@@ -209,6 +209,8 @@ const IMAGE_PAINT_PREFILL_SCHEMA: PrefillSchema = {
 };
 
 let pickedImageLabel: string | null = null;
+/** The picked image came from an openTool prefill and isn't saved yet. */
+let persistPending = false;
 
 function getImagePaintState(): Record<string, unknown> {
   const bg = opts.manualBgColor;
@@ -232,8 +234,8 @@ async function openImagePaintWithPrefill(p: Record<string, unknown> | undefined,
     const resolved = resolvePrefillImageSrc(pre.src);
     if ('error' in resolved) return resolved;
     try {
-      const raw = await blobToImageData(await loadPrefillImageBlob(resolved));
-      loaded = { full: resizeImageData(raw, STAMP_MAX), thumb: resizeImageData(raw, THUMB_MAX), label: resolved.label };
+      const full = await blobToImageData(await loadPrefillImageBlob(resolved), STAMP_MAX);
+      loaded = { full, thumb: resizeImageData(full, THUMB_MAX), label: resolved.label };
     } catch (e) {
       return { error: `src: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -246,7 +248,9 @@ async function openImagePaintWithPrefill(p: Record<string, unknown> | undefined,
     pickedImageThumb = loaded.thumb;
     pickedImageLabel = loaded.label;
     if (sourceLabel) sourceLabel.textContent = loaded.label;
-    persistImage(loaded.full);
+    // Not persisted yet (localStorage is shared by every tab): an AI-staged
+    // image becomes the saved image only once the user stamps with it.
+    persistPending = true;
   }
   if (pre.removeBackground !== undefined) opts.removeBackground = pre.removeBackground as boolean;
   if (pre.bgColor !== undefined) {
@@ -468,6 +472,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     const all = getRegions();
     if (all.length > 0) dropIfClippedEmpty(all[all.length - 1]);
   } else if (stamped) {
+    if (persistPending && pickedImageData) { persistImage(pickedImageData); persistPending = false; }
     notifyToolApplied('tool-image-paint', 'stamp');
   }
 }
@@ -774,6 +779,7 @@ async function applyImageFile(file: File): Promise<void> {
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
     pickedImageLabel = file.name;
+    persistPending = false;
     persistImage(pickedImageData);
     renderPreview();
     updateStampMode();

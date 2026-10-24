@@ -18,6 +18,7 @@ await partwright.openTool('tool-surface',
 
 - `applied` — the values that landed (normalized: colours become `[r,g,b]`, numbers snap to the field's step).
 - `ignored` — valid keys that had no effect here (e.g. `preserveColor` on an unpainted model).
+- `pending: true` (+ `message`) — the dialog isn't up yet because something the user must answer first is showing (an export's "unsaved objects" confirm); it opens with your values once they answer. Check `getUiState()` later rather than assuming it's open.
 - `{ error }` — unknown key, wrong type, or a value outside the field's own range (many surface ranges scale with the model size, so the error states the range for *this* model). Nothing opens on an error.
 - `note` (≤ 500 chars) shows at the top of the panel as **"Suggested by AI: …"**. Say what you set and what to try next.
 - In-app AI tool only: if your provider can't fill the free-form `prefill` object, pass the same values as a JSON string in `prefillJson` (used only when `prefill` is absent or empty; validated the same way).
@@ -121,7 +122,7 @@ Nothing is painted until the user clicks the model.
 
 ### `tool-image-paint` — Stamp an image onto the model
 
-`src` — a `data:image/…` URL, an `http(s)` URL (the host must allow CORS), or an image **attachment** id / label (`getAttachments()`); it is only downloaded into this tab, never uploaded. `removeBackground` (bool), `bgColor` (colour to treat as background; implies `removeBackground`), `smooth` (bool — subdivide for crisp edges), `detail` (16–1024, smooth mode), `size` (stamp width ≥ 1, world units), `rotationDeg` (0–359). The image and settings are staged; nothing is stamped until the user clicks the model. A src that can't be loaded is an error and nothing opens. `applied.src` / `toolState.src` is a short label, not the data URL.
+`src` — a `data:image/…` URL, an `https://` URL (the host must allow CORS; plain `http:` is refused), or an image **attachment** id / label (`getAttachments()`); SVG is fine. It is only downloaded into this tab (same timeout / 25 MB cap as Import from URL, and a pixel-count limit), never uploaded, and becomes the panel's remembered image only once the user stamps with it. `removeBackground` (bool), `bgColor` (colour to treat as background; implies `removeBackground`), `smooth` (bool — subdivide for crisp edges), `detail` (16–1024, smooth mode), `size` (stamp width ≥ 1, world units), `rotationDeg` (0–359). The image and settings are staged; nothing is stamped until the user clicks the model. A src that can't be loaded is an error and nothing opens. `applied.src` / `toolState.src` is a short label, not the data URL.
 
 ### `tool-palette` — Filament palette manager
 
@@ -129,7 +130,7 @@ Nothing is painted until the user clicks the model.
 
 ### `tool-customize` — Customizer (api.params sliders)
 
-`values` — `{key: value}` for the model's declared `api.params` (as `setParams`, but strict: an unknown key, wrong type, non-option select value or over-long text is an error; numbers past the slider range are allowed like the number box). Moving the sliders re-runs the model exactly like a drag — nothing is saved. Errors when the model declares no parameters. `toolState = {values}` (resolved).
+`values` — `{key: value}` for the model's declared `api.params` (as `setParams`, but strict: an unknown key, wrong type, non-option select value or over-long text is an error; numbers past the slider range are allowed like the number box). Moving the sliders re-runs the model exactly like a drag — nothing is saved — so from the in-app AI, `values` needs the **Run code** scope (open it without `values` otherwise). Errors when the model declares no parameters. `toolState = {values}` (resolved).
 
 ### `tool-voxel-paint` — Voxel Studio (voxel sessions)
 
@@ -137,7 +138,7 @@ Nothing is painted until the user clicks the model.
 
 ### `tool-print` — Print tools
 
-`bed` (`[x,y,z]` mm, 10–2000 each), `nozzleWidth` (0.05–2), `overhangAngleDeg` (1–89). Staged in the form with a "Suggested settings — not saved yet · **Use these** / Discard" row; the saved printer settings (`getPrinterSettings()`) change only when the user confirms (clicking Use these, editing a field, or clicking Check printability — which checks what the form shows). The printability check never runs on open.
+`bed` (`[x,y,z]` mm, 10–2000 each), `nozzleWidth` (0.05–2), `overhangAngleDeg` (1–89). Staged in the form with a "Suggested settings — not saved yet · **Use these** / Discard" row; the saved printer settings (`getPrinterSettings()`) change only when the user confirms (clicking Use these, or editing a field — which saves the whole form). Check printability checks what the form shows, staged values included, without saving them. The printability check never runs on open.
 
 ### `tool-cross-section` — Cross section
 
@@ -145,7 +146,7 @@ Nothing is painted until the user clicks the model.
 
 ### `export-objects` — Export objects (object picker)
 
-`format` (`3mf-bambu` default, `3mf`, `stl`, `obj`, `glb` — non-Bambu formats need a session with 2+ objects, since one object downloads straight away), `objects` (names or ids to tick; default the current object), and for `3mf-bambu`: `printer` (id), `nozzle` (`"0.2"` `"0.4"` `"0.6"` `"0.8"`), `filament` (id), `plateLayout` (`separate|grid|group`); `packStrategy` (`grid|horizontal|vertical`, any 3MF). Opens the export's picker with these ticked/selected — the user clicks **Export**. If a pre-export "unsaved objects" confirm comes first, `openTool` returns once it's up and the picker opens staged after the user answers it.
+`format` (`3mf-bambu` default, `3mf`, `stl`, `obj`, `glb` — non-Bambu formats need a session with 2+ objects, since one object downloads straight away), `objects` (names or ids to tick; default the current object), and for `3mf-bambu`: `printer` (id), `nozzle` (`"0.2"` `"0.4"` `"0.6"` `"0.8"`), `filament` (id), `plateLayout` (`separate|grid|group`); `packStrategy` (`grid|horizontal|vertical`, any 3MF). Opens the export's picker with these ticked/selected — the user clicks **Export**. Every key (incl. `objects`, `plateLayout:'group'` needing grouped objects) is checked before anything opens. If a pre-export "unsaved objects" confirm comes first, `openTool` returns `pending: true` after a few seconds (`ui.toolDialogOpenWaitMs`) and the picker opens with your values once the user answers the confirm. `toolState` includes `format`.
 
 ### `export-session` — Export session (.partwright.json)
 
@@ -167,14 +168,14 @@ Nothing is painted until the user clicks the model.
 
 `focus` — `"section.key"` of a setting (e.g. `"renderer.fov"`, `"ui.toastDurationMs"`): scrolls to and highlights that field. No value is changed. An unknown key is an error listing that section's keys.
 
-The dialogs and wizards above take one open at a time: if one is already open, `openTool` returns an error rather than discarding what the user has in it.
+The dialogs and wizards above take one open at a time: if one is already open — or an export you opened is still waiting on the user — `openTool` returns an error rather than discarding what the user has in it or stacking another dialog. Dialogs you open never take keyboard focus on their Export button, and Enter doesn't export until the user has clicked or tabbed into the dialog.
 
 ## What the user applied
 
-When the user applies / commits from a panel **you** opened (`openTool` from the AI) — Apply on Surface, a paint stroke, a stamp, Update code in Voxel Studio, Apply on the palette suggestion, Use these in Print tools, a slider move in Customize — your next turn starts with a line like
+When the user applies / commits from a panel **you** opened (`openTool` from the AI), while that panel is still the one you opened — Apply on Surface, a hand-painted stroke / fill / slab / shape, a stamp, a successful Update code / Save as raw in Voxel Studio, Apply on the palette suggestion, Use these in Print tools, a slider move in Customize — your next turn starts with an app-generated line (not the user's words) like
 
 ```
-[UI] user applied Surface textures: knit {mode: "whole", applies: "code", stitchWidth: 3.5, amplitude: 0.8, …}
+[UI · app note] user applied Surface textures: knit {mode: "whole", applies: "code", stitchWidth: 3.5, amplitude: 0.8, …}
 ```
 
-(the tool's `toolState` at that moment; latest per tool). It is per-tab memory only.
+(the tool's `toolState` at that moment; latest per tool). Once the user closes that panel, later use of it sends no notes. Notes are per-tab memory only and are dropped when the session changes.

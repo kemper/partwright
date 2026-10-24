@@ -99,7 +99,7 @@ import { generatePublishMetadata, isActiveProviderConnected } from './ai/publish
 import { computeCodeDiff } from './ai/codeDiff';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -129,6 +129,7 @@ import {
   parseImportUrlInput,
   MAX_REMOTE_BYTES,
 } from './import/urlImport';
+import { fetchRemoteBytes } from './import/remoteFetch';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showScadCompanionModal } from './ui/scadCompanionModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
@@ -3919,107 +3920,20 @@ async function main() {
    *  type classification, wrapped in a File named so handleImportFile routes
    *  it. Throws a human-readable message on any failure. */
   async function fetchRemoteImportFile(url: string): Promise<File> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
-    let res: Response;
-    try {
-      res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
-    } catch (e) {
-      clearTimeout(timer);
-      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
-    }
-    if (!res.ok) {
-      clearTimeout(timer);
-      throw new Error(`The server responded ${res.status} ${res.statusText}.`);
-    }
-
-    // Defense-in-depth: parseImportUrlInput only vetted the *initial* URL's
-    // scheme. With redirect: 'follow', the final URL could in theory be a
-    // non-http(s) scheme; browsers already block http(s)→file:/data: redirects,
-    // but re-check the resolved URL before touching the body just in case.
-    if (res.url) {
-      let finalProtocol: string;
-      try {
-        finalProtocol = new URL(res.url).protocol;
-      } catch {
-        clearTimeout(timer);
-        controller.abort();
-        throw new Error('The remote server redirected to an invalid URL.');
-      }
-      if (finalProtocol !== 'http:' && finalProtocol !== 'https:') {
-        clearTimeout(timer);
-        controller.abort();
-        throw new Error(`The remote server redirected to an unsupported URL (got "${finalProtocol}").`);
-      }
-    }
-
-    // Up-front size guard from Content-Length when present.
-    const declared = Number(res.headers.get('content-length'));
-    if (Number.isFinite(declared) && declared > MAX_REMOTE_BYTES) {
-      clearTimeout(timer);
-      controller.abort();
-      throw new Error(`That file is too large (${(declared / 1048576).toFixed(1)} MB; limit 25 MB).`);
-    }
-
-    const contentType = res.headers.get('content-type');
     const filename = filenameFromUrl(url);
-
-    // Classify before buffering so we can reject unsupported types early. The
-    // filename extension is authoritative; fall back to Content-Type.
-    const source = classifyRemoteResource(filename, contentType);
-    if (!source) {
-      clearTimeout(timer);
-      controller.abort();
-      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .step / .stp, .svg, .vox, or an image.');
-    }
-
-    // Stream the body with a hard byte cap as a backstop for servers that omit
-    // or under-report Content-Length.
-    let bytes: Uint8Array;
-    try {
-      bytes = await readBodyCapped(res, MAX_REMOTE_BYTES, controller);
-    } catch (e) {
-      clearTimeout(timer);
-      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw e;
-    }
-    clearTimeout(timer);
-
-    const safeName = ensureExtensionForSource(filename, source);
+    let source: ReturnType<typeof classifyRemoteResource> = null;
+    const { bytes, contentType } = await fetchRemoteBytes(url, {
+      timeoutMs: getConfig().import.remoteFetchTimeoutMs,
+      maxBytes: MAX_REMOTE_BYTES,
+      // Classify before buffering so we can reject unsupported types early. The
+      // filename extension is authoritative; fall back to Content-Type.
+      check: (res) => {
+        source = classifyRemoteResource(filename, res.headers.get('content-type'));
+        return source ? null : 'Unsupported file type. Supported: .partwright.json, .stl, .step / .stp, .svg, .vox, or an image.';
+      },
+    });
+    const safeName = ensureExtensionForSource(filename, source!);
     return new File([bytes], safeName, { type: contentType ?? '' });
-  }
-
-  /** Read a fetch Response body into a Uint8Array, aborting once the streamed
-   *  total exceeds `cap`. Falls back to a plain arrayBuffer() read (still cap-
-   *  checked) when the body isn't a readable stream. */
-  async function readBodyCapped(res: Response, cap: number, controller: AbortController): Promise<Uint8Array> {
-    const body = res.body;
-    if (!body || typeof body.getReader !== 'function') {
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.byteLength > cap) throw new Error(`That file is too large (limit 25 MB).`);
-      return buf;
-    }
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        total += value.byteLength;
-        if (total > cap) {
-          controller.abort();
-          try { await reader.cancel(); } catch { /* ignore */ }
-          throw new Error('That file is too large (limit 25 MB).');
-        }
-        chunks.push(value);
-      }
-    }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const c of chunks) { out.set(c, offset); offset += c.byteLength; }
-    return out;
   }
 
   /** Open the "Import from URL…" modal and route the user's input to either the
@@ -5636,8 +5550,8 @@ async function main() {
       bambu: bambu ? {
         printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
-        nozzles: ['0.2', '0.4', '0.6', '0.8'],
-        defaultNozzle: '0.4',
+        nozzles: [...BAMBU_NOZZLES],
+        defaultNozzle: DEFAULT_BAMBU_NOZZLE,
         filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
         defaultFilament: DEFAULT_BAMBU_FILAMENT,
       } : undefined,
@@ -9523,6 +9437,7 @@ async function main() {
       if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       else showToast('Voxel edits applied to your code', { variant: 'success' });
       syncVoxelPaintUI();
+      return !('error' in result);
     },
     saveRaw: async () => {
       // Replacing destroys the current source; confirm when there's code to lose.
@@ -9531,11 +9446,12 @@ async function main() {
           'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
           { title: 'Replace code', confirmLabel: 'Replace', danger: true },
         );
-        if (!ok) return;
+        if (!ok) return false;
       }
       const result = await commitVoxelEdits('replace', 'painted');
       if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
+      return !('error' in result);
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
@@ -9614,8 +9530,9 @@ async function main() {
     exports: {
       canExport: () => currentMeshData !== null && !isSharedPreview(),
       objectCount: () => getState().parts.length,
-      objects: () => getState().parts.map(o => ({ id: o.id, name: o.name })),
-      bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: ['0.2', '0.4', '0.6', '0.8'], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
+      objects: () => getState().parts.map(o => ({ id: o.id, name: o.name, ...(o.group ? { group: o.group } : {}) })),
+      bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: [...BAMBU_NOZZLES], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
+      versionIndices: async () => (await listCurrentVersions()).map(v => v.index),
       hasSession: () => !!getState().session,
       runObjects: (format) => (format === '3mf-bambu' ? actionExport3MFBambu() : format === '3mf' ? actionExport3MF()
         : format === 'stl' ? actionExportSTL() : format === 'obj' ? actionExportOBJ() : actionExportGLB()),
@@ -19217,7 +19134,7 @@ async function main() {
     },
     getSettings: () => loadPrinterSettings(),
     setSettings: (partial) => savePrinterSettings(partial),
-    check: () => partwrightAPI.checkPrintability(),
+    check: (overrides) => partwrightAPI.checkPrintability(overrides),
   };
   initPrintToolsUI(clipControls, printToolsHandlers);
 

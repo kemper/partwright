@@ -1,11 +1,15 @@
 // Unit tests for the PR6 prefill-depth helpers (#1085): the registry's `list`
-// field type, the "[UI] user applied …" next-turn notes (only for tools the AI
+// field type, the "[UI · app note] user applied …" next-turn notes (only for tools the AI
 // opened), the strict Customizer override check, and the publish prefill check.
 
 import { describe, expect, test } from 'vitest';
+import { afterEach, vi } from 'vitest';
 import {
   registerTool, openTool, validatePrefill, notifyToolApplied, drainToolAppliedNotes, formatToolAppliedNote,
+  captureToolApplied, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX,
 } from '../../src/ui/toolRegistry';
+import { openViewportPanel, closeViewportPanel } from '../../src/ui/viewportPanelRegistry';
+import { executeTool } from '../../src/ai/tools';
 import { checkParamOverrides, normalizeParamSchema } from '../../src/geometry/params';
 import { checkPublishPrefill } from '../../src/ui/publishModal';
 
@@ -25,11 +29,11 @@ describe('validatePrefill list fields', () => {
 describe('formatToolAppliedNote', () => {
   test('leads with the tab / tool and lists the rest compactly', () => {
     const line = formatToolAppliedNote('Surface textures', { tab: 'knit', stitchWidth: 3.5, amplitude: 0.123456, seed: 7, scope: null, label: 'hat' });
-    expect(line).toBe('[UI] user applied Surface textures: knit {stitchWidth: 3.5, amplitude: 0.1235, seed: 7, label: "hat"}');
+    expect(line).toBe('[UI · app note] user applied Surface textures: knit {stitchWidth: 3.5, amplitude: 0.1235, seed: 7, label: "hat"}');
   });
   test('`what` overrides the lead; nested objects / arrays are summarised; long lines truncate', () => {
     expect(formatToolAppliedNote('Paint colors', { tool: 'brush', brush: { size: 2, spray: true }, color: [1, 0.2, 0.4] }, 'brush stroke'))
-      .toBe('[UI] user applied Paint colors: brush stroke {tool: "brush", brush: {size: 2, spray: true}, color: [1, 0.2, 0.4]}');
+      .toBe('[UI · app note] user applied Paint colors: brush stroke {tool: "brush", brush: {size: 2, spray: true}, color: [1, 0.2, 0.4]}');
     const long = formatToolAppliedNote('X', { text: 'y'.repeat(30), a: Array.from({ length: 50 }, (_, i) => i), b: 'z'.repeat(1000) });
     expect(long.length).toBeLessThanOrEqual(400);
   });
@@ -55,7 +59,7 @@ describe('notifyToolApplied / drainToolAppliedNotes', () => {
     notifyToolApplied(neverOpened);
     notifyToolApplied('no-such-tool');
     const notes = drainToolAppliedNotes();
-    expect(notes).toEqual([`[UI] user applied Tool ${n - 2}: fuzzy {amplitude: 1}`]);
+    expect(notes).toEqual([`[UI · app note] user applied Tool ${n - 2}: fuzzy {amplitude: 1}`]);
     expect(drainToolAppliedNotes()).toEqual([]); // drained
   });
 
@@ -67,7 +71,7 @@ describe('notifyToolApplied / drainToolAppliedNotes', () => {
     notifyToolApplied(id);
     state.size = 2;
     notifyToolApplied(id);
-    expect(drainToolAppliedNotes()).toEqual([`[UI] user applied Tool ${n}: brush {size: 2}`]);
+    expect(drainToolAppliedNotes()).toEqual([`[UI · app note] user applied Tool ${n}: brush {size: 2}`]);
     await openTool(id, undefined, { source: 'ui' });
     notifyToolApplied(id);
     expect(drainToolAppliedNotes()).toEqual([]);
@@ -121,5 +125,106 @@ describe('checkPublishPrefill', () => {
     expect(checkPublishPrefill({ platform: 'makerworld', format: '3mf-bambu' })).toBeNull();
     expect(checkPublishPrefill({ platform: 'nowhere' })).toMatch(/platform must be one of/);
     expect(checkPublishPrefill({ platform: 'thingiverse', format: '3mf-bambu' })).toMatch(/format must be one of/);
+  });
+});
+
+describe('applied-note sessions', () => {
+  let n = 100;
+  /** A tool backed by a docked viewport panel, like the real ones. */
+  const regPanel = () => {
+    const id = `panel-${++n}`;
+    let open = false;
+    const entry = { close: () => { open = false; closeViewportPanel(entry); } };
+    registerTool({
+      id, title: `Panel ${n}`,
+      open: () => { open = true; openViewportPanel(entry); return { applied: {}, ignored: [] }; },
+      getState: () => ({ tab: 'x' }),
+      isOpen: () => open,
+      close: () => entry.close(),
+    });
+    return { id, entry, isOpen: () => open, reopenByUser: () => { open = true; openViewportPanel(entry); } };
+  };
+
+  test('notes are app-prefixed', () => {
+    expect(formatToolAppliedNote('T', { tab: 'a' }).startsWith(`${UI_APPLIED_NOTE_PREFIX} user applied`)).toBe(true);
+  });
+
+  test('closing the AI-opened panel ends its note session (a later user re-open sends nothing)', async () => {
+    drainToolAppliedNotes();
+    const t = regPanel();
+    await openTool(t.id, undefined, { source: 'ai' });
+    notifyToolApplied(t.id);
+    expect(drainToolAppliedNotes()).toHaveLength(1);
+    t.entry.close();          // user closes it (× / Escape)
+    t.reopenByUser();         // …and reopens it from its own toolbar button
+    notifyToolApplied(t.id);
+    expect(drainToolAppliedNotes()).toEqual([]);
+  });
+
+  test('another panel replacing it also ends the session', async () => {
+    drainToolAppliedNotes();
+    const a = regPanel();
+    const b = regPanel();
+    await openTool(a.id, undefined, { source: 'ai' });
+    await openTool(b.id, undefined, { source: 'ui' }); // replaces a
+    a.reopenByUser();
+    notifyToolApplied(a.id);
+    expect(drainToolAppliedNotes()).toEqual([]);
+  });
+
+  test('captureToolApplied snapshots now and queues only when called (success-only commits)', async () => {
+    drainToolAppliedNotes();
+    const t = regPanel();
+    await openTool(t.id, undefined, { source: 'ai' });
+    const failed = captureToolApplied(t.id, 'Update code');
+    expect(failed).not.toBeNull();
+    expect(drainToolAppliedNotes()).toEqual([]); // not called → nothing queued
+    const ok = captureToolApplied(t.id, 'Update code');
+    t.entry.close(); // the commit closes the panel …
+    ok?.();          // … the snapshot still lands
+    expect(drainToolAppliedNotes()[0]).toContain('Update code');
+  });
+
+  test('clearToolAppliedNotes drops pending notes (session change)', async () => {
+    const t = regPanel();
+    await openTool(t.id, undefined, { source: 'ai' });
+    notifyToolApplied(t.id);
+    clearToolAppliedNotes();
+    expect(drainToolAppliedNotes()).toEqual([]);
+  });
+});
+
+describe('openTool AI dispatch: customize values need the Run code scope', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const stubStorage = (scope: Record<string, boolean>) => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    });
+    return import('../../src/ai/settings').then(({ loadSettings, setToggles, saveSettings }) => {
+      saveSettings(setToggles(loadSettings(), { scope }));
+    });
+  };
+
+  test('refuses customize values when runCode is off; allows the open without values', async () => {
+    await stubStorage({ runCode: false });
+    const openToolApi = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('window', { partwright: { openTool: openToolApi } });
+    const refused = await executeTool('openTool', { id: 'tool-customize', prefill: { values: { width: 3 } } });
+    expect(refused.isError || /Run code/.test(refused.content)).toBe(true);
+    expect(refused.content).toMatch(/Run code/);
+    expect(openToolApi).not.toHaveBeenCalled();
+    await executeTool('openTool', { id: 'tool-customize', prefill: {} });
+    expect(openToolApi).toHaveBeenCalledTimes(1);
+  });
+
+  test('passes customize values through when runCode is on', async () => {
+    await stubStorage({ runCode: true });
+    const openToolApi = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('window', { partwright: { openTool: openToolApi } });
+    await executeTool('openTool', { id: 'tool-customize', prefill: { values: { width: 3 } } });
+    expect(openToolApi).toHaveBeenCalledWith('tool-customize', { values: { width: 3 } }, { source: 'ai' });
   });
 });

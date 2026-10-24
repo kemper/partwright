@@ -12,7 +12,7 @@ import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { createColorSwatch } from '../ui/colorPickerModal';
 import { createSliderEntry, type SliderEntry } from '../ui/sliderEntry';
-import { registerTool, setToolNote, notifyToolApplied, parsePrefillColor, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
+import { registerTool, setToolNote, captureToolApplied, parsePrefillColor, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -45,8 +45,8 @@ let paintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let onActivate: (() => Promise<void> | void) | null = null;
 let onDeactivate: (() => Promise<void> | void) | null = null;
-let onUpdateCode: (() => Promise<void> | void) | null = null;
-let onSaveRaw: (() => Promise<void> | void) | null = null;
+let onUpdateCode: (() => Promise<boolean | void> | boolean | void) | null = null;
+let onSaveRaw: (() => Promise<boolean | void> | boolean | void) | null = null;
 let active = false;
 let currentColor = SWATCHES[0];
 // Panel body (AI note banner host) + the swatch-ring sync a prefill colour uses.
@@ -104,10 +104,12 @@ export interface VoxelPaintUICallbacks {
   activate: () => Promise<void> | void;
   /** Called to cancel editing without committing. */
   deactivate: () => Promise<void> | void;
-  /** Called to append the edits to the existing code as v.set/v.remove ops. */
-  updateCode: () => Promise<void> | void;
-  /** Called to replace the code with voxels.decode(...) of the full grid. */
-  saveRaw: () => Promise<void> | void;
+  /** Called to append the edits to the existing code as v.set/v.remove ops.
+   *  Resolves false when nothing was written (error / cancelled). */
+  updateCode: () => Promise<boolean | void> | boolean | void;
+  /** Called to replace the code with voxels.decode(...) of the full grid.
+   *  Resolves false when nothing was written (error / cancelled). */
+  saveRaw: () => Promise<boolean | void> | boolean | void;
 }
 
 /** Mount the Voxel Studio button into the viewport's controls container. */
@@ -788,7 +790,12 @@ function buildActions(): HTMLElement {
   updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white transition-colors';
   updateBtn.textContent = 'Update code';
   updateBtn.title = 'Keep your code and append these edits as v.set/v.remove statements, then save a version';
-  updateBtn.addEventListener('click', async () => { notifyToolApplied('tool-voxel-paint', 'Update code'); if (onUpdateCode) await onUpdateCode(); syncActiveState(); });
+  updateBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Update code');
+    const ok = onUpdateCode ? await onUpdateCode() : false;
+    if (ok !== false) note?.(); // only once the edits actually landed in the code
+    syncActiveState();
+  });
   actions.appendChild(updateBtn);
 
   // Secondary: replace the editor with the raw decoded grid (confirms first).
@@ -797,7 +804,12 @@ function buildActions(): HTMLElement {
   saveRawBtn.className = 'w-full px-2 py-1 rounded text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
   saveRawBtn.textContent = 'Save as raw voxel data';
   saveRawBtn.title = 'Replace the code with voxels.decode(...) of the whole grid (warns before overwriting)';
-  saveRawBtn.addEventListener('click', async () => { notifyToolApplied('tool-voxel-paint', 'Save as raw voxel data'); if (onSaveRaw) await onSaveRaw(); syncActiveState(); });
+  saveRawBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Save as raw voxel data');
+    const ok = onSaveRaw ? await onSaveRaw() : false;
+    if (ok !== false) note?.();
+    syncActiveState();
+  });
   actions.appendChild(saveRawBtn);
 
   return actions;

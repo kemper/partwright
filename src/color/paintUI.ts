@@ -106,6 +106,7 @@ import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { createColorSwatch } from '../ui/colorPickerModal';
 import { NATURAL_TONE_SWATCHES } from './naturalTones';
+import { onUserPaint } from './paintAccessors';
 import { registerTool, setToolNote, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 let paintBtn: HTMLButtonElement | null = null;
@@ -169,16 +170,13 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   const overlayHost = controlsContainer.parentElement ?? controlsContainer;
   overlayHost.appendChild(pickerPanel);
 
-  let lastRegionCount = getRegions().length;
   onRegionsChange(() => {
     updateBadge();
     updateUndoButton();
-    // A new region while the panel is open = the user painted something; if
-    // the AI opened Paint, tell it what the user used (next-turn [UI] note).
-    const n = getRegions().length;
-    if (n > lastRegionCount && isActive()) notifyToolApplied('tool-paint', 'stroke');
-    lastRegionCount = n;
   });
+  // A hand-painted stroke / fill / slab (pointer commit paths only): if the AI
+  // opened Paint, its next turn hears what the user used.
+  onUserPaint(() => { if (isActive()) notifyToolApplied('tool-paint', 'stroke'); });
   onRedoChange(updateRedoButton);
   onVisibilityChange(updateVisibilityButton);
   onClearSnapshotChange(updateUndoClearButton);
@@ -1628,6 +1626,7 @@ function createBoxControls(): HTMLElement {
   updatePaintShapeButton();
   paintShapeBtn.addEventListener('click', () => {
     const painted = commitBox();
+    if (painted > 0) notifyToolApplied('tool-paint', 'paint inside shape');
     if (painted === 0) {
       paintShapeBtn!.textContent = 'No triangles in shape';
       window.setTimeout(() => { if (paintShapeBtn) updatePaintShapeButton(); }, 1200);

@@ -14,12 +14,13 @@ import {
 import {
   EXPORT_SESSION_FLAGS, stageExportOptionsPrefill, clearExportOptionsPrefill, isExportOptionsOpen, getExportOptionsState, closeExportOptionsDialog,
 } from './exportOptionsDialog';
+import { guardExportConfirm } from './exportConfirmModal';
 import {
   checkPublishPrefill, stagePublishPrefill, clearPublishPrefill, isPublishModalOpen, getPublishModalState, closePublishModal,
 } from './publishModal';
 import { isReliefImportOpen, getReliefImportState, closeReliefImport, type ReliefStagedOptions } from './reliefImportModal';
 import { isImageVoxelImportOpen, getImageVoxelImportState, closeImageVoxelImport } from './imageVoxelImportModal';
-import { resolvePrefillImageSrc, loadPrefillImageBlob, prefillImageFile, blobToImageData, PREFILL_IMAGE_SRC_MAX } from './prefillImage';
+import { resolvePrefillImageSrc, loadPrefillImageBlob, prefillImageFile, blobToImageData, isSvgBlob } from './prefillImage';
 import type { ImageToVoxelOptions } from '../import/imageToVoxel';
 
 export type ExportObjectsFormat = '3mf-bambu' | '3mf' | 'stl' | 'obj' | 'glb';
@@ -48,7 +49,9 @@ export interface HostToolDeps {
     canExport(): boolean;
     objectCount(): number;
     /** The session's objects (for validating `objects` up front). */
-    objects(): { id: string; name: string }[];
+    objects(): { id: string; name: string; group?: string }[];
+    /** Saved version indices of the active session (for `versions`). */
+    versionIndices(): Promise<number[]>;
     /** The Bambu picker's choices (printer ids, nozzle strings, filament ids). */
     bambuChoices(): { printers: string[]; nozzles: string[]; filaments: string[] };
     hasSession(): boolean;
@@ -69,22 +72,39 @@ export interface HostToolDeps {
   };
 }
 
-/** Wait for a staged dialog to open: resolves with its outcome, an error when
- *  the flow ended before the dialog showed, or — if something the user must
- *  answer first is up (a pre-export confirm) — the staged values after
- *  `ui.toolDialogOpenWaitMs`. */
+/** True while an AI/API-opened export / publish flow is running (from the
+ *  openTool until the user finishes or cancels it) — a second staged open is
+ *  refused rather than stacking another dialog / confirm. */
+let stagedFlowActive = false;
+
+/** Run a toolbar export/publish action with a staged prefill and wait for its
+ *  dialog: resolves with the dialog's outcome, an error when the flow ended
+ *  before the dialog showed, or — when something the user must answer first is
+ *  up (the pre-export "Export …?" confirm) — `{pending: true}` after
+ *  `ui.toolDialogOpenWaitMs`: the dialog then opens with these values once
+ *  the user answers it. Any pre-export confirm in the flow opens guarded (no
+ *  Enter-to-export until the user interacts with it). */
 async function awaitStagedDialog(
   staged: Promise<ToolOpenResult>,
   run: () => Promise<void>,
   clear: (reason: string) => void,
-  pendingResult: ToolOpenResult,
+  applied: Record<string, unknown>,
 ): Promise<ToolOpenResult> {
+  stagedFlowActive = true;
+  guardExportConfirm(true);
   void run()
     .catch(() => { /* the action reports its own failures */ })
-    .finally(() => clear('the export ended before its dialog opened (cancelled, or nothing to export)'));
+    .finally(() => {
+      stagedFlowActive = false;
+      guardExportConfirm(false);
+      clear('the export ended before its dialog opened (cancelled, or nothing to export)');
+    });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const wait = new Promise<ToolOpenResult>(resolve => {
-    timer = setTimeout(() => resolve(pendingResult), getConfig().ui.toolDialogOpenWaitMs);
+    timer = setTimeout(() => resolve({
+      applied, ignored: [], pending: true,
+      message: 'A confirm (e.g. "Export 3MF?" about unsaved objects) is waiting for the user; the dialog opens with these values after they answer it. Check getUiState() later.',
+    }), getConfig().ui.toolDialogOpenWaitMs);
   });
   try {
     return await Promise.race([staged, wait]);
@@ -93,22 +113,31 @@ async function awaitStagedDialog(
   }
 }
 
-/** Load a prefill `src` into a File + ImageData (download only). */
-async function loadPrefillImage(src: string): Promise<{ file: File; imageData: ImageData; label: string } | { error: string }> {
+const STAGED_BUSY = 'an export / publish dialog the AI opened is still waiting for the user (a pre-export confirm or the dialog itself) — let them finish or cancel it first';
+
+/** Load a prefill `src` (download only) as a File, plus — for raster images —
+ *  its pixels (`decode`) or just a size/decodability check (`check`). */
+async function loadPrefillImage(src: string, want: 'decode' | 'check'): Promise<{ file: File; imageData: ImageData | null; svg: boolean; label: string } | { error: string }> {
   const resolved = resolvePrefillImageSrc(src);
   if ('error' in resolved) return resolved;
   try {
     const blob = await loadPrefillImageBlob(resolved);
+    const svg = isSvgBlob(blob);
     const file = prefillImageFile(blob, resolved.label);
-    const imageData = /svg/i.test(blob.type) ? new ImageData(1, 1) : await blobToImageData(blob);
-    return { file, imageData, label: resolved.label };
+    let imageData: ImageData | null = null;
+    if (!svg) {
+      // `check` still validates the pixel count + that it decodes, at a tiny size.
+      imageData = await blobToImageData(blob, want === 'decode' ? Number.POSITIVE_INFINITY : 16);
+      if (want === 'check') imageData = null;
+    }
+    return { file, imageData, svg, label: resolved.label };
   } catch (e) {
     return { error: `src: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
 const RELIEF_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', maxLength: PREFILL_IMAGE_SRC_MAX, description: 'Image to load: a data:image/ URL, an http(s) URL (CORS-enabled host), or an image attachment id/label. Omit to open the picker empty.' },
+  src: { type: 'string', description: 'Image to load: a data:image/ URL, an https:// URL (CORS-enabled host), or an image attachment id/label (SVG ok). Omit to open the picker empty.' },
   mode: { type: 'enum', values: ['quantized', 'luminance'], description: "'quantized' = flat colour tile (keychain), 'luminance' = relief / lithophane." },
   options: { type: 'object', description: 'Shared knobs.', fields: {
     widthMm: { type: 'number', min: 1, max: 2000 },
@@ -151,7 +180,7 @@ const RELIEF_PREFILL_SCHEMA: PrefillSchema = {
 };
 
 const VOXEL_IMPORT_PREFILL_SCHEMA: PrefillSchema = {
-  src: { type: 'string', maxLength: PREFILL_IMAGE_SRC_MAX, description: 'Image to load (data:image/ URL, http(s) URL, or image attachment id/label). Omit to open the picker empty.' },
+  src: { type: 'string', description: 'Image to load (data:image/ URL, https:// URL, or image attachment id/label; not SVG). Omit to open the picker empty.' },
   options: { type: 'object', description: 'Initial controls (as importImageAsVoxels opts).', fields: {
     maxSize: { type: 'number', integer: true, min: 1, max: 1024 },
     mode: { type: 'enum', values: ['billboard', 'heightmap'] },
@@ -249,6 +278,7 @@ export function registerHostTools(deps: HostToolDeps): void {
         return { error: `the ${format} export only shows an object picker for a session with 2+ objects (this one would download straight away) — use format "3mf-bambu", or runUiCommand("export-${format}") to export directly` };
       }
       if (isExportPartsOpen()) return { error: 'an export object picker is already open' };
+      if (stagedFlowActive) return { error: STAGED_BUSY };
       // Validate against the real objects / Bambu choices BEFORE starting the
       // export flow (a pre-export confirm can delay the picker past openTool's
       // return); the picker re-checks when it consumes the prefill.
@@ -262,6 +292,9 @@ export function registerHostTools(deps: HostToolDeps): void {
           }
         }
       }
+      if (p.plateLayout === 'group' && format === '3mf-bambu' && !deps.exports.objects().some(o => o.group)) {
+        errors.push('plateLayout "group" needs grouped objects (this session has none)');
+      }
       if (format === '3mf-bambu') {
         const c = deps.exports.bambuChoices();
         const check = (key: 'printer' | 'nozzle' | 'filament', allowed: string[]) => {
@@ -273,7 +306,7 @@ export function registerHostTools(deps: HostToolDeps): void {
       const { format: _f, ...rest } = p;
       void _f;
       const staged = stageExportPartsPrefill({ ...(rest as Record<string, never>), note: ctx.note, source: ctx.source });
-      return awaitStagedDialog(staged, () => deps.exports.runObjects(format), clearExportPartsPrefill, { applied: p, ignored: [] })
+      return awaitStagedDialog(staged, () => deps.exports.runObjects(format), clearExportPartsPrefill, p)
         .then(r => ('error' in r ? r : { ...r, applied: { format, ...r.applied } }));
     },
     getState: getExportPartsState,
@@ -292,11 +325,20 @@ export function registerHostTools(deps: HostToolDeps): void {
     hint: 'Export',
     prefillSchema: sessionSchema,
     enabled: () => deps.exports.hasSession(),
-    open: (prefill, ctx) => {
+    open: async (prefill, ctx) => {
       if (!deps.exports.hasSession()) return { error: 'no active session to export — save a version first' };
       if (isExportOptionsOpen()) return { error: 'the session export dialog is already open' };
+      if (stagedFlowActive) return { error: STAGED_BUSY };
+      const versions = prefill?.versions as number[] | undefined;
+      if (versions) {
+        if (versions.length === 0) return { error: 'versions must list at least one version' };
+        const known = await deps.exports.versionIndices();
+        const bad = versions.filter(i => !known.includes(i));
+        if (bad.length) return { error: `versions: no version ${bad.join(', ')} (versions: ${known.join(', ') || 'none'})` };
+        if (isExportOptionsOpen() || stagedFlowActive) return { error: STAGED_BUSY };
+      }
       const staged = stageExportOptionsPrefill({ ...(prefill ?? {}), note: ctx.note, source: ctx.source });
-      return awaitStagedDialog(staged, deps.exports.runSession, clearExportOptionsPrefill, { applied: prefill ?? {}, ignored: [] });
+      return awaitStagedDialog(staged, deps.exports.runSession, clearExportOptionsPrefill, prefill ?? {});
     },
     getState: getExportOptionsState,
     isOpen: isExportOptionsOpen,
@@ -323,8 +365,9 @@ export function registerHostTools(deps: HostToolDeps): void {
       if (err) return { error: err };
       if (!deps.exports.canExport()) return { error: 'nothing to publish (no model on screen, or a read-only shared design)' };
       if (isPublishModalOpen()) return { error: 'the publish dialog is already open' };
+      if (stagedFlowActive) return { error: STAGED_BUSY };
       const staged = stagePublishPrefill({ ...p, note: ctx.note, source: ctx.source });
-      return awaitStagedDialog(staged, () => deps.exports.runPublish(p.platform), clearPublishPrefill, { applied: prefill ?? {}, ignored: [] });
+      return awaitStagedDialog(staged, () => deps.exports.runPublish(p.platform), clearPublishPrefill, prefill ?? {});
     },
     getState: getPublishModalState,
     isOpen: isPublishModalOpen,
@@ -350,9 +393,11 @@ export function registerHostTools(deps: HostToolDeps): void {
       let file: File | undefined;
       let label: string | undefined;
       if (typeof p.src === 'string') {
-        const img = await loadPrefillImage(p.src);
+        const img = await loadPrefillImage(p.src, 'check');
         if ('error' in img) return img;
         file = img.file; label = img.label;
+        // The user may have opened the wizard while the image downloaded.
+        if (isReliefImportOpen()) return { error: 'the relief wizard was opened meanwhile — close it first (its picked image and settings would be lost)' };
       }
       const staged: ReliefStagedOptions = {
         ...(p.mode ? { mode: p.mode as ReliefStagedOptions['mode'] } : {}),
@@ -381,14 +426,17 @@ export function registerHostTools(deps: HostToolDeps): void {
       if (isImageVoxelImportOpen()) return { error: 'the image → voxel dialog is already open' };
       let img: { file: File; imageData: ImageData; label: string } | null = null;
       if (typeof p.src === 'string') {
-        const r = await loadPrefillImage(p.src);
+        const r = await loadPrefillImage(p.src, 'decode');
         if ('error' in r) return r;
-        if (/svg/i.test(r.file.type)) return { error: 'src: SVG images are not supported by image → voxel (use import-relief)' };
-        img = r;
+        if (r.svg || !r.imageData) return { error: 'src: SVG images are not supported by image → voxel (use import-relief)' };
+        img = { file: r.file, imageData: r.imageData, label: r.label };
+        if (isImageVoxelImportOpen()) return { error: 'the image → voxel dialog was opened meanwhile' };
       }
       const options = { ...((p.options ?? {}) as Record<string, unknown>) } as ImageToVoxelOptions & { flatColor?: [number, number, number] };
       if (options.flatColor) options.flatColor = options.flatColor.map(n => Math.round(n * 255)) as [number, number, number];
-      void deps.imports.imageVoxel(img, options, ctx.note, ctx.source);
+      void deps.imports.imageVoxel(img, options, ctx.note, ctx.source).catch((e: unknown) => {
+        deps.toast(`Image → voxel import failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
       return { applied: { ...p, ...(img ? { src: img.label } : {}) }, ignored: [] };
     },
     getState: getImageVoxelImportState,
