@@ -285,12 +285,13 @@ may only change a short allow-list of result-affecting settings, and the user co
 ## Debugging with the Diagnostic Log
 
 ```js
-partwright.getDiagnosticLog({ level: 'error', limit: 10 })
-partwright.getDiagnosticLog({ source: ['engine', 'import'] })
+await partwright.getDiagnosticLog({ level: 'error', limit: 10 })
+await partwright.getDiagnosticLog({ source: ['engine', 'import'] })
 // -> {entries:[{id, time, level, source, message, detail?}], matched, total}
 ```
 
 The log (toolbar ⚠) collects engine failures, import/export problems, uncaught exceptions,
 intercepted console warnings and every toast, newest first. Read it before guessing why something
 failed. Anything that looks like a credential — API keys, `Authorization` headers, `?key=` URL
-parameters — is redacted. The default `limit` is `ui.diagnosticLogApiLimit`.
+parameters, `user:password@` URL userinfo — is redacted, and so is every provider key saved in
+this browser, whatever its format. The default `limit` is `ui.diagnosticLogApiLimit`.

@@ -36,46 +36,90 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// name=value in a query string / form body / free text. The name must start
+// the string or follow a delimiter (so `monkey=` never matches `key=`).
 const PARAM_RE = new RegExp(
-  `([?&;#](?:${SECRET_PARAM_NAMES.map(escapeRe).join('|')})=)[^&#\\s"'<>]+`,
+  `(^|[?&;#\\s,(])((?:${SECRET_PARAM_NAMES.map(escapeRe).join('|')})=)[^&#\\s"'<>]+`,
   'gi',
 );
 
-// "name": "value"  /  'name': 'value'  (JSON-ish)
+// scheme://user:password@host — URL userinfo.
+const USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:"'<>]+:[^\s/@"'<>]+@/gi;
+
+const FIELD_ALT = SECRET_FIELD_NAMES.map(escapeRe).join('|');
+// "name": "value" / 'name': 'value' (JSON-ish; the value may contain escaped
+// quotes).
 const JSON_FIELD_RE = new RegExp(
-  `((["'])(?:${SECRET_FIELD_NAMES.map(escapeRe).join('|')})\\2\\s*:\\s*)(["'])(?:(?!\\3).)*\\3`,
+  `((["'])(?:${FIELD_ALT})\\2\\s*:\\s*)(["'])((?:\\\\.|(?!\\3)[^\\\\])*)\\3`,
+  'gi',
+);
+// \"name\": \"value\" — the same, inside a JSON string that was itself
+// stringified (a request body echoed into an error message).
+const ESCAPED_JSON_FIELD_RE = new RegExp(
+  `((\\\\["'])(?:${FIELD_ALT})\\2\\s*:\\s*)(\\\\["'])(.*?)\\3`,
   'gi',
 );
 
 // name: value  /  name=value  (header-ish, to end of line or a delimiter)
 const HEADER_FIELD_RE = new RegExp(
-  `(\\b(?:${SECRET_FIELD_NAMES.map(escapeRe).join('|')})\\s*[:=]\\s*)(?!\\[REDACTED\\])(?:(?:Bearer|Basic|Token)\\s+)?[^\\s,;"'}\\]]+`,
+  `(\\b(?:${FIELD_ALT})\\s*[:=]\\s*)(?!\\[REDACTED\\])(?:(?:Bearer|Basic|Token)\\s+)?[^\\s,;"'}\\]]+`,
   'gi',
 );
 
+// Before a short, generic prefix (`sk-`, `hf_`) require a non-alphanumeric
+// character — or a URL-encoded `=` / quote / space — so `task-…` / `disk-…`
+// words survive while `key%3Dsk-…` is still caught. Distinctive prefixes
+// (AIza, sk-ant-, ghp_, xoxb-, AKIA, eyJ…) need no boundary at all.
+const SOFT_BOUNDARY = '(?<=^|[^A-Za-z0-9]|%3[Dd]|%22|%27|%20)';
+
 /** Well-known credential shapes, redacted wherever they appear. */
 const TOKEN_PATTERNS: RegExp[] = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g,              // bearer tokens
-  /\bsk-ant-[A-Za-z0-9_-]{10,}/g,                     // Anthropic
-  /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/g, // OpenAI-style
-  /\bAIza[0-9A-Za-z_-]{30,}/g,                        // Google API keys
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,      // GitHub tokens
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,                  // Slack
-  /\bhf_[A-Za-z0-9]{20,}/g,                           // Hugging Face
-  /\bAKIA[0-9A-Z]{16}\b/g,                            // AWS access key id
-  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g,                                  // bearer tokens
+  /sk-ant-[A-Za-z0-9_-]{10,}/g,                                           // Anthropic
+  new RegExp(`${SOFT_BOUNDARY}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`, 'g'), // OpenAI-style
+  /AIza[0-9A-Za-z_-]{30,}/g,                                              // Google API keys
+  /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,                            // GitHub tokens
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  /xox[abprs]-[A-Za-z0-9-]{10,}/g,                                        // Slack
+  new RegExp(`${SOFT_BOUNDARY}hf_[A-Za-z0-9]{20,}`, 'g'),                 // Hugging Face
+  /AKIA[0-9A-Z]{16}(?![0-9A-Z])/g,                                        // AWS access key id
+  /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,      // JWT
 ];
 
+/** Secrets the app actually holds (the user's saved provider API keys,
+ *  registered by src/ai/db.ts as keys are loaded or saved). Redacted verbatim
+ *  and URL-encoded, whatever their shape — a custom endpoint's key may match
+ *  none of the patterns above. In-memory only, never persisted. */
+const knownSecrets = new Set<string>();
+/** Shorter values are too likely to collide with ordinary text. */
+const MIN_KNOWN_SECRET_LENGTH = 8;
+
+export function registerKnownSecret(value: string | null | undefined): void {
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (v.length >= MIN_KNOWN_SECRET_LENGTH) knownSecrets.add(v);
+}
+
+export function forgetKnownSecret(value: string | null | undefined): void {
+  if (typeof value === 'string') knownSecrets.delete(value.trim());
+}
+
 /** Replace anything that looks like a secret in `text` with `[REDACTED]`:
- *  credential-named URL parameters, credential-named header / JSON fields
- *  (Authorization, x-api-key, apiKey, …), and well-known key formats
- *  (sk-…, sk-ant-…, AIza…, GitHub / Slack / HF tokens, AWS key ids, JWTs).
- *  Conservative by design: a false positive only hides a harmless string. */
+ *  the app's known secrets (saved API keys), credential-named URL parameters,
+ *  URL userinfo, credential-named header / JSON fields (Authorization,
+ *  x-api-key, apiKey, …), and well-known key formats (sk-…, sk-ant-…, AIza…,
+ *  GitHub / Slack / HF tokens, AWS key ids, JWTs). Conservative by design: a
+ *  false positive only hides a harmless string. */
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
-  out = out.replace(PARAM_RE, `$1${REDACTED}`);
+  for (const s of knownSecrets) {
+    out = out.split(s).join(REDACTED);
+    const enc = encodeURIComponent(s);
+    if (enc !== s) out = out.split(enc).join(REDACTED);
+  }
+  out = out.replace(PARAM_RE, `$1$2${REDACTED}`);
+  out = out.replace(USERINFO_RE, `$1${REDACTED}@`);
+  out = out.replace(ESCAPED_JSON_FIELD_RE, `$1$3${REDACTED}$3`);
   out = out.replace(JSON_FIELD_RE, `$1$3${REDACTED}$3`);
   out = out.replace(HEADER_FIELD_RE, `$1${REDACTED}`);
   for (const re of TOKEN_PATTERNS) out = out.replace(re, REDACTED);
@@ -101,11 +145,16 @@ export interface DiagnosticLogEntryOut {
   detail?: string;
 }
 
-export const LOG_LEVELS: readonly ErrorLevel[] = ['error', 'warn', 'info'];
-export const LOG_SOURCES: readonly ErrorSource[] = [
-  'engine', 'ai', 'import', 'export', 'storage', 'network', 'reconstruct', 'app',
-  'character', 'assembly', 'parts', 'uncaught',
-];
+// Keyed by the ErrorLevel / ErrorSource unions with `satisfies`, so adding a
+// level or source to errorLog.ts fails the type-check until it's listed here
+// (and so reaches the API validator and the AI tool's enum).
+const LEVEL_KEYS = { error: true, warn: true, info: true } satisfies Record<ErrorLevel, true>;
+const SOURCE_KEYS = {
+  engine: true, ai: true, import: true, export: true, storage: true, network: true,
+  reconstruct: true, app: true, character: true, assembly: true, parts: true, uncaught: true,
+} satisfies Record<ErrorSource, true>;
+export const LOG_LEVELS = Object.keys(LEVEL_KEYS) as readonly ErrorLevel[];
+export const LOG_SOURCES = Object.keys(SOURCE_KEYS) as readonly ErrorSource[];
 
 /** Filter + cap + redact log entries (`entries` is newest-first, as the store
  *  keeps them). Returns the selection and how many matched in total. */

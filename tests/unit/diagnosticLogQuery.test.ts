@@ -3,7 +3,7 @@
 // request URLs, auth headers, or pasted API keys.
 
 import { describe, it, expect } from 'vitest';
-import { redactSecrets, queryDiagnosticLog, REDACTED } from '../../src/diagnostics/logQuery';
+import { redactSecrets, queryDiagnosticLog, REDACTED, registerKnownSecret, forgetKnownSecret, LOG_SOURCES, LOG_LEVELS } from '../../src/diagnostics/logQuery';
 import type { LogEntry } from '../../src/diagnostics/errorLog';
 
 // Fake credentials, assembled at runtime so the CI secret scanner (gitleaks)
@@ -49,6 +49,50 @@ describe('redactSecrets', () => {
     }
   });
 
+  it('redacts a credential parameter at the very start of the text', () => {
+    const v = ['abc123', 'secret', 'value'].join('');
+    expect(redactSecrets('key=' + v + '&alt=sse')).toBe(`key=${REDACTED}&alt=sse`);
+    expect(redactSecrets('monkey=banana')).toBe('monkey=banana');
+  });
+
+  it('redacts URL userinfo', () => {
+    const pass = ['hunter', '2', 'pass'].join('');
+    const out = redactSecrets(`fetch https://alice:${pass}@models.example.test/a.stl failed`);
+    expect(out).not.toContain(pass);
+    expect(out).toContain(`https://${REDACTED}@models.example.test/a.stl`);
+  });
+
+  it('catches key formats glued to URL-encoded text', () => {
+    const out = redactSecrets(`url=https%3A%2F%2Fx.test%2F%3Fkey%3D${FAKE.google}%26alt%3Dsse`);
+    expect(out).not.toContain(FAKE.google);
+    const out2 = redactSecrets(`q%3D${FAKE.openai}`);
+    expect(out2).not.toContain(FAKE.openai);
+    // ...but ordinary hyphenated words that merely contain "sk-" survive.
+    const word = 'task-abcdefghijklmnopqrstuvwxyz';
+    expect(redactSecrets(word)).toBe(word);
+  });
+
+  it('redacts JSON values containing escaped quotes, and stringified JSON', () => {
+    const tail = ['ab', 'c\\"d', 'ef'].join('');
+    const out = redactSecrets(`{"apiKey":"${tail}","model":"m"}`);
+    expect(out).toBe(`{"apiKey":"${REDACTED}","model":"m"}`);
+    const inner = ['zz', 'top', 'secret'].join('');
+    const out2 = redactSecrets(`body: "{\\"apiKey\\":\\"${inner}\\",\\"n\\":1}"`);
+    expect(out2).not.toContain(inner);
+  });
+
+  it("redacts the app's known secrets verbatim and URL-encoded, whatever their shape", () => {
+    const custom = ['my', 'local', 'llama', 'key', '42!'].join('-');
+    expect(redactSecrets(`custom endpoint rejected ${custom}`)).toContain(custom);
+    registerKnownSecret(custom);
+    expect(redactSecrets(`custom endpoint rejected ${custom}`)).toBe(`custom endpoint rejected ${REDACTED}`);
+    expect(redactSecrets(`?k=${encodeURIComponent(custom)}`)).not.toContain(encodeURIComponent(custom));
+    forgetKnownSecret(custom);
+    expect(redactSecrets(custom)).toBe(custom);
+    registerKnownSecret('short');
+    expect(redactSecrets('short circuit')).toBe('short circuit');
+  });
+
   it('leaves ordinary diagnostic text alone', () => {
     const plain = 'Engine: Manifold.ofMesh failed — not manifold (maxTokens=4096, tokens: n/a)';
     expect(redactSecrets(plain)).toBe(plain);
@@ -81,5 +125,13 @@ describe('queryDiagnosticLog', () => {
     expect(r.entries[2].detail).not.toContain('tok_abcdefgh123');
     expect(r.entries[0].time).toBe('2026-01-01T00:00:05.000Z');
     expect('detail' in r.entries[1]).toBe(false);
+  });
+});
+
+describe('log level/source lists', () => {
+  it('cover the ErrorLevel / ErrorSource unions', () => {
+    expect([...LOG_LEVELS]).toEqual(['error', 'warn', 'info']);
+    expect(LOG_SOURCES).toContain('uncaught');
+    expect(LOG_SOURCES).toHaveLength(12);
   });
 });

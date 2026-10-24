@@ -128,6 +128,17 @@ test.describe('Core API parity', () => {
     await pw(page, (p) => p.setAppConfig('import', 'voxelDefaultMaxSize', 64));
 
     await page.evaluate(() => console.warn('parity-probe fetch https://api.example.test/v1?key=SUPERSECRET123&alt=sse failed'));
+    // A saved provider key is redacted whatever its shape (a custom endpoint's key).
+    const savedKey = ['parity', 'custom', 'endpoint', 'key', '7x'].join('-');
+    await page.evaluate(async (k) => {
+      const db = await import('/src/ai/db.ts');
+      await db.putKey({ provider: 'custom', apiKey: k, createdAt: 0, lastUsed: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0 });
+      console.warn(`parity-saved-key endpoint said: bad token ${k}`);
+    }, savedKey);
+    const keyLog = await pw(page, (p) => p.getDiagnosticLog({ source: 'app', limit: 10 })) as { entries: { message: string }[] };
+    const keyProbe = keyLog.entries.find(e => e.message.includes('parity-saved-key'));
+    expect(keyProbe).toBeTruthy();
+    expect(keyProbe!.message).not.toContain(savedKey);
     const log = await pw(page, (p) => p.getDiagnosticLog({ source: 'app', level: 'warn', limit: 5 })) as { entries: { message: string }[] };
     const probe = log.entries.find(e => e.message.includes('parity-probe'));
     expect(probe).toBeTruthy();
@@ -242,6 +253,14 @@ test.describe('Core API parity', () => {
     const img = await pw(page, (p) => p.importFromUrl('https://parity.example.test/photo.png')) as { error: string };
     expect(img.error).toMatch(/importImageAsRelief/);
     expect(await pw(page, (p) => p.importFromUrl('file:///etc/passwd'))).toHaveProperty('error');
+    // The AI path (geometryOnly) refuses code-bearing sources before fetching.
+    const code = await pw(page, (p) => p.importFromUrl('https://parity.example.test/model.scad', { geometryOnly: true })) as { error: string };
+    expect(code.error).toMatch(/Import → From URL/);
+    const shareRefused = await pw(page, async (p) => {
+      const { url } = await p.getShareLink() as { url: string };
+      return p.importFromUrl(url, { geometryOnly: true });
+    }) as { error: string };
+    expect(shareRefused.error).toMatch(/share link/);
 
     const shared = await pw(page, async (p) => {
       const before = (p.getSessionState() as { session: { id: string } }).session.id;
@@ -273,6 +292,16 @@ test.describe('Core API parity', () => {
     expect(await pw(page, (p) => p.clearColors({ kind: 'image' }))).toMatchObject({ cleared: true, kind: 'image' });
     expect(await pw(page, (p) => (p.listRegions() as unknown[]).length)).toBe(1);
     expect(await pw(page, (p) => p.clearColors({ kind: 'stamps' }))).toHaveProperty('error');
+    // A user clear followed by switching to another object must not let
+    // undoClearColors resurrect the first object's paint there.
+    const crossObject = await pw(page, async (p) => {
+      await p.saveVersion('painted');
+      await p.clearColors();
+      await p.createObject('Other');
+      return p.undoClearColors();
+    }) as { error?: string };
+    expect(crossObject.error).toBeTruthy();
+    await pw(page, (p) => p.changeObject(0));
 
     const stroke = await pw(page, (p) => p.addStrokeAnnotation({ points: [[0, -6, 2], [5, -6, 6], [10, -6, 2]], color: [0, 0, 1], width: 6 })) as { id: string; pointCount: number };
     expect(stroke.pointCount).toBe(3);

@@ -57,7 +57,7 @@ import { showSaveAllModal, type UnsavedPartRow } from './ui/saveAllModal';
 import { updateAppHistory } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
 import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
-import { getKey, mergeChatBucket } from './ai/db';
+import { getKey, mergeChatBucket, registerSavedKeysForRedaction } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createHelpPage } from './ui/help';
@@ -1821,7 +1821,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   // otherwise its continuation could overwrite the freshly-rehydrated mesh
   // and stamp triangles onto regions that no longer exist.
   resetPaintWorkerState();
-  clearRegions();
+  clearRegions({ snapshot: false });
 
   const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
   if (!geometryData || !currentMeshData) {
@@ -1872,7 +1872,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   }
   if (waits) {
     suspendReconcile = true;
-    clearRegions();
+    clearRegions({ snapshot: false });
     suspendReconcile = false;
   }
   const { mesh, parentToChildren, strokeTris } = refined;
@@ -1983,7 +1983,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
  *  to 0 triangles, exactly as the normal reconcile path already tolerates. */
 function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | null): void {
   resetPaintWorkerState();
-  clearRegions();
+  clearRegions({ snapshot: false });
   const regions = geometryData?.colorRegions as SerializedColorRegion[] | undefined;
   if (!regions || regions.length === 0) {
     syncLockState();
@@ -3189,7 +3189,7 @@ async function main() {
     // late continuation can't stamp triangle ids onto regions that no longer
     // exist (or overwrite the freshly-loaded mesh).
     resetPaintWorkerState();
-    clearRegions();
+    clearRegions({ snapshot: false });
     clearModelColorRegions(); // model-declared underlay is module state too
     // Annotations are module state too, scoped to the outgoing version — wipe
     // them here so an editor reset (new part / new session / fresh import) is
@@ -4406,7 +4406,12 @@ async function main() {
     } else {
       if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
       await preserveCurrentEditsIfNeeded();
-      if (!(await composeMeshIntoCurrentPart(parsed.mesh))) return { error: `${caller}: couldn't read the current object's geometry to combine.` };
+      // composeMeshIntoCurrentPart's work, minus its toast — the API caller
+      // gets the failure as an { error } instead.
+      const cur = getState().currentPart;
+      const curBaked = cur ? await bakePartComponents(cur.id, cur.name) : null;
+      if (!curBaked) return { error: `${caller}: couldn't read the current object's geometry to combine.` };
+      await applyImportWrapper([...curBaked, parsed.mesh], true);
     }
     return apiImportResult(target);
   }
@@ -4455,7 +4460,7 @@ async function main() {
   }
 
   /** Validate the shared `{ target?, sessionName? }` import options. */
-  function parseApiImportOpts(opts: unknown, caller: string, extraKeys: readonly string[] = []): { target: ApiImportTarget; sessionName?: string; o: Record<string, unknown> } | { error: string } {
+  function parseApiImportOpts(opts: unknown, caller: string, extraKeys: readonly string[] = []): { target: ApiImportTarget; sessionName?: string } | { error: string } {
     const r = guard(() => {
       const o = assertObject(opts ?? {}, `${caller}(opts)`)!;
       assertNoUnknownKeys(o, ['target', 'sessionName', ...extraKeys], `${caller}(opts)`);
@@ -4465,8 +4470,7 @@ async function main() {
     });
     // assertNoUnknownKeys rejects an `error` key, so 'error' here is guard's.
     if ('error' in r) return { error: String(r.error) };
-    const o = r;
-    return { target: (o.target as ApiImportTarget | undefined) ?? 'new-session', sessionName: o.sessionName as string | undefined, o };
+    return { target: (r.target as ApiImportTarget | undefined) ?? 'new-session', sessionName: r.sessionName as string | undefined };
   }
 
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
@@ -5240,6 +5244,7 @@ async function main() {
     | { part: Part; replaced: { id: string; name: string }[]; skipped: string[]; warnings: string[]; permanent?: boolean }
     | { error: string }
   > {
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
     if (isReadOnlyViewer()) return { error: 'Merging is disabled in the read-only viewer.' };
     if (!getState().session) return { error: 'No active session.' };
     await preserveCurrentEditsIfNeeded();
@@ -8962,7 +8967,7 @@ async function main() {
   async function restoreBaselineColors(baseline: MeshData): Promise<void> {
     if (simplifyBaselineColoredMesh) {
       resetPaintWorkerState();
-      clearRegions();
+      clearRegions({ snapshot: false });
       clearModelColorRegions();
       applyLiveGeometry(baseline);
       if (simplifyBaselineModelRegions && simplifyBaselineModelRegions.length > 0) {
@@ -9057,7 +9062,7 @@ async function main() {
     }
     if (coloredBaseline?.triColors) {
       resetPaintWorkerState();
-      clearRegions();
+      clearRegions({ snapshot: false });
       clearModelColorRegions();
       applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
     } else {
@@ -14110,7 +14115,7 @@ async function main() {
       if (parentColors.length > 0) {
         colorReport = await rehydrateColorRegions({ colorRegions: parentColors });
       } else {
-        clearRegions();
+        clearRegions({ snapshot: false });
       }
 
       // Carry the PARENT's annotations onto the fork. saveVersion snapshots
@@ -15176,6 +15181,9 @@ async function main() {
       if ('error' in check) return check;
       const { quality, segments } = settings;
       if (quality === undefined && segments === undefined) return { error: 'setCurvatureQuality(settings): pass quality and/or segments.' };
+      // A shared preview never runs the sharer's code, so the re-run below
+      // would silently no-op — refuse up front instead.
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
       const current = loadQualitySettings();
       let next: QualitySettings;
       if (quality !== undefined && quality !== 'custom') {
@@ -15282,6 +15290,9 @@ async function main() {
           }
         } catch (e) {
           const err = e as Error;
+          // The op may have swapped a preview mesh in before failing — put the
+          // baseline back so no unsaved result stays on screen.
+          simplifyHandlers.reset();
           return { error: err?.name === 'AbortError' ? 'simplifyModel: cancelled.' : `simplifyModel: ${mode} failed — ${err.message}` };
         }
         if (r && 'exceeded' in r) {
@@ -15293,7 +15304,11 @@ async function main() {
             : 'simplifyModel: nothing to enhance at that setting — no edge was longer than that. Try a smaller targetEdge or a higher targetTris.' };
         }
         const saved = await simplifyHandlers.save();
-        if (!saved.ok) return { error: `simplifyModel: ${saved.message}` };
+        if (!saved.ok) {
+          // The simplified mesh is live but unsaved — restore the baseline.
+          simplifyHandlers.reset();
+          return { error: `simplifyModel: ${saved.message}` };
+        }
         const v = getState().currentVersion;
         return {
           ok: true,
@@ -15357,6 +15372,7 @@ async function main() {
      *  order at the end. -> { order: listObjects() } or { error } */
     async reorderObjects(order: unknown): Promise<Record<string, unknown>> {
       if (!getState().session) return { error: 'reorderObjects: no active session. Call createSession() or openSession(id) first.' };
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
       if (isReadOnlyViewer()) return { error: 'reorderObjects: disabled in the read-only viewer.' };
       const check = guard(() => assertArray(order, 'reorderObjects(order)'));
       if (!Array.isArray(check)) return check;
@@ -15423,7 +15439,7 @@ async function main() {
      *  1..200 (default ui.diagnosticLogApiLimit). Anything that looks like a
      *  secret (API keys, Authorization headers, key-bearing URL params) is
      *  redacted. -> { entries: [{ id, time, level, source, message, detail? }], matched, total } */
-    getDiagnosticLog(opts: { level?: string | string[]; source?: string | string[]; limit?: number } = {}) {
+    async getDiagnosticLog(opts: { level?: string | string[]; source?: string | string[]; limit?: number } = {}) {
       const check = guard(() => {
         const o = assertObject(opts ?? {}, 'getDiagnosticLog(opts)')!;
         assertNoUnknownKeys(o, ['level', 'source', 'limit'], 'getDiagnosticLog(opts)');
@@ -15438,6 +15454,8 @@ async function main() {
       });
       if ('error' in check) return check;
       const o = opts ?? {};
+      // Make sure every saved provider key is known to the redactor first.
+      try { await registerSavedKeysForRedaction(); } catch { /* storage unavailable — pattern redaction still applies */ }
       return queryDiagnosticLog(errorLog.getEntries(), {
         level: o.level as never,
         source: o.source as never,
@@ -15505,18 +15523,33 @@ async function main() {
      *  'mesh'`); .js / .scad → new session, new object, or (current-object)
      *  replaces the current object's code. Images and SVGs need their own
      *  converters: use importImageAsRelief / importImageAsVoxels /
-     *  importSvgAsRelief with the URL. -> { kind, source?, sessionId, target?, object? } or { error } */
-    async importFromUrl(url: string, opts: { target?: 'new-session' | 'new-object' | 'current-object'; sessionName?: string; stepMode?: 'brep' | 'mesh' } = {}): Promise<Record<string, unknown>> {
+     *  importSvgAsRelief with the URL. `geometryOnly: true` (what the in-app
+     *  AI tool passes) refuses CODE-bearing sources — share links, session
+     *  files, .js / .scad — because importing them runs their model code
+     *  without the Import dialog's preview; only geometry (.stl/.step/.vox)
+     *  is imported. -> { kind, source?, sessionId, target?, object? } or { error } */
+    async importFromUrl(url: string, opts: { target?: 'new-session' | 'new-object' | 'current-object'; sessionName?: string; stepMode?: 'brep' | 'mesh'; geometryOnly?: boolean } = {}): Promise<Record<string, unknown>> {
       const check = guard(() => {
         assertString(url, 'importFromUrl(url)', { allowEmpty: false });
         if (opts && typeof opts === 'object' && opts.stepMode !== undefined) assertEnum(opts.stepMode, ['brep', 'mesh'] as const, 'importFromUrl(opts).stepMode');
+        if (opts && typeof opts === 'object') assertBoolean(opts.geometryOnly, 'importFromUrl(opts).geometryOnly', { optional: true });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      const po = parseApiImportOpts(opts, 'importFromUrl', ['stepMode']);
+      const po = parseApiImportOpts(opts, 'importFromUrl', ['stepMode', 'geometryOnly']);
       if ('error' in po) return po;
       if (isReadOnlyViewer() || isSharedPreview()) return { error: 'importFromUrl: importing is disabled in the read-only viewer.' };
       const parsed = parseImportUrlInput(url);
       if (parsed.kind === 'invalid') return { error: `importFromUrl: ${parsed.reason}` };
+      const codeRefusal = (what: string) => ({
+        error: `importFromUrl: ${what} contains model code that runs when it is imported, so it can't be imported automatically. Ask the user to import it themselves with Import → From URL…, which shows a preview first. (Only geometry files — .stl, .step/.stp, .vox — can be imported here.)`,
+      });
+      const geometryOnly = opts?.geometryOnly === true;
+      if (geometryOnly && parsed.kind === 'share') return codeRefusal('a Partwright share link');
+      if (geometryOnly && parsed.kind === 'remote') {
+        // Refuse before fetching when the URL's own extension says code…
+        const byName = classifyRemoteResource(filenameFromUrl(parsed.url), null);
+        if (byName === 'JSON' || byName === 'JS' || byName === 'SCAD') return codeRefusal(`a ${byName === 'JSON' ? 'session' : byName} file`);
+      }
       if (parsed.kind === 'share') {
         if (po.target !== 'new-session') return { error: "importFromUrl: a share link always imports as a new session — omit target or use 'new-session'." };
         try {
@@ -15534,6 +15567,8 @@ async function main() {
         return { error: `importFromUrl: ${(e as Error).message}` };
       }
       const source = classifyImportSource(file.name);
+      // …and again after fetching (a Content-Type can classify an extensionless URL).
+      if (geometryOnly && (source === 'JSON' || source === 'JS' || source === 'SCAD')) return codeRefusal(`a ${source === 'JSON' ? 'session' : source} file`);
       const name = po.sessionName ?? file.name.replace(/\.[^.]+$/, '');
       const remote = { kind: 'remote' as const, source, filename: file.name };
       if (source === 'JSON') {
@@ -15600,7 +15635,12 @@ async function main() {
         return o;
       });
       if ('error' in check) return check;
-      const stroke = addStrokeFromPoints({ points: opts.points, color: opts.color, width: opts.width });
+      let stroke;
+      try {
+        stroke = addStrokeFromPoints({ points: opts.points, color: opts.color, width: opts.width });
+      } catch (e) {
+        return { error: `addStrokeAnnotation: ${(e as Error).message}` };
+      }
       return { id: stroke.id, pointCount: stroke.points.length };
     },
 
@@ -18643,10 +18683,10 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
-        'getDiagnosticLog':    { signature: 'getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first, secrets redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
+        'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
         'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },
-        'importFromUrl':       { signature: 'await importFromUrl(url, {target?, sessionName?, stepMode?}) -- Import a share link (local decode) or an http(s) .partwright.json/.stl/.step/.vox/.js/.scad file -> {kind, source?, sessionId, target?, object?}', docs: '/ai/file-io.md' },
+        'importFromUrl':       { signature: 'await importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?}) -- Import a share link (local decode) or an http(s) .partwright.json/.stl/.step/.vox/.js/.scad file; geometryOnly refuses code-bearing sources -> {kind, source?, sessionId, target?, object?}', docs: '/ai/file-io.md' },
         'undoClearColors':     { signature: 'undoClearColors() -- Restore the regions removed by the last clearColors (until the next paint) -> {restored, regions}', docs: '/ai/colors.md' },
         'addStrokeAnnotation': { signature: 'addStrokeAnnotation({points: [[x,y,z], ...], color?, width?}) -- Add a freehand stroke annotation through world points -> {id, pointCount}', docs: '/ai/annotations.md' },
         'redoAnnotation':      { signature: 'redoAnnotation() -- Re-add the most recently undone stroke -> {redone, remaining, canRedo}', docs: '/ai/annotations.md' },

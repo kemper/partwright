@@ -150,7 +150,9 @@ object is saved as a version first, exactly as in the dialog.
 `importFromUrl` fetches in the browser (CORS and the page CSP apply; 25 MB cap,
 `import.remoteFetchTimeoutMs` timeout) and routes by type: `.partwright.json` → a new
 session; `.stl` / `.step` / `.vox` → as above (`stepMode: 'mesh'` tessellates STEP);
-`.js` / `.scad` → code. Images and SVGs need a converter — use `importImageAsRelief({src})`,
+`.js` / `.scad` → code. Share links, session files and `.js` / `.scad` run model code when
+imported, so `geometryOnly: true` refuses them (the in-app assistant always passes it and asks
+the user to use Import → From URL…, which previews first). Images and SVGs need a converter — use `importImageAsRelief({src})`,
 `importImageAsVoxels(url)` or `importSvgAsRelief({svgText})`.
 
 ## Recent Exports inbox

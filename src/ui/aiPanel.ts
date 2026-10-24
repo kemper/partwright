@@ -24,7 +24,7 @@ import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
-import { isModelChangingTool } from '../ai/tools';
+import { isModelChangingTool, describeToolConfirmation } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -3491,15 +3491,7 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  import. Resolves true (allow) or false (decline). */
 function showToolConfirmation(toolName: string, input: Record<string, unknown> = {}): Promise<boolean> {
   return new Promise(resolve => {
-    const label = toolName === 'importImageAsRelief'
-      ? 'import an image as a 3D relief'
-      : toolName === 'importSvgAsRelief'
-      ? 'import an SVG as a 3D relief tile'
-      : toolName === 'setAppConfig'
-      ? `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`
-      : toolName === 'importFromUrl'
-      ? `import from ${String(input.url).slice(0, 200)}`
-      : `run "${toolName}"`;
+    const label = describeToolConfirmation(toolName, input);
 
     const overlay = document.createElement('div');
     overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
