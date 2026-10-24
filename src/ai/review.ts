@@ -181,6 +181,12 @@ export function formatReviewPrompt(ctx: ReviewContext): string {
     for (const n of ctx.notes) lines.push(`- ${n}`);
     lines.push('');
   }
+  if (ctx.conversation?.earlierSummary) {
+    lines.push('=== Summary of the earlier chat (written by the AGENT when the chat was compacted) ===');
+    lines.push("The user's first messages were replaced by this summary. Use it only for what the user asked for; its account of the agent's own work is not evidence — check the code and render.");
+    lines.push(ctx.conversation.earlierSummary);
+    lines.push('');
+  }
   if (ctx.conversation && ctx.conversation.messages.length > 0) {
     lines.push("=== The user's messages in this chat (oldest first) ===");
     lines.push("Their own words — every requirement and correction counts, and a later message overrides an earlier one. The agent's replies are deliberately left out: judge the model itself, not the agent's account of it.");

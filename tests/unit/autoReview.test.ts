@@ -10,8 +10,8 @@ import {
   shouldActOnReview,
   shouldAutoReview,
   userConversation,
-  EARLIER_SUMMARY_PREFIX,
 } from '../../src/ai/autoReview';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../../src/ai/planMode';
 import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
@@ -127,19 +127,39 @@ describe('userConversation', () => {
       msg('user', 'Ears bigger please', 7),
     ];
     expect(userConversation(history, 10_000)).toEqual({
-      messages: [`${EARLIER_SUMMARY_PREFIX} The user wanted a bracket with two holes.`, 'Make it 40 wide', 'Ears bigger please'],
+      messages: ['Make it 40 wide', 'Ears bigger please'],
       omitted: 0,
+      earlierSummary: 'The user wanted a bracket with two holes.',
     });
+  });
+
+  it("strips plan-mode instructions the app added and skips the approval turn", () => {
+    const history = [
+      msg('user', `${PLAN_FIRST_PREFIX}Make a bracket`, 1),
+      msg('assistant', 'Plan: …', 2),
+      msg('user', `${PLAN_REFINE_PREFIX}Use M4 holes`, 3),
+      msg('assistant', 'Revised plan: …', 4),
+      msg('user', PLAN_APPROVED_TEXT, 5),
+    ];
+    expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket', 'Use M4 holes']);
+    expect(latestUserRequest(history)).toBe('Use M4 holes');
+  });
+
+  it('drops the compaction summary when user messages had to be left out or it does not fit', () => {
+    const summary = msg('assistant', 's'.repeat(40), 1, { compacted: true });
+    expect(userConversation([summary, msg('user', 'a'.repeat(50), 2)], 80).earlierSummary).toBeNull();
+    expect(userConversation([summary, msg('user', 'a'.repeat(50), 2)], 90).earlierSummary).toBe('s'.repeat(40));
+    expect(userConversation([summary, msg('user', 'old', 2), msg('user', 'n'.repeat(50), 3)], 52).earlierSummary).toBeNull();
   });
 
   it('keeps the newest messages within the budget and counts the rest', () => {
     const history = [msg('user', 'a'.repeat(50), 1), msg('user', 'b'.repeat(50), 2), msg('user', 'c'.repeat(50), 3)];
-    expect(userConversation(history, 120)).toEqual({ messages: ['b'.repeat(50), 'c'.repeat(50)], omitted: 1 });
-    expect(userConversation(history, 0)).toEqual({ messages: [], omitted: 0 });
+    expect(userConversation(history, 120)).toEqual({ messages: ['b'.repeat(50), 'c'.repeat(50)], omitted: 1, earlierSummary: null });
+    expect(userConversation(history, 0)).toEqual({ messages: [], omitted: 0, earlierSummary: null });
   });
 
   it('cuts only the newest message when it alone overflows', () => {
     const history = [msg('user', 'old', 1), msg('user', 'x'.repeat(30), 2)];
-    expect(userConversation(history, 10)).toEqual({ messages: [`${'x'.repeat(10)}…`], omitted: 1 });
+    expect(userConversation(history, 10)).toEqual({ messages: [`${'x'.repeat(10)}…`], omitted: 1, earlierSummary: null });
   });
 });

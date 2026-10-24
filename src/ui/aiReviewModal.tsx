@@ -62,6 +62,18 @@ interface ReviewState {
 /** Rough token cost of one attached image, for the cost preview. */
 const IMAGE_TOKENS_ESTIMATE = 1500;
 
+function conversationLength(c: UserConversation): number {
+  return c.messages.reduce((n, m) => n + m.length, c.earlierSummary?.length ?? 0);
+}
+
+/** A Local (WebGPU) model's window is too small for the review prompt plus
+ *  these extras, so they start off for it (the user can still tick them). */
+function extrasFor(provider: Provider, includeConversationSetting: boolean): Pick<ReviewState, 'includeReferences' | 'includeConversation'> {
+  return provider === 'local'
+    ? { includeReferences: false, includeConversation: false }
+    : { includeReferences: true, includeConversation: includeConversationSetting };
+}
+
 function modelOptionsFor(p: Provider): { id: string; label: string }[] {
   switch (p) {
     case 'anthropic': return ANTHROPIC_MODEL_OPTIONS;
@@ -107,7 +119,7 @@ function ReviewerPicker(props: { state: Signal<ReviewState> }) {
           value={p}
           onChange={e => {
             const next = (e.currentTarget as HTMLSelectElement).value as Provider;
-            state.value = { ...state.value, provider: next, model: defaultModelFor(next) };
+            state.value = { ...state.value, provider: next, model: defaultModelFor(next), ...extrasFor(next, loadSettings().autoReview.includeConversation) };
           }}
         >
           {ALL_PROVIDERS.map(pp => (
@@ -155,16 +167,10 @@ function ReviewerPicker(props: { state: Signal<ReviewState> }) {
   );
 }
 
-function ContextPreview(props: { state: Signal<ReviewState> }) {
-  const { state } = props;
-  const { context, contextError, references, conversation, includeReferences, includeConversation } = state.value;
-  if (contextError) {
-    return <p class="text-amber-400">Couldn't gather context: {contextError}</p>;
-  }
-  if (!context) {
-    return <p class="text-zinc-500">Capturing snapshot + gathering context...</p>;
-  }
-  const Item = (p: { label: string; detail: string }) => (
+// Module scope (not inside ContextPreview) so a re-render doesn't remount the
+// checkboxes and drop keyboard focus.
+function Item(p: { label: string; detail: string }) {
+  return (
     <div class="flex items-start gap-2">
       <span class="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
       <span>
@@ -173,9 +179,12 @@ function ContextPreview(props: { state: Signal<ReviewState> }) {
       </span>
     </div>
   );
-  // Optional extras: a checkbox instead of the dot; disabled when there's
-  // nothing to send.
-  const Toggle = (p: { label: string; detail: string; checked: boolean; empty: boolean; testId: string; onToggle: (on: boolean) => void }) => (
+}
+
+/** An optional extra: a checkbox instead of the dot; disabled when there's
+ *  nothing to send. */
+function Toggle(p: { label: string; detail: string; checked: boolean; empty: boolean; testId: string; onToggle: (on: boolean) => void }) {
+  return (
     <label class={`flex items-start gap-2 ${p.empty ? 'cursor-default' : 'cursor-pointer'}`}>
       <input
         type="checkbox"
@@ -191,8 +200,19 @@ function ContextPreview(props: { state: Signal<ReviewState> }) {
       </span>
     </label>
   );
-  const { messages, omitted } = conversation;
-  const conversationChars = messages.reduce((n, m) => n + m.length, 0);
+}
+
+function ContextPreview(props: { state: Signal<ReviewState> }) {
+  const { state } = props;
+  const { context, contextError, references, conversation, includeReferences, includeConversation } = state.value;
+  if (contextError) {
+    return <p class="text-amber-400">Couldn't gather context: {contextError}</p>;
+  }
+  if (!context) {
+    return <p class="text-zinc-500">Capturing snapshot + gathering context...</p>;
+  }
+  const { messages, omitted, earlierSummary } = conversation;
+  const conversationChars = conversationLength(conversation);
   return (
     <>
       <Item label="Current code" detail={`${context.language} · ${context.code.length} chars`} />
@@ -213,7 +233,7 @@ function ContextPreview(props: { state: Signal<ReviewState> }) {
       <Toggle
         label="Your messages"
         detail={messages.length > 0
-          ? `${messages.length} message(s) you wrote${omitted > 0 ? ` (${omitted} older left out)` : ''} · ${conversationChars} chars · the agent's replies aren't sent`
+          ? `${messages.length} message(s) you wrote${omitted > 0 ? ` (${omitted} older left out)` : ''}${earlierSummary ? ', plus the agent’s summary of the compacted start of the chat (labelled as the agent’s)' : ''} · ${conversationChars} chars · the agent's replies aren't sent`
           : '— nothing written in this chat yet'}
         checked={includeConversation}
         empty={messages.length === 0}
@@ -250,7 +270,7 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
     const codeChars = context?.code.length ?? 1500;
     const notesChars = context?.notes.join('\n').length ?? 0;
     const focusChars = focus.length;
-    const conversationChars = includeConversation ? conversation.messages.reduce((n, m) => n + m.length, 0) : 0;
+    const conversationChars = includeConversation ? conversationLength(conversation) : 0;
     const promptChars = buildReviewSystemPrompt(loadSettings().reviewPromptOverride).length;
     const images = (context?.snapshot ? 1 : 0) + (includeReferences ? references.length : 0);
     const tokens = Math.round((codeChars + notesChars + focusChars + conversationChars + promptChars) / 4) + images * IMAGE_TOKENS_ESTIMATE;
@@ -260,6 +280,9 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
       : est === null
         ? 'Estimated cost: unknown — no pricing data for this model.'
         : `Estimated cost: ~${formatUsd(est)}`;
+    if (provider === 'local' && (includeReferences || includeConversation)) {
+      costText += ' Local models have small context windows — your images and messages may not fit.';
+    }
   }
 
   return (
@@ -407,8 +430,7 @@ export async function showAiReviewModal(cb: ReviewModalCallbacks): Promise<void>
     availability,
     references: carriedAttachments(cb.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
     conversation: userConversation(cb.history, getConfig().ai.reviewConversationMaxChars),
-    includeReferences: true,
-    includeConversation: settings.autoReview.includeConversation,
+    ...extrasFor(defaultProvider, settings.autoReview.includeConversation),
   });
 
   mountPreactModal(

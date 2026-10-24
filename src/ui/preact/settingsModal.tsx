@@ -1097,7 +1097,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
           <Pill active={!review.includeConversation} label="Latest request" onClick={() => update({ includeConversation: false })} />
           <Pill active={review.includeConversation} label="All your messages" onClick={() => update({ includeConversation: true })} />
         </div>
-        <span class="text-[10px] text-zinc-500">“All your messages” sends everything you wrote in this chat — every requirement and correction — but never the agent’s replies, so the review stays independent. Also the default for the 👁 Review button. Budget: Advanced Settings → “Your messages sent to reviews”.</span>
+        <span class="text-[10px] text-zinc-500">“All your messages” sends everything you wrote in this chat — every requirement and correction — but never the agent’s replies, so the review stays independent. (After a compaction, the agent’s summary of the deleted early turns stands in for them, labelled as the agent’s.) Also the default for the 👁 Review button. Budget: Advanced Settings → “Your messages sent to reviews”.</span>
       </div>
       <div class="flex flex-col gap-1">
         <span class="text-xs text-zinc-400">Review prompt</span>

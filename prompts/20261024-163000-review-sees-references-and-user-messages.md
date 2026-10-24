@@ -42,3 +42,32 @@ to both reviews (label updated).
 
 **Modal**: reference images and user messages appear in "Reviewer will see" as
 checkboxes (disabled when empty), and the cost estimate counts them.
+
+## Human
+
+(Follow-up driven by the self-review pass on the PR — no new human prompt.)
+
+## Assistant
+
+## Key decisions
+
+**Plan-first mode**: the stored user text carries app-written plan instructions
+("Do NOT … start building") and the approval turn is just "Plan approved.
+Please proceed." Both would have reached the reviewer as "the user's words", and
+the fixed focus line would have pointed at the approval turn as "the task just
+finished". Moved the three strings into a leaf `src/ai/planMode.ts`
+(byte-identical, verified against main) so `userConversation` and
+`latestUserRequest` strip/skip them, and the automatic review's focus keeps the
+pinned request (the original ask on approval) with the conversation as context.
+
+**Compaction summary** is returned separately (`earlierSummary`) rather than
+mixed into the messages, so the modal doesn't count it as "you wrote", the prompt
+labels it as agent-written with a warning not to treat its account of the work
+as evidence, and the copy says it's included. It's sent only when no user
+message was dropped and it fits the budget.
+
+**Local reviewer**: the 👁 modal starts the image/message extras off when the
+reviewer is a Local model (small window) and warns if they're ticked.
+
+**Checkbox focus**: `Item`/`Toggle` moved to module scope so a re-render doesn't
+remount the inputs.

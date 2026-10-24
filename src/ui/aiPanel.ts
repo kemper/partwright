@@ -23,6 +23,7 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/planMode';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { isModelChangingTool } from '../ai/tools';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
@@ -2036,7 +2037,7 @@ async function approvePlan(): Promise<void> {
   // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
   // the approved turn could only re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
-    { type: 'text', text: 'Plan approved. Please proceed.' },
+    { type: 'text', text: PLAN_APPROVED_TEXT },
   ], { reviewRequest });
 }
 
@@ -3400,20 +3401,13 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
       planBlocks = [];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      const planPrefix =
-        'Before doing anything, write a concise plan for the following request. '
-        + 'Describe your approach, key steps, and any design decisions. '
-        + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
-        + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
-        + '---\n\n';
       planBlocks = [];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -3982,9 +3976,11 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
       model: reviewer.model,
       context: {
         ...context,
-        focus: conversation && conversation.messages.length > 0
-          ? "Grade the result against the user's requests in their messages below; the latest message is the task just finished."
-          : request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The pinned request stays in the focus: on plan approval it's the
+        // original ask, which the conversation alone wouldn't single out.
+        focus: request
+          ? `Grade the result against the user's request: ${request}${conversation && conversation.messages.length > 0 ? "\n(Their earlier messages below give the rest of their requirements and corrections.)" : ''}`
+          : undefined,
         // The images the user attached anywhere in this conversation (incl.
         // ones compaction carried forward), not the agent's own renders.
         references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
