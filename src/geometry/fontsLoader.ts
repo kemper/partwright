@@ -16,6 +16,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { assetPath } from '../deployment';
+import { fetchAppAsset } from './workerLockdown';
 
 const FONTS_PREFIX = assetPath('/openscad-libs/fonts');
 const FONT_MEMFS_DIR = '/usr/share/fonts';
@@ -47,7 +48,7 @@ export async function preloadFonts(): Promise<void> {
     fontsPromise = (async () => {
       const entries: [string, Uint8Array][] = await Promise.all(
         FONT_FILES.map(async (name) => {
-          const r = await fetch(`${FONTS_PREFIX}/${name}`);
+          const r = await fetchAppAsset(`${FONTS_PREFIX}/${name}`);
           if (!r.ok) throw new Error(`Failed to fetch font ${name}: ${r.status}`);
           return [name, new Uint8Array(await r.arrayBuffer())] as [string, Uint8Array];
         }),

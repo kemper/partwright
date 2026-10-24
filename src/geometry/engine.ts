@@ -18,6 +18,7 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
+import { checkEngineWorkerMessage } from './workerMessageValidation';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -295,8 +296,36 @@ function initEngineWorker(): void {
   engineWorker.postMessage({ type: 'init' });
 }
 
+/** The engine Worker runs untrusted model code, which can post its own
+ *  messages or tamper with the Worker's plumbing. A message that fails
+ *  validation never reaches the handlers below: the matching request fails
+ *  with a clear error and the Worker is recycled (its realm can no longer be
+ *  trusted). A malformed *preview* is just dropped — the full result follows. */
+function handleMalformedWorkerMessage(reason: string, callId: string | null, type: string | null): void {
+  const message = `Geometry worker sent a malformed${type ? ` ${type}` : ''} message (${reason})`;
+  if (type === 'execute_preview') {
+    errorLog.capture({ level: 'warn', source: 'engine', message });
+    return;
+  }
+  if (callId) {
+    const exec = pendingExecutions.get(callId);
+    if (exec) {
+      pendingExecutions.delete(callId);
+      recordGeometryRun(exec.meta, 'error', undefined, message);
+      exec.resolve({ mesh: null, manifold: null, error: message });
+    }
+  }
+  // recycleEngineWorker logs the teardown and rejects everything else in flight.
+  recycleEngineWorker(message);
+}
+
 function handleEngineWorkerMessage(event: MessageEvent): void {
-  const msg = event.data as { type: string } & Record<string, unknown>;
+  const check = checkEngineWorkerMessage(event.data);
+  if (!check.ok) {
+    handleMalformedWorkerMessage(check.reason, check.callId, check.type);
+    return;
+  }
+  const msg = check.msg;
 
   if (msg.type === 'ready') {
     workerReadyResolve?.();

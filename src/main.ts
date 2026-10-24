@@ -13020,7 +13020,15 @@ async function main() {
       const frames: ParamSweepFrame[] = [];
       for (let i = 0; i < steps; i++) {
         const value = from + (to - from) * (i / (steps - 1));
-        const r = executeCode(code, undefined, { [param]: value });
+        // Built in the sandboxed engine Worker, never on the main thread: the
+        // session's code may be untrusted (imported / forked), and only the
+        // Worker realm is locked down against network + storage access (#1090).
+        let r: MeshResult;
+        try {
+          r = await executeCodeAsync(code, 'manifold-js', { [param]: value });
+        } catch (e) {
+          return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${e instanceof Error ? e.message : String(e)}` };
+        }
         if (r.error || !r.mesh) {
           return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
         }

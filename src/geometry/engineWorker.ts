@@ -50,6 +50,7 @@ import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
+import { lockdownGlobalScope } from './workerLockdown';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -85,23 +86,85 @@ self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
   event.preventDefault();
 });
 
+// ── Sandbox lockdown (#1090) ─────────────────────────────────────────────
+// Model code evaluated in this Worker must not reach the network or the
+// origin's storage (IndexedDB holds the AI provider keys). After the init
+// handshake — and before ANY message that can evaluate model code is handled —
+// the global scope is permanently stripped of fetch/XHR/WebSocket/IndexedDB/
+// caches/nested Workers/BroadcastChannel/navigator.storage/… (see
+// workerLockdown.ts). Lazy engine assets loaded later (OCCT WASM, BOSL2, fonts)
+// go through the private `fetchAppAsset`, which only does same-origin GETs.
+// Fail closed: if the lockdown can't be verified, model code never runs.
+let initPromise: Promise<void> | null = null;
+let lockdownState: 'pending' | 'ok' | 'failed' = 'pending';
+let lockdownFailure = '';
+
+function lockdownNow(): void {
+  if (lockdownState !== 'pending') return;
+  try {
+    const report = lockdownGlobalScope(self);
+    if (report.stillReachable.length > 0) {
+      lockdownState = 'failed';
+      lockdownFailure = `still reachable: ${report.stillReachable.join(', ')}`;
+    } else {
+      lockdownState = 'ok';
+    }
+  } catch (err) {
+    lockdownState = 'failed';
+    lockdownFailure = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Resolve once the scope is locked down. Returns an error message when the
+ *  lockdown failed (the caller must refuse the request), else null. */
+async function ensureSandboxLocked(): Promise<string | null> {
+  if (lockdownState === 'pending') {
+    // Let an in-flight manifold-3d init finish its WASM fetch first; it runs
+    // before any model code, so the global fetch is still the pristine one.
+    if (initPromise) { try { await initPromise; } catch { /* reported by init */ } }
+    lockdownNow();
+  }
+  return lockdownState === 'ok'
+    ? null
+    : `Geometry sandbox lockdown failed (${lockdownFailure}) — refusing to run model code.`;
+}
+
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
   // ── init ───────────────────────────────────────────────────────────────
   if (msg.type === 'init') {
+    if (!initPromise) initPromise = manifoldJsEngine.init();
     try {
-      await manifoldJsEngine.init();
+      await initPromise;
       manifoldReady = true;
-      self.postMessage({ type: 'ready' });
     } catch (err) {
       self.postMessage({
         type: 'error',
         callId: null,
         message: err instanceof Error ? err.message : String(err),
       });
+      // Still lock down: voxel runs need no WASM and must not run unlocked.
+      lockdownNow();
+      return;
+    }
+    lockdownNow();
+    if (lockdownState === 'ok') {
+      self.postMessage({ type: 'ready' });
+    } else {
+      self.postMessage({ type: 'error', callId: null, message: `Geometry sandbox lockdown failed (${lockdownFailure})` });
     }
     return;
+  }
+
+  // Every other request may evaluate model code (or touch state model code
+  // could have influenced) — never handle one on an unlocked scope.
+  if (lockdownState !== 'ok') {
+    const lockErr = await ensureSandboxLocked();
+    if (lockErr) {
+      self.postMessage({ type: 'error', callId: typeof msg.callId === 'string' ? msg.callId : null, message: lockErr });
+      return;
+    }
   }
 
   // ── execute ────────────────────────────────────────────────────────────

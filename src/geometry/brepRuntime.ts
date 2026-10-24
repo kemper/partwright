@@ -39,6 +39,7 @@
 
 import { parseLabelColor } from '../color/labelColor';
 import { orderTrianglesByPart } from '../import/importParts';
+import { fetchAppAsset } from './workerLockdown';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ReplicadModule = any;
@@ -129,13 +130,20 @@ export function ensureBrepLoaded(): Promise<void> {
 async function doInit(): Promise<void> {
   const replicad = await import('replicad');
   // The single-build variant of opencascade.js is lighter and is enough for
-  // the operations we expose. The Vite ?url import gives us the file path so
-  // the Emscripten module can fetch the .wasm side-car at runtime.
+  // the operations we expose. The Vite ?url import gives us the file path of
+  // the .wasm side-car. We download it ourselves through `fetchAppAsset` and
+  // hand Emscripten the bytes (`wasmBinary`), so its glue never calls the
+  // global `fetch` — which the locked-down engine Worker no longer has (see
+  // workerLockdown.ts). This load usually happens long after lockdown, on the
+  // first BREP use.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const opencascade = (await import('replicad-opencascadejs/src/replicad_single.js' as any)).default;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const wasmUrl = (await import('replicad-opencascadejs/src/replicad_single.wasm?url' as any)).default;
-  const OC = await opencascade({ locateFile: () => wasmUrl });
+  const wasmUrl = (await import('replicad-opencascadejs/src/replicad_single.wasm?url' as any)).default as string;
+  const wasmResp = await fetchAppAsset(wasmUrl);
+  if (!wasmResp.ok) throw new Error(`Failed to load the OpenCASCADE WASM (${wasmResp.status})`);
+  const wasmBinary = new Uint8Array(await wasmResp.arrayBuffer());
+  const OC = await opencascade({ locateFile: () => wasmUrl, wasmBinary });
   replicad.setOC(OC);
   replicadModule = replicad;
   occtModule = OC;

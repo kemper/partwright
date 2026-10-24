@@ -17,6 +17,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { assetPath } from '../deployment';
+import { fetchAppAsset } from './workerLockdown';
 
 interface Bosl2Manifest {
   files: string[];
@@ -39,7 +40,7 @@ export function sourceUsesBosl2(source: string): boolean {
 async function loadManifest(): Promise<Bosl2Manifest> {
   if (!manifestPromise) {
     manifestPromise = (async () => {
-      const resp = await fetch(`${BOSL2_PREFIX}/_manifest.json`);
+      const resp = await fetchAppAsset(`${BOSL2_PREFIX}/_manifest.json`);
       if (!resp.ok) throw new Error(`Failed to fetch BOSL2 manifest: ${resp.status}`);
       return resp.json();
     })();
@@ -53,7 +54,7 @@ async function loadAllFiles(): Promise<Map<string, string>> {
       const manifest = await loadManifest();
       const entries: [string, string][] = await Promise.all(
         manifest.files.map(async (name) => {
-          const r = await fetch(`${BOSL2_PREFIX}/${name}`);
+          const r = await fetchAppAsset(`${BOSL2_PREFIX}/${name}`);
           if (!r.ok) throw new Error(`Failed to fetch BOSL2/${name}: ${r.status}`);
           return [name, await r.text()] as [string, string];
         }),
