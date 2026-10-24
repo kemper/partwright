@@ -68,3 +68,8 @@ rewritten for `withinPart`; `apiParity.test.ts` now scans the whole
 `partwrightAPI` object instead of a fixed 400 KB window that the merged object
 outgrew. Main's `paint-labels-panel.spec.ts` was restored, and #1004's
 rail-swatch and scope tests moved to `object-part-scope.spec.ts`.
+
+**Follow-up (visual check)**: the screenshot showed the merged rail row
+(swatch + name + count + hover eye/✕) squeezing part names to one letter
+because #1004's "code" badge sat on every row. Code colour is the default,
+so only "painted" keeps a badge.
