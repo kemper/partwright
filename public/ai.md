@@ -228,7 +228,7 @@ partwright.setView('sketch')                      // ValidationError: tab must b
 partwright.measureAt([5])                         // returns { error: "measureAt(xy) must have exactly 2 elements ..." }
 partwright.probeRay([0,0,0], [0, '1', 0])         // returns { error: "probeRay(direction)[1] must be a finite number ..." }
 partwright.setImages([{ src: '' }])  // ValidationError: setImages(images)[0].src must be a non-empty string, got ""
-partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
+await partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
 await partwright.runAndAssert(code, { minVolume: '1000' })  // returns { passed: false, failures: ["... .minVolume must be a finite number ..."] }
 await partwright.runAndSave(code, 'v1', { boundsRatio: { widthToDeep: [1,2] } })  // typo caught: not a recognized field
 await partwright.query({ sliceAt: 5 })            // returns { error: "... .sliceAt must be an array ..." }
@@ -261,7 +261,7 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
-partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost from code run in isolation (manifold-js) -> {success, boundingBox?, volume?, error?}
+await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> {success, boundingBox?, volume?, error?}
 partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
 partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 
@@ -369,8 +369,9 @@ partwright.getAppConfig()                // Advanced Settings: {section: {key: {
 partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
 await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
 partwright.getWorkerHealth()             // Worker health panel: per-worker liveness/restarts + recent geometry runs (durationMs main-thread round trip vs workerMs compute) -> {workers, runs}
-partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested, active, state, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, fallbackReason, sandboxOrigin, modes}
+partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested (this tab), active, state: idle|loading|ready|unavailable|bypassed, pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes}
 partwright.setEngineSandboxMode('off'|'opaque'|'origin')  // Run model code in a hidden cross-origin iframe (no access to app storage/keys, network blocked). This browser; RELOAD to apply -> {mode, previous, note}
+partwright.runWithoutEngineSandbox()     // Only when getEngineSandboxStatus().state === 'unavailable' (fail-closed: model code blocked): run model code WITHOUT the sandbox for this tab -> {ok, note} or {error}
 
 // Isolated execution -- test code without changing editor/viewport state
 await partwright.runIsolated(code, view?)  // -> {geometryData, thumbnail}. Default thumbnail is 4-iso composite; pass `view` ({elevation, azimuth, ortho, size}) for a single-angle preview.
@@ -662,6 +663,8 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
+
+**No network or storage access (enforced).** Model code — manifold-js, voxel, and BREP/replicad JS alike — runs in the geometry Web Worker, whose global scope is locked down before any model code executes: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, `indexedDB`, `caches`, `navigator.storage`/`navigator.locks`, nested `Worker`s, `BroadcastChannel`, and `importScripts` are removed (they read as `undefined`, or throw if called) and cannot be restored. Reading them never helps a model; everything a model needs arrives through `api` (imports via `api.imports`, fonts and BREP/SCAD libraries are loaded by the engine itself). A model that needs outside data must have it passed in — import the file, or inline the values in code.
 
 ### Customizer parameters (`api.params`)
 

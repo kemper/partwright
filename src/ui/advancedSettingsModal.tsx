@@ -212,7 +212,10 @@ function SandboxModeField() {
       <p class="text-[10px] text-zinc-500 leading-snug">
         Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a different origin, so it
         can't read this site's saved sessions or AI keys, and its network access is blocked. Reload to apply.
-        Currently: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}{status.state === 'fallback' ? ` (fell back: ${status.fallbackReason})` : ''}</span>.
+        This tab: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}
+          {status.state === 'unavailable' ? ` — unavailable (${status.unavailableReason})` : ''}
+          {status.state === 'bypassed' ? ' — bypassed for this tab' : ''}</span>
+        {mode.value !== status.requested && <span class="text-amber-300"> · after reload: {mode.value}</span>}.
         Not reset by "Reset to defaults".
       </p>
     </div>
@@ -1480,12 +1483,21 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field cfgKey="renderer.engineSandboxBootTimeoutMs"
           label="Sandbox start timeout"
           unit="ms"
-          hint="How long the sandbox may take to start before falling back to an unsandboxed Worker."
-          tooltip="With the engine sandbox on, the geometry Worker lives in a hidden cross-origin iframe. If that frame or its Worker doesn't load and report cross-origin isolation within this time, Partwright falls back to the plain Worker for the rest of the tab and shows a warning."
+          hint="How long the sandbox frame may take to start before model code is blocked (never falls back on its own)."
+          tooltip="With the engine sandbox on, the geometry Worker lives in a hidden cross-origin iframe. If that frame doesn't load and report cross-origin isolation within this time, the sandbox is marked unavailable: model code won't run in the tab, and a status pill offers an explicit “Run without sandbox (this tab)”. A sandboxed Worker that gets stuck starting after the frame is up restarts the frame instead."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.engineSandboxBootTimeoutMs}
           value={c.renderer.engineSandboxBootTimeoutMs}
           min={2_000} max={120_000} integer
           onChange={v => set('renderer', 'engineSandboxBootTimeoutMs', v)}
+        />
+        <Field cfgKey="renderer.engineSandboxMaxFrameRestarts"
+          label="Sandbox frame restarts"
+          hint="Times in a row the sandbox frame may be restarted after a crash before model code is blocked."
+          tooltip="If the hidden sandbox frame crashes (e.g. a model ran it out of memory) or a sandboxed Worker gets stuck starting, Partwright replaces the frame and retries — never falling back to an unsandboxed Worker. After this many consecutive failed restarts the sandbox is marked unavailable for the tab."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.engineSandboxMaxFrameRestarts}
+          value={c.renderer.engineSandboxMaxFrameRestarts}
+          min={0} max={10} integer
+          onChange={v => set('renderer', 'engineSandboxMaxFrameRestarts', v)}
         />
       </Section>
 

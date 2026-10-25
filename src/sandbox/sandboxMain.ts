@@ -11,14 +11,18 @@
 
 import workerUrl from './sandboxWorker.ts?worker&url';
 import {
+  allowedParentOrigins,
   BOOT_ERROR_MESSAGE_TYPE,
   BOOT_GLOBAL,
   CONNECT_MESSAGE_TYPE,
   parseParentMessage,
   type FrameToParent,
-} from './protocol';
+} from './frameProtocol';
 
 const parentWin = window.parent;
+// Only the app may drive this frame. In 'origin' mode anyone can embed the
+// sandbox host (frame-ancestors limits that too); check the sender as well.
+const PARENT_ORIGINS = allowedParentOrigins(location.origin, import.meta.env.VITE_APP_ORIGIN);
 const workers = new Map<string, Worker>();
 
 function post(msg: FrameToParent): void {
@@ -84,6 +88,7 @@ function spawn(id: string, port: MessagePort): void {
 
 window.addEventListener('message', (event: MessageEvent) => {
   if (event.source !== parentWin) return;
+  if (!PARENT_ORIGINS.has(event.origin)) return;
   const msg = parseParentMessage(event.data);
   if (!msg) return;
   if (msg.type === 'spawn') {

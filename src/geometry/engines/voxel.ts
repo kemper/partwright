@@ -5,6 +5,7 @@ import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mes
 import { createParamCapture, type ParamCapture } from '../params';
 import { createSdfNamespace } from '../sdf';
 import { ValidationError } from '../../validation/apiValidation';
+import { assertModelCodeRealm } from '../workerLockdown';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -87,6 +88,7 @@ export const voxelEngine: Engine = {
   isReady() { return true; },
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    assertModelCodeRealm('voxel code');
     const capture = createParamCapture(paramOverrides);
     const removedPieces: [number, number, number][] = [];
     const api = createVoxelApi(capture.params, removedPieces);
@@ -140,6 +142,10 @@ export const voxelEngine: Engine = {
       const mesh = meshGrid(grid);
       return {
         mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(),
+        // The grid itself, as transferable data: the main thread keeps it for
+        // VOX / greedy-mesh export and Voxel Studio instead of re-running the
+        // model code itself (model code only ever runs in the engine Worker).
+        voxelGrid: grid.toTransfer(),
         voxelCount: grid.size, voxelPieceCount: grid.faceComponentCount(),
         ...(grid.sdfRes !== null ? { voxelRes: grid.sdfRes } : {}),
         ...(grid.sdfResMixed ? { voxelResMixed: true } : {}),
@@ -166,19 +172,17 @@ export const voxelEngine: Engine = {
   },
 };
 
-/** Result of {@link runVoxelForPaint}: an executable run that exposes the
- *  underlying grid + per-triangle voxel provenance to voxel paint mode. */
+/** Result of {@link voxelPaintRunFromGrid}: the grid voxel paint edits plus its
+ *  block mesh and per-triangle voxel provenance. */
 export interface VoxelPaintRun extends VoxelMesh { grid: VoxelGrid }
 
-/** Run voxel code locally (synchronously) and return the grid along with the
- *  block mesh and tri→voxel provenance. Used by voxel paint mode on the main
- *  thread: paint operations mutate `grid` and re-mesh in place, so this never
- *  needs to round-trip the Worker.
- *
- *  Returns null and a message on error. Smooth surfacing is honored for
- *  rendering only — paint operates on the un-supersampled, block-meshed grid
- *  so triangle indices map cleanly to user-authored voxels. */
-export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string, unknown>): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
+/** Evaluate voxel model code and return the resulting grid (removePiece calls
+ *  applied). ENGINE-WORKER ONLY — it runs model code, so it refuses to run on
+ *  the main thread (#1090). The main thread asks the Worker for a grid via the
+ *  `voxel_grid` message (engine.ts `runVoxelGridInWorker`) and rebuilds it from
+ *  data with `VoxelGrid.fromTransfer`. */
+export function runVoxelGrid(jsCode: string, paramOverrides?: Record<string, unknown>): { ok: true; grid: VoxelGrid } | { ok: false; error: string } {
+  assertModelCodeRealm('voxel code');
   const removedPieces: [number, number, number][] = [];
   const api = createVoxelApi(createParamCapture(paramOverrides).params, removedPieces);
   let result: unknown;
@@ -192,6 +196,15 @@ export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string,
   const grid = result as VoxelGrid;
   for (const p of removedPieces) grid.removePieceAt(p);
   if (grid.size === 0) return { ok: false, error: 'The voxel grid is empty.' };
+  return { ok: true, grid };
+}
+
+/** Block mesh + tri→voxel provenance for voxel paint, from an already-built
+ *  grid (pure data — no model code runs). Paint operations mutate `grid` and
+ *  re-mesh in place on the main thread. Smooth surfacing is honored for
+ *  rendering only — paint operates on the un-supersampled, block-meshed grid
+ *  so triangle indices map cleanly to user-authored voxels. */
+export function voxelPaintRunFromGrid(grid: VoxelGrid): VoxelPaintRun {
   const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(grid);
-  return { ok: true, data: { grid, mesh, triVoxel, triNormal } };
+  return { grid, mesh, triVoxel, triNormal };
 }

@@ -18,7 +18,7 @@
 // isolated (SharedArrayBuffer is a hard requirement of the WASM engines); the
 // app falls back to a direct Worker when it isn't.
 
-import { BOOT_GLOBAL, CONNECT_MESSAGE_TYPE, STATUS_MESSAGE_TYPE } from './protocol';
+import { BOOT_GLOBAL, CONNECT_MESSAGE_TYPE, STATUS_MESSAGE_TYPE } from './frameProtocol';
 
 type PostFn = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => void;
 
@@ -45,13 +45,21 @@ function onConnect(event: MessageEvent): void {
   self.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
     realFetch(typeof input === 'string' ? new URL(input, base).href : input, init)) as typeof fetch;
 
+  // Capture the port + event plumbing NOW, before any model code runs: the
+  // engine realm is shared with model code, which could otherwise patch
+  // MessagePort.prototype.postMessage / EventTarget.prototype.dispatchEvent /
+  // MessageEvent to read or forge later runs' traffic.
+  const portPost = MessagePort.prototype.postMessage.bind(port) as (message: unknown, transfer?: Transferable[]) => void;
+  const dispatch = EventTarget.prototype.dispatchEvent.bind(self);
+  const MessageEventCtor = MessageEvent;
+
   // Route the engine's replies over the direct port to the app.
   const post: PostFn = (message, transfer) => {
-    if (Array.isArray(transfer)) port.postMessage(message, transfer);
-    else if (transfer) port.postMessage(message, transfer);
-    else port.postMessage(message);
+    if (Array.isArray(transfer)) portPost(message, transfer);
+    else if (transfer && Array.isArray(transfer.transfer)) portPost(message, transfer.transfer);
+    else portPost(message);
   };
-  (self as unknown as { postMessage: PostFn }).postMessage = post;
+  Object.defineProperty(self, 'postMessage', { value: post, writable: true, configurable: true });
 
   // Load the engine first and only then start the port: messages the app sends
   // meanwhile (`init`, an early `execute`) queue in the port instead of being
@@ -59,11 +67,11 @@ function onConnect(event: MessageEvent): void {
   import('../geometry/engineWorker')
     .then(() => {
       port.onmessage = (ev: MessageEvent) => {
-        self.dispatchEvent(new MessageEvent('message', { data: ev.data }));
+        dispatch(new MessageEventCtor('message', { data: ev.data }));
       };
     })
     .catch((err: unknown) => {
-      port.postMessage({
+      portPost({
         type: 'error',
         callId: null,
         message: `Sandboxed engine failed to load: ${err instanceof Error ? err.message : String(err)}`,

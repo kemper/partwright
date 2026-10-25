@@ -12,6 +12,7 @@
 
 import type { Font } from 'opentype.js';
 import { assetPath } from '../deployment';
+import { fetchAppAsset } from './workerLockdown';
 
 type Vec2 = [number, number];
 
@@ -45,7 +46,7 @@ export async function preloadTextFonts(): Promise<void> {
     const [opentypeMod, ...buffers] = await Promise.all([
       import('opentype.js'),
       ...variants.map(async (v) => {
-        const r = await fetch(`${FONTS_PREFIX}/${FONT_FILES[v]}`);
+        const r = await fetchAppAsset(`${FONTS_PREFIX}/${FONT_FILES[v]}`);
         if (!r.ok) throw new Error(`api.text: failed to fetch font "${v}": ${r.status}`);
         return r.arrayBuffer();
       }),

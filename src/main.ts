@@ -23,7 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCodeAsync, runVoxelGridInWorker, setEngineTrustDomain, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
 import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
@@ -41,7 +41,7 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
@@ -154,8 +154,7 @@ import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
-import { runVoxelForPaint } from './geometry/engines/voxel';
-import type { VoxelGrid } from './geometry/voxel/grid';
+import { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
@@ -365,18 +364,14 @@ import {
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
-import { getEngineSandboxStatus } from './sandbox/sandboxHost';
+import { getEngineSandboxStatus, runWithoutEngineSandbox } from './sandbox/sandboxHost';
+import { mountEngineSandboxPill } from './ui/engineSandboxPill';
 import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
-/** True while the engine sandbox is in effect (requested and not fallen back):
- *  model code must then only run in the sandboxed Worker, never on the main
- *  thread (see docs/engine-sandbox.md). */
-function engineSandboxActive(): boolean {
-  return getEngineSandboxStatus().active !== 'off';
-}
-
-type ReferenceGeometryResult = { success: boolean; error?: string; boundingBox?: unknown; volume?: number };
+/** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
+ *  reference build that was overtaken never draws its (stale) ghost. */
+let referenceGeometryGen = 0;
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -573,6 +568,45 @@ function refreshParamsPanelUI(silentReveal: boolean): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** The voxel grid behind the last successful voxel render, as transferable
+ *  data from the engine Worker, tagged with the code + Customizer values that
+ *  produced it. VOX / greedy-mesh export and Voxel Studio rebuild the grid from
+ *  this DATA (VoxelGrid.fromTransfer) — the main thread never re-runs model
+ *  code itself (#1090). */
+let lastVoxelRun: { code: string; paramsKey: string; grid: unknown } | null = null;
+
+/** Engine trust domain for a session (#1090): the session id plus an epoch
+ *  bumped when a file's objects are merged into the open session. */
+let sessionTrustEpoch = 0;
+function sessionTrustDomain(sessionId: string | null): string {
+  return `${sessionId ?? '(none)'}#${sessionTrustEpoch}`;
+}
+function bumpSessionTrustEpoch(): void { sessionTrustEpoch++; }
+
+/** Stable key for Customizer values, so a cached voxel grid is only reused for
+ *  the exact parameter set it was rendered with. */
+function voxelParamsKey(values: Record<string, unknown> | undefined): string {
+  const v = values ?? {};
+  return JSON.stringify(Object.keys(v).sort().map(k => [k, v[k]]));
+}
+
+/** A fresh, editable VoxelGrid rebuilt from the last voxel render's data when
+ *  it was produced by `code` with the current Customizer values; null
+ *  otherwise (stale, not a voxel run, or malformed data). */
+function voxelGridFromLastRun(code: string): VoxelGrid | null {
+  const run = lastVoxelRun;
+  if (!run || run.paramsKey !== voxelParamsKey(currentParamValues)) return null;
+  // The run's source may be the raw string a caller passed (partwright.run)
+  // while the editor holds its auto-formatted form.
+  if (run.code !== code && formatAsEditorWould(run.code) !== code) return null;
+  try {
+    return VoxelGrid.fromTransfer(run.grid);
+  } catch (e) {
+    errorLog.capture({ level: 'warn', source: 'engine', message: `Discarded a malformed voxel grid from the engine worker: ${e instanceof Error ? e.message : String(e)}` });
+    lastVoxelRun = null;
+    return null;
+  }
+}
 /** Session id whose geometry the viewport last framed. Lets the render paths
  *  tell a *re-render within the active session* (version switch or re-run —
  *  preserve the user's current interactive camera angle) apart from the first
@@ -4352,6 +4386,12 @@ async function main() {
       // backfill the rest of the new parts' thumbnails offscreen.
       const result = await importSessionPartsIntoActive(data);
       if (result && result.addedParts.length > 0) {
+        // The merged objects' code comes from a file: start a new engine trust
+        // epoch so it boots in a fresh Worker rather than one that has been
+        // running this session's earlier code (#1090). From here on it IS part
+        // of this session, sharing its realm like any other object.
+        bumpSessionTrustEpoch();
+        setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
         // Navigate to the first newly-added part so it appears selected with a
         // single progressive render (fast preview → full). We do NOT route
         // through selectPart here: its cancelCurrentExecution + saveVersion-based
@@ -6916,16 +6956,16 @@ async function main() {
     if (!(await confirmExportOrProceed('3MF'))) return;
     await export3MFMultiPartFlow(true);
   };
-  // The integer VoxelGrid behind a voxel session. The engine meshes in the
-  // Worker, so the grid isn't on the main thread after a normal run — re-run the
-  // current code locally to recover it (the same trick voxel paint uses), or use
-  // the live painted grid when paint is active so unbaked edits are exported.
+  // The integer VoxelGrid behind a voxel session: the live painted grid when
+  // Voxel Studio is active (so unbaked edits are exported), else the grid the
+  // engine Worker returned with the last render of the CURRENT code. Never
+  // re-runs model code on the main thread (#1090) — if the code changed since
+  // the last render, there's no grid until it runs again.
   const getCurrentVoxelGrid = (): VoxelGrid | null => {
     if (getActiveLanguage() !== 'voxel') return null;
     const painted = voxelPaint.getGrid();
     if (painted) return painted;
-    const r = runVoxelForPaint(getValue());
-    return r.ok ? r.data.grid : null;
+    return voxelGridFromLastRun(getValue());
   };
   /** Mesh for a triangle-mesh file export (STL / OBJ / 3MF). Voxel sessions get
    *  a greedy-meshed copy straight from the grid — coplanar same-color faces are
@@ -7844,6 +7884,9 @@ async function main() {
   printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
+  // Engine-sandbox status pill: persistent while the sandbox is unavailable
+  // (model code blocked — fail closed) or bypassed for this tab.
+  mountEngineSandboxPill(viewportPane);
 
   // Fast-preview pill — shown while the viewport is displaying the rough coarse
   // pass of a slow SDF model (figures) and the full-quality render is still
@@ -10640,11 +10683,26 @@ async function main() {
   initVoxelPaintUI(clipControls, {
     activate: async () => {
       const code = getValue();
-      const err = voxelPaint.activate(code, {
-        onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
-        onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-        onStateChange: () => { syncVoxelPaintUI(); },
-      }, currentParamValues);
+      // The grid comes from the engine Worker — the cached one from the last
+      // render when it matches the editor, else a fresh Worker evaluation.
+      let grid = voxelGridFromLastRun(code);
+      let err: string | null = null;
+      if (!grid) {
+        try {
+          const r = await runVoxelGridInWorker(code, currentParamValues);
+          if (r.ok) grid = r.grid; else err = r.error;
+        } catch (e) {
+          err = e instanceof Error ? e.message : String(e);
+        }
+      }
+      if (grid && getValue() !== code) { grid = null; err = 'the code changed while the studio was opening — try again'; }
+      if (grid) {
+        err = voxelPaint.activate(grid, {
+          onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
+          onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+          onStateChange: () => { syncVoxelPaintUI(); },
+        });
+      }
       if (err) showToast(`Voxel Studio: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
@@ -10945,12 +11003,21 @@ async function main() {
   // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
   // exportSTEP serializing a previous session's shape).
   let lastBrepSessionId: string | null = getState().session?.id ?? null;
+  // Cross-session isolation (#1090): each session is its own engine trust
+  // domain, so code from one session never shares a Worker realm with another
+  // session's runs (see setEngineTrustDomain in engine.ts — the Worker is
+  // recycled lazily, on the next request after a switch).
+  setEngineTrustDomain(sessionTrustDomain(lastBrepSessionId));
 
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     const sid = state.session?.id ?? null;
     if (sid !== lastBrepSessionId) {
       lastBrepSessionId = sid;
+      setEngineTrustDomain(sessionTrustDomain(sid));
+      // The parallel build pool is disposable; don't let its realms outlive
+      // the session whose parts they built.
+      disposeEnginePool();
       void clearBrepImports().catch(() => {});
       void clearBrepShape().catch(() => {});
     }
@@ -13118,11 +13185,15 @@ async function main() {
       const frames: ParamSweepFrame[] = [];
       for (let i = 0; i < steps; i++) {
         const value = from + (to - from) * (i / (steps - 1));
-        // With the engine sandbox on, model code must never run on the main
-        // thread — evaluate each frame in the (sandboxed) geometry Worker.
-        const r = engineSandboxActive()
-          ? await executeCodeAsync(code, 'manifold-js', { [param]: value })
-          : executeCode(code, undefined, { [param]: value });
+        // Built in the sandboxed engine Worker, never on the main thread: the
+        // session's code may be untrusted (imported / forked), and only the
+        // Worker realm is locked down against network + storage access (#1090).
+        let r: MeshResult;
+        try {
+          r = await executeCodeAsync(code, 'manifold-js', { [param]: value });
+        } catch (e) {
+          return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${e instanceof Error ? e.message : String(e)}` };
+        }
         if (r.error || !r.mesh) {
           return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${r.error ?? 'no mesh produced'}` };
         }
@@ -13275,8 +13346,9 @@ async function main() {
     exportGLBPartsData(partIds?: string[], filename?: string) { return partwrightAPI.exportGLBObjectsData(partIds, filename); },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
-     *  sessions only (the integer grid is re-derived from the current code, or
-     *  the live painted grid when paint is active). Returns
+     *  sessions only (the integer grid the engine Worker returned with the last
+     *  render of the current code, or the live painted grid when paint is
+     *  active — run the model first after editing). Returns
      *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
      *  format's 256-per-axis limit). */
     exportVOX(filename?: string) {
@@ -17360,11 +17432,14 @@ async function main() {
     },
 
     /** Engine sandbox (Advanced Settings → Security; docs/engine-sandbox.md):
-     *  the requested mode, the mode actually in effect (a sandbox that can't
-     *  start falls back to 'off'), and whether the sandbox frame / Worker
-     *  reported cross-origin isolation. -> { requested, active, state,
-     *  frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin,
-     *  fallbackReason, sandboxOrigin, modes } */
+     *  the mode this tab started with (`requested`, captured once per tab),
+     *  the mode model code runs under (`active`), its `state` ('unavailable'
+     *  = fail-closed, model code blocked; 'bypassed' = the user chose to run
+     *  without it), the saved setting that applies after a reload
+     *  (`pendingAfterReload`), and whether the frame / Worker reported
+     *  cross-origin isolation. -> { requested, active, state,
+     *  pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated,
+     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes } */
     getEngineSandboxStatus() {
       return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
     },
@@ -17380,6 +17455,17 @@ async function main() {
       const previous = getEngineSandboxMode();
       setEngineSandboxMode(mode);
       return { mode, previous, note: 'Reload the page to apply.' };
+    },
+
+    /** The status pill's "Run without sandbox (this tab)": only after the
+     *  sandbox became unavailable, let model code run in a plain app-origin
+     *  Worker for the rest of this tab (it can then reach this site's storage
+     *  and the network). Not an in-app AI tool. -> { ok, note } or { error } */
+    runWithoutEngineSandbox() {
+      if (!runWithoutEngineSandbox()) {
+        return { error: 'runWithoutEngineSandbox(): nothing to bypass — the engine sandbox is off or working in this tab' };
+      }
+      return { ok: true, note: 'Model code now runs without the sandbox in this tab; re-run your model. Reload to re-enable it.' };
     },
 
     /** Worker health (the Diagnostics → Workers panel): each worker's
@@ -17667,7 +17753,7 @@ async function main() {
     // === Phase 3: Reference/Phantom Geometry ===
 
     /** Set translucent reference geometry for fitment checking. Code is executed in isolation (always manifold-js). */
-    setReferenceGeometry(code: string, options?: PhantomOptions): ReferenceGeometryResult | Promise<ReferenceGeometryResult> {
+    async setReferenceGeometry(code: string, options?: PhantomOptions): Promise<{ success: boolean; error?: string; boundingBox?: unknown; volume?: number }> {
       const check = guard(() => {
         assertString(code, 'setReferenceGeometry(code)', { allowEmpty: false });
         if (options !== undefined) {
@@ -17685,48 +17771,47 @@ async function main() {
       if (isSharedPreview()) {
         return { success: false, error: SHARED_PREVIEW_REFUSAL };
       }
-      if (engineSandboxActive()) {
-        // Engine sandbox on: never evaluate model code on the main thread. Run
-        // it in the (sandboxed) Worker and measure the returned mesh here.
-        return (async (): Promise<ReferenceGeometryResult> => {
-          const r = await executeCodeAsync(code, 'manifold-js');
-          if (r.error) return { success: false, error: r.error };
-          if (!r.mesh) return { success: false, error: 'Code did not produce geometry' };
-          setPhantom(r.mesh, options);
-          let volume = 0;
-          let bb = null;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let m: any = null;
-          try { m = getModule()?.Manifold.ofMesh(r.mesh) ?? null; } catch { /* not manifold — no stats */ }
-          try { if (m) volume = m.volume(); } catch { /* ignore */ }
-          try { if (m) bb = getBoundingBox(m); } catch { /* ignore */ }
-          try { m?.delete?.(); } catch { /* ignore */ }
-          return { success: true, boundingBox: bb, volume };
-        })();
+      // Built in the sandboxed engine Worker (#1090) — the code is caller- or
+      // AI-supplied and must never run on the main thread.
+      // The build is async, so a newer set/clear or a session switch can land
+      // while it runs; only the latest call for the same session may draw.
+      const gen = ++referenceGeometryGen;
+      const sessionAtStart = getState().session?.id ?? null;
+      let result: MeshResult;
+      try {
+        result = await executeCodeAsync(code, 'manifold-js');
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
       }
-      const result = executeCode(code, 'manifold-js');
       if (result.error) {
         return { success: false, error: result.error };
       }
       if (!result.mesh) {
         return { success: false, error: 'Code did not produce geometry' };
       }
+      if (gen !== referenceGeometryGen || (getState().session?.id ?? null) !== sessionAtStart) {
+        return { success: false, error: 'Superseded by a newer setReferenceGeometry/clearReferenceGeometry call or a session switch' };
+      }
 
       setPhantom(result.mesh, options);
 
+      // The Worker returns mesh data only; rebuild a Manifold from it (pure
+      // data, no model code) for the volume + bounding box.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const m = result.manifold as any;
+      let m: any = null;
       let volume = 0;
       let bb = null;
+      try { m = getModule().Manifold.ofMesh(result.mesh); } catch { /* render-only / non-manifold */ }
       try { volume = m.volume(); } catch { /* ignore */ }
       try { bb = getBoundingBox(m); } catch { /* ignore */ }
-      try { m.delete?.(); } catch { /* ignore */ }
+      try { m?.delete?.(); } catch { /* ignore */ }
 
       return { success: true, boundingBox: bb, volume };
     },
 
     /** Clear phantom/reference geometry overlay */
     clearReferenceGeometry(): void {
+      referenceGeometryGen++; // drop any in-flight setReferenceGeometry
       clearPhantom();
     },
 
@@ -20003,8 +20088,9 @@ async function main() {
     },
 
     /** Voxel paint mode — only valid in `voxel` language sessions. Activates a
-     *  per-voxel click-to-color edit loop: the current code is re-run locally
-     *  to capture the grid + per-triangle voxel provenance, the editor is
+     *  per-voxel click-to-color edit loop: the grid from the last render of the
+     *  current code (built in the sandboxed engine Worker — run the model first
+     *  after editing) is captured with per-triangle voxel provenance, the editor is
      *  locked (read-only) so auto-run can't clobber edits, and clicks on the
      *  3D model set or erase voxels in the live grid. Call
      *  `bakeVoxelsToCode()` to commit; `deactivateVoxelPaint()` to cancel.
@@ -20013,12 +20099,15 @@ async function main() {
       if (getActiveLanguage() !== 'voxel') {
         return { error: 'activateVoxelPaint is only available in voxel sessions — call setActiveLanguage("voxel") first.' };
       }
-      const code = getValue();
-      const err = voxelPaint.activate(code, {
+      // Synchronous by contract, so it uses the grid the engine Worker returned
+      // with the last render (the main thread never evaluates model code).
+      const grid = voxelGridFromLastRun(getValue());
+      if (!grid) return { error: 'activateVoxelPaint: no up-to-date voxel grid — run the model first (partwright.run(getCode())), then activate.' };
+      const err = voxelPaint.activate(grid, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
         onStateChange: () => { syncVoxelPaintUI(); },
-      }, currentParamValues);
+      });
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
       return { voxelCount: voxelPaint.voxelCount() };
@@ -20885,7 +20974,7 @@ async function main() {
         'toggleClip': { signature: 'toggleClip(on?) -- Toggle the 3D clipping plane (omit to flip) -> {enabled, z, min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'setClipZ': { signature: 'setClipZ(z) -- Set the clipping-plane height -> {enabled, z, min, max}. Throws on a non-number', docs: '/ai.md#console-api--windowpartwright' },
         'getClipState': { signature: 'getClipState() -- Clipping plane -> {enabled, z, min, max} (min/max = model Z range)', docs: '/ai.md#console-api--windowpartwright' },
-        'setReferenceGeometry': { signature: 'setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code run in isolation (always manifold-js) -> {success, boundingBox?, volume?, error?}', docs: '/ai.md#console-api--windowpartwright' },
+        'setReferenceGeometry': { signature: 'await setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code built in the engine Worker (always manifold-js); a newer set/clear or session switch supersedes it -> {success, boundingBox?, volume?, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'clearReferenceGeometry': { signature: 'clearReferenceGeometry() -- Remove the reference-geometry ghost', docs: '/ai.md#console-api--windowpartwright' },
         'hasReferenceGeometry': { signature: 'hasReferenceGeometry() -- Whether a reference-geometry ghost is shown -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Assembly view (all parts in a grid)
@@ -20935,6 +21024,7 @@ async function main() {
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
         'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, fallback reason -> {requested, active, state, ...}', docs: '/ai.md#console-api--windowpartwright' },
         'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
@@ -21093,7 +21183,7 @@ async function main() {
         'evalAgainstImport': { signature: 'await evalAgainstImport(index?, {samples?}) -- Chamfer/hausdorff report of the current model vs imported mesh index (how faithful is the remake?)', docs: '/ai/reconstruction.md' },
         'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
         'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
-        'activateVoxelPaint': { signature: 'activateVoxelPaint() -- Enter Voxel Studio (voxel sessions only): re-runs the code to capture the grid and locks the editor -> {voxelCount} or {error}', docs: '/ai/voxel.md#voxel-studio' },
+        'activateVoxelPaint': { signature: 'activateVoxelPaint() -- Enter Voxel Studio (voxel sessions only): captures the grid from the last render of the current code (run first after editing) and locks the editor -> {voxelCount} or {error}', docs: '/ai/voxel.md#voxel-studio' },
         'deactivateVoxelPaint': { signature: 'deactivateVoxelPaint() -- Leave Voxel Studio WITHOUT committing; unlocks the editor and re-renders from the code -> {ok: true} or {error}', docs: '/ai/voxel.md#voxel-studio' },
         'paintVoxelFace': { signature: 'paintVoxelFace({faceIndex, color?, erase?}) -- Set (or erase) the voxel under a mesh triangle -> {changed, voxelCount} or {error}', docs: '/ai/voxel.md#programmatic--ai-equivalent' },
         'setVoxelTool': { signature: "setVoxelTool('view'|'paint'|'add'|'remove'|'bucket'|'level'|'boxAdd'|'boxRemove') -- Active Voxel Studio tool -> {tool} or {error}", docs: '/ai/voxel.md#programmatic--ai-equivalent' },
@@ -22394,6 +22484,9 @@ async function main() {
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
       currentMeshData = result.mesh;
+      lastVoxelRun = result.voxelGrid
+        ? { code: src, paramsKey: voxelParamsKey(currentParamValues), grid: result.voxelGrid }
+        : null;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from
       // this base + its stroke descriptors right after.

@@ -22,6 +22,8 @@ import type { Language } from './engines/types';
 import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
 import { createEngineWorker, type EngineWorkerHandle } from '../sandbox/sandboxHost';
+import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { errorLog } from '../diagnostics/errorLog';
 
 export interface PoolBuildRequest {
   code: string;
@@ -144,7 +146,18 @@ function ensureWorkers(): void {
   while (workers.length < n) workers.push(spawnWorker());
 }
 
-function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
+function handleMessage(pw: PoolWorker, data: unknown): void {
+  // Pool workers run untrusted model code too: validate before acting, and on
+  // a malformed message fail that worker's jobs and replace it (see engine.ts).
+  const check = checkEngineWorkerMessage(data);
+  if (!check.ok) {
+    if (check.type === 'execute_preview') return; // pool never asks for previews
+    const message = `Assembly build worker sent a malformed${check.type ? ` ${check.type}` : ''} message (${check.reason})`;
+    errorLog.capture({ level: 'warn', source: 'engine', message });
+    failWorker(pw, new Error(message));
+    return;
+  }
+  const msg = check.msg;
   if (msg.type === 'ready') {
     pw.ready = true;
     respawns = 0; // a healthy worker resets the give-up budget

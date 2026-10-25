@@ -258,6 +258,10 @@ export interface AppConfig {
      *  to load its frame and report a cross-origin-isolated Worker before the
      *  app gives up and falls back to an unsandboxed Worker (with a toast). */
     engineSandboxBootTimeoutMs: number;
+    /** How many times in a row the engine sandbox may restart its iframe after
+     *  a frame crash or a stuck Worker spawn before it gives up and blocks
+     *  model code in the tab (fail closed). Reset by every Worker that connects. */
+    engineSandboxMaxFrameRestarts: number;
     /** Spacing between Assembly-grid cells as a fraction of the largest part's
      *  footprint (0.25 ⇒ a quarter-cell gutter). */
     assemblyGridGutter: number;
@@ -646,6 +650,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     assemblyPoolSize: 3,
     exportPoolSize: 8,
     engineSandboxBootTimeoutMs: 20_000,
+    engineSandboxMaxFrameRestarts: 2,
     assemblyGridGutter: 0.18,
   },
   import: {

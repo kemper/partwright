@@ -478,6 +478,12 @@ export function setValue(code: string): void {
   }
 }
 
+/** What `setValue(code)` would put in the editor (auto-format applied when
+ *  enabled) — lets callers tell whether editor contents came from `code`. */
+export function formatAsEditorWould(code: string): string {
+  return autoFormatEnabled ? applyFormat(code, currentLanguage) : code;
+}
+
 function applyFormat(code: string, lang: EditorLanguage): string {
   if (lang === 'scad') return code;
   try {
