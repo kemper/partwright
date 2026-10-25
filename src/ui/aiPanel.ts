@@ -8,13 +8,13 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { getConfig } from '../config/appConfig';
 import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
-import { rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
+import { findActiveEndpoint, rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { PARTS_PROMPT } from '../ai/partsPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -29,7 +29,8 @@ import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
 import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -116,6 +117,15 @@ function effectiveSystemPromptChars(): number {
   // system-prompt branch); only 'local' gets the slim variant. Counting the
   // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
   // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider === 'custom') {
+    const tier = resolveCustomPromptTier(s.toggles);
+    if (tier !== 'full') {
+      // Medium / Slim exist for small windows, where the tool schemas are a
+      // real share of the budget — count them too.
+      const prompt = tier === 'medium' ? buildMediumLocalSystemPrompt() : buildLocalSystemPrompt();
+      return prompt.length + REDUCED_TOOLS_NOTE.length + JSON.stringify(toolsForCustomTier(buildToolList(s.toggles), tier)).length;
+    }
+  }
   if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
@@ -153,6 +163,10 @@ function contextLimitFor(settings: AiSettings): number {
       } catch { /* stale id — fall through */ }
     }
     return settings.localContext.windowSizeOverride ?? 8192;
+  }
+  if (settings.toggles.provider === 'custom') {
+    const w = customContextWindow(settings.toggles);
+    if (w > 0) return w;
   }
   const model = activeModel(settings.toggles);
   const limits = model ? getLimits(settings.toggles.provider, String(model)) : null;
@@ -690,6 +704,12 @@ async function applySessionAiPreference(): Promise<void> {
   const cur = loadSettings();
   let next: AiSettings;
   if (pref.toggles) {
+    // The Custom endpoint's context window describes the ENDPOINT, not the
+    // session: a snapshot taken before the user set a small window would
+    // otherwise bring back the ~100k-token Full payload. Restore everything
+    // else, then take the context from the saved endpoint the restored URL
+    // points at (or keep the current one when it's the same URL).
+    const { customContext: _snapshotContext, ...restorable } = pref.toggles as Record<string, unknown>;
     // Full per-session toggle snapshot (current format): restore provider,
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
@@ -698,9 +718,13 @@ async function applySessionAiPreference(): Promise<void> {
     // added lacks it, so a raw compare would never match and every window
     // focus would rewrite settings.
     const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
-      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
+      === JSON.stringify(setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
-    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    next = setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]);
+    if (next.toggles.customBaseUrl !== cur.toggles.customBaseUrl) {
+      const ep = await findActiveEndpoint(next.toggles.customBaseUrl).catch(() => null);
+      next = setCustomContext(next, ep?.context ?? DEFAULT_CUSTOM_CONTEXT);
+    }
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
   } else {
     // Legacy {provider, model} only (sessions saved before toggles were stored).
@@ -1487,6 +1511,11 @@ function renderPromptChip(): void {
     label = `· ${tierLabel} prompt`;
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
     title = `Local models use a compact built-in prompt (${tierSize}) and pull subdoc detail on demand via the readDoc tool. Click to view or pin a different tier.`;
+  } else if (provider === 'custom' && resolveCustomPromptTier(settings.toggles) !== 'full') {
+    const tier = resolveCustomPromptTier(settings.toggles);
+    label = `· ${tier === 'medium' ? 'Medium' : 'Slim'} prompt`;
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    title = 'This endpoint has a small context window, so it gets a compact prompt and a reduced tool set, and pulls subdoc detail on demand via readDoc. Change it under AI settings → Custom → Context size. Click to view the prompt.';
   } else {
     label = '· Full ai.md';
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';

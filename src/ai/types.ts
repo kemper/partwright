@@ -170,6 +170,25 @@ export interface ChatToggles {
    *  non-thinking models; CLIProxyAPI and vLLM honor it. Off = only the
    *  visibility flag (`include_reasoning`) is sent. */
   customReasoningEffort: boolean;
+  /** Custom provider only: how big a context the endpoint really has, and how
+   *  much prompt + tool schema to send into it (see customContext.ts). Copied
+   *  from the active saved endpoint like the fields above. */
+  customContext: CustomContextSettings;
+}
+
+/** How much system prompt + tool schema the Custom provider sends. `full` is
+ *  the hosted-provider payload (all of ai.md + every tool, ~100k tokens);
+ *  `medium` / `slim` reuse the local prompts with a reduced, compacted tool
+ *  set; `auto` picks from the known context window. */
+export type CustomPromptTier = 'auto' | 'full' | 'medium' | 'slim';
+
+export interface CustomContextSettings {
+  /** Context window the user typed for this endpoint, in tokens. 0 = not set
+   *  (use the detected value). */
+  window: number;
+  /** Context windows detected on Connect, keyed by model id. */
+  modelWindows: Record<string, number>;
+  promptTier: CustomPromptTier;
 }
 
 /** The 🧠 Thinking pill's levels, in menu order. */

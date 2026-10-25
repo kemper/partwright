@@ -39,7 +39,7 @@ export interface HistoryRepairResult {
   toPersist: ChatMessage[];
   /** Messages that were removed entirely and must be deleted from storage
    *  (deleteMessages). Currently only an empty carrier left behind after its
-   *  sole orphaned tool_result was stripped. */
+   *  sole stray tool_result was stripped. */
   toDelete: ChatMessage[];
   /** True when anything was changed (drives "nothing to repair" feedback). */
   changed: boolean;
@@ -48,38 +48,62 @@ export interface HistoryRepairResult {
 const INTERRUPTED_CONTENT =
   'Tool call did not complete (the turn was interrupted; history was repaired so the chat can continue).';
 
-/** Pair up every orphaned assistant `tool_use` with a synthetic, error-marked
- *  `tool_result` so the persisted history satisfies the provider invariant.
+/** In-memory-only transcript entries (the red error bubble, the amber
+ *  resumable-stop notice). They're never persisted and every provider builder
+ *  drops them on the wire, so they must not count as a neighbour when deciding
+ *  which assistant turn a tool_result answers — otherwise a repair run on the
+ *  live `state.history` could strip a valid carrier sitting just past one. */
+function isEphemeral(m: ChatMessage): boolean {
+  return m.errored === true || m.stopNotice !== undefined;
+}
+
+/** Pair up every orphaned assistant `tool_use` with a `tool_result` so the
+ *  persisted history satisfies the provider invariant. The result is the real
+ *  one when it survives somewhere else in the history (a misplaced carrier),
+ *  otherwise a synthetic, error-marked "interrupted" result.
  *
  *  Three shapes are handled:
  *   1. assistant(tool_use) → user(tool_results) missing some/all ids — the
  *      missing results are prepended into that existing user message.
  *   2. assistant(tool_use) → another assistant (the tool_result carrier was
- *      lost entirely) — a synthetic tool_result user message is inserted
- *      between them.
- *   3. assistant(tool_use) at the tail (no following message) — a synthetic
- *      tool_result user message is appended, leaving the chat in a normal
- *      "ready for the model to respond" state (resumable, nothing dropped).
+ *      lost entirely) — a tool_result user message is inserted between them.
+ *   3. assistant(tool_use) at the tail (no following message) — a tool_result
+ *      user message is appended, leaving the chat in a normal "ready for the
+ *      model to respond" state (resumable, nothing dropped).
  *
- *  It ALSO repairs the mirror-image corruption: an orphaned tool_RESULT — a
- *  user message carrying a tool_result whose `tool_use_id` has no originating
- *  assistant tool_use anywhere in the history. Compaction (and any edit that
- *  drops the assistant turn that made the call) strands these, and every
- *  hosted provider 400s on a tool_result that answers a tool_use it can't see
- *  ("unexpected `tool_use_id`" / "messages with role 'tool' must be a response
- *  to a preceding tool_calls"). The orphaned result blocks are stripped; if
- *  that empties the carrier message it's removed (returned in `toDelete`). */
+ *  It ALSO repairs the mirror-image corruption: a stray tool_RESULT — one that
+ *  doesn't answer a tool_use in the assistant message IMMEDIATELY before its
+ *  carrier. That covers a result whose tool_use was dropped entirely
+ *  (compaction, or any edit that severs a tool round) AND a result whose
+ *  tool_use still exists but further back (a carrier that ended up after the
+ *  wrong turn, or a duplicate of an already-answered call). Every hosted
+ *  provider requires strict adjacency and 400s otherwise ("unexpected
+ *  `tool_use_id` … must have a corresponding `tool_use` block in the previous
+ *  message" / "messages with role 'tool' must be a response to a preceding
+ *  tool_calls"). Stray result blocks are stripped; if that empties the carrier
+ *  message it's removed (returned in `toDelete`). */
 export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
   const messages = [...history];
   const toPersist: ChatMessage[] = [];
   const toDelete: ChatMessage[] = [];
+
+  // Every real result in the history by tool_use id (first wins), so a call
+  // whose carrier landed in the wrong place gets its actual output back rather
+  // than a synthetic "interrupted" error.
+  const realResults = new Map<string, PersistedToolResult>();
+  for (const m of messages) {
+    if (m.role !== 'user' || !m.toolResults) continue;
+    for (const r of m.toolResults) if (!realResults.has(r.toolUseId)) realResults.set(r.toolUseId, r);
+  }
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== 'assistant' || !msg.toolCalls || msg.toolCalls.length === 0) continue;
 
     const ids = msg.toolCalls.map(tc => tc.id);
-    const next = messages[i + 1];
+    let nextIdx = i + 1;
+    while (nextIdx < messages.length && isEphemeral(messages[nextIdx])) nextIdx++;
+    const next = messages[nextIdx];
     const covered = new Set(
       next && next.role === 'user'
         ? (next.toolResults ?? []).map(r => r.toolUseId)
@@ -88,11 +112,11 @@ export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
     const missing = ids.filter(id => !covered.has(id));
     if (missing.length === 0) continue;
 
-    const synthetic: PersistedToolResult[] = missing.map(id => ({
+    const supplied: PersistedToolResult[] = missing.map(id => realResults.get(id) ?? {
       toolUseId: id,
       content: INTERRUPTED_CONTENT,
       isError: true,
-    }));
+    });
 
     if (next && next.role === 'user') {
       // Case 1: inject the missing results into the existing carrier. Results
@@ -100,21 +124,22 @@ export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
       // user text), so prepend.
       const repaired: ChatMessage = {
         ...next,
-        toolResults: [...synthetic, ...(next.toolResults ?? [])],
+        toolResults: [...supplied, ...(next.toolResults ?? [])],
       };
-      messages[i + 1] = repaired;
+      messages[nextIdx] = repaired;
       toPersist.push(repaired);
     } else {
-      // Cases 2 & 3: insert/append a fresh synthetic tool_result user message.
+      // Cases 2 & 3: insert/append a fresh tool_result user message.
       // Seq sits strictly between the assistant and whatever follows so
       // listMessages' seq-sort keeps the pair adjacent across a reload.
-      const seq = next && next.seq > msg.seq ? (msg.seq + next.seq) / 2 : msg.seq + 0.5;
+      const after = messages[i + 1];
+      const seq = after && after.seq > msg.seq ? (msg.seq + after.seq) / 2 : msg.seq + 0.5;
       const inserted: ChatMessage = {
         id: generateId(),
         sessionId: msg.sessionId,
         role: 'user',
         blocks: [],
-        toolResults: synthetic,
+        toolResults: supplied,
         createdAt: msg.createdAt + 1,
         seq,
       };
@@ -124,38 +149,44 @@ export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
     }
   }
 
-  // Second pass: strip orphaned tool_results. Gather every tool_use id known
-  // to the (already use-repaired) history; any tool_result answering an id
-  // outside that set has lost its originating call and must go. The synthetic
-  // results injected above reference real ids, so they're never stripped here.
-  const knownToolUseIds = new Set<string>();
-  for (const msg of messages) {
-    if (msg.role === 'assistant' && msg.toolCalls) {
-      for (const tc of msg.toolCalls) knownToolUseIds.add(tc.id);
-    }
-  }
+  // Second pass: enforce strict adjacency. A tool_result is valid only when it
+  // answers a tool_use of the nearest preceding (non-ephemeral) message, and
+  // only once per carrier. Everything else is stripped — its call is either
+  // gone or already answered by the carrier pass 1 just made adjacent. The
+  // results pass 1 placed always answer the preceding assistant, so they stay.
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== 'user' || !msg.toolResults || msg.toolResults.length === 0) continue;
-    const kept = msg.toolResults.filter(r => knownToolUseIds.has(r.toolUseId));
-    if (kept.length === msg.toolResults.length) continue; // nothing orphaned
+    let prevIdx = i - 1;
+    while (prevIdx >= 0 && isEphemeral(messages[prevIdx])) prevIdx--;
+    const prev = prevIdx >= 0 ? messages[prevIdx] : undefined;
+    const allowed = new Set(prev?.role === 'assistant' ? (prev.toolCalls ?? []).map(tc => tc.id) : []);
+    const seen = new Set<string>();
+    const kept = msg.toolResults.filter(r => {
+      if (!allowed.has(r.toolUseId) || seen.has(r.toolUseId)) return false;
+      seen.add(r.toolUseId);
+      return true;
+    });
+    if (kept.length === msg.toolResults.length) continue; // nothing stray
     if (kept.length === 0 && msg.blocks.length === 0) {
-      // The message was nothing but orphaned tool_result(s) — drop it.
+      // The message was nothing but stray tool_result(s) — drop it.
       messages.splice(i, 1);
       toDelete.push(msg);
       i--;
       continue;
     }
-    // Keep the message (it still has text or valid results) minus the orphans.
+    // Keep the message (it still has text or valid results) minus the strays.
     const repaired: ChatMessage = { ...msg, toolResults: kept };
     messages[i] = repaired;
     toPersist.push(repaired);
   }
 
   // Dedupe toPersist by id (a message touched by both passes appears once,
-  // latest wins) so callers don't write the same id twice.
+  // latest wins) so callers don't write the same id twice. A message pass 2
+  // deleted outright must not also be re-persisted.
   const persistById = new Map<string, ChatMessage>();
   for (const m of toPersist) persistById.set(m.id, m);
+  for (const m of toDelete) persistById.delete(m.id);
 
   return {
     messages,
@@ -166,9 +197,9 @@ export function repairToolHistory(history: ChatMessage[]): HistoryRepairResult {
 }
 
 /** Cheap predicate: does this history contain a tool-history invariant
- *  violation (an orphaned tool_use missing its result, OR an orphaned
- *  tool_result whose tool_use was dropped) that would make the next provider
- *  request fail? Used to conditionally surface the "Repair tool history"
+ *  violation (an orphaned tool_use missing its result, OR a tool_result that
+ *  doesn't answer the immediately preceding assistant turn) that would make
+ *  the next provider request fail? Used to conditionally surface the "Repair tool history"
  *  affordance. */
 export function hasOrphanedToolCalls(history: ChatMessage[]): boolean {
   return repairToolHistory(history).changed;
@@ -179,10 +210,8 @@ export function hasOrphanedToolCalls(history: ChatMessage[]): boolean {
  *  Every hosted provider phrases it differently, so match on the stable
  *  fragments each one uses. Drives the error-bubble "Repair history" affordance
  *  so it appears for exactly this failure class even when the persisted history
- *  looks clean to `hasOrphanedToolCalls` (e.g. a tool_result that answers a
- *  known call but isn't adjacent to it — accepted here, rejected by a
- *  strict-adjacency backend; see #961). Pure string check — no history
- *  needed. */
+ *  looks clean to `hasOrphanedToolCalls` (an edge shape the detector doesn't
+ *  model). Pure string check — no history needed. */
 export function isToolHistoryMismatchError(message: string): boolean {
   const m = message.toLowerCase();
   return (
