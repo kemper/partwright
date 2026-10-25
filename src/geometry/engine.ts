@@ -279,6 +279,10 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' | 'debug' = 
 let workerDomain: string | null = null;
 
 const STALE_DOMAIN_ERROR = 'Execution cancelled — the session changed before this request ran';
+/** Reason for the session-isolation recycle. Must read as a CANCEL (matched by
+ *  /cancel/i in rejectAllPending and the run paths) — an in-flight run of the
+ *  previous session is superseded, not failed. */
+const SESSION_ISOLATION_REASON = 'Execution cancelled — isolating sessions: fresh geometry worker for the newly opened session';
 
 interface WorkerClaim { worker: Worker; domain: string }
 
@@ -290,7 +294,7 @@ interface WorkerClaim { worker: Worker; domain: string }
 function claimEngineWorker(domain: string = getEngineTrustDomain()): WorkerClaim {
   if (domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
   if (engineWorker && workerDomain !== null && workerDomain !== domain) {
-    recycleEngineWorker('Isolating sessions: fresh geometry worker for the newly opened session', 'debug');
+    recycleEngineWorker(SESSION_ISOLATION_REASON, 'debug');
   }
   initEngineWorker();
   workerDomain = domain;
@@ -303,7 +307,7 @@ function claimEngineWorker(domain: string = getEngineTrustDomain()): WorkerClaim
 // critical path. The fresh Worker stays untagged until a request claims it.
 onEngineTrustDomainChange((domain) => {
   if (engineWorker && workerDomain !== null && workerDomain !== domain) {
-    recycleEngineWorker('Isolating sessions: fresh geometry worker for the newly opened session', 'debug');
+    recycleEngineWorker(SESSION_ISOLATION_REASON, 'debug');
     initEngineWorker();
   }
 });
@@ -481,7 +485,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       materialSpec: msg.materialSpec ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
-      paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
+      // The validator's normalized schema (re-run through normalizeParamSchema),
+      // never the Worker's raw array.
+      paramsSchema: check.paramsSchema,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
       voxelPieceCount: msg.voxelPieceCount as number | undefined,

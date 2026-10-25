@@ -192,6 +192,39 @@ describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
   });
 });
 
+describe('cycles and the normalized Customizer schema', () => {
+  it('refuses a cyclic extra key inside diagnostics', () => {
+    const d: Record<string, unknown> = { message: 'x', severity: 'error' };
+    d.self = d;
+    const r = checkEngineWorkerMessage({ type: 'execute_result', callId: 'c1', mesh: null, error: 'x', diagnostics: [d] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('refuses a cyclic paramsSchema option', () => {
+    const opt: Record<string, unknown> = { value: 'a', label: 'A' };
+    opt.loop = [opt];
+    const r = checkEngineWorkerMessage({ type: 'execute_result', callId: 'c2', mesh: null, error: null,
+      paramsSchema: [{ key: 'm', type: 'select', default: 'a', label: 'M', options: [opt] }] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('accepts shared-but-acyclic references and returns the normalized schema', () => {
+    const option = { value: 'a', label: 'A' };
+    const r = checkEngineWorkerMessage({ type: 'execute_result', callId: 'c3', mesh: null, error: null,
+      paramsSchema: [
+        { key: 'm', type: 'select', default: 'a', label: 'M', options: [option, { value: 'b', label: 'B' }] },
+        { key: 'n', type: 'select', default: 'a', label: 'N', options: [option] },
+        { key: 'w', type: 'int', default: 3.6, label: 'W', min: 1, max: 10 },
+      ] });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // normalizeParamSchema's output, not the raw array (int default rounded).
+    expect(r.paramsSchema?.map(p => p.key)).toEqual(['m', 'n', 'w']);
+    expect(r.paramsSchema?.[2].default).toBe(4);
+    expect(r.paramsSchema).not.toBe(r.msg.paramsSchema);
+  });
+});
+
 describe('DoS and shared-memory guards', () => {
   it('isPlainData walks a shared-reference DAG once and caps total nodes', () => {
     let x: unknown = [1];
@@ -201,7 +234,9 @@ describe('DoS and shared-memory guards', () => {
     expect(performance.now() - t0).toBeLessThan(500);
     const cyclic: unknown[] = [];
     cyclic.push(cyclic);
-    expect(isPlainData(cyclic)).toBe(true); // structured clone can carry cycles
+    expect(isPlainData(cyclic)).toBe(false); // structured clone can carry cycles — refused
+    const shared = { a: 1 };
+    expect(isPlainData({ x: shared, y: [shared, shared], z: { w: shared } })).toBe(true); // shared but acyclic
     expect(isPlainData(Array.from({ length: 300_000 }, (_, i) => i))).toBe(false);
   });
 

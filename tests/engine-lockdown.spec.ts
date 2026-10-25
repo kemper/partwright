@@ -274,6 +274,53 @@ test.describe('Engine sandbox lockdown', () => {
     console.log(`[isolation] first run in new session: ${Math.round(out.firstRunMs)} ms (warm run ${Math.round(out.warmRunMs)} ms)`);
   });
 
+  test('a run in flight across a session switch ends as cancelled, not as an error', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const { getWorkerRuns } = await import('/src/diagnostics/workerStats.ts');
+      const { errorLog } = await import('/src/diagnostics/errorLog.ts');
+      await pw.createSession('switch-from');
+      await pw.run('return api.Manifold.cube(1);');
+      const since = Date.now();
+      // A slow model still running when the session changes.
+      const inFlight = pw.run('const t = Date.now(); while (Date.now() - t < 2500) {} return api.Manifold.cube(2);');
+      await new Promise((r) => setTimeout(r, 600));
+      await pw.createSession('switch-to');
+      const result = await inFlight;
+      // getWorkerRuns is newest-first; keep this window's geometry runs.
+      const runs = getWorkerRuns().filter((r: { worker: string; timestamp: number }) => r.worker === 'geometry' && r.timestamp >= since);
+      const statusText = document.body.innerText.includes('isolating sessions') ? 'shows-isolation-error' : 'ok';
+      const engineErrors = errorLog.getEntries().filter((e: { source?: string; level: string }) => e.source === 'engine' && e.level !== 'info');
+      return { result, runs: runs.map((r: { status: string; detail?: string }) => `${r.status}: ${r.detail ?? ''}`), statusText, engineErrors: engineErrors.length };
+    });
+    // The slow run is recorded as cancelled (superseded by the session switch),
+    // and nothing in that window is recorded as an error.
+    expect(out.runs.some((r: string) => /^cancelled: .*cancelled/i.test(r)), JSON.stringify(out.runs)).toBe(true);
+    expect(out.runs.filter((r: string) => r.startsWith('error')), JSON.stringify(out.runs)).toEqual([]);
+    expect(out.statusText).toBe('ok');
+    expect(out.engineErrors).toBe(0);
+  });
+
+  test('api.paint.pattern size caps fail with a readable recorder error', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const colors = await pw.run(`
+        const s = api.Manifold.sphere(5, 24);
+        api.paint.pattern({ pattern: 'spots', colors: Array.from({ length: 65 }, () => '#ff0000') });
+        return s;`);
+      const anchors = await pw.run(`
+        const s = api.Manifold.sphere(5, 24);
+        api.paint.pattern({ pattern: 'soccer', colors: ['#fff', '#000'], anchors: Array.from({ length: 1025 }, () => [0, 0, 5]) });
+        return s;`);
+      return { colors: colors.error ?? '', anchors: anchors.error ?? '' };
+    });
+    expect(out.colors).toMatch(/api\.paint\.pattern: at most 64 colors/);
+    expect(out.anchors).toMatch(/api\.paint\.pattern: at most 1024 anchors/);
+    expect(out.colors).not.toMatch(/malformed/);
+  });
+
   test('voxel grid survives an object switch served from the mesh cache (A→B→A, then VOX export + Studio)', async ({ page }) => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
