@@ -2,13 +2,14 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type CustomContextSettings, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
 import { CLI_PROXY_DEFAULT_BASE_URL } from './cliProxy';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
+import { DEFAULT_CUSTOM_CONTEXT, parseCustomContext } from './customContext';
 
 /** Desktop code-pane presentation — see `AiSettings.codeView`. */
 export type CodeViewMode = 'hidden' | 'mini' | 'full';
@@ -148,7 +149,7 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
  *  truth: cliProxy.ts. */
 const DEFAULT_CUSTOM_BASE_URL = CLI_PROXY_DEFAULT_BASE_URL;
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort' | 'customContext'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -221,6 +222,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   customModels: [],
   customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
   customReasoningEffort: false,
+  customContext: { ...DEFAULT_CUSTOM_CONTEXT, modelWindows: {} },
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -290,6 +292,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     customModels: [...t.customModels],
     customBaseUrl: t.customBaseUrl,
     customReasoningEffort: t.customReasoningEffort,
+    customContext: { ...t.customContext, modelWindows: { ...t.customContext.modelWindows } },
   };
 }
 
@@ -390,6 +393,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       customModels: settings.toggles.customModels,
       customBaseUrl: settings.toggles.customBaseUrl,
       customReasoningEffort: settings.toggles.customReasoningEffort,
+      customContext: settings.toggles.customContext,
     },
   };
 }
@@ -536,6 +540,14 @@ export function setCustomReasoningEffort(settings: AiSettings, enabled: boolean)
   };
 }
 
+/** Custom provider: the endpoint's context profile (window + prompt tier). */
+export function setCustomContext(settings: AiSettings, ctx: CustomContextSettings): AiSettings {
+  return {
+    ...settings,
+    toggles: { ...settings.toggles, customContext: parseCustomContext(ctx) },
+  };
+}
+
 /** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
 export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
   return {
@@ -566,6 +578,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
     customReasoningEffort: typeof partial.customReasoningEffort === 'boolean' ? partial.customReasoningEffort : settings.toggles.customReasoningEffort,
+    customContext: partial.customContext ? parseCustomContext({ ...settings.toggles.customContext, ...partial.customContext }) : settings.toggles.customContext,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -682,6 +695,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
         : DEFAULT_SETTINGS.toggles.customModels,
       customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
       customReasoningEffort: typeof tgls.customReasoningEffort === 'boolean' ? tgls.customReasoningEffort : DEFAULT_SETTINGS.toggles.customReasoningEffort,
+      customContext: parseCustomContext(tgls.customContext),
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,

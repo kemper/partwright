@@ -29,7 +29,8 @@ import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
 import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -116,6 +117,15 @@ function effectiveSystemPromptChars(): number {
   // system-prompt branch); only 'local' gets the slim variant. Counting the
   // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
   // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider === 'custom') {
+    const tier = resolveCustomPromptTier(s.toggles);
+    if (tier !== 'full') {
+      // Medium / Slim exist for small windows, where the tool schemas are a
+      // real share of the budget — count them too.
+      const prompt = tier === 'medium' ? buildMediumLocalSystemPrompt() : buildLocalSystemPrompt();
+      return prompt.length + REDUCED_TOOLS_NOTE.length + JSON.stringify(toolsForCustomTier(buildToolList(s.toggles), tier)).length;
+    }
+  }
   if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
@@ -153,6 +163,10 @@ function contextLimitFor(settings: AiSettings): number {
       } catch { /* stale id — fall through */ }
     }
     return settings.localContext.windowSizeOverride ?? 8192;
+  }
+  if (settings.toggles.provider === 'custom') {
+    const w = customContextWindow(settings.toggles);
+    if (w > 0) return w;
   }
   const model = activeModel(settings.toggles);
   const limits = model ? getLimits(settings.toggles.provider, String(model)) : null;
@@ -1487,6 +1501,11 @@ function renderPromptChip(): void {
     label = `· ${tierLabel} prompt`;
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
     title = `Local models use a compact built-in prompt (${tierSize}) and pull subdoc detail on demand via the readDoc tool. Click to view or pin a different tier.`;
+  } else if (provider === 'custom' && resolveCustomPromptTier(settings.toggles) !== 'full') {
+    const tier = resolveCustomPromptTier(settings.toggles);
+    label = `· ${tier === 'medium' ? 'Medium' : 'Slim'} prompt`;
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    title = 'This endpoint has a small context window, so it gets a compact prompt and a reduced tool set, and pulls subdoc detail on demand via readDoc. Change it under AI settings → Custom → Context size. Click to view the prompt.';
   } else {
     label = '· Full ai.md';
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';

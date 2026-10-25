@@ -41,3 +41,18 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## Context size: Custom endpoints and stale tool payloads
+
+**Custom endpoint context profile** (`src/ai/customContext.ts`). The full hosted payload is about 100k tokens before the conversation starts (PREAMBLE + `ai.md` ≈ 39k, 160+ tool schemas ≈ 60k). That breaks a local model behind llama.cpp / vLLM / LM Studio / Ollama: the request is rejected, or truncated past Ollama's `num_ctx`. Each saved endpoint therefore carries a `context` profile (`SavedEndpoint.context` → `ChatToggles.customContext`):
+
+- **Window**: the user's value, else the value detected on Connect for the selected model. `detectContextWindows` probes llama.cpp `/props` (`n_ctx`), Ollama `/api/ps` (`context_length` of loaded models), LM Studio `/api/v0/models` (`loaded_context_length`), and `/v1/models` (vLLM `max_model_len`, `context_length`). It deliberately ignores llama.cpp's `meta.n_ctx_train`, which is the training length rather than the runtime window. The window feeds the context meter and Auto-compact (`contextLimitFor` in `aiPanel.ts`). CLIProxyAPI bridges skip detection.
+- **Prompt tier**: Auto / Full / Medium / Slim. Medium and Slim send the local prompts (`buildMediumLocalSystemPrompt` / `buildLocalSystemPrompt`, so docs come on demand through `readDoc`) plus `REDUCED_TOOLS_NOTE`, and a compacted subset of the already-gated tool list (`MEDIUM_CUSTOM_TOOLS` ≈ 9k tokens, `SLIM_CUSTOM_TOOLS` ≈ 2.4k). Descriptions are cut to their first sentence; Slim drops parameter descriptions. Auto maps an unknown window to Full, < `ai.customSlimMaxContext` to Slim, and < `ai.customMediumMaxContext` to Medium.
+
+**Stale tool-payload pruning** (`pruneStaleToolPayloads` in `src/ai/historyElision.ts`, gated by `ai.pruneStaleToolPayloads`). This is the text counterpart of render-image elision, inspired by OpenCode's dynamic-context-pruning plugin. Like elision it rewrites only the request copy. It replaces the following with one-line notes:
+
+- code bodies older than the newest `ai.keepRecentCodeBodies` (the `code` argument of `CODE_TOOLS`, plus `getCode` results), counted per target object;
+- a `readDoc` result when the same doc is read again later;
+- large inputs of a failed call once `ai.failedCallInputTurns` newer assistant turns have passed (the error text stays).
+
+Most edits land a step or a few turns behind the tail, so the cached prefix survives. Gemini-signed calls (`thoughtSignature`) are never rewritten.

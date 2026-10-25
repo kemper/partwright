@@ -107,6 +107,35 @@ export interface AppConfig {
      *  first) instead of dropping with the summarized turns. 0 = drop them
      *  like before. */
     compactionKeepImages: number;
+    /** Custom provider, prompt size "Auto": a known context window smaller
+     *  than this many tokens gets the Slim prompt + core tool set. */
+    customSlimMaxContext: number;
+    /** …and smaller than this, the Medium prompt + everyday tool set. At or
+     *  above it — or when the window is unknown — the Full payload. */
+    customMediumMaxContext: number;
+    /** Medium / Slim: each tool description is cut to its first sentence,
+     *  at most this many characters. */
+    customToolDescriptionChars: number;
+    /** Medium: each parameter description is cut to its first sentence, at
+     *  most this many characters. Slim drops parameter descriptions. */
+    customParamDescriptionChars: number;
+    /** How long each context-window probe on Connect may take (llama.cpp
+     *  /props, Ollama /api/ps, LM Studio /api/v0/models, /v1/models). */
+    customContextProbeTimeoutMs: number;
+    /** Trim dead tool payloads from the history sent to the provider:
+     *  superseded code bodies, stale getCode results, repeated readDoc
+     *  results, and large inputs of failed calls. Stored history and the
+     *  transcript are untouched. */
+    pruneStaleToolPayloads: boolean;
+    /** How many of the newest code bodies (runAndSave / setCode / runCode …
+     *  `code` arguments, and getCode results) stay verbatim in the request;
+     *  older ones become a one-line stub. */
+    keepRecentCodeBodies: number;
+    /** A failed tool call's large inputs are stubbed once this many newer
+     *  assistant turns have passed (its error message stays). */
+    failedCallInputTurns: number;
+    /** …but only inputs at least this many characters long (as JSON). */
+    failedCallInputMinChars: number;
     /** Images the user attached in this conversation (newest first) that the
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
@@ -610,6 +639,15 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
+    customSlimMaxContext: 32_768,
+    customMediumMaxContext: 160_000,
+    customToolDescriptionChars: 200,
+    customParamDescriptionChars: 80,
+    customContextProbeTimeoutMs: 3000,
+    pruneStaleToolPayloads: true,
+    keepRecentCodeBodies: 1,
+    failedCallInputTurns: 3,
+    failedCallInputMinChars: 1500,
     reviewReferenceImages: 4,
     reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,

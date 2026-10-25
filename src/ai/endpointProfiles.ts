@@ -10,6 +10,8 @@
 // list is the durable library those copies are made from.
 
 import { CLI_PROXY_DEFAULT_BASE_URL, generateApiKey, looksLikeCliProxyUrl } from './cliProxy';
+import { DEFAULT_CUSTOM_CONTEXT, parseCustomContext } from './customContext';
+import type { CustomContextSettings } from './types';
 
 export type EndpointKind = 'cliproxyapi' | 'openai-compatible';
 
@@ -28,6 +30,10 @@ export interface SavedEndpoint {
   models: string[];
   /** Send the Thinking level as `reasoning_effort` (see custom.ts). */
   reasoningEffort: boolean;
+  /** Context window (typed or detected per model) and prompt tier — see
+   *  customContext.ts. Rows saved before this field existed read as the
+   *  default (unknown window, Auto tier) via withEndpointDefaults. */
+  context: CustomContextSettings;
   /** CLIProxyAPI only: config file path for the setup commands ('' = the
    *  OS default). */
   configPath: string;
@@ -61,6 +67,15 @@ export function findEndpointForUrl(list: SavedEndpoint[], baseUrl: string, apiKe
   return [...hits].sort((a, b) => b.updatedAt - a.updatedAt)[0];
 }
 
+function freshContext(): CustomContextSettings {
+  return { ...DEFAULT_CUSTOM_CONTEXT, modelWindows: {} };
+}
+
+/** Fill fields a row stored by an older build lacks. */
+export function withEndpointDefaults(e: SavedEndpoint): SavedEndpoint {
+  return e.context ? e : { ...e, context: freshContext() };
+}
+
 export function newEndpoint(kind: EndpointKind, id: string, now = Date.now()): SavedEndpoint {
   return kind === 'cliproxyapi'
     ? {
@@ -70,11 +85,13 @@ export function newEndpoint(kind: EndpointKind, id: string, now = Date.now()): S
       // behind the user's back.
       apiKey: generateApiKey(),
       model: '', models: [], reasoningEffort: true, configPath: '',
+      context: freshContext(),
       createdAt: now, updatedAt: now, lastConnectedAt: 0,
     }
     : {
       id, kind, name: 'OpenAI-compatible endpoint', baseUrl: '', apiKey: '',
       model: '', models: [], reasoningEffort: false, configPath: '',
+      context: freshContext(),
       createdAt: now, updatedAt: now, lastConnectedAt: 0,
     };
 }
@@ -92,7 +109,7 @@ export function nameFromUrl(baseUrl: string): string {
  *  becomes a CLIProxyAPI entry; it keeps an existing key, or gets a fresh
  *  generated one when none was saved. */
 export function seedEndpoint(
-  current: { baseUrl: string; apiKey: string; model: string; models: string[]; reasoningEffort: boolean },
+  current: { baseUrl: string; apiKey: string; model: string; models: string[]; reasoningEffort: boolean; context?: CustomContextSettings },
   id: string,
   now = Date.now(),
 ): SavedEndpoint {
@@ -107,6 +124,7 @@ export function seedEndpoint(
     model: current.model,
     models: [...current.models],
     reasoningEffort: current.reasoningEffort || (kind === 'cliproxyapi' && !current.model),
+    context: current.context ? parseCustomContext(current.context) : base.context,
   };
 }
 
@@ -147,6 +165,7 @@ export function parseBackup(text: string): SavedEndpoint[] {
       model: str(raw.model),
       models: Array.isArray(raw.models) ? raw.models.filter((m): m is string => typeof m === 'string') : [],
       reasoningEffort: raw.reasoningEffort === true,
+      context: parseCustomContext(raw.context),
       configPath: str(raw.configPath),
       createdAt: num(raw.createdAt),
       updatedAt: num(raw.updatedAt),

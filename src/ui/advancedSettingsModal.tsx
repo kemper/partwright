@@ -392,6 +392,88 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={12} integer
           onChange={v => set('ai', 'compactionKeepImages', v)}
         />
+        <ToggleField cfgKey="ai.pruneStaleToolPayloads"
+          label="Trim dead tool payloads from the request"
+          hint="Every agent step re-sends the whole conversation. This leaves out code the agent has since replaced, repeated doc reads, and the bulky inputs of failed calls, each replaced with a one-line note (call getCode / readDoc for the current copy). Your transcript is unchanged."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.pruneStaleToolPayloads}
+          value={c.ai.pruneStaleToolPayloads}
+          onChange={v => set('ai', 'pruneStaleToolPayloads', v)}
+        />
+        <Field cfgKey="ai.keepRecentCodeBodies"
+          label="Recent code bodies kept in context"
+          unit="copies"
+          hint="How many of the newest code arguments (runAndSave, setCode, runCode …) and getCode results stay verbatim; older ones become a short note."
+          tooltip="The newest copy is what's in the editor, and the model can always call getCode. Raise this to let the model compare more of its earlier attempts at a higher token cost."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentCodeBodies}
+          value={c.ai.keepRecentCodeBodies}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'keepRecentCodeBodies', v)}
+        />
+        <Field cfgKey="ai.failedCallInputTurns"
+          label="Drop failed calls' inputs after"
+          unit="turns"
+          hint="A failed tool call's large inputs are left out once this many newer agent turns have passed. Its error message stays."
+          tooltip="A failed run keeps its full code (or point list) in the history, though the model has moved on. After this many newer assistant turns, inputs larger than the size below are replaced with a note; the error text the model learned from is kept."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.failedCallInputTurns}
+          value={c.ai.failedCallInputTurns}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'failedCallInputTurns', v)}
+        />
+        <Field cfgKey="ai.failedCallInputMinChars"
+          label="…only inputs larger than"
+          unit="chars"
+          hint="Failed calls with smaller inputs are kept as they are."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.failedCallInputMinChars}
+          value={c.ai.failedCallInputMinChars}
+          min={100} max={100_000} integer
+          onChange={v => set('ai', 'failedCallInputMinChars', v)}
+        />
+        <Field cfgKey="ai.customSlimMaxContext"
+          label="Custom endpoint: Slim prompt below"
+          unit="tokens"
+          hint="With prompt size on Auto, an endpoint whose context window is smaller than this gets the Slim prompt and core tools (~4k tokens)."
+          tooltip="Set per endpoint on the Custom tab of AI settings. The window comes from Connect's detection or what you typed there; an unknown window always gets the Full payload."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customSlimMaxContext}
+          value={c.ai.customSlimMaxContext}
+          min={1024} max={1_000_000} integer
+          onChange={v => set('ai', 'customSlimMaxContext', v)}
+        />
+        <Field cfgKey="ai.customMediumMaxContext"
+          label="Custom endpoint: Medium prompt below"
+          unit="tokens"
+          hint="…and smaller than this, the Medium prompt and everyday tools (~10k tokens). Larger windows get everything (~100k tokens)."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customMediumMaxContext}
+          value={c.ai.customMediumMaxContext}
+          min={1024} max={10_000_000} integer
+          onChange={v => set('ai', 'customMediumMaxContext', v)}
+        />
+        <Field cfgKey="ai.customToolDescriptionChars"
+          label="Custom endpoint: tool description length (Medium/Slim)"
+          unit="chars"
+          hint="Each tool's description is cut to its first sentence, at most this long."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customToolDescriptionChars}
+          value={c.ai.customToolDescriptionChars}
+          min={40} max={5000} integer
+          onChange={v => set('ai', 'customToolDescriptionChars', v)}
+        />
+        <Field cfgKey="ai.customParamDescriptionChars"
+          label="Custom endpoint: parameter description length (Medium)"
+          unit="chars"
+          hint="Each parameter's description is cut to its first sentence, at most this long. Slim leaves parameter descriptions out."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customParamDescriptionChars}
+          value={c.ai.customParamDescriptionChars}
+          min={0} max={2000} integer
+          onChange={v => set('ai', 'customParamDescriptionChars', v)}
+        />
+        <Field cfgKey="ai.customContextProbeTimeoutMs"
+          label="Custom endpoint: context detection timeout"
+          unit="ms"
+          hint="How long Connect waits for each server-metadata probe (llama.cpp /props, Ollama /api/ps, LM Studio, /v1/models)."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customContextProbeTimeoutMs}
+          value={c.ai.customContextProbeTimeoutMs}
+          min={250} max={30_000} integer
+          onChange={v => set('ai', 'customContextProbeTimeoutMs', v)}
+        />
         <Field cfgKey="ai.reviewReferenceImages"
           label="Reference images sent to reviews"
           hint="How many of your attached images a review (automatic or 👁) sees next to the renders."

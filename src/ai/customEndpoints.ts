@@ -11,7 +11,8 @@
 import { openPartwrightDB } from '../storage/db';
 import { requestPersistentStorage } from '../storage/persist';
 import { deleteKey, getKey, putKey } from './db';
-import { findEndpointForUrl, seedEndpoint, type SavedEndpoint } from './endpointProfiles';
+import { findEndpointForUrl, seedEndpoint, withEndpointDefaults, type SavedEndpoint } from './endpointProfiles';
+import type { CustomContextSettings } from './types';
 
 const STORE = 'aiEndpoints';
 
@@ -32,7 +33,7 @@ export async function listEndpoints(): Promise<SavedEndpoint[]> {
   const txn = db.transaction(STORE, 'readonly');
   const req = txn.objectStore(STORE).getAll();
   await txComplete(txn);
-  return sortByCreated(req.result as SavedEndpoint[]);
+  return sortByCreated((req.result as SavedEndpoint[]).map(withEndpointDefaults));
 }
 
 /** Insert or replace endpoints in one transaction. */
@@ -63,7 +64,7 @@ export async function deleteEndpoint(id: string): Promise<void> {
  *  readwrite transaction, so two tabs opening settings at once can't both
  *  seed. */
 export async function ensureEndpointsSeeded(
-  current: { baseUrl: string; model: string; models: string[]; reasoningEffort: boolean },
+  current: { baseUrl: string; model: string; models: string[]; reasoningEffort: boolean; context?: CustomContextSettings },
   id: string,
 ): Promise<SavedEndpoint[]> {
   const apiKey = (await getKey('custom'))?.apiKey ?? '';
@@ -73,7 +74,7 @@ export async function ensureEndpointsSeeded(
   let result: SavedEndpoint[] = [];
   const getReq = store.getAll();
   getReq.onsuccess = () => {
-    result = getReq.result as SavedEndpoint[];
+    result = (getReq.result as SavedEndpoint[]).map(withEndpointDefaults);
     if (result.length > 0) return;
     const seed = seedEndpoint({ ...current, apiKey }, id);
     store.add(seed);

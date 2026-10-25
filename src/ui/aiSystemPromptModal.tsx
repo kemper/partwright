@@ -18,6 +18,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { loadSettings, setSystemPromptOverride, providerLabel } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { resolveCustomPromptTier } from '../ai/customContext';
 import { resolveLocalModel } from '../ai/local';
 import { mountPreactModal } from './preact/mount';
 import { setSettings } from './preact/settingsStore';
@@ -178,7 +179,10 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   const override = settings.systemPromptOverrides?.[provider] ?? null;
 
   let providerDefaultTier: Tier;
-  if (provider !== 'local') {
+  if (provider === 'custom') {
+    // A small-window Custom endpoint defaults to a compact tier (customContext.ts).
+    providerDefaultTier = resolveCustomPromptTier(settings.toggles);
+  } else if (provider !== 'local') {
     providerDefaultTier = 'full';
   } else if (settings.toggles.localModel) {
     providerDefaultTier = resolveLocalModel(settings.toggles.localModel).promptTier;

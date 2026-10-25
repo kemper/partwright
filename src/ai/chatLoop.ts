@@ -25,7 +25,8 @@ import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError, isTransientToolFailure } from './transientError';
-import { elideStaleToolImages, providerCachesHistory } from './historyElision';
+import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
+import { REDUCED_TOOLS_NOTE, resolveCustomPromptTier, toolsForCustomTier } from './customContext';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -227,13 +228,21 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
     }
   }
   if (toggles.provider === 'local') return buildLocalSystemPrompt();
+  if (toggles.provider === 'custom') {
+    // A small-window endpoint gets the local prompts (docs on demand via
+    // readDoc) instead of all of ai.md — see customContext.ts.
+    const tier = resolveCustomPromptTier(toggles);
+    if (tier === 'medium') return buildMediumLocalSystemPrompt() + REDUCED_TOOLS_NOTE;
+    if (tier === 'slim') return buildLocalSystemPrompt() + REDUCED_TOOLS_NOTE;
+  }
   return buildSystemPrompt(await loadAiMd());
 }
 
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
-  const tools = buildToolList(toggles, input.uiTools);
+  const gatedTools = buildToolList(toggles, input.uiTools);
+  const tools = toggles.provider === 'custom' ? toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)) : gatedTools;
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -340,9 +349,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Providers that cache the history trim in steps (see imagesToElide) so
     // the cached prefix survives between trims; the rest keep a tight window.
     const aiCfg = getConfig().ai;
-    const sentHistory = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
+    const imageTrimmed = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
       ? elideStaleToolImages(workingHistory, aiCfg.cachedImageLimit, aiCfg.cachedImageTrimTo)
       : elideStaleToolImages(workingHistory, aiCfg.keepRecentToolImages);
+    // Likewise drop text payloads a later step made dead weight: superseded
+    // code bodies, repeated readDoc results, old failed-call inputs.
+    const sentHistory = aiCfg.pruneStaleToolPayloads ? pruneStaleToolPayloads(imageTrimmed, aiCfg) : imageTrimmed;
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {

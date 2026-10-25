@@ -17,7 +17,7 @@
 // as optional alongside the required text content), so this is provider-
 // agnostic and applies at the single streamTurn call site.
 
-import type { ChatMessage, PersistedToolResult, Provider } from './types';
+import type { ChatMessage, PersistedToolCall, PersistedToolResult, Provider } from './types';
 
 /** Whether `provider` caches the repeated conversation prefix, so trimming
  *  should be stepped (cache-friendly) rather than sliding. OpenAI and Gemini
@@ -100,5 +100,144 @@ export function elideStaleToolImages(
       return { ...rest, content };
     });
     return { ...m, toolResults };
+  });
+}
+
+// === Stale tool payloads ===
+//
+// The same send-time-only treatment for text payloads that a later step made
+// dead weight (the idea behind OpenCode's dynamic-context-pruning plugin,
+// fitted to Partwright's tools):
+//   - superseded code: every runAndSave / setCode / runCode … carries the
+//     whole program, so an N-step modeling loop re-sends N versions of it on
+//     every request. Only the newest `keepRecentCodeBodies` survive; getCode
+//     results count as code bodies too.
+//   - repeated docs: a readDoc result is dropped when the same doc is read
+//     again later (some subdocs are ~30k tokens).
+//   - failed calls: once `failedCallInputTurns` newer assistant turns have
+//     passed, the large inputs of a call that errored are dropped. Its error
+//     message (what the model learned from) stays.
+//
+// Prompt caching: superseded code and failed inputs are edited a step or a
+// few turns behind the tail, so the cached prefix before them survives; a
+// dedupe edits further back but only once per repeated read, which pays for
+// itself the moment the duplicate would have been re-sent.
+//
+// Gemini signs function calls (`thoughtSignature`) and rejects tampered
+// ones, so a signed call's input is never rewritten (its tool RESULT may
+// still be).
+
+/** Tools whose `code` argument is a complete program. */
+const CODE_TOOLS = new Set(['setCode', 'runCode', 'runAndSave', 'runIsolated', 'forkVersion', 'runAndAssert', 'runAndExplain']);
+
+export const SUPERSEDED_CODE_NOTE = '[code omitted from context: a later edit or read superseded it. Call getCode for the current source.]';
+export const SUPERSEDED_GETCODE_NOTE = '[getCode result omitted from context: a later edit or read superseded it. Call getCode for the current source.]';
+export const REPEATED_DOC_NOTE = '[doc omitted from context: the same readDoc call appears again later in this conversation.]';
+export const FAILED_INPUT_NOTE = '[omitted from context: input of a failed call]';
+
+export interface ToolPayloadPruneOptions {
+  /** Newest code bodies kept verbatim (minimum 1). */
+  keepRecentCodeBodies: number;
+  /** Assistant turns after which a failed call's large inputs go. */
+  failedCallInputTurns: number;
+  /** Only failed inputs at least this long (JSON chars) are dropped. */
+  failedCallInputMinChars: number;
+}
+
+/** Code bodies are counted per target object, so editing one object never
+ *  drops the last copy of another's code. */
+function codeKey(input: Record<string, unknown>): string {
+  return typeof input.object === 'string' ? input.object : '';
+}
+
+/** Drop each large top-level value, keeping the keys so the call still
+ *  reads as what it was. */
+function stubLargeInputs(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    out[k] = JSON.stringify(v ?? null).length > 200 ? FAILED_INPUT_NOTE : v;
+  }
+  return out;
+}
+
+/**
+ * Return a history equivalent to `history` with superseded code bodies,
+ * repeated doc reads and stale failed-call inputs replaced by short notes.
+ * Input is never mutated; when nothing qualifies the original array is
+ * returned as-is.
+ */
+export function pruneStaleToolPayloads(history: ChatMessage[], opts: ToolPayloadPruneOptions): ChatMessage[] {
+  const keep = Math.max(1, Math.floor(opts.keepRecentCodeBodies));
+  const calls = new Map<string, { name: string; input: Record<string, unknown> }>();
+  const failed = new Set<string>();
+  for (const m of history) {
+    for (const tc of m.toolCalls ?? []) calls.set(tc.id, { name: tc.name, input: tc.input ?? {} });
+    for (const r of m.toolResults ?? []) if (r.isError) failed.add(r.toolUseId);
+  }
+
+  // Code bodies newest-first: a code-tool call's `code`, or a getCode result.
+  type Body = { msg: number; id: string; kind: 'input' | 'result'; signed: boolean };
+  const bodies = new Map<string, Body[]>();
+  const docReads = new Map<string, number>(); // readDoc input key → newest msg index
+  const stubCode = new Set<string>();          // `${msg}:${id}:${kind}`
+  const stubDoc = new Set<string>();           // `${msg}:${toolUseId}`
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    for (const r of m.toolResults ?? []) {
+      const call = calls.get(r.toolUseId);
+      if (!call) continue;
+      if (call.name === 'getCode' && !r.isError) {
+        const list = bodies.get(codeKey(call.input)) ?? [];
+        list.push({ msg: i, id: r.toolUseId, kind: 'result', signed: false });
+        bodies.set(codeKey(call.input), list);
+      } else if (call.name === 'readDoc' && !r.isError) {
+        const key = JSON.stringify(call.input);
+        if (docReads.has(key)) stubDoc.add(`${i}:${r.toolUseId}`);
+        else docReads.set(key, i);
+      }
+    }
+    for (const tc of m.toolCalls ?? []) {
+      if (!CODE_TOOLS.has(tc.name) || typeof tc.input?.code !== 'string') continue;
+      const list = bodies.get(codeKey(tc.input)) ?? [];
+      list.push({ msg: i, id: tc.id, kind: 'input', signed: !!tc.thoughtSignature });
+      bodies.set(codeKey(tc.input), list);
+    }
+  }
+  for (const list of bodies.values()) {
+    for (const b of list.slice(keep)) if (!b.signed) stubCode.add(`${b.msg}:${b.id}:${b.kind}`);
+  }
+
+  // Failed calls old enough to drop their large inputs.
+  const stubFailed = new Set<string>(); // toolCall id
+  let assistantTurnsAfter = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m.role !== 'assistant') continue;
+    if (assistantTurnsAfter >= opts.failedCallInputTurns) {
+      for (const tc of m.toolCalls ?? []) {
+        if (failed.has(tc.id) && !tc.thoughtSignature && JSON.stringify(tc.input ?? {}).length >= opts.failedCallInputMinChars) {
+          stubFailed.add(tc.id);
+        }
+      }
+    }
+    assistantTurnsAfter++;
+  }
+
+  if (stubCode.size === 0 && stubDoc.size === 0 && stubFailed.size === 0) return history;
+
+  return history.map((m, i): ChatMessage => {
+    let changed = false;
+    const toolCalls = m.toolCalls?.map((tc): PersistedToolCall => {
+      if (stubFailed.has(tc.id)) { changed = true; return { ...tc, input: stubLargeInputs(tc.input) }; }
+      if (stubCode.has(`${i}:${tc.id}:input`)) { changed = true; return { ...tc, input: { ...tc.input, code: SUPERSEDED_CODE_NOTE } }; }
+      return tc;
+    });
+    const toolResults = m.toolResults?.map((r): PersistedToolResult => {
+      if (stubCode.has(`${i}:${r.toolUseId}:result`)) { changed = true; return { ...r, content: SUPERSEDED_GETCODE_NOTE }; }
+      if (stubDoc.has(`${i}:${r.toolUseId}`)) { changed = true; return { ...r, content: REPEATED_DOC_NOTE }; }
+      return r;
+    });
+    if (!changed) return m;
+    return { ...m, ...(toolCalls ? { toolCalls } : {}), ...(toolResults ? { toolResults } : {}) };
   });
 }
