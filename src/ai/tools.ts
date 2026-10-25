@@ -454,6 +454,16 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinBox: {
+          type: 'object',
+          description: 'Spatial clamp {min?: [x,y,z], max?: [x,y,z]} — the flood never walks into a triangle whose centroid is outside this box. Use it to stop a fill leaking across a crease-less join (sleeve→hand, collar→neck, sock→leg). Either side may be omitted.',
+          properties: {
+            min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+          },
+        },
+        zMin: { type: 'number', description: 'Shortcut clamp: never flood below this Z (AND-ed with withinBox).' },
+        zMax: { type: 'number', description: 'Shortcut clamp: never flood above this Z (AND-ed with withinBox).' },
       },
       required: ['seed', 'color'],
     },
@@ -628,11 +638,11 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[x, y, z] world point on the face.' },
-        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional normal hint to disambiguate at edges.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional normal hint to disambiguate at edges. Omit to use the nearest face\'s normal.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name.' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
-        tolerance: { type: 'number', description: 'Coplanarity angle tolerance in degrees.' },
+        toleranceDeg: { type: 'number', description: 'Max bend angle in DEGREES (0–180) the flood may cross between ADJACENT faces. Default ≈1.8 (flat faces only); ~12 follows a 32-sided cylinder; 180 floods the whole connected mesh. On smooth/organic meshes this is all-or-nothing — use paintConnected instead.' },
       },
       required: ['point', 'color'],
     },
@@ -3494,8 +3504,19 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listSessionNotes();
     case 'readDoc':
       return readSubdoc(input.name as string);
-    case 'paintRegion':
-      return api.paintRegion(input);
+    case 'paintRegion': {
+      // The tool takes degrees (what models reason in); the console API takes
+      // the cosine. A legacy `tolerance` already in cosine range passes
+      // through; anything else is rejected by the API with a hint.
+      const { toleranceDeg, ...rest } = input;
+      if (toleranceDeg !== undefined) {
+        if (typeof toleranceDeg !== 'number' || !Number.isFinite(toleranceDeg) || toleranceDeg < 0 || toleranceDeg > 180) {
+          return { error: 'paintRegion.toleranceDeg must be a number of degrees in [0, 180]' };
+        }
+        return api.paintRegion({ ...rest, tolerance: Math.cos((toleranceDeg * Math.PI) / 180) });
+      }
+      return api.paintRegion(rest);
+    }
     case 'paintFaces':
       return api.paintFaces(input);
     case 'paintNear':
