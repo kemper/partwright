@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parse3MF, weldMesh, normalizeHexColor } from '../../src/import/parsers/threemf';
+import { parse3MF, normalizeHexColor } from '../../src/import/parsers/threemf';
+import { weldMesh } from '../../src/geometry/weldPositions';
 import { openZip, looksLikeZip } from '../../src/import/zipReader';
 import { dominantPaintColorState, encodePaintColorState } from '../../src/export/paintColor3mf';
 import { buildZip } from '../../src/export/zip';

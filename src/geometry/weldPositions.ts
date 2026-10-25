@@ -58,3 +58,15 @@ export function weldPositions(
   }
   return { positions: numVert === room ? positions : positions.slice(0, numVert * 3), remap, numVert };
 }
+
+/** Weld an already-indexed mesh's vertices that coincide after quantizing to
+ *  `tolerance`, keeping the triangle order (so per-triangle data such as a
+ *  3MF's `triColor` stays aligned). 3MF meshes are indexed, but separately-
+ *  modelled objects / some exporters duplicate seam vertices, which
+ *  `Manifold.ofMesh` rejects as open edges. */
+export function weldMesh<M extends { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number }>(mesh: M, tolerance: number): { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number } {
+  const { positions, remap, numVert } = weldPositions(mesh.vertProperties, mesh.numVert, tolerance, mesh.numProp);
+  const triVerts = new Uint32Array(mesh.triVerts.length);
+  for (let i = 0; i < triVerts.length; i++) triVerts[i] = remap[mesh.triVerts[i]];
+  return { vertProperties: positions, triVerts, numVert, numTri: mesh.numTri, numProp: 3 };
+}

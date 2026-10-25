@@ -27,7 +27,6 @@
 import type { MeshData } from '../../geometry/types';
 import { dominantPaintColorState } from '../../export/paintColor3mf';
 import { openZip, type ZipArchive } from '../zipReader';
-import { weldPositions } from '../../geometry/weldPositions';
 
 export interface ThreeMFPaletteEntry {
   /** `#rrggbb`, lower-case. */
@@ -942,13 +941,3 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   };
 }
 
-/** Weld vertices that coincide after quantizing to `tolerance`, keeping the
- *  triangle order (so `triColor` stays aligned). 3MF meshes are already indexed,
- *  but separately-modelled objects / some exporters duplicate seam vertices,
- *  which `Manifold.ofMesh` rejects as open edges. */
-export function weldMesh(mesh: MeshData, tolerance: number): MeshData {
-  const { positions, remap, numVert } = weldPositions(mesh.vertProperties, mesh.numVert, tolerance);
-  const triVerts = new Uint32Array(mesh.triVerts.length);
-  for (let i = 0; i < triVerts.length; i++) triVerts[i] = remap[mesh.triVerts[i]];
-  return { vertProperties: positions, triVerts, numVert, numTri: mesh.numTri, numProp: 3 };
-}

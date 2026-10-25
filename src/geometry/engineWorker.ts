@@ -42,8 +42,6 @@
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { computeManifoldFacts } from './manifoldFacts';
-import { edgeStats } from './geometryHeuristics';
-import { computeMeshPieces } from './meshPieces';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine, runVoxelGrid } from './engines/voxel';
@@ -66,6 +64,35 @@ const simplifyCancelFlags = new Map<string, boolean>();
 const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
+
+/** `manifoldFacts` for a simplify / enhance result of at least `minTriangles`
+ *  (the same Worker-side stats a big run sends): built from a Manifold of the
+ *  result here, so the main thread can defer its own multi-second rebuild.
+ *  `manifoldError` when the result isn't a valid solid (main shows it as
+ *  render-only). Empty for small results — main builds those itself. */
+function resultFacts(mesh: MeshData, minTriangles: unknown): { manifoldFacts?: ReturnType<typeof computeManifoldFacts>; manifoldError?: string } {
+  if (typeof minTriangles !== 'number' || mesh.numTri < minTriangles) return {};
+  let m: { delete?: () => void } | null = null;
+  try {
+    m = getManifoldModule().Manifold.ofMesh(mesh);
+    return { manifoldFacts: computeManifoldFacts(m, mesh) };
+  } catch (err) {
+    return { manifoldError: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { m?.delete?.(); } catch { /* already freed */ }
+  }
+}
+
+/** Transfer list for a result mesh (+ its facts' piece split). */
+function meshTransfer(mesh: MeshData, facts?: { pieces?: { pieceOfTri: Int32Array } }): Transferable[] {
+  const t: Transferable[] = [mesh.vertProperties.buffer, mesh.triVerts.buffer];
+  if (mesh.mergeFromVert) t.push(mesh.mergeFromVert.buffer);
+  if (mesh.mergeToVert)   t.push(mesh.mergeToVert.buffer);
+  if (mesh.runIndex)      t.push(mesh.runIndex.buffer);
+  if (mesh.runOriginalID) t.push(mesh.runOriginalID.buffer);
+  if (facts?.pieces) t.push(facts.pieces.pieceOfTri.buffer);
+  return t;
+}
 
 /** Current size (bytes) of the manifold-3d WASM linear heap — its grown
  *  high-water mark, since WASM memory never shrinks. Reported back to the main
@@ -331,14 +358,16 @@ self.onmessage = async (event: MessageEvent) => {
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
-      // A big manifold-js result: compute the Manifold-dependent stats here,
-      // over the live result, so the main thread can skip rebuilding its own
-      // Manifold from the mesh (seconds of frozen UI at a few million
-      // triangles) until something needs it. See MeshResult.manifoldFacts.
+      // A big result: compute the Manifold-dependent stats here, over the live
+      // result, so the main thread can skip rebuilding its own Manifold from
+      // the mesh (seconds of frozen UI at a few million triangles) until
+      // something needs it. See MeshResult.manifoldFacts. Every engine that
+      // returns a live Manifold returns that Manifold's own mesh (manifold-js,
+      // SCAD's canonical mesh, replicad's getMesh()), so the facts describe it.
       const liveResult = (result as { manifold?: unknown }).manifold;
-      const manifoldFacts = effectiveLang === 'manifold-js' && mesh && liveResult && !result.renderOnly &&
+      const manifoldFacts = mesh && liveResult && !result.renderOnly &&
         typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
-        ? { ...computeManifoldFacts(liveResult), edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri), pieces: computeMeshPieces(mesh) }
+        ? computeManifoldFacts(liveResult, mesh)
         : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
@@ -408,9 +437,10 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance, tolerance } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance, manifoldFactsMinTriangles } = msg as unknown as {
       callId: string;
       mesh: MeshData;
+      manifoldFactsMinTriangles?: number;
       targetTriangles: number;
       maxTolerance: number;
       // When set (> 0), run a single direct simplify(tolerance) pass instead of
@@ -463,20 +493,13 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: true, error: null,
         });
       } else if (result) {
-        const transfer: Transferable[] = [
-          result.mesh.vertProperties.buffer,
-          result.mesh.triVerts.buffer,
-        ];
-        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
-        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
-        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
-        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'simplify_result', callId,
           mesh: result.mesh, triangleCount: result.triangleCount, tolerance: result.tolerance,
-          cancelled: false, error: null,
-        }, transfer);
+          cancelled: false, error: null, ...facts,
+        }, meshTransfer(result.mesh, facts.manifoldFacts));
       } else {
         // null result: target ≥ current triangle count, or no reduction possible.
         self.postMessage({
@@ -507,9 +530,10 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles, manifoldFactsMinTriangles } = msg as unknown as {
       callId: string;
       mesh: MeshData;
+      manifoldFactsMinTriangles?: number;
       targetTriangles: number;
       maxEdgeLength: number;
       // When set (> 0), run a single direct refineToLength(edgeLength) pass
@@ -572,20 +596,13 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: false, exceeded: true, error: null,
         });
       } else if (result) {
-        const transfer: Transferable[] = [
-          result.mesh.vertProperties.buffer,
-          result.mesh.triVerts.buffer,
-        ];
-        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
-        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
-        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
-        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'enhance_result', callId,
           mesh: result.mesh, triangleCount: result.triangleCount,
-          cancelled: false, error: null,
-        }, transfer);
+          cancelled: false, error: null, ...facts,
+        }, meshTransfer(result.mesh, facts.manifoldFacts));
       } else {
         self.postMessage({
           type: 'enhance_result', callId,
