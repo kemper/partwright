@@ -21,7 +21,7 @@ import {
 import { isFatalWasmFault } from './workerFaults';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { VoxelGrid } from './voxel/grid';
-import { getEngineTrustDomain } from './trustDomain';
+import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
 import { sourceUsesBrep } from './brepRuntime';
 
@@ -296,6 +296,17 @@ function claimEngineWorker(domain: string = getEngineTrustDomain()): WorkerClaim
   workerDomain = domain;
   return { worker: engineWorker!, domain };
 }
+
+// Pre-warm on a session switch: retire the old domain's Worker and start the
+// fresh one booting right away (~0.2 s of WASM init), so the new session's
+// first run — usually issued a moment later — doesn't pay the boot on its
+// critical path. The fresh Worker stays untagged until a request claims it.
+onEngineTrustDomainChange((domain) => {
+  if (engineWorker && workerDomain !== null && workerDomain !== domain) {
+    recycleEngineWorker('Isolating sessions: fresh geometry worker for the newly opened session', 'debug');
+    initEngineWorker();
+  }
+});
 
 /** Claim the Worker, then wait for it to be ready. */
 async function claimAndWait(domain?: string): Promise<WorkerClaim> {
