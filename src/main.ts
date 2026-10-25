@@ -368,6 +368,7 @@ import {
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
+import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
 import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
@@ -377,7 +378,8 @@ import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 let referenceGeometryGen = 0;
 
 /** Set when the most recent runCodeSync was refused by a fail-closed engine
- *  sandbox, so API callers get that reason instead of the generic (and
+ *  sandbox or a fail-closed Worker lockdown ("refused to start for security
+ *  reasons"), so API callers get that reason instead of the generic (and
  *  AI-retryable) "superseded". Cleared at the start of every run. */
 let lastRunRejection: string | null = null;
 function runFailedMessage(): string {
@@ -22512,9 +22514,10 @@ async function main() {
       stopRunTimer();
       hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
-      // Surface the fail-closed sandbox refusal verbatim; other rejections keep
-      // the generic "superseded — retry" text the AI loop treats as transient.
-      lastRunRejection = isEngineSandboxUnavailableError(msg) ? msg : null;
+      // Surface a fail-closed sandbox / lockdown refusal verbatim; other
+      // rejections keep the generic "superseded — retry" text the AI loop
+      // treats as transient (retrying a refusal can't succeed).
+      lastRunRejection = isEngineSandboxUnavailableError(msg) || parseLockdownRefusal(msg) !== null ? msg : null;
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
       return false;

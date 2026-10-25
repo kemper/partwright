@@ -43,21 +43,27 @@
 export interface AllowlistGroup {
   /** One-line justification for the whole group. */
   readonly why: string;
+  /** String-keyed property names. */
   readonly names: readonly string[];
+  /** Symbol-keyed properties, as symbolLabel() labels (`@@toStringTag`).
+   *  Matched against symbol keys only — a string key that happens to read
+   *  `@@toStringTag` never matches one of these. */
+  readonly symbols?: readonly string[];
 }
 
-/** Label for a symbol-keyed property. Well-known symbols get their spec name
- *  (`[Symbol.toStringTag]`), registry symbols `[Symbol.for(<key>)]`; anything
- *  else is `[Symbol(<description>)]`, which no allowlist entry uses (a unique
- *  symbol's description proves nothing about who created it). */
+/** Label for a symbol-keyed property. Well-known symbols get `@@<name>`
+ *  (`@@toStringTag`), registry symbols `@@for(<key>)`; anything else is
+ *  `@@unique(<description>)`, which no allowlist entry uses (a unique symbol's
+ *  description proves nothing about who created it). Symbol labels are checked
+ *  against the `symbols` lists only, so they can't collide with a string key. */
 export function symbolLabel(sym: symbol): string {
   const wk = WELL_KNOWN_SYMBOLS;
   for (let i = 0; i < wk.length; i++) {
-    if ((Symbol as unknown as Record<string, unknown>)[wk[i]] === sym) return `[Symbol.${wk[i]}]`;
+    if ((Symbol as unknown as Record<string, unknown>)[wk[i]] === sym) return `@@${wk[i]}`;
   }
   const key = Symbol.keyFor(sym);
-  if (key !== undefined) return `[Symbol.for(${key})]`;
-  return `[Symbol(${sym.description ?? ''})]`;
+  if (key !== undefined) return `@@for(${key})`;
+  return `@@unique(${sym.description ?? ''})`;
 }
 
 const WELL_KNOWN_SYMBOLS: readonly string[] = Object.freeze([
@@ -134,7 +140,7 @@ export const GLOBAL_ALLOWLIST: Readonly<Record<string, AllowlistGroup>> = Object
     names: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'queueMicrotask'],
   },
   dataUtilities: {
-    why: 'In-memory encoding / copying utilities with no I/O. TextDecoder is used by every Emscripten glue (UTF8ToString); Blob carries STEP bytes (engineWorker importSTEP*, replicad blobSTEP); URL is needed to resolve asset paths.',
+    why: 'In-memory encoding / copying utilities with no I/O. TextDecoder is used by every Emscripten glue (UTF8ToString); Blob carries STEP bytes (engineWorker importSTEP*, replicad blobSTEP); URL is needed to resolve asset paths (its blob-registry statics createObjectURL/revokeObjectURL are replaced with throwing stubs — see URL_STATIC_STUBS in workerLockdown.ts).',
     names: [
       'TextEncoder', 'TextDecoder', 'atob', 'btoa', 'structuredClone', 'Blob', 'URL',
       'URLSearchParams', 'DOMException', 'Event',
@@ -158,8 +164,9 @@ export const GLOBAL_ALLOWLIST: Readonly<Record<string, AllowlistGroup>> = Object
 export const NAVIGATOR_ALLOWLIST: Readonly<Record<string, AllowlistGroup>> = Object.freeze({
   objectPrototype: OBJECT_PROTOTYPE,
   identity: {
-    why: 'The WorkerNavigator interface itself.',
-    names: ['[Symbol.toStringTag]'],
+    why: 'The WorkerNavigator interface\'s brand tag (`[object WorkerNavigator]`).',
+    names: [],
+    symbols: ['@@toStringTag'],
   },
   environment: {
     why: 'Static environment facts (no capability): the Assembly pool and Emscripten size threads by hardwareConcurrency; glue code sniffs userAgent/platform.',
@@ -173,20 +180,32 @@ export const NAVIGATOR_ALLOWLIST: Readonly<Record<string, AllowlistGroup>> = Obj
 /** Symbol-keyed properties allowed on the global chain. */
 const GLOBAL_SYMBOLS: AllowlistGroup = {
   why: 'Interface brand tags (`[object DedicatedWorkerGlobalScope]`).',
-  names: ['[Symbol.toStringTag]'],
+  names: [],
+  symbols: ['@@toStringTag'],
 };
 
-function flatten(groups: Readonly<Record<string, AllowlistGroup>>, extra: AllowlistGroup[] = []): ReadonlySet<string> {
-  const out = new Set<string>();
-  for (const key of Object.keys(groups)) for (const n of groups[key].names) out.add(n);
-  for (const g of extra) for (const n of g.names) out.add(n);
-  return out;
+/** An allowlist, split by key kind so string and symbol keys never match
+ *  each other's entries. */
+export interface Allowlist {
+  readonly names: ReadonlySet<string>;
+  readonly symbols: ReadonlySet<string>;
 }
 
-/** Every allowed label for the global chain (string names and `[Symbol.x]`). */
-export const ALLOWED_GLOBAL_NAMES: ReadonlySet<string> = flatten(GLOBAL_ALLOWLIST, [GLOBAL_SYMBOLS]);
-/** Every allowed label for the navigator chain. */
-export const ALLOWED_NAVIGATOR_NAMES: ReadonlySet<string> = flatten(NAVIGATOR_ALLOWLIST);
+function flatten(groups: Readonly<Record<string, AllowlistGroup>>, extra: AllowlistGroup[] = []): Allowlist {
+  const names = new Set<string>();
+  const symbols = new Set<string>();
+  const all = [...Object.keys(groups).map((k) => groups[k]), ...extra];
+  for (const g of all) {
+    for (const n of g.names) names.add(n);
+    for (const s of g.symbols ?? []) symbols.add(s);
+  }
+  return { names, symbols };
+}
+
+/** Everything allowed on the global chain. */
+export const ALLOWED_GLOBAL: Allowlist = flatten(GLOBAL_ALLOWLIST, [GLOBAL_SYMBOLS]);
+/** Everything allowed on the navigator chain. */
+export const ALLOWED_NAVIGATOR: Allowlist = flatten(NAVIGATOR_ALLOWLIST);
 
 /** True for a property descriptor that grants nothing: a data property whose
  *  value is a primitive. Objects, functions and accessors are never inert. */
@@ -200,8 +219,10 @@ export function isInertDescriptor(d: PropertyDescriptor): boolean {
 export interface ChainEntry {
   /** Which object holds it, e.g. `self`, `WorkerGlobalScope.prototype`. */
   owner: string;
-  /** Property label: the string key, or `[Symbol.x]` (see symbolLabel). */
+  /** Property label: the string key, or symbolLabel() for a symbol key. */
   label: string;
+  /** True for a symbol key (matched against the allowlist's `symbols`). */
+  symbol: boolean;
   /** isInertDescriptor — a primitive data value (incl. a name the lockdown
    *  already pinned to `undefined`), accepted for any name. */
   inert: boolean;
@@ -219,11 +240,11 @@ export interface AllowlistPlan {
  * an allowlist, return the labels that must be removed (default deny). Inert
  * entries are accepted for any name.
  */
-export function planAllowlistAudit(entries: readonly ChainEntry[], allowed: ReadonlySet<string>): AllowlistPlan {
+export function planAllowlistAudit(entries: readonly ChainEntry[], allowed: Allowlist): AllowlistPlan {
   const offending: ChainEntry[] = [];
   const labels = new Set<string>();
   for (const e of entries) {
-    if (e.inert || allowed.has(e.label)) continue;
+    if (e.inert || (e.symbol ? allowed.symbols : allowed.names).has(e.label)) continue;
     offending.push(e);
     labels.add(e.label);
   }

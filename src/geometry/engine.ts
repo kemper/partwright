@@ -21,6 +21,7 @@ import {
 import { isFatalWasmFault } from './workerFaults';
 import { createEngineWorker, isEngineSandboxUnavailableError, prewarmEngineSandbox, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { reportLockdownRefusal } from './lockdownRefusalLog';
 import { VoxelGrid } from './voxel/grid';
 import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
@@ -698,6 +699,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   if (msg.type === 'error') {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
+    // A fail-closed sandbox lockdown: record it (with the offending names) in
+    // the Diagnostic Log; the rejected calls carry the same message to the UI.
+    const lockdownRefused = reportLockdownRefusal(msg.message, 'geometry');
     if (callId) {
       const failedExec = pendingExecutions.get(callId);
       if (failedExec) recordGeometryRun(failedExec.meta, 'error', undefined, err.message);
@@ -730,7 +734,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       // poisoned the WASM instance — so reject every in-flight call and recycle
       // the Worker rather than silently dropping the error (which would leave
       // the no-timeout render path's promise unsettled and the UI spinning).
-      recycleEngineWorker(err.message || 'Geometry worker reported an unhandled error');
+      // A lockdown refusal is already logged above (as an error, once), so the
+      // recycle itself stays quiet.
+      recycleEngineWorker(err.message || 'Geometry worker reported an unhandled error', lockdownRefused ? 'debug' : 'warn');
     }
   }
 }

@@ -20,7 +20,9 @@
 //      a hand-rolled prototype walk — all read `undefined`.
 //   2. Does the same for the storage / device accessors on `navigator`
 //      (NAVIGATOR_PROPS — `navigator.storage`, `navigator.locks`, …).
-//   3. Replaces a few functions with frozen throwing stubs (STUBBED_FUNCTIONS).
+//   3. Replaces a few functions with frozen throwing stubs (STUBBED_FUNCTIONS,
+//      plus URL.createObjectURL / URL.revokeObjectURL — URL_STATIC_STUBS — whose
+//      blob: URLs land in the origin-wide blob registry).
 //      `importScripts` stays a *function* on purpose: Emscripten glue (the OCCT
 //      build) detects "am I in a Worker?" via `typeof importScripts ==
 //      'function'`, and module Workers already make it throw.
@@ -59,11 +61,12 @@
 
 import { BASE } from '../deployment';
 import {
-  ALLOWED_GLOBAL_NAMES,
-  ALLOWED_NAVIGATOR_NAMES,
+  ALLOWED_GLOBAL,
+  ALLOWED_NAVIGATOR,
   isInertDescriptor,
   planAllowlistAudit,
   symbolLabel,
+  type Allowlist,
   type ChainEntry,
 } from './workerGlobalAllowlist';
 
@@ -97,6 +100,13 @@ export const NAVIGATOR_PROPS: readonly string[] = Object.freeze([
 
 /** Functions kept as callable-but-inert stubs (see header, point 3). */
 const STUBBED_FUNCTIONS: readonly string[] = Object.freeze(['importScripts', 'close']);
+
+/** Static methods of the (allowlisted) `URL` constructor replaced with frozen
+ *  throwing stubs. `URL.createObjectURL` registers a `blob:` URL in the
+ *  origin-wide blob registry — a write channel any same-origin context can
+ *  read — so model code must not have it. Nothing in the engine Worker graph
+ *  calls either. */
+export const URL_STATIC_STUBS: readonly string[] = Object.freeze(['createObjectURL', 'revokeObjectURL']);
 
 export interface LockdownReport {
   /** Every `owner.name` that was deleted or overwritten. */
@@ -165,11 +175,23 @@ function reachable(root: object, name: string, allowed: unknown): boolean {
   return false;
 }
 
+/** Every stub this module installed — verifyLockdown checks a pinned stub is
+ *  ours, not a lookalike. */
+const stubs = new WeakSet<object>();
+
 function makeStub(name: string): () => never {
   const stub = (): never => {
     throw new TypeError(`${name}() is disabled in the geometry sandbox`);
   };
-  return Object.freeze(stub);
+  Object.freeze(stub);
+  stubs.add(stub);
+  return stub;
+}
+
+/** The value of `g`'s own `name` data property (no getters run). */
+function ownValue(g: object, name: string): unknown {
+  const d = Object.getOwnPropertyDescriptor(g, name);
+  return d && 'value' in d ? d.value : undefined;
 }
 
 /**
@@ -202,6 +224,22 @@ export function lockdownGlobalScope(g: object): LockdownReport {
   for (const name of LOCKDOWN_GLOBALS) scrub(g, name, undefined, 'self', removed);
   for (const name of STUBBED_FUNCTIONS) scrub(g, name, makeStub(name), 'self', removed);
 
+  // URL stays (asset paths are resolved with it) but loses its blob-registry
+  // statics. They're configurable own properties of the constructor; a
+  // non-configurable one is left for verifyLockdown to report.
+  const urlCtor = ownValue(g, 'URL');
+  if (typeof urlCtor === 'function') {
+    for (const name of URL_STATIC_STUBS) {
+      const d = Object.getOwnPropertyDescriptor(urlCtor, name);
+      if (d && !d.configurable) continue;
+      if (d) {
+        delete (urlCtor as unknown as Bag)[name];
+        removed.push(`URL.${name}`);
+      }
+      Object.defineProperty(urlCtor, name, { value: makeStub(`URL.${name}`), writable: false, enumerable: false, configurable: false });
+    }
+  }
+
   // Pin the message channel so model code can't swap the Worker's handler or
   // intercept the results of later runs. Event-handler IDL attributes are
   // accessors on the prototype; the handler is already registered by the
@@ -225,20 +263,25 @@ export function lockdownGlobalScope(g: object): LockdownReport {
   // every capability an engine needs has been captured privately (`fetch`
   // above); lazy engine loaders that run later see only allowlisted globals.
   const defaultDenied: string[] = [];
-  if (nav !== null && typeof nav === 'object') auditChain(nav, 'navigator', ALLOWED_NAVIGATOR_NAMES, defaultDenied);
-  auditChain(g, 'self', ALLOWED_GLOBAL_NAMES, defaultDenied);
+  if (nav !== null && typeof nav === 'object') auditChain(nav, 'navigator', ALLOWED_NAVIGATOR, defaultDenied);
+  auditChain(g, 'self', ALLOWED_GLOBAL, defaultDenied);
   for (let i = 0; i < defaultDenied.length; i++) removed.push(defaultDenied[i]);
 
   lockedGlobals.push(g);
   return { removed, defaultDenied, stillReachable: verifyLockdown(g) };
 }
 
+/** Map key for a property key: string and symbol labels live in separate
+ *  namespaces (a string key `@@x` is not the symbol `@@x`). */
+const keyId = (symbol: boolean, label: string): string => (symbol ? 's:' : 'n:') + label;
+
 /** Every own property (string and symbol keys) of `root` and of each object up
- *  its prototype chain, labelled for the allowlist. `keys` maps each label
- *  back to its property key. */
-function enumerateChain(root: object, rootLabel: string): { entries: ChainEntry[]; keys: Map<string, PropertyKey[]> } {
+ *  its prototype chain, labelled for the allowlist. `keys` maps each keyId
+ *  back to its property keys. Exported for the unit test that keeps the e2e
+ *  tier's in-Worker copy (tests/helpers/enumerateChainSource.ts) in sync. */
+export function enumerateChain(root: object, rootLabel: string): { entries: ChainEntry[]; keys: Map<string, PropertyKey[]> } {
   const entries: ChainEntry[] = [];
-  // Distinct unique symbols can share a label (`[Symbol(x)]`), so a label can
+  // Distinct unique symbols can share a label (`@@unique(x)`), so a label can
   // map to several keys.
   const keys = new Map<string, PropertyKey[]>();
   for (let o: object | null = root; o !== null; o = Object.getPrototypeOf(o)) {
@@ -248,24 +291,30 @@ function enumerateChain(root: object, rootLabel: string): { entries: ChainEntry[
       const key = own[i];
       const d = Object.getOwnPropertyDescriptor(o, key);
       if (!d) continue;
+      const symbol = typeof key === 'symbol';
       const label = typeof key === 'symbol' ? symbolLabel(key) : key;
-      const same = keys.get(label);
-      if (same === undefined) keys.set(label, [key]);
+      const id = keyId(symbol, label);
+      const same = keys.get(id);
+      if (same === undefined) keys.set(id, [key]);
       else if (!same.includes(key)) same.push(key);
-      entries.push({ owner, label, inert: isInertDescriptor(d) });
+      entries.push({ owner, label, symbol, inert: isInertDescriptor(d) });
     }
   }
   return { entries, keys };
 }
 
 /** Delete + pin every non-allowlisted, non-inert name on `root`'s chain. */
-function auditChain(root: object, rootLabel: string, allowed: ReadonlySet<string>, removed: string[]): void {
+function auditChain(root: object, rootLabel: string, allowed: Allowlist, removed: string[]): void {
   const { entries, keys } = enumerateChain(root, rootLabel);
   const plan = planAllowlistAudit(entries, allowed);
-  for (const label of plan.remove) {
-    for (const key of keys.get(label) ?? []) {
+  const done = new Set<string>();
+  for (const e of plan.offending) {
+    const id = keyId(e.symbol, e.label);
+    if (done.has(id)) continue;
+    done.add(id);
+    for (const key of keys.get(id) ?? []) {
       try {
-        scrub(root, key, undefined, rootLabel, removed, label);
+        scrub(root, key, undefined, rootLabel, removed, e.label);
       } catch {
         // e.g. a non-extensible owner — verifyLockdown reports what survived.
       }
@@ -275,8 +324,14 @@ function auditChain(root: object, rootLabel: string, allowed: ReadonlySet<string
 
 /** Labels on `root`'s chain that are present, not inert and not allowed —
  *  i.e. what the allowlist audit failed to remove. */
-function unexpectedOnChain(root: object, rootLabel: string, allowed: ReadonlySet<string>): string[] {
+function unexpectedOnChain(root: object, rootLabel: string, allowed: Allowlist): string[] {
   return planAllowlistAudit(enumerateChain(root, rootLabel).entries, allowed).remove;
+}
+
+/** True when `URL.<name>` is anything but one of our pinned stubs. */
+function urlStaticLive(urlCtor: object, name: string): boolean {
+  const own = Object.getOwnPropertyDescriptor(urlCtor, name);
+  return !own || own.configurable === true || !('value' in own) || own.writable === true || !stubs.has(own.value as object);
 }
 
 /** Names from the lockdown lists still reachable on `g` (or its navigator),
@@ -294,11 +349,15 @@ export function verifyLockdown(g: object): string[] {
     const d = Object.getOwnPropertyDescriptor(g, name);
     if (!d || d.configurable || d.writable) bad.push(name);
   }
-  for (const label of unexpectedOnChain(g, 'self', ALLOWED_GLOBAL_NAMES)) {
+  const urlCtor = ownValue(g, 'URL');
+  if (typeof urlCtor === 'function') {
+    for (const name of URL_STATIC_STUBS) if (urlStaticLive(urlCtor, name)) bad.push(`URL.${name}`);
+  }
+  for (const label of unexpectedOnChain(g, 'self', ALLOWED_GLOBAL)) {
     if (!bad.includes(label)) bad.push(label);
   }
   if (nav !== null && typeof nav === 'object') {
-    for (const label of unexpectedOnChain(nav, 'navigator', ALLOWED_NAVIGATOR_NAMES)) {
+    for (const label of unexpectedOnChain(nav, 'navigator', ALLOWED_NAVIGATOR)) {
       if (!bad.includes(`navigator.${label}`)) bad.push(`navigator.${label}`);
     }
   }

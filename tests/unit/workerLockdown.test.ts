@@ -6,7 +6,12 @@ import {
   isSafeAssetName,
   LOCKDOWN_GLOBALS,
   NAVIGATOR_PROPS,
+  URL_STATIC_STUBS,
+  enumerateChain,
 } from '../../src/geometry/workerLockdown';
+import type { ChainEntry } from '../../src/geometry/workerGlobalAllowlist';
+import { formatLockdownRefusal, parseLockdownRefusal, LOCKDOWN_REFUSAL_PREFIX } from '../../src/geometry/lockdownRefusal';
+import { ENUMERATE_CHAIN_SOURCE } from '../helpers/enumerateChainSource';
 
 // A fake Worker global with the same shape as Chromium's: a few members on the
 // instance ([Global] interfaces), more on WorkerGlobalScope.prototype, an
@@ -160,7 +165,7 @@ describe('lockdownGlobalScope', () => {
     expect(typeof g.addEventListener).toBe('function');
     // The audit's removals are reported separately from the explicit lists.
     expect(report.defaultDenied).toEqual(expect.arrayContaining([
-      'WorkerGlobalScope.prototype.SomeFutureStorage', 'self.OffscreenCanvas', 'self.[Symbol(vendorHook)]',
+      'WorkerGlobalScope.prototype.SomeFutureStorage', 'self.OffscreenCanvas', 'self.@@unique(vendorHook)',
       'navigator<proto>.permissions',
     ]));
     expect(report.defaultDenied.some((r) => r.endsWith('.fetch'))).toBe(false);
@@ -178,11 +183,80 @@ describe('lockdownGlobalScope', () => {
     expect(verifyLockdown(g)).toEqual(expect.arrayContaining(['StickyTransport', 'stickyAccessor']));
   });
 
+  it('replaces URL.createObjectURL / revokeObjectURL with pinned throwing stubs', () => {
+    const { g } = fakeWorkerGlobal();
+    const minted: string[] = [];
+    class FakeURL { constructor(public href: string) {} }
+    Object.defineProperty(FakeURL, 'createObjectURL', { value: () => { minted.push('blob:x'); return 'blob:x'; }, configurable: true, writable: true, enumerable: true });
+    Object.defineProperty(FakeURL, 'revokeObjectURL', { value: () => undefined, configurable: true, writable: true, enumerable: true });
+    Object.defineProperty(g, 'URL', { value: FakeURL, configurable: true, writable: true });
+
+    const report = lockdownGlobalScope(g);
+    expect(report.stillReachable).toEqual([]);
+    expect(report.removed).toEqual(expect.arrayContaining(['URL.createObjectURL', 'URL.revokeObjectURL']));
+    const U = g.URL as unknown as Record<string, unknown>;
+    expect(g.URL).toBe(FakeURL); // URL itself stays usable
+    for (const name of URL_STATIC_STUBS) {
+      expect(typeof U[name], name).toBe('function');
+      expect(() => (U[name] as () => void)(), name).toThrow(/URL\.\w+\(\) is disabled/);
+      const d = Object.getOwnPropertyDescriptor(FakeURL, name)!;
+      expect(d.writable || d.configurable, name).toBe(false);
+      expect(Object.isFrozen(d.value), name).toBe(true);
+    }
+    expect(() => { U.createObjectURL = () => 'blob:evil'; }).toThrow(TypeError);
+    expect(minted).toEqual([]);
+  });
+
+  it('fails closed when a URL blob-registry static cannot be replaced', () => {
+    const { g } = fakeWorkerGlobal();
+    const FakeURL = function URL() {};
+    Object.defineProperty(FakeURL, 'createObjectURL', { value: () => 'blob:x', configurable: false, writable: false });
+    Object.defineProperty(g, 'URL', { value: FakeURL, configurable: true, writable: true });
+    const report = lockdownGlobalScope(g);
+    expect(report.stillReachable).toContain('URL.createObjectURL');
+    expect(report.stillReachable).not.toContain('URL.revokeObjectURL');
+  });
+
+  it('the e2e tier\'s in-Worker enumeration source matches enumerateChain', () => {
+    // tests/engine-lockdown.spec.ts runs ENUMERATE_CHAIN_SOURCE inside the real
+    // Worker; evaluate the same text here so it can't drift from the runtime.
+    const { g, nav, wgsProto } = fakeWorkerGlobal();
+    Object.defineProperty(wgsProto, 'CONSTANT', { value: 1, configurable: false, writable: false });
+    Object.defineProperty(g, Symbol('unique'), { value: () => 1, configurable: true, writable: true });
+    Object.defineProperty(g, Symbol.for('registered'), { value: 7, configurable: true, writable: true });
+    Object.defineProperty(wgsProto, Symbol.toStringTag, { value: 'WorkerGlobalScope', configurable: true });
+    Object.defineProperty(g, '@@toStringTag', { value: {}, configurable: true, writable: true });
+    Object.defineProperty(g, 'pinned', { value: undefined, configurable: false, writable: false });
+    const twin = new Function(`return (${ENUMERATE_CHAIN_SOURCE});`)() as (root: object, label: string) => ChainEntry[];
+    for (const [root, label] of [[g, 'self'], [nav, 'navigator']] as const) {
+      expect(twin(root, label), label).toEqual(enumerateChain(root, label).entries);
+    }
+    // And after a lockdown, too (pinned undefineds, stubs, shadowing data props).
+    lockdownGlobalScope(g);
+    expect(twin(g, 'self')).toEqual(enumerateChain(g, 'self').entries);
+  });
+
   it('covers the names called out in #1090', () => {
     for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'WebSocketStream', 'EventSource', 'WebTransport', 'indexedDB', 'caches', 'CacheStorage', 'Worker', 'SharedWorker', 'BroadcastChannel']) {
       expect(LOCKDOWN_GLOBALS).toContain(name);
     }
     expect(NAVIGATOR_PROPS).toEqual(expect.arrayContaining(['storage', 'locks']));
+  });
+});
+
+describe('lockdown refusal message', () => {
+  it('says why the engine refused and round-trips the offending names', () => {
+    const msg = formatLockdownRefusal('still reachable: StickyStorage, navigator.sticky');
+    expect(msg.startsWith(LOCKDOWN_REFUSAL_PREFIX)).toBe(true);
+    expect(msg).toMatch(/refused to start for security reasons/);
+    expect(parseLockdownRefusal(msg)).toBe('still reachable: StickyStorage, navigator.sticky');
+    // A detail containing parentheses survives (the last ")" closes it).
+    expect(parseLockdownRefusal(formatLockdownRefusal('TypeError: f(x) failed'))).toBe('TypeError: f(x) failed');
+  });
+  it('ignores every other error', () => {
+    for (const other of ['Geometry Worker crashed: x', '', null, 42, 'Execution cancelled']) {
+      expect(parseLockdownRefusal(other), String(other)).toBeNull();
+    }
   });
 });
 

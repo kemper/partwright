@@ -1,10 +1,11 @@
 import { test, expect, type Page } from 'playwright/test';
 import {
   planAllowlistAudit,
-  ALLOWED_GLOBAL_NAMES,
-  ALLOWED_NAVIGATOR_NAMES,
+  ALLOWED_GLOBAL,
+  ALLOWED_NAVIGATOR,
   type ChainEntry,
 } from '../src/geometry/workerGlobalAllowlist';
+import { ENUMERATE_CHAIN_SOURCE } from './helpers/enumerateChainSource';
 
 // Engine-Worker sandbox lockdown (#1090). Model code runs via
 // `new Function('api', code)` inside the geometry Worker; after the init
@@ -84,6 +85,8 @@ const PROBE_CODE = String.raw`
   { const om = self.onmessage; probe('hijack onmessage', () => { self.onmessage = () => {}; self.onmessage = om; return true; }); }
   { const pm = self.postMessage; probe('hijack postMessage', () => { self.postMessage = () => {}; self.postMessage = pm; return true; }); }
   probe('api.fetch', () => api.fetch);
+  probe('URL.createObjectURL()', () => URL.createObjectURL(new Blob(['x'])));
+  probe('replace URL.createObjectURL', () => { URL.createObjectURL = () => 'blob:x'; return /native code/.test(String(URL.createObjectURL)) || URL.createObjectURL(new Blob(['x'])); });
   // Sanity: the sandbox still has what model code legitimately needs.
   r.__mathOk = typeof Math.sin === 'function';
   r.__navigatorOk = typeof navigator.hardwareConcurrency === 'number';
@@ -91,34 +94,21 @@ const PROBE_CODE = String.raw`
 `;
 
 // Model code that walks the Worker global's prototype chain (and navigator's)
-// AFTER lockdown and reports every own property, strings and symbols, with the
-// same inert rule and symbol labels as src/geometry/workerGlobalAllowlist.ts.
-// The test then runs the shared planner on it in Node, so a name the audit
-// failed to remove is reported by name.
+// AFTER lockdown and reports every own property, strings and symbols. The walk
+// is ENUMERATE_CHAIN_SOURCE — the in-Worker twin of workerLockdown's
+// `enumerateChain`, kept in sync by a unit test — and the test runs the shared
+// planner on the result in Node, so a name the audit failed to remove is
+// reported by name. It also reports the URL blob-registry statics.
 const ENUMERATE_CODE = String.raw`
-  const WK = ['asyncIterator', 'hasInstance', 'isConcatSpreadable', 'iterator', 'match', 'matchAll',
-    'replace', 'search', 'species', 'split', 'toPrimitive', 'toStringTag', 'unscopables', 'dispose', 'asyncDispose'];
-  const label = (k) => {
-    if (typeof k !== 'symbol') return k;
-    for (const w of WK) if (Symbol[w] === k) return '[Symbol.' + w + ']';
-    const key = Symbol.keyFor(k);
-    return key !== undefined ? '[Symbol.for(' + key + ')]' : '[Symbol(' + (k.description ?? '') + ')]';
-  };
-  const walk = (root) => {
-    const out = [];
-    for (let o = root, i = 0; o; o = Object.getPrototypeOf(o), i++) {
-      const ctor = Object.getOwnPropertyDescriptor(o, 'constructor')?.value?.name;
-      const owner = i === 0 ? 'root' : (ctor ? ctor + '.prototype' : '<proto>');
-      for (const k of Reflect.ownKeys(o)) {
-        const d = Object.getOwnPropertyDescriptor(o, k);
-        const v = d && 'value' in d ? d.value : undefined;
-        const inert = !!d && 'value' in d && (v === null || (typeof v !== 'object' && typeof v !== 'function'));
-        out.push({ owner, label: label(k), inert });
-      }
-    }
-    return out;
-  };
-  throw new Error('ENUM:' + JSON.stringify({ global: walk(self), navigator: walk(navigator) }));
+  const enumerate = ${ENUMERATE_CHAIN_SOURCE};
+  const urlStatics = {};
+  for (const n of ['createObjectURL', 'revokeObjectURL']) {
+    const d = Object.getOwnPropertyDescriptor(URL, n);
+    let call;
+    try { call = 'returned:' + String(URL[n](n === 'createObjectURL' ? new Blob(['x']) : 'blob:x')); } catch (e) { call = 'threw:' + String(e && e.message); }
+    urlStatics[n] = { type: typeof (d && d.value), writable: !!(d && d.writable), configurable: !!(d && d.configurable), call };
+  }
+  throw new Error('ENUM:' + JSON.stringify({ global: enumerate(self, 'self'), navigator: enumerate(navigator, 'navigator'), urlStatics }));
 `;
 
 function parseProbe(error: string | null | undefined): Record<string, unknown> {
@@ -421,9 +411,17 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
       }
       const m = /ENUM:(\{.*\})/.exec(out.error ?? '');
       expect(m, `unexpected error: ${out.error}`).toBeTruthy();
-      const found = JSON.parse(m![1]) as { global: ChainEntry[]; navigator: ChainEntry[] };
-      const unexpectedGlobals = planAllowlistAudit(found.global, ALLOWED_GLOBAL_NAMES).offending.map((e) => `${e.owner}.${e.label}`);
-      const unexpectedNavigator = planAllowlistAudit(found.navigator, ALLOWED_NAVIGATOR_NAMES).offending.map((e) => `navigator ${e.owner}.${e.label}`);
+      type UrlStatic = { type: string; writable: boolean; configurable: boolean; call: string };
+      const found = JSON.parse(m![1]) as { global: ChainEntry[]; navigator: ChainEntry[]; urlStatics: Record<string, UrlStatic> };
+      // URL stays, but its blob-registry statics are pinned throwing stubs: no
+      // `blob:` URL can be minted into the origin-wide registry.
+      for (const name of ['createObjectURL', 'revokeObjectURL']) {
+        const s = found.urlStatics[name];
+        expect(s, name).toMatchObject({ type: 'function', writable: false, configurable: false });
+        expect(s.call, name).toMatch(/^threw:.*disabled in the geometry sandbox/);
+      }
+      const unexpectedGlobals = planAllowlistAudit(found.global, ALLOWED_GLOBAL).offending.map((e) => `${e.owner}.${e.label}`);
+      const unexpectedNavigator = planAllowlistAudit(found.navigator, ALLOWED_NAVIGATOR).offending.map((e) => `navigator ${e.owner}.${e.label}`);
       expect([...unexpectedGlobals, ...unexpectedNavigator], 'non-allowlisted names still reachable after lockdown').toEqual([]);
 
       // The audit really ran in this Worker: capabilities the explicit
@@ -438,4 +436,32 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
       console.log(`[allowlist ${mode}] default-deny removed ${denied.length} globals the denylist doesn't name`);
     });
   }
+
+  test('a lockdown refusal reaches the Diagnostic Log with the offending names', async ({ page }) => {
+    await boot(page);
+    // A real refusal needs a browser whose Worker global can't be scrubbed, so
+    // drive the main-thread path with the Worker's own refusal message (model
+    // code can post on the pinned channel; the app treats it like a refusal).
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const { formatLockdownRefusal } = await import('/src/geometry/lockdownRefusal.ts');
+      const message = formatLockdownRefusal('still reachable: StickyStorage, navigator.stickyThing');
+      const refused = await pw.run(`self.postMessage({ type: 'error', callId: null, message: ${JSON.stringify(message)} }); const t = Date.now(); while (Date.now() - t < 300) {} return api.Manifold.cube(1);`);
+      const { errorLog } = await import('/src/diagnostics/errorLog.ts');
+      const entries = errorLog.getEntries().filter((e: { source?: string; message: string }) => e.source === 'engine' && /refused to start for security reasons/.test(e.message));
+      const after = await pw.run('return api.Manifold.cube([2, 2, 2]);');
+      return { refusedError: refused.error ?? '', entries: entries.map((e: { level: string; message: string; detail?: string }) => ({ level: e.level, message: e.message, detail: e.detail ?? '' })), after };
+    });
+    // The user-visible error says why nothing rendered…
+    expect(out.refusedError).toMatch(/Geometry engine refused to start for security reasons/);
+    // …and the Diagnostic Log records it once, as an error, naming the globals.
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].level).toBe('error');
+    expect(out.entries[0].message).toMatch(/StickyStorage, navigator\.stickyThing/);
+    expect(out.entries[0].detail).toMatch(/workerGlobalAllowlist/);
+    // A real (unforged) Worker boots fine afterwards.
+    expect(out.after.error).toBeFalsy();
+    expect(out.after.triangleCount).toBe(12);
+  });
 });
