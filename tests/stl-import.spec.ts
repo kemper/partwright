@@ -74,7 +74,10 @@ test.describe('STL import', () => {
         const pw = (window as any).partwright;
         if (!((pw?.getCode?.() ?? '') as string).includes('Manifold.ofMesh(api.imports[0])')) return false;
         const geo = pw?.getGeometryData?.();
-        return typeof geo?.volume === 'number';
+        // `stale` is set while the geometry still belongs to the PREVIOUS code
+        // (the starter's volume is numeric too). Opening a new session boots a
+        // fresh, isolated geometry Worker (#1090), which widens that window.
+        return typeof geo?.volume === 'number' && geo.stale !== true;
       },
       undefined,
       { timeout: 15000 },
