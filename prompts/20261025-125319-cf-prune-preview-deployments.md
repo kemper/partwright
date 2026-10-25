@@ -46,3 +46,32 @@ documents `mainifold.pages.dev`. Rather than hardcode one name that may be
 stale, the script now enumerates every Pages project in the account and
 prunes each; `--project` (repeatable) or `CF_PAGES_PROJECT` narrows it. The
 same keep/production guards apply per project.
+
+## Human
+
+Go ahead and add the fix to this PR. [Context: e2e shard 5 was red on main
+itself — the select-scope surface texture test — and I had proposed a patch
+rather than widening the PR.]
+
+## Assistant
+
+## Key decisions (main-red fix)
+
+**Root cause**: two separately-green merges collided. The scoped-ops PR added a
+third surface scope kind (`select`, a shared selector), while the engine
+lockdown PR added main-thread re-validation of Worker results whose
+`checkSurfaceOp` only knew `label`/`point`. Any `select`-scoped
+`api.surface.*` op made the whole execute_result fail validation, so the run
+produced no geometry.
+
+**Fix shape**: map `{kind:'select', select}` back onto the `select` option and
+let `parseSurfaceOpts` re-validate it (a normalized Selector re-parses
+cleanly through `parseSelector`), mirroring how label/point scopes are
+handled. Also added `select` to the "params must not carry scope keys"
+guard: without it, a forged payload could smuggle a `select` scope inside
+`params` and pass validation — the new unit case reproduced that before the
+fix.
+
+**Scope check**: of the scoped-ops PR's source changes, only the surface op
+spec reaches a validated Worker payload, so no other allow-list needed
+updating.
