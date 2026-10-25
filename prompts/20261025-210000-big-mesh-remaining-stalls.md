@@ -49,3 +49,33 @@ the on-disk record shape. An older build sharing the origin's IndexedDB (a
 rollback deploy, a stale tab, the pinned /v1 mount) would fail to load those
 versions. That is a compatibility call for the owner, so it stays tracked in
 #1129 with these numbers.
+
+### Review follow-ups
+
+A review pass on the draft found a real bug and several gaps; all fixed here.
+
+- **Hollow solids were miscounted.** The mesh census returned early when no
+  piece needed a ray test, so a sealed inner cavity shell (negative volume)
+  never counted as contained — a hollow cube said 0 enclosed pieces instead
+  of 1. `countContained` now always runs. New unit cases (hollow cube,
+  rattle-in-a-box) compare the mesh census against manifold-3d's exact one.
+- **A stats failure is not "not a solid".** If computing the facts throws in
+  the Worker, it now sends nothing and the main thread builds the Manifold
+  itself, instead of reporting the result as render-only.
+- **Heal no longer adopts a broken Manifold.** It reuses the solid it cleaned
+  only when that solid's status is clean; otherwise the result shows as
+  render-only with the usual warning.
+- **The instant import preview is display-only.** It no longer overwrites the
+  current model state, and a failed or cancelled run puts the previous
+  display back.
+- **Small 3MF objects probe on the main thread.** Below the lazy-solid
+  threshold ofMesh takes milliseconds, which is cheaper than starting the
+  probe Worker.
+- **3MF probe only swaps the mesh when it actually welded**, so the caller
+  keeps its own mesh (and per-triangle data) when the raw one already passes.
+- The ray-test sample count is a config knob (`renderer.containmentSamples`,
+  Advanced Settings) rather than a module constant.
+
+Skipped: computing simplify facts from the live candidate before it is
+released. It would only save Worker time, not main-thread time, and means
+threading facts through every return path in `simplify.ts`.

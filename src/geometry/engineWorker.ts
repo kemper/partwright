@@ -70,16 +70,33 @@ let manifoldReady = false;
  *  result here, so the main thread can defer its own multi-second rebuild.
  *  `manifoldError` when the result isn't a valid solid (main shows it as
  *  render-only). Empty for small results — main builds those itself. */
-function resultFacts(mesh: MeshData, minTriangles: unknown): { manifoldFacts?: ReturnType<typeof computeManifoldFacts>; manifoldError?: string } {
+function resultFacts(mesh: MeshData, minTriangles: unknown, containmentSamples: unknown): { manifoldFacts?: ReturnType<typeof computeManifoldFacts>; manifoldError?: string } {
   if (typeof minTriangles !== 'number' || mesh.numTri < minTriangles) return {};
   let m: { delete?: () => void } | null = null;
   try {
     m = getManifoldModule().Manifold.ofMesh(mesh);
-    return { manifoldFacts: computeManifoldFacts(m, mesh) };
   } catch (err) {
     return { manifoldError: err instanceof Error ? err.message : String(err) };
+  }
+  // A failure computing the stats is NOT "not a solid": send nothing and let
+  // the main thread build the Manifold itself, as for a small result.
+  try {
+    return { manifoldFacts: computeManifoldFacts(m, mesh, { containmentSamples: typeof containmentSamples === 'number' ? containmentSamples : undefined }) };
+  } catch {
+    return {};
   } finally {
     try { m?.delete?.(); } catch { /* already freed */ }
+  }
+}
+
+/** `computeManifoldFacts` for a run result, or undefined if it throws — the
+ *  main thread then builds its own Manifold (a stats failure must not fail
+ *  the run). */
+function computeFactsSafely(live: unknown, mesh: MeshData, containmentSamples: unknown): ReturnType<typeof computeManifoldFacts> | undefined {
+  try {
+    return computeManifoldFacts(live, mesh, { containmentSamples: typeof containmentSamples === 'number' ? containmentSamples : undefined });
+  } catch {
+    return undefined;
   }
 }
 
@@ -202,7 +219,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -212,6 +229,7 @@ self.onmessage = async (event: MessageEvent) => {
       companionFiles?: Record<string, string>;
       sdfPreviewScale?: number | null;
       manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
     };
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
@@ -367,7 +385,7 @@ self.onmessage = async (event: MessageEvent) => {
       const liveResult = (result as { manifold?: unknown }).manifold;
       const manifoldFacts = mesh && liveResult && !result.renderOnly &&
         typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
-        ? computeManifoldFacts(liveResult, mesh)
+        ? computeFactsSafely(liveResult, mesh, containmentSamples)
         : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
@@ -437,10 +455,11 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance, tolerance, manifoldFactsMinTriangles } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
       targetTriangles: number;
       maxTolerance: number;
       // When set (> 0), run a single direct simplify(tolerance) pass instead of
@@ -493,7 +512,7 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: true, error: null,
         });
       } else if (result) {
-        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles, containmentSamples);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'simplify_result', callId,
@@ -530,10 +549,11 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles, manifoldFactsMinTriangles } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
       targetTriangles: number;
       maxEdgeLength: number;
       // When set (> 0), run a single direct refineToLength(edgeLength) pass
@@ -596,7 +616,7 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: false, exceeded: true, error: null,
         });
       } else if (result) {
-        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles, containmentSamples);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'enhance_result', callId,

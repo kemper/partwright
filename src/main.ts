@@ -5107,7 +5107,11 @@ async function main() {
     const configuredTolerance = getConfig().import.stlWeldTolerance;
     let r: IndexedProbeResult;
     if (isOrientedEdgeManifold(raw)) {
-      r = { mesh: raw, isManifold: true };
+      r = { mesh: raw, isManifold: true, welded: false };
+    } else if (raw.numTri < getConfig().renderer.lazyManifoldMinTriangles) {
+      // Small (e.g. one object of a split 3MF): ofMesh is milliseconds here,
+      // cheaper than spawning the Worker and loading manifold-3d into it.
+      r = probeIndexed(raw, { configuredTolerance, tryManifold: tryConstructManifold });
     } else {
       try {
         r = await probeIndexedInWorker(raw, configuredTolerance);
@@ -5116,8 +5120,8 @@ async function main() {
         r = probeIndexed(raw, { configuredTolerance, tryManifold: tryConstructManifold });
       }
     }
-    // A failed probe hands back the raw mesh itself — keep the caller's object.
-    const source = r.isManifold ? r.mesh : raw;
+    // Unless the probe welded, keep the caller's own mesh (the Worker's is a copy).
+    const source = r.isManifold && r.welded ? r.mesh : raw;
     if (r.isManifold) return { probe: { mesh: toImportedMesh(filename, source, format), isManifold: true }, source };
     return {
       probe: { mesh: toImportedMesh(filename, raw, format), isManifold: false, manifoldError: r.manifoldError, maxTried: r.maxTried, triCount: raw.numTri, vertCount: raw.numVert },
@@ -14955,8 +14959,15 @@ async function main() {
       };
       const status = typeof cleaned.status === 'function' ? cleaned.status() : 0;
       // Hand `cleaned` over as the current Manifold (it IS this mesh's solid)
-      // instead of rebuilding one from the mesh.
-      applyLiveGeometry(meshData, { manifold: cleaned });
+      // instead of rebuilding one from the mesh — unless it came out broken,
+      // which shows as render-only with the usual warning.
+      const healthy = !status || status === 0 || status === 'NoError';
+      if (healthy) {
+        applyLiveGeometry(meshData, { manifold: cleaned });
+      } else {
+        try { cleaned.delete?.(); } catch { /* already freed */ }
+        applyLiveGeometry(meshData, { error: String(status) });
+      }
       return {
         ok: !status || status === 0 || status === 'NoError',
         volumeDelta: after.volume - before.volume,
@@ -22667,9 +22678,15 @@ async function main() {
     // e.g. the first time a big object is opened after a reload. Show that
     // mesh right away (it IS the result's geometry) under the fast-preview
     // pill; the engine's result replaces it as usual.
+    // Display only: the model state (currentMeshData, its Manifold, paint,
+    // labels) keeps describing the previous model until the result lands, and
+    // a cancelled or failed run puts the previous display back.
     const importPreview = previewLang === 'manifold-js' ? importWrapperPreviewMesh(src) : null;
+    const displayedBeforePreview = importPreview ? getDisplayedMesh() : null;
+    const undoImportPreview = () => {
+      if (importPreview && displayedBeforePreview) updateMesh(displayedBeforePreview, { skipAutoFrame: true });
+    };
     if (importPreview) {
-      currentMeshData = importPreview;
       updateMesh(importPreview, { skipAutoFrame: preservedCameraPose !== null });
       showFastPreviewPill();
     }
@@ -22690,6 +22707,7 @@ async function main() {
       _running = false;
       stopRunTimer();
       hideFastPreviewPill();
+      undoImportPreview();
       const msg = err instanceof Error ? err.message : String(err);
       // Surface the fail-closed sandbox refusal verbatim; other rejections keep
       // the generic "superseded — retry" text the AI loop treats as transient.
@@ -22728,6 +22746,7 @@ async function main() {
     syncParamsPanel(result.paramsSchema);
 
     if (result.error) {
+      undoImportPreview();
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';

@@ -169,6 +169,11 @@ export interface AppConfig {
      *  detail a thumbnail can't show. Above the ~500k catalog budget so
      *  catalog thumbnails stay exact. renderViews etc. are never proxied. */
     thumbnailMaxTriangles: number;
+    /** Points per enclosed-piece test in the engine Worker's stats for big
+     *  models: a piece counts as enclosed (no floater warning) when all of
+     *  these sample points lie inside the larger piece. More = fewer misses
+     *  on oddly shaped pieces, slower. */
+    containmentSamples: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -656,6 +661,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     creaseEdgeMaxTriangles: 200_000,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
+    containmentSamples: 12,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,

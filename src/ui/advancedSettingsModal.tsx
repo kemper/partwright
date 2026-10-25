@@ -706,6 +706,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'thumbnailMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.containmentSamples"
+          label="Enclosed-piece samples"
+          hint="Points tested per piece when checking big models for pieces sealed inside others."
+          tooltip="For big models the engine checks whether a separate piece sits entirely inside another (an internal part, a sealed cavity) by testing a few points of it. Enclosed pieces don't trigger the floating-part warning. More points catch odd shapes that poke out between samples, at a small cost in speed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.containmentSamples}
+          value={c.renderer.containmentSamples}
+          min={1} max={256} integer
+          onChange={v => set('renderer', 'containmentSamples', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"

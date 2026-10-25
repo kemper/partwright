@@ -132,23 +132,27 @@ function censusFromManifold(manifold: Manifold): Census {
   return census;
 }
 
-/** Sample points per enclosure test in the mesh census. */
-const CONTAINMENT_SAMPLES = 12;
-
 /** The census from the mesh itself — the piece split, per-piece signed volume
- *  and bbox in one pass — with containment judged by casting rays from a few
- *  points of the smaller piece through the larger (inside = odd crossings for
- *  every sample). `decompose()` + boolean `intersect()` took ~8.5 s on a
- *  3.7M-triangle mesh; this is a couple of linear passes. Approximate only in
- *  the containment test (a sliver poking out between samples), which feeds the
- *  floater warning, not geometry. */
-function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces): Census {
+ *  and bbox in one pass — with containment judged by casting rays from
+ *  `samples` points of the smaller piece through the larger (inside = odd
+ *  crossings for every sample). `decompose()` + boolean `intersect()` took
+ *  ~8.5 s on a 3.7M-triangle mesh; this is a couple of linear passes.
+ *  Approximate only in the containment test (a sliver poking out between
+ *  samples), which feeds the floater warning, not geometry. */
+function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces, samples: number): Census {
   const { vertProperties: vp, triVerts: tv, numTri, numProp: np } = mesh;
   const n = pieces.count;
   const census: Census = { componentCount: n, containedComponents: 0, componentsInterpenetrate: false };
   if (n <= 1) return census;
   const vol = new Float64Array(n);
   const lo = new Float64Array(n * 3).fill(Infinity), hi = new Float64Array(n * 3).fill(-Infinity);
+  const grow = (p: number, o: number) => {
+    for (let k = 0; k < 3; k++) {
+      const x = vp[o + k];
+      if (x < lo[p * 3 + k]) lo[p * 3 + k] = x;
+      if (x > hi[p * 3 + k]) hi[p * 3 + k] = x;
+    }
+  };
   for (let t = 0; t < numTri; t++) {
     const p = pieces.pieceOfTri[t];
     if (p < 0) continue;
@@ -156,13 +160,7 @@ function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces): Census {
     vol[p] += (vp[a] * (vp[b + 1] * vp[c + 2] - vp[b + 2] * vp[c + 1])
       - vp[a + 1] * (vp[b] * vp[c + 2] - vp[b + 2] * vp[c])
       + vp[a + 2] * (vp[b] * vp[c + 1] - vp[b + 1] * vp[c])) / 6;
-    for (const o of [a, b, c]) {
-      for (let k = 0; k < 3; k++) {
-        const x = vp[o + k];
-        if (x < lo[p * 3 + k]) lo[p * 3 + k] = x;
-        if (x > hi[p * 3 + k]) hi[p * 3 + k] = x;
-      }
-    }
+    grow(p, a); grow(p, b); grow(p, c);
   }
   const infos: PieceInfo[] = Array.from({ length: n }, (_, p) => ({
     vol: vol[p],
@@ -177,61 +175,77 @@ function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces): Census {
   // piece, nudged off-axis so the +X rays don't graze edges exactly.
   const needSamples = new Set<number>();
   candidates.forEach((c, j) => { if (c.length > 0) needSamples.add(j); });
-  if (needSamples.size === 0) return census;
-  const trisOf = new Map<number, number[]>();
-  const count = new Uint32Array(n);
-  for (let t = 0; t < numTri; t++) { const p = pieces.pieceOfTri[t]; if (p >= 0) count[p]++; }
-  const seen = new Uint32Array(n);
-  for (let t = 0; t < numTri; t++) {
-    const p = pieces.pieceOfTri[t];
-    if (p < 0 || !needSamples.has(p)) continue;
-    const stride = Math.max(1, Math.floor(count[p] / CONTAINMENT_SAMPLES));
-    if (seen[p]++ % stride !== 0) continue;
-    const list = trisOf.get(p) ?? [];
-    if (list.length < CONTAINMENT_SAMPLES) { list.push(t); trisOf.set(p, list); }
-  }
-  const diag = Math.hypot(...[0, 1, 2].map(k => Math.max(...infos.map(i => i.bb ? i.bb.max[k] : -Infinity)) - Math.min(...infos.map(i => i.bb ? i.bb.min[k] : Infinity))));
-  const nudge = (Number.isFinite(diag) ? diag : 1) * 1e-7;
-  // One test = (larger piece i, smaller piece j); its samples' crossing counts.
-  interface Test { j: number; pts: Float64Array; crossings: Uint32Array }
-  const testsByLarger = new Map<number, Test[]>();
-  for (const j of needSamples) {
-    const tris = trisOf.get(j) ?? [];
-    const pts = new Float64Array(tris.length * 3);
-    tris.forEach((t, s) => {
-      for (let k = 0; k < 3; k++) {
-        pts[s * 3 + k] = (vp[tv[t * 3] * np + k] + vp[tv[t * 3 + 1] * np + k] + vp[tv[t * 3 + 2] * np + k]) / 3;
-      }
-      pts[s * 3 + 1] += nudge * 0.7071;
-      pts[s * 3 + 2] += nudge * 0.3183;
-    });
-    for (const i of candidates[j]) {
-      const list = testsByLarger.get(i) ?? [];
-      list.push({ j, pts, crossings: new Uint32Array(tris.length) });
-      testsByLarger.set(i, list);
+  // Tests keyed larger piece → smaller piece → that test's crossing counts.
+  interface Test { pts: Float64Array; crossings: Uint32Array }
+  const testsByLarger = new Map<number, Map<number, Test>>();
+  if (needSamples.size > 0) {
+    const trisOf = new Map<number, number[]>();
+    const count = new Uint32Array(n);
+    for (let t = 0; t < numTri; t++) { const p = pieces.pieceOfTri[t]; if (p >= 0) count[p]++; }
+    const seen = new Uint32Array(n);
+    for (let t = 0; t < numTri; t++) {
+      const p = pieces.pieceOfTri[t];
+      if (p < 0 || !needSamples.has(p)) continue;
+      const stride = Math.max(1, Math.floor(count[p] / samples));
+      if (seen[p]++ % stride !== 0) continue;
+      const list = trisOf.get(p) ?? [];
+      if (list.length < samples) { list.push(t); trisOf.set(p, list); }
     }
-  }
-  for (let t = 0; t < numTri; t++) {
-    const tests = testsByLarger.get(pieces.pieceOfTri[t]);
-    if (!tests) continue;
-    const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
-    const ay = vp[a + 1], az = vp[a + 2], by = vp[b + 1], bz = vp[b + 2], cy = vp[c + 1], cz = vp[c + 2];
-    for (const test of tests) {
-      const { pts, crossings } = test;
-      for (let s = 0; s < crossings.length; s++) {
-        const py = pts[s * 3 + 1], pz = pts[s * 3 + 2];
-        // Does the +X ray from the point pass through the triangle's YZ shadow?
-        const d1 = (by - ay) * (pz - az) - (bz - az) * (py - ay);
-        const d2 = (cy - by) * (pz - bz) - (cz - bz) * (py - by);
-        const d3 = (ay - cy) * (pz - cz) - (az - cz) * (py - cy);
-        if (!((d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0))) continue;
-        const x = (d2 * vp[a] + d3 * vp[b] + d1 * vp[c]) / (d1 + d2 + d3);
-        if (x > pts[s * 3]) crossings[s]++;
+    let extent = 0;
+    for (let k = 0; k < 3; k++) {
+      let mn = Infinity, mx = -Infinity;
+      for (let p = 0; p < n; p++) { if (lo[p * 3 + k] < mn) mn = lo[p * 3 + k]; if (hi[p * 3 + k] > mx) mx = hi[p * 3 + k]; }
+      if (mx > mn) extent += (mx - mn) * (mx - mn);
+    }
+    const nudge = (extent > 0 ? Math.sqrt(extent) : 1) * 1e-7;
+    for (const j of needSamples) {
+      const tris = trisOf.get(j) ?? [];
+      const pts = new Float64Array(tris.length * 3);
+      tris.forEach((t, s) => {
+        for (let k = 0; k < 3; k++) {
+          pts[s * 3 + k] = (vp[tv[t * 3] * np + k] + vp[tv[t * 3 + 1] * np + k] + vp[tv[t * 3 + 2] * np + k]) / 3;
+        }
+        pts[s * 3 + 1] += nudge * 0.7071;
+        pts[s * 3 + 2] += nudge * 0.3183;
+      });
+      for (const i of candidates[j]) {
+        const byJ = testsByLarger.get(i) ?? new Map<number, Test>();
+        byJ.set(j, { pts, crossings: new Uint32Array(tris.length) });
+        testsByLarger.set(i, byJ);
       }
     }
+    // Edge function of (u→v) at (py, pz) in the YZ plane, always evaluated
+    // from the lower vertex index so the two triangles sharing an edge get
+    // exact negations — a ray grazing the edge then counts exactly once.
+    const edge = (iu: number, iv: number, py: number, pz: number): number => {
+      const flip = iu > iv;
+      const u = (flip ? iv : iu) * np, v = (flip ? iu : iv) * np;
+      const d = (vp[v + 1] - vp[u + 1]) * (pz - vp[u + 2]) - (vp[v + 2] - vp[u + 2]) * (py - vp[u + 1]);
+      return flip ? -d : d;
+    };
+    for (let t = 0; t < numTri; t++) {
+      const tests = testsByLarger.get(pieces.pieceOfTri[t]);
+      if (!tests) continue;
+      const ia = tv[t * 3], ib = tv[t * 3 + 1], ic = tv[t * 3 + 2];
+      const a = ia * np, b = ib * np, c = ic * np;
+      for (const { pts, crossings } of tests.values()) {
+        for (let s = 0; s < crossings.length; s++) {
+          const py = pts[s * 3 + 1], pz = pts[s * 3 + 2];
+          // Does the +X ray from the point pass through the triangle's YZ shadow?
+          const d1 = edge(ia, ib, py, pz);
+          const d2 = edge(ib, ic, py, pz);
+          const d3 = edge(ic, ia, py, pz);
+          if (!((d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0))) continue;
+          const x = (d2 * vp[a] + d3 * vp[b] + d1 * vp[c]) / (d1 + d2 + d3);
+          if (x > pts[s * 3]) crossings[s]++;
+        }
+      }
+    }
   }
+  // Negative-volume pieces (sealed inner cavity shells) count as contained
+  // even when no piece needed a ray test.
   census.containedComponents = countContained(infos, candidates, (i, j) => {
-    const test = testsByLarger.get(i)?.find(x => x.j === j);
+    const test = testsByLarger.get(i)?.get(j);
     return !!test && test.crossings.length > 0 && test.crossings.every(c => c % 2 === 1);
   });
   return census;
@@ -241,7 +255,7 @@ function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces): Census {
  *  path — `mesh` is the manifold's own getMesh()), the component census comes
  *  from the mesh instead of decompose() + booleans, and the mesh-wide extras
  *  (edge stats, the piece split) ride along. */
-export function computeManifoldFacts(manifold: Manifold, mesh?: FactsMesh): ManifoldFacts {
+export function computeManifoldFacts(manifold: Manifold, mesh?: FactsMesh, opts: { containmentSamples?: number } = {}): ManifoldFacts {
   let volume = 0;
   let surfaceArea = 0;
   try {
@@ -252,7 +266,17 @@ export function computeManifoldFacts(manifold: Manifold, mesh?: FactsMesh): Mani
   }
 
   const pieces = mesh ? computeMeshPieces(mesh) : null;
-  const census = mesh && pieces ? censusFromMesh(mesh, pieces) : censusFromManifold(manifold);
+  let census: Census;
+  if (mesh && pieces) {
+    try {
+      census = censusFromMesh(mesh, pieces, Math.max(1, Math.round(opts.containmentSamples ?? 12)));
+    } catch {
+      // Never let the census sink the facts: the piece count alone still holds.
+      census = { componentCount: pieces.count, containedComponents: 0, componentsInterpenetrate: false };
+    }
+  } else {
+    census = censusFromManifold(manifold);
+  }
 
   let isManifold = true;
   let manifoldStatus: string | null = null;

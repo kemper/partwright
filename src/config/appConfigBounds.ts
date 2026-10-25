@@ -75,6 +75,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     creaseEdgeMaxTriangles: { min: 0, max: 50_000_000, integer: true },
     lazyManifoldMinTriangles: { min: 0, max: 50_000_000, integer: true },
     thumbnailMaxTriangles: { min: 0, max: 50_000_000, integer: true },
+    containmentSamples: { min: 1, max: 256, integer: true },
     assemblyPoolSize: { min: 1, max: 16, integer: true },
     engineSandboxBootTimeoutMs: { min: 2_000, max: 120_000, integer: true },
     engineSandboxMaxFrameRestarts: { min: 0, max: 10, integer: true },

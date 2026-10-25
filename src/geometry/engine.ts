@@ -787,7 +787,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -1098,7 +1098,7 @@ export async function simplifyInWorker(
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     worker.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
-        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
     );
@@ -1182,7 +1182,7 @@ export async function enhanceInWorker(
     const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
     worker.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
-        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );

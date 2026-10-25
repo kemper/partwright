@@ -237,13 +237,14 @@ describe('probeIndexed', () => {
     const r = probeIndexed(m, { configuredTolerance: 1e-5, tryManifold: () => { trials++; return { ok: false, error: 'x' }; } });
     expect(r.isManifold).toBe(true);
     expect(r.mesh).toBe(m);
+    expect(r.isManifold && r.welded).toBe(false);
     expect(trials).toBe(0);
   });
 
   it('welds split seams on the first ladder rung, keeping triangle order', () => {
     const raw = unweldedCube();
     const r = probeIndexed(raw, { configuredTolerance: 1e-5, tryManifold: () => ({ ok: false, error: 'Not manifold' }) });
-    expect(r.isManifold).toBe(true);
+    expect(r.isManifold && r.welded).toBe(true);
     expect(r.mesh.numVert).toBe(8);
     expect(r.mesh.numTri).toBe(12);
     // Triangle 0 still has the same corner positions, in order.
