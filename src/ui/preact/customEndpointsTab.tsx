@@ -19,11 +19,23 @@
 // the chat Worker reads) when the user clicks "Use", saves/activates from the
 // footer, or edits the endpoint already in use.
 
-import { useEffect, useRef } from 'preact/hooks';
+import { useEffect, useMemo, useRef } from 'preact/hooks';
 import { signal, useSignal } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 
 import { listModels as listCustomModels } from '../../ai/custom';
+import {
+  customContextWindow,
+  detectContextWindows,
+  resolveCustomPromptTier,
+  toolsForCustomTier,
+  REDUCED_TOOLS_NOTE,
+  type ResolvedCustomTier,
+} from '../../ai/customContext';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt } from '../../ai/systemPrompt';
+import { buildToolList } from '../../ai/tools';
+import type { CustomPromptTier } from '../../ai/types';
+import { getConfig } from '../../config/appConfig';
 import {
   addKeyCommand,
   classifyBridgeError,
@@ -59,6 +71,7 @@ import {
 import {
   loadSettings,
   setCustomBaseUrl,
+  setCustomContext,
   setCustomModel,
   setCustomModels,
   setCustomReasoningEffort,
@@ -108,7 +121,7 @@ export function CustomEndpointsTab(props: {
     let cancelled = false;
     const t = loadSettings().toggles;
     void ensureEndpointsSeeded(
-      { baseUrl: t.customBaseUrl, model: t.customModel, models: t.customModels, reasoningEffort: t.customReasoningEffort },
+      { baseUrl: t.customBaseUrl, model: t.customModel, models: t.customModels, reasoningEffort: t.customReasoningEffort, context: t.customContext },
       generateId(),
     ).then(async list => {
       const applied = await findActiveEndpoint(t.customBaseUrl, list);
@@ -159,6 +172,7 @@ export function CustomEndpointsTab(props: {
     s = setCustomModel(s, e.model.trim());
     s = setCustomModels(s, e.models);
     s = setCustomReasoningEffort(s, e.reasoningEffort);
+    s = setCustomContext(s, e.context);
     setSettings(s);
     await syncLegacyCustomKey(e.apiKey);
     appliedId.value = e.id;
@@ -256,15 +270,20 @@ export function CustomEndpointsTab(props: {
     try {
       const list = await listCustomModels(d.baseUrl, d.apiKey);
       const ids = list.map(m => m.id);
+      // A bridge fronts hosted models (big windows, Full payload); anything
+      // else may be a small local server — ask it what it runs with.
+      const detected = d.kind === 'cliproxyapi' ? {} : await detectContextWindows(d.baseUrl, d.apiKey, ids);
       const cur = stillOpen() ? draft.value! : endpoints.value.find(x => x.id === d.id);
       if (!cur) return; // deleted meanwhile
       const model = cur.model.trim() || (d.kind === 'cliproxyapi' ? pickDefaultModel(ids) : (ids.length === 1 ? ids[0] : ''));
-      const saved = await persist({ models: ids, model, lastConnectedAt: Date.now() }, d.id);
+      const context = Object.keys(detected).length > 0 ? { ...cur.context, modelWindows: detected } : cur.context;
+      const saved = await persist({ models: ids, model, lastConnectedAt: Date.now(), context }, d.id);
       if (!stillOpen()) return;
       const hint = d.kind === 'cliproxyapi' ? diagnoseBridgeModels(ids, saved?.model ?? model, os.value) : null;
+      const ctxNote = model && detected[model] ? ` Context window: ${detected[model].toLocaleString()} tokens.` : '';
       status.value = hint
         ? { tone: 'warn', text: hint.text, command: hint.command }
-        : { tone: 'ok', text: ids.length ? `Connected — ${ids.length} model(s) available.${model ? '' : ' Pick one below.'}` : 'Connected, but the endpoint reported no models — type the model id below.' };
+        : { tone: 'ok', text: ids.length ? `Connected — ${ids.length} model(s) available.${model ? '' : ' Pick one below.'}${ctxNote}` : 'Connected, but the endpoint reported no models — type the model id below.' };
     } catch (err) {
       if (!stillOpen()) return;
       status.value = explainConnectError(err instanceof Error ? err.message : String(err), d, os.value);
@@ -627,7 +646,105 @@ function EndpointEditor(props: {
           <Step n={++n} title="API key (optional)">{keyField}</Step>
           <Step n={++n} title="Connect" done={connected && props.status?.tone !== 'err'}>{connectRow}</Step>
           <Step n={++n} title="Choose a default model" done={!!d.model.trim()}>{modelField}</Step>
+          <Step n={++n} title="Context size">
+            <ContextField d={d} commit={commit} />
+          </Step>
         </div>
+      )}
+    </div>
+  );
+}
+
+const TIER_OPTIONS: { id: CustomPromptTier; label: string }[] = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'full', label: 'Full' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'slim', label: 'Slim' },
+];
+
+const TIER_HINT: Record<ResolvedCustomTier, string> = {
+  full: 'all of ai.md + every tool — for big hosted models',
+  medium: 'compact prompt + everyday tools, docs read on demand',
+  slim: 'smallest prompt + core tools, docs read on demand',
+};
+
+/** Rough tokens each tier sends before the conversation starts (Full's
+ *  ai.md isn't loaded here, so its figure covers the tool schemas only). */
+function tierTokenEstimates(): Record<ResolvedCustomTier, number> {
+  const tools = buildToolList(loadSettings().toggles);
+  const cpt = getConfig().ai.charsPerToken;
+  const est = (tier: ResolvedCustomTier, promptChars: number) =>
+    Math.round((promptChars + JSON.stringify(toolsForCustomTier(tools, tier)).length) / cpt);
+  return {
+    full: est('full', 0),
+    medium: est('medium', buildMediumLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length),
+    slim: est('slim', buildLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length),
+  };
+}
+
+function kTokens(n: number): string {
+  return n >= 10_000 ? `~${Math.round(n / 1000)}k` : `~${(n / 1000).toFixed(1)}k`;
+}
+
+/** The endpoint's context window (typed, or detected on Connect) and how much
+ *  prompt + tool schema to send into it. */
+function ContextField(props: { d: SavedEndpoint; commit: (patch?: Partial<SavedEndpoint>) => void }) {
+  const { d, commit } = props;
+  const estimates = useMemo(tierTokenEstimates, []);
+  const ctx = { customModel: d.model, customContext: d.context };
+  const ctxWindow = customContextWindow(ctx);
+  const resolved = resolveCustomPromptTier(ctx);
+  // What Auto would pick for this window — shown on the Auto pill even while
+  // another tier is selected.
+  const autoTier = resolveCustomPromptTier({ ...ctx, customContext: { ...d.context, promptTier: 'auto' } });
+  const detected = d.context.modelWindows[d.model.trim()] ?? 0;
+  const overflow = ctxWindow > 0 && estimates[resolved] >= ctxWindow * getConfig().ai.customOverflowWarnFraction;
+  const source = d.context.window > 0
+    ? 'you set it'
+    : detected > 0 ? `detected for ${d.model.trim()}` : null;
+  return (
+    <div class="flex flex-col gap-1.5" data-testid="custom-context">
+      <label class="flex items-center gap-2">
+        <span class="shrink-0 text-[11px] text-zinc-300">Context window</span>
+        <input
+          type="number"
+          min={1024}
+          step={1024}
+          data-testid="custom-context-window"
+          class="w-32 px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-zinc-100 text-[11px] font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+          placeholder={detected > 0 ? String(detected) : 'unknown'}
+          value={d.context.window > 0 ? String(d.context.window) : ''}
+          onChange={e => {
+            const v = Math.floor(Number((e.currentTarget as HTMLInputElement).value));
+            commit({ context: { ...d.context, window: Number.isFinite(v) && v > 0 ? v : 0 } });
+          }}
+        />
+        <span class="text-[10px] text-zinc-500">tokens{source ? ` · ${source}` : ''}</span>
+      </label>
+      <span class="text-[10px] text-zinc-500 leading-snug">
+        {ctxWindow > 0
+          ? 'Drives the context meter and Auto-compact. Leave blank to use what Connect detects.'
+          : 'Connect asks the server (llama.cpp, vLLM, LM Studio, Ollama). If it can’t tell, type what the server was started with — e.g. llama.cpp’s -c, Ollama’s num_ctx — or Partwright assumes a large hosted model.'}
+      </span>
+      <div class="flex items-center gap-1 flex-wrap" data-testid="custom-prompt-tier">
+        <span class="shrink-0 text-[11px] text-zinc-300 mr-1">Prompt size</span>
+        {TIER_OPTIONS.map(o => (
+          <Pill
+            key={o.id}
+            active={d.context.promptTier === o.id}
+            label={o.id === 'auto' ? `Auto (${autoTier})` : `${o.label} ${kTokens(estimates[o.id as ResolvedCustomTier])}`}
+            onClick={() => commit({ context: { ...d.context, promptTier: o.id } })}
+          />
+        ))}
+      </div>
+      <span class="text-[10px] text-zinc-500 leading-snug">
+        Sent with every request: <strong class="text-zinc-300">{resolved}</strong> — {TIER_HINT[resolved]}{resolved === 'full' ? `, ${kTokens(estimates.full)} tokens of tool schemas plus the full ai.md prompt.` : ` (${kTokens(estimates[resolved])} tokens).`}
+        {d.context.promptTier === 'auto' && ` Auto uses Slim below ${getConfig().ai.customSlimMaxContext.toLocaleString()} tokens, Medium below ${getConfig().ai.customMediumMaxContext.toLocaleString()}, and Full above that or when the window is unknown.`}
+      </span>
+      {overflow && (
+        <span class="text-[10px] text-amber-200 leading-snug" data-testid="custom-context-overflow">
+          That leaves little or no room in a {ctxWindow.toLocaleString()}-token window — pick a smaller prompt size.
+        </span>
       )}
     </div>
   );
