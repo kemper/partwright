@@ -120,8 +120,10 @@ describe('context window detection', () => {
     expect(contextFromLlamaCppProps({ default_generation_settings: { n_ctx: 16384 } })).toBe(16384);
     expect(contextFromLlamaCppProps({ n_ctx: 8192 })).toBe(8192);
     expect(contextWindowsFromOllamaPs({ models: [{ name: 'qwen3:8b', model: 'qwen3:8b', context_length: 4096 }] })).toEqual({ 'qwen3:8b': 4096 });
+    // An unloaded model's maximum is NOT what an on-demand load runs with.
     expect(contextWindowsFromLmStudio({ data: [{ id: 'a', loaded_context_length: 8192, max_context_length: 131072 }, { id: 'b', max_context_length: 32768 }] }))
-      .toEqual({ a: 8192, b: 32768 });
+      .toEqual({ a: 8192 });
+    expect(contextWindowsFromModelList({ data: [{ id: 'lm', max_context_length: 131072 }] })).toEqual({});
     expect(serverRoot('http://localhost:8080/v1/')).toBe('http://localhost:8080');
   });
 

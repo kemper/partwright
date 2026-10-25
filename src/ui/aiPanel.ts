@@ -8,13 +8,13 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { getConfig } from '../config/appConfig';
 import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
-import { rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
+import { findActiveEndpoint, rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { PARTS_PROMPT } from '../ai/partsPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -30,7 +30,7 @@ import { gatherReviewContext, runReview } from '../ai/review';
 import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
-import { REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
+import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -704,6 +704,12 @@ async function applySessionAiPreference(): Promise<void> {
   const cur = loadSettings();
   let next: AiSettings;
   if (pref.toggles) {
+    // The Custom endpoint's context window describes the ENDPOINT, not the
+    // session: a snapshot taken before the user set a small window would
+    // otherwise bring back the ~100k-token Full payload. Restore everything
+    // else, then take the context from the saved endpoint the restored URL
+    // points at (or keep the current one when it's the same URL).
+    const { customContext: _snapshotContext, ...restorable } = pref.toggles as Record<string, unknown>;
     // Full per-session toggle snapshot (current format): restore provider,
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
@@ -712,9 +718,13 @@ async function applySessionAiPreference(): Promise<void> {
     // added lacks it, so a raw compare would never match and every window
     // focus would rewrite settings.
     const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
-      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
+      === JSON.stringify(setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
-    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    next = setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]);
+    if (next.toggles.customBaseUrl !== cur.toggles.customBaseUrl) {
+      const ep = await findActiveEndpoint(next.toggles.customBaseUrl).catch(() => null);
+      next = setCustomContext(next, ep?.context ?? DEFAULT_CUSTOM_CONTEXT);
+    }
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
   } else {
     // Legacy {provider, model} only (sessions saved before toggles were stored).

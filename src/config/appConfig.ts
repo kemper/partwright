@@ -131,11 +131,23 @@ export interface AppConfig {
      *  `code` arguments, and getCode results) stay verbatim in the request;
      *  older ones become a one-line stub. */
     keepRecentCodeBodies: number;
+    /** Extra code bodies allowed to pile up before older ones are trimmed
+     *  back to `keepRecentCodeBodies` in one edit. Trimming edits an earlier
+     *  message and breaks the cached prefix (prompt caching, llama.cpp KV
+     *  reuse), so batching keeps the cache valid between trims. 0 = trim
+     *  every step. */
+    codeBodyTrimBatch: number;
     /** A failed tool call's large inputs are stubbed once this many newer
      *  assistant turns have passed (its error message stays). */
     failedCallInputTurns: number;
     /** …but only inputs at least this many characters long (as JSON). */
     failedCallInputMinChars: number;
+    /** Within such a failed call, only top-level values at least this many
+     *  characters long (as JSON) are replaced; small ones stay readable. */
+    failedCallValueMinChars: number;
+    /** Custom endpoint settings warn when the chosen prompt size's fixed
+     *  payload uses more than this fraction of the context window. */
+    customOverflowWarnFraction: number;
     /** Images the user attached in this conversation (newest first) that the
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
@@ -646,8 +658,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     customContextProbeTimeoutMs: 3000,
     pruneStaleToolPayloads: true,
     keepRecentCodeBodies: 1,
+    codeBodyTrimBatch: 3,
     failedCallInputTurns: 3,
     failedCallInputMinChars: 1500,
+    failedCallValueMinChars: 200,
+    customOverflowWarnFraction: 0.8,
     reviewReferenceImages: 4,
     reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,

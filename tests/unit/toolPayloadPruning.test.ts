@@ -5,12 +5,13 @@ import {
   REPEATED_DOC_NOTE,
   SUPERSEDED_CODE_NOTE,
   SUPERSEDED_GETCODE_NOTE,
+  SUPERSEDED_RUN_NOTE,
   type ToolPayloadPruneOptions,
 } from '../../src/ai/historyElision';
 import { hasOrphanedToolCalls } from '../../src/ai/historyRepair';
 import type { ChatMessage, PersistedToolCall, PersistedToolResult } from '../../src/ai/types';
 
-const OPTS: ToolPayloadPruneOptions = { keepRecentCodeBodies: 1, failedCallInputTurns: 3, failedCallInputMinChars: 100 };
+const OPTS: ToolPayloadPruneOptions = { keepRecentCodeBodies: 1, codeBodyTrimBatch: 0, failedCallInputTurns: 3, failedCallInputMinChars: 100, failedCallValueMinChars: 200 };
 
 let seq = 0;
 function assistant(calls: PersistedToolCall[]): ChatMessage {
@@ -59,7 +60,7 @@ describe('pruneStaleToolPayloads', () => {
   });
 
   it('honours keepRecentCodeBodies', () => {
-    const h = [...round('c1', 'runCode', { code: 'v1' }), ...round('c2', 'runCode', { code: 'v2' }), ...round('c3', 'runCode', { code: 'v3' })];
+    const h = [...round('c1', 'setCode', { code: 'v1' }), ...round('c2', 'setCode', { code: 'v2' }), ...round('c3', 'setCode', { code: 'v3' })];
     const out = pruneStaleToolPayloads(h, { ...OPTS, keepRecentCodeBodies: 2 });
     expect([codeOf(out, 'c1'), codeOf(out, 'c2'), codeOf(out, 'c3')]).toEqual([SUPERSEDED_CODE_NOTE, 'v2', 'v3']);
   });
@@ -67,6 +68,60 @@ describe('pruneStaleToolPayloads', () => {
   it('counts code per target object', () => {
     const h = [...round('a1', 'runAndSave', { code: 'lid', object: 'lid' }), ...round('b1', 'runAndSave', { code: 'box' })];
     expect(pruneStaleToolPayloads(h, OPTS)).toBe(h);
+  });
+
+  it('trims in batches so the cached prefix survives between trims', () => {
+    const steps = (n: number) => Array.from({ length: n }, (_, k) => round(`c${k}`, 'runAndSave', { code: `v${k}` })).flat();
+    const opts = { ...OPTS, codeBodyTrimBatch: 2 };
+    // keep 1 + batch 2: up to 3 bodies stay verbatim…
+    const three = steps(3);
+    expect(pruneStaleToolPayloads(three, opts)).toBe(three);
+    expect([0, 1, 2].map(k => codeOf(pruneStaleToolPayloads(steps(3), opts), `c${k}`))).toEqual(['v0', 'v1', 'v2']);
+    // …the 4th triggers one cut back to 1…
+    expect([0, 1, 2, 3].map(k => codeOf(pruneStaleToolPayloads(steps(4), opts), `c${k}`)))
+      .toEqual([SUPERSEDED_CODE_NOTE, SUPERSEDED_CODE_NOTE, SUPERSEDED_CODE_NOTE, 'v3']);
+    // …and the 5th edits nothing older than the 4th (same prefix as before).
+    expect([0, 1, 2, 3, 4].map(k => codeOf(pruneStaleToolPayloads(steps(5), opts), `c${k}`)))
+      .toEqual([SUPERSEDED_CODE_NOTE, SUPERSEDED_CODE_NOTE, SUPERSEDED_CODE_NOTE, 'v3', 'v4']);
+  });
+
+  it('a scratch run never evicts the real program; runs supersede only runs', () => {
+    const h = [
+      ...round('s1', 'runAndSave', { code: 'FULL PROGRAM' }),
+      ...round('r1', 'runIsolated', { code: 'snippet 1' }),
+      ...round('r2', 'runAndAssert', { code: 'snippet 2' }),
+    ];
+    const out = pruneStaleToolPayloads(h, OPTS);
+    expect(codeOf(out, 's1')).toBe('FULL PROGRAM');
+    expect(codeOf(out, 'r1')).toBe(SUPERSEDED_RUN_NOTE);
+    expect(codeOf(out, 'r2')).toBe('snippet 2');
+  });
+
+  it('an object switch starts a new code lineage', () => {
+    const h = [
+      ...round('a1', 'runAndSave', { code: 'box' }),
+      ...round('x1', 'changeObject', { id: 'lid' }),
+      ...round('b1', 'runAndSave', { code: 'lid' }),
+    ];
+    expect(pruneStaleToolPayloads(h, OPTS)).toBe(h);
+  });
+
+  it('pairs results with calls by position — repeated ids (Gemini, WebLLM) never cross-match', () => {
+    const bigCode = 'x'.repeat(500);
+    const h = [
+      ...round('gemini_call_0', 'runAndSave', { code: bigCode }, 'Error: boom', true),
+      ...Array.from({ length: 3 }, () => round('gemini_call_0', 'getGeometryData', {}, '{"stats":1}')).flat(),
+      ...round('gemini_call_0', 'runAndSave', { code: 'CURRENT' }, '{"saved":2}', false, { thoughtSignature: 'sig' }),
+      ...round('gemini_call_0', 'readDoc', { name: 'colors' }, 'COLORS'),
+    ];
+    const out = pruneStaleToolPayloads(h, OPTS);
+    const calls = out.flatMap(m => m.toolCalls ?? []);
+    const results = out.flatMap(m => m.toolResults ?? []).map(r => r.content);
+    // The old failed run loses its big code; the newest (signed) run keeps its program.
+    expect(calls[0].input.code).toBe(FAILED_INPUT_NOTE);
+    expect(calls[4].input.code).toBe('CURRENT');
+    // No result is mistaken for a readDoc / getCode result.
+    expect(results).toEqual(['Error: boom', '{"stats":1}', '{"stats":1}', '{"stats":1}', '{"saved":2}', 'COLORS']);
   });
 
   it('never rewrites a Gemini-signed call', () => {

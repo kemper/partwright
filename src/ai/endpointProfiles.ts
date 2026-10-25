@@ -73,7 +73,7 @@ function freshContext(): CustomContextSettings {
 
 /** Fill fields a row stored by an older build lacks. */
 export function withEndpointDefaults(e: SavedEndpoint): SavedEndpoint {
-  return e.context ? e : { ...e, context: freshContext() };
+  return { ...e, context: e.context ? parseCustomContext(e.context) : freshContext() };
 }
 
 export function newEndpoint(kind: EndpointKind, id: string, now = Date.now()): SavedEndpoint {

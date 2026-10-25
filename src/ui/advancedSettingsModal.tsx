@@ -409,6 +409,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={50} integer
           onChange={v => set('ai', 'keepRecentCodeBodies', v)}
         />
+        <Field cfgKey="ai.codeBodyTrimBatch"
+          label="…older code trimmed in batches of"
+          unit="copies"
+          hint="Older code piles up this far before it's trimmed back in one step, so the provider's cached history (and a local server's prompt cache) stays valid in between. 0 trims every step."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.codeBodyTrimBatch}
+          value={c.ai.codeBodyTrimBatch}
+          min={0} max={50} integer
+          onChange={v => set('ai', 'codeBodyTrimBatch', v)}
+        />
         <Field cfgKey="ai.failedCallInputTurns"
           label="Drop failed calls' inputs after"
           unit="turns"
@@ -427,6 +436,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.failedCallInputMinChars}
           min={100} max={100_000} integer
           onChange={v => set('ai', 'failedCallInputMinChars', v)}
+        />
+        <Field cfgKey="ai.failedCallValueMinChars"
+          label="…and within one, values larger than"
+          unit="chars"
+          hint="Only a failed call's large arguments (code, point lists) are replaced; short ones like a label or colour stay readable."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.failedCallValueMinChars}
+          value={c.ai.failedCallValueMinChars}
+          min={20} max={100_000} integer
+          onChange={v => set('ai', 'failedCallValueMinChars', v)}
         />
         <Field cfgKey="ai.customSlimMaxContext"
           label="Custom endpoint: Slim prompt below"
@@ -464,6 +482,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.customParamDescriptionChars}
           min={0} max={2000} integer
           onChange={v => set('ai', 'customParamDescriptionChars', v)}
+        />
+        <Field cfgKey="ai.customOverflowWarnFraction"
+          label="Custom endpoint: warn when the prompt uses more than"
+          unit="of the window"
+          hint="The Context size settings warn when the chosen prompt size's fixed payload takes more than this fraction of the endpoint's context window (0.8 = 80%)."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.customOverflowWarnFraction}
+          value={c.ai.customOverflowWarnFraction}
+          min={0.1} max={1}
+          onChange={v => set('ai', 'customOverflowWarnFraction', v)}
         />
         <Field cfgKey="ai.customContextProbeTimeoutMs"
           label="Custom endpoint: context detection timeout"

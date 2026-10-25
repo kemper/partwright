@@ -162,10 +162,11 @@ export function serverRoot(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
 }
 
-/** `/v1/models` entries that carry a window: vLLM `max_model_len`,
- *  OpenRouter-style `context_length`, and a couple of other spellings. (Not
- *  llama.cpp's `meta.n_ctx_train` — that is the training length, not what
- *  the server was started with.) */
+/** `/v1/models` entries that carry a window: vLLM `max_model_len` (what
+ *  the server was started with), a loaded length, or OpenRouter-style
+ *  `context_length`. Advertised model maxima are skipped — llama.cpp's
+ *  `meta.n_ctx_train` and LM Studio's `max_context_length` describe what
+ *  the model COULD take, and a load usually uses far less. */
 export function contextWindowsFromModelList(json: unknown): Record<string, number> {
   const out: Record<string, number> = {};
   const data = (json as { data?: unknown })?.data;
@@ -173,7 +174,7 @@ export function contextWindowsFromModelList(json: unknown): Record<string, numbe
   for (const m of data as Array<Record<string, unknown>>) {
     if (!m || typeof m.id !== 'string') continue;
     const w = positiveInt(m.max_model_len) || positiveInt(m.loaded_context_length)
-      || positiveInt(m.context_length) || positiveInt(m.context_window) || positiveInt(m.max_context_length);
+      || positiveInt(m.context_length) || positiveInt(m.context_window);
     if (w > 0) out[m.id] = w;
   }
   return out;
@@ -198,14 +199,16 @@ export function contextWindowsFromOllamaPs(json: unknown): Record<string, number
   return out;
 }
 
-/** LM Studio `/api/v0/models`: loaded length, else the model's maximum. */
+/** LM Studio `/api/v0/models`: the length a LOADED model runs with. An
+ *  unloaded model only reports its maximum, and LM Studio's on-demand load
+ *  uses its own (much smaller) default — so that stays unknown. */
 export function contextWindowsFromLmStudio(json: unknown): Record<string, number> {
   const out: Record<string, number> = {};
   const data = (json as { data?: unknown })?.data;
   if (!Array.isArray(data)) return out;
   for (const m of data as Array<Record<string, unknown>>) {
     if (!m || typeof m.id !== 'string') continue;
-    const w = positiveInt(m.loaded_context_length) || positiveInt(m.max_context_length);
+    const w = positiveInt(m.loaded_context_length);
     if (w > 0) out[m.id] = w;
   }
   return out;

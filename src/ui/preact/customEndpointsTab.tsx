@@ -698,7 +698,7 @@ function ContextField(props: { d: SavedEndpoint; commit: (patch?: Partial<SavedE
   // another tier is selected.
   const autoTier = resolveCustomPromptTier({ ...ctx, customContext: { ...d.context, promptTier: 'auto' } });
   const detected = d.context.modelWindows[d.model.trim()] ?? 0;
-  const overflow = ctxWindow > 0 && estimates[resolved] >= ctxWindow * 0.8;
+  const overflow = ctxWindow > 0 && estimates[resolved] >= ctxWindow * getConfig().ai.customOverflowWarnFraction;
   const source = d.context.window > 0
     ? 'you set it'
     : detected > 0 ? `detected for ${d.model.trim()}` : null;
