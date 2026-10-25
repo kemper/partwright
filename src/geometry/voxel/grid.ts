@@ -887,6 +887,14 @@ export class VoxelGrid {
     if (!(keys instanceof Float64Array) || !(colors instanceof Uint32Array) || keys.length !== colors.length) {
       throw new ValidationError('voxel grid transfer: keys/colors must be a Float64Array and Uint32Array of equal length');
     }
+    // Views over a SharedArrayBuffer (or a resizable buffer) could be rewritten
+    // by the Worker after this check — only accept plain owned buffers.
+    for (const view of [keys, colors]) {
+      const buf = view.buffer as ArrayBuffer & { resizable?: boolean };
+      if (!(buf instanceof ArrayBuffer) || buf.resizable === true) {
+        throw new ValidationError('voxel grid transfer: arrays must own a plain ArrayBuffer');
+      }
+    }
     const out = new VoxelGrid();
     const maxKey = DIM * DIM * DIM;
     for (let i = 0; i < keys.length; i++) {

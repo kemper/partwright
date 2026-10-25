@@ -31,18 +31,25 @@
 // sources, fonts). Before removing `fetch` the lockdown captures a private,
 // pre-bound reference in this module's scope. It is never placed on the global
 // object or on `api`; the only door to it is `fetchAppAsset(url)`, which only
-// issues same-origin GETs for plain path-absolute URLs. Even if model code
-// reaches that function (e.g. via `import()` of the bundled chunk), it can't
-// talk to any other origin. URL validation deliberately uses only operations
-// model code cannot monkey-patch (typeof, primitive string indexing/length,
-// comparisons) — never String.prototype methods, Reflect, or Function#call,
-// which could otherwise be hooked to receive the native fetch or rewrite the
-// URL after validation.
+// issues same-origin GETs, with redirects refused, for normalized paths under a
+// short allow-list of static-asset prefixes (`<base>assets/`,
+// `<base>openscad-libs/`, plus `<base>node_modules/` in dev) — no `.`/`..`
+// segments, no `//`, no query. Even if model code reaches that function (e.g.
+// via `import()` of the bundled chunk) or steers a loader's inputs by patching
+// built-ins, the most it can cause is a same-origin GET of a public static
+// asset. URL validation deliberately uses only operations model code cannot
+// monkey-patch (typeof, primitive string indexing/length, comparisons, loops
+// over frozen arrays) — never String.prototype methods, Reflect, or
+// Function#call, which could otherwise be hooked to receive the native fetch
+// or rewrite the URL after validation. The fetch options are a null-prototype
+// literal, so a polluted Object.prototype can't inject method/body/headers.
 //
 // What this can't remove: dynamic `import()` is syntax, not a global. It is
 // bounded by CSP `script-src` ('self' + the fixed Cloudflare analytics host;
 // no `blob:`/`data:`), so it can only load same-origin modules — no
 // cross-origin read or attacker-controlled endpoint.
+
+import { BASE } from '../deployment';
 
 /** Global names removed from the Worker scope (and its prototype chain). */
 export const LOCKDOWN_GLOBALS: readonly string[] = Object.freeze([
@@ -88,7 +95,7 @@ type Bag = Record<string, unknown>;
 // The private network handle. Set once, by the first lockdown of the real
 // `globalThis`, from the pristine pre-user-code `fetch`, pre-bound so calling
 // it never looks up `call`/`apply` (which model code could hook).
-let boundFetch: ((input: string) => Promise<Response>) | null = null;
+let boundFetch: ((input: string, init: RequestInit) => Promise<Response>) | null = null;
 let lockedOrigin: string | null = null;
 
 const lockedGlobals: object[] = [];
@@ -157,7 +164,7 @@ export function lockdownGlobalScope(g: object): LockdownReport {
 
   // Capture the private fetch BEFORE removing it — real global only.
   if (g === globalThis && boundFetch === null && typeof bag.fetch === 'function') {
-    boundFetch = Function.prototype.bind.call(bag.fetch as (...a: unknown[]) => unknown, g) as (input: string) => Promise<Response>;
+    boundFetch = Function.prototype.bind.call(bag.fetch as (...a: unknown[]) => unknown, g) as (input: string, init: RequestInit) => Promise<Response>;
     const origin = (bag.location as { origin?: unknown } | undefined)?.origin;
     lockedOrigin = typeof origin === 'string' && origin !== 'null' ? origin : null;
   }
@@ -212,57 +219,90 @@ export function verifyLockdown(g: object): string[] {
 
 // ── Private same-origin asset fetch ─────────────────────────────────────────
 
+/** The only path prefixes fetchAppAsset will request: the build's hashed
+ *  assets (OCCT WASM), the bundled OpenSCAD libraries + fonts, and — dev
+ *  server only — node_modules (where Vite serves `?url` WASM). Frozen at module
+ *  load, before any model code exists. */
+const ASSET_PREFIXES: readonly string[] = Object.freeze([
+  BASE + 'assets/',
+  BASE + 'openscad-libs/',
+  ...(import.meta.env?.DEV ? [BASE + 'node_modules/'] : []),
+]);
+
 function isAllowedPathChar(c: string): boolean {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-    || c === '/' || c === '-' || c === '_' || c === '.' || c === '~'
-    || c === '@' || c === '+' || c === ',' || c === '?' || c === '=' || c === '&';
+    || c === '/' || c === '-' || c === '_' || c === '.' || c === '~';
+}
+
+function hasPrefix(s: string, prefix: string): boolean {
+  if (s.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (s[i] !== prefix[i]) return false;
+  return true;
 }
 
 /**
- * Normalize `url` to a same-origin, path-absolute URL (`/assets/x.wasm`), or
- * null when it isn't one. Accepts either a path (`/openscad-libs/…`) or an
- * absolute URL whose origin is exactly `origin`. Rejects protocol-relative
- * (`//host`), backslash tricks (`/\host`), whitespace/control characters (which
- * the URL parser strips — `/\t/host` would otherwise become `//host`), and
- * anything outside a conservative path character set.
+ * Normalize `url` to a same-origin static-asset path (`/assets/x.wasm`), or
+ * null when it isn't one. Accepts either a path or an absolute URL whose
+ * origin is exactly `origin`. The path must start with one of `prefixes`, use
+ * only `[A-Za-z0-9/._~-]` (so no backslash, whitespace/control characters —
+ * which the URL parser strips, turning `/\t/host` into `//host` — query or
+ * fragment), and contain no empty (`//`), `.` or `..` segment.
  *
  * Implemented with primitive string indexing and comparisons only — no
  * String.prototype methods — so model code can't subvert it by patching
  * built-ins. Exported for unit tests.
  */
-export function toAppAssetPath(url: unknown, origin: string | null): string | null {
+export function toAppAssetPath(url: unknown, origin: string | null, prefixes: readonly string[] = ASSET_PREFIXES): string | null {
   if (typeof url !== 'string') return null;
   let start = 0;
-  if (origin !== null) {
-    const prefix = origin + '/';
-    let match = url.length >= prefix.length;
-    for (let i = 0; match && i < prefix.length; i++) if (url[i] !== prefix[i]) match = false;
-    if (match) start = origin.length;
-  }
+  if (origin !== null && hasPrefix(url, origin + '/')) start = origin.length;
   let out = '';
+  let seg = '';
   for (let i = start; i < url.length; i++) {
     const c = url[i];
     if (!isAllowedPathChar(c)) return null;
+    if (c === '/') {
+      if (i > start && (seg === '' || seg === '.' || seg === '..')) return null;
+      seg = '';
+    } else {
+      seg += c;
+    }
     out += c;
   }
-  if (out.length < 2 || out[0] !== '/' || out[1] === '/') return null;
-  return out;
+  if (seg === '' || seg === '.' || seg === '..') return null; // trailing slash / dot segment
+  if (out.length < 2 || out[0] !== '/') return null;
+  for (let i = 0; i < prefixes.length; i++) if (hasPrefix(out, prefixes[i])) return out;
+  return null;
 }
 
 /**
  * Fetch a same-origin static asset (WASM side-car, BOSL2 source, font) for an
  * engine's lazy loader. In the locked-down engine Worker this is the ONLY way
- * to reach the network, and it only issues same-origin GETs. Outside a
- * locked-down realm (main thread, Node SSR for `model:preview`, unit tests) it
- * defers to the live `globalThis.fetch`, so the CLI's public/ fetch shim keeps
- * working. Every new lazy loader that runs in the engine Worker must use this
- * instead of `fetch` (see docs/architecture-notes.md).
+ * to reach the network: a same-origin GET (redirects refused) of a path under
+ * the asset allow-list. Outside a locked-down realm (main thread, Node SSR for
+ * `model:preview`, unit tests) it defers to the live `globalThis.fetch`, so the
+ * CLI's public/ fetch shim keeps working. Every new lazy loader that runs in
+ * the engine Worker must use this instead of `fetch` (see
+ * docs/architecture-notes.md).
  */
 export function fetchAppAsset(url: string): Promise<Response> {
   if (boundFetch === null) return globalThis.fetch(url);
   const path = toAppAssetPath(url, lockedOrigin);
   if (path === null) return Promise.reject(new TypeError('fetchAppAsset: only same-origin app assets can be loaded from the geometry sandbox'));
-  return boundFetch(path);
+  return boundFetch(path, { __proto__: null, redirect: 'error' } as unknown as RequestInit);
+}
+
+/** True for a bare asset file name (`ball_bearings.scad`): `[A-Za-z0-9._-]`,
+ *  not starting with `.`. Primitive operations only (see toAppAssetPath) — the
+ *  loaders vet names that arrive over the network (the BOSL2 manifest) with
+ *  it before building URLs. */
+export function isSafeAssetName(name: unknown): name is string {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 128 || name[0] === '.') return false;
+  for (let i = 0; i < name.length; i++) {
+    const c = name[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '.' || c === '_' || c === '-')) return false;
+  }
+  return true;
 }
 
 // ── Main-thread evaluation guard ────────────────────────────────────────────

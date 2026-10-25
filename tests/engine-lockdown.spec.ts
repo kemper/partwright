@@ -273,4 +273,31 @@ test.describe('Engine sandbox lockdown', () => {
     // Report the isolation cost (fresh Worker + manifold-3d init) in the log.
     console.log(`[isolation] first run in new session: ${Math.round(out.firstRunMs)} ms (warm run ${Math.round(out.warmRunMs)} ms)`);
   });
+
+  test('voxel grid survives an object switch served from the mesh cache (A→B→A, then VOX export + Studio)', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('voxel-cache');
+      await pw.setActiveLanguage('voxel');
+      const a = await pw.runAndSave("return api.voxels().fillBox([0,0,0],[3,3,3],'#ff8800');", 'A');
+      const objA = pw.getCurrentObject();
+      await pw.createObject('B');
+      await pw.setActiveLanguage('manifold-js');
+      await pw.runAndSave('return api.Manifold.cube([5, 5, 5]);', 'B');
+      await pw.changeObject(objA.id);
+      const lang = pw.getActiveLanguage();
+      const vox = pw.exportVOX('a.vox');
+      const voxData = await pw.exportVOXData('a.vox');
+      const studio = pw.activateVoxelPaint();
+      pw.deactivateVoxelPaint();
+      return { saved: !a.error, lang, vox, voxBytes: voxData.sizeBytes ?? null, studio };
+    });
+    expect(out.saved).toBe(true);
+    expect(out.lang).toBe('voxel');
+    expect(out.vox, JSON.stringify(out)).toMatchObject({ ok: true });
+    expect(out.voxBytes).toBeGreaterThan(0);
+    expect(out.studio.error).toBeFalsy();
+    expect(out.studio.voxelCount).toBe(64);
+  });
 });

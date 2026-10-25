@@ -23,7 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCodeAsync, runVoxelGridInWorker, setEngineTrustDomain, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
 import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
@@ -262,6 +262,7 @@ import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } fro
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
+import { setEngineTrustDomain, getEngineTrustDomain } from './geometry/trustDomain';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -565,15 +566,15 @@ let currentMeshData: MeshData | null = null;
  *  produced it. VOX / greedy-mesh export and Voxel Studio rebuild the grid from
  *  this DATA (VoxelGrid.fromTransfer) — the main thread never re-runs model
  *  code itself (#1090). */
-let lastVoxelRun: { code: string; paramsKey: string; grid: unknown } | null = null;
+type VoxelRunCache = { code: string; paramsKey: string; grid: unknown };
+let lastVoxelRun: VoxelRunCache | null = null;
 
-/** Engine trust domain for a session (#1090): the session id plus an epoch
- *  bumped when a file's objects are merged into the open session. */
-let sessionTrustEpoch = 0;
+/** Engine trust domain for a session (#1090): model code from one session
+ *  never shares a geometry Worker realm with another session's runs. Objects
+ *  merged in from a file join the session's domain like any other object. */
 function sessionTrustDomain(sessionId: string | null): string {
-  return `${sessionId ?? '(none)'}#${sessionTrustEpoch}`;
+  return `session:${sessionId ?? '(none)'}`;
 }
-function bumpSessionTrustEpoch(): void { sessionTrustEpoch++; }
 
 /** Stable key for Customizer values, so a cached voxel grid is only reused for
  *  the exact parameter set it was rendered with. */
@@ -752,6 +753,9 @@ type PartMeshCacheEntry = {
   lostLabels: string[] | null;
   modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>;
   paramsSchema: ParamSpec[] | undefined;
+  /** The voxel grid behind this mesh (voxel sessions), so a cache hit restores
+   *  VOX export / Voxel Studio / greedy STL without re-running the code. */
+  voxelRun: VoxelRunCache | null;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -3170,6 +3174,7 @@ async function saveCurrentVersion(label?: string): Promise<
         lostLabels: currentLostLabels,
         modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
+        voxelRun: lastVoxelRun,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -3375,6 +3380,14 @@ async function main() {
 
   // Apply persisted theme before any UI renders
   initTheme();
+
+  // Engine trust domain = the open session (#1090). Registered before anything
+  // can open a session or run model code (syncEditorFromURL, catalog/share
+  // loads), so the very first run is already tagged with its session and a
+  // session switch — create, open, import, fork, close — recycles the geometry
+  // Worker before the next session's code runs. The build pool listens too.
+  setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
+  onStateChange((state) => { setEngineTrustDomain(sessionTrustDomain(state.session?.id ?? null)); });
 
   // Rehydrate the Recent Imports / Recent Exports lists from IndexedDB so they
   // survive a refresh. Fire-and-forget: each notifies its subscribers (the
@@ -3582,6 +3595,7 @@ async function main() {
   // is unusual) and self-corrects on the next live run; not guarded here.
   async function backfillThumbnailsForParts(sessionId: string, partIds: string[]): Promise<void> {
     let wrote = false;
+    const domain = getEngineTrustDomain(); // these versions belong to this session (#1090)
     try {
       for (const partId of partIds) {
         const versions = await listVersions(partId);
@@ -3599,6 +3613,7 @@ async function main() {
               undefined,
               (v.importedMeshes ?? []) as ImportedMesh[],
               v.companionFiles,
+              { domain },
             );
           } catch {
             // Worker restarted (a live run cancelled it) or an engine fault —
@@ -4378,12 +4393,7 @@ async function main() {
       // backfill the rest of the new parts' thumbnails offscreen.
       const result = await importSessionPartsIntoActive(data);
       if (result && result.addedParts.length > 0) {
-        // The merged objects' code comes from a file: start a new engine trust
-        // epoch so it boots in a fresh Worker rather than one that has been
-        // running this session's earlier code (#1090). From here on it IS part
-        // of this session, sharing its realm like any other object.
-        bumpSessionTrustEpoch();
-        setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
+
         // Navigate to the first newly-added part so it appears selected with a
         // single progressive render (fast preview → full). We do NOT route
         // through selectPart here: its cancelCurrentExecution + saveVersion-based
@@ -5530,6 +5540,8 @@ async function main() {
    *  single compose component. Returns null when the part has no version or
    *  produced no usable mesh (e.g. render-only or a code error). */
   async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
+    // Captured before the await: the part's code belongs to THIS session.
+    const domain = getEngineTrustDomain();
     const version = await getLatestVersion(partId);
     if (!version) return null;
     // Bake the part under the language it was authored in, not the globally
@@ -5541,7 +5553,7 @@ async function main() {
     const saved = getActiveImports();
     try {
       setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code, lang);
+      const result = await executeCodeAsync(version.code, lang, undefined, undefined, undefined, undefined, { domain });
       if (result.error || !result.mesh) return null;
       return [toImportedMesh(label, result.mesh)];
     } finally {
@@ -5565,6 +5577,7 @@ async function main() {
     if (partId === getState().currentPart?.id && currentMeshData) {
       return { name, mesh: coloredMeshForExport(currentMeshData) };
     }
+    const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
     if (!version) return null;
     const lang = effectiveVersionLanguage(version, getState().session);
@@ -5583,6 +5596,7 @@ async function main() {
       // build with no companions, fail, and be silently dropped from the export.
       companionFiles: version.companionFiles ?? getCompanionFiles(),
       onStart: opts.onStart,
+      domain,
     });
     if (!result || result.error || !result.mesh) return null;
     const mesh = result.mesh;
@@ -6959,6 +6973,18 @@ async function main() {
     if (painted) return painted;
     return voxelGridFromLastRun(getValue());
   };
+  /** Async twin of getCurrentVoxelGrid for callers that can wait: when no
+   *  cached grid matches the editor, the engine Worker evaluates the code. */
+  const getCurrentVoxelGridAsync = async (): Promise<VoxelGrid | null> => {
+    const cached = getCurrentVoxelGrid();
+    if (cached || getActiveLanguage() !== 'voxel') return cached;
+    try {
+      const r = await runVoxelGridInWorker(getValue(), currentParamValues);
+      return r.ok ? r.grid : null;
+    } catch {
+      return null;
+    }
+  };
   /** Mesh for a triangle-mesh file export (STL / OBJ / 3MF). Voxel sessions get
    *  a greedy-meshed copy straight from the grid — coplanar same-color faces are
    *  coalesced, cutting triangle count (and file size) several-fold. Greedy
@@ -6979,9 +7005,9 @@ async function main() {
     if (!currentMeshData) return null;
     return colored ? coloredMeshForExport(currentMeshData) : currentMeshData;
   };
-  const actionExportVOX = () => {
+  const actionExportVOX = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    const grid = getCurrentVoxelGrid();
+    const grid = await getCurrentVoxelGridAsync();
     if (!grid) {
       showToast(getActiveLanguage() === 'voxel'
         ? 'Run a voxel model before exporting .vox.'
@@ -8668,6 +8694,8 @@ async function main() {
       noteLabelMapChanged();
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
+      // The grid behind a cached voxel mesh (null for other engines).
+      lastVoxelRun = cachedEntry.voxelRun;
       // Show the geometry; colours (model underlay + any user paint) are applied
       // by the single rehydrateColorRegions pass below, which both load branches
       // share — so this branch no longer hand-rolls its own colour stamp (the
@@ -8771,6 +8799,7 @@ async function main() {
           lostLabels: currentLostLabels,
           modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
+          voxelRun: lastVoxelRun,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -10992,21 +11021,12 @@ async function main() {
   // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
   // exportSTEP serializing a previous session's shape).
   let lastBrepSessionId: string | null = getState().session?.id ?? null;
-  // Cross-session isolation (#1090): each session is its own engine trust
-  // domain, so code from one session never shares a Worker realm with another
-  // session's runs (see setEngineTrustDomain in engine.ts — the Worker is
-  // recycled lazily, on the next request after a switch).
-  setEngineTrustDomain(sessionTrustDomain(lastBrepSessionId));
 
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     const sid = state.session?.id ?? null;
     if (sid !== lastBrepSessionId) {
       lastBrepSessionId = sid;
-      setEngineTrustDomain(sessionTrustDomain(sid));
-      // The parallel build pool is disposable; don't let its realms outlive
-      // the session whose parts they built.
-      disposeEnginePool();
       void clearBrepImports().catch(() => {});
       void clearBrepShape().catch(() => {});
     }
@@ -13171,6 +13191,10 @@ async function main() {
       if (getActiveLanguage() !== 'manifold-js') return { error: 'exportParamSweep runs the model per frame \u2014 only manifold-js sessions are supported.' };
       const steps = Math.round(opts?.steps ?? 12);
       const code = getValue();
+      // Bind every frame to the session the code came from: a session switch
+      // mid-sweep refuses the remaining frames instead of running this code in
+      // the next session's Worker (#1090).
+      const domain = getEngineTrustDomain();
       const frames: ParamSweepFrame[] = [];
       for (let i = 0; i < steps; i++) {
         const value = from + (to - from) * (i / (steps - 1));
@@ -13179,7 +13203,7 @@ async function main() {
         // Worker realm is locked down against network + storage access (#1090).
         let r: MeshResult;
         try {
-          r = await executeCodeAsync(code, 'manifold-js', { [param]: value });
+          r = await executeCodeAsync(code, 'manifold-js', { [param]: value }, undefined, undefined, undefined, { domain });
         } catch (e) {
           return { error: `Param sweep stopped at ${param}=${value.toFixed(3)}: ${e instanceof Error ? e.message : String(e)}` };
         }
@@ -13471,7 +13495,7 @@ async function main() {
     async exportVOXData(filename?: string) {
       const bad = argError(() => assertString(filename, 'exportVOXData(filename)', { optional: true }));
       if (bad) return bad;
-      const grid = getCurrentVoxelGrid();
+      const grid = await getCurrentVoxelGridAsync();
       if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
       let built;
       try { built = buildVOX(grid, filename); }
@@ -20909,7 +20933,7 @@ async function main() {
         'toggleClip': { signature: 'toggleClip(on?) -- Toggle the 3D clipping plane (omit to flip) -> {enabled, z, min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'setClipZ': { signature: 'setClipZ(z) -- Set the clipping-plane height -> {enabled, z, min, max}. Throws on a non-number', docs: '/ai.md#console-api--windowpartwright' },
         'getClipState': { signature: 'getClipState() -- Clipping plane -> {enabled, z, min, max} (min/max = model Z range)', docs: '/ai.md#console-api--windowpartwright' },
-        'setReferenceGeometry': { signature: 'setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code run in isolation (always manifold-js) -> {success, boundingBox?, volume?, error?}', docs: '/ai.md#console-api--windowpartwright' },
+        'setReferenceGeometry': { signature: 'await setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code run in isolation (always manifold-js) -> Promise<{success, boundingBox?, volume?, error?}>', docs: '/ai.md#console-api--windowpartwright' },
         'clearReferenceGeometry': { signature: 'clearReferenceGeometry() -- Remove the reference-geometry ghost', docs: '/ai.md#console-api--windowpartwright' },
         'hasReferenceGeometry': { signature: 'hasReferenceGeometry() -- Whether a reference-geometry ghost is shown -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Assembly view (all parts in a grid)
@@ -22308,7 +22332,11 @@ async function main() {
 
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
+    // The Customizer values this run was REQUESTED with (they can change while
+    // it's in flight) — what a cached voxel grid must be keyed on.
+    let runParamsKey = '';
     try {
+      runParamsKey = voxelParamsKey(currentParamValues);
       result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
@@ -22416,7 +22444,7 @@ async function main() {
       resetPaintWorkerState();
       currentMeshData = result.mesh;
       lastVoxelRun = result.voxelGrid
-        ? { code: src, paramsKey: voxelParamsKey(currentParamValues), grid: result.voxelGrid }
+        ? { code: src, paramsKey: runParamsKey, grid: result.voxelGrid }
         : null;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from

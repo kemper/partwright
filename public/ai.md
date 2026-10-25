@@ -228,7 +228,7 @@ partwright.setView('sketch')                      // ValidationError: tab must b
 partwright.measureAt([5])                         // returns { error: "measureAt(xy) must have exactly 2 elements ..." }
 partwright.probeRay([0,0,0], [0, '1', 0])         // returns { error: "probeRay(direction)[1] must be a finite number ..." }
 partwright.setImages([{ src: '' }])  // ValidationError: setImages(images)[0].src must be a non-empty string, got ""
-partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
+await partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
 await partwright.runAndAssert(code, { minVolume: '1000' })  // returns { passed: false, failures: ["... .minVolume must be a finite number ..."] }
 await partwright.runAndSave(code, 'v1', { boundsRatio: { widthToDeep: [1,2] } })  // typo caught: not a recognized field
 await partwright.query({ sliceAt: 5 })            // returns { error: "... .sliceAt must be an array ..." }
@@ -261,7 +261,7 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
-partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost from code run in isolation (manifold-js) -> {success, boundingBox?, volume?, error?}
+await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost from code run in isolation (manifold-js, in the sandboxed engine Worker) -> Promise<{success, boundingBox?, volume?, error?}>
 partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
 partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 

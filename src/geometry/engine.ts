@@ -21,6 +21,7 @@ import {
 import { isFatalWasmFault } from './workerFaults';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { VoxelGrid } from './voxel/grid';
+import { getEngineTrustDomain } from './trustDomain';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
 import { sourceUsesBrep } from './brepRuntime';
 
@@ -244,7 +245,7 @@ export function cancelCurrentExecution(): void {
  *  state half-mutated, after which every subsequent call into the same instance
  *  faults instantly; recycling here is the only reliable recovery short of a
  *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
-function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): void {
+function recycleEngineWorker(reason: string, level: 'warn' | 'info' | 'debug' = 'warn'): void {
   // The routine high-heap reset ('info') is a clean stop, not a crash: it must
   // not climb the restart counter the worker-health panel reads as a crash loop.
   rejectAllPending(new Error(reason));
@@ -257,9 +258,11 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): v
   // make visible — so it bumps the restart counter like any other teardown.
   // Recovery, not a crash — warn rather than error, so it doesn't read as a
   // second hard failure to the user.
-  if (level === 'info') markWorkerStopped('geometry');
-  else markWorkerRestarted('geometry', reason);
-  errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
+  // 'debug' (session isolation) is routine on every session switch: a clean
+  // stop for the health panel and a devtools breadcrumb, no Diagnostic Log entry.
+  if (level === 'warn') markWorkerRestarted('geometry', reason);
+  else markWorkerStopped('geometry');
+  if (level !== 'debug') errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
   // eslint-disable-next-line no-console
   console.debug('[EngineWorker]', reason);
 }
@@ -267,39 +270,49 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): v
 // ── Cross-session isolation ─────────────────────────────────────────────────
 // Model code shares the Worker realm with every later run in the same Worker,
 // so code from one session could patch built-ins or listen to `message` to
-// observe — or forge results for — another session's runs. The app tags the
-// active trust domain (the open session, plus an epoch bumped on merge
-// imports) via setEngineTrustDomain; before any request is posted, a Worker
-// that has run model code for a DIFFERENT domain is terminated and a fresh one
-// boots. Lazy: switching sessions costs nothing until the next request, and a
-// Worker that never ran model code is reused.
-let trustDomain: string | null = null;
+// observe — or forge results for — another session's runs. main.ts sets the
+// active trust domain (the open session) in `trustDomain.ts`; every request
+// claims the Worker for a domain first: a Worker tagged with a DIFFERENT domain
+// is terminated and a fresh one boots, and the Worker is tagged with the
+// request's domain (it now holds that domain's code or data). Lazy: a session
+// switch costs nothing until the next request.
 let workerDomain: string | null = null;
 
-/** Set the trust domain for subsequent engine requests (main.ts: session id +
- *  merge-import epoch). */
-export function setEngineTrustDomain(domain: string | null): void {
-  trustDomain = domain;
-}
+const STALE_DOMAIN_ERROR = 'Execution cancelled — the session changed before this request ran';
 
-function isolateEngineWorker(): void {
-  rejectAllPending(new Error('Execution cancelled — geometry worker recycled to isolate sessions'));
-  workerReadyReject?.(new Error('Execution cancelled — geometry worker recycled to isolate sessions'));
-  workerReadyReject = null;
-  engineWorker?.terminate();
-  engineWorker = null;
-  workerDomain = null;
-  markWorkerRestarted('geometry', 'session isolation');
-  errorLog.capture({ level: 'info', source: 'engine', message: 'Geometry worker recycled to isolate sessions' });
-}
+interface WorkerClaim { worker: Worker; domain: string }
 
-/** Get a Worker that is safe for the current trust domain (recycling one that
- *  ran another domain's model code), booting it if needed. `runsModelCode`
- *  marks the Worker as belonging to the current domain from now on. */
-function claimEngineWorker(runsModelCode: boolean): void {
-  if (engineWorker && workerDomain !== null && workerDomain !== trustDomain) isolateEngineWorker();
+/** Claim the engine Worker for `domain` (default: the active domain),
+ *  recycling a Worker that belongs to another domain and booting one if
+ *  needed. A caller that captured model code under an earlier domain passes
+ *  that domain explicitly; if the session has moved on, the request is
+ *  refused rather than run in the new session's Worker. */
+function claimEngineWorker(domain: string = getEngineTrustDomain()): WorkerClaim {
+  if (domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
+  if (engineWorker && workerDomain !== null && workerDomain !== domain) {
+    recycleEngineWorker('Isolating sessions: fresh geometry worker for the newly opened session', 'debug');
+  }
   initEngineWorker();
-  if (runsModelCode) workerDomain = trustDomain;
+  workerDomain = domain;
+  return { worker: engineWorker!, domain };
+}
+
+/** Claim the Worker, then wait for it to be ready. */
+async function claimAndWait(domain?: string): Promise<WorkerClaim> {
+  const claim = claimEngineWorker(domain);
+  await workerReady;
+  return claim;
+}
+
+/** After awaiting `workerReady`, confirm the claimed Worker is still the live
+ *  one and still tagged with the claim's domain — a recycle or session switch
+ *  during the await must not let this request land in a different realm. */
+function ensureClaim(claim: WorkerClaim): Worker {
+  if (claim.domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
+  if (engineWorker !== claim.worker || workerDomain !== claim.domain) {
+    throw new Error('Execution cancelled — the geometry worker restarted before this request ran');
+  }
+  return claim.worker;
 }
 
 /** After a run that left the heap above the high-memory threshold, swap in a
@@ -691,12 +704,14 @@ export async function executeCodeAsync(
   onPreview?: (result: MeshResult) => void,
   explicitImports?: ImportedMesh[],
   explicitCompanions?: Record<string, string>,
+  /** `domain`: the trust domain the caller captured `source` under (loops
+   *  that capture code and then await). Refused if the session has changed. */
+  opts?: { domain?: string },
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
   // Ensure the Worker is booted.
-  claimEngineWorker(true);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait(opts?.domain));
 
   const callId = `exec-${++callIdCounter}`;
 
@@ -727,7 +742,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -740,12 +755,11 @@ export async function runVoxelGridInWorker(
   code: string,
   params?: Record<string, unknown>,
 ): Promise<{ ok: true; grid: VoxelGrid } | { ok: false; error: string }> {
-  claimEngineWorker(true);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `voxgrid-${++callIdCounter}`;
   return new Promise((resolve, reject) => {
     pendingVoxelGrids.set(callId, { resolve, reject });
-    engineWorker!.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
+    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
   });
 }
 
@@ -779,8 +793,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
   const l = pickLang(lang);
   if (l === 'scad') {
     // Route SCAD through the Worker so its Emscripten init doesn't block.
-    claimEngineWorker(false);
-    await workerReady;
+    const worker = ensureClaim(await claimAndWait());
     const callId = `val-${++callIdCounter}`;
     const timeoutMs = getWorkerOpTimeoutMs('scad');
     return new Promise<ValidateResult>((resolve, reject) => {
@@ -797,7 +810,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
         resolve: (r) => { clearTimeout(timer); resolve(r); },
         reject:  (e) => { clearTimeout(timer); reject(e); },
       });
-      engineWorker!.postMessage({ type: 'validate', callId, code: source, lang: l });
+      worker.postMessage({ type: 'validate', callId, code: source, lang: l });
     });
   }
   return validateCode(source, l);
@@ -810,9 +823,9 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
  *  resolves to `null`, which the caller reads as "couldn't determine" and falls
  *  back to its static regex candidates — distinct from an empty result. */
 export async function detectScadIncludesAsync(source: string): Promise<string[] | null> {
-  claimEngineWorker(false);
+  let worker: Worker;
   try {
-    await workerReady;
+    worker = ensureClaim(await claimAndWait());
   } catch {
     return null;
   }
@@ -830,7 +843,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
       // Worker restart / hard error → "couldn't determine".
       reject: () => { clearTimeout(timer); resolve(null); },
     });
-    engineWorker!.postMessage({ type: 'detect_includes', callId, code: source });
+    worker.postMessage({ type: 'detect_includes', callId, code: source });
   });
 }
 
@@ -840,8 +853,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
  *  message rather than treating it as a hard error. Any *real* failure
  *  (worker dead, OCCT threw) rejects. */
 export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `step-${++callIdCounter}`;
   return new Promise<Blob | null>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -853,7 +865,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       resolve: (b) => { clearTimeout(timer); resolve(b); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'exportSTEP', callId });
+    worker.postMessage({ type: 'exportSTEP', callId });
   });
 }
 
@@ -867,8 +879,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
   // `await workerReady` and the postMessage, or a Worker reset in that gap
   // (e.g. the high-heap reset after a run) leaves `engineWorker` null.
   const bytes = await blob.arrayBuffer();
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `stepin-brep-${++callIdCounter}`;
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -880,7 +891,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
       resolve: (n) => { clearTimeout(timer); resolve(n); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
+    worker.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
   });
 }
 
@@ -891,8 +902,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
 export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
   // File read first — see importSTEPToBrep.
   const bytes = await blob.arrayBuffer();
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `stepin-mesh-${++callIdCounter}`;
   return new Promise<MeshData>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -904,15 +914,14 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
       resolve: (m) => { clearTimeout(timer); resolve(m); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
+    worker.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
   });
 }
 
 /** Drop any pending BREP imports. Called when the user opens a different
  *  session or clears them explicitly. */
 export async function clearBrepImports(): Promise<void> {
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `clearbrepin-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -924,7 +933,7 @@ export async function clearBrepImports(): Promise<void> {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'clearBrepImports', callId });
+    worker.postMessage({ type: 'clearBrepImports', callId });
   });
 }
 
@@ -933,8 +942,7 @@ export async function clearBrepImports(): Promise<void> {
  *  switching the active language away from replicad, so a later exportSTEP
  *  can't return a stale shape that belongs to a different session. */
 export async function clearBrepShape(): Promise<void> {
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `clearbrepshape-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -946,7 +954,7 @@ export async function clearBrepShape(): Promise<void> {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'clearBrepShape', callId });
+    worker.postMessage({ type: 'clearBrepShape', callId });
   });
 }
 
@@ -986,8 +994,7 @@ export async function simplifyInWorker(
   directTolerance?: number,
 ): Promise<SimplifyWorkerResult | null> {
   if (signal?.aborted) throw new SimplifyAbortError();
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `simplify-${++callIdCounter}`;
 
   return new Promise<SimplifyWorkerResult | null>((resolve, reject) => {
@@ -1009,7 +1016,7 @@ export async function simplifyInWorker(
         // next iteration boundary and resolves the pending promise with
         // cancelled=true (which surfaces as `null` here, not a reject — the
         // caller treats the cancel like a no-op reduction).
-        engineWorker?.postMessage({ type: 'simplify_cancel', callId });
+        worker.postMessage({ type: 'simplify_cancel', callId });
         // Eagerly reject with AbortError so the caller can distinguish
         // user-cancel from "no reduction possible" — we still clean up the
         // worker-side flag via the eventual simplify_result that arrives.
@@ -1030,7 +1037,7 @@ export async function simplifyInWorker(
       numProp: mesh.numProp,
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
-    engineWorker!.postMessage(
+    worker.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
         ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
@@ -1074,8 +1081,7 @@ export async function enhanceInWorker(
   directEdgeLength?: number,
 ): Promise<EnhanceWorkerResult | null> {
   if (signal?.aborted) throw new EnhanceAbortError();
-  claimEngineWorker(false);
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `enhance-${++callIdCounter}`;
 
   return new Promise<EnhanceWorkerResult | null>((resolve, reject) => {
@@ -1093,7 +1099,7 @@ export async function enhanceInWorker(
     });
     if (signal) {
       abortListener = () => {
-        engineWorker?.postMessage({ type: 'enhance_cancel', callId });
+        worker.postMessage({ type: 'enhance_cancel', callId });
         const pending = pendingEnhances.get(callId);
         if (pending) {
           pendingEnhances.delete(callId);
@@ -1114,7 +1120,7 @@ export async function enhanceInWorker(
     // override) and pass it through — the Worker's own getConfig only sees
     // static defaults.
     const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
-    engineWorker!.postMessage(
+    worker.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,

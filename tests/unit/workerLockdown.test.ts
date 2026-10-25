@@ -3,6 +3,7 @@ import {
   lockdownGlobalScope,
   verifyLockdown,
   toAppAssetPath,
+  isSafeAssetName,
   LOCKDOWN_GLOBALS,
   NAVIGATOR_PROPS,
 } from '../../src/geometry/workerLockdown';
@@ -141,11 +142,28 @@ describe('lockdownGlobalScope', () => {
 
 describe('toAppAssetPath', () => {
   const origin = 'https://app.example';
-  it('accepts same-origin paths and absolute same-origin URLs', () => {
+  it('accepts allow-listed asset paths and absolute same-origin URLs', () => {
     expect(toAppAssetPath('/openscad-libs/BOSL2/_manifest.json', origin)).toBe('/openscad-libs/BOSL2/_manifest.json');
+    expect(toAppAssetPath('/openscad-libs/fonts/LiberationSans-Bold.ttf', origin)).toBe('/openscad-libs/fonts/LiberationSans-Bold.ttf');
     expect(toAppAssetPath('/assets/replicad_single-AbC123.wasm', origin)).toBe('/assets/replicad_single-AbC123.wasm');
-    expect(toAppAssetPath('/@fs/home/u/node_modules/x/y.wasm?v=1', origin)).toBe('/@fs/home/u/node_modules/x/y.wasm?v=1');
-    expect(toAppAssetPath('https://app.example/v1/assets/x.wasm', origin)).toBe('/v1/assets/x.wasm');
+    expect(toAppAssetPath('https://app.example/assets/x.wasm', origin)).toBe('/assets/x.wasm');
+    // A /v1/ build's prefixes.
+    expect(toAppAssetPath('https://app.example/v1/assets/x.wasm', origin, ['/v1/assets/'])).toBe('/v1/assets/x.wasm');
+    expect(toAppAssetPath('/assets/x.wasm', origin, ['/v1/assets/'])).toBeNull();
+  });
+  it('only serves the asset prefixes', () => {
+    for (const bad of ['/ai.md', '/editor', '/current/example.com/', '/src/geometry/engine.ts', '/assetsx/a.wasm']) {
+      expect(toAppAssetPath(bad, origin), bad).toBeNull();
+    }
+  });
+  it('rejects dot segments, empty segments, queries and fragments', () => {
+    for (const bad of [
+      '/assets/../ai.md', '/assets/./x.wasm', '/assets//x.wasm', '/openscad-libs/BOSL2/', '/assets/..',
+      '/openscad-libs/a.scad?x=1', '/assets/x.wasm#y', '/current//example.com/', '/assets/%2e%2e/ai.md',
+      '/@fs/home/u/node_modules/x/y.wasm',
+    ]) {
+      expect(toAppAssetPath(bad, origin), bad).toBeNull();
+    }
   });
   it('rejects anything that could leave the origin', () => {
     for (const bad of [
@@ -160,7 +178,16 @@ describe('toAppAssetPath', () => {
     expect(toAppAssetPath(42, origin)).toBeNull();
   });
   it('without a known origin only accepts plain paths', () => {
-    expect(toAppAssetPath('/fonts/a.ttf', null)).toBe('/fonts/a.ttf');
-    expect(toAppAssetPath('https://app.example/fonts/a.ttf', null)).toBeNull();
+    expect(toAppAssetPath('/openscad-libs/fonts/a.ttf', null)).toBe('/openscad-libs/fonts/a.ttf');
+    expect(toAppAssetPath('https://app.example/openscad-libs/fonts/a.ttf', null)).toBeNull();
+  });
+});
+
+describe('isSafeAssetName', () => {
+  it('accepts plain file names only', () => {
+    for (const ok of ['std.scad', 'ball_bearings.scad', 'LiberationSans-Bold.ttf']) expect(isSafeAssetName(ok), ok).toBe(true);
+    for (const bad of ['', '.', '..', '.hidden', '../x', 'a/b.scad', 'a?b', 'a b', 42, null, 'x'.repeat(200)]) {
+      expect(isSafeAssetName(bad), String(bad)).toBe(false);
+    }
   });
 });
