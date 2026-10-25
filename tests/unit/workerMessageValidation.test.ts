@@ -162,6 +162,8 @@ describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
   it('accepts what the recorders emit', () => {
     expect(exec({ surfaceOps: [{ id: 'knurl', params: { amplitude: 0.3, profile: 'pyramid' }, scope: { kind: 'label', label: 'grip' } }] }).ok).toBe(true);
     expect(exec({ surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'point', point: [0, 0, 0], radius: 4 } }] }).ok).toBe(true);
+    // #1093: a normalized selector (what parseSurfaceOpts records) round-trips.
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: {}, scope: { kind: 'select', select: [{ label: ['grip'], where: { facing: [0, 0, 1] } }] } }] }).ok).toBe(true);
     expect(exec({ paramsSchema: [
       { key: 'w', type: 'number', default: 5, label: 'Width', min: 1, max: 10, step: 0.5, unit: 'mm' },
       { key: 'mode', type: 'select', default: 'a', label: 'Mode', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] },
@@ -178,6 +180,9 @@ describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
       { surfaceOps: [{ id: 'fuzzy', params: { amplitude: { x: 1 } } }] },
       { surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'point', point: [0, 0], radius: 4 } }] },
       { surfaceOps: [{ id: 'fuzzy', params: { label: 'x' } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: { select: { label: 'x' } } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'select', select: [{ teleport: true }] } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'select', select: [{ label: ['x'] }], extra: 1 } }] },
       { paramsSchema: [{ key: 'w', type: 'number', default: 5, label: 'W', min: 10, max: 1 }] },
       { paramsSchema: [{ key: 'w', type: 'select', default: 'z', label: 'W', options: [{ value: 'a', label: 'A' }] }] },
       { paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W' }, { key: 'w', type: 'number', default: 2, label: 'W' }] },
