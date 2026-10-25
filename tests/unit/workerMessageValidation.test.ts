@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { checkEngineWorkerMessage, checkMeshData, checkPaintDescriptor, isPlainData } from '../../src/geometry/workerMessageValidation';
 import { API_PAINT_DESCRIPTOR_KINDS } from '../../src/geometry/apiPaintSpec';
+import { parseSelector } from '../../src/geometry/selector';
 
 /** One valid descriptor per api.paint.* kind — exactly what the recorder emits. */
 const VALID_DESCRIPTORS: Record<string, Record<string, unknown>> = {
@@ -167,6 +168,12 @@ describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
   it('accepts what the recorders emit', () => {
     expect(exec({ surfaceOps: [{ id: 'knurl', params: { amplitude: 0.3, profile: 'pyramid' }, scope: { kind: 'label', label: 'grip' } }] }).ok).toBe(true);
     expect(exec({ surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'point', point: [0, 0, 0], radius: 4 } }] }).ok).toBe(true);
+    // #1111's shared-selector scope, as the Worker recorder emits it (already parsed).
+    const select = parseSelector({ label: 'grip', where: { facing: 'up' } }, 'test');
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: { amplitude: 0.7 }, scope: { kind: 'select', select } }] }).ok).toBe(true);
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: {}, scope: { kind: 'select', select: [] } }] }).ok).toBe(false);
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: {}, scope: { kind: 'select', select, extra: 1 } }] }).ok).toBe(false);
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: { select }, scope: undefined }] }).ok).toBe(false);
     // #1093: a normalized selector (what parseSurfaceOpts records) round-trips.
     expect(exec({ surfaceOps: [{ id: 'knurl', params: {}, scope: { kind: 'select', select: [{ label: ['grip'], where: { facing: [0, 0, 1] } }] } }] }).ok).toBe(true);
     expect(exec({ paramsSchema: [

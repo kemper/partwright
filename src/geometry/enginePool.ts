@@ -23,6 +23,7 @@ import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
 import { createEngineWorker, isEngineSandboxUnavailableError, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { reportLockdownRefusal } from './lockdownRefusalLog';
 import { errorLog } from '../diagnostics/errorLog';
 import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 
@@ -194,6 +195,13 @@ function handleMessage(pw: PoolWorker, data: unknown): void {
     // otherwise the WASM instance may be poisoned — fail the worker and replace.
     const callId = msg.callId as string | null;
     const message = (msg.message as string) || 'Assembly build failed';
+    // A fail-closed sandbox lockdown is deterministic for this browser — log it
+    // (with the offending names) and stop, rather than respawning into the same
+    // refusal until the budget runs out and the reason is lost.
+    if (reportLockdownRefusal(message, 'assembly')) {
+      refuseAll(pw, new Error(message));
+      return;
+    }
     if (callId && pw.inflight.has(callId)) {
       pw.inflight.get(callId)!.reject(new Error(message));
       pw.inflight.delete(callId);

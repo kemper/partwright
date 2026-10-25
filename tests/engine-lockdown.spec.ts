@@ -1,4 +1,11 @@
 import { test, expect, type Page } from 'playwright/test';
+import {
+  planAllowlistAudit,
+  ALLOWED_GLOBAL,
+  ALLOWED_NAVIGATOR,
+  type ChainEntry,
+} from '../src/geometry/workerGlobalAllowlist';
+import { ENUMERATE_CHAIN_SOURCE } from './helpers/enumerateChainSource';
 
 // Engine-Worker sandbox lockdown (#1090). Model code runs via
 // `new Function('api', code)` inside the geometry Worker; after the init
@@ -78,10 +85,30 @@ const PROBE_CODE = String.raw`
   { const om = self.onmessage; probe('hijack onmessage', () => { self.onmessage = () => {}; self.onmessage = om; return true; }); }
   { const pm = self.postMessage; probe('hijack postMessage', () => { self.postMessage = () => {}; self.postMessage = pm; return true; }); }
   probe('api.fetch', () => api.fetch);
+  probe('URL.createObjectURL()', () => URL.createObjectURL(new Blob(['x'])));
+  probe('replace URL.createObjectURL', () => { URL.createObjectURL = () => 'blob:x'; return /native code/.test(String(URL.createObjectURL)) || URL.createObjectURL(new Blob(['x'])); });
   // Sanity: the sandbox still has what model code legitimately needs.
   r.__mathOk = typeof Math.sin === 'function';
   r.__navigatorOk = typeof navigator.hardwareConcurrency === 'number';
   throw new Error('PROBE:' + JSON.stringify(r));
+`;
+
+// Model code that walks the Worker global's prototype chain (and navigator's)
+// AFTER lockdown and reports every own property, strings and symbols. The walk
+// is ENUMERATE_CHAIN_SOURCE — the in-Worker twin of workerLockdown's
+// `enumerateChain`, kept in sync by a unit test — and the test runs the shared
+// planner on the result in Node, so a name the audit failed to remove is
+// reported by name. It also reports the URL blob-registry statics.
+const ENUMERATE_CODE = String.raw`
+  const enumerate = ${ENUMERATE_CHAIN_SOURCE};
+  const urlStatics = {};
+  for (const n of ['createObjectURL', 'revokeObjectURL']) {
+    const d = Object.getOwnPropertyDescriptor(URL, n);
+    let call;
+    try { call = 'returned:' + String(URL[n](n === 'createObjectURL' ? new Blob(['x']) : 'blob:x')); } catch (e) { call = 'threw:' + String(e && e.message); }
+    urlStatics[n] = { type: typeof (d && d.value), writable: !!(d && d.writable), configurable: !!(d && d.configurable), call };
+  }
+  throw new Error('ENUM:' + JSON.stringify({ global: enumerate(self, 'self'), navigator: enumerate(navigator, 'navigator'), urlStatics }));
 `;
 
 function parseProbe(error: string | null | undefined): Record<string, unknown> {
@@ -346,5 +373,95 @@ test.describe('Engine sandbox lockdown', () => {
     expect(out.voxBytes).toBeGreaterThan(0);
     expect(out.studio.error).toBeFalsy();
     expect(out.studio.voxelCount).toBe(64);
+  });
+});
+
+// Allowlist audit (default deny): after lockdown, every name left on the Worker
+// global's prototype chain and on navigator's must be on the allowlist in
+// src/geometry/workerGlobalAllowlist.ts (or inert). When this fails after a
+// Chromium upgrade, the message names the global that couldn't be removed — see
+// docs/architecture-notes.md → "Allowlist audit" for how to triage it. Run for
+// the direct Worker and for the #1110 iframe-sandbox Worker (a classic blob:
+// Worker whose global differs slightly).
+test.describe('Engine sandbox lockdown — global allowlist', () => {
+  for (const mode of ['off', 'opaque'] as const) {
+    test(`the Worker global holds only allowlisted names (engine sandbox: ${mode})`, async ({ page }) => {
+      const denied: string[] = [];
+      page.on('console', (msg) => {
+        const m = /\[lockdown\] default-deny removed \d+ non-allowlisted globals: (.*)$/.exec(msg.text());
+        if (m) denied.push(...m[1].split(', '));
+      });
+      await page.addInitScript((m) => {
+        if (window !== window.top) return;
+        try { localStorage.setItem('partwright-engine-sandbox', m); } catch { /* ignore */ }
+      }, mode);
+      if (mode === 'opaque') {
+        const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
+        test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
+      }
+      await boot(page);
+      const out = await page.evaluate(async (code) => {
+        const pw = (window as unknown as { partwright: PW & { getEngineSandboxStatus: () => { active: string; unavailableReason: string | null } } }).partwright;
+        const r = await pw.run(code);
+        return { error: r.error ?? null, sandbox: pw.getEngineSandboxStatus() };
+      }, ENUMERATE_CODE);
+      if (mode === 'opaque') {
+        expect(out.sandbox.unavailableReason, 'sandbox unavailable').toBeNull();
+        expect(out.sandbox.active).toBe('opaque');
+      }
+      const m = /ENUM:(\{.*\})/.exec(out.error ?? '');
+      expect(m, `unexpected error: ${out.error}`).toBeTruthy();
+      type UrlStatic = { type: string; writable: boolean; configurable: boolean; call: string };
+      const found = JSON.parse(m![1]) as { global: ChainEntry[]; navigator: ChainEntry[]; urlStatics: Record<string, UrlStatic> };
+      // URL stays, but its blob-registry statics are pinned throwing stubs: no
+      // `blob:` URL can be minted into the origin-wide registry.
+      for (const name of ['createObjectURL', 'revokeObjectURL']) {
+        const s = found.urlStatics[name];
+        expect(s, name).toMatchObject({ type: 'function', writable: false, configurable: false });
+        expect(s.call, name).toMatch(/^threw:.*disabled in the geometry sandbox/);
+      }
+      const unexpectedGlobals = planAllowlistAudit(found.global, ALLOWED_GLOBAL).offending.map((e) => `${e.owner}.${e.label}`);
+      const unexpectedNavigator = planAllowlistAudit(found.navigator, ALLOWED_NAVIGATOR).offending.map((e) => `navigator ${e.owner}.${e.label}`);
+      expect([...unexpectedGlobals, ...unexpectedNavigator], 'non-allowlisted names still reachable after lockdown').toEqual([]);
+
+      // The audit really ran in this Worker: capabilities the explicit
+      // denylist doesn't name are gone, and the removals were logged.
+      const labels = new Set(found.global.filter((e) => !e.inert).map((e) => e.label));
+      for (const name of ['MessageChannel', 'OffscreenCanvas', 'Request', 'Response', 'createImageBitmap']) {
+        expect(labels.has(name), name).toBe(false);
+      }
+      expect(found.navigator.some((e) => e.label === 'permissions' && !e.inert)).toBe(false);
+      expect(denied, 'the Worker logs what default-deny removed').toEqual(expect.arrayContaining(['self.MessageChannel']));
+      // Reported, not asserted: the list changes with every Chromium release.
+      console.log(`[allowlist ${mode}] default-deny removed ${denied.length} globals the denylist doesn't name`);
+    });
+  }
+
+  test('a lockdown refusal reaches the Diagnostic Log with the offending names', async ({ page }) => {
+    await boot(page);
+    // A real refusal needs a browser whose Worker global can't be scrubbed, so
+    // drive the main-thread path with the Worker's own refusal message (model
+    // code can post on the pinned channel; the app treats it like a refusal).
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const { formatLockdownRefusal } = await import('/src/geometry/lockdownRefusal.ts');
+      const message = formatLockdownRefusal('still reachable: StickyStorage, navigator.stickyThing');
+      const refused = await pw.run(`self.postMessage({ type: 'error', callId: null, message: ${JSON.stringify(message)} }); const t = Date.now(); while (Date.now() - t < 300) {} return api.Manifold.cube(1);`);
+      const { errorLog } = await import('/src/diagnostics/errorLog.ts');
+      const entries = errorLog.getEntries().filter((e: { source?: string; message: string }) => e.source === 'engine' && /refused to start for security reasons/.test(e.message));
+      const after = await pw.run('return api.Manifold.cube([2, 2, 2]);');
+      return { refusedError: refused.error ?? '', entries: entries.map((e: { level: string; message: string; detail?: string }) => ({ level: e.level, message: e.message, detail: e.detail ?? '' })), after };
+    });
+    // The user-visible error says why nothing rendered…
+    expect(out.refusedError).toMatch(/Geometry engine refused to start for security reasons/);
+    // …and the Diagnostic Log records it once, as an error, naming the globals.
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].level).toBe('error');
+    expect(out.entries[0].message).toMatch(/StickyStorage, navigator\.stickyThing/);
+    expect(out.entries[0].detail).toMatch(/workerGlobalAllowlist/);
+    // A real (unforged) Worker boots fine afterwards.
+    expect(out.after.error).toBeFalsy();
+    expect(out.after.triangleCount).toBe(12);
   });
 });
