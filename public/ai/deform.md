@@ -23,7 +23,7 @@ sessions.)
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
 | Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.editPart(m, 'head', { scale: 1.3 })` (rigid, cut at the seam) or `api.sculpt.transform(m, { select, scale \| rotate \| translate, blend })` (soft warp) |
 | Swap / delete / rebuild one part | `api.editPart(m, 'hat', (part, info) => newHat)` — return `null` to delete |
-| Check an edit touched only what it should | `diffVersions(a, b, { geometry: true, render: true })` (console / AI tool) |
+| Check an edit touched only what it should | `partwright.diffVersions(a, b, { geometry: true, render: true })`; the chat tool: `diffVersions { a, b, geometry: true, heatmap: true }` |
 | Confine any of the above to one part / region / facing | `select: { label } \| { region } \| { where }` — see below |
 
 **When you're already in `api.sdf` land, stay there** — its `.twist/.bend/.shell/.round/.smoothUnion`
@@ -234,13 +234,20 @@ parts and on detected import parts (`api.importWithParts(i)`).
   the shoulder) or a function `(part, info) => Manifold | null`. `info` =
   `{ center, min, max, seam, seamBox }` (`seam` is the cut's centre, null when
   the part was the whole model). Return `null` to delete the part.
-- **`blend`** fillets the seam (a scoped `smoothWeld` around the cut). Without
-  it the part is a plain union: a rotated part shows a small ledge at a flat
-  cut, a scaled one a lip where its cut face is now bigger than the rest's.
+- **`blend`** fillets the seam (a scoped `smoothWeld` around the cut). The
+  default is a small fillet (1/32 of the part's cut box), which also closes the
+  hairline gaps a lattice cut leaves where the edited part meets the rest; pass
+  a bigger value for a visible fillet, or `blend: 0` for a plain union (a
+  rotated part then shows a small ledge at a flat cut, a scaled one a lip).
+- **Selecting the whole model** applies the edit to all of it (no cut).
+- **Cost:** a few seconds to ~15 s per call (the cut, then the seam fillet);
+  `resolution` (32..128) trades cut accuracy for time.
 - **Rigid, exact faces.** Unlike `sculpt.transform` (a soft warp of the whole
   surface), every face keeps its exact geometry; only the cut is approximate
   (a lattice of `resolution` samples, default 64, along the part's box).
-  Labels carry through.
+  Labels carry through, small separate pieces elsewhere in the model are left
+  alone, a hollow part keeps its cavity, and any pocket the edit seals at a
+  curved seam is filled.
 - **Check the result** with `diffVersions(a, b, { geometry: true })` after a
   `runAndSave`: `changedParts` and per-part `changedFraction` show whether
   anything besides the part moved (a neighbour sharing the seam shows a small

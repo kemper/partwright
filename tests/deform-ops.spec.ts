@@ -275,4 +275,53 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     expect(out.maxDisplacement).toBeGreaterThan(1);
     expect(out.heatmap).toBe('data:image/png;base64,');
   });
+
+  test('editPart edge cases: whole model, small separate pieces, hollow parts (#1093)', async () => {
+    test.setTimeout(120_000);
+    const out = await page.evaluate(async () => {
+      const api = (window as unknown as { partwright: {
+        createSession: (n?: string) => Promise<unknown>;
+        run: (code: string) => Promise<unknown>;
+        getGeometryData: () => Promise<{ isManifold?: boolean; componentCount?: number; genus?: number; volume?: number; boundingBox?: { x: [number, number] } } | null>;
+        listObjectParts: () => { parts?: { name: string; triangleCount: number }[] };
+      } }).partwright;
+      await api.createSession('edit-part-edges');
+      const probe = async (code: string) => {
+        const r = await api.run(code) as { error?: string } | undefined;
+        const geo = await api.getGeometryData();
+        const parts = Object.fromEntries((api.listObjectParts().parts ?? []).map(p => [p.name, p.triangleCount]));
+        return { error: (r && r.error) || null, components: geo?.componentCount, genus: geo?.genus, volume: geo?.volume, bbox: geo?.boundingBox, parts };
+      };
+      return {
+        // Selecting everything: the edit applies to the whole model.
+        whole: await probe("const { Manifold } = api;\nreturn api.editPart(api.label(Manifold.cube([10, 10, 10], true), 'body'), 'body', { scale: 1.5 });"),
+        // A small separate labelled pin elsewhere must survive an edit of the body.
+        pin: await probe([
+          'const { Manifold } = api;',
+          "const body = api.label(Manifold.cube([60, 60, 60], true), 'body');",
+          "const base = api.label(Manifold.cube([80, 80, 4], true).translate([0, 0, -40]), 'base');",
+          "const pin = api.label(Manifold.sphere(0.8, 24).translate([38, 0, -36]), 'pin');",
+          "return api.editPart(body.add(base).add(pin), 'body', { translate: [0, 0, 5] });",
+        ].join('\n')),
+        // A hollow head keeps its (scaled) cavity.
+        hollow: await probe([
+          'const { Manifold } = api;',
+          "const body = api.label(Manifold.cylinder(24, 7, 6, 48), 'body');",
+          "const head = api.label(Manifold.sphere(7, 48).subtract(Manifold.sphere(4, 48)).translate([0, 0, 29]), 'head');",
+          "return api.editPart(body.add(head), 'head', { scale: 1.3 });",
+        ].join('\n')),
+        // A scoped round that would erase the selected area errors like plain round.
+        thin: await probe("const { Manifold } = api;\nreturn api.round(Manifold.cube([30, 30, 1], true), { radius: 2, select: { where: { facing: 'up' } } });"),
+      };
+    });
+
+    expect(out.whole.error).toBeNull();
+    expect(out.whole.bbox!.x[1]).toBeCloseTo(7.5, 3);
+    expect(out.pin.error).toBeNull();
+    expect(out.pin.parts.pin).toBeGreaterThan(0);
+    expect(out.pin.components).toBe(3);
+    expect(out.hollow.error).toBeNull();
+    expect(out.hollow.components).toBe(2); // the solid + its cavity
+    expect(out.thin.error).toMatch(/rounds the selected area away/);
+  });
 });

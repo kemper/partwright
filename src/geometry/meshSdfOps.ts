@@ -270,7 +270,9 @@ function exactField(mesh: any, occ: Uint8Array, raster: Float32Array, band: { id
  *  of that set's surface (its lattice iso-crossings). */
 function openExact(f: Float32Array, spec: GridSpec, r: number, band: { idx: Int32Array; pts: Float64Array }): Float32Array {
   const shifted = f.map(v => v + r);
-  const d = nearestPointDistances(isoCrossings(shifted, spec, 0, band.idx), band.pts);
+  const crossings = isoCrossings(shifted, spec, 0, band.idx);
+  need(crossings.length > 0, `round: radius ${r} rounds the selected area away entirely — it is thinner than ${(2 * r).toFixed(2)} units there. Use a smaller radius.`);
+  const d = nearestPointDistances(crossings, band.pts);
   return signedFromDistances(shifted, band, d, i => shifted[i] < 0, -r);
 }
 
@@ -299,7 +301,9 @@ function spliceScoped(Manifold: any, base: Float32Array, edited: Float32Array, w
   // interpolation error keeps it on one side.
   const lift = 0.05 * v;
   for (let i = 0; i < field.length; i++) {
-    const d = w[i] * (edited[i] - base[i]);
+    // w = 0 must stay a no-op even where `edited` is infinite (no surface
+    // left to measure to), or NaN would poison the blur and the zone.
+    const d = w[i] ? w[i] * (edited[i] - base[i]) : 0;
     field[i] = base[i] + d - lift;
     moved[i] = Math.abs(d);
   }
@@ -371,21 +375,43 @@ export function createMeshSdfOps(module: any) {
     if (!splice) return exact; // the selection's edit moved nothing
     let inside = splice.result.intersect(splice.cover);
     if (keepLabels) inside = withCarriedLabels(inside, inputs);
-    return dropSlivers(exact.subtract(splice.cut).add(inside), voxel);
+    return dropSlivers(exact.subtract(splice.cut).add(inside), voxel, 1e-3, [exact]);
   }
 
   /** Re-merge `m` (as the app does on display) and drop the zero-size shells
    *  a cut can leave where it grazes a surface — loose pieces under `scale`
    *  voxels of volume (default a thousandth, which no real component is), and
-   *  inside-out pockets under a voxel (a real cavity is bigger than that). */
-  function dropSlivers(m: any, voxel: number, scale = 1e-3): any {
+   *  inside-out pockets under a voxel (a real cavity is bigger than that).
+   *  A small piece that `sources` already had (same volume — a tiny separate
+   *  component of the model, moved or not) is kept: only the cut's own debris
+   *  goes. */
+  function dropSlivers(m: any, voxel: number, scale = 1e-3, sources: any[] = []): any {
     const merged = Manifold.ofMesh(m.getMesh());
     const pieces = merged.decompose();
     if (pieces.length < 2) return merged;
     const v3 = voxel * voxel * voxel;
     const min = scale * v3, minCavity = Math.max(min, v3);
-    const real = pieces.filter((p: any) => { const vol = p.volume(); return vol > min || vol < -minCavity; });
+    const had = pieceVolumes(sources);
+    const real = pieces.filter((p: any) => {
+      const vol = p.volume();
+      return vol > min || vol < -minCavity || takeMatch(had, vol);
+    });
     return real.length === pieces.length ? merged : Manifold.compose(real);
+  }
+
+  /** Volumes of every connected piece (cavities negative) of `ms`. */
+  function pieceVolumes(ms: any[]): number[] {
+    const out: number[] = [];
+    for (const m of ms) for (const p of m.decompose()) out.push(p.volume());
+    return out;
+  }
+
+  /** Remove and report a volume in `list` equal to `v` (to float noise). */
+  function takeMatch(list: number[], v: number): boolean {
+    const i = list.findIndex(b => Math.abs(b - v) <= 1e-9 + 1e-4 * Math.abs(b));
+    if (i < 0) return false;
+    list.splice(i, 1);
+    return true;
   }
 
   interface RoundOpts {
@@ -570,7 +596,7 @@ export function createMeshSdfOps(module: any) {
    *  neck, an arm at the shoulder). The cut is a levelSet of the difference of
    *  the two exact distances on a lattice around the selection; booleans keep
    *  every input face exact. `seamId` is the cut faces' originalID. */
-  function splitPart(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number): { part: any; rest: any; seamId: number; voxel: number } {
+  function splitPart(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number): { part: any; rest: any | null; seamId: number; voxel: number } {
     const numTri = mesh.triVerts.length / 3;
     const pick = (want: number) => {
       const tv: number[] = [];
@@ -581,7 +607,8 @@ export function createMeshSdfOps(module: any) {
       };
     };
     const selMesh = pick(1), otherMesh = pick(0);
-    if (otherMesh.numTri === 0) return { part: m, rest: new Manifold(), seamId: -1, voxel: 1 };
+    // The selection is the whole model: nothing to cut, the edit applies to all of it.
+    if (otherMesh.numTri === 0) return { part: m, rest: null, seamId: -1, voxel: 1 };
     // The part's solid can reach past its faces' box (a patch on a flat face
     // owns material behind it), so grow the box by half its diagonal, clipped
     // to the model.
@@ -641,6 +668,14 @@ export function createMeshSdfOps(module: any) {
       if (field[i] < 0 && !keepIn[i]) field[i] = voxel * 0.5;
       else if (!(field[i] < 0) && !keepOut[i]) field[i] = -voxel * 0.5;
     }
+    // A jagged cut leaves sub-voxel bridges and tunnels where the edited part
+    // meets the rest again; one blur pass makes the cut surface smooth. (The
+    // outer layer stays forced outside.)
+    blurField(field, spec);
+    for (let i = 0; i < n; i++) {
+      const ix = i % spec.nx, iy = Math.floor(i / spec.nx) % spec.ny, iz = Math.floor(i / (spec.nx * spec.ny));
+      if (ix === 0 || iy === 0 || iz === 0 || ix === spec.nx - 1 || iy === spec.ny - 1 || iz === spec.nz - 1) field[i] = voxel;
+    }
     // levelSet can still emit zero-size shells on lattice planes; drop them
     // before they seed slivers in the booleans.
     const raw = levelSetFromField(Manifold, field, spec);
@@ -648,7 +683,7 @@ export function createMeshSdfOps(module: any) {
     const region = dropSlivers(raw, voxel);
     // Where the two distances nearly tie the cut can also chip off loose
     // voxel-sized crumbs; they'd float once the part moves, so drop them.
-    return { part: dropSlivers(m.intersect(region), voxel, 4), rest: dropSlivers(m.subtract(region), voxel, 4), seamId, voxel };
+    return { part: dropSlivers(m.intersect(region), voxel, 4, [m]), rest: dropSlivers(m.subtract(region), voxel, 4, [m]), seamId, voxel };
   }
 
   /** Per-triangle mask of the faces carrying originalID `id`. */
@@ -719,9 +754,10 @@ export function createMeshSdfOps(module: any) {
 
   interface EditPartOpts {
     /** Smooth the seam where the edited part meets the rest with a fillet of
-     *  this radius (a scoped smoothWeld). Default 0: a plain union. */
+     *  this radius (a scoped smoothWeld). Default: 1/32 of the cut box (two
+     *  voxels at the default resolution); 0 for a plain union. */
     blend?: number;
-    /** Cut lattice resolution along the selection box's longest side (default 64, 32..256). */
+    /** Cut lattice resolution along the selection box's longest side (default 64, 32..128). */
     resolution?: number;
   }
 
@@ -739,10 +775,10 @@ export function createMeshSdfOps(module: any) {
       'editPart(m, part, edit): edit must be a function (part, info) => Manifold or a { scale, rotate, translate, pivot } object');
     need(!!opts && typeof opts === 'object', 'editPart: opts must be an object');
     for (const k of Object.keys(opts)) need(['blend', 'resolution'].includes(k), `editPart: unknown option "${k}" (allowed: blend, resolution)`);
-    const blend = opts.blend ?? 0;
-    need(isFiniteNum(blend) && blend >= 0, 'editPart.blend must be a distance >= 0');
+    const blendOpt = opts.blend;
+    need(blendOpt === undefined || (isFiniteNum(blendOpt) && blendOpt >= 0), 'editPart.blend must be a distance >= 0');
     const resolution = opts.resolution ?? 64;
-    need(Number.isInteger(resolution) && resolution >= 32 && resolution <= 256, 'editPart.resolution must be an integer in 32..256');
+    need(Number.isInteger(resolution) && resolution >= 32 && resolution <= 128, 'editPart.resolution must be an integer in 32..128');
 
     const mesh = m.getMesh();
     const scope = resolveScope([mesh], sel, 'editPart.part');
@@ -764,38 +800,49 @@ export function createMeshSdfOps(module: any) {
     } else {
       next = transformPart(part, edit as PartTransform, info.seam ?? info.center);
     }
+    if (!rest || rest.isEmpty()) {
+      need(!!next && !next.isEmpty(), 'editPart: the selection is the whole model, so deleting it would leave nothing');
+      return next;
+    }
     if (!next || next.isEmpty()) return rest;
-    if (rest.isEmpty()) return next;
-    if (blend === 0) return fillNewCavities(dropSlivers(rest.add(next), voxel), m, voxel);
+    // Crumbs and sealed pockets the join leaves at the seam go; anything
+    // either side already had (a small separate piece, a hollow) stays.
+    const finish = (out: any) => fillNewCavities(dropSlivers(out, voxel, 4, [rest, next]), [rest, next]);
+    // Default: a small fillet (1/32 of the cut box, two voxels at the default
+    // resolution), which also closes the sub-voxel tunnels a jagged cut can
+    // leave where the edited part meets the rest. Tied to the box, not the
+    // voxel, so a finer cut doesn't shrink it below what closes them.
+    const blend = blendOpt ?? (voxel * resolution) / 32;
+    if (blend === 0) return finish(rest.add(next));
     // Blend only around the seam: both sides' cut faces (when the edit kept
     // the part's), grown to cover the joint.
     const meshes = [rest.getMesh(), next.getMesh()];
     const masks = meshes.map(mm => facesWithId(mm, seamId));
     const pts = masks.map((mk, i) => facesCentroid(meshes[i], mk)).filter((x): x is NonNullable<typeof x> => !!x);
-    need(pts.length > 0, 'editPart.blend: no seam left to blend (the edit replaced the part entirely) — weld it yourself with api.smoothWeld');
+    if (pts.length === 0) {
+      need(blendOpt === undefined, 'editPart.blend: no seam left to blend (the edit replaced the part entirely) — weld it yourself with api.smoothWeld');
+      return finish(rest.add(next));
+    }
     const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
     for (const q of pts) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], q.min[k]); max[k] = Math.max(max[k], q.max[k]); }
-    return fillNewCavities(scopedWeld([rest, next], meshes, { masks, min, max }, unionBounds(bboxOf(rest), bboxOf(next)), blend, blend, undefined, true, 'editPart'), m, voxel);
+    const weld = () => finish(scopedWeld([rest, next], meshes, { masks, min, max }, unionBounds(bboxOf(rest), bboxOf(next)), blend, blend, undefined, true, 'editPart'));
+    if (blendOpt !== undefined) return weld();
+    // The default fillet is a nicety: if the seam is too big to resolve at
+    // that radius, fall back to the plain union rather than fail the edit.
+    try { return weld(); } catch { return finish(rest.add(next)); }
   }
 
   /** A part cut along a curved seam and then scaled or turned no longer
    *  matches the rest's side of the seam, and where the edited part's rim
    *  still overlaps the rest the gap between them is sealed into a hidden
-   *  cavity. Fill every cavity (inside-out piece) of `out` that `input` didn't
-   *  already have; a hollow model's own cavities are kept. */
-  function fillNewCavities(out: any, input: any, voxel: number): any {
+   *  cavity. Fill every cavity (inside-out piece) of `out` that neither
+   *  operand had: the rest's and the edited part's own cavities (a hollow
+   *  head, scaled with it) are kept. */
+  function fillNewCavities(out: any, operands: any[]): any {
     const pieces = out.decompose();
     if (pieces.length < 2) return out;
-    const before = input.decompose().map((p: any) => p.volume()).filter((v: number) => v < 0);
-    const tol = voxel * voxel * voxel;
-    const kept = pieces.filter((p: any) => {
-      const v = p.volume();
-      if (v >= 0) return true;
-      const i = before.findIndex((b: number) => Math.abs(b - v) <= tol + 1e-3 * Math.abs(b));
-      if (i < 0) return false;
-      before.splice(i, 1);
-      return true;
-    });
+    const had = pieceVolumes(operands).filter(v => v < 0);
+    const kept = pieces.filter((p: any) => { const v = p.volume(); return v >= 0 || takeMatch(had, v); });
     return kept.length === pieces.length ? out : Manifold.compose(kept);
   }
 

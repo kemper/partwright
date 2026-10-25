@@ -54,3 +54,19 @@ shorthands; labels resolve main-side through a triangle-index lookup on the
 run's labelMap.
 
 **Follow-up filed:** the sub-voxel seam hairline in the edge overlay is #1112; a retro note records the boolean-robustness lessons.
+
+**Review follow-up.** The review agent found:
+- `editPart` crashed on a whole-model selection;
+- it silently dropped small separate components and filled a scaled hollow part's own cavity;
+- the plain-union seam left tiny handles;
+- a scoped round could hide an "everything eroded" case behind NaNs;
+- `diffVersions` re-runs ignored companion files and saved textures, and left a BREP version's shape in the Worker.
+
+Fixes:
+- crumb and cavity cleanup now only drops pieces neither operand had;
+- the cut field is blurred before the cut is built;
+- the default seam fillet is 1/32 of the cut box, so it doesn't shrink as the cut resolution goes up;
+- `resolution` is capped at 128;
+- `diffVersions` passes companion files, measures saved textured meshes, and re-runs the live BREP code afterwards.
+
+The remaining notes went into the docs: the `select` texture border is approximate, and the chat tool's option is called `heatmap`.

@@ -15722,20 +15722,32 @@ async function main() {
         statDiff,
       };
       if (!opts?.geometry && !opts?.render) return base;
-      // Re-run each version off the live editor (its own language, params and
-      // imports), then measure each surface against the other.
+      // Re-run each version off the live editor (its own language, params,
+      // imports and companion files, like the thumbnail backfill), then
+      // measure each surface against the other. A version saved with a
+      // computed api.surface texture is measured textured (its saved mesh),
+      // with its parts remapped onto it.
       const runVersion = async (v: Version) => {
-        const r = await executeCodeAsync(v.code, effectiveVersionLanguage(v, getState().session), v.paramValues ?? undefined, undefined, (v.importedMeshes ?? []) as ImportedMesh[]);
+        const r = await executeCodeAsync(v.code, effectiveVersionLanguage(v, getState().session), v.paramValues ?? undefined, undefined, (v.importedMeshes ?? []) as ImportedMesh[], v.companionFiles);
         if (r.error || !r.mesh) throw new Error(`diffVersions: version ${v.index} did not produce geometry${r.error ? `: ${r.error}` : ''}`);
-        return r;
+        const textured = (v.surfaceTexture as PersistedSurfaceTexture | undefined)?.mesh;
+        if (!textured?.triVerts) return { mesh: r.mesh, labelMap: r.labelMap };
+        const mesh = textured as MeshData;
+        return { mesh, labelMap: r.labelMap && r.labelMap.size > 0 ? remapTriangleSets(r.labelMap, r.mesh, mesh) : r.labelMap };
       };
+      const touchesBrep = [va, vb].some(v => effectiveVersionLanguage(v, getState().session) === 'replicad');
       try {
         const [ra, rb] = [await runVersion(va), await runVersion(vb)];
-        const { report, perTriB } = meshDiff(ra.mesh!, rb.mesh!, { tolerance: opts.tolerance, labelsA: ra.labelMap, labelsB: rb.labelMap });
+        // The BREP engine keeps the last run's shape for exportSTEP; put the
+        // editor's own model back so a following export isn't version b.
+        if (touchesBrep && getActiveLanguage() === 'replicad') {
+          await executeCodeAsync(getValue(), 'replicad', currentParamValues).catch(() => undefined);
+        }
+        const { report, perTriB } = meshDiff(ra.mesh, rb.mesh, { tolerance: opts.tolerance, labelsA: ra.labelMap, labelsB: rb.labelMap });
         let heatmap: string | undefined;
         if (opts.render) {
           const view = typeof opts.render === 'object' ? opts.render : {};
-          const colored = { ...rb.mesh!, triColors: deviationColors(perTriB, report.tolerance, report.maxDisplacement) };
+          const colored = { ...rb.mesh, triColors: deviationColors(perTriB, report.tolerance, report.maxDisplacement) };
           heatmap = renderSingleView(colored, { azimuth: view.azimuth, elevation: view.elevation, size: view.size ?? getRenderBudget().defaultPx });
         }
         return {
