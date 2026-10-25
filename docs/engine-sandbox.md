@@ -162,38 +162,76 @@ from a sandboxed iframe. `vite preview` always mirrors the production
 
 ## Deploying `origin` mode
 
-1. **Add a second hostname to the same Cloudflare Pages project**, e.g.
-   `sandbox.partwrightstudio.com` (Pages → Custom domains). It serves the
-   identical build, so `/sandbox`, `/assets/*` and the wasm are there.
-2. **REQUIRED — the sandbox host must not serve the app.** Redirect every
-   path on that host except `/sandbox`, `/assets/*` and `/openscad-libs/*`
-   (and their `/v1/` twins) to the app host, e.g. with absolute-URL rules in
-   `public/_redirects` (`https://sandbox.partwrightstudio.com/* https://www.partwrightstudio.com/:splat 302`
-   placed after explicit pass-through rules for the sandbox paths) or a
-   Cloudflare redirect rule. Otherwise a user who opens the full app on
-   `sandbox.<domain>` saves sessions and **AI keys into the sandbox origin's
-   storage — exactly where `origin`-mode Workers can read them.**
-3. **Build with** `VITE_SANDBOX_ORIGIN=https://sandbox.partwrightstudio.com`
-   and `VITE_APP_ORIGIN=https://www.partwrightstudio.com` (comma-separate
-   several app hosts) — Pages → Settings → Environment variables. The frame
-   refuses spawn requests from any other origin, so a missing
+Production uses a **second Cloudflare Pages project**, `partwright-sandbox`
+(`https://partwright-sandbox.pages.dev`), built from the same repo and the
+same `production` branch with the default `npm run build`. It needs no DNS:
+`pages.dev` is on the Public Suffix List, so it is a separate *site* from
+`www.partwrightstudio.com`. (The domain itself is on Namecheap DNS, so a
+`sandbox.partwrightstudio.com` host could not use a Cloudflare redirect rule,
+and Pages' `_redirects` cannot match on the hostname.)
+
+1. **Create the `partwright-sandbox` Pages project** (connect to Git, same
+   repo, production branch `production`, build `npm run build`, output
+   `dist`). Turn preview deployments off; it only needs production. **Never
+   delete it**: `pages.dev` names are first-come, so a deleted project's name
+   could be claimed by someone else, and the app would frame their page.
+2. **Production env vars on BOTH projects** (Settings → Variables and
+   Secrets, type Text):
+   `VITE_SANDBOX_ORIGIN=https://partwright-sandbox.pages.dev` and
+   `VITE_APP_ORIGIN=https://www.partwrightstudio.com,https://partwrightstudio.com`.
+   The frame refuses spawn requests from any other origin, so a missing
    `VITE_APP_ORIGIN` makes `origin` mode fail closed. Preview deployments
    without these simply can't select `origin` mode (the option is disabled;
    `setEngineSandboxMode('origin')` returns an error).
-4. **Allow framing it from the app**: add
-   `frame-src 'self' https://sandbox.partwrightstudio.com` to the `/*`
-   `Content-Security-Policy` in `public/_headers` (the dev/preview servers add
-   it automatically from `VITE_SANDBOX_ORIGIN`). The sandbox document's
-   `frame-ancestors` already lists the production app hosts.
-5. Optionally set `VITE_ENGINE_SANDBOX=origin` to make it the default.
+3. **The sandbox host never runs the app.** It serves the full build, so
+   without a guard a user who opened `/editor` there would save sessions and
+   **AI keys into the sandbox origin's storage.** Browsers partition
+   third-party storage today, so the framed Worker would normally see a
+   separate bucket, but partitioning can be disabled by policy, relaxed by
+   the Storage Access API, or changed by browsers later, so the app must not
+   rely on it. `src/entry.ts` checks this first (`sandboxHostAction` in
+   `src/sandbox/sandboxHostGuard.ts`): on the `VITE_SANDBOX_ORIGIN` origin, and
+   on `https://partwright-sandbox.pages.dev` by name in case the sandbox
+   project's build lacks the env var, it redirects to the first
+   `VITE_APP_ORIGIN` (falling back to `www.partwrightstudio.com` on the
+   production host), keeping path, query and hash, before loading any app
+   bundle or touching storage. It shows a static notice if there's nowhere to
+   send the visitor. `sandbox.html` doesn't load `entry.ts`, so the frame is
+   unaffected, and the content pages (`/help`, `/catalog`, …) ship no
+   storage-writing JS. Per-deploy hosts
+   (`<hash>.partwright-sandbox.pages.dev`) are other origins the frame never
+   runs on, so they don't need the guard. Keep new storage-touching code
+   behind `entry.ts`'s dynamic imports.
+4. **Framing is allowed from the app** by `frame-src 'self'
+   https://partwright-sandbox.pages.dev` on the `/*` CSP in `public/_headers`
+   (the dev/preview servers add it from `VITE_SANDBOX_ORIGIN`). The sandbox
+   document's `frame-ancestors` already lists the production app hosts.
+   Changing the sandbox host means updating that `frame-src` and
+   `PRODUCTION_SANDBOX_ORIGIN` in `src/sandbox/sandboxHostGuard.ts`.
+5. Optionally set `VITE_ENGINE_SANDBOX=origin` to make it the default. Until
+   then the mode is opt-in per browser (Advanced Settings → Security, or
+   `partwright.setEngineSandboxMode('origin')`), and the `/legal` "Code
+   execution" text should be updated when the default flips.
 
-Same-site note: `sandbox.partwrightstudio.com` is same-*site* as
-`www.partwrightstudio.com`. That doesn't matter for storage (origins are
-separate) but Chromium may keep both in one renderer process (the benchmark
-saw no extra renderer for `origin` mode locally, unlike `opaque`). A
-different registrable domain would buy process isolation at the cost of a
-cross-site embed (third-party storage partitioning applies; the frame needs no
-storage anyway).
+Verify after a release:
+
+```bash
+curl -sI https://partwright-sandbox.pages.dev/sandbox   # 200, two CSP headers, cross-origin-resource-policy: cross-origin
+```
+
+Opening `https://partwright-sandbox.pages.dev/editor` in a browser should land
+on `https://www.partwrightstudio.com/editor`. Then, on `www`:
+`partwright.setEngineSandboxMode('origin'); location.reload()`, and
+`partwright.getEngineSandboxStatus()` should report `active: 'origin'`,
+`state: 'ready'`, both `crossOriginIsolated` flags `true` and no
+`unavailableReason`.
+
+Site note: being a different site, the frame most likely runs in its own
+renderer process (stronger isolation). Mesh results are then copied across
+processes, measured for `opaque` below at ≈7 ms for 205k triangles and
+≈18 ms for 500k. Unlike `opaque`, the frame's HTTP cache persists, so it
+downloads the engine once rather than on every page load. Third-party storage
+partitioning applies; the frame needs no storage.
 
 ## Testing
 
