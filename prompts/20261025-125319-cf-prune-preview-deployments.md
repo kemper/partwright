@@ -35,3 +35,14 @@ setting (branch control), not an API call this script should make silently.
 
 Verified against a stubbed fetch (pagination, kept branches, production guard,
 429 retry, partial-failure exit code); no real Cloudflare token in the session.
+
+## Assistant
+
+## Key decisions (follow-up)
+
+**All projects by default**: the Cloudflare Pages bot comment on the PR showed
+this branch's preview deploying to a `partwright` project, while CLAUDE.md
+documents `mainifold.pages.dev`. Rather than hardcode one name that may be
+stale, the script now enumerates every Pages project in the account and
+prunes each; `--project` (repeatable) or `CF_PAGES_PROJECT` narrows it. The
+same keep/production guards apply per project.
