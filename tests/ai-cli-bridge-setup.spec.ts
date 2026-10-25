@@ -109,6 +109,9 @@ test.describe('AI CLI bridge setup', () => {
     // A second endpoint (e.g. a remote gateway) — "Use" switches the provider
     // to it, and both stay saved.
     await page.getByRole('button', { name: '+ Other endpoint' }).click();
+    // addEndpoint awaits its IndexedDB write before selecting the new entry;
+    // typing earlier lands in the previous entry's form and is then replaced.
+    await expect(rows).toHaveCount(3);
     await page.getByTestId('custom-endpoint-url').fill('https://gw.example.com/v1');
     await page.getByTestId('custom-endpoint-url').blur();
     await page.getByTestId('custom-endpoint-key').fill('sk-remote');
