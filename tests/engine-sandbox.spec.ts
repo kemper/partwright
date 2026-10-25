@@ -418,3 +418,19 @@ test('engine sandbox: off by default', async ({ page }) => {
   expect(s.active).toBe('off');
   expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
 });
+
+test('engine sandbox: the sandbox host redirects the app to the app origin', async ({ page, baseURL }) => {
+  // Same derivation as playwright.config.ts (the second dev server's port).
+  const appOrigin = new URL(baseURL!).origin;
+  const appPort = Number(new URL(appOrigin).port);
+  const sandboxOrigin = `http://localhost:${Number(process.env.E2E_SANDBOX_PORT || appPort + 1000)}`;
+
+  // Opening the app on the sandbox host must never boot it there (its storage
+  // is the origin 'origin'-mode Workers run in): entry.ts sends it home first.
+  await page.goto(`${sandboxOrigin}/editor?gallery#x`);
+  await page.waitForURL(`${appOrigin}/editor?gallery#x`, { timeout: 30_000 });
+
+  // The frame document itself still loads on the sandbox host.
+  const res = await page.request.get(`${sandboxOrigin}/sandbox`);
+  expect(res.ok()).toBe(true);
+});
