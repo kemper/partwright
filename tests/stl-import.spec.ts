@@ -89,7 +89,7 @@ test.describe('STL import', () => {
       const pw = (window as any).partwright;
       const code = pw.getCode();
       const geo = pw.getGeometryData();
-      return { code, volume: geo.volume, isManifold: geo.isManifold, triangleCount: geo.triangleCount };
+      return { code, volume: geo.volume, isManifold: geo.isManifold, triangleCount: geo.triangleCount, objects: pw.listObjects().map((o: { name: string }) => o.name) };
     });
 
     expect(result.code).toContain('Manifold.ofMesh(api.imports[0])');
@@ -97,6 +97,47 @@ test.describe('STL import', () => {
     expect(result.volume).toBeCloseTo(1000, 1);
     expect(result.isManifold).toBe(true);
     expect(result.triangleCount).toBe(12);
+    // The first object is named after the file, like every later import.
+    expect(result.objects).toEqual(['unit-cube']);
+  });
+
+  test('a big mesh defers the main-thread solid: stats come from the engine Worker, slicing builds it on demand', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    // Treat every mesh as "big" so this 12-triangle cube takes the deferred
+    // path a multi-million-triangle import would.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.setAppConfig('renderer', 'lazyManifoldMinTriangles', 0);
+    });
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'deferred-cube.stl',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from(buildCubeSTLBase64(), 'base64'),
+    });
+    await page.waitForFunction(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      if (!((pw?.getCode?.() ?? '') as string).includes('deferred-cube.stl')) return false;
+      const geo = pw?.getGeometryData?.();
+      return typeof geo?.volume === 'number' && geo.stale !== true && geo.triangleCount === 12;
+    }, undefined, { timeout: 15000 });
+
+    const r = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const geo = pw.getGeometryData();
+      return { geo, bbox: pw.getBoundingBox(), slice: pw.sliceAtZ(0) };
+    });
+    expect(r.geo.volume).toBeCloseTo(1000, 1);
+    expect(r.geo.surfaceArea).toBeCloseTo(600, 1);
+    expect(r.geo.isManifold).toBe(true);
+    expect(r.geo.genus).toBe(0);
+    expect(r.geo.componentCount).toBe(1);
+    expect(r.bbox).toEqual({ min: [-5, -5, -5], max: [5, 5, 5] });
+    // The deferred Manifold is built on first use — slicing still works.
+    expect(r.slice.error).toBeUndefined();
+    expect(r.slice.area).toBeCloseTo(100, 1);
   });
 
   test('imported mesh stays editable — wrapper composes with code-defined primitives', async ({ page }) => {

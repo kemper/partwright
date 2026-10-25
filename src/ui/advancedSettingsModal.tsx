@@ -676,6 +676,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={0.9} step={0.05}
           onChange={v => set('renderer', 'isolateGhostOpacity', v)}
         />
+        <Field cfgKey="renderer.creaseEdgeMaxTriangles"
+          label="Crease edges up to"
+          unit="triangles"
+          hint="Thumbnails and rendered views skip crease edges on meshes denser than this."
+          tooltip="Version thumbnails and renderViews outline a model's sharp edges (creases). Finding them scans every edge on the main thread, which froze the app for seconds after importing a dense scan — and at that density the lines are noise anyway. Above this many triangles the outline is skipped. 0 = never draw crease edges."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.creaseEdgeMaxTriangles}
+          value={c.renderer.creaseEdgeMaxTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'creaseEdgeMaxTriangles', v)}
+        />
+        <Field cfgKey="renderer.lazyManifoldMinTriangles"
+          label="Defer solid rebuild from"
+          unit="triangles"
+          hint="Big models skip rebuilding the solid after each run until a slice or boolean needs it."
+          tooltip="After every run the editor rebuilds a solid (Manifold) copy of the model for slicing, measuring and booleans. On a multi-million-triangle import that rebuild froze the app for seconds. From this many triangles, the engine computes the model's stats itself and the rebuild waits until a tool actually needs the solid. Deferred models skip the stats' automatic quartile cross-sections (meshes over 250k triangles skip them anyway). 0 = always defer."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.lazyManifoldMinTriangles}
+          value={c.renderer.lazyManifoldMinTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'lazyManifoldMinTriangles', v)}
+        />
+        <Field cfgKey="renderer.thumbnailMaxTriangles"
+          label="Thumbnail detail up to"
+          unit="triangles"
+          hint="Version thumbnails of bigger meshes are drawn from a simplified copy."
+          tooltip="A version thumbnail is a small image. Drawing a multi-million-triangle mesh into one uploads it to the GPU a second time and rasterizes detail no pixel can show, which stalled the app for seconds after a big import. Above this many triangles the thumbnail is drawn from a simplified copy of about this size (the model itself, and rendered views like renderViews, are untouched). 0 = always draw the full mesh."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.thumbnailMaxTriangles}
+          value={c.renderer.thumbnailMaxTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'thumbnailMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -833,7 +863,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field cfgKey="renderer.thumbnailTimeoutMs"
           label="Thumbnail generation timeout"
           unit="ms"
-          tooltip="Max time to wait for a session thumbnail render before giving up and saving without one. Thumbnails are rendered in the background when a session is saved. On slow hardware or with very complex geometry, the render may take longer than the default. Increase if your session list shows blank thumbnails."
+          tooltip="How long to wait for the browser to encode a version thumbnail in the background before encoding it directly instead (a brief pause, but the thumbnail is never lost). After a very large import the background encode can be held up for seconds."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.thumbnailTimeoutMs}
           value={c.renderer.thumbnailTimeoutMs}
           min={500} max={30_000} integer
@@ -1538,6 +1568,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.toolDialogOpenWaitMs}
           min={500} max={60_000} integer
           onChange={v => set('ui', 'toolDialogOpenWaitMs', v)}
+        />
+        <Field cfgKey="ui.paintAdjacencyWorkerMinTriangles"
+          label="Prepare paint in background from"
+          unit="triangles"
+          hint="Bigger meshes prepare paint tools in a background worker."
+          tooltip="After each run the app prepares the triangle-neighbour graph the paint tools use, so Paint opens instantly. On a big mesh that takes a second or more and froze the app while it looked idle (e.g. right after switching objects). From this many triangles it is built in a background worker when you open Paint instead; paint clicks wait the moment it takes. 0 = always in the background."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintAdjacencyWorkerMinTriangles}
+          value={c.ui.paintAdjacencyWorkerMinTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('ui', 'paintAdjacencyWorkerMinTriangles', v)}
+        />
+        <Field cfgKey="ui.paintAdjacencyWorkerTimeoutMs"
+          label="Background paint prep timeout"
+          unit="ms"
+          hint="Fall back to preparing paint on the main thread after this long."
+          tooltip="If the background worker preparing the paint tools doesn't answer within this time (for example, the browser stopped it for using too much memory), the app prepares them on the main thread instead, which may pause the app briefly but keeps Paint working."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintAdjacencyWorkerTimeoutMs}
+          value={c.ui.paintAdjacencyWorkerTimeoutMs}
+          min={5_000} max={600_000} step={5_000} integer
+          onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
         />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"

@@ -41,6 +41,9 @@
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
+import { computeManifoldFacts } from './manifoldFacts';
+import { edgeStats } from './geometryHeuristics';
+import { computeMeshPieces } from './meshPieces';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine, runVoxelGrid } from './engines/voxel';
@@ -172,7 +175,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -181,6 +184,7 @@ self.onmessage = async (event: MessageEvent) => {
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
       sdfPreviewScale?: number | null;
+      manifoldFactsMinTriangles?: number;
     };
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
@@ -327,6 +331,15 @@ self.onmessage = async (event: MessageEvent) => {
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
+      // A big manifold-js result: compute the Manifold-dependent stats here,
+      // over the live result, so the main thread can skip rebuilding its own
+      // Manifold from the mesh (seconds of frozen UI at a few million
+      // triangles) until something needs it. See MeshResult.manifoldFacts.
+      const liveResult = (result as { manifold?: unknown }).manifold;
+      const manifoldFacts = effectiveLang === 'manifold-js' && mesh && liveResult && !result.renderOnly &&
+        typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
+        ? { ...computeManifoldFacts(liveResult), edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri), pieces: computeMeshPieces(mesh) }
+        : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
         const transfer: Transferable[] = [
@@ -340,13 +353,14 @@ self.onmessage = async (event: MessageEvent) => {
         // Voxel meshes carry per-triangle colors; transfer them too (the
         // manifold-js path leaves triColors undefined).
         if (mesh.triColors)     transfer.push(mesh.triColors.buffer);
+        if (manifoldFacts?.pieces) transfer.push(manifoldFacts.pieces.pieceOfTri.buffer);
         // Voxel runs also return the grid itself as typed arrays.
         const vg = result.voxelGrid as VoxelGridTransfer | undefined;
         if (vg) transfer.push(vg.keys.buffer, vg.colors.buffer);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {

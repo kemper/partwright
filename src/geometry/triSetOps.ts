@@ -12,8 +12,7 @@ export interface TriAdjacency {
   nbr: Int32Array;
 }
 
-/** Adapt per-triangle neighbour lists (e.g. `buildAdjacency(mesh).neighbors`
- *  from src/color/adjacency.ts, which is corner-adjacent) to CSR. */
+/** Adapt per-triangle neighbour lists to CSR. */
 export function adjacencyFromNeighborLists(neighbors: ArrayLike<ArrayLike<number>>): TriAdjacency {
   const n = neighbors.length;
   const start = new Int32Array(n + 1);

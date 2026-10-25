@@ -150,7 +150,9 @@ import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
-import { parseSTL } from './import/parsers/stl';
+import { isOrientedEdgeManifold, probeSTL, weldToleranceLadder, type STLProbeResult } from './import/stlProbe';
+import type { ManifoldFacts } from './geometry/manifoldFacts';
+import { probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
 import { parse3MF, weldMesh, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
@@ -340,6 +342,7 @@ import {
   setPartGroup,
   partSaveState,
   currentPartIsDirty,
+  dataURLToBlob,
   getState,
   setSessionThumbCamera,
   setSessionWorkCamera,
@@ -741,6 +744,80 @@ function paintIdlePromise(): Promise<void> {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let currentManifold: any = null;
+/** The mesh `currentManifold` is still to be built from — set instead of
+ *  building it eagerly for a big run, whose stats came from the engine Worker
+ *  (`currentManifoldFacts`). `Manifold.ofMesh` on a multi-million-triangle
+ *  mesh freezes the UI for seconds, so it waits until a slice / boolean /
+ *  decompose actually asks for the solid. Read the Manifold through
+ *  `liveManifold()`, never `currentManifold` directly. */
+let pendingManifoldMesh: MeshData | null = null;
+/** The Worker-computed stats describing the current (built or pending)
+ *  Manifold, and the mesh they describe; null when the main thread computes
+ *  the stats itself. */
+let currentManifoldFacts: ManifoldFacts | null = null;
+let currentManifoldFactsMesh: MeshData | null = null;
+
+/** Defer the current Manifold: `facts` (from the engine Worker) describe
+ *  `mesh`, and the Manifold is built from it on first `liveManifold()`.
+ *  Call after `releaseCurrentManifold()`. */
+function deferManifold(mesh: MeshData, facts: ManifoldFacts): void {
+  pendingManifoldMesh = mesh;
+  currentManifoldFacts = facts;
+  currentManifoldFactsMesh = mesh;
+}
+
+/** The Worker facts for `mesh`, if the current ones describe it. */
+function manifoldFactsFor(mesh: MeshData | null): ManifoldFacts | null {
+  return mesh && currentManifoldFactsMesh === mesh ? currentManifoldFacts : null;
+}
+
+/** The current model's Manifold, built on first use when it was deferred.
+ *  Null for render-only models (or when the deferred build fails). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function liveManifold(): any {
+  if (pendingManifoldMesh) {
+    const mesh = pendingManifoldMesh;
+    pendingManifoldMesh = null;
+    const mod = getModule();
+    try {
+      currentManifold = mod ? mod.Manifold.ofMesh(mesh) : null;
+    } catch (e) {
+      // The Worker said solid but the rebuild disagrees — trust the rebuild,
+      // drop the Worker stats and refresh them, so the stats and the
+      // slice/boolean tools agree that the model is render-only.
+      currentManifold = null;
+      currentManifoldFacts = null;
+      currentManifoldFactsMesh = null;
+      errorLog.capture({ level: 'warn', source: 'engine', message: `Rebuilding the model's solid on the main thread failed; treating it as render-only: ${e instanceof Error ? e.message : String(e)}` });
+      updateGeometryData();
+    }
+  }
+  return currentManifold;
+}
+
+/** Free the current Manifold's WASM-heap memory (Manifold objects live outside
+ *  the JS heap and need a manual .delete()) and drop any deferred build. */
+function releaseCurrentManifold(): void {
+  if (currentManifold && typeof currentManifold.delete === 'function') {
+    try { currentManifold.delete(); } catch { /* already deleted */ }
+  }
+  currentManifold = null;
+  pendingManifoldMesh = null;
+  currentManifoldFacts = null;
+  currentManifoldFactsMesh = null;
+}
+
+/** Bounding box of the current model without forcing a deferred Manifold
+ *  build: the Worker's facts when the build was deferred, else the Manifold's. */
+function currentManifoldBBox(): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (pendingManifoldMesh && currentManifoldFacts) {
+    // A copy: callers (incl. the console API) may mutate it.
+    const bb = currentManifoldFacts.bbox;
+    return bb ? { min: [...bb.min], max: [...bb.max] } : null;
+  }
+  const m = liveManifold();
+  return m ? getBoundingBox(m) : null;
+}
 /** Per-run map from labels (assigned in user code via api.label(shape, name))
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
@@ -774,6 +851,9 @@ type PartMeshCacheEntry = {
   /** The voxel grid behind this mesh (voxel sessions), so a cache hit restores
    *  VOX export / Voxel Studio / greedy STL without re-running the code. */
   voxelRun: VoxelRunCache | null;
+  /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
+   *  cache hit can defer the Manifold rebuild too. */
+  manifoldFacts: ManifoldFacts | null;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -824,7 +904,8 @@ function currentObjectPartsSummary(): ObjectPartsSummary | null {
   if (!mesh) return null;
   const c = objectPartsCache;
   if (c && c.mesh === mesh && c.labels === currentLabelMap) return c.summary;
-  const summary = summarizeObjectParts(mesh, currentLabelMap);
+  // A big run's Worker already split the mesh into pieces (manifoldFacts).
+  const summary = summarizeObjectParts(mesh, currentLabelMap, manifoldFactsFor(mesh)?.pieces);
   objectPartsCache = { mesh, labels: currentLabelMap, summary };
   return summary;
 }
@@ -1574,7 +1655,11 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 
   // currentManifold may be null for render-only imports (sculpted STLs that
   // can't form a watertight manifold). computeGeometryStats degrades gracefully.
-  const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
+  // A big run's stats come from the Worker (currentManifoldFacts), so they
+  // don't force the deferred Manifold build.
+  const data = withSessionContext(currentManifoldFacts
+    ? computeGeometryStats(null, currentMeshData, executionTimeMs, sourceCode, currentManifoldFacts)
+    : computeGeometryStats(liveManifold(), currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
   if (printabilityIndicatorEl) {
     const { issues } = computePrintability(data);
@@ -1626,6 +1711,7 @@ function captureThumbnail(
       elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
       azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
+      thumbnail: true,
     });
   } catch {
     return Promise.resolve(null);
@@ -1638,9 +1724,16 @@ function captureThumbnail(
       clearTimeout(timer);
       resolve(b);
     };
-    // Bound the wait: if toBlob never calls back, resolve null so the caller
-    // (save / snapshot) still completes.
-    const timer = setTimeout(() => finish(null), getConfig().renderer.thumbnailTimeoutMs);
+    // Bound the wait: if toBlob hasn't called back, encode synchronously
+    // instead. Its callback is a task queued behind whatever the main thread
+    // does next — after a big import that can be seconds of mesh upload /
+    // first frames, and resolving null there saved the version with no
+    // thumbnail. A sync PNG encode of the small tile takes milliseconds.
+    const timer = setTimeout(() => {
+      let b: Blob | null = null;
+      try { b = dataURLToBlob(canvas.toDataURL('image/png')); } catch { /* tainted / lost canvas */ }
+      finish(b);
+    }, getConfig().renderer.thumbnailTimeoutMs);
     try {
       canvas.toBlob(b => finish(b), 'image/png');
     } catch {
@@ -3193,6 +3286,7 @@ async function saveCurrentVersion(label?: string): Promise<
         modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
+        manifoldFacts: manifoldFactsFor(meshToCache),
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -3700,7 +3794,7 @@ async function main() {
   // Import a raw code payload as a new session. Shared between file drop and the AI API.
   async function importCodePayload(code: string, language: Language, sessionName?: string, companions?: Record<string, string>): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
-    const session = await createSession(sessionName, language);
+    const session = await createSession(sessionName, language, sessionName);
     // Register companions right after session creation so their tabs appear in
     // the bar immediately — before the (potentially slow) first compile. createSession
     // calls setCompanionFiles({}) internally, so companions must be re-applied here.
@@ -3755,7 +3849,7 @@ async function main() {
   // build on.
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-    const session = await createSession(sessionName, 'manifold-js');
+    const session = await createSession(sessionName, 'manifold-js', sessionName);
     // Fresh session: drop the previous model's paint before running the import
     // wrapper (same reason as importCodePayload). seedRegions below are added
     // AFTER this clear, so an imported colored mesh's own seeds survive.
@@ -4734,7 +4828,8 @@ async function main() {
   async function openStepBrepInNewSession(file: File, opts: { awaitRun: boolean; sessionName?: string }): Promise<string | null> {
     const starter = stepBrepStarter(file.name);
     if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-    await createSession(opts.sessionName ?? file.name.replace(/\.(step|stp)$/i, ''), 'replicad');
+    const stepName = opts.sessionName ?? file.name.replace(/\.(step|stp)$/i, '');
+    await createSession(stepName, 'replicad', stepName);
     const err = await pushStepBrepShape(file);
     if (err) return err;
     setValue(starter);
@@ -4785,7 +4880,7 @@ async function main() {
       return `Failed to parse STEP file: ${(e as Error).message}`;
     }
     if (!mesh || mesh.numTri === 0) return `STEP file produced no geometry: ${file.name}`;
-    const trial = tryConstructManifold(mesh);
+    const trial = quickManifoldTrial(mesh);
     return { mesh: toImportedMesh(file.name, mesh, 'step'), isManifold: trial.ok };
   }
 
@@ -4892,63 +4987,71 @@ async function main() {
     return { target: (r.target as ApiImportTarget | undefined) ?? 'new-session', sessionName: r.sessionName as string | undefined };
   }
 
+  /** Non-interactive STL parse: tries a ladder of weld tolerances and reports
+   *  whether the welded result forms a clean manifold. Shared by the interactive
+   *  file path (`parseSTLFile`, which adds the progress modal and the
+   *  render-only confirm dialog) and the programmatic `importMeshData` API
+   *  (which auto-accepts render-only). Returns null only when the bytes don't
+   *  parse as STL at all.
+   *
+   *  The parse and the `Manifold.ofMesh` trials run in the STL probe Worker —
+   *  on a multi-million-triangle STL they take seconds and used to freeze the
+   *  UI. If the Worker can't run, it falls back to probing on the main thread.
+   *  Rejects with STLProbeAbortError when `ctl.signal` aborts. */
+  type ParsedSTLProbe =
+    | { mesh: ImportedMesh; isManifold: true }
+    | { mesh: ImportedMesh; isManifold: false; manifoldError: string | null; maxTried: number; triCount: number; vertCount: number };
+  async function parseSTLBytes(bytes: Uint8Array, filename: string, ctl?: STLProbeControl): Promise<ParsedSTLProbe | null> {
+    const configuredTolerance = getConfig().import.stlWeldTolerance;
+    let probe: STLProbeResult | null;
+    try {
+      probe = await probeSTLInWorker(bytes, configuredTolerance, ctl);
+    } catch (e) {
+      // Once the bytes were handed to the Worker (transferred) they're gone, so
+      // only a Worker that never started can fall back.
+      if (e instanceof STLProbeAbortError || bytes.byteLength === 0) throw e;
+      errorLog.capture({ level: 'warn', source: 'import', message: `STL probe worker failed; parsing on the main thread instead: ${(e as Error).message}` });
+      probe = probeSTL(bytes, { configuredTolerance, tryManifold: tryConstructManifold });
+    }
+    if (!probe) return null;
+    return { ...probe, mesh: toImportedMesh(filename, probe.mesh) };
+  }
+
+  /** Weld tolerances to try for an already-indexed mesh (3MF); see
+   *  `weldToleranceLadder` in stlProbe.ts. */
+  function meshWeldToleranceLadder(mesh: MeshData): number[] {
+    return weldToleranceLadder(mesh, getConfig().import.stlWeldTolerance);
+  }
+
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
    *  Tries progressively looser weld tolerances to absorb float-precision noise.
    *  If the mesh still won't form a manifold (common for sculpted/scanned models
    *  with self-intersections or open edges), prompts the user to import as
-   *  render-only — visible and exportable, but no booleans/paint/slice. */
-  /** Non-interactive STL parse: tries a ladder of weld tolerances and reports
-   *  whether the welded result forms a clean manifold. Shared by the interactive
-   *  file path (`parseSTLFile`, which adds the render-only confirm dialog) and
-   *  the programmatic `importMeshData` API (which auto-accepts render-only).
-   *  Returns null only when the bytes don't parse as STL at all. */
-  type ParsedSTLProbe =
-    | { mesh: ImportedMesh; isManifold: true }
-    | { mesh: ImportedMesh; isManifold: false; manifoldError: string | null; maxTried: number; triCount: number; vertCount: number };
-  function parseSTLBytes(bytes: Uint8Array, filename: string): ParsedSTLProbe | null {
-    // Sanity-check that the file parses to *something* before the more expensive
-    // ofMesh trials.
-    const probe = parseSTL(bytes);
-    if (!probe || probe.numTri === 0) return null;
-
-    const tolerances = weldToleranceLadder(probe);
-    let bestMesh = probe;
-    let maxTried = 0;
-    let manifoldError: string | null = null;
-    for (const tol of tolerances) {
-      const mesh = parseSTL(bytes, { weldTolerance: tol });
-      if (!mesh || mesh.numTri === 0) continue;
-      const trial = tryConstructManifold(mesh);
-      if (trial.ok) return { mesh: toImportedMesh(filename, mesh), isManifold: true };
-      manifoldError = trial.error;
-      if (tol > maxTried) maxTried = tol;
-      bestMesh = mesh;
-    }
-    return {
-      mesh: toImportedMesh(filename, bestMesh),
-      isManifold: false,
-      manifoldError,
-      maxTried,
-      triCount: probe.numTri,
-      vertCount: probe.numVert,
-    };
-  }
-
-  /** Weld tolerances to try, loosest last: the configured STL tolerance, two
-   *  fixed steps, then a scale-aware fallback — 5 ppm of the bounding-box
-   *  diagonal catches imports in unusual units (μm or m) where 1e-3 absolute is
-   *  either way too tight or way too loose. Shared by the STL and 3MF paths. */
-  function weldToleranceLadder(mesh: MeshData): number[] {
-    const bbox = bboxFromMesh(mesh);
-    const diag = bbox
-      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
-      : 0;
-    return [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, Math.max(diag * 5e-6, 1e-6)];
-  }
-
+   *  render-only — visible and exportable, but no booleans/paint/slice. A big
+   *  file shows a cancellable progress modal while it's checked. */
   async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const parsed = parseSTLBytes(bytes, file.name);
+    const abort = new AbortController();
+    const progressId = startProgress({
+      title: `Importing ${file.name}`,
+      message: 'Reading triangles…',
+      onCancel: () => abort.abort(),
+    });
+    let parsed: ParsedSTLProbe | null;
+    try {
+      parsed = await parseSTLBytes(bytes, file.name, {
+        signal: abort.signal,
+        onProgress: (fraction, message) => updateProgress(progressId, fraction, message),
+      });
+    } catch (e) {
+      if (e instanceof STLProbeAbortError) {
+        showToast(`Cancelled importing "${file.name}".`, { variant: 'neutral', source: 'import' });
+        return null;
+      }
+      throw e;
+    } finally {
+      endProgress(progressId);
+    }
     if (!parsed) {
       showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
       return null;
@@ -5001,13 +5104,13 @@ async function main() {
    *  Welding keeps triangle order, so per-triangle colours stay aligned with
    *  the returned `source`. */
   function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): { probe: ParsedSTLProbe; source: MeshData } {
-    const first = tryConstructManifold(raw);
+    const first = quickManifoldTrial(raw);
     if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, format), isManifold: true }, source: raw };
     let manifoldError: string | null = first.error;
     let maxTried = 0;
-    for (const tol of weldToleranceLadder(raw)) {
+    for (const tol of meshWeldToleranceLadder(raw)) {
       const welded = weldMesh(raw, tol);
-      const trial = tryConstructManifold(welded);
+      const trial = quickManifoldTrial(welded);
       if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, format), isManifold: true }, source: welded };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
@@ -5448,6 +5551,13 @@ async function main() {
     };
   }
 
+  /** `tryConstructManifold`, short-circuited by the cheap edge-topology check
+   *  that settles a clean mesh without a (multi-second, main-thread on this
+   *  path) `Manifold.ofMesh`. See `isOrientedEdgeManifold`. */
+  function quickManifoldTrial(mesh: MeshData): { ok: true } | { ok: false; error: string } {
+    return isOrientedEdgeManifold(mesh) ? { ok: true } : tryConstructManifold(mesh);
+  }
+
   /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
    *  trial manifold is disposed immediately — we only care whether construction
    *  worked, not the geometry itself. */
@@ -5510,14 +5620,16 @@ async function main() {
     // saveVersion already deduplicates on all five axes (code + annotations +
     // paint + params + companions), so letting it run is the holistic fix: no
     // DB write when truly nothing changed, one write when any tracked state
-    // differs. The only extra cost is the captureThumbnail() call (~30–80 ms
-    // canvas readback, not a recompile).
-    const thumbnail = await captureThumbnail();
+    // differs. Run that same dedup check BEFORE capturing the thumbnail: on a
+    // multi-million-triangle mesh the offscreen render + readback takes
+    // seconds, and every object switch passes through here.
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     // Include companions so the dedup check in saveVersion works when a
     // concurrent applyCodeToCurrentPart already saved a version with companions
     // (avoids the "new-part import + navigate away" phantom second version).
     const companionFiles = getActiveLanguage() === 'scad' ? getCompanionFiles() : undefined;
+    if (!currentPartIsDirty(code, geometryData, { companionFiles })) return;
+    const thumbnail = await captureThumbnail();
     await saveVersion(code, geometryData, thumbnail, undefined, undefined, { companionFiles });
   }
 
@@ -8698,14 +8810,18 @@ async function main() {
 
       currentMeshData = cachedEntry.meshData;
       paintBaseMesh = cachedEntry.meshData;
-      if (currentManifold && typeof currentManifold.delete === 'function') {
-        try { currentManifold.delete(); } catch { /* already deleted */ }
-      }
-      const mod = getModule();
-      try {
-        currentManifold = (mod && cachedEntry.meshData) ? mod.Manifold.ofMesh(cachedEntry.meshData) : null;
-      } catch {
-        currentManifold = null;
+      releaseCurrentManifold();
+      if (cachedEntry.manifoldFacts) {
+        // A big mesh: reuse its Worker stats and defer the main-thread
+        // rebuild, so switching objects doesn't freeze on `Manifold.ofMesh`.
+        deferManifold(cachedEntry.meshData, cachedEntry.manifoldFacts);
+      } else {
+        const mod = getModule();
+        try {
+          currentManifold = (mod && cachedEntry.meshData) ? mod.Manifold.ofMesh(cachedEntry.meshData) : null;
+        } catch {
+          currentManifold = null;
+        }
       }
       currentLabelMap = cachedEntry.labelMap;
       currentLabelMesh = currentMeshData;
@@ -8741,6 +8857,7 @@ async function main() {
       }
       syncClipSliderBounds();
       simplifyBaselineMesh = null;
+      simplifyBaselineFacts = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
@@ -8820,6 +8937,7 @@ async function main() {
           modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
+          manifoldFacts: manifoldFactsFor(currentMeshData),
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -10146,6 +10264,9 @@ async function main() {
   // imported-style version. The baseline persists across panel open/close and
   // is cleared whenever a code run replaces the geometry.
   let simplifyBaselineMesh: MeshData | null = null;
+  // The engine Worker's stats for the baseline (a big mesh whose Manifold
+  // build was deferred), so restoring it defers again instead of freezing.
+  let simplifyBaselineFacts: ManifoldFacts | null = null;
   // Baseline mesh with triColors baked in (set when the panel opens with paint
   // active). Used as the color source for all carry operations in this session.
   let simplifyBaselineColoredMesh: MeshData | null = null;
@@ -10183,26 +10304,30 @@ async function main() {
     resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
-    if (currentManifold && typeof currentManifold.delete === 'function') {
-      try { currentManifold.delete(); } catch { /* already deleted */ }
-    }
+    releaseCurrentManifold();
     const mod = getModule();
-    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
-    // simplify / enhance / paint-refine result can come back not-quite-manifold
-    // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
-    // "Not manifold" on those. Without this guard the exception escapes the
-    // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
-    // AND the stats / printability refresh below is skipped — so the user gets
-    // no warning that the model went non-manifold (the exact bug reported for
-    // paint → enhance → paint → simplify). Fall back to render-only and warn.
-    try {
-      currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
-    } catch {
-      currentManifold = null;
-      showToast(
-        "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
-        { variant: 'warn', source: 'engine', durationMs: 6000 },
-      );
+    if (mesh === simplifyBaselineMesh && simplifyBaselineFacts) {
+      // Restoring a big simplify baseline: its Worker stats still hold, so
+      // defer the Manifold build again rather than freezing on ofMesh.
+      deferManifold(mesh, simplifyBaselineFacts);
+    } else {
+      // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+      // simplify / enhance / paint-refine result can come back not-quite-manifold
+      // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
+      // "Not manifold" on those. Without this guard the exception escapes the
+      // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
+      // AND the stats / printability refresh below is skipped — so the user gets
+      // no warning that the model went non-manifold (the exact bug reported for
+      // paint → enhance → paint → simplify). Fall back to render-only and warn.
+      try {
+        currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+      } catch {
+        currentManifold = null;
+        showToast(
+          "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+          { variant: 'warn', source: 'engine', durationMs: 6000 },
+        );
+      }
     }
     updateMesh(mesh);
     updatePaintMesh(mesh);
@@ -10294,11 +10419,16 @@ async function main() {
       if (!currentMeshData) {
         return { ok: false, reason: "Run some code first — there’s no model to simplify." };
       }
-      if (!currentManifold) {
+      // Judge "solid?" from the Worker's stats when the Manifold build was
+      // deferred: building it here would freeze on exactly the huge meshes
+      // people simplify (Simplify itself runs on the mesh, in a Worker).
+      const facts = manifoldFactsFor(paintBaseMesh ?? currentMeshData);
+      if (!(facts ? facts.isManifold : liveManifold())) {
         return { ok: false, reason: "Simplify needs a solid (manifold) model. Render-only imports can’t be reduced." };
       }
       if (!simplifyBaselineMesh) {
         simplifyBaselineMesh = currentMeshData;
+        simplifyBaselineFacts = manifoldFactsFor(currentMeshData);
         // Snapshot colors once so all carry operations in this session use the
         // same source — even after apply clears the regions module state.
         if (modelHasColor()) {
@@ -10564,7 +10694,8 @@ async function main() {
       const cx = (x0 + x1 + x2) / 3, cy = (y0 + y1 + y2) / 3, cz = (z0 + z1 + z2) / 3;
       if (inFootprint(cx, cy, cz) || inFootprint(x0, y0, z0) || inFootprint(x1, y1, z1) || inFootprint(x2, y2, z2)) {
         footprintTris.add(t);
-        for (const n of adjacency.neighbors[t]) {
+        for (let j = adjacency.nbStart[t]; j < adjacency.nbStart[t + 1]; j++) {
+          const n = adjacency.nbFlat[j];
           if (!visited.has(n)) { visited.add(n); queue.push(n); }
         }
       }
@@ -13086,8 +13217,8 @@ async function main() {
     sliceAtZ(z: number) {
       const check = guard(() => assertNumber(z, 'sliceAtZ(z)'));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentManifold) return { error: 'No geometry loaded' };
-      const result = sliceAtZ(currentManifold, z);
+      if (!liveManifold()) return { error: 'No geometry loaded' };
+      const result = sliceAtZ(liveManifold(), z);
       // sliceAtZ now returns a reference into a per-(manifold,z) memo cache.
       // Hand external (console/AI) callers a copy so mutating the result can't
       // corrupt the cache; in-app callers keep the fast shared reference.
@@ -13096,8 +13227,7 @@ async function main() {
 
     /** Get bounding box of current geometry */
     getBoundingBox() {
-      if (!currentManifold) return null;
-      return getBoundingBox(currentManifold);
+      return currentManifoldBBox();
     },
 
     /** Get the raw manifold-3d module (for advanced use) */
@@ -13161,10 +13291,10 @@ async function main() {
       });
       if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      if (!currentManifold) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
+      if (!liveManifold()) return { error: 'Model is render-only (no manifold) \u2014 exploded view needs solid components.' };
       // Decompose on the main thread; extract plain meshes then free the WASM pieces.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pieces: any[] = currentManifold.decompose();
+      const pieces: any[] = liveManifold().decompose();
       // Carry the painted/model colors onto each decomposed piece (nearest-
       // centroid, same as the export paths) so the exploded video stays colored.
       const coloredSrc = coloredMeshForExport(currentMeshData);
@@ -13747,7 +13877,8 @@ async function main() {
         };
       }
       if (split === 'object' || split === 'plate') return { error: `importMeshData(opts.split): '${split}' is for 3MF — an STL splits by 'piece'.` };
-      const parsed = parseSTLBytes(bytes, filename);
+      const parsed = await parseSTLBytes(bytes, filename).catch((e: Error) => ({ error: `Could not read "${filename}" as an STL file: ${e.message}` }));
+      if (parsed && 'error' in parsed) return parsed;
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
       if (splitting) {
         const dest = splitTarget();
@@ -13803,7 +13934,8 @@ async function main() {
           splitModes: ['none', ...(result.objects.length > 1 ? ['object'] : []), ...(platesInUse(result) > 1 ? ['plate'] : [])],
         };
       }
-      const parsed = parseSTLBytes(bytes, filename);
+      const parsed = await parseSTLBytes(bytes, filename).catch((e: Error) => ({ error: `Could not read "${filename}" as an STL file: ${e.message}` }));
+      if (parsed && 'error' in parsed) return parsed;
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
       const base = filename.replace(/\.[^.]+$/, '');
       const items = importPieceItems(parsed.mesh, base) ?? [{ name: base, triangles: triangleRange(0, parsed.mesh.numTri) }];
@@ -14602,8 +14734,8 @@ async function main() {
     sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null | { error: string } {
       const check = guard(() => assertNumber(z, 'sliceAtZVisual(z)'));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentManifold) return null;
-      const s = sliceAtZ(currentManifold, z);
+      if (!liveManifold()) return null;
+      const s = sliceAtZ(liveManifold(), z);
       if (!s) return null;
       const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox);
       return { svg, area: s.area, contours: s.polygons.length };
@@ -14643,28 +14775,28 @@ async function main() {
         }
       });
       if (bad) return bad;
-      if (!currentManifold) return null;
+      if (!liveManifold()) return null;
 
       // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
       // the manifold so that axis points along Z, slice, then label the result
       // with the original axis and the un-rotated offset.
-      const bb = currentManifold.boundingBox();
+      const bb = liveManifold().boundingBox();
       const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
       const lo = bb.min[axisIdx];
       const hi = bb.max[axisIdx];
       const actualOffset = offset ?? (lo + hi) / 2;
 
-      let sliceTarget = currentManifold;
+      let sliceTarget = liveManifold();
       let zHeight = actualOffset;
       let unrotate = false;
       if (axis === 'x') {
         // Rotate +X to +Z (rotation around Y by -90°).
-        sliceTarget = currentManifold.rotate([0, -90, 0]);
+        sliceTarget = liveManifold().rotate([0, -90, 0]);
         zHeight = actualOffset;
         unrotate = true;
       } else if (axis === 'y') {
         // Rotate +Y to +Z (rotation around X by 90°).
-        sliceTarget = currentManifold.rotate([90, 0, 0]);
+        sliceTarget = liveManifold().rotate([90, 0, 0]);
         zHeight = actualOffset;
         unrotate = true;
       }
@@ -14693,9 +14825,9 @@ async function main() {
      *
      *  Works for any engine — operates on the rendered manifold. */
     componentBounds(): Array<{ index: number; volume: number; triangleCount: number; vertexCount: number; bbox: { min: [number, number, number]; max: [number, number, number]; size: [number, number, number]; center: [number, number, number] } }> | null {
-      if (!currentManifold) return null;
-      if (currentManifold.isEmpty?.()) return [];
-      const pieces = currentManifold.decompose();
+      if (!liveManifold()) return null;
+      if (liveManifold().isEmpty?.()) return [];
+      const pieces = liveManifold().decompose();
       const out = pieces.map((p: { boundingBox: () => { min: number[]; max: number[] }; volume: () => number; numTri: () => number; numVert: () => number; delete?: () => void }, i: number) => {
         const bb = p.boundingBox();
         const min: [number, number, number] = [bb.min[0], bb.min[1], bb.min[2]];
@@ -14730,9 +14862,9 @@ async function main() {
       });
       if (bad) return bad;
       const arr = point as unknown[];
-      if (!currentManifold || currentManifold.isEmpty?.()) return null;
+      if (!liveManifold() || liveManifold().isEmpty?.()) return null;
       const p = arr as [number, number, number];
-      const bb = currentManifold.boundingBox();
+      const bb = liveManifold().boundingBox();
       if (p[0] < bb.min[0] || p[0] > bb.max[0]) return false;
       if (p[1] < bb.min[1] || p[1] > bb.max[1]) return false;
       if (p[2] < bb.min[2] || p[2] > bb.max[2]) return false;
@@ -14745,7 +14877,7 @@ async function main() {
       // intermediate would otherwise leak the cube's WASM heap memory.
       const cube = mod.Manifold.cube([eps, eps, eps], true);
       const probe = cube.translate(p);
-      const inter = probe.intersect(currentManifold);
+      const inter = probe.intersect(liveManifold());
       const inside = !inter.isEmpty();
       try { inter.delete?.(); } catch { /* ignore */ }
       try { probe.delete?.(); } catch { /* ignore */ }
@@ -14766,14 +14898,14 @@ async function main() {
         }
       });
       if (bad) return bad;
-      if (!currentManifold || currentManifold.isEmpty?.()) return null;
+      if (!liveManifold() || liveManifold().isEmpty?.()) return null;
       // decompose() returns an array of fresh Manifolds — we must .delete()
       // each piece after counting, otherwise this leaks O(components) of WASM
       // heap on every healCurrent call.
-      const beforePieces = currentManifold.decompose();
+      const beforePieces = liveManifold().decompose();
       const before = {
-        volume: currentManifold.volume(),
-        tri: currentManifold.numTri(),
+        volume: liveManifold().volume(),
+        tri: liveManifold().numTri(),
         components: beforePieces.length,
       };
       for (const p of beforePieces) { try { p.delete?.(); } catch { /* ignore */ } }
@@ -14781,7 +14913,7 @@ async function main() {
       // stored tolerance falls back to the stored value — so 0 (the default
       // here) is the lightest-touch heal. Pass a positive value to collapse
       // edges aggressively. (The binding rejects no-arg .simplify().)
-      const cleaned = currentManifold.simplify(opts?.tolerance ?? 0);
+      const cleaned = liveManifold().simplify(opts?.tolerance ?? 0);
       const afterPieces = cleaned.decompose();
       const after = {
         volume: cleaned.volume(),
@@ -16691,18 +16823,21 @@ async function main() {
 
       const result: Record<string, unknown> = {};
 
-      if (!currentManifold) {
+      // Only slices / decompose need the solid; a bbox alone mustn't force a
+      // deferred Manifold build on a big mesh.
+      const needsSolid = (opts.sliceAt?.length ?? 0) > 0 || !!opts.decompose;
+      if (needsSolid ? !liveManifold() : !currentManifoldBBox()) {
         return { error: 'No geometry loaded' };
       }
 
       if (opts.boundingBox) {
-        result.boundingBox = getBoundingBox(currentManifold);
+        result.boundingBox = currentManifoldBBox();
       }
 
       if (opts.sliceAt && opts.sliceAt.length > 0) {
         const slices: Record<string, unknown> = {};
         for (const z of opts.sliceAt) {
-          const s = sliceAtZ(currentManifold, z);
+          const s = sliceAtZ(liveManifold(), z);
           slices[`z${z}`] = s ?? { error: `No cross-section at z=${z}` };
         }
         result.slices = slices;
@@ -16710,7 +16845,7 @@ async function main() {
 
       if (opts.decompose) {
         try {
-          const parts = currentManifold.decompose();
+          const parts = liveManifold().decompose();
           result.components = parts.map((p: any, i: number) => {
             const bb = getBoundingBox(p);
             const vol = (() => { try { return p.volume(); } catch { return 0; } })();
@@ -16838,10 +16973,10 @@ async function main() {
     analyzeProfile(sampleCount?: number): ZProfile | null | { error: string } {
       const check = guard(() => assertNumber(sampleCount, 'analyzeProfile(sampleCount)', { optional: true, min: 1, integer: true }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentManifold) return null;
-      const bbox = getBoundingBox(currentManifold);
+      if (!liveManifold()) return null;
+      const bbox = getBoundingBox(liveManifold());
       if (!bbox) return null;
-      return analyzeZProfile(currentManifold, bbox, sampleCount);
+      return analyzeZProfile(liveManifold(), bbox, sampleCount);
     },
 
     /** Analyze Z-profile of code in isolation — no side effects */
@@ -17183,8 +17318,8 @@ async function main() {
 
     /** Check if any component is fully contained inside another (invisible geometry) */
     checkContainment(): ContainmentWarning[] | null {
-      if (!currentManifold) return null;
-      return checkContainment(currentManifold);
+      if (!liveManifold()) return null;
+      return checkContainment(liveManifold());
     },
 
     // === Phase 2: View State & Session Rename ===
@@ -17720,7 +17855,8 @@ async function main() {
       }
       let placed: ApiImportResult | { error: string };
       if (source === 'STL') {
-        const mesh = parseSTLBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+        const mesh = await parseSTLBytes(new Uint8Array(await file.arrayBuffer()), file.name).catch((e: Error) => ({ error: `importFromUrl: could not read "${file.name}" as an STL file: ${e.message}` }));
+        if (mesh && 'error' in mesh) return mesh;
         if (!mesh) return { error: `importFromUrl: could not parse "${file.name}" as an STL file.` };
         placed = await placeMeshAtApiTarget(mesh, file.name, po.target, name, 'importFromUrl');
       } else if (source === 'STEP') {
@@ -20066,12 +20202,12 @@ async function main() {
       if (!opts || typeof opts !== 'object') return { error: 'paintComponent requires { index, color }' };
       if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintComponent.index must be a non-negative integer (from listComponents)' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
-      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      if (!liveManifold()) return { error: 'No geometry loaded — run code first.' };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let parts: any[] | null = null;
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        parts = currentManifold.decompose() as any[];
+        parts = liveManifold().decompose() as any[];
         if (opts.index >= parts.length) {
           return { error: `paintComponent.index ${opts.index} out of range — listComponents has ${parts.length} component(s).` };
         }
@@ -20109,9 +20245,9 @@ async function main() {
      *  the agent can then call `paintInBox({box: component.boundingBox,
      *  color})` for each, with no coordinate guessing. */
     listComponents() {
-      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      if (!liveManifold()) return { error: 'No geometry loaded — run code first.' };
       try {
-        const parts = currentManifold.decompose();
+        const parts = liveManifold().decompose();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const components = parts.map((p: any, i: number) => {
           const bb = getBoundingBox(p);
@@ -21483,9 +21619,7 @@ async function main() {
     ];
     // 'auto': inspect the current manifold's bounding box.
     let bb: { min: [number, number, number]; max: [number, number, number] } | null = null;
-    if (currentManifold) {
-      try { bb = getBoundingBox(currentManifold); } catch { bb = null; }
-    }
+    try { bb = currentManifoldBBox(); } catch { bb = null; }
     if (!bb) return [FRONT, TOP, ISO];
     const dx = bb.max[0] - bb.min[0];
     const dy = bb.max[1] - bb.min[1];
@@ -22602,6 +22736,9 @@ async function main() {
       // reconstruction, paint resolution, stats) sees final geometry.
       // skipSurface: skip during thumbnail-regeneration imports so the
       // heavy surface computation doesn't hang the import flow.
+      // The Worker's stats describe the mesh it produced; a texture pass that
+      // swaps in a new mesh invalidates them.
+      const engineMesh = result.mesh;
       if (!opts.skipSurface) await applySurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
@@ -22620,9 +22757,7 @@ async function main() {
       paintBaseMesh = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
-      if (currentManifold && typeof currentManifold.delete === 'function') {
-        try { currentManifold.delete(); } catch { /* already deleted */ }
-      }
+      releaseCurrentManifold();
       // The geometry Worker returns manifold=null (live WASM objects can't
       // cross thread boundaries). Reconstruct a queryable Manifold from the
       // transferred mesh data so sliceAtZ, getBoundingBox, decompose, etc.
@@ -22633,6 +22768,10 @@ async function main() {
         // Render-only output (api.renderMesh) is intentionally not a real
         // Manifold; trying to ofMesh() it would throw "Not manifold".
         currentManifold = null;
+      } else if (result.manifoldFacts && result.mesh === engineMesh) {
+        // A big run: the Worker sent its stats, so defer the (seconds-long)
+        // main-thread rebuild until something needs the solid.
+        deferManifold(result.mesh, result.manifoldFacts);
       } else {
         const mod = getModule();
         // SCAD / replicad engines deliberately tolerate non-watertight output
@@ -22758,6 +22897,7 @@ async function main() {
       // A fresh run replaces the geometry, so any simplify baseline is stale.
       // Drop it and let an open panel re-snapshot the new mesh.
       simplifyBaselineMesh = null;
+      simplifyBaselineFacts = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
