@@ -106,6 +106,11 @@ function lockdownNow(): void {
   if (lockdownState !== 'pending') return;
   try {
     const report = lockdownGlobalScope(self);
+    // Names the allowlist audit removed that the explicit denylist didn't —
+    // logged so a capability a newer browser adds shows up in DevTools.
+    if (report.defaultDenied.length > 0) {
+      console.debug(`[lockdown] default-deny removed ${report.defaultDenied.length} non-allowlisted globals: ${report.defaultDenied.join(', ')}`);
+    }
     if (report.stillReachable.length > 0) {
       lockdownState = 'failed';
       lockdownFailure = `still reachable: ${report.stillReachable.join(', ')}`;

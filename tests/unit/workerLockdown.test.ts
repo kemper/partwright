@@ -132,6 +132,52 @@ describe('lockdownGlobalScope', () => {
     expect(report.stillReachable).toContain('WebSocketStream');
   });
 
+  it('default-denies names that are on neither list (allowlist audit)', () => {
+    const { g, nav, wgsProto, dedicatedProto } = fakeWorkerGlobal();
+    const unknownSym = Symbol('vendorHook');
+    Object.defineProperty(wgsProto, 'SomeFutureStorage', { value: function SomeFutureStorage() {}, configurable: true, writable: true });
+    Object.defineProperty(wgsProto, 'setTimeout', { value: function setTimeout() {}, configurable: true, writable: true });
+    Object.defineProperty(dedicatedProto, 'TEMPORARY', { value: 0, configurable: false, writable: false, enumerable: true });
+    Object.defineProperty(g, 'OffscreenCanvas', { value: function OffscreenCanvas() {}, configurable: true, writable: true });
+    Object.defineProperty(g, unknownSym, { value: () => 'hook', configurable: true, writable: true });
+    // A second unique symbol with the same description (same label) goes too.
+    const twinSym = Symbol('vendorHook');
+    Object.defineProperty(wgsProto, twinSym, { value: () => 'twin', configurable: true, writable: true });
+    Object.defineProperty(Object.getPrototypeOf(nav), 'permissions', { get: () => ({ query: () => 1 }), configurable: true });
+
+    const report = lockdownGlobalScope(g);
+    expect(report.stillReachable).toEqual([]);
+    expect(g.SomeFutureStorage).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(wgsProto, 'SomeFutureStorage')).toBeUndefined();
+    expect(g.OffscreenCanvas).toBeUndefined();
+    expect((g as Record<symbol, unknown>)[unknownSym]).toBeUndefined();
+    expect((g as Record<symbol, unknown>)[twinSym]).toBeUndefined();
+    expect((nav as Record<string, unknown>).permissions).toBeUndefined();
+    // Allowlisted and inert names survive.
+    expect(typeof g.setTimeout).toBe('function');
+    expect(g.TEMPORARY).toBe(0);
+    expect((nav as { hardwareConcurrency: number }).hardwareConcurrency).toBe(8);
+    expect(typeof g.addEventListener).toBe('function');
+    // The audit's removals are reported separately from the explicit lists.
+    expect(report.defaultDenied).toEqual(expect.arrayContaining([
+      'WorkerGlobalScope.prototype.SomeFutureStorage', 'self.OffscreenCanvas', 'self.[Symbol(vendorHook)]',
+      'navigator<proto>.permissions',
+    ]));
+    expect(report.defaultDenied.some((r) => r.endsWith('.fetch'))).toBe(false);
+    expect(report.removed).toEqual(expect.arrayContaining(report.defaultDenied));
+    // Pinned like the denylisted names.
+    expect(() => { g.OffscreenCanvas = () => 'evil'; }).toThrow(TypeError);
+  });
+
+  it('fails closed when a non-allowlisted capability cannot be removed', () => {
+    const { g, wgsProto } = fakeWorkerGlobal();
+    Object.defineProperty(wgsProto, 'StickyTransport', { value: function StickyTransport() {}, configurable: false, writable: false });
+    Object.defineProperty(wgsProto, 'stickyAccessor', { get: () => 1, configurable: false });
+    const report = lockdownGlobalScope(g);
+    expect(report.stillReachable).toEqual(expect.arrayContaining(['StickyTransport', 'stickyAccessor']));
+    expect(verifyLockdown(g)).toEqual(expect.arrayContaining(['StickyTransport', 'stickyAccessor']));
+  });
+
   it('covers the names called out in #1090', () => {
     for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'WebSocketStream', 'EventSource', 'WebTransport', 'indexedDB', 'caches', 'CacheStorage', 'Worker', 'SharedWorker', 'BroadcastChannel']) {
       expect(LOCKDOWN_GLOBALS).toContain(name);

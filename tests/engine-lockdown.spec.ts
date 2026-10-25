@@ -1,4 +1,10 @@
 import { test, expect, type Page } from 'playwright/test';
+import {
+  planAllowlistAudit,
+  ALLOWED_GLOBAL_NAMES,
+  ALLOWED_NAVIGATOR_NAMES,
+  type ChainEntry,
+} from '../src/geometry/workerGlobalAllowlist';
 
 // Engine-Worker sandbox lockdown (#1090). Model code runs via
 // `new Function('api', code)` inside the geometry Worker; after the init
@@ -82,6 +88,37 @@ const PROBE_CODE = String.raw`
   r.__mathOk = typeof Math.sin === 'function';
   r.__navigatorOk = typeof navigator.hardwareConcurrency === 'number';
   throw new Error('PROBE:' + JSON.stringify(r));
+`;
+
+// Model code that walks the Worker global's prototype chain (and navigator's)
+// AFTER lockdown and reports every own property, strings and symbols, with the
+// same inert rule and symbol labels as src/geometry/workerGlobalAllowlist.ts.
+// The test then runs the shared planner on it in Node, so a name the audit
+// failed to remove is reported by name.
+const ENUMERATE_CODE = String.raw`
+  const WK = ['asyncIterator', 'hasInstance', 'isConcatSpreadable', 'iterator', 'match', 'matchAll',
+    'replace', 'search', 'species', 'split', 'toPrimitive', 'toStringTag', 'unscopables', 'dispose', 'asyncDispose'];
+  const label = (k) => {
+    if (typeof k !== 'symbol') return k;
+    for (const w of WK) if (Symbol[w] === k) return '[Symbol.' + w + ']';
+    const key = Symbol.keyFor(k);
+    return key !== undefined ? '[Symbol.for(' + key + ')]' : '[Symbol(' + (k.description ?? '') + ')]';
+  };
+  const walk = (root) => {
+    const out = [];
+    for (let o = root, i = 0; o; o = Object.getPrototypeOf(o), i++) {
+      const ctor = Object.getOwnPropertyDescriptor(o, 'constructor')?.value?.name;
+      const owner = i === 0 ? 'root' : (ctor ? ctor + '.prototype' : '<proto>');
+      for (const k of Reflect.ownKeys(o)) {
+        const d = Object.getOwnPropertyDescriptor(o, k);
+        const v = d && 'value' in d ? d.value : undefined;
+        const inert = !!d && 'value' in d && (v === null || (typeof v !== 'object' && typeof v !== 'function'));
+        out.push({ owner, label: label(k), inert });
+      }
+    }
+    return out;
+  };
+  throw new Error('ENUM:' + JSON.stringify({ global: walk(self), navigator: walk(navigator) }));
 `;
 
 function parseProbe(error: string | null | undefined): Record<string, unknown> {
@@ -347,4 +384,58 @@ test.describe('Engine sandbox lockdown', () => {
     expect(out.studio.error).toBeFalsy();
     expect(out.studio.voxelCount).toBe(64);
   });
+});
+
+// Allowlist audit (default deny): after lockdown, every name left on the Worker
+// global's prototype chain and on navigator's must be on the allowlist in
+// src/geometry/workerGlobalAllowlist.ts (or inert). When this fails after a
+// Chromium upgrade, the message names the global that couldn't be removed — see
+// docs/architecture-notes.md → "Allowlist audit" for how to triage it. Run for
+// the direct Worker and for the #1110 iframe-sandbox Worker (a classic blob:
+// Worker whose global differs slightly).
+test.describe('Engine sandbox lockdown — global allowlist', () => {
+  for (const mode of ['off', 'opaque'] as const) {
+    test(`the Worker global holds only allowlisted names (engine sandbox: ${mode})`, async ({ page }) => {
+      const denied: string[] = [];
+      page.on('console', (msg) => {
+        const m = /\[lockdown\] default-deny removed \d+ non-allowlisted globals: (.*)$/.exec(msg.text());
+        if (m) denied.push(...m[1].split(', '));
+      });
+      await page.addInitScript((m) => {
+        if (window !== window.top) return;
+        try { localStorage.setItem('partwright-engine-sandbox', m); } catch { /* ignore */ }
+      }, mode);
+      if (mode === 'opaque') {
+        const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
+        test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
+      }
+      await boot(page);
+      const out = await page.evaluate(async (code) => {
+        const pw = (window as unknown as { partwright: PW & { getEngineSandboxStatus: () => { active: string; unavailableReason: string | null } } }).partwright;
+        const r = await pw.run(code);
+        return { error: r.error ?? null, sandbox: pw.getEngineSandboxStatus() };
+      }, ENUMERATE_CODE);
+      if (mode === 'opaque') {
+        expect(out.sandbox.unavailableReason, 'sandbox unavailable').toBeNull();
+        expect(out.sandbox.active).toBe('opaque');
+      }
+      const m = /ENUM:(\{.*\})/.exec(out.error ?? '');
+      expect(m, `unexpected error: ${out.error}`).toBeTruthy();
+      const found = JSON.parse(m![1]) as { global: ChainEntry[]; navigator: ChainEntry[] };
+      const unexpectedGlobals = planAllowlistAudit(found.global, ALLOWED_GLOBAL_NAMES).offending.map((e) => `${e.owner}.${e.label}`);
+      const unexpectedNavigator = planAllowlistAudit(found.navigator, ALLOWED_NAVIGATOR_NAMES).offending.map((e) => `navigator ${e.owner}.${e.label}`);
+      expect([...unexpectedGlobals, ...unexpectedNavigator], 'non-allowlisted names still reachable after lockdown').toEqual([]);
+
+      // The audit really ran in this Worker: capabilities the explicit
+      // denylist doesn't name are gone, and the removals were logged.
+      const labels = new Set(found.global.filter((e) => !e.inert).map((e) => e.label));
+      for (const name of ['MessageChannel', 'OffscreenCanvas', 'Request', 'Response', 'createImageBitmap']) {
+        expect(labels.has(name), name).toBe(false);
+      }
+      expect(found.navigator.some((e) => e.label === 'permissions' && !e.inert)).toBe(false);
+      expect(denied, 'the Worker logs what default-deny removed').toEqual(expect.arrayContaining(['self.MessageChannel']));
+      // Reported, not asserted: the list changes with every Chromium release.
+      console.log(`[allowlist ${mode}] default-deny removed ${denied.length} globals the denylist doesn't name`);
+    });
+  }
 });
