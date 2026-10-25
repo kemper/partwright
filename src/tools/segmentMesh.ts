@@ -7,6 +7,7 @@
 // true part of every triangle. Detectors see only the bare mesh and are
 // scored against those labels.
 
+import { getConfig } from '../config/appConfig';
 import { manifoldJsEngine } from '../geometry/engines/manifoldJs';
 import { preloadTextFonts, sourceUsesManifoldText } from '../geometry/textGlyphs';
 import { parseSTL } from '../import/parsers/stl';
@@ -40,7 +41,8 @@ function bboxOf(p: Float32Array): { min: number[]; max: number[] } {
 
 /** Run a detector on a welded mesh. */
 export function segmentMesh(mesh: SegMesh, req: Omit<DetectRequest, 'signal' | 'progress'>): SegmentOutput {
-  const runner = new SegmentationRunner(mesh);
+  // Same speck pass as the browser (appConfig defaults here: no localStorage).
+  const runner = new SegmentationRunner(mesh, { autoAbsorbFrac: getConfig().segmentation.autoAbsorbSpeckFrac });
   const t0 = performance.now();
   runner.features(req.featureOptions);
   const t1 = performance.now();

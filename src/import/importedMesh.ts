@@ -1,7 +1,7 @@
 // Shared types + active-imports register for files imported as geometry.
 //
 // An ImportedMesh is a mesh attached to a Version: parsed from an external file
-// (STL today; OBJ/3MF/SVG in later phases) or generated in-app (a `relief`
+// (STL / 3MF / STEP-tessellated) or generated in-app (a `relief`
 // heightmap built from an image). The sandbox exposes the mesh data to user code
 // via `api.imports[i]`, so `Manifold.ofMesh(api.imports[i])` works.
 //
@@ -15,7 +15,7 @@ export interface ImportedMesh {
   /** Original filename, for display. */
   filename: string;
   /** Source format. */
-  format: 'stl' | 'relief' | 'step';
+  format: 'stl' | 'relief' | 'step' | '3mf';
   /** Mesh data — shape mirrors what `Manifold.ofMesh()` expects. */
   vertProperties: Float32Array;
   triVerts: Uint32Array;
@@ -29,7 +29,9 @@ export interface ImportedMesh {
 }
 
 /** Detected parts committed on an import. Identity is per *source* triangle
- *  (this mesh's `triVerts` order), so the stored mesh is never re-meshed. */
+ *  (this mesh's `triVerts` order). An accept with smooth edges stores the
+ *  mesh re-meshed along the part boundaries, with parts for the new
+ *  triangles (see `source.edgeSmoothing`). */
 export interface ImportedMeshParts {
   /** Part name per part index (unique, non-empty). */
   names: string[];
@@ -44,7 +46,13 @@ export interface ImportedMeshParts {
     detectorId: string;
     params: Record<string, unknown>;
     featureOptions?: Record<string, unknown>;
-    seeds?: { label: string; point: [number, number, number] }[];
+    /** The parts' pins (`auto` = placed by the draft, not the user;
+     *  `maxRadius` = the pin's geodesic growth cap; `color` = its part colour
+     *  when the pin carried one). */
+    seeds?: { label: string; point: [number, number, number]; auto?: boolean; color?: string; maxRadius?: number }[];
+    /** Edge-smoothing passes the accept cut the mesh along (the stored
+     *  mesh is then the refined one); absent/0 = not re-meshed. */
+    edgeSmoothing?: number;
   };
 }
 

@@ -32,11 +32,13 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { viewportToolsMount } from './popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
-import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
+import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, saveQualitySettingsSilent, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
 import { getConfig } from '../config/appConfig';
 import type { Language } from '../geometry/engine';
+import { createSliderEntry, type SliderEntry } from './sliderEntry';
+import { registerTool, setToolNote, checkRange, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -135,7 +137,8 @@ export interface SimplifyHandlers {
    *  hard cap as a backstop. */
   estimateRefine(edgeLength: number): number;
   /** Restore the baseline mesh to the viewport (with original colors). */
-  reset(): void;
+  /** Restores the baseline mesh's colours; resolves when they're back. */
+  reset(): void | Promise<void>;
   /** Bake the mesh currently on screen into a new saved version. */
   save(): Promise<SimplifySaveResult>;
 }
@@ -159,8 +162,7 @@ let onCancelRender: (() => void) | null = null;
 let simplifyBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let panelHeader: HTMLElement | null = null;
-let slider: HTMLInputElement | null = null;
-let numberInput: HTMLInputElement | null = null;
+let countEntry: SliderEntry | null = null;
 let originalEl: HTMLElement | null = null;
 let resultEl: HTMLElement | null = null;
 let statusEl: HTMLElement | null = null;
@@ -178,8 +180,7 @@ let knobSizeBtn: HTMLButtonElement | null = null;
 let countControls: HTMLElement | null = null;
 let lengthControls: HTMLElement | null = null;
 let lengthLabel: HTMLLabelElement | null = null;
-let lengthSlider: HTMLInputElement | null = null;
-let lengthInput: HTMLInputElement | null = null;
+let lengthEntry: SliderEntry | null = null;
 let amountRow: HTMLElement | null = null;
 let amountSlider: HTMLInputElement | null = null;
 let amountValueEl: HTMLElement | null = null;
@@ -199,6 +200,94 @@ let applyAbort: AbortController | null = null;
 let prevWireframeVisible: boolean | null = null;
 /** Whether color preservation is currently requested. */
 let preserveColor = true;
+/** The panel's padded content area (the AI note lands at its top). */
+let contentEl: HTMLElement | null = null;
+
+/** Open the panel (if closed) and stage an (already schema-validated) prefill:
+ *  curvature quality is previewed live (reverts on close unless applied, like a
+ *  radio click); the simplify/enhance target is staged for the user's Apply.
+ *  Every value is checked against the bounds of the REQUESTED mode + knob
+ *  first — on an error nothing opens and no quality preview starts. */
+function openWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const meshKeys = ['mode', 'knob', 'targetTris', 'length', 'amount', 'preserveColor'] as const;
+  const wantsMesh = meshKeys.some(k => pre[k] !== undefined);
+  // The model the panel will operate on (peek without opening when closed).
+  let peek: SimplifyOpenInfo | null = isSimplifyOpen() ? info : null;
+  if (wantsMesh && !peek && handlers) {
+    const r = handlers.open(false);
+    peek = r.ok ? r.info : null;
+  }
+  const nextMode = (pre.mode as SimplifyMode | undefined) ?? mode;
+  const nextKnob = (pre.knob as KnobMode | undefined) ?? knobMode;
+  const errors: string[] = [];
+  if (peek) {
+    if (pre.targetTris !== undefined) {
+      if (nextKnob !== 'count') errors.push("targetTris needs knob 'count'");
+      else {
+        const base = peek.baseTriangles;
+        const lo = nextMode === 'simplify' ? Math.max(4, Math.min(base, Math.round(base * 0.02) || 4)) : base;
+        const hi = nextMode === 'simplify' ? base : Infinity;
+        checkRange('targetTris', pre.targetTris as number, lo, hi, errors);
+      }
+    }
+    if (pre.length !== undefined) {
+      if (nextKnob === 'count') errors.push("length needs knob 'edge' or 'size'");
+      else checkRange('length', pre.length as number, Number.MIN_VALUE, Infinity, errors);
+    }
+    if (pre.amount !== undefined && nextKnob !== 'size') errors.push("amount needs knob 'size'");
+  }
+  if (errors.length) return { error: errors.join('; ') };
+
+  if (!isSimplifyOpen()) openPanel();
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (!p) return { applied: {}, ignored: [] };
+  const applied: Record<string, unknown> = {};
+  const ignored: string[] = [];
+  if (pre.curvatureQuality !== undefined) {
+    const radio = qualityRadios.find(r => r.value === pre.curvatureQuality);
+    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+    applied.curvatureQuality = pre.curvatureQuality;
+  }
+  if (!info) {
+    for (const k of meshKeys) if (pre[k] !== undefined) ignored.push(k); // no model to simplify
+    return { applied, ignored };
+  }
+  if (pre.mode !== undefined || pre.knob !== undefined) {
+    mode = nextMode; knobMode = nextKnob;
+    if (pre.mode !== undefined) applied.mode = mode;
+    if (pre.knob !== undefined) applied.knob = knobMode;
+    syncModeUI();
+  }
+  if (pre.targetTris !== undefined && countEntry) { countEntry.set(pre.targetTris as number); applied.targetTris = countEntry.get(); }
+  if (pre.length !== undefined && lengthEntry) { lengthEntry.set(pre.length as number); applied.length = lengthEntry.get(); }
+  if (pre.amount !== undefined && amountSlider) {
+    amountSlider.value = String(pre.amount);
+    if (amountValueEl) amountValueEl.textContent = String(amountVal());
+    applied.amount = amountVal();
+  }
+  if (pre.preserveColor !== undefined) {
+    if (info.hasColor && colorCheckbox) { colorCheckbox.checked = pre.preserveColor as boolean; preserveColor = colorCheckbox.checked; applied.preserveColor = preserveColor; }
+    else ignored.push('preserveColor');
+  }
+  updateApplyEnabled();
+  return { applied, ignored };
+}
+
+function simplifyState(): Record<string, unknown> {
+  const q = loadQualitySettings();
+  return {
+    curvatureQuality: q.quality,
+    mode,
+    knob: knobMode,
+    targetTris: knobMode === 'count' ? currentTarget() : null,
+    length: knobMode === 'count' ? null : lengthVal(),
+    amount: knobMode === 'size' ? amountVal() : null,
+    preserveColor,
+    baseTriangles: info?.baseTriangles ?? null,
+    pending: qualityPending() || meshPending(),
+  };
+}
 
 export function initSimplifyUI(
   controlsContainer: HTMLElement,
@@ -209,6 +298,24 @@ export function initSimplifyUI(
   isScadLang = opts.initialLang === 'scad';
   onCancelRender = opts.onCancelRender ?? null;
   initQualityLogic(opts.initialLang);
+  registerTool({
+    id: 'tool-quality',
+    title: 'Quality: simplify / enhance',
+    hint: 'Tools',
+    prefillSchema: {
+      curvatureQuality: { type: 'enum', values: QUALITY_OPTIONS.map(o => o.id), description: 'Curvature quality preset — previewed live, kept only on Apply.' },
+      mode: { type: 'enum', values: ['simplify', 'enhance'], description: 'Reduce or increase triangle count.' },
+      knob: { type: 'enum', values: ['count', 'edge', 'size'], description: 'How the target is expressed.' },
+      targetTris: { type: 'number', integer: true, min: 4, description: "Target triangle count (knob 'count'; simplify ≤ base, enhance ≥ base)." },
+      length: { type: 'number', description: "Edge length / tolerance / size threshold in mesh units (knob 'edge' or 'size')." },
+      amount: { type: 'number', integer: true, min: 1, max: 6, description: "Strength / detail levels (knob 'size')." },
+      preserveColor: { type: 'boolean', description: 'Keep paint (painted models only).' },
+    },
+    open: (prefill, ctx) => openWithPrefill(prefill, ctx),
+    getState: () => (isSimplifyOpen() ? simplifyState() : null),
+    isOpen: isSimplifyOpen,
+    close: () => { if (isSimplifyOpen()) closePanel(); },
+  });
 
   simplifyBtn = document.createElement('button');
   simplifyBtn.id = 'simplify-toggle';
@@ -255,6 +362,26 @@ export function notifyQualityLangChanged(lang: Language): void {
   if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
 }
 
+/** Commit a curvature quality from outside the panel (the
+ *  `partwright.setCurvatureQuality` API) and re-baseline the panel's
+ *  commit/preview state so closing an open panel doesn't revert it. By default
+ *  it applies like Apply does (the quality listener re-runs the model);
+ *  `silent` skips that re-run for a caller that runs the model itself and
+ *  awaits the result. */
+export function commitCurvatureQuality(next: QualitySettings, opts: { silent?: boolean } = {}): void {
+  if (opts.silent) saveQualitySettingsSilent({ ...next });
+  else saveQualityForLang({ ...next });
+  committedQuality = { ...loadQualitySettings() };
+  syncQualityRadios();
+  updateApplyEnabled();
+}
+
+/** Whether a Quality-panel simplify/enhance is mid-flight (the API refuses to
+ *  start a second one on the same baseline). */
+export function isSimplifyApplying(): boolean {
+  return applying;
+}
+
 /** Call when a code run starts (true) or ends (false) so the Stop button
  *  shows only while a render is actually in progress (SCAD mode only). */
 export function setQualityRenderState(isRendering: boolean): void {
@@ -299,6 +426,7 @@ function toggle(): void {
     closePanel();
   } else {
     openPanel();
+    setToolNote(contentEl, null);
   }
 }
 
@@ -382,7 +510,7 @@ function lengthBounds(): { lo: number; hi: number; def: number } {
 /** Sync slider/input bounds, labels, and which control group is visible for the
  *  current mode (simplify/enhance) and knob (count/edge/size). */
 function syncModeUI(): void {
-  if (!info || !slider || !numberInput) return;
+  if (!info || !countEntry) return;
   const base = info.baseTriangles;
 
   if (simplifyModeBtn) simplifyModeBtn.className = mode === 'simplify' ? MODE_ACTIVE : MODE_INACTIVE;
@@ -397,37 +525,23 @@ function syncModeUI(): void {
   if (amountRow) amountRow.classList.toggle('hidden', knobMode !== 'size');
 
   // Count knob: the original target-triangle slider.
+  // Simplify caps at the base count (a real limit); enhance only floors at it,
+  // so a target typed past the slider's 8× is accepted.
   if (mode === 'simplify') {
     const min = Math.max(4, Math.min(base, Math.round(base * 0.02) || 4));
-    slider.min = String(min);
-    slider.max = String(base);
-    slider.value = String(info.currentTriangles);
-    numberInput.min = String(min);
-    numberInput.max = String(base);
-    numberInput.value = String(info.currentTriangles);
+    countEntry.setBounds({ min, max: base, hardMin: min, hardMax: base });
+    countEntry.set(info.currentTriangles);
   } else {
-    const max = base * 8;
-    const defaultTarget = base * 2;
-    slider.min = String(base);
-    slider.max = String(max);
-    slider.value = String(defaultTarget);
-    numberInput.min = String(base);
-    numberInput.removeAttribute('max');
-    numberInput.value = String(defaultTarget);
+    countEntry.setBounds({ min: base, max: base * 8, hardMin: base, hardMax: Infinity });
+    countEntry.set(base * 2);
   }
 
   // Edge-length / size knob: a length slider in mesh units (+ amount for size).
-  if (lengthSlider && lengthInput) {
+  if (lengthEntry) {
     const { lo, hi, def } = lengthBounds();
     const step = Math.max((hi - lo) / 200, 1e-6);
-    lengthSlider.min = String(lo);
-    lengthSlider.max = String(hi);
-    lengthSlider.step = String(step);
-    lengthSlider.value = String(def);
-    lengthInput.min = String(fmtLen(lo));
-    lengthInput.step = String(fmtLen(step) || step);
-    lengthInput.removeAttribute('max'); // user may type beyond the slider range
-    lengthInput.value = String(fmtLen(def));
+    lengthEntry.setBounds({ min: lo, max: hi, step });
+    lengthEntry.set(def);
   }
   if (lengthLabel) lengthLabel.textContent = lengthLabelText();
 }
@@ -442,10 +556,11 @@ function lengthLabelText(): string {
 
 /** The length/threshold value typed into the length knob (mesh units). */
 function lengthVal(): number {
-  const n = Number(lengthInput?.value);
-  if (Number.isFinite(n) && n > 0) return n;
-  const s = Number(lengthSlider?.value);
-  return Number.isFinite(s) && s > 0 ? s : 0;
+  // A typed 0 can't be a length — fall back to the slider, as before.
+  const n = lengthEntry?.get() ?? 0;
+  if (n > 0) return n;
+  const r = Number(lengthEntry?.range.value);
+  return Number.isFinite(r) && r > 0 ? r : 0;
 }
 
 /** The integer "amount" (strength / detail levels) for the size knob. */
@@ -492,6 +607,7 @@ function meshPending(): boolean {
 }
 
 function closePanel(): void {
+  setToolNote(contentEl, null);
   revertQualityPreview();
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onSimplifyEscape);
@@ -531,18 +647,8 @@ function showResult(count: number): void {
   }
 }
 
-function clampTarget(raw: number): number {
-  if (!info) return raw;
-  const min = Number(slider?.min ?? 4);
-  if (!Number.isFinite(raw)) return mode === 'simplify' ? info.baseTriangles : info.baseTriangles * 2;
-  // Enhance: only enforce the minimum — the user can type beyond the slider range.
-  if (mode === 'enhance') return Math.max(min, Math.round(raw));
-  const max = Number(slider?.max ?? info.baseTriangles);
-  return Math.max(min, Math.min(max, Math.round(raw)));
-}
-
 function currentTarget(): number {
-  return clampTarget(Number(numberInput?.value ?? slider?.value ?? info?.currentTriangles ?? 0));
+  return countEntry?.get() ?? info?.currentTriangles ?? 0;
 }
 
 /** Enable the shared Apply (and Reset) whenever there's something pending to
@@ -556,10 +662,9 @@ function updateApplyEnabled(): void {
 }
 
 function setControlsDisabled(disabled: boolean): void {
-  if (slider) slider.disabled = disabled;
-  if (numberInput) numberInput.disabled = disabled;
-  if (lengthSlider) lengthSlider.disabled = disabled;
-  if (lengthInput) lengthInput.disabled = disabled;
+  for (const e of [countEntry, lengthEntry]) {
+    if (e) { e.range.disabled = disabled; e.input.disabled = disabled; }
+  }
   if (amountSlider) amountSlider.disabled = disabled;
   if (resetBtn) resetBtn.disabled = disabled;
   if (simplifyModeBtn) simplifyModeBtn.disabled = disabled;
@@ -738,6 +843,7 @@ function buildPanel(): HTMLElement {
   const c = document.createElement('div');
   c.className = 'p-2.5';
   p.appendChild(c);
+  contentEl = c;
 
   // --- Curvature quality section ---
   const qualitySection = document.createElement('div');
@@ -880,42 +986,19 @@ function buildPanel(): HTMLElement {
   const row = document.createElement('div');
   row.className = 'flex items-center gap-2 mb-2';
 
-  slider = document.createElement('input');
-  slider.type = 'range';
-  slider.id = 'simplify-slider';
-  slider.className = 'flex-1 accent-blue-400 cursor-pointer';
-  slider.min = '4';
-  slider.max = '100';
-  slider.step = '1';
-  slider.value = '100';
-  slider.addEventListener('input', () => {
-    if (applying) return;
-    const t = clampTarget(Number(slider!.value));
-    if (numberInput) numberInput.value = String(t);
-    updateApplyEnabled();
+  // Bounds are set per mode in syncModeUI. The box updates the target live as
+  // you type (Apply reads it), and normalizes on Enter / blur.
+  countEntry = createSliderEntry({
+    min: 4, max: 100, step: 1, value: 100, hardMin: 4, integer: true,
+    liveTyping: true,
+    onChange: () => updateApplyEnabled(),
+    title: '',
+    rangeClass: 'flex-1 accent-blue-400 cursor-pointer',
+    inputClass: 'w-20 px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60',
   });
-  row.appendChild(slider);
-
-  numberInput = document.createElement('input');
-  numberInput.type = 'number';
-  numberInput.id = 'simplify-input';
-  numberInput.className = 'w-20 px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60';
-  numberInput.min = '4';
-  numberInput.step = '1';
-  numberInput.addEventListener('input', () => {
-    if (applying) return;
-    const t = clampTarget(Number(numberInput!.value));
-    if (slider) slider.value = String(Math.min(Number(slider.max), t));
-    updateApplyEnabled();
-  });
-  numberInput.addEventListener('change', () => {
-    if (applying) return;
-    const t = clampTarget(Number(numberInput!.value));
-    numberInput!.value = String(t);
-    if (slider) slider.value = String(Math.min(Number(slider.max), t));
-    updateApplyEnabled();
-  });
-  row.appendChild(numberInput);
+  countEntry.range.id = 'simplify-slider';
+  countEntry.input.id = 'simplify-input';
+  row.append(countEntry.range, countEntry.input);
   countControls.appendChild(row);
   controlsEl.appendChild(countControls);
 
@@ -932,33 +1015,20 @@ function buildPanel(): HTMLElement {
   const lengthRow = document.createElement('div');
   lengthRow.className = 'flex items-center gap-2 mb-2';
 
-  lengthSlider = document.createElement('input');
-  lengthSlider.type = 'range';
-  lengthSlider.id = 'simplify-length-slider';
-  lengthSlider.className = 'flex-1 accent-blue-400 cursor-pointer';
-  lengthSlider.addEventListener('input', () => {
-    if (applying) return;
-    if (lengthInput) lengthInput.value = String(fmtLen(Number(lengthSlider!.value)));
-    updateApplyEnabled();
+  // Bounds are derived from the mesh in syncModeUI; the box has no max — the
+  // user may type a length beyond the slider's range.
+  lengthEntry = createSliderEntry({
+    min: 0, max: 1, step: 0.005, value: 0.5, hardMin: 0, hardMax: Infinity,
+    format: v => String(fmtLen(v)),
+    liveTyping: true,
+    onChange: () => updateApplyEnabled(),
+    title: '',
+    rangeClass: 'flex-1 accent-blue-400 cursor-pointer',
+    inputClass: 'w-20 px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60',
   });
-  lengthRow.appendChild(lengthSlider);
-
-  lengthInput = document.createElement('input');
-  lengthInput.type = 'number';
-  lengthInput.id = 'simplify-length-input';
-  lengthInput.className = 'w-20 px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60';
-  lengthInput.min = '0';
-  const syncLengthFromInput = (): void => {
-    if (applying) return;
-    const v = Number(lengthInput!.value);
-    if (lengthSlider && Number.isFinite(v) && v > 0) {
-      lengthSlider.value = String(Math.max(Number(lengthSlider.min), Math.min(Number(lengthSlider.max), v)));
-    }
-    updateApplyEnabled();
-  };
-  lengthInput.addEventListener('input', syncLengthFromInput);
-  lengthInput.addEventListener('change', syncLengthFromInput);
-  lengthRow.appendChild(lengthInput);
+  lengthEntry.range.id = 'simplify-length-slider';
+  lengthEntry.input.id = 'simplify-length-input';
+  lengthRow.append(lengthEntry.range, lengthEntry.input);
   lengthControls.appendChild(lengthRow);
 
   // Amount (size knob only): strength for simplify / detail levels for enhance.

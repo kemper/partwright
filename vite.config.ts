@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin, type Connect } from 'vite';
+import { defineConfig, loadEnv, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { execSync } from 'node:child_process';
 import { writeFileSync, readFileSync } from 'node:fs';
@@ -178,9 +178,12 @@ function injectAnalyticsBeacon(): Plugin {
   return {
     name: 'partwright-analytics-beacon',
     apply: 'build',
-    transformIndexHtml(html) {
+    transformIndexHtml(html, ctx) {
       // Runs for every HTML input (index + the content pages); editor.html is a
       // closeBundle copy of the built index.html, so it inherits the beacon too.
+      // The engine-sandbox frame is not a page a user visits, and its CSP
+      // (script-src 'self') would block the beacon anyway.
+      if (isSandboxDocPath(ctx.path) || ctx.filename === resolve(__dirname, 'sandbox.html')) return html;
       return html.replace('</body>', `  ${BEACON}\n</body>`);
     },
   };
@@ -211,6 +214,103 @@ function editorHtmlAlias(): Plugin {
       } catch {
         /* no index.html emitted — nothing to alias */
       }
+    },
+  };
+}
+
+// ── Engine sandbox (docs/engine-sandbox.md, kemper/partwright#1090) ─────────
+// sandbox.html is the hidden iframe that hosts the geometry Worker when the
+// engine sandbox is on. Its document gets its OWN, much tighter CSP (no
+// `https:` in connect-src — model code must not reach the network) plus
+// `Cross-Origin-Resource-Policy: cross-origin` so a COEP:require-corp app on a
+// different origin may embed it. Mirrors the `/sandbox` rules in
+// public/_headers. Applied to `sandbox` and `sandbox.html` under any base.
+const SANDBOX_CSP_BASE =
+  "default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; " +
+  "connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; " +
+  "base-uri 'none'; form-action 'none'";
+
+/** Normalize a comma-separated list of absolute http(s) URLs to their origins. */
+function originsOf(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const part of raw.split(',')) {
+    try {
+      // Only http(s) origins (as frameProtocol.allowedParentOrigins) — never
+      // let a stray `javascript:`/`data:` value into a CSP source list.
+      const u = new URL(part.trim());
+      if (u.protocol === 'https:' || u.protocol === 'http:') out.push(u.origin);
+    } catch { /* skip invalid */ }
+  }
+  return out;
+}
+
+/** The sandbox document's CSP. `frame-ancestors` limits who may embed it:
+ *  'self' (opaque mode — same URL origin as the app) plus the configured app
+ *  origin(s) for 'origin' mode (VITE_APP_ORIGIN). */
+function sandboxCsp(appOrigins: string[], dev: boolean): string {
+  // Dev keeps Vite's HMR websocket reachable from the frame.
+  const base = dev ? SANDBOX_CSP_BASE.replace("connect-src 'self'", "connect-src 'self' ws://localhost:*") : SANDBOX_CSP_BASE;
+  return `${base}; frame-ancestors 'self'${appOrigins.map(o => ' ' + o).join('')}`;
+}
+
+// The app may frame the engine-sandbox page from VITE_SANDBOX_ORIGIN ('origin'
+// mode). Without an explicit frame-src the app CSP's default-src 'self' would
+// refuse it. Mirrors what a deployment adds to public/_headers (see
+// docs/engine-sandbox.md). Empty when no sandbox origin is configured.
+function sandboxFrameSrc(sandboxOrigin: string | undefined): string {
+  const [origin] = originsOf(sandboxOrigin);
+  return origin ? `; frame-src 'self' ${origin}` : '';
+}
+
+/** Exactly the sandbox document — `/sandbox` or `/sandbox.html`, optionally
+ *  under a version mount (`/v1/sandbox`) — not any path ending in "sandbox". */
+function isSandboxDocPath(p: string | undefined): boolean {
+  if (!p) return false;
+  return /^(?:\/v\d+)?\/sandbox(?:\.html)?$/.test(p.split(/[?#]/)[0]);
+}
+
+// In 'opaque' mode the frame has an opaque origin, so every module/wasm/font it
+// (or its Worker) loads from this server is a cross-origin request from
+// `Origin: null` and needs `Access-Control-Allow-Origin`. Production sets it
+// statically for /assets + /openscad-libs (public/_headers); `vite preview`
+// mirrors that here. The DEV server only does it when
+// PARTWRIGHT_SANDBOX_DEV_CORS=1 (the Playwright config sets it): Vite restricts
+// dev-server CORS on purpose — a page on any site can send `Origin: null` from
+// a sandboxed iframe — so opaque mode against `npm run dev` is opt-in.
+function engineSandboxHeaders(): Plugin {
+  // VITE_* from the environment or .env files (resolved config.env).
+  let appOrigins: string[] = [];
+  const make = (kind: 'dev' | 'preview'): Connect.NextHandleFunction => (req, res, next) => {
+    const url = req.url ?? '';
+    if (isSandboxDocPath(url)) {
+      const csp = sandboxCsp(appOrigins, kind === 'dev');
+      const origSetHeader = res.setHeader.bind(res);
+      res.setHeader = (name: string, value: string | number | readonly string[]) => {
+        // Vite applies server/preview `headers` (the APP's CSP) at send time;
+        // swap in the sandbox CSP whenever that happens.
+        if (name.toLowerCase() === 'content-security-policy') return origSetHeader(name, csp);
+        return origSetHeader(name, value);
+      };
+      res.setHeader('Content-Security-Policy', csp);
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    }
+    const corsAllowed = kind === 'preview' || process.env.PARTWRIGHT_SANDBOX_DEV_CORS === '1';
+    if (corsAllowed && req.headers.origin === 'null') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    next();
+  };
+  return {
+    name: 'partwright-engine-sandbox-headers',
+    configResolved(config) {
+      appOrigins = originsOf(config.env.VITE_APP_ORIGIN as string | undefined);
+    },
+    configureServer(server) {
+      server.middlewares.use(make('dev'));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(make('preview'));
     },
   };
 }
@@ -255,7 +355,10 @@ function resolveBuildInfo() {
   return { commit, branch, buildTime: new Date().toISOString(), repo, dirty, version };
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+// VITE_* settings from the shell or a .env file (process.env wins, as in Vite).
+const viteEnv = { ...loadEnv(mode, __dirname, 'VITE_'), ...process.env };
+return {
   // Deployment base. Default `/` (the unversioned production mount). Set
   // DEPLOY_BASE=/v1/ (etc.) to mount this build under a version path for the
   // versioned-deployment strategy — Vite then prefixes every emitted asset/
@@ -273,7 +376,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), engineSandboxHeaders(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -289,6 +392,10 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['manifold-3d']
   },
+  // A second dev server of the same checkout (the engine-sandbox origin in
+  // playwright.config.ts) points this elsewhere so the two don't race on
+  // node_modules/.vite's dependency pre-bundle.
+  ...(process.env.VITE_CACHE_DIR ? { cacheDir: process.env.VITE_CACHE_DIR } : {}),
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
@@ -306,7 +413,7 @@ export default defineConfig({
       // Analytics beacon host (static.cloudflareinsights.com) is in _headers'
       // script-src but deliberately NOT here, because the beacon is injected
       // build-only (see injectAnalyticsBeacon) and never loads in dev/test.
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" + sandboxFrameSrc(viteEnv.VITE_SANDBOX_ORIGIN),
     },
     fs: {
       // Relax strict fs access for WASM files in node_modules
@@ -328,6 +435,9 @@ export default defineConfig({
         legal: resolve(__dirname, 'legal.html'),
         'whats-new': resolve(__dirname, 'whats-new.html'),
         ideas: resolve(__dirname, 'ideas.html'),
+        // Engine-sandbox frame (docs/engine-sandbox.md) — app-free, only the
+        // tiny spawner + the geometry Worker bundle.
+        sandbox: resolve(__dirname, 'sandbox.html'),
       },
       output: {
         // Function form (not the object map) so we can isolate Vite's
@@ -353,4 +463,5 @@ export default defineConfig({
     },
   },
   appType: 'spa',
+};
 });

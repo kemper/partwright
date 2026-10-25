@@ -17,13 +17,16 @@ import { viewportInspectMount } from './popoverMenu';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
+import { registerTool, setToolNote, createSuggestionRow, notifyToolApplied, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 export interface PrintToolsHandlers {
   /** Snapshot state + close sibling overlays when the user opens the panel. */
   open(userInitiated: boolean): { hasModel: boolean };
   getSettings(): PrinterSettings;
   setSettings(partial: Partial<PrinterSettings>): PrinterSettings;
-  check(): PrintabilityReport | { error: string };
+  /** Run the printability check; `overrides` checks unsaved (staged) form
+   *  values without saving them. */
+  check(overrides?: { bed: [number, number, number]; nozzleWidth: number; overhangAngleDeg: number }): PrintabilityReport | { error: string };
 }
 
 const BTN_INACTIVE = TOOL_TOGGLE_IDLE;
@@ -42,6 +45,12 @@ let bedX: HTMLInputElement | null = null;
 let bedY: HTMLInputElement | null = null;
 let bedZ: HTMLInputElement | null = null;
 let nozzleInput: HTMLInputElement | null = null;
+let overhangInput: HTMLInputElement | null = null;
+let contentEl: HTMLElement | null = null;
+// Staged (unsaved) settings from an openTool prefill: the form shows them with
+// a "Use these settings" row; nothing is saved until the user confirms (or
+// edits a field, which commits the whole form like any manual edit).
+let stagedRow: HTMLElement | null = null;
 let reportEl: HTMLElement | null = null;
 let statusEl: HTMLElement | null = null;
 
@@ -69,6 +78,16 @@ export function initPrintToolsUI(controlsContainer: HTMLElement, h: PrintToolsHa
   viewportInspectMount(controlsContainer).appendChild(printBtn);
 
   panel = buildPanel();
+  registerTool({
+    id: 'tool-print',
+    title: 'Print tools / check printability',
+    hint: 'Inspect',
+    prefillSchema: PRINT_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openPrintWithPrefill(prefill, ctx),
+    getState: () => (isPrintToolsOpen() ? readForm() : null),
+    isOpen: isPrintToolsOpen,
+    close: forceDeactivate,
+  });
   // Append to the overlay host (the layout container that positions the
   // floating panels) so position math in setInitialPanelPosition lands in
   // the same coordinate space the other panels use.
@@ -90,6 +109,60 @@ function toggle(): void {
   else openPanel();
 }
 
+/** Prefill keys for `openTool('tool-print', …)` — staged in the form, saved
+ *  only when the user confirms; the printability check is never auto-run. */
+const PRINT_PREFILL_SCHEMA: PrefillSchema = {
+  bed: { type: 'vec3', description: 'Build volume [x,y,z] in mm (10..2000 each).' },
+  nozzleWidth: { type: 'number', min: 0.05, max: 2, description: 'Nozzle diameter (mm).' },
+  overhangAngleDeg: { type: 'number', min: 1, max: 89, description: 'Overhang limit, degrees from horizontal (45 = the classic rule).' },
+};
+
+/** The form's current values (what the user sees — staged or saved). */
+function readForm(): { bed: [number, number, number]; nozzleWidth: number; overhangAngleDeg: number } {
+  const s = handlers?.getSettings();
+  return {
+    bed: [Number(bedX?.value) || s?.bed[0] || 0, Number(bedY?.value) || s?.bed[1] || 0, Number(bedZ?.value) || s?.bed[2] || 0],
+    nozzleWidth: Number(nozzleInput?.value) || s?.nozzleWidth || 0.4,
+    overhangAngleDeg: Number(overhangInput?.value) || s?.overhangAngleDeg || 45,
+  };
+}
+
+function clearStaged(): void {
+  stagedRow?.remove();
+  stagedRow = null;
+}
+
+function openPrintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
+  const pre = p ?? {};
+  const bed = pre.bed as [number, number, number] | undefined;
+  if (bed && bed.some(n => n < 10 || n > 2000)) return { error: 'bed values must be in [10, 2000] mm' };
+  if (!isPrintToolsOpen()) openPanel();
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (Object.keys(pre).length === 0) return { applied: {}, ignored: [] };
+  if (bed) { bedX!.value = String(bed[0]); bedY!.value = String(bed[1]); bedZ!.value = String(bed[2]); syncPreset(bed); }
+  if (pre.nozzleWidth !== undefined && nozzleInput) nozzleInput.value = String(pre.nozzleWidth);
+  if (pre.overhangAngleDeg !== undefined && overhangInput) overhangInput.value = String(pre.overhangAngleDeg);
+  clearStaged();
+  const row = createSuggestionRow({
+    text: 'Suggested settings — not saved yet.',
+    dismissLabel: 'Discard',
+    onDismiss: () => { clearStaged(); loadSettingsIntoForm(); },
+    primaryLabel: 'Use these',
+    onPrimary: () => { commitSettings(); },
+  });
+  row.dataset.printStaged = '';
+  row.classList.add('mb-3');
+  stagedRow = row;
+  presetSel?.before(row);
+  return { applied: pre, ignored: [] };
+}
+
+function syncPreset(bed: [number, number, number]): void {
+  if (!presetSel) return;
+  const match = PRINTER_PRESETS.find(p => p.bed[0] === bed[0] && p.bed[1] === bed[1] && p.bed[2] === bed[2]);
+  presetSel.value = match ? match.id : 'custom';
+}
+
 function openPanel(): void {
   if (!handlers || !panel) return;
   setInitialPanelPosition(panel);
@@ -104,6 +177,8 @@ function openPanel(): void {
 }
 
 function closePanel(): void {
+  clearStaged(); // unconfirmed suggestions don't outlive the panel
+  setToolNote(contentEl, null);
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onPrintEscape);
   closeViewportPanel(registryEntry);
@@ -121,11 +196,9 @@ function loadSettingsIntoForm(): void {
   if (bedY) bedY.value = String(s.bed[1]);
   if (bedZ) bedZ.value = String(s.bed[2]);
   if (nozzleInput) nozzleInput.value = String(s.nozzleWidth);
+  if (overhangInput) overhangInput.value = String(s.overhangAngleDeg);
   // Reflect a matching preset, else "Custom".
-  if (presetSel) {
-    const match = PRINTER_PRESETS.find(p => p.bed[0] === s.bed[0] && p.bed[1] === s.bed[1] && p.bed[2] === s.bed[2]);
-    presetSel.value = match ? match.id : 'custom';
-  }
+  syncPreset(s.bed);
 }
 
 function commitSettings(): void {
@@ -136,11 +209,12 @@ function commitSettings(): void {
     Number(bedZ?.value) || 0,
   ];
   const nozzleWidth = Number(nozzleInput?.value) || 0.4;
-  handlers.setSettings({ bed, nozzleWidth });
-  if (presetSel) {
-    const match = PRINTER_PRESETS.find(p => p.bed[0] === bed[0] && p.bed[1] === bed[1] && p.bed[2] === bed[2]);
-    presetSel.value = match ? match.id : 'custom';
-  }
+  const overhangAngleDeg = Number(overhangInput?.value) || 45;
+  const wasStaged = stagedRow !== null;
+  handlers.setSettings({ bed, nozzleWidth, overhangAngleDeg });
+  syncPreset(bed);
+  // A manual edit (or "Use these") saves the whole form, staged values included.
+  if (wasStaged) { clearStaged(); notifyToolApplied('tool-print', 'printer settings'); }
 }
 
 function dotFor(level: string): string {
@@ -195,6 +269,7 @@ function buildPanel(): HTMLElement {
 
   // ── Scrollable content area ────────────────────────────────────────────
   const c = document.createElement('div');
+  contentEl = c;
   c.className = 'p-2.5 overflow-y-auto';
   c.style.maxHeight = '70vh';
   p.appendChild(c);
@@ -248,6 +323,22 @@ function buildPanel(): HTMLElement {
   nozRow.appendChild(nozLabel); nozRow.appendChild(nozzleInput);
   c.appendChild(nozRow);
 
+  // Overhang limit — feeds the printability check's support warning (was
+  // settable only via setPrinterSettings before).
+  const ovRow = document.createElement('div');
+  ovRow.className = 'flex items-center gap-2 mb-3 -mt-1.5';
+  const ovLabel = document.createElement('span');
+  ovLabel.className = 'text-[11px] text-zinc-400 flex-1';
+  ovLabel.textContent = 'Overhang limit (°)';
+  ovLabel.title = 'Downward faces shallower than this (from horizontal) need support. 45 = the classic rule.';
+  overhangInput = document.createElement('input');
+  overhangInput.type = 'number'; overhangInput.step = '1'; overhangInput.min = '1'; overhangInput.max = '89';
+  overhangInput.className = `${NUM_INPUT} w-20`;
+  overhangInput.setAttribute('aria-label', 'Overhang limit (degrees)');
+  overhangInput.addEventListener('change', commitSettings);
+  ovRow.appendChild(ovLabel); ovRow.appendChild(overhangInput);
+  c.appendChild(ovRow);
+
   // ── Printability ─────────────────────────────────────────────────────
   const checkBtn = document.createElement('button');
   checkBtn.id = 'print-check-btn';
@@ -255,7 +346,9 @@ function buildPanel(): HTMLElement {
   checkBtn.textContent = 'Check printability';
   checkBtn.addEventListener('click', () => {
     if (!handlers) return;
-    const r = handlers.check();
+    // Check what the form shows. Staged (AI-suggested, unsaved) values are
+    // checked as overrides — they're saved only via "Use these" / an edit.
+    const r = handlers.check(stagedRow ? readForm() : undefined);
     renderReport(r);
   });
   c.appendChild(checkBtn);

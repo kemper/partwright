@@ -2,10 +2,14 @@
 // AI tool schema, CLI flags) reads detectors and their ParamSpecs from here,
 // so registering a detector updates all of them at once.
 
+import { autoMergeDetector } from './autoPatches';
 import { creaseWatershedDetector, piecesDetector } from './detectors';
-import type { ParamSpec, ParamValues, PartDetector } from './types';
+import { planarGroupsDetector } from './planarGroups';
+import { randomWalkerDetector } from './randomWalker';
+import { thicknessDetector } from './thickness';
+import type { DetectorPreset, ParamSpec, ParamValues, PartDetector } from './types';
 
-const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector];
+const DETECTORS: PartDetector[] = [piecesDetector, creaseWatershedDetector, randomWalkerDetector, autoMergeDetector, thicknessDetector, planarGroupsDetector];
 
 export function listDetectors(): readonly PartDetector[] {
   return DETECTORS;
@@ -19,12 +23,29 @@ export function detectorIds(): string[] {
   return DETECTORS.map((d) => d.id);
 }
 
+/** Detectors that may run unattended (import-time auto-detect,
+ *  `autoDetectParts`), in the order they should be tried: opted in via
+ *  `autoPropose`, able to run without seeds, ascending priority (registry
+ *  order breaks ties). */
+export function autoProposeDetectors(): PartDetector[] {
+  return DETECTORS
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => d.autoPropose !== undefined && d.seeds !== 'required')
+    .sort((a, b) => a.d.autoPropose!.priority - b.d.autoPropose!.priority || a.i - b.i)
+    .map(({ d }) => d);
+}
+
 /** JSON-friendly description of a detector (for listPartDetectors / docs). */
 export function describeDetector(d: PartDetector): {
   id: string; name: string; description: string; bestFor: string;
-  seeds: PartDetector['seeds']; params: ParamSpec[];
+  seeds: PartDetector['seeds']; params: ParamSpec[]; presets: DetectorPreset[]; autoPropose: boolean;
 } {
-  return { id: d.id, name: d.name, description: d.description, bestFor: d.bestFor, seeds: d.seeds, params: d.params.map((p) => ({ ...p })) };
+  return {
+    id: d.id, name: d.name, description: d.description, bestFor: d.bestFor, seeds: d.seeds,
+    params: d.params.map((p) => ({ ...p })),
+    presets: (d.presets ?? []).map((p) => ({ name: p.name, params: { ...p.params }, ...(p.featureOptions ? { featureOptions: { ...p.featureOptions } } : {}) })),
+    autoPropose: d.autoPropose !== undefined && d.seeds !== 'required',
+  };
 }
 
 /** Fill defaults and validate user params against a detector's ParamSpecs.
@@ -74,8 +95,20 @@ export function paramsJsonSchema(): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const d of DETECTORS) {
     for (const p of d.params) {
-      if (props[p.key]) continue;
-      const base: Record<string, unknown> = { description: `[${d.id}] ${p.label}: ${p.hint} Default ${String(p.default)}.` };
+      const text = `[${d.id}] ${p.label}: ${p.hint} Default ${String(p.default)}.`;
+      const seen = props[p.key] as Record<string, unknown> | undefined;
+      // A key several detectors share keeps the first one's type, and lists
+      // every detector's meaning, so the model never reads one detector's
+      // hint as another's.
+      if (seen) {
+        seen.description = `${String(seen.description)} ${text}`;
+        if (seen.minimum !== undefined && (p.min === undefined || p.min < (seen.minimum as number))) seen.minimum = p.min;
+        if (seen.maximum !== undefined && (p.max === undefined || p.max > (seen.maximum as number))) seen.maximum = p.max;
+        if (seen.minimum === undefined) delete seen.minimum;
+        if (seen.maximum === undefined) delete seen.maximum;
+        continue;
+      }
+      const base: Record<string, unknown> = { description: text };
       if (p.type === 'enum') { base.type = 'string'; base.enum = p.options; }
       else if (p.type === 'boolean') base.type = 'boolean';
       else { base.type = p.type === 'integer' ? 'integer' : 'number'; if (p.min !== undefined) base.minimum = p.min; if (p.max !== undefined) base.maximum = p.max; }

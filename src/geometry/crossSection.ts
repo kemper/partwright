@@ -140,15 +140,4 @@ function generateSVG(
 </svg>`;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getBoundingBox(manifold: any): { min: [number, number, number]; max: [number, number, number] } | null {
-  try {
-    const bbox = manifold.boundingBox();
-    return {
-      min: [bbox.min[0], bbox.min[1], bbox.min[2]],
-      max: [bbox.max[0], bbox.max[1], bbox.max[2]],
-    };
-  } catch {
-    return null;
-  }
-}
+export { manifoldBoundingBox as getBoundingBox } from './manifoldFacts';

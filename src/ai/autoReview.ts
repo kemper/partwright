@@ -12,6 +12,8 @@
 import type { AutoReviewSettings } from './settings';
 import type { ChatBlock, ChatMessage, ChatToggles, Provider, TurnOutcomeReason } from './types';
 import { activeModel } from './types';
+import { CARRIED_ATTACHMENTS_NOTE } from './compactionAttachments';
+import { userWords } from './userWords';
 
 export type ReviewVerdict = 'pass' | 'minor' | 'rework';
 
@@ -74,11 +76,11 @@ export function resolveReviewer(settings: AutoReviewSettings, toggles: ChatToggl
 /** Model-changing tool calls made in assistant messages created at or after
  *  `since` (ms) — i.e. during the current round. `isChanging` is
  *  `isModelChangingTool` from tools.ts (injected to keep this module pure). */
-export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string) => boolean): number {
+export function countModelChangingCalls(history: ChatMessage[], since: number, isChanging: (name: string, input?: Record<string, unknown>) => boolean): number {
   let n = 0;
   for (const m of history) {
     if (m.role !== 'assistant' || m.createdAt < since || !m.toolCalls) continue;
-    for (const c of m.toolCalls) if (isChanging(c.name)) n++;
+    for (const c of m.toolCalls) if (isChanging(c.name, c.input)) n++;
   }
   return n;
 }
@@ -96,16 +98,74 @@ export function requestText(blocks: ChatBlock[]): string {
 }
 
 /** Fallback when the caller didn't pin the request: the most recent human
- *  message, skipping tool-result carriers, auto-continue nudges and our own
- *  review follow-ups. */
+ *  message, skipping tool-result carriers, auto-continue nudges, plan
+ *  approvals and our own review follow-ups. */
 export function latestUserRequest(history: ChatMessage[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (m.role !== 'user' || m.autoResumeNudge) continue;
-    const text = requestText(m.blocks);
+    const text = userWords(m.blocks);
     if (text && !text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) return text;
   }
   return '';
+}
+
+/** What `userConversation` hands the reviewer. */
+export interface UserConversation {
+  /** The user's messages, oldest first. */
+  messages: string[];
+  /** Older user messages left out to fit the budget. */
+  omitted: number;
+  /** The agent's compaction summary of the turns compaction deleted, when
+   *  there is one and it fits — the only agent-written text sent, labelled
+   *  as such, because the user's early requirements survive only in it. */
+  earlierSummary: string | null;
+}
+
+/** The user's own messages in this chat, oldest first, for the reviewer —
+ *  every requirement and correction, without the agent's replies (which
+ *  would anchor the reviewer on the agent's own account of its work).
+ *  Skips tool-result carriers, image-only turns, the compaction
+ *  attachment note, auto-continue nudges, review follow-ups and plan
+ *  approvals, and strips plan-mode instructions the app added. Keeps the
+ *  newest messages within `maxChars` (0 = none) and counts the older ones
+ *  that don't fit; the compaction summary is oldest, so it goes first. */
+export function userConversation(history: ChatMessage[], maxChars: number): UserConversation {
+  const none: UserConversation = { messages: [], omitted: 0, earlierSummary: null };
+  if (maxChars <= 0) return none;
+  const summaries: string[] = [];
+  const entries: string[] = [];
+  for (const m of history) {
+    if (m.role === 'assistant') {
+      if (!m.compacted) continue;
+      const text = requestText(m.blocks);
+      if (text) summaries.push(text);
+      continue;
+    }
+    if (m.autoResumeNudge) continue;
+    const text = userWords(m.blocks);
+    if (!text || text === CARRIED_ATTACHMENTS_NOTE || text.startsWith(AUTO_REVIEW_FOLLOWUP_TAG)) continue;
+    entries.push(text);
+  }
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const room = maxChars - used;
+    if (room <= 0) break;
+    const e = entries[i];
+    if (e.length > room) {
+      // Only the newest message is ever cut (head kept); an older one that
+      // doesn't fit is left out whole.
+      if (kept.length === 0) { kept.unshift(`${e.slice(0, room)}…`); used = maxChars; }
+      break;
+    }
+    kept.unshift(e);
+    used += e.length;
+  }
+  const omitted = entries.length - kept.length;
+  const summary = summaries.join('\n\n');
+  const earlierSummary = summary && omitted === 0 && summary.length <= maxChars - used ? summary : null;
+  return { messages: kept, omitted, earlierSummary };
 }
 
 /** The follow-up user turn that asks the agent to act on a review. The review

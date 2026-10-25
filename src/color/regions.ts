@@ -37,9 +37,21 @@ export interface ColorRegion {
    *  reverses the most recent operation even when an edit kept the region in
    *  its original slot. Never serialized. */
   seq?: number;
+  /** Regions added inside one `runAsUndoGroup` call share this id, and undo /
+   *  redo take them off / put them back together (e.g. the several seam loops
+   *  of one `paintAlongBoundary`). Transient — not persisted. */
+  undoGroup?: number;
 }
 
-export type RegionDescriptor =
+// Every descriptor may carry `withinPart`: the name of a label (an `api.label`
+// region or a detected part of an import, #1025). The region is then clipped
+// to that part, so the paint can never bleed across the part's edge. The clip
+// is applied wherever a region's triangles are set (live and on re-resolve),
+// via the resolver main.ts registers with `setPartScopeResolver`. Descriptors
+// saved before scoping simply omit it.
+export type RegionDescriptor = RegionDescriptorKind & { withinPart?: string };
+
+type RegionDescriptorKind =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
   // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
   // is set, the mesh is locally subdivided near the region's boundary until
@@ -122,10 +134,29 @@ export type RegionDescriptor =
   // colour. Resolved by `computePatternColors` (src/color/colorPattern.ts), which
   // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
   // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
+  // `smooth` + `maxEdge` (soccer / stripes / checker only — SMOOTH_PATTERN_KINDS)
+  // subdivide + clip the scope's boundary triangles along the pattern's analytic
+  // field, exactly like a smooth slab: only the descriptor is saved, and the
+  // refined mesh is rebuilt from it on load. Omitted ⇒ whole-triangle colours.
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
       scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
-      anchors?: [number, number, number][] };
+      anchors?: [number, number, number][];
+      smooth?: boolean; maxEdge?: number }
+  // Colour match (the Replace tool with a part selected): every triangle whose
+  // DRAWN colour (with this region excluded, like `colorFlood`) is within
+  // `colorTolerance` of `seedColor` — not just a connected patch. `unpainted`
+  // also matches triangles no layer colours (the neutral model shade the user
+  // picked as the source). Normally carries a `withinPart`, so a swap stays
+  // inside one part; re-resolved by colour on every reconcile.
+  | { kind: 'colorMatch'; seedColor: [number, number, number]; colorTolerance: number; unpainted?: boolean };
+
+/** The part a descriptor is confined to (`withinPart`), or null. `byLabel`
+ *  regions ARE the part, so they report their own label. */
+export function descriptorPartLabel(d: RegionDescriptor): string | null {
+  if (d.kind === 'byLabel') return d.label;
+  return d.withinPart ?? null;
+}
 
 export interface SerializedColorRegion {
   id: number;
@@ -178,6 +209,22 @@ const clearSnapshotListeners: ChangeListener[] = [];
 // (add, clear, deserialize) drops the stack so redo can never resurrect a
 // region into a state where the user wouldn't expect it.
 let regionRedoStack: ColorRegion[] = [];
+
+let nextUndoGroup = 1;
+let activeUndoGroup: number | null = null;
+
+/** Run `fn` so every region it adds is ONE undo step (undoLastPaint / the
+ *  Undo button remove them together; redo restores them together). Nested
+ *  calls join the outer group. */
+export function runAsUndoGroup<T>(fn: () => T): T {
+  if (activeUndoGroup !== null) return fn();
+  activeUndoGroup = nextUndoGroup++;
+  try {
+    return fn();
+  } finally {
+    activeUndoGroup = null;
+  }
+}
 
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
@@ -276,6 +323,58 @@ export function hasRegions(): boolean {
   return regions.length > 0;
 }
 
+// Resolves a descriptor against the CURRENT working mesh (published by main.ts,
+// which owns the mesh, adjacency and label map). Lets the paint panel build
+// descriptor-driven regions (e.g. Replace-within-a-part) without importing main.
+let currentMeshResolver: ((d: RegionDescriptor) => Set<number>) | null = null;
+
+export function setCurrentMeshResolver(fn: ((d: RegionDescriptor) => Set<number>) | null): void {
+  currentMeshResolver = fn;
+}
+
+/** Resolve `d` on the current working mesh (empty when nothing is loaded). */
+export function resolveOnCurrentMesh(d: RegionDescriptor): Set<number> {
+  return currentMeshResolver?.(d) ?? new Set<number>();
+}
+
+/** Resolves a part (label) name to its triangle set on the CURRENT working
+ *  mesh, or null when no such part exists. Registered by main.ts, which owns
+ *  the label map and the refined-mesh lineage. */
+type PartScopeResolver = (label: string) => Set<number> | null;
+let partScopeResolver: PartScopeResolver | null = null;
+
+export function setPartScopeResolver(fn: PartScopeResolver | null): void {
+  partScopeResolver = fn;
+}
+
+/** Clip a region's triangles (and per-triangle colours) to its `withinPart`
+ *  scope. A part that no longer exists clips to nothing — the same "missing
+ *  label paints nothing" rule `byLabel` follows. Idempotent, so resolving an
+ *  already-clipped set again is harmless. */
+export function clipToPart(
+  descriptor: RegionDescriptor,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): { triangles: Set<number>; perTriColors?: Map<number, [number, number, number]> } {
+  const label = descriptor.withinPart;
+  if (!label || !partScopeResolver) return { triangles, perTriColors };
+  return intersectWithScope(partScopeResolver(label) ?? new Set<number>(), triangles, perTriColors);
+}
+
+/** Keep only the triangles (and per-triangle colours) inside `scope`. */
+export function intersectWithScope(
+  scope: Set<number>,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): { triangles: Set<number>; perTriColors?: Map<number, [number, number, number]> } {
+  const clipped = new Set<number>();
+  for (const t of triangles) if (scope.has(t)) clipped.add(t);
+  if (!perTriColors) return { triangles: clipped };
+  const colors = new Map<number, [number, number, number]>();
+  for (const [t, c] of perTriColors) if (scope.has(t)) colors.set(t, c);
+  return { triangles: clipped, perTriColors: colors };
+}
+
 export function addRegion(
   name: string,
   color: [number, number, number],
@@ -286,6 +385,7 @@ export function addRegion(
   slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
+  if (descriptor.withinPart) ({ triangles, perTriColors } = clipToPart(descriptor, triangles, perTriColors));
   const id = nextRegionId++;
   const region: ColorRegion = {
     id,
@@ -299,6 +399,7 @@ export function addRegion(
     slotId,
     perTriColors,
     seq: ++opSeq,
+    ...(activeUndoGroup !== null ? { undoGroup: activeUndoGroup } : {}),
   };
   regions.push(region);
   clearRedoStack();
@@ -330,42 +431,75 @@ export function removeRegion(id: number): boolean {
   return true;
 }
 
-/** Undo the most recent paint operation and push it onto the redo stack.
- *  Normally that pops the most recently added region; if the most recent op
- *  was an edit made by `replaceRegion`, the original it replaced is swapped
- *  back into the same slot instead. */
-export function removeLastRegion(): ColorRegion | null {
-  if (regions.length === 0) return null;
-  let idx = regions.length - 1;
-  for (let i = 0; i < regions.length; i++) {
-    if ((regions[i].seq ?? 0) > (regions[idx].seq ?? 0)) idx = i;
-  }
+/** Undo the region at `idx`: an edit made by `replaceRegion` swaps its
+ *  original back into the same slot (carrying later recolour / rename /
+ *  visibility / slot changes, so undo reverts only the triangle edit); any
+ *  other region comes off the list. Either way it goes on the redo stack. */
+function undoAt(idx: number): ColorRegion {
   const region = regions[idx];
   tagOffList(region);
   if (region.replaces) {
-    // Carry later recolour / rename / visibility / slot changes back, so undo
-    // reverts only the triangle edit.
     copyUserFields(region, region.replaces);
     regions[idx] = region.replaces;
   } else {
     regions.splice(idx, 1);
   }
   regionRedoStack.push(region);
+  return region;
+}
+
+/** Index of the most recent operation (highest `seq`) among regions matching
+ *  `pred`, or -1. Without edits that's always the last array entry. */
+function latestIndex(pred: (r: ColorRegion) => boolean = () => true): number {
+  let idx = -1;
+  for (let i = 0; i < regions.length; i++) {
+    if (!pred(regions[i])) continue;
+    if (idx < 0 || (regions[i].seq ?? 0) >= (regions[idx].seq ?? 0)) idx = i;
+  }
+  return idx;
+}
+
+/** Undo the most recent paint operation — with the rest of its undo group,
+ *  if it was made in one (see runAsUndoGroup) — onto the redo stack. Normally
+ *  that pops the most recently added region; if the most recent op was an
+ *  edit made by `replaceRegion`, the original it replaced is swapped back into
+ *  the same slot instead. Returns the last-made region of the step. */
+export function removeLastRegion(): ColorRegion | null {
+  if (regions.length === 0) return null;
+  const region = undoAt(latestIndex());
+  const group = region.undoGroup;
+  if (group !== undefined) {
+    for (let i = latestIndex(r => r.undoGroup === group); i >= 0; i = latestIndex(r => r.undoGroup === group)) {
+      undoAt(i);
+    }
+  }
   notifyRedo();
   notify();
   return region;
 }
 
-/** Pop the redo stack and re-apply it. Returns null if nothing to redo. */
-export function redoLastRegion(): ColorRegion | null {
-  const region = regionRedoStack.pop() ?? null;
-  if (!region) return null;
+/** Re-apply one undone region: an edit goes back into its original's slot,
+ *  anything else back onto the end of the list. */
+function redoOne(region: ColorRegion): void {
   const slot = region.replaces ? regions.indexOf(region.replaces) : -1;
   if (slot >= 0) {
     copyUserFields(region.replaces!, region);
     regions[slot] = region;
   } else {
     regions.push(region);
+  }
+}
+
+/** Pop the redo stack and re-apply it (with the rest of its undo group).
+ *  Returns null if nothing to redo. */
+export function redoLastRegion(): ColorRegion | null {
+  let region = regionRedoStack.pop() ?? null;
+  if (!region) return null;
+  redoOne(region);
+  const group = region.undoGroup;
+  while (group !== undefined && regionRedoStack.length > 0 && regionRedoStack[regionRedoStack.length - 1].undoGroup === group) {
+    region = regionRedoStack.pop()!;
+    redoOne(region);
   }
   notifyRedo();
   notify();
@@ -418,6 +552,9 @@ export function replaceRegion(
     perTriColors: undefined,
     replaces: original,
     seq: ++opSeq,
+    // The edit is its own operation: it must not inherit the original's undo
+    // group (undoing it would then also undo that group's siblings).
+    undoGroup: activeUndoGroup ?? undefined,
   };
   regions[idx] = edited;
   clearRedoStack();
@@ -586,12 +723,51 @@ export function setRegionTriangles(
 ): void {
   const region = regions.find(r => r.id === id);
   if (region) {
+    if (region.descriptor.withinPart) ({ triangles, perTriColors } = clipToPart(region.descriptor, triangles, perTriColors));
     region.triangles = triangles;
     region.perTriColors = perTriColors;
   }
 }
 
-export function clearRegions(): void {
+/** Re-point a region at a new descriptor (e.g. reassigning unmatched paint to
+ *  another part) with its freshly resolved triangles, keeping its id, colour,
+ *  order and slot. Notifies so the viewport recolours. */
+export function setRegionDescriptor(
+  id: number,
+  descriptor: RegionDescriptor,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): boolean {
+  const region = regions.find(r => r.id === id);
+  if (!region) return false;
+  region.descriptor = descriptor;
+  region.triangles = triangles;
+  region.perTriColors = perTriColors;
+  clearRedoStack();
+  notify();
+  return true;
+}
+
+/** Remove every region. A user-facing Clear (the paint panel's button,
+ *  `partwright.clearColors`) records a snapshot so "Undo clear" can restore
+ *  it. Internal resets — loading another version/object, rehydrating saved
+ *  paint, simplify's colour carry — pass `{ snapshot: false }`: they record
+ *  nothing AND discard any pending snapshot, so undo-clear can never
+ *  resurrect a different model's paint. */
+export function clearRegions(opts: { snapshot?: boolean } = {}): void {
+  if (opts.snapshot === false) {
+    const hadSnapshot = clearSnapshot !== null;
+    clearSnapshot = null;
+    clearSnapshotPartial = false;
+    if (regions.length > 0) {
+      regions = [];
+      nextOrder = 1;
+      clearRedoStack();
+      notify();
+    }
+    if (hadSnapshot) notifyClearSnapshot();
+    return;
+  }
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
   for (const r of clearSnapshot) tagOffList(r);

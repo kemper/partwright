@@ -7,6 +7,8 @@
 //   { type: 'run_turn',     input: AgentWorkerInput }
 //   { type: 'abort' }
 //   { type: 'tool_result',  callId: string, result: ToolExecResult }
+//   { type: 'tool_confirm_pending', callId }   user is being asked to confirm — pause the timeout
+//   { type: 'tool_confirm_done',    callId }   prompt answered — restart the timeout
 //   { type: 'queue_blocks', blocks: ChatBlock[] }
 //
 // Protocol — Worker → Main:
@@ -45,8 +47,15 @@ export type AgentWorkerInput = Omit<RunTurnInput, 'signal' | 'onDrainQueuedBlock
   aiConfig?: AppConfig['ai'];
 };
 
-// Pending tool-call promises keyed by callId.
-const pendingToolCalls = new Map<string, (result: ToolExecResult) => void>();
+// Pending tool calls keyed by callId. pause/resume stop and restart the
+// timeout while the main thread waits on a confirmation prompt, so the time a
+// user spends reading "Allow this?" never counts against toolCallTimeoutMs.
+interface PendingToolCall {
+  resolve: (result: ToolExecResult) => void;
+  pause: () => void;
+  resume: () => void;
+}
+const pendingToolCalls = new Map<string, PendingToolCall>();
 
 // Blocks queued by the human mid-turn; pushed from main thread via queue_blocks.
 const workerQueuedBlocks: ChatBlock[] = [];
@@ -68,7 +77,10 @@ async function executeToolViaMessage(
   self.postMessage({ type: 'tool_call', callId, name, input });
   return new Promise<ToolExecResult>((resolve, reject) => {
     const ms = activeToolCallTimeoutMs;
-    const timer = setTimeout(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => { timer = setTimeout(onTimeout, ms); };
+    const disarm = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
+    const onTimeout = () => {
       pendingToolCalls.delete(callId);
       // Tell the main thread to cancel the in-flight execution. The tool runs
       // on the main thread (window.partwright → engine Worker); abandoning our
@@ -78,10 +90,14 @@ async function executeToolViaMessage(
       // the execution rejects promptly.
       self.postMessage({ type: 'cancel_tool', callId, name });
       reject(new Error(`Tool call "${name}" (${callId}) timed out after ${ms / 1000}s`));
-    }, ms);
-    pendingToolCalls.set(callId, (result) => {
-      clearTimeout(timer);
-      resolve(result);
+    };
+    arm();
+    pendingToolCalls.set(callId, {
+      resolve: (result) => { disarm(); resolve(result); },
+      pause: disarm,
+      // The full budget restarts once the prompt is answered: the tool itself
+      // has not started running yet.
+      resume: () => { if (timer === null) arm(); },
     });
   });
 }
@@ -91,11 +107,21 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── tool_result ────────────────────────────────────────────────────────
   if (msg.type === 'tool_result') {
-    const resolve = pendingToolCalls.get(msg.callId as string);
-    if (resolve) {
+    const pending = pendingToolCalls.get(msg.callId as string);
+    if (pending) {
       pendingToolCalls.delete(msg.callId as string);
-      resolve(msg.result as ToolExecResult);
+      pending.resolve(msg.result as ToolExecResult);
     }
+    return;
+  }
+
+  // ── tool_confirm_pending / tool_confirm_done ───────────────────────────
+  if (msg.type === 'tool_confirm_pending') {
+    pendingToolCalls.get(msg.callId as string)?.pause();
+    return;
+  }
+  if (msg.type === 'tool_confirm_done') {
+    pendingToolCalls.get(msg.callId as string)?.resume();
     return;
   }
 

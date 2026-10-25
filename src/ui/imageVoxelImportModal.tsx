@@ -16,13 +16,17 @@ import {
   imageDataToVoxelGrid,
   countVoxelBuilderCalls,
   MAX_BUILDER_CALLS,
+  HARD_MAX,
+  HARD_MAX_Y,
   type ImageDataLike,
   type ImageToVoxelOptions,
   type ImageVoxelMode,
   type ImageVoxelColorMode,
 } from '../import/imageToVoxel';
 import { listSlotRgb255 } from '../color/palette';
+import { clampEntry, entryTitle, formatEntry, stepDecimals } from './sliderEntry';
 import { openColorPicker } from './colorPickerModal';
+import { createToolNote, type ToolOpenContext } from './toolRegistry';
 
 export interface ImageVoxelModalOptions {
   filename?: string;
@@ -35,7 +39,15 @@ export interface ImageVoxelModalOptions {
   file?: File | null;
   /** Pre-fill the controls (e.g. re-importing a past entry with its settings). */
   initialOptions?: ImageToVoxelOptions;
+  /** "Suggested by AI: …" line (openTool('import-image-voxel') prefill). */
+  note?: string;
+  noteSource?: ToolOpenContext['source'];
 }
+
+let openVoxelModal: { state: () => Record<string, unknown>; close: () => void } | null = null;
+export function isImageVoxelImportOpen(): boolean { return openVoxelModal !== null; }
+export function getImageVoxelImportState(): Record<string, unknown> | null { return openVoxelModal?.state() ?? null; }
+export function closeImageVoxelImport(): void { openVoxelModal?.close(); }
 
 /** What the modal resolves to on Import: the chosen options plus the image the
  *  user ended up with (original or swapped-in) and its source File + name. */
@@ -170,23 +182,52 @@ function Slider(props: {
   max: number;
   step?: number;
   suffix?: string;
+  /** Typed-value bounds when they differ from the slider's range — the slider
+   *  covers the common range, the number box accepts up to the real limit.
+   *  Default to [min, max]. */
+  hardMin?: number;
+  hardMax?: number;
   onChange: (v: number) => void;
 }) {
   const step = props.step ?? 1;
-  const shown = step < 1 ? props.value.toFixed(2) : String(props.value);
+  const bounds = { hardMin: props.hardMin ?? props.min, hardMax: props.hardMax ?? props.max, integer: step >= 1 };
+  const shown = formatEntry(props.value, stepDecimals(step));
   return (
     <label class="block">
-      <div class="flex items-center justify-between text-[11px] text-zinc-400 mb-0.5">
+      <div class="flex items-center justify-between gap-2 text-[11px] text-zinc-400 mb-0.5">
         <span>{props.label}</span>
-        <span class="text-zinc-200 tabular-nums">{shown}{props.suffix ?? ''}</span>
+        <span class="flex items-center gap-1">
+          <input
+            type="number"
+            class="w-16 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200"
+            aria-label={props.label}
+            title={entryTitle(props.max, bounds.hardMax)}
+            min={bounds.hardMin}
+            max={Number.isFinite(bounds.hardMax) ? bounds.hardMax : undefined}
+            step={step}
+            value={shown}
+            // Commit on Enter / blur ('change'), not per keystroke, so a
+            // half-typed value isn't clamped while the user is still typing.
+            onChange={e => {
+              const el = e.target as HTMLInputElement;
+              const raw = el.valueAsNumber;
+              if (Number.isNaN(raw)) { el.value = shown; return; }
+              const v = clampEntry(raw, bounds);
+              el.value = formatEntry(v);
+              props.onChange(v);
+            }}
+          />
+          {props.suffix ? <span>{props.suffix.trim()}</span> : null}
+        </span>
       </div>
       <input
         type="range"
         class="w-full accent-blue-500"
+        aria-label={props.label}
         min={props.min}
         max={props.max}
-        step={props.step ?? 1}
-        value={props.value}
+        step={step}
+        value={Math.max(props.min, Math.min(props.max, props.value))}
         onInput={e => props.onChange(Number((e.target as HTMLInputElement).value))}
       />
     </label>
@@ -542,24 +583,24 @@ function ImageVoxelBody(props: {
             </div>
           </div>
 
-          <Slider label="Resolution (longest side)" value={opts.maxSize} min={8} max={128} suffix=" px"
+          <Slider label="Resolution (longest side)" value={opts.maxSize} min={8} max={128} hardMax={HARD_MAX} suffix=" px"
             onChange={v => set('maxSize', v)} />
 
           {opts.mode === 'billboard' ? (
-            <Slider label="Thickness" value={opts.depth} min={1} max={32} suffix=" vox"
+            <Slider label="Thickness" value={opts.depth} min={1} max={32} hardMax={HARD_MAX_Y} suffix=" vox"
               onChange={v => set('depth', v)} />
           ) : (
             <>
-              <Slider label="Max relief height" value={opts.maxHeight} min={1} max={64} suffix=" vox"
+              <Slider label="Max relief height" value={opts.maxHeight} min={1} max={64} hardMax={HARD_MAX_Y} suffix=" vox"
                 onChange={v => set('maxHeight', v)} />
-              <Slider label="Base thickness" value={opts.baseThickness} min={0} max={16} suffix=" vox"
+              <Slider label="Base thickness" value={opts.baseThickness} min={0} max={16} hardMax={HARD_MAX_Y} suffix=" vox"
                 onChange={v => set('baseThickness', v)} />
               <label class="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
                 <input type="checkbox" class="accent-blue-500" checked={opts.invert}
                   onChange={e => set('invert', (e.target as HTMLInputElement).checked)} />
                 Invert (dark areas raised)
               </label>
-              <Slider label="Gamma (midtone curve)" value={opts.gamma} min={0.2} max={3} step={0.1}
+              <Slider label="Gamma (midtone curve)" value={opts.gamma} min={0.2} max={3} step={0.1} hardMin={0.01} hardMax={Infinity}
                 onChange={v => set('gamma', v)} />
             </>
           )}
@@ -757,14 +798,20 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
     const fileSig = signal<File | null>(opts.file ?? null);
     const filenameSig = signal<string>(opts.filename ?? '');
     const swapErrorSig = signal<string | null>(null);
-    mountPreactModal(
+    const note = opts.note;
+    const handle = mountPreactModal(
       {
         title: 'Image → Voxel',
         scrollable: true,
-        onClose: () => resolve(result),
+        onClose: () => { openVoxelModal = null; resolve(result); },
       },
       close => ({
-        body: <ImageVoxelBody imageSig={imageSig} filenameSig={filenameSig} fileSig={fileSig} swapErrorSig={swapErrorSig} state={state} />,
+        body: (
+          <>
+            {note && <div ref={el => { if (el && !el.firstChild) el.append(createToolNote(note, opts.noteSource)); }} />}
+            <ImageVoxelBody imageSig={imageSig} filenameSig={filenameSig} fileSig={fileSig} swapErrorSig={swapErrorSig} state={state} />
+          </>
+        ),
         footer: (
           <ImageVoxelFooter
             imageSig={imageSig}
@@ -779,5 +826,9 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
         ),
       }),
     );
+    openVoxelModal = {
+      state: () => ({ src: filenameSig.value || null, options: emitOptions(state.value) }),
+      close: () => { result = null; handle.close(); },
+    };
   });
 }

@@ -11,6 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
+import { dropIfClippedEmpty, withPaintScope } from './paintScope';
 import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
@@ -301,22 +302,23 @@ export function commitBox(): number {
 
   const existingCount = getRegions().length;
   const { smooth, maxEdge } = shapeSmoothDescriptorFields(mesh);
-  addRegion(
+  const region = addRegion(
     `${shapeLabel(shapeType)} ${existingCount + 1}`,
     [...getColor()] as [number, number, number],
     'slab',
-    { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, shape: shapeType, smooth, maxEdge },
+    withPaintScope({ kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, shape: shapeType, smooth, maxEdge }),
     triangles,
     true,
     getSlotId() ?? undefined,
   );
+  if (dropIfClippedEmpty(region)) return 0;
 
   // Dim the shape so the user can see the painted result underneath.
   // Stays faint until the user hovers a gizmo handle or drags again.
   boxCommitted = true;
   applyOpacity(0.08, 0.4);
 
-  return triangles.size;
+  return region.triangles.size;
 }
 
 function shapeLabel(s: ShapeType): string {

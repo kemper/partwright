@@ -47,9 +47,12 @@ export function medianEdgeLength(mesh: SegMesh): number {
   return lens[lens.length >> 1];
 }
 
-export function resolveFeatureOptions(opts: FeatureOptions = {}): ResolvedFeatureOptions {
+export function resolveFeatureOptions(opts: FeatureOptions = {}, medianEdge = 0): ResolvedFeatureOptions {
   const r = opts.normalSmoothRadius;
-  return { normalSmoothRadius: typeof r === 'number' && Number.isFinite(r) && r > 0 ? r : 0 };
+  if (typeof r === 'number' && Number.isFinite(r) && r > 0) return { normalSmoothRadius: r };
+  const k = opts.normalSmoothEdgeLengths;
+  if (typeof k === 'number' && Number.isFinite(k) && k > 0 && medianEdge > 0) return { normalSmoothRadius: k * medianEdge };
+  return { normalSmoothRadius: 0 };
 }
 
 /** Stable cache key for resolved options. */
@@ -57,8 +60,21 @@ export function featureOptionsKey(o: ResolvedFeatureOptions): string {
   return `r=${o.normalSmoothRadius.toPrecision(6)}`;
 }
 
+/** Cheap content hash of an allow mask (so the cache can't serve a patch
+ *  layout computed for a different focus/lock area). */
+export function maskKey(allow: Uint8Array | undefined): string {
+  if (!allow) return 'all';
+  let h = 2166136261, n = 0;
+  for (let t = 0; t < allow.length; t++) {
+    if (!allow[t]) continue;
+    n++;
+    h = Math.imul(h ^ t, 16777619);
+  }
+  return `${n}:${(h >>> 0).toString(36)}`;
+}
+
 export function computeMeshFeatures(mesh: SegMesh, options: FeatureOptions = {}): MeshFeatures {
-  const resolved = resolveFeatureOptions(options);
+  const resolved = resolveFeatureOptions(options, medianEdgeLength(mesh));
   const { positions: p, triVerts: tv } = mesh;
   const triCount = tv.length / 3;
   const nVert = p.length / 3;

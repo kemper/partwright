@@ -134,10 +134,18 @@ export function canRedoStroke(): boolean {
   return strokeRedoStack.length > 0;
 }
 
+/** Remove the most recent annotation of either kind. A removed STROKE goes on
+ *  the redo stack (like removeLastStroke) so redoLastStroke can bring it back;
+ *  removing a text label is a different mutation, so it drops the stack. */
 export function removeLastAnnotation(): Annotation | null {
   const popped = annotations.pop() ?? null;
   if (popped) {
-    clearRedoStack();
+    if (popped.type === 'stroke') {
+      strokeRedoStack.push(popped);
+      notifyRedo();
+    } else {
+      clearRedoStack();
+    }
     notify();
   }
   return popped;

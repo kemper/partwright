@@ -87,7 +87,7 @@ async function auditOne(page, entry) {
     await new Promise(r => setTimeout(r, 500));
     const code = payload.versions[payload.versions.length - 1].code;
     const geo = await window.partwright.run(code);
-    if (!geo || geo.status === 'error') return { error: 'run: ' + (geo && geo.error) };
+    if (!geo || geo.error || geo.status === 'error') return { error: 'run: ' + (geo && geo.error) };
     await new Promise(r => setTimeout(r, 200));
     const fresh = window.partwright.getGeometryData();
     const regions = window.partwright.listRegions ? window.partwright.listRegions() : [];

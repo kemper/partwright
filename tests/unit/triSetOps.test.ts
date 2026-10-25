@@ -47,6 +47,15 @@ describe('triSetOps partitions', () => {
     expect(partitionRegions(p, pathAdj).count).toBe(2);
   });
 
+  it('merges a run of all-small regions instead of swapping their labels', () => {
+    // Every region is below the threshold: with undirected votes neighbours
+    // just trade labels each round and nothing ever merges.
+    const p = Int32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const weight = Float32Array.from([1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9]);
+    absorbSmallRegions(p, pathAdj, weight, 5);
+    expect(partitionRegions(p, pathAdj).count).toBeLessThanOrEqual(3);
+  });
+
   it('absorbs unassigned gaps but never targets them', () => {
     const p = Int32Array.from([0, 0, 0, -1, 1, 1, 1, 1, 1, 1]);
     absorbSmallRegions(p, pathAdj, new Float32Array(N).fill(1), 2);

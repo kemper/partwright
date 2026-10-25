@@ -2,7 +2,15 @@
 // Node tier.
 
 import { describe, test, expect } from 'vitest';
-import { WASM_HEAP_MAX_BYTES, formatEngineMemory } from '../../src/geometry/engineMemory';
+import {
+  WASM_HEAP_MAX_BYTES,
+  formatEngineMemory,
+  engineHeapPercent,
+  isEngineHeapHigh,
+  engineHeapWarning,
+} from '../../src/geometry/engineMemory';
+
+const MB = 1024 * 1024;
 
 describe('WASM_HEAP_MAX_BYTES', () => {
   test('matches manifold-3d\'s compiled getHeapMax() (4 GiB − 64 KiB page)', () => {
@@ -29,5 +37,54 @@ describe('formatEngineMemory', () => {
 
   test('full ceiling reads as 100%', () => {
     expect(formatEngineMemory(WASM_HEAP_MAX_BYTES)).toBe('4096 MB / 4096 MB (100%)');
+  });
+});
+
+describe('engineHeapPercent', () => {
+  test('is the unrounded share of the ceiling', () => {
+    expect(engineHeapPercent(WASM_HEAP_MAX_BYTES)).toBe(100);
+    expect(engineHeapPercent(WASM_HEAP_MAX_BYTES / 2)).toBe(50);
+  });
+});
+
+describe('isEngineHeapHigh', () => {
+  test('fires at or above the threshold', () => {
+    expect(isEngineHeapHigh(WASM_HEAP_MAX_BYTES / 2, 50)).toBe(true);
+    expect(isEngineHeapHigh(2100 * MB, 50)).toBe(true);
+    expect(isEngineHeapHigh(1900 * MB, 50)).toBe(false);
+  });
+
+  test('an ordinary run (boot heap) is not high', () => {
+    expect(isEngineHeapHigh(16 * MB, 50)).toBe(false);
+  });
+
+  test('unmeasured heap (non-manifold-js engine) never fires', () => {
+    expect(isEngineHeapHigh(undefined, 10)).toBe(false);
+  });
+
+  test('a threshold of 100 or more disables it, even at the ceiling', () => {
+    expect(isEngineHeapHigh(WASM_HEAP_MAX_BYTES, 100)).toBe(false);
+    expect(isEngineHeapHigh(WASM_HEAP_MAX_BYTES, 150)).toBe(false);
+  });
+
+  test('a threshold of 0 fires for any measured heap', () => {
+    expect(isEngineHeapHigh(16 * MB, 0)).toBe(true);
+  });
+});
+
+describe('engineHeapWarning', () => {
+  test('names the heap reading and the cheap fixes', () => {
+    const w = engineHeapWarning(2400 * MB, 50);
+    expect(w).toBeDefined();
+    expect(w).toContain('2400 MB / 4096 MB (59%)');
+    expect(w).toMatch(/memory access out of bounds/);
+    expect(w).toMatch(/Manifold\.compose/);
+    expect(w).toMatch(/segment count/);
+  });
+
+  test('is undefined below the threshold, when unmeasured, or when disabled', () => {
+    expect(engineHeapWarning(100 * MB, 50)).toBeUndefined();
+    expect(engineHeapWarning(undefined, 50)).toBeUndefined();
+    expect(engineHeapWarning(WASM_HEAP_MAX_BYTES, 100)).toBeUndefined();
   });
 });

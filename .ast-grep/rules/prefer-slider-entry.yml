@@ -1,0 +1,18 @@
+id: prefer-slider-entry
+language: typescript
+severity: hint
+message: >-
+  Hand-built range slider. For a numeric setting, use createSliderEntry() /
+  bindSliderEntry() from src/ui/sliderEntry.ts so it gets the shared typed
+  number box (exact values, and values past the slider up to the real limit).
+note: >-
+  The app convention: the slider covers the common range, an editable number
+  box beside it accepts an exact value up to the setting's hard limit. This is
+  a hint — a slider whose value is a named level or a bounded percentage
+  (opacity, spray strength) can stay a plain range with a readout.
+files:
+  - "src/**/*.ts"
+ignores:
+  - "src/ui/sliderEntry.ts"
+rule:
+  pattern: $EL.type = 'range'
