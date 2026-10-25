@@ -1,7 +1,6 @@
 ---
 session: "0124MugS7aLdW18UJDeEAS17"
 timestamp: "2026-10-25T21:00:00Z"
-model: claude-opus-5-5
 tools: [playwright-cdp-profiler, vite-node]
 ---
 

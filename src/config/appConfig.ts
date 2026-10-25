@@ -235,6 +235,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Typed arrays (mesh vertices, triangles, part ids…) at least this many
+     *  KB in a saved version are stored in IndexedDB as Blobs. Saving or
+     *  reading a plain array copies it on the main thread (~0.5 s for a
+     *  3.7M-triangle import); a Blob is written and read out of line.
+     *  0 = every array. */
+    storedArrayBlobMinKB: number;
     /** Triangle count above which the smooth-paint REFINED mesh (the mesh
      *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
      *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
@@ -681,6 +687,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    storedArrayBlobMinKB: 64,
     paintRefinePersistMaxTriangles: 1_000_000,
     paintRefineCacheMaxMB: 256,
     paintRefineCacheTouchMinutes: 60,

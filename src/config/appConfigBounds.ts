@@ -99,6 +99,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     enhanceWarnTriangles: { min: 10_000, max: 50_000_000, integer: true },
     enhanceMaxTriangles: { min: 100_000, max: 100_000_000, integer: true },
     surfaceTexturePersistMaxTriangles: { min: 0, max: 20_000_000, integer: true },
+    storedArrayBlobMinKB: { min: 0, max: 1_048_576, integer: true },
     paintRefinePersistMaxTriangles: { min: 0, max: 20_000_000, integer: true },
     paintRefineCacheMaxMB: { min: 0, max: 4096, integer: true },
     paintRefineCacheTouchMinutes: { min: 0, max: 10_080, integer: true },
