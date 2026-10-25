@@ -230,12 +230,17 @@ const SANDBOX_CSP_BASE =
   "connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; " +
   "base-uri 'none'; form-action 'none'";
 
-/** Normalize a comma-separated list of absolute URLs to their origins. */
+/** Normalize a comma-separated list of absolute http(s) URLs to their origins. */
 function originsOf(raw: string | undefined): string[] {
   if (!raw) return [];
   const out: string[] = [];
   for (const part of raw.split(',')) {
-    try { out.push(new URL(part.trim()).origin); } catch { /* skip invalid */ }
+    try {
+      // Only http(s) origins (as frameProtocol.allowedParentOrigins) — never
+      // let a stray `javascript:`/`data:` value into a CSP source list.
+      const u = new URL(part.trim());
+      if (u.protocol === 'https:' || u.protocol === 'http:') out.push(u.origin);
+    } catch { /* skip invalid */ }
   }
   return out;
 }

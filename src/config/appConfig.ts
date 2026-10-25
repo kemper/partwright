@@ -255,8 +255,10 @@ export interface AppConfig {
      *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
     exportPoolSize: number;
     /** How long (ms) the engine sandbox (Advanced Settings → Security) may take
-     *  to load its frame and report a cross-origin-isolated Worker before the
-     *  app gives up and falls back to an unsandboxed Worker (with a toast). */
+     *  to load its frame (or start a Worker in a loaded frame) before it gives
+     *  up. Never falls back to an unsandboxed Worker: the first frame failing
+     *  marks the sandbox unavailable (model code blocked, status pill); a stuck
+     *  spawn or a replacement frame counts against engineSandboxMaxFrameRestarts. */
     engineSandboxBootTimeoutMs: number;
     /** How many times in a row the engine sandbox may restart its iframe after
      *  a frame crash or a stuck Worker spawn before it gives up and blocks

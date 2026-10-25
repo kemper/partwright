@@ -15,8 +15,9 @@
 // take over its listener and replay that queue.
 //
 // Before loading the engine we report whether this Worker is cross-origin
-// isolated (SharedArrayBuffer is a hard requirement of the WASM engines); the
-// app falls back to a direct Worker when it isn't.
+// isolated (SharedArrayBuffer is a hard requirement of the WASM engines); if
+// it isn't, the app marks the sandbox unavailable (fail closed — model code
+// does not run) rather than falling back to an app-origin Worker.
 
 import { BOOT_GLOBAL, CONNECT_MESSAGE_TYPE, STATUS_MESSAGE_TYPE } from './frameProtocol';
 

@@ -192,7 +192,10 @@ class SandboxHost {
   private lastTickAt = 0;
   private pingSentAt: number | null = null;
 
-  constructor(mode: 'opaque' | 'origin', origin: string | null) {
+  /** `replacement`: created by restartFrame after an earlier frame died. Its
+   *  boot timeout is one more failed restart (bounded by the restart budget);
+   *  only the tab's FIRST frame failing to load fails closed immediately. */
+  constructor(mode: 'opaque' | 'origin', origin: string | null, replacement = false) {
     this.mode = mode;
     this.origin = origin;
     this.expectedOrigin = mode === 'origin' ? origin! : 'null';
@@ -215,7 +218,9 @@ class SandboxHost {
     window.addEventListener('message', this.onWindowMessage);
     document.body.appendChild(frame);
     this.bootTimer = window.setTimeout(() => {
-      if (!this.ready && !this.destroyed) failClosed('the sandbox frame did not load in time');
+      if (this.ready || this.destroyed) return;
+      if (replacement) restartFrame('the replacement sandbox frame did not load in time');
+      else failClosed('the sandbox frame did not load in time');
     }, getConfig().renderer.engineSandboxBootTimeoutMs);
   }
 
@@ -359,7 +364,7 @@ function restartFrame(reason: string): void {
   restartsSinceConnect++;
   frameRestarts++;
   errorLog.capture({ level: 'warn', source: 'engine', message: `Restarting the engine sandbox frame: ${reason}` });
-  host = new SandboxHost(old.mode, old.origin);
+  host = new SandboxHost(old.mode, old.origin, true);
   const waiting = old.destroy(`sandbox frame restarted: ${reason}`);
   // detach() above already errored connected façades; re-home the waiting ones.
   for (const h of waiting) h.rehome(host);

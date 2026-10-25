@@ -69,3 +69,14 @@ headless Chromium kept the opaque frame in the app's process here.
 "superseded — retry", which the AI loop treats as transient. Only the
 fail-closed refusal is now passed through verbatim (`runFailedMessage()`).
 Other rejections keep the old text, so the AI retry behaviour is unchanged.
+
+**Re-review nits.** When the sandbox is unavailable, the engine pool used to
+treat each stand-in Worker's refusal as a crash. It respawned until the
+budget ran out and then reported "failed to initialise". It now rejects
+in-flight and queued builds with the refusal itself and doesn't respawn. A
+unit test with a mocked `createEngineWorker` covers this; it fails on the old
+pool code. A replacement frame (from `restartFrame`) that misses its boot
+timeout now counts as one more restart against the budget, instead of
+failing closed straight away. Only the tab's first frame fails closed on boot
+timeout. The vite.config origin list keeps only http(s) origins. Stale "falls
+back" wording is gone.

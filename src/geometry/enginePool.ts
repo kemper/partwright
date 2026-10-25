@@ -21,7 +21,7 @@ import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
 import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
-import { createEngineWorker, type EngineWorkerHandle } from '../sandbox/sandboxHost';
+import { createEngineWorker, isEngineSandboxUnavailableError, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { errorLog } from '../diagnostics/errorLog';
 import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
@@ -110,7 +110,14 @@ function spawnWorker(): PoolWorker {
   const worker = createEngineWorker(() => new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' }));
   const pw: PoolWorker = { worker, ready: false, inflight: new Map(), busy: false };
   worker.onmessage = (e: MessageEvent) => handleMessage(pw, e.data);
-  worker.onerror = () => {
+  worker.onerror = (ev: ErrorEvent) => {
+    // A fail-closed engine sandbox won't run model code in this tab: respawning
+    // can't help, so refuse everything with its message instead of burning the
+    // respawn budget into a generic "failed to initialise".
+    if (isEngineSandboxUnavailableError(ev.message ?? '')) {
+      refuseAll(pw, new Error(ev.message));
+      return;
+    }
     // A worker-level error can't be tied to one callId; fail everything in flight
     // on this worker and replace it so the pool stays usable.
     failWorker(pw, new Error('Assembly build worker crashed'));
@@ -125,6 +132,18 @@ function failWorker(pw: PoolWorker, err: Error): void {
   pw.inflight.clear();
   pw.busy = false;
   replaceWorker(pw);
+}
+
+/** Drop a worker without replacing it and reject its in-flight jobs plus the
+ *  whole queue with `err` (the engine sandbox is unavailable). */
+function refuseAll(pw: PoolWorker, err: Error): void {
+  for (const job of pw.inflight.values()) job.reject(err);
+  pw.inflight.clear();
+  pw.busy = false;
+  try { pw.worker.terminate(); } catch { /* already gone */ }
+  const idx = workers.indexOf(pw);
+  if (idx !== -1) workers.splice(idx, 1);
+  drainQueue(err);
 }
 
 function replaceWorker(dead: PoolWorker): void {
