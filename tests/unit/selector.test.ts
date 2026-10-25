@@ -62,6 +62,17 @@ describe('selectors (#1093)', () => {
     expect(() => parseSelectOpts({ blend: 2 }, 'op')).toThrow(/only applies together with select/);
   });
 
+  it('labels can resolve by triangle index (the main thread\'s labelMap)', () => {
+    const byTri: LabelLookup = {
+      ids: () => null,
+      names: () => ['wall'],
+      triangles: (n) => (n === 'wall' ? new Set([2, 3]) : null),
+    };
+    const plain = { ...MESH, runIndex: undefined, runOriginalID: undefined };
+    expect([...selectTriangles(plain, parseSelector({ label: 'wall' }, 't'), byTri, 't')]).toEqual([0, 0, 1, 1]);
+    expect(() => selectTriangles(plain, parseSelector({ label: 'roof' }, 't'), byTri, 't')).toThrow(/no part "roof"/);
+  });
+
   it('vertex weights: hard edge, then feathered by blend', () => {
     const mask = selectTriangles(MESH, parseSelector({ label: 'floor' }, 't'), LABELS, 't');
     expect([...vertexWeights(MESH, mask, 0)]).toEqual([1, 1, 1, 1, 0, 0, 0, 0]);

@@ -2337,7 +2337,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'diffVersions',
-    description: 'Compare two saved versions of the current object — the programmatic form of the Diff tab. Use to answer "what changed between v2 and v5?" or to find a regression before rolling back. Returns { a: {id, index, label}, b: {...}, codeChanged, codeDiff: {changed, added, removed, diff} (a compact line diff: "- " = only in a, "+ " = only in b), statDiff (per-stat delta of the geometry data: volume, bbox, componentCount, …) }. Pass includeCode: true to also get both full sources (expensive on long files). Version indices come from listVersions.',
+    description: 'Compare two saved versions of the current object — the programmatic form of the Diff tab. Use to answer "what changed between v2 and v5?" or to find a regression before rolling back. Returns { a: {id, index, label}, b: {...}, codeChanged, codeDiff: {changed, added, removed, diff} (a compact line diff: "- " = only in a, "+ " = only in b), statDiff (per-stat delta of the geometry data: volume, bbox, componentCount, …) }. Pass includeCode: true to also get both full sources (expensive on long files). Pass geometry: true for the EDIT-LOCALITY check — both versions are re-run and each surface is measured against the other: geometry {maxDisplacement, meanDisplacement, changedFraction (share of b\'s surface that moved), changedBox, parts[{name, maxDisplacement, changed}], changedParts, unchangedParts}. Use it after an edit (editPart, a scoped round, a sculpt) to confirm only the intended part moved. heatmap: true also attaches a render of b coloured by how far it moved (grey = unchanged, yellow → red = farther). Version indices come from listVersions.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2345,6 +2345,9 @@ Returns { ok, stats, metrics, version } or { error }.`,
         b: { type: 'integer', minimum: 1, description: '1-based index of the second ("after") version.' },
         maxDiffLines: { type: 'integer', minimum: 1, maximum: 2000, description: 'Cap on the changed lines shown in codeDiff.diff. Default 80.' },
         includeCode: { type: 'boolean', description: 'Also return both versions\' full code. Default false.' },
+        geometry: { type: 'boolean', description: 'Re-run both versions and report how far the surface moved and which parts changed. Default false.' },
+        tolerance: { type: 'number', minimum: 0, description: 'Distances at or below this count as unchanged (default 1e-4 of the model size).' },
+        heatmap: { type: 'boolean', description: 'Attach a deviation heatmap render of version b (implies geometry). Default false.' },
       },
       required: ['a', 'b'],
     },
@@ -3930,21 +3933,30 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       };
     }
     case 'diffVersions': {
-      const r = await api.diffVersions({ index: input.a }, { index: input.b }) as Record<string, unknown>;
+      const wantGeometry = input.geometry === true || input.heatmap === true;
+      const r = await api.diffVersions({ index: input.a }, { index: input.b }, wantGeometry ? {
+        geometry: true,
+        ...(typeof input.tolerance === 'number' ? { tolerance: input.tolerance } : {}),
+        ...(input.heatmap === true ? { render: true } : {}),
+      } : undefined) as Record<string, unknown>;
       if (!r || typeof r !== 'object' || 'error' in r) return r;
       const a = r.a as { id: string; index: number; label: string; code: string };
       const b = r.b as { id: string; index: number; label: string; code: string };
       const maxLines = typeof input.maxDiffLines === 'number' && Number.isFinite(input.maxDiffLines)
         ? Math.min(2000, Math.max(1, Math.floor(input.maxDiffLines)))
         : 80;
-      return {
+      const out = {
         a: { id: a.id, index: a.index, label: a.label },
         b: { id: b.id, index: b.index, label: b.label },
         codeChanged: r.codeChanged,
         codeDiff: computeCodeDiff(a.code, b.code, maxLines),
         statDiff: r.statDiff,
+        ...(r.geometry ? { geometry: r.geometry } : {}),
         ...(input.includeCode === true ? { codeA: a.code, codeB: b.code } : {}),
       };
+      const img = typeof r.heatmap === 'string' ? parseImageDataUrl(r.heatmap) : null;
+      if (!img) return out;
+      return { content: JSON.stringify(out), isError: false, image: { ...img, label: `deviation heatmap v${a.index} → v${b.index}` } };
     }
     case 'getMeasurement': {
       if ((input.from === undefined) !== (input.to === undefined)) {

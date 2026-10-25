@@ -113,6 +113,18 @@ return body;
     click). The Surface panel's **Scope → Near point** picker writes this for you
     from a click; for code, read `getGeometryData()`'s `boundingBox`/`centroid`
     to choose a point.
+  - `select: <selector>` — any selector the shaping ops take
+    ([deform](/ai/deform.md#selecting-part-of-a-shape)): parts, balls, facing /
+    bounds tests, combined with OR / AND / `except`. `label` and `region` are
+    shorthands for the two simplest forms. Pass one of the three keys. Like a
+    `label` scope, the selected faces become seed points with a catch radius
+    of about one mean edge, so the texture's border is approximate (it can
+    reach a little past a facing/bounds edge on a coarse mesh).
+
+    ```js
+    api.surface.knurl({ select: { label: 'grip', where: { facing: 'up' } }, cellWidth: 2.4 }); // top of the grip only
+    api.surface.fuzzy({ select: { except: { label: 'base' } } });                              // everything but the base
+    ```
 
   Scoping is the code-path counterpart of the bake path's `selectedTriangles`
   patch, and the label's color carries onto the textured region automatically.

@@ -51,6 +51,9 @@ export type Selector = SelectorTerm[];
 export interface LabelLookup {
   ids(name: string): number[] | null;
   names(): string[];
+  /** When present, labels resolve by triangle index on the mesh being
+   *  selected (the main thread's labelMap) instead of by run originalID. */
+  triangles?(name: string): Set<number> | null;
 }
 
 export interface SelectorMesh {
@@ -197,7 +200,7 @@ export function selectTriangles(mesh: SelectorMesh, sel: Selector, labels: Label
   if (wanted.size > 0) {
     if (!labels) fail(name, 'a label selector needs labelled parts — wrap shapes with api.label(shape, "name") (or load an import with api.importWithParts(i))');
     for (const l of wanted) {
-      const ids = labels.ids(l);
+      const ids = labels.triangles ? (labels.triangles(l) ? [] : null) : labels.ids(l);
       if (!ids) {
         const known = labels.names();
         fail(name, `no part "${l}" in this run.${known.length ? ` Parts: ${known.map(n => `"${n}"`).join(', ')}.` : ' Label parts with api.label(shape, "name") first.'}`);
@@ -205,14 +208,19 @@ export function selectTriangles(mesh: SelectorMesh, sel: Selector, labels: Label
       idSets.set(l, new Set(ids));
     }
   }
-  const triIds = wanted.size > 0 ? triangleOriginalIds(mesh) : null;
+  const byTri = labels?.triangles ? new Map([...wanted].map(l => [l, labels.triangles!(l)!])) : null;
+  const triIds = wanted.size > 0 && !byTri ? triangleOriginalIds(mesh) : null;
 
   const centroid = new Float64Array(3);
   const normal = new Float64Array(3);
   const evalTerm = (t: SelectorTerm, tri: number): boolean => {
     if (t.label) {
-      const id = triIds![tri];
-      if (!t.label.some(l => idSets.get(l)!.has(id))) return false;
+      if (byTri) {
+        if (!t.label.some(l => byTri.get(l)!.has(tri))) return false;
+      } else {
+        const id = triIds![tri];
+        if (!t.label.some(l => idSets.get(l)!.has(id))) return false;
+      }
     }
     if (t.region || t.where) {
       const a = tv[tri * 3] * numProp, b = tv[tri * 3 + 1] * numProp, c = tv[tri * 3 + 2] * numProp;

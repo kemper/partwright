@@ -21,6 +21,8 @@
 
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
+import { selectTriangles, type LabelLookup } from './geometry/selector';
+import { meshDiff, deviationColors } from './geometry/meshDiff';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
@@ -12048,14 +12050,14 @@ async function main() {
     id: string,
     opts: Record<string, unknown> | undefined,
   ): Record<string, unknown> | undefined {
-    if (!opts || (!('label' in opts) && !('region' in opts))) return opts;
+    if (!opts || !SURFACE_SCOPE_KEYS.some(k => k in opts)) return opts;
     const rest: Record<string, unknown> = { ...opts };
-    delete rest.label;
-    delete rest.region;
-    if (!isSurfaceOpId(id) || !currentMeshData) return rest;
     const scopeOnly: Record<string, unknown> = {};
-    if ('label' in opts) scopeOnly.label = opts.label;
-    if ('region' in opts) scopeOnly.region = opts.region;
+    for (const k of SURFACE_SCOPE_KEYS) {
+      if (k in opts) scopeOnly[k] = opts[k];
+      delete rest[k];
+    }
+    if (!isSurfaceOpId(id) || !currentMeshData) return rest;
     const { scope } = parseSurfaceOpts(id, scopeOnly);
     if (!scope) return rest;
     const resolved = resolveSurfaceScopes([{ id, params: {}, scope }], currentMeshData, currentLabelMap);
@@ -12324,22 +12326,23 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      const { preserveColor, label, region, ...opOpts } = (opts ?? {}) as Record<string, unknown> & { preserveColor?: boolean };
-      const scoped = label !== undefined || region !== undefined;
+      const { preserveColor, label, region, select, ...opOpts } = (opts ?? {}) as Record<string, unknown> & { preserveColor?: boolean };
+      const scoped = label !== undefined || region !== undefined || select !== undefined;
       const scopeOpts = {
         ...(label !== undefined ? { label } : {}),
         ...(region !== undefined ? { region } : {}),
+        ...(select !== undefined ? { select } : {}),
       };
       const asCode = mode === 'code' || (mode === 'auto' && getActiveLanguage() === 'manifold-js');
       if (asCode) {
-        // The code path resolves label/region scopes via parseSurfaceOpts.
+        // The code path resolves label/region/select scopes via parseSurfaceOpts.
         const r = await partwrightAPI.applySurfaceTextureAsCode(id, { ...opOpts, ...scopeOpts });
         return { path: 'code' as const, ...r };
       }
       // Bake methods are whole-model only — they can't honor a label/region
       // scope, so reject rather than silently texture the entire mesh.
       if (scoped) {
-        return { error: `applySurfaceTexture: scoping (label/region) is only supported on the code path (a manifold-js session). The current session bakes whole-model; switch to manifold-js or drop the scope.` };
+        return { error: `applySurfaceTexture: scoping (label/region/select) is only supported on the code path (a manifold-js session). The current session bakes whole-model; switch to manifold-js or drop the scope.` };
       }
       const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) } as Record<string, number | boolean | string> & { preserveColor?: boolean };
       const r = id === 'fuzzy' ? await partwrightAPI.applyFuzzySkin(bakeOpts)
@@ -15671,8 +15674,34 @@ async function main() {
     /** Compare two versions' code and geometry stats — the programmatic form of
      *  the Diff tab. Pass two targets (each { index } or { id }) from
      *  listVersions(). Returns each version's code + a per-field stat delta, or
-     *  { error } if either version isn't found. */
-    async diffVersions(a: { index?: number; id?: string }, b: { index?: number; id?: string }) {
+     *  { error } if either version isn't found.
+     *
+     *  `{ geometry: true }` also re-runs both versions and measures how far the
+     *  surface moved: max / mean displacement, the box around what changed,
+     *  the changed share of the surface, and per-part `changed` flags (the
+     *  edit-locality check — did the edit only touch the head?). `render: true`
+     *  (or { azimuth, elevation, size }) adds a heatmap PNG of B: grey where
+     *  nothing moved, yellow → red by distance. */
+    async diffVersions(
+      a: { index?: number; id?: string },
+      b: { index?: number; id?: string },
+      opts?: { geometry?: boolean; tolerance?: number; render?: boolean | { azimuth?: number; elevation?: number; size?: number } },
+    ) {
+      const badOpts = argError(() => {
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'diffVersions(a, b, opts)')!;
+        assertNoUnknownKeys(o, ['geometry', 'tolerance', 'render'], 'diffVersions(a, b, opts)');
+        assertBoolean(o.geometry, 'diffVersions(opts).geometry', { optional: true });
+        assertNumber(o.tolerance, 'diffVersions(opts).tolerance', { optional: true, min: 0 });
+        if (o.render !== undefined && typeof o.render !== 'boolean') {
+          const r = assertObject(o.render, 'diffVersions(opts).render')!;
+          assertNoUnknownKeys(r, ['azimuth', 'elevation', 'size'], 'diffVersions(opts).render');
+          assertNumber(r.azimuth, 'diffVersions(opts).render.azimuth', { optional: true });
+          assertNumber(r.elevation, 'diffVersions(opts).render.elevation', { optional: true, min: -90, max: 90 });
+          assertNumber(r.size, 'diffVersions(opts).render.size', { optional: true, min: 64, max: 2048, integer: true });
+        }
+      });
+      if (badOpts) return badOpts;
       const pa = parseVersionTarget(a, 'diffVersions');
       if ('error' in pa) return pa;
       const pb = parseVersionTarget(b, 'diffVersions');
@@ -15686,12 +15715,51 @@ async function main() {
         (va.geometryData ?? {}) as Record<string, unknown>,
         (vb.geometryData ?? {}) as Record<string, unknown>,
       );
-      return {
+      const base = {
         a: { id: va.id, index: va.index, label: va.label, code: va.code },
         b: { id: vb.id, index: vb.index, label: vb.label, code: vb.code },
         codeChanged: va.code !== vb.code,
         statDiff,
       };
+      if (!opts?.geometry && !opts?.render) return base;
+      // Re-run each version off the live editor (its own language, params,
+      // imports and companion files, like the thumbnail backfill), then
+      // measure each surface against the other. A version saved with a
+      // computed api.surface texture is measured textured (its saved mesh),
+      // with its parts remapped onto it.
+      const runVersion = async (v: Version) => {
+        const r = await executeCodeAsync(v.code, effectiveVersionLanguage(v, getState().session), v.paramValues ?? undefined, undefined, (v.importedMeshes ?? []) as ImportedMesh[], v.companionFiles);
+        if (r.error || !r.mesh) throw new Error(`diffVersions: version ${v.index} did not produce geometry${r.error ? `: ${r.error}` : ''}`);
+        const textured = (v.surfaceTexture as PersistedSurfaceTexture | undefined)?.mesh;
+        if (!textured?.triVerts) return { mesh: r.mesh, labelMap: r.labelMap };
+        const mesh = textured as MeshData;
+        return { mesh, labelMap: r.labelMap && r.labelMap.size > 0 ? remapTriangleSets(r.labelMap, r.mesh, mesh) : r.labelMap };
+      };
+      const touchesBrep = [va, vb].some(v => effectiveVersionLanguage(v, getState().session) === 'replicad');
+      try {
+        const [ra, rb] = [await runVersion(va), await runVersion(vb)];
+        // The BREP engine keeps the last run's shape for exportSTEP; put the
+        // editor's own model back so a following export isn't version b.
+        if (touchesBrep && getActiveLanguage() === 'replicad') {
+          await executeCodeAsync(getValue(), 'replicad', currentParamValues).catch(() => undefined);
+        }
+        const { report, perTriB } = meshDiff(ra.mesh, rb.mesh, { tolerance: opts.tolerance, labelsA: ra.labelMap, labelsB: rb.labelMap });
+        let heatmap: string | undefined;
+        if (opts.render) {
+          const view = typeof opts.render === 'object' ? opts.render : {};
+          const colored = { ...rb.mesh, triColors: deviationColors(perTriB, report.tolerance, report.maxDisplacement) };
+          heatmap = renderSingleView(colored, { azimuth: view.azimuth, elevation: view.elevation, size: view.size ?? getRenderBudget().defaultPx });
+        }
+        return {
+          ...base,
+          geometry: {
+            ...report,
+            changedParts: report.parts.filter(p => p.changed).map(p => p.name),
+            unchangedParts: report.parts.filter(p => !p.changed).map(p => p.name),
+          },
+          ...(heatmap ? { heatmap } : {}),
+        };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
     /** Load a version into the editor. Pass { index } or { id } from listVersions().
@@ -20676,7 +20744,7 @@ async function main() {
         'navigateVersion': { signature: "await navigateVersion('prev'|'next') -- Step to the previous/next version (switches to that version's language, restores params/colors/annotations) -> {id, index, label}, null at either end, or {error}", docs: '/ai.md#console-api--windowpartwright' },
         'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'deleteVersion':   { signature: 'await deleteVersion({index} | {id}) -- Delete a version (refuses the last) -> {ok, deleted, newCurrent} or {error}', docs: '/ai.md#console-api--windowpartwright' },
-        'diffVersions':    { signature: 'await diffVersions({index} | {id}, {index} | {id}) -- Compare two versions -> {a, b, codeChanged, statDiff}', docs: '/ai.md#console-api--windowpartwright' },
+        'diffVersions':    { signature: 'await diffVersions({index} | {id}, {index} | {id}, {geometry?, tolerance?, render?}) -- Compare two versions -> {a, b, codeChanged, statDiff}; geometry: true adds the edit-locality check {maxDisplacement, changedBox, changedFraction, parts, changedParts, unchangedParts}; render adds a heatmap PNG', docs: '/ai.md#console-api--windowpartwright' },
         'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) -- Load + modify + validate + save in one call; carries parent colors -> {..., codeDiff, colors}', docs: '/ai.md#forking-a-prior-version' },
         'copyColorsFromVersion': { signature: 'await copyColorsFromVersion({index} | {id}) -- Re-apply a prior version\'s color regions onto the current mesh -> {source, carried, dropped}', docs: '/ai.md#forking-a-prior-version' },
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
@@ -21975,7 +22043,27 @@ async function main() {
       if (s.kind === 'point') {
         return { seeds: Float32Array.of(s.point[0], s.point[1], s.point[2]), radius: s.radius };
       }
-      const tris = labelMap?.get(s.label);
+      let tris: Set<number> | undefined;
+      if (s.kind === 'select') {
+        // Same selector the shaping ops use; labels resolve through this run's
+        // labelMap. A selector naming a missing part textures nothing, like a
+        // missing label scope.
+        try {
+          const lookup: LabelLookup = {
+            ids: () => null,
+            names: () => [...(labelMap?.keys() ?? [])],
+            triangles: (name) => labelMap?.get(name) ?? null,
+          };
+          const mask = selectTriangles(base, s.select, lookup, 'api.surface select');
+          tris = new Set<number>();
+          for (let t = 0; t < mask.length; t++) if (mask[t]) tris.add(t);
+        } catch (e) {
+          errorLog.capture({ level: 'warn', source: 'engine', message: e instanceof Error ? e.message : String(e) });
+          tris = undefined;
+        }
+      } else {
+        tris = labelMap?.get(s.label);
+      }
       if (!tris || tris.size === 0) return { seeds: new Float32Array(0), radius: 1 };
       if (meanEdge < 0) meanEdge = baseMeanEdge(base);
       const seeds = new Float32Array(tris.size * 3);

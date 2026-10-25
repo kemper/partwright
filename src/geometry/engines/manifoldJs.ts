@@ -837,6 +837,8 @@ export const manifoldJsEngine: Engine = {
       alongCurve: meshOpsNamespace.alongCurve,
       round: meshOpsNamespace.round,
       smoothWeld: meshOpsNamespace.smoothWeld,
+      // Edit one part as a solid (cut at its seam, transform, re-attach):
+      editPart: meshOpsNamespace.editPart,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:

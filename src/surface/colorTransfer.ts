@@ -153,8 +153,9 @@ export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32A
  *  closest to. Exact: a bounding-volume hierarchy over the triangles is walked
  *  nearest-box-first and pruned by box distance. Each query starts from the
  *  previous query's answer as its bound, so spatially coherent queries (one
- *  mesh's triangles in order) prune almost everything at once. */
-export function nearestSurfaceTriangleMap(refMesh: MeshData, points: Float32Array | Float64Array): Int32Array {
+ *  mesh's triangles in order) prune almost everything at once. Pass `dist2`
+ *  (one slot per query) to also get each squared distance. */
+export function nearestSurfaceTriangleMap(refMesh: MeshData, points: Float32Array | Float64Array, dist2?: Float64Array): Int32Array {
   const nq = Math.floor(points.length / 3);
   const result = new Int32Array(nq).fill(-1);
   if (refMesh.numTri === 0 || nq === 0) return result;
@@ -199,6 +200,7 @@ export function nearestSurfaceTriangleMap(refMesh: MeshData, points: Float32Arra
       else { stack[sp++] = l; stack[sp++] = l + 1; }
     }
     result[q] = best;
+    if (dist2) dist2[q] = bestD;
     if (best >= 0) prev = best;
   }
   return result;
