@@ -244,13 +244,14 @@ function checkSurfaceOp(op: unknown): void {
   if (!isPlainObject(op) || !isSurfaceOpId(op.id) || !isPlainObject(op.params)) fail('surfaceOps entries need a known id and a params object');
   onlyKeys(op, ['id', 'params', 'scope'], 'surfaceOps entry');
   const opts: Record<string, unknown> = { ...op.params };
-  if ('label' in opts || 'region' in opts) fail('surfaceOps params must not carry scope keys');
+  if ('label' in opts || 'region' in opts || 'select' in opts) fail('surfaceOps params must not carry scope keys');
   if (op.scope !== undefined) {
     const s = op.scope;
     if (!isPlainObject(s)) fail('surfaceOps scope must be an object');
     if (s.kind === 'label') { onlyKeys(s, ['kind', 'label'], 'surfaceOps scope'); opts.label = s.label; }
     else if (s.kind === 'point') { onlyKeys(s, ['kind', 'point', 'radius'], 'surfaceOps scope'); opts.region = { point: s.point, radius: s.radius }; }
-    else fail('surfaceOps scope kind must be label or point');
+    else if (s.kind === 'select') { onlyKeys(s, ['kind', 'select'], 'surfaceOps scope'); opts.select = s.select; }
+    else fail('surfaceOps scope kind must be label, point or select');
   }
   try {
     parseSurfaceOpts(op.id, opts);
