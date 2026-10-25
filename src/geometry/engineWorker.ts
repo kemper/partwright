@@ -55,6 +55,7 @@ import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
 import { lockdownGlobalScope } from './workerLockdown';
+import { formatLockdownRefusal } from './lockdownRefusal';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -153,6 +154,11 @@ function lockdownNow(): void {
   if (lockdownState !== 'pending') return;
   try {
     const report = lockdownGlobalScope(self);
+    // Names the allowlist audit removed that the explicit denylist didn't —
+    // logged so a capability a newer browser adds shows up in DevTools.
+    if (report.defaultDenied.length > 0) {
+      console.debug(`[lockdown] default-deny removed ${report.defaultDenied.length} non-allowlisted globals: ${report.defaultDenied.join(', ')}`);
+    }
     if (report.stillReachable.length > 0) {
       lockdownState = 'failed';
       lockdownFailure = `still reachable: ${report.stillReachable.join(', ')}`;
@@ -163,6 +169,9 @@ function lockdownNow(): void {
     lockdownState = 'failed';
     lockdownFailure = err instanceof Error ? err.message : String(err);
   }
+  // The app also records this in its Diagnostic Log (engine.ts / enginePool.ts
+  // recognise the message via parseLockdownRefusal); this is the devtools copy.
+  if (lockdownState === 'failed') console.error(`[lockdown] ${formatLockdownRefusal(lockdownFailure)}`);
 }
 
 /** Resolve once the scope is locked down. Returns an error message when the
@@ -176,7 +185,7 @@ async function ensureSandboxLocked(): Promise<string | null> {
   }
   return lockdownState === 'ok'
     ? null
-    : `Geometry sandbox lockdown failed (${lockdownFailure}) — refusing to run model code.`;
+    : formatLockdownRefusal(lockdownFailure);
 }
 
 self.onmessage = async (event: MessageEvent) => {
@@ -202,7 +211,7 @@ self.onmessage = async (event: MessageEvent) => {
     if (lockdownState === 'ok') {
       self.postMessage({ type: 'ready' });
     } else {
-      self.postMessage({ type: 'error', callId: null, message: `Geometry sandbox lockdown failed (${lockdownFailure})` });
+      self.postMessage({ type: 'error', callId: null, message: formatLockdownRefusal(lockdownFailure) });
     }
     return;
   }
