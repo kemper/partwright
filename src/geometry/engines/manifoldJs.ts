@@ -25,6 +25,7 @@ import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, typ
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertModelCodeRealm } from '../workerLockdown';
+import type { ApiPaintDescriptorKind } from '../apiPaintSpec';
 import { withoutPiecesAt } from '../removePieces';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -296,7 +297,10 @@ export const manifoldJsEngine: Engine = {
     // renders them as the model-color underlay. The code is the source of truth,
     // so these are never written to the paint sidecar. Last-recorded wins on
     // overlap, in declaration order. Cleared on every run.
-    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
+    // Typed against the shared API_PAINT_DESCRIPTOR_KINDS (apiPaintSpec.ts),
+    // which the Worker→main validator allow-lists — a new kind must be added
+    // there or this won't compile.
+    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor & { kind: ApiPaintDescriptorKind } }[] = [];
     let paintSeq = 0;
 
     // Viewport material declared in code via `api.material(...)` — a shading

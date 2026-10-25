@@ -9,9 +9,14 @@
 // index ranges, plain-data payloads with no prototype-polluting keys). A
 // malformed message is rejected before any main-thread logic acts on it.
 //
-// Pure and dependency-free so it runs in the unit tier.
+// Pure (data tables only) so it runs in the unit tier.
 
 import type { MeshData } from './types';
+import { API_PAINT_DESCRIPTOR_KINDS } from './apiPaintSpec';
+import { COLOR_PATTERN_KINDS } from '../color/colorPattern';
+import { isSurfaceOpId, parseSurfaceOpts } from '../surface/surfaceOpSpec';
+import { normalizeParamSchema } from './params';
+import { isMaterialPresetName } from '../renderer/materialSpec';
 
 /** Every message type the engine Worker legitimately sends. */
 export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -35,6 +40,16 @@ export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
 
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_DATA_DEPTH = 32;
+/** Total nodes one isPlainData walk may visit. Structured clone preserves
+ *  shared references, so `x = [x, x]` repeated 31 times is a tiny message that
+ *  a naive walk would expand to ~2^31 visits; shared nodes are visited once
+ *  (WeakSet) and the walk is capped. */
+const MAX_DATA_NODES = 250_000;
+const PAINT_KINDS: ReadonlySet<string> = new Set(API_PAINT_DESCRIPTOR_KINDS);
+const PATTERN_KINDS: ReadonlySet<string> = new Set(COLOR_PATTERN_KINDS);
+const AXES: ReadonlySet<string> = new Set(['x', 'y', 'z']);
+const MAX_PATTERN_COLORS = 64;
+const MAX_PATTERN_ANCHORS = 1024;
 
 export type WorkerMessageCheck =
   | { ok: true; msg: Record<string, unknown> & { type: string } }
@@ -50,26 +65,50 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+/** A typed array of class `Ctor` over a plain, fixed-length ArrayBuffer. A view
+ *  over a SharedArrayBuffer (or a resizable buffer) could be rewritten by the
+ *  Worker AFTER validation — the app is cross-origin isolated, so the Worker
+ *  can post one — so those are refused. */
+function isOwnedView<T extends ArrayBufferView>(v: unknown, Ctor: abstract new (...args: never[]) => T): v is T {
+  if (!(v instanceof Ctor)) return false;
+  const buf = (v as ArrayBufferView).buffer;
+  return buf instanceof ArrayBuffer && (buf as ArrayBuffer & { resizable?: boolean }).resizable !== true;
+}
+
+function isOwnedAnyView(v: unknown): boolean {
+  if (!ArrayBuffer.isView(v)) return false;
+  const buf = v.buffer;
+  return buf instanceof ArrayBuffer && (buf as ArrayBuffer & { resizable?: boolean }).resizable !== true;
+}
+
 /** Structured-clone-able plain JSON-ish data: primitives, arrays, plain objects,
- *  typed arrays. No Map/Set/Date/Blob, no `__proto__`/`constructor` keys,
- *  bounded depth. */
-export function isPlainData(v: unknown, depth = 0): boolean {
-  if (depth > MAX_DATA_DEPTH) return false;
-  if (v === null || v === undefined) return true;
-  const t = typeof v;
-  if (t === 'string' || t === 'number' || t === 'boolean') return true;
-  if (t !== 'object') return false;
-  if (ArrayBuffer.isView(v)) return true;
-  if (Array.isArray(v)) {
-    for (const item of v) if (!isPlainData(item, depth + 1)) return false;
+ *  typed arrays over owned buffers. No Map/Set/Date/Blob, no
+ *  `__proto__`/`constructor` keys, bounded depth and node count. */
+export function isPlainData(v: unknown): boolean {
+  const seen = new WeakSet<object>();
+  let budget = MAX_DATA_NODES;
+  const walk = (x: unknown, depth: number): boolean => {
+    if (--budget < 0 || depth > MAX_DATA_DEPTH) return false;
+    if (x === null || x === undefined) return true;
+    const t = typeof x;
+    if (t === 'string' || t === 'number' || t === 'boolean') return true;
+    if (t !== 'object') return false;
+    const o = x as object;
+    if (seen.has(o)) return true; // shared reference — already validated
+    seen.add(o);
+    if (ArrayBuffer.isView(o)) return isOwnedAnyView(o);
+    if (Array.isArray(o)) {
+      for (const item of o) if (!walk(item, depth + 1)) return false;
+      return true;
+    }
+    if (!isPlainObject(o)) return false;
+    for (const key of Object.keys(o)) {
+      if (FORBIDDEN_KEYS.has(key)) return false;
+      if (!walk((o as Record<string, unknown>)[key], depth + 1)) return false;
+    }
     return true;
-  }
-  if (!isPlainObject(v)) return false;
-  for (const key of Object.keys(v)) {
-    if (FORBIDDEN_KEYS.has(key)) return false;
-    if (!isPlainData(v[key], depth + 1)) return false;
-  }
-  return true;
+  };
+  return walk(v, 0);
 }
 
 function isNonNegInt(v: unknown): v is number {
@@ -90,8 +129,145 @@ function optPlainArray(v: unknown, field: string): unknown[] | null {
   if (!Array.isArray(v) || !isPlainData(v)) fail(`${field} must be an array of plain data`);
   return v;
 }
+function isFiniteNum(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+function isTuple(v: unknown, n: number): boolean {
+  return Array.isArray(v) && v.length === n && v.every(isFiniteNum);
+}
 function isRgb(v: unknown): boolean {
-  return Array.isArray(v) && v.length === 3 && v.every(n => typeof n === 'number' && Number.isFinite(n));
+  return isTuple(v, 3);
+}
+function onlyKeys(o: Record<string, unknown>, allowed: readonly string[], field: string): void {
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) fail(`${field}: unexpected field "${k}"`);
+}
+function reqTuple(o: Record<string, unknown>, k: string, n: number, field: string): void {
+  if (!isTuple(o[k], n)) fail(`${field}.${k} must be ${n} finite numbers`);
+}
+function reqNum(o: Record<string, unknown>, k: string, field: string): void {
+  if (!isFiniteNum(o[k])) fail(`${field}.${k} must be a finite number`);
+}
+function optNum(o: Record<string, unknown>, k: string, field: string): void {
+  if (o[k] !== undefined && !isFiniteNum(o[k])) fail(`${field}.${k} must be a finite number`);
+}
+function optAxis(o: Record<string, unknown>, k: string, field: string): void {
+  if (o[k] !== undefined && !(typeof o[k] === 'string' && AXES.has(o[k] as string))) fail(`${field}.${k} must be 'x', 'y' or 'z'`);
+}
+
+/** Per-kind field check for an `api.paint.*` descriptor — exactly the fields
+ *  the recorder emits, with the types the main-thread resolver relies on, so a
+ *  forged `{ kind: 'box' }` (no center) can't throw there and no other
+ *  descriptor kind (imagePaint, brushStroke, colorFlood, …) can reach
+ *  resolveDescriptorTriangles. */
+export function checkPaintDescriptor(d: unknown, field = 'paintOps descriptor'): void {
+  if (!isPlainObject(d) || typeof d.kind !== 'string' || !PAINT_KINDS.has(d.kind)) {
+    fail(`${field} kind must be one of ${API_PAINT_DESCRIPTOR_KINDS.join(', ')}`);
+  }
+  if (d.withinPart !== undefined && (typeof d.withinPart !== 'string' || d.withinPart.length === 0)) fail(`${field}.withinPart must be a label name`);
+  const f = `${field} (${d.kind})`;
+  switch (d.kind) {
+    case 'box':
+      onlyKeys(d, ['kind', 'center', 'size', 'quaternion', 'shape', 'withinPart'], f);
+      reqTuple(d, 'center', 3, f); reqTuple(d, 'size', 3, f); reqTuple(d, 'quaternion', 4, f);
+      if (d.shape !== undefined && d.shape !== 'box') fail(`${f}.shape must be 'box'`);
+      break;
+    case 'slab':
+      onlyKeys(d, ['kind', 'normal', 'offset', 'thickness', 'withinPart'], f);
+      reqTuple(d, 'normal', 3, f); reqNum(d, 'offset', f); reqNum(d, 'thickness', f);
+      break;
+    case 'cylinder':
+      onlyKeys(d, ['kind', 'center', 'rMin', 'rMax', 'zMin', 'zMax', 'axis', 'withinPart'], f);
+      reqTuple(d, 'center', 2, f);
+      for (const k of ['rMin', 'rMax', 'zMin', 'zMax']) reqNum(d, k, f);
+      optAxis(d, 'axis', f);
+      break;
+    case 'byLabel':
+      onlyKeys(d, ['kind', 'label', 'withinPart'], f);
+      if (typeof d.label !== 'string' || d.label.length === 0) fail(`${f}.label must be a label name`);
+      break;
+    case 'pattern': {
+      onlyKeys(d, ['kind', 'pattern', 'colors', 'scope', 'scale', 'axis', 'warp', 'coverage', 'seed', 'anchors', 'withinPart'], f);
+      if (typeof d.pattern !== 'string' || !PATTERN_KINDS.has(d.pattern)) fail(`${f}.pattern must be one of ${COLOR_PATTERN_KINDS.join(', ')}`);
+      if (!Array.isArray(d.colors) || d.colors.length === 0 || d.colors.length > MAX_PATTERN_COLORS || !d.colors.every(isRgb)) fail(`${f}.colors must be 1–${MAX_PATTERN_COLORS} [r, g, b] colours`);
+      for (const k of ['scale', 'warp', 'coverage', 'seed']) optNum(d, k, f);
+      optAxis(d, 'axis', f);
+      if (d.anchors !== undefined && (!Array.isArray(d.anchors) || d.anchors.length > MAX_PATTERN_ANCHORS || !d.anchors.every(a => isTuple(a, 3)))) fail(`${f}.anchors must be up to ${MAX_PATTERN_ANCHORS} [x, y, z] points`);
+      if (d.scope !== undefined) {
+        const s = d.scope;
+        if (!isPlainObject(s)) fail(`${f}.scope must be an object`);
+        onlyKeys(s, ['label', 'above', 'below', 'box', 'sphere'], `${f}.scope`);
+        if (s.label !== undefined && typeof s.label !== 'string') fail(`${f}.scope.label must be a string`);
+        for (const k of ['above', 'below'] as const) {
+          const p = s[k];
+          if (p === undefined) continue;
+          if (!isPlainObject(p)) fail(`${f}.scope.${k} must be { axis, at }`);
+          onlyKeys(p, ['axis', 'at'], `${f}.scope.${k}`);
+          if (!(typeof p.axis === 'string' && AXES.has(p.axis))) fail(`${f}.scope.${k}.axis must be 'x', 'y' or 'z'`);
+          reqNum(p, 'at', `${f}.scope.${k}`);
+        }
+        if (s.box !== undefined) {
+          if (!isPlainObject(s.box)) fail(`${f}.scope.box must be { min, max }`);
+          onlyKeys(s.box, ['min', 'max'], `${f}.scope.box`);
+          reqTuple(s.box, 'min', 3, `${f}.scope.box`); reqTuple(s.box, 'max', 3, `${f}.scope.box`);
+        }
+        if (s.sphere !== undefined) {
+          if (!isPlainObject(s.sphere)) fail(`${f}.scope.sphere must be { center, radius }`);
+          onlyKeys(s.sphere, ['center', 'radius'], `${f}.scope.sphere`);
+          reqTuple(s.sphere, 'center', 3, `${f}.scope.sphere`); reqNum(s.sphere, 'radius', `${f}.scope.sphere`);
+        }
+      }
+      break;
+    }
+  }
+}
+
+/** Re-run the Worker-side `api.surface.*` validator on the main thread. */
+function checkSurfaceOp(op: unknown): void {
+  if (!isPlainObject(op) || !isSurfaceOpId(op.id) || !isPlainObject(op.params)) fail('surfaceOps entries need a known id and a params object');
+  onlyKeys(op, ['id', 'params', 'scope'], 'surfaceOps entry');
+  const opts: Record<string, unknown> = { ...op.params };
+  if ('label' in opts || 'region' in opts) fail('surfaceOps params must not carry scope keys');
+  if (op.scope !== undefined) {
+    const s = op.scope;
+    if (!isPlainObject(s)) fail('surfaceOps scope must be an object');
+    if (s.kind === 'label') { onlyKeys(s, ['kind', 'label'], 'surfaceOps scope'); opts.label = s.label; }
+    else if (s.kind === 'point') { onlyKeys(s, ['kind', 'point', 'radius'], 'surfaceOps scope'); opts.region = { point: s.point, radius: s.radius }; }
+    else fail('surfaceOps scope kind must be label or point');
+  }
+  try {
+    parseSurfaceOpts(op.id, opts);
+  } catch (e) {
+    fail(`surfaceOps: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Re-normalize the captured Customizer schema with the same validator
+ *  `api.params` uses (types, options, min/max/step, defaults). */
+function checkParamsSchema(schema: unknown[]): void {
+  const raw: Record<string, unknown> = {};
+  for (const p of schema) {
+    if (!isPlainObject(p) || typeof p.key !== 'string' || typeof p.type !== 'string') fail('paramsSchema entries need string key and type');
+    if (FORBIDDEN_KEYS.has(p.key) || Object.prototype.hasOwnProperty.call(raw, p.key)) fail(`paramsSchema key "${p.key}" is reserved or duplicated`);
+    const { key, ...spec } = p;
+    raw[key as string] = spec;
+  }
+  try {
+    normalizeParamSchema(raw);
+  } catch (e) {
+    fail(`paramsSchema: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+const MATERIAL_UNIT_FIELDS = ['metalness', 'roughness', 'clearcoat', 'transmission', 'opacity'] as const;
+
+/** `api.material(...)` spec: known preset, 0..1 colour and PBR numbers. */
+function checkMaterialSpec(m: unknown): void {
+  if (!isPlainObject(m)) fail('materialSpec must be a plain object');
+  onlyKeys(m, ['preset', 'color', ...MATERIAL_UNIT_FIELDS], 'materialSpec');
+  if (m.preset !== undefined && !isMaterialPresetName(m.preset)) fail('materialSpec.preset is not a known preset');
+  const inUnit = (n: unknown) => isFiniteNum(n) && n >= 0 && n <= 1;
+  if (m.color !== undefined && !(isRgb(m.color) && (m.color as number[]).every(inUnit))) fail('materialSpec.color must be [r, g, b] in 0..1');
+  for (const k of MATERIAL_UNIT_FIELDS) if (m[k] !== undefined && !inUnit(m[k])) fail(`materialSpec.${k} must be a number in 0..1`);
 }
 
 /**
@@ -102,8 +278,8 @@ function isRgb(v: unknown): boolean {
 export function checkMeshData(m: unknown): string | null {
   if (!isPlainObject(m)) return 'mesh must be a plain object';
   const { vertProperties, triVerts, numVert, numTri, numProp } = m;
-  if (!(vertProperties instanceof Float32Array)) return 'mesh.vertProperties must be a Float32Array';
-  if (!(triVerts instanceof Uint32Array)) return 'mesh.triVerts must be a Uint32Array';
+  if (!isOwnedView(vertProperties, Float32Array)) return 'mesh.vertProperties must be a Float32Array over its own buffer';
+  if (!isOwnedView(triVerts, Uint32Array)) return 'mesh.triVerts must be a Uint32Array over its own buffer';
   if (!isNonNegInt(numVert) || !isNonNegInt(numTri)) return 'mesh.numVert / mesh.numTri must be non-negative integers';
   if (!isNonNegInt(numProp) || numProp < 3) return 'mesh.numProp must be an integer ≥ 3';
   if (vertProperties.length !== numVert * numProp) return 'mesh.vertProperties length does not match numVert × numProp';
@@ -113,13 +289,13 @@ export function checkMeshData(m: unknown): string | null {
   }
   const { mergeFromVert, mergeToVert, runIndex, runOriginalID, triColors } = m;
   if (mergeFromVert !== undefined || mergeToVert !== undefined) {
-    if (!(mergeFromVert instanceof Uint32Array) || !(mergeToVert instanceof Uint32Array)) return 'mesh.mergeFromVert / mergeToVert must be Uint32Arrays';
+    if (!isOwnedView(mergeFromVert, Uint32Array) || !isOwnedView(mergeToVert, Uint32Array)) return 'mesh.mergeFromVert / mergeToVert must be Uint32Arrays';
     if (mergeFromVert.length !== mergeToVert.length) return 'mesh.mergeFromVert / mergeToVert lengths differ';
   }
-  if (runIndex !== undefined && !(runIndex instanceof Uint32Array)) return 'mesh.runIndex must be a Uint32Array';
-  if (runOriginalID !== undefined && !(runOriginalID instanceof Uint32Array)) return 'mesh.runOriginalID must be a Uint32Array';
+  if (runIndex !== undefined && !isOwnedView(runIndex, Uint32Array)) return 'mesh.runIndex must be a Uint32Array';
+  if (runOriginalID !== undefined && !isOwnedView(runOriginalID, Uint32Array)) return 'mesh.runOriginalID must be a Uint32Array';
   if (triColors !== undefined) {
-    if (!(triColors instanceof Uint8Array)) return 'mesh.triColors must be a Uint8Array';
+    if (!isOwnedView(triColors, Uint8Array)) return 'mesh.triColors must be a Uint8Array over its own buffer';
     if (triColors.length !== numTri * 3) return 'mesh.triColors length does not match numTri × 3';
   }
   return null;
@@ -131,7 +307,7 @@ function checkVoxelGridField(v: unknown, field: string): void {
   if (v === undefined || v === null) return;
   if (!isPlainObject(v)) fail(`${field} must be a plain object`);
   const { keys, colors, surfacing } = v;
-  if (!(keys instanceof Float64Array) || !(colors instanceof Uint32Array) || keys.length !== colors.length) {
+  if (!isOwnedView(keys, Float64Array) || !isOwnedView(colors, Uint32Array) || keys.length !== colors.length) {
     fail(`${field} needs equal-length Float64Array keys and Uint32Array colors`);
   }
   if (!isPlainObject(surfacing) || typeof surfacing.mode !== 'string' || !isPlainData(surfacing)) fail(`${field}.surfacing must be a plain object`);
@@ -178,29 +354,20 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   if (paintOps) {
     for (const op of paintOps) {
       if (!isPlainObject(op) || typeof op.name !== 'string' || !isRgb(op.color)) fail('paintOps entries need a string name and [r, g, b] color');
-      const d = op.descriptor;
-      // Shape check only — the descriptor kinds are owned by the api.paint.*
-      // recorder (box/slab/cylinder/byLabel/pattern/…) and grow with it, so an
-      // allow-list here would silently drop new paint ops. The payload is
-      // already plain data (optPlainArray above).
-      if (!isPlainObject(d) || typeof d.kind !== 'string') fail('paintOps entries need a descriptor with a string kind');
+      onlyKeys(op, ['name', 'color', 'descriptor'], 'paintOps entry');
+      checkPaintDescriptor(op.descriptor);
     }
   }
   const surfaceOps = optPlainArray(msg.surfaceOps, 'surfaceOps');
   if (surfaceOps) {
-    for (const op of surfaceOps) {
-      if (!isPlainObject(op) || typeof op.id !== 'string' || !isPlainObject(op.params)) fail('surfaceOps entries need a string id and a params object');
-    }
+    for (const op of surfaceOps) checkSurfaceOp(op);
   }
-  if (msg.materialSpec !== undefined && msg.materialSpec !== null && !(isPlainObject(msg.materialSpec) && isPlainData(msg.materialSpec))) {
-    fail('materialSpec must be a plain object');
+  if (msg.materialSpec !== undefined && msg.materialSpec !== null) {
+    if (!isPlainData(msg.materialSpec)) fail('materialSpec must be plain data');
+    checkMaterialSpec(msg.materialSpec);
   }
   const schema = optPlainArray(msg.paramsSchema, 'paramsSchema');
-  if (schema) {
-    for (const p of schema) {
-      if (!isPlainObject(p) || typeof p.key !== 'string' || typeof p.type !== 'string') fail('paramsSchema entries need string key and type');
-    }
-  }
+  if (schema) checkParamsSchema(schema);
   const lost = optPlainArray(msg.lostLabels, 'lostLabels');
   if (lost && !lost.every(s => typeof s === 'string')) fail('lostLabels must be strings');
   optBool(msg.renderOnly, 'renderOnly');

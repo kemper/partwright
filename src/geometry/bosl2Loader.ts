@@ -17,7 +17,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { assetPath } from '../deployment';
-import { fetchAppAsset } from './workerLockdown';
+import { fetchAppAsset, isSafeAssetName } from './workerLockdown';
+
+// Built-ins captured at module load — before any model code runs in this
+// Worker — so code that patched Array.prototype / Promise / JSON in an earlier
+// run can't steer which files are fetched (#1090). fetchAppAsset's path
+// allow-list is the real gate; this keeps the loader's own inputs honest too.
+const jsonParse = JSON.parse;
+const promiseAll = Promise.all.bind(Promise) as <T>(values: Promise<T>[]) => Promise<T[]>;
+const isArray = Array.isArray;
 
 interface Bosl2Manifest {
   files: string[];
@@ -42,7 +50,17 @@ async function loadManifest(): Promise<Bosl2Manifest> {
     manifestPromise = (async () => {
       const resp = await fetchAppAsset(`${BOSL2_PREFIX}/_manifest.json`);
       if (!resp.ok) throw new Error(`Failed to fetch BOSL2 manifest: ${resp.status}`);
-      return resp.json();
+      const parsed = jsonParse(await resp.text()) as unknown;
+      const files = parsed !== null && typeof parsed === 'object' ? (parsed as { files?: unknown }).files : undefined;
+      if (!isArray(files)) throw new Error('BOSL2 manifest is malformed');
+      // Plain loop + name vetting: never trust a (possibly patched) .map/.filter.
+      const names: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const name: unknown = files[i];
+        if (!isSafeAssetName(name)) throw new Error('BOSL2 manifest lists an invalid file name');
+        names[names.length] = name;
+      }
+      return { files: names };
     })();
   }
   return manifestPromise;
@@ -52,14 +70,19 @@ async function loadAllFiles(): Promise<Map<string, string>> {
   if (!filesPromise) {
     filesPromise = (async () => {
       const manifest = await loadManifest();
-      const entries: [string, string][] = await Promise.all(
-        manifest.files.map(async (name) => {
-          const r = await fetchAppAsset(`${BOSL2_PREFIX}/${name}`);
+      const loads: Promise<[string, string]>[] = [];
+      for (let i = 0; i < manifest.files.length; i++) {
+        const name = manifest.files[i];
+        loads[loads.length] = (async () => {
+          const r = await fetchAppAsset(BOSL2_PREFIX + '/' + name);
           if (!r.ok) throw new Error(`Failed to fetch BOSL2/${name}: ${r.status}`);
           return [name, await r.text()] as [string, string];
-        }),
-      );
-      return new Map(entries);
+        })();
+      }
+      const entries = await promiseAll(loads);
+      const out = new Map<string, string>();
+      for (let i = 0; i < entries.length; i++) out.set(entries[i][0], entries[i][1]);
+      return out;
     })();
   }
   return filesPromise;

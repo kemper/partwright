@@ -1,6 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { checkEngineWorkerMessage, checkMeshData, isPlainData } from '../../src/geometry/workerMessageValidation';
+import { checkEngineWorkerMessage, checkMeshData, checkPaintDescriptor, isPlainData } from '../../src/geometry/workerMessageValidation';
+import { API_PAINT_DESCRIPTOR_KINDS } from '../../src/geometry/apiPaintSpec';
+
+/** One valid descriptor per api.paint.* kind — exactly what the recorder emits. */
+const VALID_DESCRIPTORS: Record<string, Record<string, unknown>> = {
+  box: { kind: 'box', center: [0, 0, 0], size: [1, 1, 1], quaternion: [0, 0, 0, 1], shape: 'box' },
+  slab: { kind: 'slab', normal: [0, 0, 1], offset: 2, thickness: 1, withinPart: 'body' },
+  cylinder: { kind: 'cylinder', center: [0, 0], rMin: 0, rMax: 2, zMin: 0, zMax: 5 },
+  byLabel: { kind: 'byLabel', label: 'body' },
+  pattern: {
+    kind: 'pattern', pattern: 'spots', colors: [[1, 1, 1], [0, 0, 0]],
+    scope: { label: 'body', above: { axis: 'z', at: 1 }, box: { min: [0, 0, 0], max: [1, 1, 1] }, sphere: { center: [0, 0, 0], radius: 2 } },
+    scale: 3, axis: 'y', warp: 0.2, coverage: 0.5, seed: 7, anchors: [[0, 0, 1]],
+  },
+};
+const execWithPaint = (descriptor: unknown) => ({
+  type: 'execute_result', callId: 'exec-p', mesh: null, error: null,
+  paintOps: [{ name: 'p', color: [1, 0, 0], descriptor }],
+});
 
 function mesh(numVert = 3, numTri = 1) {
   return {
@@ -101,18 +119,99 @@ describe('api.paint.* recorder parity', () => {
   // Drift guard for #1109: every descriptor kind the manifold-js recorder can
   // emit must survive Worker→main validation (a kind allow-list here once
   // rejected `pattern`, breaking api.paint.pattern in-app).
-  it('accepts every descriptor kind engines/manifoldJs.ts records', () => {
+  it('the recorder emits exactly the shared API_PAINT_DESCRIPTOR_KINDS, and each validates', () => {
     const src = readFileSync(new URL('../../src/geometry/engines/manifoldJs.ts', import.meta.url), 'utf8');
     const recorder = src.slice(src.indexOf('const paintOps'));
     const kinds = new Set([...recorder.matchAll(/kind:\s*'([A-Za-z]+)'/g)].map(m => m[1]));
-    expect(kinds.size).toBeGreaterThanOrEqual(5);
-    for (const k of ['box', 'slab', 'cylinder', 'byLabel', 'pattern']) expect(kinds).toContain(k);
-    for (const kind of kinds) {
-      const r = checkEngineWorkerMessage({
-        type: 'execute_result', callId: 'exec-k', mesh: null, error: null,
-        paintOps: [{ name: `paint·${kind}`, color: [1, 0, 0], descriptor: { kind, scope: { label: 'body' } } }],
-      });
-      expect(r.ok, kind).toBe(true);
+    expect([...kinds].sort()).toEqual([...API_PAINT_DESCRIPTOR_KINDS].sort());
+    expect(Object.keys(VALID_DESCRIPTORS).sort()).toEqual([...API_PAINT_DESCRIPTOR_KINDS].sort());
+    for (const kind of API_PAINT_DESCRIPTOR_KINDS) {
+      const r = checkEngineWorkerMessage(execWithPaint(VALID_DESCRIPTORS[kind]));
+      expect(r.ok, `${kind}: ${r.ok ? '' : r.reason}`).toBe(true);
     }
+  });
+
+  it('refuses kinds the recorder never emits and forged / incomplete descriptors', () => {
+    const bad: unknown[] = [
+      { kind: 'imagePaint', entries: [0, 255, 0, 0], avgColor: [1, 0, 0] },
+      { kind: 'brushStroke', samples: [[0, 0, 0]], radius: 1, shape: 'round', maxEdge: 1 },
+      { kind: 'colorFlood', seedPoint: [0, 0, 0], seedNormal: [0, 0, 1], seedColor: [1, 1, 1], colorTolerance: 0.1 },
+      { kind: 'triangles', ids: [0] },
+      { kind: 'box' },
+      { ...VALID_DESCRIPTORS.box, center: [0, 0] },
+      { ...VALID_DESCRIPTORS.box, center: ['0', 0, 0] },
+      { ...VALID_DESCRIPTORS.box, extra: 1 },
+      { ...VALID_DESCRIPTORS.slab, thickness: Infinity },
+      { ...VALID_DESCRIPTORS.cylinder, axis: 'w' },
+      { kind: 'byLabel', label: '' },
+      { ...VALID_DESCRIPTORS.pattern, pattern: 'plaid' },
+      { ...VALID_DESCRIPTORS.pattern, colors: [] },
+      { ...VALID_DESCRIPTORS.pattern, smooth: true, maxEdge: 0.1 },
+      { ...VALID_DESCRIPTORS.pattern, scope: { sphere: { center: [0, 0, 0] } } },
+      { ...VALID_DESCRIPTORS.pattern, anchors: Array.from({ length: 2000 }, () => [0, 0, 0]) },
+    ];
+    for (const d of bad) {
+      expect(() => checkPaintDescriptor(d), JSON.stringify(d).slice(0, 80)).toThrow();
+      expect(checkEngineWorkerMessage(execWithPaint(d)).ok).toBe(false);
+    }
+  });
+});
+
+describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
+  const exec = (extra: Record<string, unknown>) => checkEngineWorkerMessage({ type: 'execute_result', callId: 'e', mesh: null, error: null, ...extra });
+  it('accepts what the recorders emit', () => {
+    expect(exec({ surfaceOps: [{ id: 'knurl', params: { amplitude: 0.3, profile: 'pyramid' }, scope: { kind: 'label', label: 'grip' } }] }).ok).toBe(true);
+    expect(exec({ surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'point', point: [0, 0, 0], radius: 4 } }] }).ok).toBe(true);
+    expect(exec({ paramsSchema: [
+      { key: 'w', type: 'number', default: 5, label: 'Width', min: 1, max: 10, step: 0.5, unit: 'mm' },
+      { key: 'mode', type: 'select', default: 'a', label: 'Mode', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] },
+      { key: 'on', type: 'boolean', default: true, label: 'On' },
+      { key: 'tag', type: 'text', default: 'hi', label: 'Tag', maxLength: 8 },
+      { key: 'c', type: 'color', default: '#3b82f6', label: 'C' },
+    ] }).ok).toBe(true);
+    expect(exec({ materialSpec: { preset: 'brass', roughness: 0.4, color: [0.9, 0.7, 0.3] } }).ok).toBe(true);
+  });
+  it('refuses forged values', () => {
+    for (const extra of [
+      { surfaceOps: [{ id: 'teleport', params: {} }] },
+      { surfaceOps: [{ id: 'fuzzy', params: { bogus: 1 } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: { amplitude: { x: 1 } } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: {}, scope: { kind: 'point', point: [0, 0], radius: 4 } }] },
+      { surfaceOps: [{ id: 'fuzzy', params: { label: 'x' } }] },
+      { paramsSchema: [{ key: 'w', type: 'number', default: 5, label: 'W', min: 10, max: 1 }] },
+      { paramsSchema: [{ key: 'w', type: 'select', default: 'z', label: 'W', options: [{ value: 'a', label: 'A' }] }] },
+      { paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W' }, { key: 'w', type: 'number', default: 2, label: 'W' }] },
+      { paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W', onclick: 'x' }] },
+      { materialSpec: { preset: 'unobtainium' } },
+      { materialSpec: { roughness: 7 } },
+      { materialSpec: { color: [2, 0, 0] } },
+      { materialSpec: { shader: 'x' } },
+    ]) {
+      expect(exec(extra).ok, JSON.stringify(extra).slice(0, 90)).toBe(false);
+    }
+  });
+});
+
+describe('DoS and shared-memory guards', () => {
+  it('isPlainData walks a shared-reference DAG once and caps total nodes', () => {
+    let x: unknown = [1];
+    for (let i = 0; i < 31; i++) x = [x, x];
+    const t0 = performance.now();
+    expect(isPlainData(x)).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(500);
+    const cyclic: unknown[] = [];
+    cyclic.push(cyclic);
+    expect(isPlainData(cyclic)).toBe(true); // structured clone can carry cycles
+    expect(isPlainData(Array.from({ length: 300_000 }, (_, i) => i))).toBe(false);
+  });
+
+  it('refuses typed arrays backed by a SharedArrayBuffer', () => {
+    const shared = new Float32Array(new SharedArrayBuffer(9 * 4));
+    expect(checkMeshData({ vertProperties: shared, triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3 })).toMatch(/own buffer/);
+    const sharedTris = new Uint32Array(new SharedArrayBuffer(3 * 4));
+    expect(checkMeshData({ vertProperties: new Float32Array(9), triVerts: sharedTris, numVert: 3, numTri: 1, numProp: 3 })).toMatch(/own buffer/);
+    expect(isPlainData({ a: new Uint8Array(new SharedArrayBuffer(4)) })).toBe(false);
+    const grid = { keys: new Float64Array(new SharedArrayBuffer(8)), colors: new Uint32Array(1), surfacing: { mode: 'blocks', iterations: 2, detail: 1 } };
+    expect(checkEngineWorkerMessage({ type: 'voxel_grid_result', callId: 'g', grid, error: null }).ok).toBe(false);
   });
 });

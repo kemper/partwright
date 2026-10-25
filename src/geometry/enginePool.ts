@@ -24,6 +24,7 @@ import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh'
 import { createEngineWorker, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { errorLog } from '../diagnostics/errorLog';
+import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 
 export interface PoolBuildRequest {
   code: string;
@@ -38,6 +39,11 @@ export interface PoolBuildRequest {
    *  part actually starts meshing, as opposed to waiting behind others). Lets a
    *  per-part progress UI flip a row from "queued" to "rendering". */
   onStart?: () => void;
+  /** The trust domain (session) the caller captured `code` under — see
+   *  trustDomain.ts. Defaults to the active domain. A build whose domain is no
+   *  longer active is refused, so a flow that outlives a session switch can't
+   *  respawn the pool and run the old session's code next to the new one's. */
+  domain?: string;
 }
 
 export interface PoolBuildResult {
@@ -241,6 +247,9 @@ function dispatch(pw: PoolWorker, job: Job): void {
 /** Build one part in the pool. Spawns workers on first use. Concurrency is
  *  bounded by the pool size; excess calls queue and run as workers free up. */
 export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
+  if ((req.domain ?? getEngineTrustDomain()) !== getEngineTrustDomain()) {
+    return Promise.reject(new Error('Build cancelled — the session changed before it ran'));
+  }
   ensureWorkers();
   return new Promise<PoolBuildResult>((resolve, reject) => {
     queue.push({ req, resolve, reject });
@@ -263,3 +272,7 @@ export function disposeEnginePool(): void {
   // sizes from its own config again.
   sizeOverride = null;
 }
+
+// Pool workers belong to the session whose parts they built (#1090): drop them
+// (and anything queued) the moment the active session changes.
+onEngineTrustDomainChange(() => { disposeEnginePool(); });
