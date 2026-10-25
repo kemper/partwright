@@ -19,7 +19,7 @@ import { normalizeParamSchema, type ParamSpec } from './params';
 import { isMaterialPresetName } from '../renderer/materialSpec';
 
 /** Every message type the engine Worker legitimately sends. */
-const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'ready',
   'error',
   'execute_preview',

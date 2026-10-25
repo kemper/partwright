@@ -367,6 +367,22 @@ import {
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
+import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
+import { mountEngineSandboxPill } from './ui/engineSandboxPill';
+import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
+import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
+
+/** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
+ *  reference build that was overtaken never draws its (stale) ghost. */
+let referenceGeometryGen = 0;
+
+/** Set when the most recent runCodeSync was refused by a fail-closed engine
+ *  sandbox, so API callers get that reason instead of the generic (and
+ *  AI-retryable) "superseded". Cleared at the start of every run. */
+let lastRunRejection: string | null = null;
+function runFailedMessage(): string {
+  return lastRunRejection ?? 'Run was superseded by a concurrent execution — retry';
+}
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -7497,7 +7513,7 @@ async function main() {
       return { error: `${why} The code was restored.` };
     };
     setValue(nextCode);
-    if (!(await runCodeSync(nextCode))) return { error: 'Run was superseded by a concurrent execution — retry.' };
+    if (!(await runCodeSync(nextCode))) return { error: runFailedMessage() };
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') return restore(`Deleting ${what} broke the run: ${geo.error ?? 'run error'}.`);
     const after = currentObjectPartsSummary();
@@ -7611,7 +7627,7 @@ async function main() {
     setValue(nextCode);
     if (!(await runCodeSync(nextCode))) {
       setValue(previousCode);
-      return { error: 'Run was superseded by a concurrent execution — retry.' };
+      return { error: runFailedMessage() };
     }
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') {
@@ -7903,6 +7919,9 @@ async function main() {
   printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
+  // Engine-sandbox status pill: persistent while the sandbox is unavailable
+  // (model code blocked — fail closed) or bypassed for this tab.
+  mountEngineSandboxPill(viewportPane);
 
   // Fast-preview pill — shown while the viewport is displaying the rough coarse
   // pass of a slow SDF model (figures) and the full-quality render is still
@@ -12361,7 +12380,7 @@ async function main() {
       }
       setValue(up.code);
       const applied = await runCodeSync(up.code);
-      if (!applied) return { error: 'Run was superseded by a concurrent execution — retry' };
+      if (!applied) return { error: runFailedMessage() };
       const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
       if (geo?.status === 'error') {
         // The edited code doesn't run — put the buffer back the way it was
@@ -12971,7 +12990,7 @@ async function main() {
       // and keep auto-framing (the same-session gate still frames a fresh run).
       const applied = await runCodeSync(src, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
-        return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+        return { status: 'error', error: runFailedMessage() };
       }
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       return { ...geo, printability: computePrintability(geo) };
@@ -13032,7 +13051,7 @@ async function main() {
       // matching the Customizer panel's onChange path (runCode preserves by
       // default). captureCameraToPreserve still auto-frames a session's first run.
       const applied = await runCodeSync(getValue(), { preserveCamera: true });
-      if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+      if (!applied) return { status: 'error', error: runFailedMessage() };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
         geometry,
@@ -15956,7 +15975,7 @@ async function main() {
       setValue(code);
       const applied = await runCodeSync(code, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
-        return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
+        return { passed: false, failures: [runFailedMessage()], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
@@ -16162,7 +16181,7 @@ async function main() {
       setValue(newCode);
       const forkApplied = await runCodeSync(newCode, { preserveCamera: true });
       if (!forkApplied) {
-        return { error: 'Run was superseded by a concurrent execution — retry' };
+        return { error: runFailedMessage() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
@@ -17511,6 +17530,52 @@ async function main() {
       };
     },
 
+    /** Engine sandbox (Advanced Settings → Security; docs/engine-sandbox.md):
+     *  the mode this tab started with (`requested`, captured once per tab),
+     *  the mode model code runs under (`active`), its `state` ('unavailable'
+     *  = fail-closed, model code blocked; 'bypassed' = the user chose to run
+     *  without it), the saved setting that applies after a reload
+     *  (`pendingAfterReload`), and whether the frame / Worker reported
+     *  cross-origin isolation. -> { requested, active, state,
+     *  pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated,
+     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes } */
+    getEngineSandboxStatus() {
+      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
+    },
+
+    /** Choose the engine-sandbox mode for this browser ('off' | 'opaque' |
+     *  'origin'). Persists; takes effect on the next page reload (the
+     *  geometry Worker is created at boot). Deliberately NOT an in-app AI
+     *  tool: a prompt-injected session must not be able to switch it off.
+     *  -> { mode, previous, note } or { error } */
+    setEngineSandboxMode(mode: string) {
+      if (!isEngineSandboxMode(mode)) return { error: `setEngineSandboxMode(mode): mode must be one of ${ENGINE_SANDBOX_MODES.join(', ')}` };
+      if (mode === 'origin' && !configuredSandboxOrigin()) return { error: "setEngineSandboxMode('origin'): this build has no VITE_SANDBOX_ORIGIN configured" };
+      const previous = getEngineSandboxMode();
+      setEngineSandboxMode(mode);
+      return { mode, previous, note: 'Reload the page to apply.' };
+    },
+
+    /** The status pill's "Run without sandbox (this tab)": only after the
+     *  sandbox became unavailable, let model code run in a plain app-origin
+     *  Worker for the rest of this tab (it can then reach this site's storage
+     *  and the network). Not an in-app AI tool. -> { ok, note } or { error } */
+    runWithoutEngineSandbox() {
+      if (!runWithoutEngineSandbox()) {
+        return { error: 'runWithoutEngineSandbox(): nothing to bypass — the engine sandbox is off or working in this tab' };
+      }
+      return { ok: true, note: 'Model code now runs without the sandbox in this tab; re-run your model. Reload to re-enable it.' };
+    },
+
+    /** Worker health (the Diagnostics → Workers panel): each worker's
+     *  liveness / in-flight / restart counts plus the recent geometry-run
+     *  history with main-thread wall time (durationMs) and Worker-side compute
+     *  time (workerMs) — the gap is queue + transfer cost.
+     *  -> { workers: [...], runs: [...] } */
+    getWorkerHealth() {
+      return { workers: getWorkerHealth(), runs: getWorkerRuns() };
+    },
+
     /** Read the Diagnostic Log (the toolbar ⚠ panel): errors, warnings and
      *  routine activity from every subsystem, newest first. Filter by `level`
      *  ('error' | 'warn' | 'info', or a list) and/or `source` ('engine', 'ai',
@@ -17807,6 +17872,10 @@ async function main() {
       }
       // Built in the sandboxed engine Worker (#1090) — the code is caller- or
       // AI-supplied and must never run on the main thread.
+      // The build is async, so a newer set/clear or a session switch can land
+      // while it runs; only the latest call for the same session may draw.
+      const gen = ++referenceGeometryGen;
+      const sessionAtStart = getState().session?.id ?? null;
       let result: MeshResult;
       try {
         result = await executeCodeAsync(code, 'manifold-js');
@@ -17818,6 +17887,9 @@ async function main() {
       }
       if (!result.mesh) {
         return { success: false, error: 'Code did not produce geometry' };
+      }
+      if (gen !== referenceGeometryGen || (getState().session?.id ?? null) !== sessionAtStart) {
+        return { success: false, error: 'Superseded by a newer setReferenceGeometry/clearReferenceGeometry call or a session switch' };
       }
 
       setPhantom(result.mesh, options);
@@ -17838,6 +17910,7 @@ async function main() {
 
     /** Clear phantom/reference geometry overlay */
     clearReferenceGeometry(): void {
+      referenceGeometryGen++; // drop any in-flight setReferenceGeometry
       clearPhantom();
     },
 
@@ -21000,7 +21073,7 @@ async function main() {
         'toggleClip': { signature: 'toggleClip(on?) -- Toggle the 3D clipping plane (omit to flip) -> {enabled, z, min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'setClipZ': { signature: 'setClipZ(z) -- Set the clipping-plane height -> {enabled, z, min, max}. Throws on a non-number', docs: '/ai.md#console-api--windowpartwright' },
         'getClipState': { signature: 'getClipState() -- Clipping plane -> {enabled, z, min, max} (min/max = model Z range)', docs: '/ai.md#console-api--windowpartwright' },
-        'setReferenceGeometry': { signature: 'await setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code run in isolation (always manifold-js) -> Promise<{success, boundingBox?, volume?, error?}>', docs: '/ai.md#console-api--windowpartwright' },
+        'setReferenceGeometry': { signature: 'await setReferenceGeometry(code, {color?: 0xRRGGBB, opacity?: 0..1, wireframe?}) -- Show a translucent fitment ghost from code built in the (sandboxed) engine Worker (always manifold-js); a newer set/clear or session switch supersedes it -> Promise<{success, boundingBox?, volume?, error?}>', docs: '/ai.md#console-api--windowpartwright' },
         'clearReferenceGeometry': { signature: 'clearReferenceGeometry() -- Remove the reference-geometry ghost', docs: '/ai.md#console-api--windowpartwright' },
         'hasReferenceGeometry': { signature: 'hasReferenceGeometry() -- Whether a reference-geometry ghost is shown -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Assembly view (all parts in a grid)
@@ -21048,6 +21121,10 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
+        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
         'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },
@@ -22369,6 +22446,7 @@ async function main() {
     // doesn't flicker an error on every keystroke.
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
+    lastRunRejection = null;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -22434,6 +22512,9 @@ async function main() {
       stopRunTimer();
       hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
+      // Surface the fail-closed sandbox refusal verbatim; other rejections keep
+      // the generic "superseded — retry" text the AI loop treats as transient.
+      lastRunRejection = isEngineSandboxUnavailableError(msg) ? msg : null;
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
       return false;

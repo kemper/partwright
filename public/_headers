@@ -27,3 +27,46 @@
 
 /*.txt
   Content-Type: text/plain; charset=utf-8
+
+# Engine sandbox frame (docs/engine-sandbox.md, kemper/partwright#1090). With the
+# sandbox enabled, the geometry Worker that evaluates model code lives in this
+# hidden iframe on a different origin. The document gets a SECOND, much tighter
+# CSP: browsers enforce every policy they receive (the effective policy is the
+# intersection with the `/*` one above), so the Worker it spawns — a blob:
+# Worker, which inherits this document's policy — can only connect to 'self':
+# no `https:`, no AI-provider hosts. CORP cross-origin lets a COEP:require-corp
+# app on ANOTHER origin embed it ('origin' mode). Keep the CSP in sync with
+# sandboxCsp() in vite.config.ts. frame-ancestors: 'self' covers opaque mode
+# (same URL origin); the production app hosts cover 'origin' mode. Cloudflare serves the built sandbox.html at
+# its clean URL, so list both spellings, under each version mount.
+/sandbox
+  Cross-Origin-Resource-Policy: cross-origin
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://www.partwrightstudio.com https://partwrightstudio.com
+
+/sandbox.html
+  Cross-Origin-Resource-Policy: cross-origin
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://www.partwrightstudio.com https://partwrightstudio.com
+
+/v1/sandbox
+  Cross-Origin-Resource-Policy: cross-origin
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://www.partwrightstudio.com https://partwrightstudio.com
+
+/v1/sandbox.html
+  Cross-Origin-Resource-Policy: cross-origin
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://www.partwrightstudio.com https://partwrightstudio.com
+
+# Engine sandbox 'opaque' mode: the frame (and its Worker) has an opaque origin,
+# so every engine module / wasm / font / BOSL2 file it loads from this site is a
+# cross-origin request from `Origin: null` and needs CORS. These are public,
+# credential-free static assets.
+/assets/*
+  Access-Control-Allow-Origin: *
+
+/openscad-libs/*
+  Access-Control-Allow-Origin: *
+
+/v1/assets/*
+  Access-Control-Allow-Origin: *
+
+/v1/openscad-libs/*
+  Access-Control-Allow-Origin: *

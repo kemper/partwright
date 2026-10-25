@@ -19,6 +19,7 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
+import { createEngineWorker, isEngineSandboxUnavailableError, prewarmEngineSandbox, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { VoxelGrid } from './voxel/grid';
 import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
@@ -50,6 +51,9 @@ export function setActiveLanguage(lang: Language): void {
  * is always eager-loaded since OpenSCAD needs it for the round-trip).
  * Also boots the geometry Worker so it's warm before first code execution. */
 export async function initEngine(lang: Language = DEFAULT_LANGUAGE): Promise<void> {
+  // With the engine sandbox on, start loading its iframe now so it overlaps
+  // the main-thread WASM init below (no-op when the sandbox is off).
+  prewarmEngineSandbox();
   // Always make sure manifold-js is ready (exports + slicing + ofMesh rely on it).
   await manifoldJsEngine.init();
   if (lang !== 'manifold-js') {
@@ -76,7 +80,8 @@ function pickLang(lang?: Language): Language {
 
 // ── Geometry Worker client ──────────────────────────────────────────────────
 
-let engineWorker: Worker | null = null;
+// A real Worker, or the engine-sandbox façade over one (src/sandbox/sandboxHost.ts).
+let engineWorker: EngineWorkerHandle | null = null;
 let workerReadyResolve: (() => void) | null = null;
 let workerReadyReject: ((e: Error) => void) | null = null;
 // Mutable so it can be replaced when the Worker is restarted after a crash.
@@ -284,7 +289,7 @@ const STALE_DOMAIN_ERROR = 'Execution cancelled — the session changed before t
  *  previous session is superseded, not failed. */
 const SESSION_ISOLATION_REASON = 'Execution cancelled — isolating sessions: fresh geometry worker for the newly opened session';
 
-interface WorkerClaim { worker: Worker; domain: string }
+interface WorkerClaim { worker: EngineWorkerHandle; domain: string }
 
 /** Claim the engine Worker for `domain` (default: the active domain),
  *  recycling a Worker that belongs to another domain and booting one if
@@ -322,7 +327,7 @@ async function claimAndWait(domain?: string): Promise<WorkerClaim> {
 /** After awaiting `workerReady`, confirm the claimed Worker is still the live
  *  one and still tagged with the claim's domain — a recycle or session switch
  *  during the await must not let this request land in a different realm. */
-function ensureClaim(claim: WorkerClaim): Worker {
+function ensureClaim(claim: WorkerClaim): EngineWorkerHandle {
   if (claim.domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
   if (engineWorker !== claim.worker || workerDomain !== claim.domain) {
     throw new Error('Execution cancelled — the geometry worker restarted before this request ran');
@@ -356,13 +361,30 @@ function initEngineWorker(): void {
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
-  engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  // Rejections reach whoever awaits the gate; a Worker that dies before
+  // anyone does must not surface as an unhandled rejection.
+  workerReady.catch(() => { /* handled by awaiters */ });
+  performance.mark('partwright:engine-worker-start');
+  engineWorker = createEngineWorker(() => new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' }));
   markWorkerStarted('geometry');
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
-    // Reject all pending calls if the Worker crashes.
-    rejectAllPending(new Error(`Geometry Worker crashed: ${ev.message}`));
+    // Reject all pending calls if the Worker crashes. A fail-closed engine
+    // sandbox refusing to run model code isn't a crash: pass its message
+    // through as-is (the sandbox host already logged it).
+    const sandboxRefusal = isEngineSandboxUnavailableError(ev.message);
+    const crashErr = new Error(sandboxRefusal ? ev.message : `Geometry Worker crashed: ${ev.message}`);
+    rejectAllPending(crashErr);
+    // A Worker that dies before 'ready' (e.g. a fail-closed engine sandbox)
+    // must also release callers awaiting the ready gate, or they hang.
+    workerReadyReject?.(crashErr);
+    workerReadyReject = null;
+    // Terminate before dropping it: a crashed-but-alive Worker (or a sandbox
+    // frame Worker) must not keep posting results that a fresh Worker's
+    // predictable callIds could match.
+    engineWorker?.terminate();
     engineWorker = null;
+    if (sandboxRefusal) return;
     markWorkerRestarted('geometry', `crashed: ${ev.message}`);
     errorLog.capture({ level: 'error', source: 'engine', message: `Geometry worker crashed — next call will restart it: ${ev.message}` });
   };
@@ -412,6 +434,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   const msg = check.msg;
 
   if (msg.type === 'ready') {
+    // Ready signal for tooling/benchmarks (scripts/bench-engine-sandbox.mjs).
+    performance.mark('partwright:engine-worker-ready');
     workerReadyResolve?.();
     workerReadyResolve = null;
     return;
@@ -840,7 +864,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
  *  resolves to `null`, which the caller reads as "couldn't determine" and falls
  *  back to its static regex candidates — distinct from an empty result. */
 export async function detectScadIncludesAsync(source: string): Promise<string[] | null> {
-  let worker: Worker;
+  let worker: EngineWorkerHandle;
   try {
     worker = ensureClaim(await claimAndWait());
   } catch {
