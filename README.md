@@ -19,7 +19,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM booleans)
 - **Built-in AI assistant** with five provider types: **Anthropic**, **OpenAI**, **Google Gemini**, any **OpenAI-compatible** endpoint (Ollama, LM Studio, llama.cpp, vLLM…), or a **local model running in your browser on WebGPU** (free, no key). Keys stay in your browser and requests go straight to the provider.
 - The AI writes the code, renders the model from several angles, reads geometry stats, and fixes its own mistakes. Plan mode, auto-continue, spend caps, voice input, and image attachments.
 - **Cross-provider review:** have one model critique another model's work, by hand or automatically at the end of each task.
-- **Photo-driven flows:** a stylized bust from a photo, Photo → 3D, and **convert an imported mesh back into editable code**.
+- **Photo-driven flows:** a stylized bust from a photo, Photo → 3D, **convert an imported mesh back into editable code**, and **split an imported mesh into named, paintable parts** (hair, face, shirt…).
 - **External agents** (Claude Code, browser extensions, MCP) can drive everything through the `window.partwright` console API.
 
 **Color, texture & effects**
@@ -31,7 +31,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM booleans)
 
 **Import & export**
 - **Export:** 3MF (multi-color, multi-plate, with Bambu Studio / OrcaSlicer project files for your exact printer), STL, OBJ, GLB, STEP, VOX, and turntable / exploded-view videos.
-- **Import:** STL, STEP, SVG, MagicaVoxel `.vox`, images (as reliefs or voxel art), sessions, and files from a URL.
+- **Import:** STL, 3MF (with filament colours, plates, and named parts from Bambu Studio, OrcaSlicer, or PrusaSlicer), STEP, SVG, MagicaVoxel `.vox`, images (as reliefs or voxel art), sessions, and files from a URL.
 
 **Workflow**
 - **Sessions & versions:** every save is a version. Compare them side by side in a gallery or diff view, keep notes, and attach reference images.
@@ -39,7 +39,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM booleans)
 - **Share links** encode the whole design in the URL hash (gzipped, client-side, nothing uploaded). Opening one shows a read-only preview, and the shared code never runs until the viewer chooses to fork it.
 - Command palette (⌘K / Ctrl+K), keyboard shortcuts, light/dark themes, and a mobile-friendly layout.
 
-**Private by design:** a static site with no backend. Geometry runs in WebAssembly in your browser, and your work is saved in your browser's IndexedDB. See [SECURITY.md](SECURITY.md).
+**Private by design:** a static site with no backend. Geometry runs in WebAssembly in your browser, and your work is saved in your browser's IndexedDB. Model code runs in a locked-down Worker with no network or storage access, and an opt-in sandbox can move it to a separate origin. See [SECURITY.md](SECURITY.md).
 
 ## Feedback & support
 
@@ -62,7 +62,7 @@ Open [http://localhost:5173/](http://localhost:5173/) for the landing page, or [
 
 ## How it works
 
-The editor runs user code in a sandboxed function. Code receives an `api` object with `Manifold`, `CrossSection`, and `setCircularSegments`, and must `return` a Manifold:
+The editor runs user code in a locked-down Web Worker. Code receives an `api` object with `Manifold`, `CrossSection`, and `setCircularSegments`, and must `return` a Manifold:
 
 ```javascript
 const { Manifold, CrossSection } = api;

@@ -38,17 +38,19 @@ The other entries in `package.json` are build and test tooling (Vite, Tailwind, 
 - External font/image loading (fingerprinting vectors)
 - Plugins (`<object>`/`<embed>`) and form posts to other sites
 
-The CSP does **not** restrict which HTTPS hosts the page can `fetch`. `connect-src` allows `https:` (plus `localhost`) on purpose, so that a **Custom (OpenAI-compatible) AI endpoint** you host yourself and **Import from URL** can reach any address you give them. The app only makes these requests when you trigger them: it talks to the AI provider you connected, downloads local-model weights you chose, and fetches URLs you import.
+The CSP does **not** restrict which HTTPS hosts the page itself can `fetch` (model code can't use this; see [Code execution model](#code-execution-model)). `connect-src` allows `https:` (plus `localhost`) on purpose, so that a **Custom (OpenAI-compatible) AI endpoint** you host yourself and **Import from URL** can reach any address you give them. The app only makes these requests when you trigger them: it talks to the AI provider you connected, downloads local-model weights you chose, and fetches URLs you import.
 
 **Geometry data is numbers only.** The `#geometry-data` DOM element (read by AI agents for model stats) contains only computed numerical values — vertex counts, volumes, bounding boxes. User code never appears in this element.
 
 ## Code execution model
 
-The geometry editor executes user-written JavaScript via `new Function('api', code)`. This is **not a security sandbox** — it's equivalent to `eval()` with strict mode. User code can access `window`, `document`, and browser APIs.
+Model code (typed by you, written by an AI, or arriving in an imported session, share link, or catalog fork) runs via `new Function('api', code)`. It never runs on the page's main thread, so it can't touch `window`, `document`, or the UI. It runs inside the geometry Web Worker instead.
 
-This is by design: Partwright is a code editor, like CodePen or JSFiddle. You should only run code you trust, just as you would in a browser dev console.
+Before that Worker evaluates any model code, it **locks down its own global scope**: it removes the network and storage APIs (`fetch`, `XMLHttpRequest`, `WebSocket`, `indexedDB`, Cache Storage, `navigator.storage`, and similar), pins them as `undefined` so they can't be put back, and then removes anything else not on a default-deny allowlist. Model code therefore can't read the IndexedDB store that holds your AI keys or send data anywhere. The engines still load their own static assets (WASM, OpenSCAD libraries, fonts) through a private same-origin loader that model code can't steer to another host. See [`src/geometry/workerLockdown.ts`](src/geometry/workerLockdown.ts).
 
-The `api` parameter provides only geometry primitives (`Manifold`, `CrossSection`, etc.) — no browser APIs are passed in. But the sandbox boundary is convention, not enforcement.
+For a second boundary, turn on the **engine sandbox** (⚙ Settings → Security — engine sandbox, off by default). It moves the Worker into a hidden iframe on a separate origin, so even a capability the lockdown missed would reach an empty origin with no access to the app's storage and a CSP that blocks outside requests. It fails closed: if the sandbox can't start, model code doesn't run until you reload or explicitly choose to run without the sandbox in that tab. See [`docs/engine-sandbox.md`](docs/engine-sandbox.md).
+
+The `api` parameter provides only geometry primitives (`Manifold`, `CrossSection`, etc.). Partwright is still a code editor, so the usual rule applies: be careful with code you don't trust, as you would with any script.
 
 ## How to verify
 
