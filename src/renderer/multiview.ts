@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
+import { meshDataToGeometry as indexedGeometry, triColoredGeometry } from './meshGeometry';
+import { previewProxy } from './previewProxy';
 import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegistry';
 import { presetIndex } from '../storage/db';
 import type { SessionAttachment, AttachedImage } from '../storage/attachment';
@@ -47,64 +49,17 @@ const VIEWS: ViewConfig[] = [
   { name: 'Under Back-Right',  position: (d) => [d, d, -d],    up: [0, 0, 1] },
 ];
 
-function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry();
-
-  if (meshData.triColors) {
-    // Unindex to carry per-triangle colors as per-vertex attributes
-    const numTri = meshData.numTri;
-    const positions = new Float32Array(numTri * 3 * 3);
-    const colors = new Float32Array(numTri * 3 * 3);
-    const { vertProperties, triVerts, numProp, triColors } = meshData;
-
-    for (let t = 0; t < numTri; t++) {
-      const v0 = triVerts[t * 3];
-      const v1 = triVerts[t * 3 + 1];
-      const v2 = triVerts[t * 3 + 2];
-
-      for (let c = 0; c < 3; c++) {
-        positions[t * 9 + c] = vertProperties[v0 * numProp + c];
-        positions[t * 9 + 3 + c] = vertProperties[v1 * numProp + c];
-        positions[t * 9 + 6 + c] = vertProperties[v2 * numProp + c];
-      }
-
-      const r = triColors[t * 3] / 255;
-      const g = triColors[t * 3 + 1] / 255;
-      const b = triColors[t * 3 + 2] / 255;
-      const painted = (triColors as Uint8Array & { _painted?: Uint8Array })._painted;
-      const isPainted = painted ? painted[t] === 1 : (r !== 0 || g !== 0 || b !== 0);
-      // Unpainted base is light gray, NOT pure white, so the mesh
-      // silhouette is visible against the white render background.
-      // Pure white made unpainted parts of a model invisible against
-      // the bg — only the painted patches showed, which read as
-      // "the renderer is broken" to a model reasoning from the image.
-      const cr = isPainted ? r : UNPAINTED_BASE;
-      const cg = isPainted ? g : UNPAINTED_BASE;
-      const cb = isPainted ? b : UNPAINTED_BASE;
-
-      for (let v = 0; v < 3; v++) {
-        colors[t * 9 + v * 3] = cr;
-        colors[t * 9 + v * 3 + 1] = cg;
-        colors[t * 9 + v * 3 + 2] = cb;
-      }
-    }
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
-  } else {
-    const positions = new Float32Array(meshData.numVert * 3);
-    for (let i = 0; i < meshData.numVert; i++) {
-      positions[i * 3] = meshData.vertProperties[i * meshData.numProp];
-      positions[i * 3 + 1] = meshData.vertProperties[i * meshData.numProp + 1];
-      positions[i * 3 + 2] = meshData.vertProperties[i * meshData.numProp + 2];
-    }
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(meshData.triVerts, 1));
-    geometry.computeVertexNormals();
-  }
-
-  return geometry;
+function meshDataToGeometry(full: MeshData): THREE.BufferGeometry {
+  // Offscreen renders are small: draw a huge mesh from a lighter proxy.
+  const meshData = previewProxy(full, getConfig().renderer.previewMaxTriangles);
+  // Unpainted base is light gray, NOT pure white, so the mesh silhouette is
+  // visible against the white render background. Pure white made unpainted
+  // parts of a model invisible against the bg — only the painted patches
+  // showed, which read as "the renderer is broken" to a model reasoning from
+  // the image.
+  return meshData.triColors
+    ? triColoredGeometry(meshData as MeshData & { triColors: Uint8Array }, [UNPAINTED_BASE, UNPAINTED_BASE, UNPAINTED_BASE])
+    : indexedGeometry(meshData);
 }
 
 let offRenderer: THREE.WebGLRenderer | null = null;

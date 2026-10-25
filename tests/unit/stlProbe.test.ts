@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { parseSTL, parseSTLSoup, weldPositions, weldSoup } from '../../src/import/parsers/stl';
-import { probeSTL, weldToleranceLadder } from '../../src/import/stlProbe';
+import { parseSTL, parseSTLSoup, weldSoup } from '../../src/import/parsers/stl';
+import { weldPositions } from '../../src/geometry/weldPositions';
+import { isOrientedEdgeManifold, probeSTL, weldToleranceLadder } from '../../src/import/stlProbe';
 import type { MeshData } from '../../src/geometry/types';
 
 type V = [number, number, number];
@@ -110,20 +111,32 @@ describe('STL parsing', () => {
 });
 
 describe('probeSTL', () => {
-  it('returns the first welded mesh the manifold check accepts', () => {
+  // The cube with one triangle missing: open, so the topology check fails and
+  // the injected ofMesh trial decides.
+  const OPEN_CUBE = CUBE.slice(1);
+
+  it('accepts a clean closed mesh on the topology check alone, without an ofMesh trial', () => {
+    let trials = 0;
+    const r = probeSTL(binarySTL(CUBE), { configuredTolerance: 1e-5, tryManifold: () => { trials++; return { ok: false, error: 'x' }; } })!;
+    expect(r.isManifold).toBe(true);
+    expect(trials).toBe(0);
+    expect(r.mesh.numTri).toBe(12);
+  });
+
+  it('falls back to the ofMesh trial ladder when the topology check fails', () => {
     const tried: number[] = [];
-    const r = probeSTL(binarySTL(CUBE), {
+    const r = probeSTL(binarySTL(OPEN_CUBE), {
       configuredTolerance: 1e-5,
       tryManifold: (m: MeshData) => { tried.push(m.numVert); return tried.length === 2 ? { ok: true } : { ok: false, error: 'Not manifold' }; },
     })!;
     expect(r.isManifold).toBe(true);
     expect(tried).toHaveLength(2);
-    expect(r.mesh.numTri).toBe(12);
+    expect(r.mesh.numTri).toBe(11);
   });
 
   it('reports the render-only fallback when every tolerance fails', () => {
     const progress: number[] = [];
-    const r = probeSTL(binarySTL(CUBE), {
+    const r = probeSTL(binarySTL(OPEN_CUBE), {
       configuredTolerance: 1e-5,
       tryManifold: () => ({ ok: false, error: 'Not manifold' }),
       onProgress: (f) => progress.push(f),
@@ -132,7 +145,7 @@ describe('probeSTL', () => {
     if (r.isManifold) return;
     expect(r.manifoldError).toBe('Not manifold');
     expect(r.maxTried).toBe(1e-3);
-    expect(r.triCount).toBe(12);
+    expect(r.triCount).toBe(11);
     expect(r.vertCount).toBe(8);
     expect(progress[0]).toBe(0);
     expect(progress.every((f, i) => i === 0 || f > progress[i - 1])).toBe(true);
@@ -147,5 +160,36 @@ describe('probeSTL', () => {
     const ladder = weldToleranceLadder(m, 2e-5);
     expect(ladder.slice(0, 3)).toEqual([2e-5, 1e-4, 1e-3]);
     expect(ladder[3]).toBeCloseTo(Math.hypot(10, 10, 10) * 5e-6, 12);
+  });
+});
+
+describe('isOrientedEdgeManifold', () => {
+  const cube = () => parseSTL(binarySTL(CUBE))!;
+
+  it('accepts a closed, consistently oriented mesh', () => {
+    expect(isOrientedEdgeManifold(cube())).toBe(true);
+  });
+
+  it('rejects an open mesh, a flipped triangle, and a face doubled with the same winding', () => {
+    const open = parseSTL(binarySTL(CUBE.slice(1)))!;
+    expect(isOrientedEdgeManifold(open)).toBe(false);
+    const flipped = cube();
+    const tv = flipped.triVerts;
+    [tv[0], tv[1]] = [tv[1], tv[0]];
+    expect(isOrientedEdgeManifold(flipped)).toBe(false);
+    const c = cube();
+    const doubled = { ...c, triVerts: new Uint32Array([...c.triVerts, ...c.triVerts.slice(0, 3)]), numTri: c.numTri + 1 };
+    expect(isOrientedEdgeManifold(doubled)).toBe(false);
+  });
+
+  it('accepts a pinched edge whose four faces pair up (two each way)', () => {
+    // Two cubes sharing exactly one edge (x=5, y=5, z in [-5, 5]).
+    const shifted = CUBE.map(t => t.map(([x, y, z]) => [x + 10, y + 10, z] as V));
+    expect(isOrientedEdgeManifold(parseSTL(binarySTL([...CUBE, ...shifted]))!)).toBe(true);
+  });
+
+  it('accepts two disjoint closed solids', () => {
+    const shifted = CUBE.map(t => t.map(([x, y, z]) => [x + 30, y, z] as V));
+    expect(isOrientedEdgeManifold(parseSTL(binarySTL([...CUBE, ...shifted]))!)).toBe(true);
   });
 });

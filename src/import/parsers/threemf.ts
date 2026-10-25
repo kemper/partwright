@@ -27,7 +27,7 @@
 import type { MeshData } from '../../geometry/types';
 import { dominantPaintColorState } from '../../export/paintColor3mf';
 import { openZip, type ZipArchive } from '../zipReader';
-import { weldPositions } from './stl';
+import { weldPositions } from '../../geometry/weldPositions';
 
 export interface ThreeMFPaletteEntry {
   /** `#rrggbb`, lower-case. */

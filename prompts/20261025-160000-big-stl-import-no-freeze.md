@@ -95,3 +95,52 @@ that exact mesh.
 - `query({ boundingBox })` no longer forces the build.
 - The weld's per-vertex arrays grow with the unique-vertex count. On the user's
   file the probe went from 14 s to 10.9 s, with a far lower peak heap.
+
+## Human
+
+Work on the remaining stalls in #1129. Also: on the first import the object is
+named "Object 1" instead of the file name, but later imports get the file name.
+Please fix that too.
+
+## Assistant
+
+## Round 2 — remaining stalls (#1129) + first-object name
+
+**First object name.** `createSession` always named its one object
+"Object 1", while the "new object" import path used `createPart(fileBase)`.
+`createSession` now takes an optional first-object name, and the session-
+creating import paths (mesh, code file, STEP→BREP) pass the session/file name.
+
+**Profiling-driven, again with the user's 3.7M-triangle file.** Each fix
+targets a measured stall:
+- **Geometry built twice (~1 s each).** `renderer/meshGeometry.ts` now builds
+  indexed positions + area-weighted normals once per MeshData, with
+  typed-array loops instead of Three's Vector3-based `computeVertexNormals`.
+  The arrays are cached in a WeakMap and shared by the viewport and offscreen
+  renders. The un-indexed coloured path is shared too. A unit test checks the
+  normals equal Three's.
+- **Thumbnail (4.5 s, GPU).** Offscreen renders draw meshes over
+  `renderer.previewMaxTriangles` (400k) from a vertex-clustered proxy
+  (`previewProxy.ts`, one linear pass). The cell is sized from the surface
+  area so the proxy lands near the budget. `weldPositions` moved to
+  `geometry/` (with a stride) so the renderer can use it.
+- **Edge stats and the piece split.** The engine Worker now computes these
+  next to `manifoldFacts` (validated; `pieceOfTri` is range-checked). The
+  piece summary uses counting sort into one typed buffer instead of per-piece
+  JS arrays.
+- **The probe's ofMesh (~10 s).** A CSR edge-topology check
+  (`isOrientedEdgeManifold`, ~0.4 s): every directed edge must occur exactly
+  as often as its reverse, which is the halfedge-pairing property ofMesh
+  enforces. It accepts the pinched edges real sculpts have, as ofMesh does
+  (the user's file has 10). Verified against ofMesh on clean, pinched-edge,
+  pinched-vertex and open meshes. A mesh that fails still gets the exact
+  ofMesh ladder. The STEP and 3MF paths use the same quick check.
+- **Paint adjacency.** `AdjacencyGraph` is now CSR (`nbStart`/`nbFlat`). One
+  typed-array view per triangle cost 2.1 s of the 3.9 s build, and the build
+  is now 1.1 s. Big meshes (`ui.paintAdjacencyWorkerMinTriangles`) build it in
+  a Worker when Paint opens, with a "Preparing…" toast. There is no idle
+  prewarm, since even the clone into the Worker cost 0.45 s per switch.
+
+**Result:** import 45 s → 37 s. Paint opens without a freeze. The remaining
+end-of-import busy time in this headless container is mostly software-GPU
+frame rendering, plus IndexedDB serializing the 67 MB mesh on `put()`.

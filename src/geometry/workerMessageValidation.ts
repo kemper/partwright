@@ -169,11 +169,26 @@ function optNum(o: Record<string, unknown>, k: string, field: string): void {
   if (o[k] !== undefined && !isFiniteNum(o[k])) fail(`${field}.${k} must be a finite number`);
 }
 /** `MeshResult.manifoldFacts` — the Worker-computed stats of a big run. */
-function checkManifoldFacts(v: unknown): void {
+function checkManifoldFacts(v: unknown, numTri: number | null): void {
   if (v === undefined || v === null) return;
   const field = 'manifoldFacts';
   if (!isPlainObject(v)) fail(`${field} must be a plain object`);
-  onlyKeys(v, ['bbox', 'volume', 'surfaceArea', 'genus', 'isManifold', 'manifoldStatus', 'componentCount', 'containedComponents', 'componentsInterpenetrate'], field);
+  onlyKeys(v, ['bbox', 'volume', 'surfaceArea', 'genus', 'isManifold', 'manifoldStatus', 'componentCount', 'containedComponents', 'componentsInterpenetrate', 'edges', 'pieces'], field);
+  if (v.pieces !== undefined) {
+    const p = v.pieces;
+    if (!isPlainObject(p)) fail(`${field}.pieces must be { count, pieceOfTri }`);
+    onlyKeys(p, ['count', 'pieceOfTri'], `${field}.pieces`);
+    if (!isNonNegInt(p.count) || !(p.pieceOfTri instanceof Int32Array)) fail(`${field}.pieces must be { count, pieceOfTri: Int32Array }`);
+    if (numTri !== null && p.pieceOfTri.length !== numTri) fail(`${field}.pieces.pieceOfTri must have one entry per triangle`);
+    const count = p.count as number;
+    for (const x of p.pieceOfTri) if (x < -1 || x >= count) fail(`${field}.pieces.pieceOfTri entry out of range`);
+  }
+  if (v.edges !== undefined) {
+    if (!isPlainObject(v.edges)) fail(`${field}.edges must be { min, mean }`);
+    onlyKeys(v.edges, ['min', 'mean'], `${field}.edges`);
+    reqNum(v.edges, 'min', `${field}.edges`);
+    reqNum(v.edges, 'mean', `${field}.edges`);
+  }
   if (v.bbox !== null) {
     if (!isPlainObject(v.bbox)) fail(`${field}.bbox must be { min, max } or null`);
     onlyKeys(v.bbox, ['min', 'max'], `${field}.bbox`);
@@ -410,7 +425,7 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   optBool(msg.renderOnly, 'renderOnly');
   optFinite(msg.workerMs, 'workerMs');
   optFinite(msg.engineHeapBytes, 'engineHeapBytes');
-  checkManifoldFacts(msg.manifoldFacts);
+  checkManifoldFacts(msg.manifoldFacts, numTri);
   optFinite(msg.voxelCount, 'voxelCount');
   optFinite(msg.voxelPieceCount, 'voxelPieceCount');
   optFinite(msg.voxelRes, 'voxelRes');

@@ -696,6 +696,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'lazyManifoldMinTriangles', v)}
         />
+        <Field cfgKey="renderer.previewMaxTriangles"
+          label="Thumbnail detail up to"
+          unit="triangles"
+          hint="Thumbnails and rendered views draw bigger meshes from a simplified copy."
+          tooltip="Version thumbnails and renderViews are small images. Drawing a multi-million-triangle mesh into one uploads it to the GPU a second time and rasterizes detail no pixel can show, which stalled the app for seconds after a big import. Above this many triangles they are drawn from a simplified copy of about this size (the model itself is untouched). 0 = always draw the full mesh."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.previewMaxTriangles}
+          value={c.renderer.previewMaxTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'previewMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -1559,15 +1569,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={500} max={60_000} integer
           onChange={v => set('ui', 'toolDialogOpenWaitMs', v)}
         />
-        <Field cfgKey="ui.paintPrewarmMaxTriangles"
-          label="Paint pre-warm up to"
+        <Field cfgKey="ui.paintAdjacencyWorkerMinTriangles"
+          label="Prepare paint in background from"
           unit="triangles"
-          hint="Bigger meshes prepare paint only when you open it."
-          tooltip="After each run the app quietly prepares the triangle-neighbour graph paint tools use, so Paint opens instantly. On a huge mesh that preparation takes seconds and froze the app while it looked idle (e.g. right after switching objects). Above this many triangles it waits until you open Paint. 0 = never pre-warm."
-          defaultValue={APP_CONFIG_DEFAULTS.ui.paintPrewarmMaxTriangles}
-          value={c.ui.paintPrewarmMaxTriangles}
+          hint="Bigger meshes prepare paint tools in a background worker."
+          tooltip="After each run the app prepares the triangle-neighbour graph the paint tools use, so Paint opens instantly. On a big mesh that takes a second or more and froze the app while it looked idle (e.g. right after switching objects). From this many triangles it is built in a background worker when you open Paint instead; paint clicks wait the moment it takes. 0 = always in the background."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintAdjacencyWorkerMinTriangles}
+          value={c.ui.paintAdjacencyWorkerMinTriangles}
           min={0} max={50_000_000} step={50_000} integer
-          onChange={v => set('ui', 'paintPrewarmMaxTriangles', v)}
+          onChange={v => set('ui', 'paintAdjacencyWorkerMinTriangles', v)}
         />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"

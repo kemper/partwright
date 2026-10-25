@@ -89,7 +89,7 @@ test.describe('STL import', () => {
       const pw = (window as any).partwright;
       const code = pw.getCode();
       const geo = pw.getGeometryData();
-      return { code, volume: geo.volume, isManifold: geo.isManifold, triangleCount: geo.triangleCount };
+      return { code, volume: geo.volume, isManifold: geo.isManifold, triangleCount: geo.triangleCount, objects: pw.listObjects().map((o: { name: string }) => o.name) };
     });
 
     expect(result.code).toContain('Manifold.ofMesh(api.imports[0])');
@@ -97,6 +97,8 @@ test.describe('STL import', () => {
     expect(result.volume).toBeCloseTo(1000, 1);
     expect(result.isManifold).toBe(true);
     expect(result.triangleCount).toBe(12);
+    // The first object is named after the file, like every later import.
+    expect(result.objects).toEqual(['unit-cube']);
   });
 
   test('a big mesh defers the main-thread solid: stats come from the engine Worker, slicing builds it on demand', async ({ page }) => {

@@ -150,7 +150,7 @@ import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
-import { probeSTL, weldToleranceLadder, type STLProbeResult } from './import/stlProbe';
+import { isOrientedEdgeManifold, probeSTL, weldToleranceLadder, type STLProbeResult } from './import/stlProbe';
 import type { ManifoldFacts } from './geometry/manifoldFacts';
 import { probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
 import { parse3MF, weldMesh, type ThreeMFParseResult } from './import/parsers/threemf';
@@ -903,7 +903,8 @@ function currentObjectPartsSummary(): ObjectPartsSummary | null {
   if (!mesh) return null;
   const c = objectPartsCache;
   if (c && c.mesh === mesh && c.labels === currentLabelMap) return c.summary;
-  const summary = summarizeObjectParts(mesh, currentLabelMap);
+  // A big run's Worker already split the mesh into pieces (manifoldFacts).
+  const summary = summarizeObjectParts(mesh, currentLabelMap, manifoldFactsFor(mesh)?.pieces);
   objectPartsCache = { mesh, labels: currentLabelMap, summary };
   return summary;
 }
@@ -3784,7 +3785,7 @@ async function main() {
   // Import a raw code payload as a new session. Shared between file drop and the AI API.
   async function importCodePayload(code: string, language: Language, sessionName?: string, companions?: Record<string, string>): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
-    const session = await createSession(sessionName, language);
+    const session = await createSession(sessionName, language, sessionName);
     // Register companions right after session creation so their tabs appear in
     // the bar immediately — before the (potentially slow) first compile. createSession
     // calls setCompanionFiles({}) internally, so companions must be re-applied here.
@@ -3839,7 +3840,7 @@ async function main() {
   // build on.
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-    const session = await createSession(sessionName, 'manifold-js');
+    const session = await createSession(sessionName, 'manifold-js', sessionName);
     // Fresh session: drop the previous model's paint before running the import
     // wrapper (same reason as importCodePayload). seedRegions below are added
     // AFTER this clear, so an imported colored mesh's own seeds survive.
@@ -4818,7 +4819,8 @@ async function main() {
   async function openStepBrepInNewSession(file: File, opts: { awaitRun: boolean; sessionName?: string }): Promise<string | null> {
     const starter = stepBrepStarter(file.name);
     if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-    await createSession(opts.sessionName ?? file.name.replace(/\.(step|stp)$/i, ''), 'replicad');
+    const stepName = opts.sessionName ?? file.name.replace(/\.(step|stp)$/i, '');
+    await createSession(stepName, 'replicad', stepName);
     const err = await pushStepBrepShape(file);
     if (err) return err;
     setValue(starter);
@@ -4869,7 +4871,7 @@ async function main() {
       return `Failed to parse STEP file: ${(e as Error).message}`;
     }
     if (!mesh || mesh.numTri === 0) return `STEP file produced no geometry: ${file.name}`;
-    const trial = tryConstructManifold(mesh);
+    const trial = quickManifoldTrial(mesh);
     return { mesh: toImportedMesh(file.name, mesh, 'step'), isManifold: trial.ok };
   }
 
@@ -5093,13 +5095,13 @@ async function main() {
    *  Welding keeps triangle order, so per-triangle colours stay aligned with
    *  the returned `source`. */
   function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): { probe: ParsedSTLProbe; source: MeshData } {
-    const first = tryConstructManifold(raw);
+    const first = quickManifoldTrial(raw);
     if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, format), isManifold: true }, source: raw };
     let manifoldError: string | null = first.error;
     let maxTried = 0;
     for (const tol of meshWeldToleranceLadder(raw)) {
       const welded = weldMesh(raw, tol);
-      const trial = tryConstructManifold(welded);
+      const trial = quickManifoldTrial(welded);
       if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, format), isManifold: true }, source: welded };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
@@ -5538,6 +5540,13 @@ async function main() {
       numTri: mesh.numTri,
       numProp: mesh.numProp,
     };
+  }
+
+  /** `tryConstructManifold`, short-circuited by the cheap edge-topology check
+   *  that settles a clean mesh without a (multi-second, main-thread on this
+   *  path) `Manifold.ofMesh`. See `isOrientedEdgeManifold`. */
+  function quickManifoldTrial(mesh: MeshData): { ok: true } | { ok: false; error: string } {
+    return isOrientedEdgeManifold(mesh) ? { ok: true } : tryConstructManifold(mesh);
   }
 
   /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
@@ -10676,7 +10685,8 @@ async function main() {
       const cx = (x0 + x1 + x2) / 3, cy = (y0 + y1 + y2) / 3, cz = (z0 + z1 + z2) / 3;
       if (inFootprint(cx, cy, cz) || inFootprint(x0, y0, z0) || inFootprint(x1, y1, z1) || inFootprint(x2, y2, z2)) {
         footprintTris.add(t);
-        for (const n of adjacency.neighbors[t]) {
+        for (let j = adjacency.nbStart[t]; j < adjacency.nbStart[t + 1]; j++) {
+          const n = adjacency.nbFlat[j];
           if (!visited.has(n)) { visited.add(n); queue.push(n); }
         }
       }

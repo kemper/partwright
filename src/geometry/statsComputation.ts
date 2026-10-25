@@ -97,9 +97,9 @@ export function computeGeometryStats(
 
   // Cheap mesh-quality signals (mirrors model:preview): shortest/mean edge for
   // sub-extrusion detail, and bbox aspect ratio for sliver/fragility checks.
-  const edges = meshData.numTri > 0
+  const edges = f?.edges ?? (meshData.numTri > 0
     ? edgeStats(meshData.vertProperties, meshData.numProp, meshData.triVerts, meshData.numTri)
-    : { min: 0, mean: 0 };
+    : { min: 0, mean: 0 });
   const aspectRatio = aspectRatioOf(dimensions);
 
   return {

@@ -3,13 +3,22 @@
 import type { MeshData } from '../geometry/types';
 
 export interface AdjacencyGraph {
-  /** For each triangle index, the list of adjacent triangle indices (sharing an edge). */
-  neighbors: Uint32Array[];
+  /** Adjacent triangles as CSR: the neighbours of triangle t are
+   *  `nbFlat[nbStart[t] .. nbStart[t + 1])` (see `neighborsOf`). Flat on
+   *  purpose — one typed-array view per triangle cost ~2 s to allocate at
+   *  3.7M triangles, more than building the graph itself. */
+  nbStart: Uint32Array;
+  nbFlat: Uint32Array;
   /** Triangle normals — 3 floats per triangle (nx, ny, nz). */
   normals: Float32Array;
   /** Triangle centroids — 3 floats per triangle (cx, cy, cz). Used by the
    *  brush tool's radius expansion (sphere query against centroids). */
   centroids: Float32Array;
+}
+
+/** The triangles adjacent to `t` (a view — don't mutate). */
+export function neighborsOf(adjacency: AdjacencyGraph, t: number): Uint32Array {
+  return adjacency.nbFlat.subarray(adjacency.nbStart[t], adjacency.nbStart[t + 1]);
 }
 
 /** Build a triangle adjacency graph from mesh data.
@@ -70,7 +79,6 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
   }
   const nbFlat = new Uint32Array(nbStart[numTri]);
   stamp.fill(-1);
-  const neighbors: Uint32Array[] = new Array(numTri);
   for (let t = 0; t < numTri; t++) {
     let w = nbStart[t];
     stamp[t] = t;
@@ -81,7 +89,6 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
         if (stamp[u] !== t) { stamp[u] = t; nbFlat[w++] = u; }
       }
     }
-    neighbors[t] = nbFlat.subarray(nbStart[t], nbStart[t + 1]);
   }
 
   // Compute triangle normals
@@ -129,7 +136,8 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
   }
 
   return {
-    neighbors,
+    nbStart,
+    nbFlat,
     normals,
     centroids,
   };
@@ -195,7 +203,7 @@ export function findCoplanarRegion(
   adjacency: AdjacencyGraph,
   normalTolerance = 0.9995,
 ): Set<number> {
-  const { neighbors, normals } = adjacency;
+  const { nbStart, nbFlat, normals } = adjacency;
   const result = new Set<number>();
 
   const queue = [seedTri];
@@ -207,9 +215,8 @@ export function findCoplanarRegion(
     const cny = normals[current * 3 + 1];
     const cnz = normals[current * 3 + 2];
 
-    const adj = neighbors[current];
-    for (let i = 0; i < adj.length; i++) {
-      const neighbor = adj[i];
+    for (let i = nbStart[current]; i < nbStart[current + 1]; i++) {
+      const neighbor = nbFlat[i];
       if (result.has(neighbor)) continue;
 
       const nx = normals[neighbor * 3];
@@ -247,7 +254,7 @@ export function gateRegionByBend(
   normalTolerance: number,
 ): Set<number> {
   if (normalTolerance <= -1 || !candidates.has(seedTri)) return candidates;
-  const { neighbors, normals } = adjacency;
+  const { nbStart, nbFlat, normals } = adjacency;
   const result = new Set<number>([seedTri]);
   const stack = [seedTri];
   while (stack.length > 0) {
@@ -255,9 +262,8 @@ export function gateRegionByBend(
     const cnx = normals[current * 3];
     const cny = normals[current * 3 + 1];
     const cnz = normals[current * 3 + 2];
-    const adj = neighbors[current];
-    for (let i = 0; i < adj.length; i++) {
-      const neighbor = adj[i];
+    for (let i = nbStart[current]; i < nbStart[current + 1]; i++) {
+      const neighbor = nbFlat[i];
       if (result.has(neighbor) || !candidates.has(neighbor)) continue;
       const dot = cnx * normals[neighbor * 3] + cny * normals[neighbor * 3 + 1] + cnz * normals[neighbor * 3 + 2];
       if (dot < normalTolerance) continue;
@@ -297,9 +303,9 @@ export function findConnectedFromSeed(
    *  of the seed triangle's color. Ignored when triColors is absent. */
   colorOpts?: { triColors: Uint8Array; maxColorDist: number },
 ): Set<number> {
-  const { neighbors, normals, centroids } = adjacency;
+  const { nbStart, nbFlat, normals, centroids } = adjacency;
   const result = new Set<number>();
-  if (seedTri < 0 || seedTri >= neighbors.length) return result;
+  if (seedTri < 0 || seedTri >= nbStart.length - 1) return result;
 
   // The seed itself must satisfy the clamp — otherwise we're already
   // outside the intended region and the walk is meaningless.
@@ -325,9 +331,8 @@ export function findConnectedFromSeed(
 
   while (queue.length > 0) {
     const current = queue.pop()!;
-    const adj = neighbors[current];
-    for (let i = 0; i < adj.length; i++) {
-      const neighbor = adj[i];
+    for (let i = nbStart[current]; i < nbStart[current + 1]; i++) {
+      const neighbor = nbFlat[i];
       if (result.has(neighbor)) continue;
 
       const nx = normals[neighbor * 3];
@@ -381,7 +386,7 @@ export function findColorRegion(
    *  *original* matched color even after the seed triangle has been recolored. */
   seedColorOverride?: readonly [number, number, number],
 ): Set<number> {
-  const { neighbors } = adjacency;
+  const { nbStart, nbFlat } = adjacency;
   const result = new Set<number>();
 
   if (colorTolerance >= 1 || !triColors) {
@@ -390,9 +395,8 @@ export function findColorRegion(
     result.add(seedTri);
     while (queue.length > 0) {
       const current = queue.pop()!;
-      const adj = neighbors[current];
-      for (let i = 0; i < adj.length; i++) {
-        const nb = adj[i];
+      for (let i = nbStart[current]; i < nbStart[current + 1]; i++) {
+        const nb = nbFlat[i];
         if (!result.has(nb)) { result.add(nb); queue.push(nb); }
       }
     }
@@ -411,9 +415,8 @@ export function findColorRegion(
 
   while (queue.length > 0) {
     const current = queue.pop()!;
-    const adj = neighbors[current];
-    for (let i = 0; i < adj.length; i++) {
-      const nb = adj[i];
+    for (let i = nbStart[current]; i < nbStart[current + 1]; i++) {
+      const nb = nbFlat[i];
       if (result.has(nb)) continue;
 
       const dr = (triColors[nb * 3]     - sr) / 255;

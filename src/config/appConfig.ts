@@ -163,6 +163,11 @@ export interface AppConfig {
      *  only when first needed instead of after every run. That rebuild is a
      *  synchronous `Manifold.ofMesh` — ~6 s of frozen UI at 2M triangles. */
     lazyManifoldMinTriangles: number;
+    /** Largest mesh (triangles) drawn as-is in offscreen renders (version
+     *  thumbnails, renderViews). Bigger meshes are drawn from a vertex-
+     *  clustered proxy of about this many triangles: the full mesh costs
+     *  seconds of GPU upload + raster for detail a small image can't show. */
+    previewMaxTriangles: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -376,11 +381,11 @@ export interface AppConfig {
      *  to appear (a pre-export "unsaved objects" confirm can come first) before
      *  reporting the prefill as staged-for-when-it-opens (ms). */
     toolDialogOpenWaitMs: number;
-    /** Largest mesh (triangles) whose paint adjacency graph is pre-built in an
-     *  idle callback after each run. Past it the graph is built only when
-     *  paint opens — an idle callback is still one synchronous task, and the
-     *  build takes seconds on a multi-million-triangle mesh. */
-    paintPrewarmMaxTriangles: number;
+    /** Triangle count from which the paint tools' adjacency graph is built in
+     *  a background Worker when Paint opens, instead of on the main thread (in
+     *  an idle callback after each run). An idle callback is still one
+     *  synchronous task, and the build takes ~1 s at a few million triangles. */
+    paintAdjacencyWorkerMinTriangles: number;
     /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
      *  tool; the oldest drop past this). */
     maxPendingAppliedNotes: number;
@@ -645,6 +650,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     isolateGhostOpacity: 0.1,
     creaseEdgeMaxTriangles: 200_000,
     lazyManifoldMinTriangles: 250_000,
+    previewMaxTriangles: 400_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -711,7 +717,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   },
   ui: {
     toolDialogOpenWaitMs: 4000,
-    paintPrewarmMaxTriangles: 300_000,
+    paintAdjacencyWorkerMinTriangles: 300_000,
     maxPendingAppliedNotes: 6,
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,

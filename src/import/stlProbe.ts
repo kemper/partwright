@@ -65,11 +65,55 @@ export function probeSTL(bytes: Uint8Array, opts: STLProbeOptions): STLProbeResu
     opts.onProgress?.((i + 1) / (tolerances.length + 1), `Checking ${soupTris} triangles (weld tolerance ${tol.toExponential(0)})…`);
     const mesh = tol === DEFAULT_STL_WELD_TOLERANCE ? probe : weldSoup(soup, tol);
     if (!mesh || mesh.numTri === 0) continue;
-    const trial = opts.tryManifold(mesh);
+    // The cheap topology check settles the common (clean) case without a
+    // multi-second `Manifold.ofMesh` the engine will repeat anyway; only a
+    // mesh it rejects pays for the exact trial.
+    const trial = isOrientedEdgeManifold(mesh) ? { ok: true as const } : opts.tryManifold(mesh);
     if (trial.ok) return { mesh, isManifold: true };
     manifoldError = trial.error;
     if (tol > maxTried) maxTried = tol;
     bestMesh = mesh;
   }
   return { mesh: bestMesh, isManifold: false, manifoldError, maxTried, triCount: probe.numTri, vertCount: probe.numVert };
+}
+
+/** True when every directed edge a→b of the mesh occurs exactly as often as
+ *  its reverse b→a — each edge's triangles pair up with opposite orientation.
+ *  That is the property `Manifold.ofMesh` checks: it pairs each halfedge with
+ *  an opposite one and fails "Not manifold" when one is left over (a pinched
+ *  edge shared by two pairs of faces is fine — real sculpts have them). A
+ *  welded mesh can't trip its other checks (out-of-range indices, non-finite
+ *  coordinates), so a mesh that passes here is accepted there, at a fraction
+ *  of the cost (a CSR pass, ~0.2 s, vs. ~10 s of halfedge build + sort at
+ *  3.7M triangles). A mesh that fails still gets the exact ofMesh trial. */
+export function isOrientedEdgeManifold(mesh: Pick<MeshData, 'triVerts' | 'numTri' | 'numVert'>): boolean {
+  const { triVerts, numTri, numVert } = mesh;
+  if (numTri === 0) return false;
+  // Outgoing directed edges per vertex, as CSR.
+  const start = new Uint32Array(numVert + 1);
+  for (let i = 0; i < numTri * 3; i++) {
+    const v = triVerts[i];
+    if (v >= numVert) return false;
+    start[v + 1]++;
+  }
+  for (let v = 0; v < numVert; v++) start[v + 1] += start[v];
+  const to = new Uint32Array(numTri * 3);
+  const cursor = start.slice(0, numVert);
+  for (let t = 0; t < numTri; t++) {
+    const a = triVerts[t * 3], b = triVerts[t * 3 + 1], c = triVerts[t * 3 + 2];
+    to[cursor[a]++] = b;
+    to[cursor[b]++] = c;
+    to[cursor[c]++] = a;
+  }
+  for (let a = 0; a < numVert; a++) {
+    for (let i = start[a]; i < start[a + 1]; i++) {
+      const b = to[i];
+      let forward = 0;
+      for (let j = start[a]; j < start[a + 1]; j++) if (to[j] === b) forward++;
+      let back = 0;
+      for (let j = start[b]; j < start[b + 1]; j++) if (to[j] === a) back++;
+      if (forward !== back) return false;
+    }
+  }
+  return true;
 }

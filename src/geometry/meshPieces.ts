@@ -77,14 +77,14 @@ export function computeMeshPieces(mesh: PieceMesh): MeshPieces {
   }
 
   // Number the roots in first-triangle order so piece 0 is stable.
-  const rootToPiece = new Map<number, number>();
+  const rootToPiece = new Int32Array(numVert).fill(-1);
+  let count = 0;
   for (let t = 0; t < numTri; t++) {
     const r = find(triVerts[t * 3]);
-    let p = rootToPiece.get(r);
-    if (p === undefined) { p = rootToPiece.size; rootToPiece.set(r, p); }
-    pieceOfTri[t] = p;
+    if (rootToPiece[r] < 0) rootToPiece[r] = count++;
+    pieceOfTri[t] = rootToPiece[r];
   }
-  return { count: rootToPiece.size, pieceOfTri };
+  return { count, pieceOfTri };
 }
 
 /** Union every pair of vertices at the same quantized position. Numeric (sort
@@ -122,7 +122,8 @@ export interface ObjectPartSummary {
 
 export interface ObjectPieceSummary {
   index: number;
-  triangles: number[];
+  /** Ascending triangle ids (a view into one shared buffer — don't mutate). */
+  triangles: Uint32Array;
   /** The part (label) covering most of this piece's surface area, if any. */
   part?: string;
 }
@@ -159,11 +160,21 @@ export function summarizeObjectParts(
     for (let t = 0; t < mesh.numTri; t++) if (owner[t] < 0) unlabeled.push(t);
   }
 
-  const pieceTris: number[][] = Array.from({ length: pieces.count }, () => []);
+  // Counting sort into one typed buffer: pushing millions of ids onto
+  // per-piece JS arrays was most of this function's cost on a big mesh.
+  const start = new Uint32Array(pieces.count + 1);
   for (let t = 0; t < mesh.numTri; t++) {
     const p = pieces.pieceOfTri[t];
-    if (p >= 0) pieceTris[p].push(t);
+    if (p >= 0) start[p + 1]++;
   }
+  for (let p = 0; p < pieces.count; p++) start[p + 1] += start[p];
+  const flat = new Uint32Array(start[pieces.count]);
+  const cursor = start.slice(0, pieces.count);
+  for (let t = 0; t < mesh.numTri; t++) {
+    const p = pieces.pieceOfTri[t];
+    if (p >= 0) flat[cursor[p]++] = t;
+  }
+  const pieceTris = Array.from({ length: pieces.count }, (_, p) => flat.subarray(start[p], start[p + 1]));
   // Weight by surface area, not triangle count: a finely-tessellated handle
   // shouldn't out-vote the big, coarsely-meshed body it's attached to.
   const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;

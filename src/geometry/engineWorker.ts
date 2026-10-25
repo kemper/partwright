@@ -42,6 +42,8 @@
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { computeManifoldFacts } from './manifoldFacts';
+import { edgeStats } from './geometryHeuristics';
+import { computeMeshPieces } from './meshPieces';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine, runVoxelGrid } from './engines/voxel';
@@ -336,7 +338,7 @@ self.onmessage = async (event: MessageEvent) => {
       const liveResult = (result as { manifold?: unknown }).manifold;
       const manifoldFacts = effectiveLang === 'manifold-js' && mesh && liveResult && !result.renderOnly &&
         typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
-        ? computeManifoldFacts(liveResult)
+        ? { ...computeManifoldFacts(liveResult), edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri), pieces: computeMeshPieces(mesh) }
         : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
@@ -351,6 +353,7 @@ self.onmessage = async (event: MessageEvent) => {
         // Voxel meshes carry per-triangle colors; transfer them too (the
         // manifold-js path leaves triColors undefined).
         if (mesh.triColors)     transfer.push(mesh.triColors.buffer);
+        if (manifoldFacts?.pieces) transfer.push(manifoldFacts.pieces.pieceOfTri.buffer);
         // Voxel runs also return the grid itself as typed arrays.
         const vg = result.voxelGrid as VoxelGridTransfer | undefined;
         if (vg) transfer.push(vg.keys.buffer, vg.colors.buffer);

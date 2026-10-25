@@ -23,6 +23,13 @@ export interface ManifoldFacts {
   componentCount: number;
   containedComponents: number;
   componentsInterpenetrate: boolean;
+  /** Shortest / mean triangle edge length of the result mesh — not a
+   *  Manifold figure, but a full pass over a big mesh, so the Worker computes
+   *  it alongside. Absent when computed on the main thread. */
+  edges?: { min: number; mean: number };
+  /** The mesh's connected components (`computeMeshPieces`), for the object
+   *  list's Pieces section — also a full pass, so computed alongside. */
+  pieces?: { count: number; pieceOfTri: Int32Array };
 }
 
 export function manifoldBoundingBox(manifold: Manifold): ManifoldFacts['bbox'] {

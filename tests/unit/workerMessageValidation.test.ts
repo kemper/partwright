@@ -75,7 +75,7 @@ describe('checkEngineWorkerMessage', () => {
       surfaceOps: [{ id: 'fuzzy', params: { amplitude: 0.2 } }], materialSpec: { preset: 'brass' },
       lostLabels: null, paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W' }],
       renderOnly: false, workerMs: 12, engineHeapBytes: 1024,
-      manifoldFacts: { bbox: { min: [0, 0, 0], max: [1, 1, 1] }, volume: 1, surfaceArea: 6, genus: 0, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false },
+      manifoldFacts: { bbox: { min: [0, 0, 0], max: [1, 1, 1] }, volume: 1, surfaceArea: 6, genus: 0, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, edges: { min: 0.5, mean: 1 }, pieces: { count: 1, pieceOfTri: new Int32Array(1) } },
     }).ok).toBe(true);
     expect(checkEngineWorkerMessage({ type: 'execute_result', callId: 'exec-2', mesh: null, error: 'x', diagnostics: [{ message: 'x', severity: 'error' }], labelMapEntries: null, lostLabels: null, paramsSchema: null, workerMs: 1 }).ok).toBe(true);
     expect(checkEngineWorkerMessage({ type: 'validate_result', callId: 'v', result: { valid: true } }).ok).toBe(true);
@@ -103,6 +103,8 @@ describe('checkEngineWorkerMessage', () => {
       { type: 'execute_result', callId: 'exec-3', mesh: null, sdfLabelCounts: { a: 'NaN' } },
       { type: 'execute_result', callId: 'exec-3', mesh: null, manifoldFacts: { bbox: null, volume: 'big', surfaceArea: 0, genus: null, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false } },
       { type: 'execute_result', callId: 'exec-3', mesh: null, manifoldFacts: { bbox: null, volume: 1, surfaceArea: 0, genus: null, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, extra: 1 } },
+      { type: 'execute_result', callId: 'exec-3', mesh: mesh(), manifoldFacts: { bbox: null, volume: 1, surfaceArea: 0, genus: null, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, pieces: { count: 1, pieceOfTri: new Int32Array([3]) } } },
+      { type: 'execute_result', callId: 'exec-3', mesh: mesh(), manifoldFacts: { bbox: null, volume: 1, surfaceArea: 0, genus: null, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, pieces: { count: 1, pieceOfTri: new Int32Array(2) } } },
       { type: 'execute_result', callId: 7, mesh: null },
       { type: 'validate_result', callId: 'exec-3', result: { valid: 'yes' } },
       { type: 'exportSTEP_result', callId: 'exec-3', blob: 'not a blob' },

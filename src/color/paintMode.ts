@@ -17,6 +17,8 @@ import { setPaintAccessors, notifyUserPaint } from './paintAccessors';
 import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
 import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 import { getConfig } from '../config/appConfig';
+import { buildAdjacencyInWorker } from './adjacencyClient';
+import { showToast } from '../ui/toast';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
@@ -389,13 +391,39 @@ export function getCurrentMesh(): MeshData | null {
 setPaintAccessors({ getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields });
 
 
+/** True while the adjacency graph for `currentMesh` is being built in the
+ *  Worker; paint clicks wait for it (the tools no-op without adjacency). */
+let adjacencyPending = false;
+
+/** Build the adjacency graph for a big mesh in the Worker (seconds on the main
+ *  thread at a few million triangles). Applied only if the mesh is still
+ *  current; on Worker failure, falls back to a main-thread build. */
+function buildAdjacencyOffThread(mesh: MeshData): void {
+  adjacencyPending = true;
+  buildAdjacencyInWorker(mesh).then(
+    (graph) => { if (currentMesh === mesh) { adjacency = graph; adjacencyPending = false; } },
+    () => { if (currentMesh === mesh) { adjacency = buildAdjacency(mesh); adjacencyPending = false; } },
+  );
+}
+
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
   adjacency = null; // invalidate — mesh changed
+  adjacencyPending = false;
   lastBucketSeed = null; // the remembered seed indexes the old tessellation
   invalidateProjection(); // the id-buffer geometry is rebuilt against the new mesh
-  if (active) {
+  if (mesh.numTri >= getConfig().ui.paintAdjacencyWorkerMinTriangles) {
+    // Big mesh: build in the Worker, and only while Paint is open — no idle
+    // prewarm (an idle callback is still one long main-thread task, and even
+    // handing the mesh to the Worker costs a copy on every run / object
+    // switch). activate() starts it when Paint opens.
+    if (active) {
+      buildAdjacencyOffThread(mesh);
+      onSlabDragMeshChanged();
+      onBoxDragMeshChanged();
+    }
+  } else if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
     onBoxDragMeshChanged();
@@ -403,16 +431,10 @@ export function updatePaintMesh(mesh: MeshData): void {
     // Pre-warm in the background so activate() finds it ready.
     // Uses requestIdleCallback when available (Chrome/Firefox/Edge); falls back
     // to setTimeout so Safari still benefits from the deferral.
-    // An idle callback still runs as ONE synchronous task, so on a huge mesh
-    // (seconds to build) the prewarm would freeze an idle-looking app — e.g.
-    // right after switching objects. Past the cap, build only when paint
-    // actually opens.
     const prewarm = () => {
       if (currentMesh === mesh && adjacency === null) adjacency = buildAdjacency(mesh);
     };
-    if (mesh.numTri > getConfig().ui.paintPrewarmMaxTriangles) {
-      // no prewarm — activate() builds on demand
-    } else if (typeof requestIdleCallback !== 'undefined') {
+    if (typeof requestIdleCallback !== 'undefined') {
       requestIdleCallback(prewarm);
     } else {
       setTimeout(prewarm, 0);
@@ -426,11 +448,14 @@ export function activate(): void {
   active = true;
   enforcePaletteConstraint(); // a constrained palette must not paint an ad-hoc held-over colour
 
-  if (currentMesh && !adjacency) {
+  if (currentMesh && !adjacency && !adjacencyPending) {
     // Fallback: pre-warm callback hasn't fired yet (e.g. user opened paint
-    // immediately after execution). Build synchronously now.
-    adjacency = buildAdjacency(currentMesh);
+    // immediately after execution). Build synchronously now — or, for a big
+    // mesh, in the Worker (paint clicks no-op until it lands).
+    if (currentMesh.numTri >= getConfig().ui.paintAdjacencyWorkerMinTriangles) buildAdjacencyOffThread(currentMesh);
+    else adjacency = buildAdjacency(currentMesh);
   }
+  if (adjacencyPending) showToast('Preparing paint tools for this large model — a moment…', { variant: 'neutral', source: 'app' });
 
   // Veto OrbitControls only for left-button pointerdowns that hit the model
   // and only when a tool wants the click. Off-model clicks fall through so
