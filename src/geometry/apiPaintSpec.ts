@@ -10,3 +10,9 @@
 export const API_PAINT_DESCRIPTOR_KINDS = ['box', 'slab', 'cylinder', 'byLabel', 'pattern'] as const;
 
 export type ApiPaintDescriptorKind = typeof API_PAINT_DESCRIPTOR_KINDS[number];
+
+/** Most colours one `api.paint.pattern` may carry. Enforced by the recorder
+ *  (a readable `api.paint.pattern:` error) and by the Worker→main validator. */
+export const MAX_PAINT_PATTERN_COLORS = 64;
+/** Most `anchors` one `api.paint.pattern` may carry (same two enforcement points). */
+export const MAX_PAINT_PATTERN_ANCHORS = 1024;

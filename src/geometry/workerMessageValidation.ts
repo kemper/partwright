@@ -12,10 +12,10 @@
 // Pure (data tables only) so it runs in the unit tier.
 
 import type { MeshData } from './types';
-import { API_PAINT_DESCRIPTOR_KINDS } from './apiPaintSpec';
+import { API_PAINT_DESCRIPTOR_KINDS, MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS } from './apiPaintSpec';
 import { COLOR_PATTERN_KINDS } from '../color/colorPattern';
 import { isSurfaceOpId, parseSurfaceOpts } from '../surface/surfaceOpSpec';
-import { normalizeParamSchema } from './params';
+import { normalizeParamSchema, type ParamSpec } from './params';
 import { isMaterialPresetName } from '../renderer/materialSpec';
 
 /** Every message type the engine Worker legitimately sends. */
@@ -48,11 +48,15 @@ const MAX_DATA_NODES = 250_000;
 const PAINT_KINDS: ReadonlySet<string> = new Set(API_PAINT_DESCRIPTOR_KINDS);
 const PATTERN_KINDS: ReadonlySet<string> = new Set(COLOR_PATTERN_KINDS);
 const AXES: ReadonlySet<string> = new Set(['x', 'y', 'z']);
-const MAX_PATTERN_COLORS = 64;
-const MAX_PATTERN_ANCHORS = 1024;
 
 export type WorkerMessageCheck =
-  | { ok: true; msg: Record<string, unknown> & { type: string } }
+  | {
+      ok: true;
+      msg: Record<string, unknown> & { type: string };
+      /** execute results: the Customizer schema re-normalized on THIS thread
+       *  (normalizeParamSchema) — use it instead of the Worker's raw array. */
+      paramsSchema?: ParamSpec[];
+    }
   | { ok: false; reason: string; callId: string | null; type: string | null };
 
 class Bad extends Error {}
@@ -85,7 +89,12 @@ function isOwnedAnyView(v: unknown): boolean {
  *  typed arrays over owned buffers. No Map/Set/Date/Blob, no
  *  `__proto__`/`constructor` keys, bounded depth and node count. */
 export function isPlainData(v: unknown): boolean {
-  const seen = new WeakSet<object>();
+  // `checked`: nodes fully validated already (a shared, acyclic reference is
+  // walked once). `onPath`: ancestors of the node being visited — reaching one
+  // again is a cycle, which no consumer of these payloads can handle (a JSON
+  // copy or a recursive walk would never terminate), so it's refused.
+  const checked = new WeakSet<object>();
+  const onPath = new Set<object>();
   let budget = MAX_DATA_NODES;
   const walk = (x: unknown, depth: number): boolean => {
     if (--budget < 0 || depth > MAX_DATA_DEPTH) return false;
@@ -94,19 +103,28 @@ export function isPlainData(v: unknown): boolean {
     if (t === 'string' || t === 'number' || t === 'boolean') return true;
     if (t !== 'object') return false;
     const o = x as object;
-    if (seen.has(o)) return true; // shared reference — already validated
-    seen.add(o);
-    if (ArrayBuffer.isView(o)) return isOwnedAnyView(o);
-    if (Array.isArray(o)) {
-      for (const item of o) if (!walk(item, depth + 1)) return false;
-      return true;
+    if (onPath.has(o)) return false; // cycle
+    if (checked.has(o)) return true; // shared reference — already validated
+    let ok: boolean;
+    if (ArrayBuffer.isView(o)) {
+      ok = isOwnedAnyView(o);
+    } else if (Array.isArray(o)) {
+      onPath.add(o);
+      ok = true;
+      for (const item of o) if (!walk(item, depth + 1)) { ok = false; break; }
+      onPath.delete(o);
+    } else if (!isPlainObject(o)) {
+      ok = false;
+    } else {
+      onPath.add(o);
+      ok = true;
+      for (const key of Object.keys(o)) {
+        if (FORBIDDEN_KEYS.has(key) || !walk((o as Record<string, unknown>)[key], depth + 1)) { ok = false; break; }
+      }
+      onPath.delete(o);
     }
-    if (!isPlainObject(o)) return false;
-    for (const key of Object.keys(o)) {
-      if (FORBIDDEN_KEYS.has(key)) return false;
-      if (!walk((o as Record<string, unknown>)[key], depth + 1)) return false;
-    }
-    return true;
+    if (ok) checked.add(o);
+    return ok;
   };
   return walk(v, 0);
 }
@@ -188,10 +206,10 @@ export function checkPaintDescriptor(d: unknown, field = 'paintOps descriptor'):
     case 'pattern': {
       onlyKeys(d, ['kind', 'pattern', 'colors', 'scope', 'scale', 'axis', 'warp', 'coverage', 'seed', 'anchors', 'withinPart'], f);
       if (typeof d.pattern !== 'string' || !PATTERN_KINDS.has(d.pattern)) fail(`${f}.pattern must be one of ${COLOR_PATTERN_KINDS.join(', ')}`);
-      if (!Array.isArray(d.colors) || d.colors.length === 0 || d.colors.length > MAX_PATTERN_COLORS || !d.colors.every(isRgb)) fail(`${f}.colors must be 1–${MAX_PATTERN_COLORS} [r, g, b] colours`);
+      if (!Array.isArray(d.colors) || d.colors.length === 0 || d.colors.length > MAX_PAINT_PATTERN_COLORS || !d.colors.every(isRgb)) fail(`${f}.colors must be 1–${MAX_PAINT_PATTERN_COLORS} [r, g, b] colours`);
       for (const k of ['scale', 'warp', 'coverage', 'seed']) optNum(d, k, f);
       optAxis(d, 'axis', f);
-      if (d.anchors !== undefined && (!Array.isArray(d.anchors) || d.anchors.length > MAX_PATTERN_ANCHORS || !d.anchors.every(a => isTuple(a, 3)))) fail(`${f}.anchors must be up to ${MAX_PATTERN_ANCHORS} [x, y, z] points`);
+      if (d.anchors !== undefined && (!Array.isArray(d.anchors) || d.anchors.length > MAX_PAINT_PATTERN_ANCHORS || !d.anchors.every(a => isTuple(a, 3)))) fail(`${f}.anchors must be up to ${MAX_PAINT_PATTERN_ANCHORS} [x, y, z] points`);
       if (d.scope !== undefined) {
         const s = d.scope;
         if (!isPlainObject(s)) fail(`${f}.scope must be an object`);
@@ -243,7 +261,7 @@ function checkSurfaceOp(op: unknown): void {
 
 /** Re-normalize the captured Customizer schema with the same validator
  *  `api.params` uses (types, options, min/max/step, defaults). */
-function checkParamsSchema(schema: unknown[]): void {
+function checkParamsSchema(schema: unknown[]): ParamSpec[] {
   const raw: Record<string, unknown> = {};
   for (const p of schema) {
     if (!isPlainObject(p) || typeof p.key !== 'string' || typeof p.type !== 'string') fail('paramsSchema entries need string key and type');
@@ -252,7 +270,7 @@ function checkParamsSchema(schema: unknown[]): void {
     raw[key as string] = spec;
   }
   try {
-    normalizeParamSchema(raw);
+    return normalizeParamSchema(raw);
   } catch (e) {
     fail(`paramsSchema: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -324,6 +342,7 @@ function checkMeshField(v: unknown, field: string, nullable: boolean): number | 
 }
 
 function checkDiagnostics(v: unknown, field: string): void {
+  // optPlainArray → isPlainData: refuses cycles anywhere inside, incl. extra keys.
   const arr = optPlainArray(v, field);
   if (!arr) return;
   for (const d of arr) {
@@ -332,7 +351,7 @@ function checkDiagnostics(v: unknown, field: string): void {
 }
 
 /** The colour / label / op payload shared by execute_result and execute_preview. */
-function checkModelPayload(msg: Record<string, unknown>, numTri: number | null): void {
+function checkModelPayload(msg: Record<string, unknown>, numTri: number | null): ParamSpec[] | undefined {
   const lme = msg.labelMapEntries;
   if (lme !== undefined && lme !== null) {
     if (!Array.isArray(lme)) fail('labelMapEntries must be an array');
@@ -367,7 +386,7 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
     checkMaterialSpec(msg.materialSpec);
   }
   const schema = optPlainArray(msg.paramsSchema, 'paramsSchema');
-  if (schema) checkParamsSchema(schema);
+  const normalizedSchema = schema ? checkParamsSchema(schema) : undefined;
   const lost = optPlainArray(msg.lostLabels, 'lostLabels');
   if (lost && !lost.every(s => typeof s === 'string')) fail('lostLabels must be strings');
   optBool(msg.renderOnly, 'renderOnly');
@@ -385,6 +404,7 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
       if (FORBIDDEN_KEYS.has(k) || typeof n !== 'number' || !Number.isFinite(n)) fail('sdfLabelCounts values must be finite numbers');
     }
   }
+  return normalizedSchema;
 }
 
 function checkFraction(v: unknown): void {
@@ -403,6 +423,7 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
   if (type === null || !ENGINE_WORKER_MESSAGE_TYPES.has(type)) {
     return { ok: false, reason: `unknown message type ${JSON.stringify(String(data.type)).slice(0, 60)}`, callId, type: null };
   }
+  let paramsSchema: ParamSpec[] | undefined;
   try {
     if (type !== 'ready' && data.callId !== null && data.callId !== undefined && typeof data.callId !== 'string') fail('callId must be a string');
     if (type !== 'ready' && type !== 'error' && callId === null) fail('callId is required');
@@ -421,7 +442,7 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
         optString(data.error, 'error');
         const numTri = checkMeshField(data.mesh, 'mesh', true);
         checkDiagnostics(data.diagnostics, 'diagnostics');
-        checkModelPayload(data, numTri);
+        paramsSchema = checkModelPayload(data, numTri);
         break;
       }
       case 'validate_result': {
@@ -474,5 +495,5 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
     if (e instanceof Bad) return { ok: false, reason: e.message, callId, type };
     throw e;
   }
-  return { ok: true, msg: data as Record<string, unknown> & { type: string } };
+  return { ok: true, msg: data as Record<string, unknown> & { type: string }, ...(paramsSchema ? { paramsSchema } : {}) };
 }

@@ -222,7 +222,7 @@ function handleMessage(pw: PoolWorker, data: unknown): void {
   job.resolve({
     mesh,
     error: (msg.error as string | null) ?? null,
-    paramsSchema: (msg.paramsSchema as PoolBuildResult['paramsSchema']) ?? undefined,
+    paramsSchema: check.paramsSchema, // normalized by the validator, not the Worker's raw array
     labelMap: labelMapEntries ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)])) : undefined,
     labelColors: labelColorEntries && labelColorEntries.length > 0 ? new Map(labelColorEntries) : undefined,
     paintOps: (msg.paintOps as PoolBuildResult['paintOps']) ?? undefined,
@@ -278,8 +278,8 @@ export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
 
 /** Tear down the pool and reject anything still queued. Call when the Assembly
  *  view closes so the extra WASM heaps are released. */
-export function disposeEnginePool(): void {
-  const err = new Error('Assembly view closed');
+export function disposeEnginePool(reason = 'Assembly view closed'): void {
+  const err = new Error(reason);
   for (const pw of workers) {
     for (const job of pw.inflight.values()) job.reject(err);
     try { pw.worker.terminate(); } catch { /* already gone */ }
@@ -294,4 +294,4 @@ export function disposeEnginePool(): void {
 
 // Pool workers belong to the session whose parts they built (#1090): drop them
 // (and anything queued) the moment the active session changes.
-onEngineTrustDomainChange(() => { disposeEnginePool(); });
+onEngineTrustDomainChange(() => { disposeEnginePool('Build cancelled — the session changed'); });

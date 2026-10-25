@@ -4409,7 +4409,6 @@ async function main() {
       // backfill the rest of the new parts' thumbnails offscreen.
       const result = await importSessionPartsIntoActive(data);
       if (result && result.addedParts.length > 0) {
-
         // Navigate to the first newly-added part so it appears selected with a
         // single progressive render (fast preview → full). We do NOT route
         // through selectPart here: its cancelCurrentExecution + saveVersion-based
@@ -5736,7 +5735,7 @@ async function main() {
           }
         }));
       } finally {
-        disposeEnginePool();
+        disposeEnginePool('Export bake finished');
       }
       return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
     } finally {
@@ -6684,7 +6683,7 @@ async function main() {
     const progress = startExportProgress({
       title: 'Preparing 3MF…',
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
     });
     try {
       const { baked } = await bakePartsParallel(bakeParts, {
@@ -6753,7 +6752,7 @@ async function main() {
     const progress = startExportProgress({
       title: `Preparing ${formatTag}…`,
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool(); },
+      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
     });
     try {
       const { baked } = await bakePartsParallel(bakeParts, {
