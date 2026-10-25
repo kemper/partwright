@@ -16,6 +16,7 @@ npm run lint:deps         # madge: circular dependencies (gate — graph is acyc
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
 npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
+npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
