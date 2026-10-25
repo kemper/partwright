@@ -27,7 +27,7 @@ async function openEditorWithSlab(page: import('playwright/test').Page) {
 /** Bucket-paint the top face at the viewport centre. */
 async function bucketPaintCentre(page: import('playwright/test').Page) {
   await page.evaluate(() => {
-    const canvas = document.querySelector('canvas')!;
+    const canvas = document.querySelector('#viewport-container canvas')!;
     const r = canvas.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     const fire = (t: string, x: number, y: number, buttons: number) =>

@@ -41,6 +41,7 @@ import {
 } from './openai';
 import type { ChatMessage, ChatToggles, TurnUsage } from './types';
 import { customReasoningFields } from './thinkingLevels';
+import { bridgeErrorHint, isSubscriptionAuthError } from './cliProxy';
 import type { ToolDefinition } from './tools';
 
 export type { StreamCallbacks, StreamResult } from './openai';
@@ -68,6 +69,36 @@ function modelsUrl(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, '')}/models`;
 }
 
+/** Explain a 401/403 from `/models`. The two causes need different fixes, so
+ *  say which one it is: no key was sent (none saved in this browser — e.g.
+ *  site data was cleared, or this is a different origin), or the key that was
+ *  sent doesn't match the server's list (CLIProxyAPI's `access.api-keys`, or
+ *  root `api-keys` in pre-v8 configs). The server's own reason is appended
+ *  when it gives one (CLIProxyAPI says "Missing API key" / "Invalid API key"). */
+async function authErrorMessage(res: Response, apiKey: string, baseUrl: string, model = ''): Promise<string> {
+  const body = await res.text().catch(() => '');
+  let reason = '';
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown; detail?: unknown } | null;
+    const err = parsed?.error;
+    const msg = typeof err === 'string' ? err
+      : typeof (err as { message?: unknown } | null)?.message === 'string' ? (err as { message: string }).message
+      : typeof parsed?.message === 'string' ? parsed.message
+      : typeof parsed?.detail === 'string' ? parsed.detail
+      : '';
+    reason = msg;
+  } catch { /* not JSON — fall back to the raw body below */ }
+  if (!reason) reason = body;
+  reason = reason.replace(/\s+/g, ' ').trim().slice(0, 120);
+  const said = reason ? ` (server: "${reason}")` : '';
+  // A bridge passing through a lost subscription login (not its own key
+  // check) — the key is fine; the fix is logging in again.
+  if (isSubscriptionAuthError(reason)) return `${res.status}: the endpoint's upstream login failed${said}. ${bridgeErrorHint(reason, baseUrl, model) ?? ''}`.trim();
+  return apiKey.trim().length === 0
+    ? `${res.status}: the endpoint requires an API key, and none is saved here${said}. Paste the key the endpoint expects into the API key field.`
+    : `${res.status}: the endpoint rejected the API key${said}. It doesn't match the key the endpoint expects — paste the right one here, or for a CLIProxyAPI bridge run the endpoint's step 2 command, which adds this key to its config (other keys stay).`;
+}
+
 function authHeaders(apiKey: string): HeadersInit {
   const headers: Record<string, string> = {};
   if (apiKey && apiKey.trim().length > 0) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
@@ -79,26 +110,35 @@ export async function streamTurn(
   callbacks: StreamCallbacks = {},
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  return openaiStreamTurn(
-    {
-      apiKey: spec.apiKey,
-      model: spec.model,
-      systemPrompt: spec.systemPrompt,
-      systemSuffix: spec.systemSuffix,
-      history: spec.history,
-      tools: spec.tools,
-      maxTokens: spec.maxTokens,
-      // Self-hosted servers implement Chat Completions, not the Responses
-      // API. `thinking` is deliberately omitted so the OpenAI transport never
-      // attaches its own reasoning_effort; the opt-in one rides in
-      // extraChatFields below (see module header).
-      baseUrl: spec.baseUrl,
-      forceChatCompletions: true,
-      extraChatFields: customReasoningFields(spec.thinking ?? 'off', spec.sendReasoningEffort === true),
-    },
-    callbacks,
-    signal,
-  );
+  try {
+    return await openaiStreamTurn(
+      {
+        apiKey: spec.apiKey,
+        model: spec.model,
+        systemPrompt: spec.systemPrompt,
+        systemSuffix: spec.systemSuffix,
+        history: spec.history,
+        tools: spec.tools,
+        maxTokens: spec.maxTokens,
+        // Self-hosted servers implement Chat Completions, not the Responses
+        // API. `thinking` is deliberately omitted so the OpenAI transport never
+        // attaches its own reasoning_effort; the opt-in one rides in
+        // extraChatFields below (see module header).
+        baseUrl: spec.baseUrl,
+        forceChatCompletions: true,
+        extraChatFields: customReasoningFields(spec.thinking ?? 'off', spec.sendReasoningEffort === true),
+      },
+      callbacks,
+      signal,
+    );
+  } catch (err) {
+    // A CLIProxyAPI bridge whose subscription login lapsed answers with auth
+    // errors that never say "log in again" — append the fix (see cliProxy.ts).
+    const message = err instanceof Error ? err.message : String(err);
+    const hint = bridgeErrorHint(message, spec.baseUrl, spec.model);
+    if (!hint) throw err;
+    throw new Error(`${message}\n\n${hint}`);
+  }
 }
 
 /** Single-shot non-streaming call used by compaction + review. Delegates to
@@ -111,7 +151,14 @@ export async function summarize(
   baseUrl: string,
   maxTokens = 4096,
 ): Promise<{ text: string; usage: TurnUsage }> {
-  return openaiSummarize(apiKey, model, system, user, maxTokens, baseUrl);
+  try {
+    return await openaiSummarize(apiKey, model, system, user, maxTokens, baseUrl);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const hint = bridgeErrorHint(message, baseUrl, model);
+    if (!hint) throw err;
+    throw new Error(`${message}\n\n${hint}`);
+  }
 }
 
 /** Probe the endpoint to confirm it's reachable and OpenAI-compatible. We
@@ -127,9 +174,7 @@ export async function validateConnection(baseUrl: string, apiKey: string): Promi
   try {
     const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
     if (res.ok) return null;
-    if (res.status === 401 || res.status === 403) {
-      return `${res.status}: endpoint requires an API key (or the key is wrong).`;
-    }
+    if (res.status === 401 || res.status === 403) return await authErrorMessage(res, apiKey, base);
     const body = await res.text().catch(() => '');
     return `${res.status}: ${body.slice(0, 200) || res.statusText || 'request failed'}`;
   } catch (err) {
@@ -148,7 +193,7 @@ export async function listModels(baseUrl: string, apiKey: string): Promise<{ id:
   if (base.length === 0) throw new Error('Enter an endpoint URL first.');
   const res = await fetch(modelsUrl(base), { method: 'GET', headers: authHeaders(apiKey) });
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) throw new Error('Endpoint requires an API key (or the key is wrong).');
+    if (res.status === 401 || res.status === 403) throw new Error(await authErrorMessage(res, apiKey, base));
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status}: ${body.slice(0, 200) || res.statusText}`);
   }

@@ -14,6 +14,19 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import * as THREE from 'three';
 import { getConfig } from '../config/appConfig';
+import { createSliderEntry } from './sliderEntry';
+import { createToolNote, type ToolOpenContext } from './toolRegistry';
+
+/** A partial ReliefOptions (every sub-object partial) — what an
+ *  `openTool('import-relief')` prefill stages on top of the wizard defaults. */
+export interface ReliefStagedOptions {
+  mode?: ReliefImportMode;
+  common?: Partial<ReliefOptions['common']>;
+  luminance?: Partial<ReliefOptions['luminance']>;
+  quantized?: Partial<ReliefOptions['quantized']>;
+  preprocess?: Partial<ReliefOptions['preprocess']>;
+  crop?: ReliefOptions['crop'];
+}
 
 export interface ReliefImportModalOptions {
   aiAvailable: boolean;
@@ -23,6 +36,12 @@ export interface ReliefImportModalOptions {
   // Pre-load these option values (recent imports keep the user's tweaks so
   // a re-click reopens the wizard already tuned).
   initialOptions?: ReliefOptions;
+  // Staged on top of the fresh defaults (palette default kept) — the AI
+  // openTool prefill. The user still clicks Create.
+  stagedOptions?: ReliefStagedOptions;
+  // "Suggested by AI: …" line at the top of the wizard.
+  note?: string;
+  noteSource?: ToolOpenContext['source'];
   // Called when the user clicks "AI assist"; returns option overrides to merge.
   onAiAssist?: (image: ImageData, opts: ReliefOptions) => Promise<Partial<ReliefOptions> & { note?: string }>;
   // Called on Create with the chosen image + resolved options + a base name.
@@ -58,6 +77,10 @@ const MODES: ModeDef[] = [
 // Only one relief wizard at a time; createModalShell already enforces a single
 // shell, but we keep our own flag to short-circuit re-entrant opens cleanly.
 let isOpen = false;
+let openWizard: { state: () => Record<string, unknown>; close: () => void } | null = null;
+export function isReliefImportOpen(): boolean { return isOpen; }
+export function getReliefImportState(): Record<string, unknown> | null { return openWizard?.state() ?? null; }
+export function closeReliefImport(): void { openWizard?.close(); }
 
 export function openReliefImportModal(options: ReliefImportModalOptions): void {
   if (isOpen) return;
@@ -79,6 +102,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   } else if (opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0) {
     opts.quantized.fixedPalette = listSlotRgb255();
   }
+  if (options.stagedOptions) mergeOptions(opts, options.stagedOptions as Partial<ReliefOptions>);
+  if (options.stagedOptions?.crop) opts.crop = { ...options.stagedOptions.crop };
   let image: ImageData | null = null;
   let svgText: string | null = null;
   // The currently-picked source File, captured so we can register it with the
@@ -106,8 +131,26 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       if (preview3DTimer !== undefined) window.clearTimeout(preview3DTimer);
       three.dispose();
       isOpen = false;
+      openWizard = null;
     },
   });
+  if (options.note) {
+    const banner = createToolNote(options.note, options.noteSource);
+    banner.classList.add('mb-2');
+    shell.body.prepend(banner);
+  }
+  openWizard = {
+    state: () => ({
+      src: pickedFile?.name ?? null,
+      mode: opts.mode,
+      options: { ...opts.common },
+      luminance: { ...opts.luminance },
+      quantized: { ...opts.quantized },
+      preprocess: { ...opts.preprocess },
+      crop: opts.crop ? { ...opts.crop } : null,
+    }),
+    close: () => shell.close(),
+  };
 
   // --- Source picker -------------------------------------------------------
   const pickRow = document.createElement('div');
@@ -765,7 +808,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       // Reset crop to the full image when a new source is picked. We don't
       // know the user's intent for the new picture, so a fresh import starts
       // uncropped.
-      if (!options.initialOptions?.crop) opts.crop = { left: 0, top: 0, right: 1, bottom: 1 };
+      if (!options.initialOptions?.crop && !options.stagedOptions?.crop) opts.crop = { left: 0, top: 0, right: 1, bottom: 1 };
       renderCrop();
       sourceLabel.textContent = `${baseName} — ${off.width}×${off.height}`;
       renderPreview();
@@ -802,7 +845,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     e.preventDefault();
     shell.body.classList.remove('ring-2', 'ring-blue-500/60');
     const file = e.dataTransfer?.files?.[0];
-    if (file) void loadFile(file);
+    if (!file) return;
+    // Keep the drop from also reaching main.ts's document-level import.
+    e.stopPropagation();
+    void loadFile(file);
   });
 
   // Click-to-pick background colour for silhouette mode. The user clicks the
@@ -1237,57 +1283,24 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     set: (v: number) => void,
     range: { min: number; max: number; step: number; int?: boolean },
   ): HTMLElement {
-    // Slider for dragged exploration, plus a typeable number input for exact
-    // entry. Two-way bound and clamped to the slider's range.
+    // Slider for dragged exploration, plus a typeable number box for exact
+    // entry. The box floors at range.min (typed negatives would break
+    // downstream consumers) but has no max — main.ts's clampReliefCommon
+    // enforces the hard upper bound at create time — so a value past the
+    // slider just pins its thumb while the setting carries the typed value.
     const { wrap, labelRow, valueEl } = fieldWrap(label, unit);
     valueEl.remove();
-    const fmt = (v: number) => (range.int ? String(Math.round(v)) : v.toFixed(2));
-    const numEl = document.createElement('input');
-    numEl.type = 'number';
-    // Number input deliberately omits `max` so the user can type a value
-    // larger than the slider visually allows (matching the freehand pattern
-    // used elsewhere in the app — main.ts's clampReliefCommon enforces a
-    // hard upper bound at create time).
-    numEl.min = String(range.min);
-    numEl.step = String(range.step);
-    numEl.value = fmt(get());
-    numEl.className = 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500';
-    labelRow.appendChild(numEl);
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(range.min);
-    input.max = String(range.max);
-    input.step = String(range.step);
-    input.value = String(get());
-    input.className = 'w-full accent-blue-500 cursor-pointer';
-    const onSlider = (): void => {
-      const v = range.int ? Math.round(Number(input.value)) : Number(input.value);
-      set(v);
-      numEl.value = fmt(v);
-      schedulePreview();
-    };
-    const onNumber = (): void => {
-      let v = Number(numEl.value);
-      if (!Number.isFinite(v)) { numEl.value = fmt(get()); return; }
-      if (range.int) v = Math.round(v);
-      // Floor at range.min (typed negatives would break downstream consumers),
-      // but accept values larger than range.max — the slider just pins at its
-      // visual max while the underlying value carries the user's input.
-      if (v < range.min) v = range.min;
-      set(v);
-      input.value = String(Math.min(v, range.max));
-      numEl.value = fmt(v);
-      schedulePreview();
-    };
-    input.addEventListener('input', onSlider);
-    numEl.addEventListener('change', onNumber);
-    numEl.addEventListener('blur', onNumber);
-    numEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { onNumber(); numEl.blur(); } });
-    controlRefreshers.push(() => {
-      input.value = String(get());
-      numEl.value = fmt(get());
+    const entry = createSliderEntry({
+      label, min: range.min, max: range.max, step: range.step, value: get(),
+      hardMax: Infinity, integer: range.int,
+      format: v => (range.int ? String(Math.round(v)) : v.toFixed(2)),
+      onChange: v => { set(v); schedulePreview(); },
+      rangeClass: 'w-full accent-blue-500 cursor-pointer',
+      inputClass: 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500',
     });
-    wrap.appendChild(input);
+    labelRow.appendChild(entry.input);
+    controlRefreshers.push(() => entry.set(get()));
+    wrap.appendChild(entry.range);
     parent.appendChild(wrap);
     return wrap;
   }

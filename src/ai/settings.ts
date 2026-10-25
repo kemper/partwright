@@ -2,12 +2,17 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, parseThinkingLevel, type AnthropicModelId, type ChatToggles, type CustomContextSettings, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
+import { CLI_PROXY_DEFAULT_BASE_URL } from './cliProxy';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
+import { DEFAULT_CUSTOM_CONTEXT, parseCustomContext } from './customContext';
+
+/** Desktop code-pane presentation — see `AiSettings.codeView`. */
+export type CodeViewMode = 'hidden' | 'mini' | 'full';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -19,13 +24,15 @@ export interface AiSettings {
    *  Persists the user's choice thereafter, so once they open it it stays open
    *  on reload (and once they close it it stays closed). */
   drawerOpen: boolean;
-  /** Whether the code editor pane is collapsed. `null` means "no explicit
-   *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
-   *  visitor with the AI panel up doesn't see two competing surfaces in the
-   *  editor (and a visitor with it closed gets the code pane). Once the user
-   *  clicks "Hide code" / "Show code" the choice is persisted and respected on
-   *  every subsequent load. */
+  /** Legacy two-state "Hide code" preference, superseded by `codeView` and no
+   *  longer written. Still read once: a stored `true` carries over as
+   *  `codeView: 'hidden'` until the user picks a mode. */
   editorCollapsed: boolean | null;
+  /** How the desktop code pane is shown: `'mini'` (the compact code map —
+   *  the default), `'full'` (the CodeMirror editor) or `'hidden'`. `null` means
+   *  no choice since the three-way mode shipped; layout.ts then honors a legacy
+   *  `editorCollapsed: true` as `'hidden'` and otherwise starts on `'mini'`. */
+  codeView: CodeViewMode | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
   /** True once the user picked an auto-compact mode themselves (or had a
@@ -120,12 +127,16 @@ export interface AutoReviewSettings {
   /** How many times the agent may act on a non-passing review before the
    *  loop stops (0 = just post the review). */
   fixRounds: number;
+  /** Send the user's earlier messages in this chat (not the agent's replies)
+   *  with the review, so it grades against every requirement and correction
+   *  — not just the latest message. Also the 👁 Review modal's default. */
+  includeConversation: boolean;
 }
 
 /** Upper bound for AutoReviewSettings.fixRounds. */
 export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
 
-const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1 };
+const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1, includeConversation: true };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
 const SETTINGS_REV = 1;
@@ -133,13 +144,12 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 /** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
  *  CLIProxyAPI's default localhost port (:8317) — the subscription bridge the
- *  Custom tab's onboarding card walks the user through — so the endpoint is
- *  pre-filled and the common case (driving Partwright from a Claude/Codex
- *  plan via the bridge) needs no typing. The single source of truth for this
- *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
-export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
+ *  Custom tab walks the user through — so the common case (driving Partwright
+ *  from a Claude/Codex plan via the bridge) needs no typing. Single source of
+ *  truth: cliProxy.ts. */
+const DEFAULT_CUSTOM_BASE_URL = CLI_PROXY_DEFAULT_BASE_URL;
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl' | 'customReasoningEffort' | 'customContext'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -212,6 +222,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   customModels: [],
   customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
   customReasoningEffort: false,
+  customContext: { ...DEFAULT_CUSTOM_CONTEXT, modelWindows: {} },
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -219,6 +230,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   toggles: DEFAULT_TOGGLES,
   drawerOpen: false,
   editorCollapsed: null,
+  codeView: null,
   // Auto at 70% of the context window, capped by the auto-compact token
   // ceiling (app config). With history caching, compacting only when the
   // conversation is big keeps each cache miss affordable.
@@ -280,6 +292,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     customModels: [...t.customModels],
     customBaseUrl: t.customBaseUrl,
     customReasoningEffort: t.customReasoningEffort,
+    customContext: { ...t.customContext, modelWindows: { ...t.customContext.modelWindows } },
   };
 }
 
@@ -380,6 +393,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       customModels: settings.toggles.customModels,
       customBaseUrl: settings.toggles.customBaseUrl,
       customReasoningEffort: settings.toggles.customReasoningEffort,
+      customContext: settings.toggles.customContext,
     },
   };
 }
@@ -526,6 +540,14 @@ export function setCustomReasoningEffort(settings: AiSettings, enabled: boolean)
   };
 }
 
+/** Custom provider: the endpoint's context profile (window + prompt tier). */
+export function setCustomContext(settings: AiSettings, ctx: CustomContextSettings): AiSettings {
+  return {
+    ...settings,
+    toggles: { ...settings.toggles, customContext: parseCustomContext(ctx) },
+  };
+}
+
 /** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
 export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
   return {
@@ -556,6 +578,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
     customReasoningEffort: typeof partial.customReasoningEffort === 'boolean' ? partial.customReasoningEffort : settings.toggles.customReasoningEffort,
+    customContext: partial.customContext ? parseCustomContext({ ...settings.toggles.customContext, ...partial.customContext }) : settings.toggles.customContext,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -578,6 +601,7 @@ interface LegacyAiSettings {
   autoCompactUserSet?: boolean;
   drawerOpen?: boolean;
   editorCollapsed?: boolean | null;
+  codeView?: CodeViewMode | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
   systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']>;
   customLocalModels?: CustomLocalModel[];
@@ -648,6 +672,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       : (partial.autoCompactMode !== undefined && partial.autoCompactMode !== 'off'),
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
     editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
+    codeView: partial.codeView === 'hidden' || partial.codeView === 'mini' || partial.codeView === 'full' ? partial.codeView : null,
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
@@ -670,6 +695,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
         : DEFAULT_SETTINGS.toggles.customModels,
       customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
       customReasoningEffort: typeof tgls.customReasoningEffort === 'boolean' ? tgls.customReasoningEffort : DEFAULT_SETTINGS.toggles.customReasoningEffort,
+      customContext: parseCustomContext(tgls.customContext),
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
@@ -698,6 +724,7 @@ function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): Auto
     provider: r.provider && AUTO_REVIEW_PROVIDERS.includes(r.provider) ? r.provider : DEFAULT_AUTO_REVIEW.provider,
     model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
     fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
+    includeConversation: typeof r.includeConversation === 'boolean' ? r.includeConversation : DEFAULT_AUTO_REVIEW.includeConversation,
   };
 }
 

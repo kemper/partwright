@@ -156,6 +156,62 @@ describe('repairToolHistory', () => {
   });
 });
 
+describe('non-adjacent tool_results (the "unexpected tool_use_id" 400)', () => {
+  function errored(seq: number): ChatMessage {
+    return { id: `e${seq}`, sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: '400' }], createdAt: seq * 1000, seq, errored: true };
+  }
+
+  it("strips a result answering a call that isn't in the previous message", () => {
+    // t1 was already answered; a later carrier carries a stray duplicate of it
+    // alongside the results for the turn right before it.
+    const history = [
+      userText(0, 'hi'),
+      assistant(1, ['t1']),
+      toolResults(2, ['t1']),
+      assistant(3, ['t2', 't3']),
+      toolResults(4, ['t2', 't3', 't1']),
+    ];
+    expect(hasOrphanedToolCalls(history)).toBe(true);
+    const r = repairToolHistory(history);
+    expect(r.changed).toBe(true);
+    expect(r.messages.find(m => m.id === 'r4')!.toolResults!.map(x => x.toolUseId)).toEqual(['t2', 't3']);
+    expect(r.messages.find(m => m.id === 'r2')!.toolResults!.map(x => x.toolUseId)).toEqual(['t1']);
+    expect(r.toPersist.map(m => m.id)).toEqual(['r4']);
+    expect(hasOrphanedToolCalls(r.messages)).toBe(false);
+  });
+
+  it('moves a misplaced carrier back next to its call, keeping the real result', () => {
+    // The carrier for t1 ended up after a different assistant turn.
+    const history = [
+      userText(0, 'hi'),
+      assistant(1, ['t1']),
+      assistant(2, [], 'meanwhile'),
+      toolResults(3, ['t1']),
+    ];
+    const r = repairToolHistory(history);
+    expect(r.changed).toBe(true);
+    expect(r.messages.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    const carrier = r.messages[2];
+    expect(carrier.toolResults).toEqual([{ toolUseId: 't1', content: 'ok', isError: false }]);
+    expect(r.toDelete.map(m => m.id)).toEqual(['r3']);
+    expect(hasOrphanedToolCalls(r.messages)).toBe(false);
+  });
+
+  it('dedupes a result repeated inside one carrier', () => {
+    const history = [assistant(0, ['t1']), toolResults(1, ['t1', 't1'])];
+    const r = repairToolHistory(history);
+    expect(r.changed).toBe(true);
+    expect(r.messages[1].toolResults).toHaveLength(1);
+  });
+
+  it('ignores an in-memory error bubble between a call and its carrier', () => {
+    const history = [userText(0, 'hi'), assistant(1, ['t1']), errored(2), toolResults(3, ['t1'])];
+    const r = repairToolHistory(history);
+    expect(r.changed).toBe(false);
+    expect(r.toDelete).toHaveLength(0);
+  });
+});
+
 describe('isToolHistoryMismatchError', () => {
   it('matches the Anthropic orphaned-tool_use 400 (the reported error)', () => {
     const msg =

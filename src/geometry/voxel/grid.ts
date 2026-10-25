@@ -168,6 +168,15 @@ function normalizeLockBox(val: unknown): { min: Vec3; max: Vec3 } {
   };
 }
 
+/** Wire form of a {@link VoxelGrid} for crossing a Worker boundary. */
+export interface VoxelGridTransfer {
+  /** Packed voxel keys (see `packKey`) — up to ~8.6e9, so Float64. */
+  keys: Float64Array;
+  /** `0xRRGGBB` per key. */
+  colors: Uint32Array;
+  surfacing: Surfacing;
+}
+
 /** A mutable sparse voxel grid. Builder methods chain (`return this`). */
 export class VoxelGrid {
   /** @internal Brand so the engine can recognize a returned grid even across
@@ -642,6 +651,43 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Delete the face-connected piece that `point` lies on — the voxel half of
+   *  `api.removePiece([x, y, z])`. `point` is in mesh coordinates (voxel
+   *  (x, y, z) spans [x, x+1]³), typically a point on the piece's surface; the
+   *  occupied voxel nearest it within one cell starts the flood. Returns the
+   *  number of voxels removed (0 when no voxel is that close). */
+  removePieceAt(point: Vec3): number {
+    const [px, py, pz] = point;
+    let seed: number | null = null;
+    let best = Infinity;
+    const bx = Math.floor(px), by = Math.floor(py), bz = Math.floor(pz);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const x = bx + dx, y = by + dy, z = bz + dz;
+      if (!inRange(x, y, z)) continue;
+      const key = packKey(x, y, z);
+      if (!this.cells.has(key)) continue;
+      const d = (x + 0.5 - px) ** 2 + (y + 0.5 - py) ** 2 + (z + 0.5 - pz) ** 2;
+      if (d < best) { best = d; seed = key; }
+    }
+    if (seed === null) return 0;
+    const piece = new Set<number>([seed]);
+    const stack = [seed];
+    while (stack.length) {
+      const key = stack.pop()!;
+      const z = (key % DIM) - HALF;
+      const y = (Math.floor(key / DIM) % DIM) - HALF;
+      const x = Math.floor(key / (DIM * DIM)) - HALF;
+      for (const [dx, dy, dz] of FACE_NEIGHBORS) {
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (!inRange(nx, ny, nz)) continue;
+        const nk = packKey(nx, ny, nz);
+        if (this.cells.has(nk) && !piece.has(nk)) { piece.add(nk); stack.push(nk); }
+      }
+    }
+    for (const key of piece) this.cells.delete(key);
+    return piece.size;
+  }
+
   /** Merge all voxels from `other` into this grid. Existing voxels in `this`
    *  keep their color; only empty positions are filled from `other`. Chainable. */
   weld(other: VoxelGrid): this {
@@ -814,6 +860,66 @@ export class VoxelGrid {
     const out = new VoxelGrid();
     out.cells = new Map(this.cells);
     out._surfacing = { ...this._surfacing };
+    return out;
+  }
+
+  /** Flatten to transferable typed arrays (cells + surfacing) so the grid can
+   *  cross a Worker boundary zero-copy. The sandboxed engine Worker builds
+   *  grids from model code; the main thread only ever rebuilds them from this
+   *  DATA via {@link VoxelGrid.fromTransfer} — it never re-runs model code. */
+  toTransfer(): VoxelGridTransfer {
+    const keys = new Float64Array(this.cells.size);
+    const colors = new Uint32Array(this.cells.size);
+    let i = 0;
+    for (const [k, c] of this.cells) { keys[i] = k; colors[i] = c; i++; }
+    const s = this._surfacing;
+    const surfacing: Surfacing = { ...s, ...(s.lockBox ? { lockBox: { min: [...s.lockBox.min] as Vec3, max: [...s.lockBox.max] as Vec3 } } : {}) };
+    return { keys, colors, surfacing };
+  }
+
+  /** Rebuild a grid from {@link VoxelGrid.toTransfer} data received from the
+   *  (untrusted) engine Worker. Validates every key, colour and surfacing knob
+   *  — the surfacing goes back through `smooth()`'s own argument validation —
+   *  and throws a ValidationError on anything malformed. */
+  static fromTransfer(t: unknown): VoxelGrid {
+    if (t === null || typeof t !== 'object') throw new ValidationError('voxel grid transfer: expected an object');
+    const { keys, colors, surfacing } = t as Partial<VoxelGridTransfer>;
+    if (!(keys instanceof Float64Array) || !(colors instanceof Uint32Array) || keys.length !== colors.length) {
+      throw new ValidationError('voxel grid transfer: keys/colors must be a Float64Array and Uint32Array of equal length');
+    }
+    // Views over a SharedArrayBuffer (or a resizable buffer) could be rewritten
+    // by the Worker after this check — only accept plain owned buffers.
+    for (const view of [keys, colors]) {
+      const buf = view.buffer as ArrayBuffer & { resizable?: boolean };
+      if (!(buf instanceof ArrayBuffer) || buf.resizable === true) {
+        throw new ValidationError('voxel grid transfer: arrays must own a plain ArrayBuffer');
+      }
+    }
+    const out = new VoxelGrid();
+    const maxKey = DIM * DIM * DIM;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const c = colors[i];
+      if (!Number.isInteger(k) || k < 0 || k >= maxKey) throw new ValidationError('voxel grid transfer: voxel key out of range');
+      if (c > 0xffffff) throw new ValidationError('voxel grid transfer: colour out of range');
+      out.cells.set(k, c);
+    }
+    if (surfacing === null || typeof surfacing !== 'object') throw new ValidationError('voxel grid transfer: missing surfacing');
+    const s = surfacing as Surfacing;
+    if (s.mode === 'smooth') {
+      const opts: Record<string, unknown> = { iterations: s.iterations, detail: s.detail };
+      if (s.strength !== undefined) opts.strength = s.strength;
+      if (s.algorithm !== undefined) opts.algorithm = s.algorithm;
+      if (s.flatBottom !== undefined) opts.flatBottom = s.flatBottom;
+      if (s.baseLayers !== undefined) opts.baseLayers = s.baseLayers;
+      if (s.lockBox !== undefined) {
+        if (s.lockBox === null || typeof s.lockBox !== 'object') throw new ValidationError('voxel grid transfer: bad lockBox');
+        opts.lockBox = [s.lockBox.min, s.lockBox.max];
+      }
+      out.smooth(opts as Parameters<VoxelGrid['smooth']>[0]);
+    } else if (s.mode !== 'blocks') {
+      throw new ValidationError('voxel grid transfer: unknown surfacing mode');
+    }
     return out;
   }
 

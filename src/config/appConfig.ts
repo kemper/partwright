@@ -107,10 +107,55 @@ export interface AppConfig {
      *  first) instead of dropping with the summarized turns. 0 = drop them
      *  like before. */
     compactionKeepImages: number;
+    /** Custom provider, prompt size "Auto": a known context window smaller
+     *  than this many tokens gets the Slim prompt + core tool set. */
+    customSlimMaxContext: number;
+    /** …and smaller than this, the Medium prompt + everyday tool set. At or
+     *  above it — or when the window is unknown — the Full payload. */
+    customMediumMaxContext: number;
+    /** Medium / Slim: each tool description is cut to its first sentence,
+     *  at most this many characters. */
+    customToolDescriptionChars: number;
+    /** Medium: each parameter description is cut to its first sentence, at
+     *  most this many characters. Slim drops parameter descriptions. */
+    customParamDescriptionChars: number;
+    /** How long each context-window probe on Connect may take (llama.cpp
+     *  /props, Ollama /api/ps, LM Studio /api/v0/models, /v1/models). */
+    customContextProbeTimeoutMs: number;
+    /** Trim dead tool payloads from the history sent to the provider:
+     *  superseded code bodies, stale getCode results, repeated readDoc
+     *  results, and large inputs of failed calls. Stored history and the
+     *  transcript are untouched. */
+    pruneStaleToolPayloads: boolean;
+    /** How many of the newest code bodies (runAndSave / setCode / runCode …
+     *  `code` arguments, and getCode results) stay verbatim in the request;
+     *  older ones become a one-line stub. */
+    keepRecentCodeBodies: number;
+    /** Extra code bodies allowed to pile up before older ones are trimmed
+     *  back to `keepRecentCodeBodies` in one edit. Trimming edits an earlier
+     *  message and breaks the cached prefix (prompt caching, llama.cpp KV
+     *  reuse), so batching keeps the cache valid between trims. 0 = trim
+     *  every step. */
+    codeBodyTrimBatch: number;
+    /** A failed tool call's large inputs are stubbed once this many newer
+     *  assistant turns have passed (its error message stays). */
+    failedCallInputTurns: number;
+    /** …but only inputs at least this many characters long (as JSON). */
+    failedCallInputMinChars: number;
+    /** Within such a failed call, only top-level values at least this many
+     *  characters long (as JSON) are replaced; small ones stay readable. */
+    failedCallValueMinChars: number;
+    /** Custom endpoint settings warn when the chosen prompt size's fixed
+     *  payload uses more than this fraction of the context window. */
+    customOverflowWarnFraction: number;
     /** Images the user attached in this conversation (newest first) that the
      *  automatic end-of-task review sees alongside the renders, so it can
      *  compare the result against the user's reference. 0 = renders only. */
     reviewReferenceImages: number;
+    /** Max characters of the user's own chat messages sent to a review
+     *  (automatic or 👁), newest kept first. The agent's replies are never
+     *  sent. 0 = none (the automatic review still gets the latest request). */
+    reviewConversationMaxChars: number;
     /** Max characters of a manual (👁) review copied into the
      *  `[REVIEW from …]` session note the agent reads via getSessionContext.
      *  The review itself is always kept in full in the chat transcript. */
@@ -145,6 +190,26 @@ export interface AppConfig {
     maxPixelRatio: number;
     /** Render scale during camera orbit/zoom (0–1, lower = faster interaction). */
     interactionRenderScale: number;
+    /** Opacity (0–1) of the rest of the object while one part is isolated
+     *  from the Objects list (◐ Isolate). Lower = fainter ghost. */
+    isolateGhostOpacity: number;
+    /** Triangle count above which offscreen renders (version thumbnails,
+     *  renderViews) skip the crease-edge overlay. Building it is a full
+     *  edge-adjacency pass on the main thread — ~2.5 s at 500k triangles —
+     *  and on a mesh that dense the creases are noise at thumbnail size. */
+    creaseEdgeMaxTriangles: number;
+    /** Triangle count from which a manifold-js run's volume / genus /
+     *  component stats are computed in the engine Worker, and the main
+     *  thread's own Manifold (for slicing, booleans, decompose) is rebuilt
+     *  only when first needed instead of after every run. That rebuild is a
+     *  synchronous `Manifold.ofMesh` — ~6 s of frozen UI at 2M triangles. */
+    lazyManifoldMinTriangles: number;
+    /** Largest mesh (triangles) drawn as-is in a version thumbnail. Bigger
+     *  meshes are drawn from a vertex-clustered proxy of about this many
+     *  triangles: the full mesh costs seconds of GPU upload + raster for
+     *  detail a thumbnail can't show. Above the ~500k catalog budget so
+     *  catalog thumbnails stay exact. renderViews etc. are never proxied. */
+    thumbnailMaxTriangles: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -188,7 +253,8 @@ export interface AppConfig {
     offscreenIdleDisposeMs: number;
     /** Pointer activity grace window (ms) that keeps on-demand rendering active. */
     pointerGraceMs: number;
-    /** Max time (ms) to wait for thumbnail generation before giving up. */
+    /** Max time (ms) to wait for the browser's background thumbnail encode
+     *  before encoding it synchronously instead. */
     thumbnailTimeoutMs: number;
     /** Projected triangle count above which the Quality panel's Apply asks for
      *  a Proceed/Cancel confirmation before running an enhance (the result is
@@ -205,6 +271,22 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Triangle count above which the smooth-paint REFINED mesh (the mesh
+     *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
+     *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
+     *  mesh lets reopening a painted version skip rebuilding every smooth
+     *  edge; above the cap reopening rebuilds the edges as before. Costs
+     *  roughly 20 bytes per triangle. 0 = never cache. */
+    paintRefinePersistMaxTriangles: number;
+    /** Total size (MB) of the local smooth-paint mesh cache (IndexedDB
+     *  `paintRefineCache`). Least-recently-used entries are evicted past it. */
+    paintRefineCacheMaxMB: number;
+    /** A cache hit older than this many minutes is re-stamped as recently
+     *  used (each re-stamp rewrites the entry, so reads only touch it now and
+     *  then). */
+    paintRefineCacheTouchMinutes: number;
+    /** Most pixels one `probePixels` call may cast (one ray each). */
+    probePixelsMaxPixels: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
      *  full-quality render, the Worker meshes a throwaway coarse pass at this
      *  multiple of the model's march `edgeLength` (and skips detail regions) so
@@ -231,6 +313,20 @@ export interface AppConfig {
      *  memory for export speed; clamped at runtime to both (hardwareConcurrency −
      *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
     exportPoolSize: number;
+    /** How long (ms) the engine sandbox (Advanced Settings → Security) may take
+     *  to load its frame (or start a Worker in a loaded frame) before it gives
+     *  up. Never falls back to an unsandboxed Worker: the first frame failing
+     *  marks the sandbox unavailable (model code blocked, status pill); a stuck
+     *  spawn or a replacement frame counts against engineSandboxMaxFrameRestarts. */
+    engineSandboxBootTimeoutMs: number;
+    /** How many times in a row the engine sandbox may restart its iframe after
+     *  a frame crash or a stuck Worker spawn before it gives up and blocks
+     *  model code in the tab (fail closed). Reset by every Worker that connects. */
+    engineSandboxMaxFrameRestarts: number;
+    /** Engine-sandbox liveness ping interval (ms). The app pings the hidden
+     *  sandbox frame this often; a frame that misses ~3 pings in a row (its
+     *  renderer crashed or was OOM-killed) is replaced. */
+    engineSandboxHeartbeatMs: number;
     /** Spacing between Assembly-grid cells as a fraction of the largest part's
      *  footprint (0.25 ⇒ a quarter-cell gutter). */
     assemblyGridGutter: number;
@@ -238,6 +334,21 @@ export interface AppConfig {
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
     stlWeldTolerance: number;
+    /** Max triangles a 3MF import may expand to (after component instancing) —
+     *  guards against tiny files whose nested component references fan out to
+     *  billions of triangles. */
+    threeMfMaxTriangles: number;
+    /** Max decompressed size (MB) of any single part inside a 3MF package —
+     *  zip-bomb guard. */
+    threeMfMaxEntryMB: number;
+    /** Max distinct colours a 3MF import is painted with. Files with more
+     *  (per-triangle-coloured scans) import as mesh only, with a notice. */
+    threeMfMaxColors: number;
+    /** Max objects one import may be split into (a multi-object 3MF imported
+     *  one object per 3MF object / plate, or an STL split into one object per
+     *  piece). Each becomes its own object with a version, so this bounds the
+     *  run time of a split import. */
+    maxSplitObjects: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -250,6 +361,11 @@ export interface AppConfig {
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
     remoteFetchTimeoutMs: number;
+    /** Longest image `src` string (chars) an AI openTool prefill accepts — a
+     *  data URL of a few MB. */
+    prefillImageSrcMaxChars: number;
+    /** Largest image (width × height pixels) an openTool prefill will decode. */
+    prefillImageMaxPixels: number;
     /** Color-distance threshold for matching swapped filament colors (0–1, lower = stricter). */
     filamentMatchThreshold: number;
     /** Confidence score below which the filament swap guide shows a warning (0–1). */
@@ -260,12 +376,83 @@ export interface AppConfig {
     /** Surface samples per mesh for convertToCode / evalAgainstImport
      *  chamfer+hausdorff reports (more = tighter noise floor, slower). */
     reconstructEvalSamples: number;
+    /** Photo match (`photoMatch` / `model:preview --match-photo`): the common
+     *  height (px) the photo and model silhouettes are resampled to before
+     *  comparing. Higher = finer detail, slower. */
+    photoMatchTargetHeight: number;
+    /** Photo match: floor of the auto-estimated background tolerance (RGB
+     *  distance). The estimate adapts above it to the backdrop's noise; keep it
+     *  low so dark hair on a black backdrop stays foreground. */
+    photoMatchBgToleranceMin: number;
+    /** Photo match: tolerance (RGB distance) around an explicit `bg` colour
+     *  when the caller passes no `bgTolerance`. */
+    photoMatchBgTolerance: number;
+    /** Photo match: k-means refinement iterations over the photo's colours
+     *  (seeded with the model's region colours). */
+    photoMatchKmeansIterations: number;
+    /** Photo match: number of horizontal bands in the width profile. */
+    photoMatchBands: number;
+    /** Photo match: colour difference (ΔE) above which a region is reported as
+     *  a colour mismatch. */
+    photoMatchColorShiftWarn: number;
+    /** Photo match: a photo pixel is credited to a model region of its colour
+     *  only within this distance (fraction of the figure height); further
+     *  away it's a photo detail with no model counterpart. */
+    photoMatchMaxRegionDistance: number;
+    /** Photo match: size (px) of the flat model render compared against the
+     *  photo. */
+    photoMatchRenderSize: number;
+    /** Photo match: warn when the photo's subject is shorter than this
+     *  (original photo pixels) — too small to judge fine outline detail. */
+    photoMatchMinSubjectPx: number;
+    /** Photo match: regions whose photo colours converge closer than this ΔE
+     *  (or that share a model colour and touch) are flagged low-confidence and
+     *  their shape findings suppressed. 0 disables the auto-detection. */
+    photoMatchAmbiguousDeltaE: number;
+    /** Photo match: outline-diff offsets below this (% of figure height) are
+     *  not reported. */
+    photoMatchOutlineMinPct: number;
+    /** Photo match: maximum number of outline-diff lines. */
+    photoMatchOutlineMaxLines: number;
+    /** Photo match: in auto background mode, a border whose estimated
+     *  tolerance reaches this RGB distance counts as busy and switches to the
+     *  colour-model (GrabCut-lite) segmentation. */
+    photoMatchBusyBorderTolerance: number;
   };
   ui: {
+    /** openTool on an export / publish dialog: how long to wait for the dialog
+     *  to appear (a pre-export "unsaved objects" confirm can come first) before
+     *  reporting the prefill as staged-for-when-it-opens (ms). */
+    toolDialogOpenWaitMs: number;
+    /** Triangle count from which the paint tools' adjacency graph is built in
+     *  a background Worker when Paint opens, instead of on the main thread (in
+     *  an idle callback after each run). An idle callback is still one
+     *  synchronous task, and the build takes ~1 s at a few million triangles. */
+    paintAdjacencyWorkerMinTriangles: number;
+    /** How long (ms) to wait for that Worker before building the graph on the
+     *  main thread instead (a Worker killed for memory may never answer). */
+    paintAdjacencyWorkerTimeoutMs: number;
+    /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
+     *  tool; the oldest drop past this). */
+    maxPendingAppliedNotes: number;
+    /** Longest "[UI · app note] user applied …" note line (chars; truncated past it). */
+    maxAppliedNoteChars: number;
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
+    /** How long a toast carrying an action button (e.g. a delete's "Undo")
+     *  stays on screen (ms) — longer than a plain toast so the button can be
+     *  reached. After it fades, "Recover deleted" in the Objects list still
+     *  restores the item. */
+    undoToastDurationMs: number;
+    /** Days a deleted object stays in the "Recover deleted" bin before it is
+     *  permanently purged (checked whenever the bin is read). */
+    deletedObjectRetentionDays: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
+    /** 3MF export "Filament colors" step: the merge tolerance (CIE76 ΔE) it opens
+     *  with — painted colours closer than this to a more-used colour are merged
+     *  into one filament. 0 = keep every distinct shade. */
+    exportColorMergeTolerance: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
     /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
@@ -310,12 +497,30 @@ export interface AppConfig {
     defaultPaletteCapacity: number;
     /** Max colours kept in the palette's recent-colour history ring. */
     paletteHistoryMax: number;
+    /** Default `paintStroke` smoothness: target boundary edge = radius /
+     *  this. The painted edge is clipped exactly, so this only sets how finely
+     *  a curve is approximated; higher values add triangles every saved
+     *  session must rebuild on open. */
+    paintStrokeResolution: number;
+    /** Gap filled between consecutive `paintStroke` / `paintAirbrush` path
+     *  points, as a fraction of the radius. Smaller = smoother band edge,
+     *  more samples. */
+    paintStrokePathSpacing: number;
+    /** `paintAlongBoundary` paints at most this many seam loops (the longest
+     *  ones); the rest are reported as `skippedLoops`. Each loop is one smooth
+     *  stroke on the main thread, so a noisy seam with hundreds of specks
+     *  would otherwise stall the tab. */
+    boundaryPaintMaxLoops: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Default number of entries `partwright.getDiagnosticLog()` (and the AI
+     *  `getDiagnosticLog` tool) returns when the caller passes no `limit`.
+     *  Newest first; the log itself keeps up to 200 entries. */
+    diagnosticLogApiLimit: number;
     /** Whether the "Did you know?" rolling hints strip shows at the top of the
      *  editor. Users can turn it off permanently here; the strip's ✕ only hides
      *  it for the current tab/session. */
@@ -328,6 +533,9 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Width (px) of the code pane in its compact "mini" mode — the
+     *  syntax-colored code map shown by default instead of the full editor. */
+    codeMinimapWidthPx: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -351,6 +559,91 @@ export interface AppConfig {
     /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
+    /** Share of the ~4 GB WebAssembly heap ceiling (percent) at which a
+     *  manifold-js run counts as memory-heavy. Past it the geometry warnings
+     *  flag the model before it reaches "memory access out of bounds", and the
+     *  geometry Worker is reset once idle so the next run starts on a fresh,
+     *  unfragmented heap (WASM memory never shrinks on its own). 100 disables
+     *  both the warning and the reset. */
+    engineHeapHighPct: number;
+  };
+  segmentation: {
+    /** Part detection: after an interactive STL import, try the automatic
+     *  detectors (`autoDetectParts`). When they split the mesh (e.g. a
+     *  multi-body figure, one body per colour) the Part Detection panel opens
+     *  on the proposal; otherwise the usual convert-to-code ask appears, with
+     *  a "Detect parts…" button. Off = always the convert ask. */
+    autoDetectOnImport: boolean;
+    /** Part detection: imports above this many triangles skip the automatic
+     *  import-time pass (it would delay the next-step prompt on huge scans);
+     *  the convert ask's "Detect parts…" button still works. */
+    autoDetectMaxTriangles: number;
+    /** Part detection: an automatic proposal with more parts than this is
+     *  dropped (an assembly or a scan with loose debris, not colour bodies).
+     *  Explicit `detectParts` calls are not limited. */
+    autoDetectMaxParts: number;
+    /** Part detection: islands below this fraction of the total surface area
+     *  are folded into their neighbours by the panel's "Absorb specks" action
+     *  (the absorbSmall edit op default). */
+    absorbMinAreaFrac: number;
+    /** Part detection: majority-filter passes the panel's "Smooth edges"
+     *  action runs over part boundaries (smoothBoundaries default). */
+    smoothBoundaryIterations: number;
+    /** Part detection: parts listed in console/AI summaries before the list
+     *  is truncated (keeps tool results small on over-segmented meshes). */
+    maxListedParts: number;
+    /** Part detection: edit batches kept for Undo in a draft. */
+    undoDepth: number;
+    /** Part detection: cells per side of the coarse depth buffer that decides
+     *  where renderParts draws each part's number (higher = finds smaller
+     *  visible slivers, slightly slower). */
+    labelGridResolution: number;
+    /** Live mode: wait this long (ms) after the last seed/setting change
+     *  before re-running detection. */
+    liveDebounceMs: number;
+    /** Wait this long (ms) after the last Edge-smoothness change before
+     *  recomputing the smooth part edges. */
+    edgeSmoothingDebounceMs: number;
+    /** Preset filmstrip tile size (px). */
+    presetThumbSize: number;
+    /** Edge-smoothing passes a new part draft starts with (0 = triangle
+     *  edges; acceptParts then keeps the original mesh). */
+    defaultEdgeSmoothing: number;
+    /** Smooth edges leave a part boundary alone where it runs along a fold
+     *  at least this sharp (°, groove or ridge) — a hard edge such as a CAD
+     *  box edge already IS the seam. Sculpted grooves (often 30–60° per edge
+     *  on scans) still smooth at the default. */
+    edgePinCreaseDeg: number;
+    /** "Convert to seeds": regions smaller than this fraction of their part
+     *  get no seed of their own. */
+    seedsFromPartsMinRegionFrac: number;
+    /** Seed-marker dot radius as a fraction of the model's diagonal. */
+    seedDotFraction: number;
+    /** Seed-marker name-tag height as a fraction of the viewport height. */
+    seedTagScreenFraction: number;
+    /** Part panel "Fix" brush radius as a fraction of the model's diagonal. */
+    fixBrushRadiusFrac: number;
+    /** Part panel label chips: a chip's pin counts as "missed" (its part
+     *  came out empty or a speck) below this fraction of the surface area. */
+    chipMissAreaFrac: number;
+    /** previewSeeds: a seed farther than this many median edge lengths from
+     *  the surface counts as a miss (it is still snapped to the nearest
+     *  triangle when detection runs, which is usually not what was meant). */
+    seedMissEdgeLengths: number;
+    /** renderParts `focus`: padding around the focused part's bounding box,
+     *  as a fraction of its largest dimension. */
+    focusPadding: number;
+    /** Detection folds "specks" — regions under this fraction of the surface
+     *  with no pin of any kind, no hand fix, and whose part nobody named,
+     *  coloured or locked — into the neighbour they border most. 0 = off. */
+    autoAbsorbSpeckFrac: number;
+    /** A Separate-pieces proposal of 1–2 pieces counts as a fused figure
+     *  (the panel opens with the first label chip armed) when its largest
+     *  piece has at least this many triangles. */
+    fusedPieceMinTris: number;
+    /** Phone layout (below 768 px): the part panel is a bottom sheet this
+     *  fraction of the window height, so the model stays visible above it. */
+    mobileSheetHeightFrac: number;
   };
 }
 
@@ -384,7 +677,20 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
     compactionKeepImages: 4,
+    customSlimMaxContext: 32_768,
+    customMediumMaxContext: 160_000,
+    customToolDescriptionChars: 200,
+    customParamDescriptionChars: 80,
+    customContextProbeTimeoutMs: 3000,
+    pruneStaleToolPayloads: true,
+    keepRecentCodeBodies: 1,
+    codeBodyTrimBatch: 3,
+    failedCallInputTurns: 3,
+    failedCallInputMinChars: 1500,
+    failedCallValueMinChars: 200,
+    customOverflowWarnFraction: 0.8,
     reviewReferenceImages: 4,
+    reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
@@ -399,6 +705,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     fov: 50,
     maxPixelRatio: 2,
     interactionRenderScale: 0.6,
+    isolateGhostOpacity: 0.1,
+    creaseEdgeMaxTriangles: 200_000,
+    lazyManifoldMinTriangles: 250_000,
+    thumbnailMaxTriangles: 600_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -418,28 +728,62 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    paintRefinePersistMaxTriangles: 1_000_000,
+    paintRefineCacheMaxMB: 256,
+    paintRefineCacheTouchMinutes: 60,
+    probePixelsMaxPixels: 4096,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
     exportPoolSize: 8,
+    engineSandboxBootTimeoutMs: 20_000,
+    engineSandboxMaxFrameRestarts: 2,
+    engineSandboxHeartbeatMs: 2_000,
     assemblyGridGutter: 0.18,
   },
   import: {
     stlWeldTolerance: 1e-5,
+    threeMfMaxTriangles: 20_000_000,
+    threeMfMaxEntryMB: 1024,
+    threeMfMaxColors: 256,
+    maxSplitObjects: 100,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
+    prefillImageSrcMaxChars: 15_000_000,
+    prefillImageMaxPixels: 40_000_000,
     filamentMatchThreshold: 0.18,
     filamentConfidenceWarnThreshold: 0.9,
     reconstructCellBudget: 6_000_000,
     reconstructEvalSamples: 4000,
+    photoMatchTargetHeight: 160,
+    photoMatchBgToleranceMin: 10,
+    photoMatchBgTolerance: 40,
+    photoMatchKmeansIterations: 8,
+    photoMatchBands: 10,
+    photoMatchColorShiftWarn: 30,
+    photoMatchMaxRegionDistance: 0.12,
+    photoMatchRenderSize: 512,
+    photoMatchMinSubjectPx: 300,
+    photoMatchAmbiguousDeltaE: 12,
+    photoMatchOutlineMinPct: 1.5,
+    photoMatchOutlineMaxLines: 8,
+    photoMatchBusyBorderTolerance: 75,
   },
   ui: {
+    toolDialogOpenWaitMs: 4000,
+    paintAdjacencyWorkerMinTriangles: 300_000,
+    paintAdjacencyWorkerTimeoutMs: 60_000,
+    maxPendingAppliedNotes: 6,
+    maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
+    undoToastDurationMs: 8000,
+    deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
+    exportColorMergeTolerance: 10,
     codeEditorErrorIdleMs: 800,
     codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
@@ -455,11 +799,16 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     scadDefaultQuality: 32,
     defaultPaletteCapacity: 4,
     paletteHistoryMax: 48,
+    paintStrokeResolution: 16,
+    paintStrokePathSpacing: 0.25,
+    boundaryPaintMaxLoops: 8,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    diagnosticLogApiLimit: 30,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,
@@ -468,6 +817,32 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+    engineHeapHighPct: 50,
+  },
+  segmentation: {
+    autoDetectOnImport: true,
+    autoDetectMaxTriangles: 2_000_000,
+    autoDetectMaxParts: 40,
+    absorbMinAreaFrac: 0.002,
+    smoothBoundaryIterations: 2,
+    maxListedParts: 80,
+    undoDepth: 20,
+    labelGridResolution: 160,
+    liveDebounceMs: 450,
+    edgeSmoothingDebounceMs: 250,
+    presetThumbSize: 112,
+    defaultEdgeSmoothing: 3,
+    edgePinCreaseDeg: 60,
+    seedsFromPartsMinRegionFrac: 0.01,
+    seedDotFraction: 0.008,
+    seedTagScreenFraction: 0.026,
+    fixBrushRadiusFrac: 0.012,
+    chipMissAreaFrac: 0.0005,
+    seedMissEdgeLengths: 3,
+    focusPadding: 0.15,
+    autoAbsorbSpeckFrac: 0.002,
+    fusedPieceMinTris: 2000,
+    mobileSheetHeightFrac: 0.45,
   },
 };
 

@@ -26,6 +26,129 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 20, 2026',
+    headline: 'Partwright 1.8.1 — refreshed AI model list',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8.1',
+            body: 'A backward-compatible fix release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Updated model catalog',
+            body: 'The list of available Anthropic, OpenAI and Google models and their pricing has been refreshed, including newer model versions and corrected tiered pricing.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 20, 2026',
+    headline: 'Partwright 1.8 — part detection for imported meshes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Import',
+        items: [
+          {
+            title: 'Part detection for imported meshes',
+            body: 'Imported STL meshes can now be split into named parts automatically. Pick a detector and preset, refine with pins (select, merge, solo and hover to find a part), lock or focus regions, and accept to turn the parts into labels you can color and edit. Detection is offered right after an STL import and from the Paint panel, and it runs without blocking the editor.',
+          },
+        ],
+      },
+      {
+        label: 'Editor',
+        items: [
+          {
+            title: 'Compact code map by default',
+            body: 'The code pane now shows a compact code map (minimap) by default, making it easier to navigate long models.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'AI chat image drops',
+            body: 'Dropping an image into the AI chat no longer also opens the import chooser.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 13, 2026',
+    headline: 'Partwright 1.7.1 — clearer custom-endpoint errors',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.7.1',
+            body: 'A backward-compatible fix release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Custom endpoint 401s explained',
+            body: 'When a custom OpenAI-compatible endpoint rejects your key with a 401, the error now explains what went wrong, and re-running the CLI bridge setup re-syncs its key so the connection recovers.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 11, 2026',
+    headline: 'Partwright 1.7 — a community Discord and a big catalog quality pass',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.7',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working. Adds a link to the community Discord and fixes a long list of catalog models.',
+          },
+        ],
+      },
+      {
+        label: 'Community',
+        items: [
+          {
+            title: 'Join the Discord',
+            body: 'There is now a Discord icon in the header and a link in the footer and the help page\'s Feedback & support section. The short link /discord also takes you to the invite.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog models fixed up',
+            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, Pac-Man ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 10, 2026',
     headline: 'Partwright 1.6 — objects and their parts, a print-tested Cloud Guitar, and a fairer AI reviewer',
     groups: [

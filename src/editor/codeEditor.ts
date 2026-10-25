@@ -46,6 +46,21 @@ function markEditorScrollIntent(): void {
 }
 
 let currentLanguage: EditorLanguage = 'manifold-js';
+
+/** Subscribers notified when the main editor's document or diagnostics change
+ *  (the code minimap redraws from these). */
+const contentListeners = new Set<() => void>();
+function notifyContentListeners(): void {
+  for (const cb of contentListeners) cb();
+}
+
+/** Subscribe to main-editor document / diagnostics changes. Fires synchronously
+ *  inside the CodeMirror update — subscribers should coalesce their own work
+ *  (e.g. into a rAF). Returns an unsubscribe function. */
+export function onEditorContentChange(cb: () => void): () => void {
+  contentListeners.add(cb);
+  return () => { contentListeners.delete(cb); };
+}
 // Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
 // window doesn't flip it in another open window.
 let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false';
@@ -386,6 +401,7 @@ export function initEditor(
       fontSizeCompartment.of(fontSizeExt(fontSizePx)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+          notifyContentListeners();
           if (activeDiagnostics.length > 0) {
             window.queueMicrotask(() => clearEditorDiagnostics());
           }
@@ -433,6 +449,7 @@ export function setLanguage(lang: EditorLanguage): void {
   editorView.dispatch({
     effects: languageCompartment.reconfigure(languageExt(lang)),
   });
+  notifyContentListeners();
 }
 
 export function getValue(): string {
@@ -459,6 +476,12 @@ export function setValue(code: string): void {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
+}
+
+/** What `setValue(code)` would put in the editor (auto-format applied when
+ *  enabled) — lets callers tell whether editor contents came from `code`. */
+export function formatAsEditorWould(code: string): string {
+  return autoFormatEnabled ? applyFormat(code, currentLanguage) : code;
 }
 
 function applyFormat(code: string, lang: EditorLanguage): string {
@@ -574,12 +597,51 @@ export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {
     .filter(hasEditorLocation)
     .map(d => toEditorDiagnostic(d, doc));
   editorView.dispatch(setDiagnostics(editorView.state, activeDiagnostics));
+  notifyContentListeners();
 }
 
 export function clearEditorDiagnostics(): void {
   if (!editorView || activeDiagnostics.length === 0) return;
   activeDiagnostics = [];
   editorView.dispatch(setDiagnostics(editorView.state, []));
+  notifyContentListeners();
+}
+
+/** The main editor's document as an array of lines (empty before init). */
+export function getEditorLines(): string[] {
+  return editorView ? editorView.state.doc.toJSON() : [];
+}
+
+/** The main editor's active language. */
+export function getEditorLanguage(): EditorLanguage {
+  return currentLanguage;
+}
+
+/** 1-based line numbers carrying an error-severity diagnostic. */
+export function getEditorErrorLines(): number[] {
+  if (!editorView) return [];
+  const doc = editorView.state.doc;
+  const lines = new Set<number>();
+  for (const d of activeDiagnostics) {
+    if (d.severity !== 'error') continue;
+    lines.add(doc.lineAt(Math.min(d.from, doc.length)).number);
+  }
+  return [...lines].sort((a, b) => a - b);
+}
+
+/** Put the caret at the start of a 1-based line, scroll it to the middle of the
+ *  editor, and focus it. Out-of-range lines are clamped. */
+export function revealEditorLine(lineNumber: number): void {
+  if (!editorView) return;
+  const doc = editorView.state.doc;
+  const line = doc.line(Math.max(1, Math.min(doc.lines, Math.round(lineNumber))));
+  // Deliberate jump — keep the bottom-scroll stabilizer from reverting it.
+  markEditorScrollIntent();
+  editorView.dispatch({
+    selection: { anchor: line.from },
+    effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+  });
+  editorView.focus();
 }
 
 export function revealFirstDiagnostic(): void {
@@ -591,6 +653,21 @@ export function revealFirstDiagnostic(): void {
   editorView.dispatch({
     selection: { anchor: first.from, head: first.to },
     effects: EditorView.scrollIntoView(first.from, { y: 'center' }),
+  });
+  editorView.focus();
+}
+
+/** Select `[from, to)` and scroll it into the middle of the editor (e.g. the
+ *  Objects rail's "Go to code" on a part's api.label call). */
+export function revealRange(from: number, to: number): void {
+  if (!editorView) return;
+  const len = editorView.state.doc.length;
+  const a = Math.max(0, Math.min(from, len));
+  const b = Math.max(a, Math.min(to, len));
+  markEditorScrollIntent();
+  editorView.dispatch({
+    selection: { anchor: a, head: b },
+    effects: EditorView.scrollIntoView(a, { y: 'center' }),
   });
   editorView.focus();
 }

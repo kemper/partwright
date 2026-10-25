@@ -69,6 +69,7 @@ partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json
 partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az,el] [-p k=v]  # one tile per model
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
 partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
+partwright segment <mesh.stl> [--algo id] [--seeds seeds.json] [-p k=v] [--smooth r] [--png out]  # part detection → colour-coded PNG + quality JSON (see public/ai/segmentation.md; `npm run segment:bench` scores detectors)
 
 partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop

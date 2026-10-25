@@ -9,6 +9,7 @@
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'detect_includes',   callId, code }
+//   { type: 'voxel_grid',        callId, code, params? }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
@@ -24,6 +25,7 @@
 //   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
+//   { type: 'voxel_grid_result',       callId, grid, error }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
@@ -39,9 +41,13 @@
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
+import { computeManifoldFacts } from './manifoldFacts';
+import { edgeStats } from './geometryHeuristics';
+import { computeMeshPieces } from './meshPieces';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
-import { voxelEngine } from './engines/voxel';
+import { voxelEngine, runVoxelGrid } from './engines/voxel';
+import type { VoxelGridTransfer } from './voxel/grid';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
@@ -50,6 +56,8 @@ import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
+import { lockdownGlobalScope } from './workerLockdown';
+import { formatLockdownRefusal } from './lockdownRefusal';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -85,28 +93,98 @@ self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
   event.preventDefault();
 });
 
+// ── Sandbox lockdown (#1090) ─────────────────────────────────────────────
+// Model code evaluated in this Worker must not reach the network or the
+// origin's storage (IndexedDB holds the AI provider keys). After the init
+// handshake — and before ANY message that can evaluate model code is handled —
+// the global scope is permanently stripped of fetch/XHR/WebSocket/IndexedDB/
+// caches/nested Workers/BroadcastChannel/navigator.storage/… (see
+// workerLockdown.ts). Lazy engine assets loaded later (OCCT WASM, BOSL2, fonts)
+// go through the private `fetchAppAsset`, which only does same-origin GETs.
+// Fail closed: if the lockdown can't be verified, model code never runs.
+let initPromise: Promise<void> | null = null;
+let lockdownState: 'pending' | 'ok' | 'failed' = 'pending';
+let lockdownFailure = '';
+
+function lockdownNow(): void {
+  if (lockdownState !== 'pending') return;
+  try {
+    const report = lockdownGlobalScope(self);
+    // Names the allowlist audit removed that the explicit denylist didn't —
+    // logged so a capability a newer browser adds shows up in DevTools.
+    if (report.defaultDenied.length > 0) {
+      console.debug(`[lockdown] default-deny removed ${report.defaultDenied.length} non-allowlisted globals: ${report.defaultDenied.join(', ')}`);
+    }
+    if (report.stillReachable.length > 0) {
+      lockdownState = 'failed';
+      lockdownFailure = `still reachable: ${report.stillReachable.join(', ')}`;
+    } else {
+      lockdownState = 'ok';
+    }
+  } catch (err) {
+    lockdownState = 'failed';
+    lockdownFailure = err instanceof Error ? err.message : String(err);
+  }
+  // The app also records this in its Diagnostic Log (engine.ts / enginePool.ts
+  // recognise the message via parseLockdownRefusal); this is the devtools copy.
+  if (lockdownState === 'failed') console.error(`[lockdown] ${formatLockdownRefusal(lockdownFailure)}`);
+}
+
+/** Resolve once the scope is locked down. Returns an error message when the
+ *  lockdown failed (the caller must refuse the request), else null. */
+async function ensureSandboxLocked(): Promise<string | null> {
+  if (lockdownState === 'pending') {
+    // Let an in-flight manifold-3d init finish its WASM fetch first; it runs
+    // before any model code, so the global fetch is still the pristine one.
+    if (initPromise) { try { await initPromise; } catch { /* reported by init */ } }
+    lockdownNow();
+  }
+  return lockdownState === 'ok'
+    ? null
+    : formatLockdownRefusal(lockdownFailure);
+}
+
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
   // ── init ───────────────────────────────────────────────────────────────
   if (msg.type === 'init') {
+    if (!initPromise) initPromise = manifoldJsEngine.init();
     try {
-      await manifoldJsEngine.init();
+      await initPromise;
       manifoldReady = true;
-      self.postMessage({ type: 'ready' });
     } catch (err) {
       self.postMessage({
         type: 'error',
         callId: null,
         message: err instanceof Error ? err.message : String(err),
       });
+      // Still lock down: voxel runs need no WASM and must not run unlocked.
+      lockdownNow();
+      return;
+    }
+    lockdownNow();
+    if (lockdownState === 'ok') {
+      self.postMessage({ type: 'ready' });
+    } else {
+      self.postMessage({ type: 'error', callId: null, message: formatLockdownRefusal(lockdownFailure) });
     }
     return;
   }
 
+  // Every other request may evaluate model code (or touch state model code
+  // could have influenced) — never handle one on an unlocked scope.
+  if (lockdownState !== 'ok') {
+    const lockErr = await ensureSandboxLocked();
+    if (lockErr) {
+      self.postMessage({ type: 'error', callId: typeof msg.callId === 'string' ? msg.callId : null, message: lockErr });
+      return;
+    }
+  }
+
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -115,6 +193,7 @@ self.onmessage = async (event: MessageEvent) => {
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
       sdfPreviewScale?: number | null;
+      manifoldFactsMinTriangles?: number;
     };
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
@@ -261,6 +340,15 @@ self.onmessage = async (event: MessageEvent) => {
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
+      // A big manifold-js result: compute the Manifold-dependent stats here,
+      // over the live result, so the main thread can skip rebuilding its own
+      // Manifold from the mesh (seconds of frozen UI at a few million
+      // triangles) until something needs it. See MeshResult.manifoldFacts.
+      const liveResult = (result as { manifold?: unknown }).manifold;
+      const manifoldFacts = effectiveLang === 'manifold-js' && mesh && liveResult && !result.renderOnly &&
+        typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
+        ? { ...computeManifoldFacts(liveResult), edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri), pieces: computeMeshPieces(mesh) }
+        : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
         const transfer: Transferable[] = [
@@ -274,10 +362,14 @@ self.onmessage = async (event: MessageEvent) => {
         // Voxel meshes carry per-triangle colors; transfer them too (the
         // manifold-js path leaves triColors undefined).
         if (mesh.triColors)     transfer.push(mesh.triColors.buffer);
+        if (manifoldFacts?.pieces) transfer.push(manifoldFacts.pieces.pieceOfTri.buffer);
+        // Voxel runs also return the grid itself as typed arrays.
+        const vg = result.voxelGrid as VoxelGridTransfer | undefined;
+        if (vg) transfer.push(vg.keys.buffer, vg.colors.buffer);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
@@ -527,6 +619,27 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg.type === 'enhance_cancel') {
     const { callId } = msg as unknown as { callId: string };
     if (enhanceCancelFlags.has(callId)) enhanceCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── voxel_grid ──────────────────────────────────────────────────────────
+  // Evaluate voxel model code and return the grid itself (typed arrays) — for
+  // Voxel Studio activation when the main thread has no up-to-date grid from
+  // the last render. The main thread never evaluates model code (#1090).
+  if (msg.type === 'voxel_grid') {
+    const { callId, code, params } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null };
+    try {
+      const r = runVoxelGrid(code, params ?? undefined);
+      if (!r.ok) {
+        self.postMessage({ type: 'voxel_grid_result', callId, grid: null, error: r.error });
+      } else {
+        const grid = r.grid.toTransfer();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (self as any).postMessage({ type: 'voxel_grid_result', callId, grid, error: null }, [grid.keys.buffer, grid.colors.buffer]);
+      }
+    } catch (err) {
+      self.postMessage({ type: 'voxel_grid_result', callId, grid: null, error: err instanceof Error ? err.message : String(err) });
+    }
     return;
   }
 

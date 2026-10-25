@@ -6,24 +6,31 @@
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
+import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
+import { findActiveEndpoint, rememberEndpointModel, resolveCustomApiKey } from '../ai/customEndpoints';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { PARTS_PROMPT } from '../ai/partsPrompt';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { createModalShell } from './modalShell';
+import { BUTTON_CANCEL, BUTTON_DANGER, BUTTON_PRIMARY } from './styleConstants';
 import { confirmDialog } from './dialogs';
 import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview } from '../ai/autoReview';
-import { isModelChangingTool } from '../ai/tools';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
+import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
+import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -45,6 +52,7 @@ import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
+import { getSelectedPartKeys, setSelectedPartKey, onPartSelectionChange, describePartKeys, partSelectionChatContext, splitPartSelectionContext } from './partSelection';
 
 interface PanelState {
   open: boolean;
@@ -109,6 +117,15 @@ function effectiveSystemPromptChars(): number {
   // system-prompt branch); only 'local' gets the slim variant. Counting the
   // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
   // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider === 'custom') {
+    const tier = resolveCustomPromptTier(s.toggles);
+    if (tier !== 'full') {
+      // Medium / Slim exist for small windows, where the tool schemas are a
+      // real share of the budget — count them too.
+      const prompt = tier === 'medium' ? buildMediumLocalSystemPrompt() : buildLocalSystemPrompt();
+      return prompt.length + REDUCED_TOOLS_NOTE.length + JSON.stringify(toolsForCustomTier(buildToolList(s.toggles), tier)).length;
+    }
+  }
   if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
@@ -146,6 +163,10 @@ function contextLimitFor(settings: AiSettings): number {
       } catch { /* stale id — fall through */ }
     }
     return settings.localContext.windowSizeOverride ?? 8192;
+  }
+  if (settings.toggles.provider === 'custom') {
+    const w = customContextWindow(settings.toggles);
+    if (w > 0) return w;
   }
   const model = activeModel(settings.toggles);
   const limits = model ? getLimits(settings.toggles.provider, String(model)) : null;
@@ -243,6 +264,7 @@ function pinTranscriptToBottom(): void {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 let pendingImagesEl: HTMLElement | null = null;
+let partContextEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
@@ -368,6 +390,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // Pending "[UI · app note] user applied …" lines describe the previous
+  // session's model — don't carry them into this one.
+  if (!state.inFlight) clearToolAppliedNotes();
   // If a turn is in flight the session change was triggered by the model
   // calling createSession mid-turn. Don't reload/re-render now — the
   // callbacks (onUserPersisted etc.) are keeping state.history current
@@ -679,6 +704,12 @@ async function applySessionAiPreference(): Promise<void> {
   const cur = loadSettings();
   let next: AiSettings;
   if (pref.toggles) {
+    // The Custom endpoint's context window describes the ENDPOINT, not the
+    // session: a snapshot taken before the user set a small window would
+    // otherwise bring back the ~100k-token Full payload. Restore everything
+    // else, then take the context from the saved endpoint the restored URL
+    // points at (or keep the current one when it's the same URL).
+    const { customContext: _snapshotContext, ...restorable } = pref.toggles as Record<string, unknown>;
     // Full per-session toggle snapshot (current format): restore provider,
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
@@ -687,9 +718,13 @@ async function applySessionAiPreference(): Promise<void> {
     // added lacks it, so a raw compare would never match and every window
     // focus would rewrite settings.
     const sameToggles = JSON.stringify(setToggles(cur, cur.toggles).toggles)
-      === JSON.stringify(setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]).toggles);
+      === JSON.stringify(setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]).toggles);
     if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
-    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    next = setToggles(cur, restorable as unknown as Parameters<typeof setToggles>[1]);
+    if (next.toggles.customBaseUrl !== cur.toggles.customBaseUrl) {
+      const ep = await findActiveEndpoint(next.toggles.customBaseUrl).catch(() => null);
+      next = setCustomContext(next, ep?.context ?? DEFAULT_CUSTOM_CONTEXT);
+    }
     if (pref.preset) next = { ...next, preset: pref.preset as Preset };
   } else {
     // Legacy {provider, model} only (sessions saved before toggles were stored).
@@ -967,6 +1002,15 @@ function buildDrawer(): void {
   pendingImagesEl.className = 'px-3 pb-1.5 flex flex-wrap gap-1.5 shrink-0 hidden';
   bottomSection.appendChild(pendingImagesEl);
 
+  // Selected-part context chip (#1003): while a part / piece is selected in the
+  // Objects list, it rides along with the next message as context.
+  partContextEl = document.createElement('div');
+  partContextEl.id = 'ai-part-context';
+  partContextEl.className = 'px-3 pb-1.5 shrink-0 hidden';
+  bottomSection.appendChild(partContextEl);
+  renderPartContext();
+  onPartSelectionChange(renderPartContext);
+
   // In-progress indicator — shown while a turn is in flight so the user
   // knows we haven't frozen. Hidden by default; populated by
   // showProgress() / hideProgress() driven by runTurn's onProgress callback
@@ -1189,10 +1233,17 @@ function buildDrawer(): void {
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
   root.addEventListener('dragleave', e => { if (e.target === root) root.classList.remove('ring-2', 'ring-blue-500'); });
   root.addEventListener('drop', async e => {
-    e.preventDefault();
     root.classList.remove('ring-2', 'ring-blue-500');
-    if (!e.dataTransfer) return;
-    for (const file of Array.from(e.dataTransfer.files)) await attachFile(file);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    // Only claim drops that carry an image — those become chat attachments.
+    // stopPropagation() (synchronously, before any await) keeps the drop from
+    // reaching main.ts's document-level import, which would otherwise also pop
+    // the relief/voxel chooser. A drop with no images (an STL, a session JSON)
+    // stays unclaimed and bubbles on to the general import.
+    if (!files.some(f => f.type.startsWith('image/'))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    for (const file of files) await attachFile(file);
   });
 
   (mountTarget ?? document.body).appendChild(root);
@@ -1385,6 +1436,9 @@ function renderModelPicker(): void {
       sel.value = current;
       sel.addEventListener('change', () => {
         saveSettings(setCustomModel(loadSettings(), sel.value));
+        // Keep the saved endpoint's default in step, so re-selecting it in
+        // AI Settings doesn't revert this pick.
+        void rememberEndpointModel(settings.toggles.customBaseUrl, sel.value);
         recordSessionAiPreference();
         renderToggleStrip();
         renderCostMeter();
@@ -1457,6 +1511,11 @@ function renderPromptChip(): void {
     label = `· ${tierLabel} prompt`;
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
     title = `Local models use a compact built-in prompt (${tierSize}) and pull subdoc detail on demand via the readDoc tool. Click to view or pin a different tier.`;
+  } else if (provider === 'custom' && resolveCustomPromptTier(settings.toggles) !== 'full') {
+    const tier = resolveCustomPromptTier(settings.toggles);
+    label = `· ${tier === 'medium' ? 'Medium' : 'Slim'} prompt`;
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    title = 'This endpoint has a small context window, so it gets a compact prompt and a reduced tool set, and pulls subdoc detail on demand via readDoc. Change it under AI settings → Custom → Context size. Click to view the prompt.';
   } else {
     label = '· Full ai.md';
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
@@ -2028,7 +2087,7 @@ async function approvePlan(): Promise<void> {
   // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
   // the approved turn could only re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
-    { type: 'text', text: 'Plan approved. Please proceed.' },
+    { type: 'text', text: PLAN_APPROVED_TEXT },
   ], { reviewRequest });
 }
 
@@ -2223,6 +2282,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     if (b.type === 'text') {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
+      // App-generated "[UI · app note] user applied …" context: a muted system
+      // line, not a blue bubble that would read as the user's own words.
+      if (msg.role === 'user' && b.text.startsWith(UI_APPLIED_NOTE_PREFIX)) {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] italic text-zinc-500 whitespace-pre-wrap break-words';
+        line.dataset.uiAppNote = '';
+        line.textContent = b.text;
+        wrap.appendChild(line);
+        continue;
+      }
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
@@ -2553,7 +2622,19 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
-  bubble.textContent = text;
+  // The Objects-list selection rides along as a context line; show it as a
+  // chip rather than raw "[Selected in …]" text in the user's own bubble.
+  const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
+  if (context) {
+    const chip = document.createElement('div');
+    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+    chip.title = 'The part selected in the Objects list was sent as context';
+    chip.textContent = `◎ ${context}`;
+    bubble.appendChild(chip);
+    bubble.appendChild(document.createTextNode(rest));
+  } else {
+    bubble.textContent = text;
+  }
   return bubble;
 }
 
@@ -2655,6 +2736,7 @@ async function launchReview(): Promise<void> {
   showAiReviewModal({
     activeProvider,
     sessionId: state.sessionId,
+    history: state.history,
     onReviewPosted: (msg) => {
       state.history.push(msg);
       renderTranscript();
@@ -2874,10 +2956,35 @@ function captureChatImageAsAttachment(img: ImageSource): void {
   try {
     const existing = pw.getAttachments();
     if (Array.isArray(existing) && existing.some(a => a.src === src)) return;
-    pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType });
+    const r = pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType }) as { error?: unknown } | undefined;
+    if (typeof r?.error === 'string') console.warn('Session attachments: capture failed', r.error);
   } catch (err) {
     console.warn('Session attachments: capture failed', err);
   }
+}
+
+function renderPartContext(): void {
+  if (!partContextEl) return;
+  const keys = getSelectedPartKeys();
+  partContextEl.replaceChildren();
+  partContextEl.classList.toggle('hidden', keys.length === 0);
+  if (keys.length === 0) return;
+  const chip = document.createElement('span');
+  chip.className = 'inline-flex items-center gap-1 max-w-full rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-100';
+  chip.title = 'Selected in the Objects list — sent with your message as context';
+  const t = document.createElement('span');
+  t.className = 'truncate';
+  t.textContent = `◎ ${describePartKeys(keys)}`;
+  chip.appendChild(t);
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] -my-3 -mr-2 md:min-w-0 md:min-h-0 md:my-0 md:mr-0 text-amber-200/70 [@media(hover:hover)]:hover:text-amber-50';
+  rm.textContent = '✕';
+  rm.title = 'Clear the selection';
+  rm.setAttribute('aria-label', 'Clear the selected part');
+  rm.addEventListener('click', () => setSelectedPartKey(null));
+  chip.appendChild(rm);
+  partContextEl.appendChild(chip);
 }
 
 function renderPendingImages(): void {
@@ -3092,7 +3199,7 @@ async function preflightTurn(
       );
       return PREFLIGHT_ABORT;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     // Hosted cloud provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
@@ -3176,6 +3283,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   help: () => { openSlashHelp(); },
   portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
   reconstruct: () => { prefillAiInput(RECONSTRUCT_PROMPT); },
+  parts: () => { prefillAiInput(PARTS_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a
@@ -3345,8 +3453,17 @@ async function sendMessage(): Promise<void> {
   const capturedText = text;
   const capturedImages = [...state.pendingImages];
 
-  const blocks: ChatBlock[] = [];
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
+  // "[UI · app note] user applied …" lines for panels the AI opened and the user then
+  // applied from (toolRegistry.notifyToolApplied) — one leading text block,
+  // so the model sees what the user settled on. Per-tab memory only.
+  const uiNotes = drainToolAppliedNotes();
+  const uiNoteBlocks: ChatBlock[] = uiNotes.length ? [{ type: 'text', text: uiNotes.join('\n') }] : [];
+
+  const blocks: ChatBlock[] = [...uiNoteBlocks];
+  // The Objects-list selection is chat context: "make it red" means the part
+  // the user has selected.
+  const partKeys = getSelectedPartKeys();
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
@@ -3390,20 +3507,13 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
-      planBlocks = [];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      planBlocks = [...uiNoteBlocks];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      const planPrefix =
-        'Before doing anything, write a concise plan for the following request. '
-        + 'Describe your approach, key steps, and any design decisions. '
-        + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
-        + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
-        + '---\n\n';
-      planBlocks = [];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      planBlocks = [...uiNoteBlocks];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -3478,50 +3588,47 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
-/** Show a blocking overlay asking the user to allow or decline an AI-initiated
- *  import. Resolves true (allow) or false (decline). */
-function showToolConfirmation(toolName: string): Promise<boolean> {
+/** Ask the user to allow or decline a confirm-required AI tool call (imports,
+ *  deleteVersion). Resolves true (allow) or false (decline). Built on
+ *  modalShell, so Escape / click-outside / ✕ decline and focus moves into the
+ *  dialog (onto Decline — the safe default for an irreversible action). An
+ *  abort of the turn (Stop, tab take-over) dismisses the prompt as a decline. */
+async function showToolConfirmation(toolName: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const label = await confirmToolLabel(toolName, input);
+  if (signal?.aborted) return false;
   return new Promise(resolve => {
-    const label = toolName === 'importImageAsRelief'
-      ? 'import an image as a 3D relief'
-      : toolName === 'importSvgAsRelief'
-      ? 'import an SVG as a 3D relief tile'
-      : `run "${toolName}"`;
-
-    const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
-
-    const card = document.createElement('div');
-    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+    let allowed = false;
+    const onAbort = () => { allowed = false; shell.close(); };
+    const shell = createModalShell({
+      title: 'Allow this AI action?',
+      maxWidth: 'sm',
+      onClose: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(allowed);
+      },
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const msg = document.createElement('p');
-    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.className = 'text-sm text-zinc-200';
+    msg.setAttribute('data-testid', 'ai-tool-confirm-message');
     msg.textContent = `The AI wants to ${label}. Allow this?`;
-
-    const btns = document.createElement('div');
-    btns.className = 'flex gap-2 justify-end';
+    shell.body.appendChild(msg);
 
     const declineBtn = document.createElement('button');
-    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.className = BUTTON_CANCEL;
     declineBtn.textContent = 'Decline';
+    declineBtn.addEventListener('click', () => { allowed = false; shell.close(); });
 
     const allowBtn = document.createElement('button');
-    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.className = toolName === 'deleteVersion' ? BUTTON_DANGER : BUTTON_PRIMARY;
     allowBtn.textContent = 'Allow';
+    allowBtn.addEventListener('click', () => { allowed = true; shell.close(); });
 
-    btns.appendChild(declineBtn);
-    btns.appendChild(allowBtn);
-    card.appendChild(msg);
-    card.appendChild(btns);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    const done = (allowed: boolean) => {
-      overlay.remove();
-      resolve(allowed);
-    };
-    allowBtn.addEventListener('click', () => done(true));
-    declineBtn.addEventListener('click', () => done(false));
+    shell.footer.appendChild(declineBtn);
+    shell.footer.appendChild(allowBtn);
+    declineBtn.focus();
   });
 }
 
@@ -3674,7 +3781,7 @@ async function runTurnWithStallRetry(
         renderTranscript();
         renderCostMeter();
       },
-      confirmTool: (toolName) => showToolConfirmation(toolName),
+      confirmTool: (toolName, toolInput) => showToolConfirmation(toolName, toolInput, controller.signal),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },
@@ -3964,15 +4071,23 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
   try {
     const context = await gatherReviewContext();
     if (controller.signal.aborted || state.sessionId !== reviewSession || !writeOwner) return null;
+    // The user's own messages (never the agent's replies), so the review
+    // grades against every requirement and correction, not just the last ask.
+    const conversation = cfg.includeConversation ? userConversation(state.history, getConfig().ai.reviewConversationMaxChars) : undefined;
     const result = await runReview({
       provider: reviewer.provider,
       model: reviewer.model,
       context: {
         ...context,
-        focus: request ? `Grade the result against the user's request: ${request}` : undefined,
+        // The pinned request stays in the focus: on plan approval it's the
+        // original ask, which the conversation alone wouldn't single out.
+        focus: request
+          ? `Grade the result against the user's request: ${request}${conversation && conversation.messages.length > 0 ? "\n(Their earlier messages below give the rest of their requirements and corrections.)" : ''}`
+          : undefined,
         // The images the user attached anywhere in this conversation (incl.
         // ones compaction carried forward), not the agent's own renders.
         references: carriedAttachments(state.history, getConfig().ai.reviewReferenceImages).map(b => b.source),
+        conversation,
       },
       sessionId: reviewSession,
       // The review is in the transcript — a session note per automatic
@@ -4234,7 +4349,7 @@ async function maybeAutoCompact(): Promise<void> {
   if (settings.toggles.provider === 'custom') {
     // Optional key; skip silently if the endpoint isn't fully configured.
     if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) return;
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
   } else if (settings.toggles.provider !== 'local') {
     const key = await getKey(settings.toggles.provider);
     if (!key) return;
@@ -4288,7 +4403,7 @@ async function runCompact(): Promise<void> {
       void showAiSettingsModal({ onChange: () => panelStatusUpdate() }, { initialTab: 'custom' });
       return;
     }
-    apiKey = (await getKey('custom'))?.apiKey;
+    apiKey = await resolveCustomApiKey(settings.toggles.customBaseUrl);
     setTransientStatus('Summarizing the conversation…');
   } else if (settings.toggles.provider !== 'local') {
     const provider = settings.toggles.provider;

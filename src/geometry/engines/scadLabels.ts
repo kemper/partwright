@@ -45,6 +45,13 @@ export interface ScadLabelScan {
    *  wrote but didn't survive into paintByLabel reach. Runtime-computed
    *  names (`label(str("c", i))`) don't appear here. */
   allLiteralLabelNames: string[];
+  /** Part names from top-level `remove_part("name");` statements — what the
+   *  object list's ✕ writes. The engine drops the labelled objects with these
+   *  names after compiling. */
+  removedParts: string[];
+  /** Points from top-level `remove_piece([x, y, z]);` statements — the engine
+   *  drops the separate pieces touching them after compiling. */
+  removedPieces: [number, number, number][];
 }
 
 /**
@@ -82,7 +89,17 @@ export function scanScadLabels(source: string): ScadLabelScan {
   // recorded statement. Module declarations (`module foo(...) { ... }`),
   // function declarations, `use`/`include` directives, and bare top-level
   // assignments (`name = expr;`) don't produce geometry, so we drop them.
+  const removedParts: string[] = [];
+  const removedPieces: [number, number, number][] = [];
   const flushStatement = (chunk: string) => {
+    // `remove_part(...)` / `remove_piece(...)` are no-op modules to OpenSCAD
+    // (they emit no object), so they're recorded, never counted as geometry.
+    const removal = parseRemovalStatement(chunk);
+    if (removal) {
+      if ('part' in removal) removedParts.push(removal.part);
+      else removedPieces.push(removal.piece);
+      return;
+    }
     if (!isGeometryStatement(chunk)) return;
     topLevelStatements.push({ labelName: extractLeadingLabelName(chunk) });
   };
@@ -150,7 +167,55 @@ export function scanScadLabels(source: string): ScadLabelScan {
     hasAnyLabelCalls,
     hasNestedLabels,
     allLiteralLabelNames,
+    removedParts,
+    removedPieces,
   };
+}
+
+const REMOVE_PART_RE = /^\s*remove_part\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)\s*;?\s*$/;
+const REMOVE_PIECE_RE = /^\s*remove_piece\s*\(\s*\[([^\]]*)\]\s*\)\s*;?\s*$/;
+
+/** Parse a top-level `remove_part("name");` or `remove_piece([x, y, z]);`
+ *  statement (comments allowed around it). Null for anything else, including
+ *  malformed arguments — those then compile as an ordinary no-op call. */
+function parseRemovalStatement(chunk: string): { part: string } | { piece: [number, number, number] } | null {
+  const text = stripComments(chunk);
+  const part = REMOVE_PART_RE.exec(text);
+  if (part) {
+    const name = part[1].replace(/\\(.)/g, '$1');
+    return name.length > 0 ? { part: name } : null;
+  }
+  const piece = REMOVE_PIECE_RE.exec(text);
+  if (piece) {
+    const nums = piece[1].split(',').map(s => Number(s.trim()));
+    if (nums.length === 3 && nums.every(n => Number.isFinite(n))) return { piece: nums as [number, number, number] };
+  }
+  return null;
+}
+
+/** Remove `// …` and `/* … *\/` comments, leaving string literals intact. */
+function stripComments(source: string): string {
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    const n = source[i + 1];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === '\\' ? 2 : 1;
+      out += source.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === '/' && n === '/') {
+      while (i < source.length && source[i] !== '\n') i++;
+    } else if (c === '/' && n === '*') {
+      const end = source.indexOf('*/', i + 2);
+      i = end < 0 ? source.length : end + 2;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
 }
 
 /** Read the literal string argument of a `label(` token at `source[at..]`.

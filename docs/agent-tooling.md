@@ -17,10 +17,11 @@ agents below can run on different model tiers.
 | `work-reviewer` | `.claude/agents/work-reviewer.md` | `opus` | read-only (`Read, Grep, Glob, Bash`) | Reviews the branch diff vs `origin/main` for correctness, back-compat, security, **and** UI consistency. Never edits. |
 | `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__serena__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
 | `model-sculpt` | `.claude/agents/model-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a model snippet (photo→figurine, catalog toy, mechanical part) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Engine-aware: **manifold-js / voxel / scad** (not replicad — see below). Returns **text only**. Driven by the `/sculpt` skill. |
+| `model-critic` | `.claude/agents/model-critic.md` | `sonnet` | read-only (`Read, Bash`) | Checkpoint critic for likeness work: renders the model at the reference photos' angles, compares against the photos + the sculpt's feature checklist, and returns a ranked top-3 fix list as text. Called by the `/sculpt` skill **only at checkpoints** (score plateau / every ~5 passes), never every pass. |
 | `implementer` | `.claude/agents/implementer.md` | `sonnet` | `Read, Write, Edit, Bash, Grep, Glob` | Spec-driven implementation worker for parallelizable, well-bounded units (a new modifier/provider/export following an existing sibling). Runs build + unit + the targeted spec before reporting; asks the caller instead of guessing on ambiguity. Launch with `isolation: "worktree"` so parallel workers never share the checkout. |
 | `test-triage` | `.claude/agents/test-triage.md` | `sonnet` | `Read, Bash, Grep, Glob` | Runs vitest / Playwright (targeted, shard, or full) in its own context and returns only a digest: failing test → root-cause hypothesis → `file:line`. Diagnoses, never fixes. The log firewall for the e2e suite. |
 
-All five are checked in, so every session and teammate gets the same behavior.
+All six are checked in, so every session and teammate gets the same behavior.
 The `work-reviewer` runs the static-analysis scripts below as part of its review
 and reasons about the hits against the diff.
 

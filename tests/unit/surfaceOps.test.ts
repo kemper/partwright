@@ -53,8 +53,16 @@ describe('parseSurfaceOpts (shared scalar + scope validator)', () => {
     expect(parseSurfaceOpts('smooth', { iterations: 3 }).scope).toBeUndefined();
   });
 
-  it('rejects passing both label and region', () => {
-    expect(() => parseSurfaceOpts('fuzzy', { label: 'a', region: { point: [0, 0, 0], radius: 1 } })).toThrow(/not both/);
+  it('rejects passing more than one scope key', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { label: 'a', region: { point: [0, 0, 0], radius: 1 } })).toThrow(/not several/);
+    expect(() => parseSurfaceOpts('fuzzy', { label: 'a', select: { label: 'a' } })).toThrow(/not several/);
+  });
+
+  it('accepts a shared selector as a select scope (#1093)', () => {
+    const r = parseSurfaceOpts('knurl', { select: { label: 'grip', where: { facing: '+x' } }, amplitude: 0.4 });
+    expect(r.params).toEqual({ amplitude: 0.4 });
+    expect(r.scope?.kind).toBe('select');
+    expect(() => parseSurfaceOpts('knurl', { select: { lable: 'grip' } })).toThrow(/unknown selector key "lable"/);
   });
 
   it('rejects an unknown option (mentioning the scope keys)', () => {

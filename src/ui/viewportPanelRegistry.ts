@@ -22,24 +22,60 @@ export function onViewportPanelOpen(fn: OpenListener): void {
   openListeners.push(fn);
 }
 
+/** >0 while a programmatic (AI / API) tool open is running — see
+ *  {@link runWithSilentPanelOpen}. */
+let silentDepth = 0;
+
+/** Run `fn` with every panel it opens (synchronously) treated as a `silent`
+ *  open, so the AI panel isn't stepped aside. Used by the tool registry when
+ *  the AI opens a tool for the user: the chat stays visible beside it. Openers
+ *  that build asynchronously must open their panel before their first await. */
+export function runWithSilentPanelOpen<T>(fn: () => T): T {
+  silentDepth++;
+  try { return fn(); } finally { silentDepth--; }
+}
+
 /** Call when a panel is about to become visible. Closes any other open panel.
  *
  *  `silent` opens (e.g. the Customizer auto-revealing after an AI turn) skip the
  *  open-listeners, so they don't pull the AI panel out of the way — only a
  *  hands-on, user-initiated tool open should do that. */
 export function openViewportPanel(panel: ViewportPanel, opts?: { silent?: boolean }): void {
-  if (active && active !== panel) active.close();
+  if (active && active !== panel) {
+    const prev = active;
+    prev.close();
+    // Panels normally call closeViewportPanel from close(); cover any that don't.
+    if (active === prev) { active = null; for (const fn of closeListeners) fn(prev); }
+  }
   const reopening = active === panel;
   active = panel;
   // Notify subscribers only on a genuine, non-silent open (a panel re-asserting
   // itself — e.g. a params re-sync on the already-open panel — shouldn't keep
   // stomping the AI panel the user may have just reopened).
-  if (!reopening && !opts?.silent) for (const fn of openListeners) fn();
+  if (!reopening && !opts?.silent && silentDepth === 0) for (const fn of openListeners) fn();
+}
+
+/** Fire the "a tool panel opened" listeners unconditionally — even when the
+ *  panel was already open (a re-open skips them in openViewportPanel). Used by
+ *  the tool registry on the phone layout, where an AI/API open must step the
+ *  full-screen chat aside so the tool it just staged is actually visible. */
+export function notifyPanelOpen(): void {
+  for (const fn of openListeners) fn();
+}
+
+type CloseListener = (panel: ViewportPanel) => void;
+const closeListeners: CloseListener[] = [];
+
+/** Subscribe to "a viewport tool panel closed" (× / Escape / replaced by
+ *  another panel). The tool registry uses it to end an AI-opened tool session. */
+export function onViewportPanelClose(fn: CloseListener): void {
+  closeListeners.push(fn);
 }
 
 /** Call when a panel hides itself (× button, Escape, or forced close). */
 export function closeViewportPanel(panel: ViewportPanel): void {
   if (active === panel) active = null;
+  for (const fn of closeListeners) fn(panel);
 }
 
 /** The viewport tool panel currently open ("the current menu"), or `null` if

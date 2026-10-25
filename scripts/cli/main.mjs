@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
+import { runSegment } from './segment.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
 
 const coerce = (s) => { if (s === 'true') return true; if (s === 'false') return false; const n = Number(s); return Number.isNaN(n) ? s : n; };
@@ -134,6 +135,8 @@ async function cmdCall(argv) {
   const args = a._[1] ? JSON.parse(a._[1]) : [];
   const r = await rpc(method, args);
   if (!r.ok) { console.log(json(r)); process.exit(1); }
+  // Value-returning API methods report failure as { error } (ai.md#argument-validation).
+  if (typeof r.result?.error === 'string') { console.log(json({ ok: false, error: r.result.error })); process.exit(1); }
   if (a.out && typeof r.result === 'string' && r.result.startsWith('data:image')) {
     writeDataUrl(r.result, resolve(a.out));
     console.log(json({ ok: true, out: resolve(a.out) }));
@@ -149,11 +152,11 @@ async function cmdRender(argv) {
     const code = readFileSync(resolve(a.code), 'utf8');
     await rpc('setActiveLanguage', ['manifold-js']);
     const run = await rpc('runAndSave', [code, 'render']);
-    if (!run.ok || run.result?.geometry?.status === 'error') { console.log(json({ ok: false, error: run.result?.geometry?.error || run.error })); process.exit(1); }
+    if (!run.ok || typeof run.result?.error === 'string' || run.result?.geometry?.status === 'error') { console.log(json({ ok: false, error: run.result?.error || run.result?.geometry?.error || run.error })); process.exit(1); }
   }
   const opts = { views: a.views || 'all', size: Number(a.size) || 420 };
   const r = await rpc('renderViews', [opts]);
-  if (!r.ok || typeof r.result !== 'string') { console.log(json({ ok: false, error: r.error || 'no image (is a model loaded?)' })); process.exit(1); }
+  if (!r.ok || typeof r.result !== 'string') { console.log(json({ ok: false, error: r.error || (typeof r.result?.error === 'string' ? r.result.error : 'no image (is a model loaded?)') })); process.exit(1); }
   writeDataUrl(r.result, out);
   console.log(json({ ok: true, out }));
 }
@@ -175,6 +178,7 @@ async function cmdBake(argv) {
     await pw.createSession(name);
     if (thumbCamera && pw.setThumbnailCamera) await pw.setThumbnailCamera(thumbCamera);
     const run = await pw.runAndSave(model, 'shape');
+    if (run && typeof run.error === 'string') return { error: 'model error: ' + run.error };
     if (run && run.geometry && run.geometry.status === 'error') return { error: 'model error: ' + run.geometry.error };
     const paintResults = [];
     for (const p of paints) paintResults.push(await pw.paintByLabel(p));
@@ -231,7 +235,8 @@ async function cmdIterate(argv) {
   await rpc('setActiveLanguage', [a.lang || 'manifold-js']);
   const runRes = await rpc('run', [code]);
   if (!runRes.ok) { console.log(json(runRes)); process.exit(1); }
-  if (runRes.result?.status === 'error') { console.log(json({ ok: false, error: runRes.result.error, stats: runRes.result })); process.exit(1); }
+  // A bad argument comes back as { error } (no status); a model failure as { status: 'error', error }.
+  if (typeof runRes.result?.error === 'string' || runRes.result?.status === 'error') { console.log(json({ ok: false, error: runRes.result.error, stats: runRes.result })); process.exit(1); }
   if (Object.keys(a.params).length) await rpc('setParams', [a.params]); // re-runs with overrides
   const stats = (await rpc('getGeometryData', [])).result;
   const img = await rpc('renderViews', [{ views: a.views || 'all', size: Number(a.size) || 420 }]);
@@ -268,6 +273,28 @@ async function cmdFetch(argv) {
   console.log(json({ ok: true, out, bytes: buf.length, contentType: res.headers.get('content-type') || 'unknown' }));
 }
 
+// Part detection on an STL (#1025): detector → colour-coded PNG + quality JSON.
+async function cmdSegment(argv) {
+  const a = parse(argv, ['json']);
+  const file = a._[0];
+  if (!file) { console.error('usage: partwright segment <mesh.stl> --algo <id> [--seeds seeds.json] [-p k=v] [--smooth r] [--png out] [--views …] [--size N]'); process.exit(1); }
+  const { views, error: viewErr } = resolveViews(a.view, a.views);
+  if (viewErr) { console.error(viewErr); process.exit(1); }
+  const out = await runSegment(resolve(file), { algorithm: a.algo || 'crease-watershed', params: a.params, seedsFile: a.seeds, smoothRadius: a.smooth });
+  const s = out.summary;
+  const result = {
+    ok: true, detector: s.detectorId, params: s.params, ms: out.ms,
+    parts: s.parts.map((p) => ({ id: p.id, name: p.name, triCount: p.triCount, areaFrac: p.areaFrac, regions: p.regions, displayColor: p.displayColor })),
+    unassigned: s.unassigned, quality: s.quality,
+  };
+  if (!a.json) {
+    const png = a.png || join(dirname(resolve(file)), `${basename(file).replace(/\.[^.]+$/, '')}.parts.png`);
+    await composePng(out.positions, out.triVerts, out.triColors, out.bbox, Number(a.size) || 512, views ?? undefined).toFile(png);
+    result.png = png;
+  }
+  console.log(json(result));
+}
+
 // Discovery — list the window.partwright methods reachable via `call`.
 async function cmdMethods(argv) {
   const a = parse(argv);
@@ -291,6 +318,9 @@ Phase 1 (stateless, no browser — fast inner loop):
                                [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
                                photo → palette-snapped voxel model + preview
   partwright fetch   <url>     [--out file]              download a remote image to disk (for photo)
+  partwright segment <mesh.stl> [--algo crease-watershed|pieces] [--seeds seeds.json] [-p k=v]
+                               [--smooth radius] [--png out] [--views …] [--size N] [--json]
+                               detect named parts → colour-coded PNG + quality JSON
 
 Phase 2 (headless-browser daemon — full fidelity + state):
   partwright iterate <file.js> [--out png] [--views all] [-p k=v]
@@ -311,6 +341,7 @@ export async function main(argv) {
     case 'compare': return cmdCompare(rest);
     case 'photo': return cmdPhoto(rest);
     case 'fetch': return cmdFetch(rest);
+    case 'segment': return cmdSegment(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);

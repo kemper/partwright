@@ -231,6 +231,8 @@ export interface SeedRegion {
   color: [number, number, number];
   triangleIds: number[];
   name: string;
+  /** Palette slot the region is attributed to (a 3MF import's filament slot). */
+  slotId?: string;
 }
 
 export interface GenerateReliefResult {

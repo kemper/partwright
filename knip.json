@@ -6,12 +6,15 @@
     "help.html",
     "legal.html",
     "whats-new.html",
+    "src/sandbox/sandboxMain.ts",
+    "src/sandbox/sandboxWorker.ts",
     "src/content/catalogEntry.ts",
     "tests/**/*.spec.ts",
     "tests/unit/**/*.test.ts",
     "scripts/**/*.mjs",
     "bin/*.mjs",
-    "src/tools/previewModel.ts"
+    "src/tools/previewModel.ts",
+    "src/tools/segmentMesh.ts"
   ],
   "project": ["src/**/*.{ts,tsx}"],
   "paths": {

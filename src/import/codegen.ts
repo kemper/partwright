@@ -41,6 +41,7 @@ return api.renderMesh(api.imports[0]);
   }
 
   if (imports.length === 1) {
+    if (imports[0].parts) return `${header}\n\n${importExpr(imports[0], 0, 'return ')};\n`;
     return `${header}
 const { Manifold } = api;
 
@@ -49,7 +50,7 @@ return Manifold.ofMesh(api.imports[0]);
   }
 
   const parts = imports
-    .map((_, i) => `  Manifold.ofMesh(api.imports[${i}]),`)
+    .map((m, i) => `  ${importExpr(m, i, '')},`)
     .join('\n');
 
   return `${header}
@@ -59,4 +60,21 @@ return Manifold.compose([
 ${parts}
 ]);
 `;
+}
+
+/** Expression that loads import `i`: `api.importWithParts(i)` (detected parts
+ *  become labels) when the import carries parts, else plain ofMesh. */
+function importExpr(m: ImportedMesh, i: number, prefix: string): string {
+  return m.parts ? `${prefix}api.importWithParts(${i})` : `${prefix}Manifold.ofMesh(api.imports[${i}])`;
+}
+
+/** Rewrite existing code so imports load with their committed parts:
+ *  `Manifold.ofMesh(api.imports[i])` → `api.importWithParts(i)`. Returns the
+ *  code unchanged (and `changed: false`) when no such call exists — e.g. the
+ *  user restructured it; they can call `api.importWithParts(i)` themselves. */
+export function rewriteImportsWithParts(code: string, index: number): { code: string; changed: boolean } {
+  if (new RegExp(`api\\.importWithParts\\(\\s*${index}\\s*\\)`).test(code)) return { code, changed: false };
+  const re = new RegExp(`Manifold\\.ofMesh\\(\\s*api\\.imports\\[\\s*${index}\\s*\\]\\s*\\)`, 'g');
+  const next = code.replace(re, `api.importWithParts(${index})`);
+  return { code: next, changed: next !== code };
 }

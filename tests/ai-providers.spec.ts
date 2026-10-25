@@ -122,14 +122,14 @@ test.describe('Multi-provider AI', () => {
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
     await page.locator('button:has-text("Custom (OpenAI)")').dispatchEvent('click');
 
-    // The custom config UI renders: base URL input + the connection helpers.
-    const urlInput = modal.locator('input[placeholder="http://localhost:8080/v1"]');
+    // The custom config UI renders the saved-endpoint editor: base URL input
+    // + the Connect button.
+    const urlInput = modal.getByTestId('custom-endpoint-url');
     await expect(urlInput).toBeVisible();
-    await expect(modal.locator('button:has-text("Test connection")')).toBeVisible();
-    await expect(modal.locator('button:has-text("Fetch models")')).toBeVisible();
+    await expect(modal.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
 
-    // Enable is gated on the endpoint URL (the API key is optional). The URL
-    // ships pre-filled with the bridge default, so Enable starts ready;
+    // Enable is gated on the open endpoint's URL (the API key is optional).
+    // The first saved endpoint is the bridge default, so Enable starts ready;
     // clearing the URL gates it off, and refilling flips it back on — no key
     // required.
     const enableBtn = modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true });
@@ -140,7 +140,7 @@ test.describe('Multi-provider AI', () => {
     await expect(enableBtn).toBeDisabled();
     await urlInput.fill('http://localhost:8080/v1');
     await urlInput.blur();
-    await modal.locator('input[placeholder^="e.g. llama"]').fill('my-model');
+    await modal.getByTestId('custom-endpoint-model').fill('my-model');
     await expect(enableBtn).toBeEnabled();
   });
 
@@ -165,7 +165,9 @@ test.describe('Multi-provider AI', () => {
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
     await page.locator('button:has-text("Custom (OpenAI)")').dispatchEvent('click');
 
-    const urlInput = modal.locator('input[placeholder="http://localhost:8080/v1"]');
+    // Add a second (non-bridge) endpoint and point it at the mocked server.
+    await modal.getByRole('button', { name: '+ Other endpoint' }).click();
+    const urlInput = modal.getByTestId('custom-endpoint-url');
     await urlInput.fill('http://localhost:9911/v1');
     await urlInput.blur(); // commit the URL (its onChange fires on blur)
 
@@ -173,19 +175,18 @@ test.describe('Multi-provider AI', () => {
     await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save & activate Custom endpoint' })).toBeEnabled();
 
-    // Fetch the endpoint's models → pills appear and a model is picked.
-    await modal.getByRole('button', { name: 'Fetch models' }).click();
-    await expect(modal.getByText('2 model(s) found.')).toBeVisible();
+    // Connect → the endpoint's models appear as pills; pick one.
+    await modal.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(modal.getByText('Connected — 2 model(s) available.', { exact: false })).toBeVisible();
     await modal.getByRole('button', { name: 'qwen2.5-coder-32b' }).click();
 
-    // Type an API key but DON'T click "Save key" — the original usability bug
-    // was that closing here silently dropped the typed key. Save & activate
-    // must flush it.
-    await modal.locator('input[placeholder="leave blank if the endpoint needs no auth"]').fill('pw-secret-token-123');
+    // Type an API key but don't blur — closing via Save & activate must still
+    // save it (the original usability bug silently dropped a typed key).
+    await modal.getByTestId('custom-endpoint-key').fill('pw-secret-token-123');
     await page.getByRole('button', { name: 'Save & activate Custom endpoint' }).click();
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
 
-    // The typed key was persisted to the aiKeys store despite never clicking "Save key".
+    // The typed key was saved with the endpoint and mirrored to the aiKeys row.
     const storedKey = await page.evaluate(async () => {
       const db = await import('/src/ai/db.ts');
       return (await db.getKey('custom'))?.apiKey ?? null;

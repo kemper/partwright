@@ -26,6 +26,7 @@ export const SLASH_COMMANDS = [
   { name: 'models', summary: 'Open AI settings — provider, model, and API key', aliases: ['model', 'settings'] },
   { name: 'portrait', summary: 'Prefill a prompt to model a stylized 3D bust from a photo you attach', aliases: ['bust'] },
   { name: 'reconstruct', summary: 'Prefill a prompt to reverse-engineer an imported mesh into editable code', aliases: ['convert'] },
+  { name: 'parts', summary: 'Prefill a prompt to split an imported mesh into named parts and paint each one', aliases: ['segment'] },
   { name: 'help', summary: 'List the available slash commands', aliases: ['commands'] },
 ] as const satisfies readonly SlashCommandSpec[];
 

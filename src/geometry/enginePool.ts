@@ -20,7 +20,12 @@ import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
 import type { MeshData } from './types';
-import type { ImportedMesh } from '../import/importedMesh';
+import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
+import { createEngineWorker, isEngineSandboxUnavailableError, type EngineWorkerHandle } from '../sandbox/sandboxHost';
+import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { reportLockdownRefusal } from './lockdownRefusalLog';
+import { errorLog } from '../diagnostics/errorLog';
+import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 
 export interface PoolBuildRequest {
   code: string;
@@ -35,6 +40,11 @@ export interface PoolBuildRequest {
    *  part actually starts meshing, as opposed to waiting behind others). Lets a
    *  per-part progress UI flip a row from "queued" to "rendering". */
   onStart?: () => void;
+  /** The trust domain (session) the caller captured `code` under — see
+   *  trustDomain.ts. Defaults to the active domain. A build whose domain is no
+   *  longer active is refused, so a flow that outlives a session switch can't
+   *  respawn the pool and run the old session's code next to the new one's. */
+  domain?: string;
 }
 
 export interface PoolBuildResult {
@@ -56,7 +66,8 @@ interface Job {
 }
 
 interface PoolWorker {
-  worker: Worker;
+  /** A real Worker, or the engine-sandbox façade over one. */
+  worker: EngineWorkerHandle;
   /** True once the worker has booted its WASM and posted `ready`. */
   ready: boolean;
   /** callId → its in-flight job, so a result routes back to the right promise. */
@@ -97,10 +108,17 @@ function targetPoolSize(): number {
 }
 
 function spawnWorker(): PoolWorker {
-  const worker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  const worker = createEngineWorker(() => new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' }));
   const pw: PoolWorker = { worker, ready: false, inflight: new Map(), busy: false };
   worker.onmessage = (e: MessageEvent) => handleMessage(pw, e.data);
-  worker.onerror = () => {
+  worker.onerror = (ev: ErrorEvent) => {
+    // A fail-closed engine sandbox won't run model code in this tab: respawning
+    // can't help, so refuse everything with its message instead of burning the
+    // respawn budget into a generic "failed to initialise".
+    if (isEngineSandboxUnavailableError(ev.message ?? '')) {
+      refuseAll(pw, new Error(ev.message));
+      return;
+    }
     // A worker-level error can't be tied to one callId; fail everything in flight
     // on this worker and replace it so the pool stays usable.
     failWorker(pw, new Error('Assembly build worker crashed'));
@@ -115,6 +133,18 @@ function failWorker(pw: PoolWorker, err: Error): void {
   pw.inflight.clear();
   pw.busy = false;
   replaceWorker(pw);
+}
+
+/** Drop a worker without replacing it and reject its in-flight jobs plus the
+ *  whole queue with `err` (the engine sandbox is unavailable). */
+function refuseAll(pw: PoolWorker, err: Error): void {
+  for (const job of pw.inflight.values()) job.reject(err);
+  pw.inflight.clear();
+  pw.busy = false;
+  try { pw.worker.terminate(); } catch { /* already gone */ }
+  const idx = workers.indexOf(pw);
+  if (idx !== -1) workers.splice(idx, 1);
+  drainQueue(err);
 }
 
 function replaceWorker(dead: PoolWorker): void {
@@ -142,7 +172,18 @@ function ensureWorkers(): void {
   while (workers.length < n) workers.push(spawnWorker());
 }
 
-function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
+function handleMessage(pw: PoolWorker, data: unknown): void {
+  // Pool workers run untrusted model code too: validate before acting, and on
+  // a malformed message fail that worker's jobs and replace it (see engine.ts).
+  const check = checkEngineWorkerMessage(data);
+  if (!check.ok) {
+    if (check.type === 'execute_preview') return; // pool never asks for previews
+    const message = `Assembly build worker sent a malformed${check.type ? ` ${check.type}` : ''} message (${check.reason})`;
+    errorLog.capture({ level: 'warn', source: 'engine', message });
+    failWorker(pw, new Error(message));
+    return;
+  }
+  const msg = check.msg;
   if (msg.type === 'ready') {
     pw.ready = true;
     respawns = 0; // a healthy worker resets the give-up budget
@@ -154,6 +195,13 @@ function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
     // otherwise the WASM instance may be poisoned — fail the worker and replace.
     const callId = msg.callId as string | null;
     const message = (msg.message as string) || 'Assembly build failed';
+    // A fail-closed sandbox lockdown is deterministic for this browser — log it
+    // (with the offending names) and stop, rather than respawning into the same
+    // refusal until the budget runs out and the reason is lost.
+    if (reportLockdownRefusal(message, 'assembly')) {
+      refuseAll(pw, new Error(message));
+      return;
+    }
     if (callId && pw.inflight.has(callId)) {
       pw.inflight.get(callId)!.reject(new Error(message));
       pw.inflight.delete(callId);
@@ -182,7 +230,7 @@ function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
   job.resolve({
     mesh,
     error: (msg.error as string | null) ?? null,
-    paramsSchema: (msg.paramsSchema as PoolBuildResult['paramsSchema']) ?? undefined,
+    paramsSchema: check.paramsSchema, // normalized by the validator, not the Worker's raw array
     labelMap: labelMapEntries ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)])) : undefined,
     labelColors: labelColorEntries && labelColorEntries.length > 0 ? new Map(labelColorEntries) : undefined,
     paintOps: (msg.paintOps as PoolBuildResult['paintOps']) ?? undefined,
@@ -210,11 +258,7 @@ function dispatch(pw: PoolWorker, job: Job): void {
   // as "rendering started". Guarded so a throwing callback can't wedge dispatch.
   try { job.req.onStart?.(); } catch { /* progress callback must not break dispatch */ }
   const { code, lang, params, imports, companionFiles } = job.req;
-  const wireImports = (imports ?? []).map(m => ({
-    id: m.id, filename: m.filename, format: m.format,
-    numProp: m.numProp, numVert: m.numVert, numTri: m.numTri,
-    vertProperties: m.vertProperties.slice(), triVerts: m.triVerts.slice(),
-  }));
+  const wireImports = (imports ?? []).map(cloneImportForWorker);
   pw.worker.postMessage({
     type: 'execute',
     callId,
@@ -230,6 +274,9 @@ function dispatch(pw: PoolWorker, job: Job): void {
 /** Build one part in the pool. Spawns workers on first use. Concurrency is
  *  bounded by the pool size; excess calls queue and run as workers free up. */
 export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
+  if ((req.domain ?? getEngineTrustDomain()) !== getEngineTrustDomain()) {
+    return Promise.reject(new Error('Build cancelled — the session changed before it ran'));
+  }
   ensureWorkers();
   return new Promise<PoolBuildResult>((resolve, reject) => {
     queue.push({ req, resolve, reject });
@@ -239,8 +286,8 @@ export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
 
 /** Tear down the pool and reject anything still queued. Call when the Assembly
  *  view closes so the extra WASM heaps are released. */
-export function disposeEnginePool(): void {
-  const err = new Error('Assembly view closed');
+export function disposeEnginePool(reason = 'Assembly view closed'): void {
+  const err = new Error(reason);
   for (const pw of workers) {
     for (const job of pw.inflight.values()) job.reject(err);
     try { pw.worker.terminate(); } catch { /* already gone */ }
@@ -252,3 +299,7 @@ export function disposeEnginePool(): void {
   // sizes from its own config again.
   sizeOverride = null;
 }
+
+// Pool workers belong to the session whose parts they built (#1090): drop them
+// (and anything queued) the moment the active session changes.
+onEngineTrustDomainChange(() => { disposeEnginePool('Build cancelled — the session changed'); });
