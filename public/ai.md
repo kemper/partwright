@@ -642,6 +642,8 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
 
+**Locked-down environment:** model code runs in a geometry Worker that has no network, storage, DOM or GPU access. Only `api` (below), standard JavaScript built-ins, `WebAssembly`, timers, `console`, `performance`, `crypto` and text/URL helpers are available. If you see `fetch is not a function`, `X is not defined`, `Cannot read properties of undefined (reading 'open')`, or `… is disabled in the geometry sandbox`, the code reached for a blocked browser API. That's deliberate, not a bug to work around. Pass external data in through imports (`api.imports`), `api.params`, or the console API instead.
+
 ```js
 const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 // MUST return a Manifold object
