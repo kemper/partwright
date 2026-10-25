@@ -11,6 +11,8 @@ import { getBuildVolume } from '../geometry/printerSettings';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
+import { createSliderEntry } from './sliderEntry';
+import { registerTool, createToolNote, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
@@ -29,6 +31,24 @@ type ScaleMode = 'percent' | 'units';
 
 let openModal: HTMLDivElement | null = null;
 let currentResizeClose: (() => void) | null = null;
+let currentResizeState: (() => Record<string, unknown>) | null = null;
+
+/** Prefill keys for `openTool('tool-resize', …)`. */
+const RESIZE_PREFILL_SCHEMA: PrefillSchema = {
+  scale: { type: 'numberOrVec3', min: 0.01, description: 'Scale factor: a number (uniform) or [sx, sy, sz]. 1 = no change.' },
+  size: { type: 'vec3', description: 'Target size [x, y, z] in model units (switches to raw units).' },
+  uniform: { type: 'boolean', description: 'Link the axes (default true).' },
+  fitToBed: { type: 'boolean', description: 'Stage a uniform fit to the printer build volume.' },
+  mode: { type: 'enum', values: ['parametric', 'bake'], description: 'Write-back: keep editable code (manifold-js) or bake to a mesh.' },
+  preserveColor: { type: 'boolean', description: 'Keep paint on bake (painted models only).' },
+};
+
+interface ResizeOpenOpts {
+  fitToBed?: boolean;
+  prefill?: Record<string, unknown>;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
 
 const resizeRegistryEntry = { close(): void { currentResizeClose?.(); } };
 
@@ -88,11 +108,27 @@ function fitToBedFactor(size: [number, number, number], bed: [number, number, nu
   return Number.isFinite(f) && f > 0 ? f : null;
 }
 
-export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): void {
-  if (openModal) { openModal.remove(); openModal = null; currentResizeClose = null; }
-
+export function openResizeModal(api: ResizeApi, opts?: ResizeOpenOpts): ToolOpenResult {
   const bbox = getBbox(api);
   const size = bbox?.size ?? [10, 10, 10];
+
+  // Validate the prefill up front (before touching any open panel).
+  const p = opts?.prefill ?? {};
+  const ignored: string[] = [];
+  {
+    const errors: string[] = [];
+    if (p.scale !== undefined && p.size !== undefined) errors.push('pass scale OR size, not both');
+    if (p.fitToBed && (p.scale !== undefined || p.size !== undefined)) errors.push('fitToBed computes the scale — drop scale/size');
+    if (Array.isArray(p.size) && (p.size as number[]).some(n => !(n > 0.001))) errors.push('size values must be > 0.001');
+    const perAxis = Array.isArray(p.scale) || Array.isArray(p.size);
+    if (p.uniform === true && perAxis) {
+      const v = (Array.isArray(p.scale) ? p.scale : (p.size as number[]).map((n, i) => n / (size[i] || 1))) as number[];
+      if (Math.max(...v) - Math.min(...v) > 1e-9) errors.push('uniform:true needs the same factor on every axis');
+    }
+    if (p.mode === 'parametric' && !api.canPlaceParametric()) errors.push("mode 'parametric' isn't available for this model (needs an unpainted manifold-js model) — use 'bake'");
+    if (errors.length) return { error: errors.join('; ') };
+  }
+  if (openModal) { openModal.remove(); openModal = null; currentResizeClose = null; }
 
   // State
   let mode: ScaleMode = 'percent';
@@ -299,55 +335,49 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     const readout = el('span', 'text-zinc-400 tabular-nums', '');
     labelRow.append(label, readout);
 
-    const controlRow = el('div', 'flex items-center gap-2');
-    const slider = el('input', 'flex-1 accent-blue-500');
-    slider.type = 'range';
-    const numInput = el('input', 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs');
-    numInput.type = 'number';
-    controlRow.append(slider, numInput);
-    wrap.append(labelRow, controlRow);
-
     function getValue() {
       if (mode === 'percent') return axis === 'X' ? pctX : axis === 'Y' ? pctY : pctZ;
       return axis === 'X' ? rawX : axis === 'Y' ? rawY : rawZ;
     }
     function getMax() { return mode === 'percent' ? maxPct : maxRaw; }
-    function getMin() { return mode === 'percent' ? 1 : 0.001; }
-    function getStep() { return mode === 'percent' ? 0.1 : 0.001; }
+    const fmt = (v: number) => (mode === 'percent' ? v.toFixed(1) : v.toFixed(3));
+    const showReadout = (v: number) => { readout.textContent = mode === 'percent' ? `${fmt(v)}%` : fmt(v); };
 
-    function updateDisplay() {
-      const v = getValue();
-      readout.textContent = mode === 'percent' ? `${v.toFixed(1)}%` : `${v.toFixed(3)}`;
-      numInput.value = mode === 'percent' ? v.toFixed(1) : v.toFixed(3);
-      slider.min = String(getMin());
-      slider.max = String(getMax());
-      slider.step = String(getStep());
-      slider.value = String(v);
-    }
-
-    function applyValue(v: number) {
-      const clamped = Math.max(getMin(), Math.min(getMax(), v));
-      if (mode === 'percent') {
-        if (axis === 'X' || uniform) pctX = clamped;
-        if (axis === 'Y' || uniform) pctY = clamped;
-        if (axis === 'Z' || uniform) pctZ = clamped;
-      } else {
-        if (axis === 'X' || uniform) rawX = clamped;
-        if (axis === 'Y' || uniform) rawY = clamped;
-        if (axis === 'Z' || uniform) rawZ = clamped;
-      }
-      if (uniform) renderControls();
-      else updateDisplay();
-      schedulePreview();
-    }
-
-    slider.addEventListener('input', () => applyValue(slider.valueAsNumber));
-    numInput.addEventListener('change', () => {
-      const v = parseFloat(numInput.value);
-      if (Number.isFinite(v)) applyValue(v);
+    // The slider spans [min, "Slider max"]; the box takes any larger value and
+    // grows the range to fit it (and the "Slider max" box with it) instead of
+    // silently clamping it.
+    const entry = createSliderEntry({
+      label: `${axis} scale`,
+      min: mode === 'percent' ? 1 : 0.001,
+      max: getMax(),
+      step: mode === 'percent' ? 0.1 : 0.001,
+      value: getValue(),
+      hardMax: Infinity,
+      format: fmt,
+      onChange: (v) => {
+        const grow = v > getMax();
+        if (grow) { if (mode === 'percent') maxPct = v; else maxRaw = v; }
+        if (mode === 'percent') {
+          if (axis === 'X' || uniform) pctX = v;
+          if (axis === 'Y' || uniform) pctY = v;
+          if (axis === 'Z' || uniform) pctZ = v;
+        } else {
+          if (axis === 'X' || uniform) rawX = v;
+          if (axis === 'Y' || uniform) rawY = v;
+          if (axis === 'Z' || uniform) rawZ = v;
+        }
+        // A grown range applies to every axis' slider and the max box.
+        if (grow) renderControls();
+        else showReadout(v);
+        schedulePreview();
+      },
+      rangeClass: 'flex-1 accent-blue-500',
+      inputClass: 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs',
     });
-
-    updateDisplay();
+    const controlRow = el('div', 'flex items-center gap-2');
+    controlRow.append(entry.range, entry.input);
+    wrap.append(labelRow, controlRow);
+    showReadout(getValue());
     return wrap;
   }
 
@@ -408,6 +438,7 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     panel.remove();
     openModal = null;
     currentResizeClose = null;
+    currentResizeState = null;
     closeViewportPanel(resizeRegistryEntry);
     document.removeEventListener('keydown', onResizeEscape);
   };
@@ -446,23 +477,99 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     }
   });
 
+  if (opts?.note) {
+    const note = createToolNote(opts.note, opts.source);
+    note.classList.add('mb-3');
+    body.prepend(note);
+  }
+
   renderControls();
   container.append(panel);
   setInitialPanelPosition(panel);
   currentResizeClose = close;
+  currentResizeState = () => {
+    const f = getScaleFactors();
+    return {
+      scale: f,
+      size: [size[0] * f[0], size[1] * f[1], size[2] * f[2]],
+      uniform,
+      input: mode,
+      mode: writeBack,
+      preserveColor,
+    };
+  };
   openViewportPanel(resizeRegistryEntry);
   document.addEventListener('keydown', onResizeEscape);
   openModal = panel as HTMLDivElement;
 
   // Opened from the "fit to print bed" command: stage the fit immediately so the
   // user lands on a previewed result, one Apply away from saving.
-  if (opts?.fitToBed) applyFit();
+  const applied: Record<string, unknown> = {};
+  if (opts?.fitToBed || p.fitToBed) { applyFit(); if (p.fitToBed) applied.fitToBed = true; }
+
+  // Prefill (validated above): stage the values and preview — never Apply.
+  if (p.mode !== undefined) {
+    writeBack = p.mode as 'parametric' | 'bake';
+    for (const r of panel.querySelectorAll<HTMLInputElement>('input[name="resize-writeback"]')) r.checked = r.value === writeBack;
+    syncColorRow();
+    applied.mode = writeBack;
+  }
+  if (p.preserveColor !== undefined) {
+    if (hasColor) {
+      preserveColor = p.preserveColor as boolean;
+      const cb = colorRow?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      if (cb) cb.checked = preserveColor;
+      applied.preserveColor = preserveColor;
+    } else ignored.push('preserveColor');
+  }
+  if (p.scale !== undefined || p.size !== undefined) {
+    if (p.scale !== undefined) {
+      const s = typeof p.scale === 'number' ? [p.scale, p.scale, p.scale] : (p.scale as number[]);
+      mode = 'percent';
+      uniform = p.uniform !== undefined ? (p.uniform as boolean) : s[0] === s[1] && s[1] === s[2];
+      [pctX, pctY, pctZ] = [s[0] * 100, s[1] * 100, s[2] * 100];
+      [rawX, rawY, rawZ] = [size[0] * s[0], size[1] * s[1], size[2] * s[2]];
+      maxPct = Math.max(maxPct, pctX, pctY, pctZ);
+      applied.scale = p.scale;
+    } else {
+      const s = p.size as number[];
+      mode = 'units';
+      const f = s.map((n, i) => n / (size[i] || 1));
+      uniform = p.uniform !== undefined ? (p.uniform as boolean) : Math.max(...f) - Math.min(...f) < 1e-9;
+      [rawX, rawY, rawZ] = [s[0], s[1], s[2]];
+      [pctX, pctY, pctZ] = [f[0] * 100, f[1] * 100, f[2] * 100];
+      maxRaw = Math.max(maxRaw, rawX, rawY, rawZ);
+      applied.size = s;
+    }
+    uniformCheck.checked = uniform;
+    applied.uniform = uniform;
+    syncModeBtns();
+    renderControls();
+    schedulePreview();
+  } else if (p.uniform !== undefined) {
+    uniform = p.uniform as boolean;
+    uniformCheck.checked = uniform;
+    if (uniform) { pctY = pctZ = pctX; rawY = rawZ = rawX; }
+    renderControls();
+    applied.uniform = uniform;
+  }
+  return { applied, ignored };
 }
 
 const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
 
 export function initResizeUI(api: ResizeApi): void {
+  registerTool({
+    id: 'tool-resize',
+    title: 'Resize / scale model',
+    hint: 'Tools',
+    prefillSchema: RESIZE_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openResizeModal(api, { prefill, note: ctx.note, source: ctx.source }),
+    getState: () => currentResizeState?.() ?? null,
+    isOpen: () => openModal !== null,
+    close: () => currentResizeClose?.(),
+  });
   registerCommands([
     {
       id: 'resize-model',

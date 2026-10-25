@@ -147,7 +147,7 @@ describe('Anthropic thinking config', () => {
 
   test('plain turns default to a 32k ceiling, and every ceiling is capped at the model output limit', async () => {
     // Opus 4.8 at Off runs without thinking, so it gets the plain default.
-    // A caller-supplied ceiling above Haiku 4.5's output limit is clamped
+    // A caller-supplied ceiling above Haiku 5.5's output limit is clamped
     // down to that limit (the API 400s above it).
     const bodies: Record<string, { max_tokens?: number }> = {};
     async function run(key: string, model: string, maxTokens?: number) {
@@ -165,8 +165,8 @@ describe('Anthropic thinking config', () => {
       } catch { /* body already captured */ }
     }
     await run('opus48', 'claude-opus-4-8');
-    await run('haikuHuge', 'claude-haiku-4-5', 500_000);
-    const haikuLimit = getLimits('anthropic', 'claude-haiku-4-5')?.output;
+    await run('haikuHuge', 'claude-haiku-5-5', 500_000);
+    const haikuLimit = getLimits('anthropic', 'claude-haiku-5-5')?.output;
 
     expect(bodies.opus48.max_tokens).toBe(32768);
     expect(haikuLimit).toBeGreaterThan(0);

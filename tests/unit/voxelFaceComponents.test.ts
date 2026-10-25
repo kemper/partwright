@@ -137,3 +137,21 @@ describe('VoxelGrid.faceComponentCount', () => {
     expect(v.faceComponentCount()).toBe(1);
   });
 });
+
+describe('VoxelGrid.removePieceAt', () => {
+  it('removes only the face-connected piece the point lies on', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [2, 0, 0], '#f00').fillBox([5, 0, 0], [6, 0, 0], '#0f0');
+    expect(v.faceComponentCount()).toBe(2);
+    // A point on the +z face of voxel (5,0,0) — mesh coords, voxel spans [x, x+1].
+    expect(v.removePieceAt([5.5, 0.5, 1])).toBe(2);
+    expect(v.size).toBe(3);
+    expect(v.has(0, 0, 0) && v.has(2, 0, 0)).toBe(true);
+    expect(v.has(5, 0, 0) || v.has(6, 0, 0)).toBe(false);
+  });
+
+  it('removes nothing when no voxel is near the point', () => {
+    const v = new VoxelGrid().set(0, 0, 0, '#f00');
+    expect(v.removePieceAt([10, 10, 10])).toBe(0);
+    expect(v.size).toBe(1);
+  });
+});

@@ -12,8 +12,7 @@ export interface TriAdjacency {
   nbr: Int32Array;
 }
 
-/** Adapt per-triangle neighbour lists (e.g. `buildAdjacency(mesh).neighbors`
- *  from src/color/adjacency.ts, which is corner-adjacent) to CSR. */
+/** Adapt per-triangle neighbour lists to CSR. */
 export function adjacencyFromNeighborLists(neighbors: ArrayLike<ArrayLike<number>>): TriAdjacency {
   const n = neighbors.length;
   const start = new Int32Array(n + 1);
@@ -192,19 +191,29 @@ export function absorbSmallRegions(
     const label = new Int32Array(count);
     for (let t = 0; t < triPart.length; t++) { w[compOf[t]] += weight[t]; label[compOf[t]] = triPart[t]; }
     const target = new Int32Array(count).fill(-2);
+    // Votes from big neighbours win; a region with only small neighbours may
+    // only flow into a LARGER one (ties by component id). Without that
+    // direction, two small neighbours each adopt the other's label and just
+    // swap every round instead of merging.
     const votes = new Map<number, Map<number, number>>();
+    const bigVotes = new Map<number, Map<number, number>>();
     for (let t = 0; t < triPart.length; t++) {
       const c = compOf[t];
       if (w[c] >= minWeight) continue;
       for (let j = adj.start[t]; j < adj.start[t + 1]; j++) {
         const o = adj.nbr[j];
+        const oc = compOf[o];
         const L = triPart[o];
-        if (compOf[o] === c || L < 0) continue;
-        let m = votes.get(c);
-        if (!m) { m = new Map(); votes.set(c, m); }
+        if (oc === c || L < 0) continue;
+        const big = w[oc] >= minWeight;
+        if (!big && (w[oc] < w[c] || (w[oc] === w[c] && oc < c))) continue;
+        const into = big ? bigVotes : votes;
+        let m = into.get(c);
+        if (!m) { m = new Map(); into.set(c, m); }
         m.set(L, (m.get(L) ?? 0) + 1);
       }
     }
+    for (const [c, m] of bigVotes) votes.set(c, m);
     let changed = 0;
     // Smallest regions first so a cluster of slivers resolves into its host.
     const order = [...votes.keys()].sort((x, y) => w[x] - w[y]);

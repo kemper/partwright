@@ -223,3 +223,24 @@ describe('scanScadLabels — allLiteralLabelNames', () => {
     expect(r.allLiteralLabelNames).toEqual([]);
   });
 });
+
+describe('scanScadLabels — remove_part / remove_piece', () => {
+  it('collects removals and does not count them as geometry statements', () => {
+    const r = scanScadLabels([
+      '// header',
+      'remove_part("lid");',
+      'remove_piece([1.5, -2, 3]); // the loose bit',
+      'label("base") cube(10);',
+      'label("lid") translate([0,0,12]) cube(10);',
+    ].join('\n'));
+    expect(r.removedParts).toEqual(['lid']);
+    expect(r.removedPieces).toEqual([[1.5, -2, 3]]);
+    expect(r.topLevelStatements.map(s => s.labelName)).toEqual(['base', 'lid']);
+  });
+
+  it('unescapes quoted names and ignores malformed points', () => {
+    const r = scanScadLabels('remove_part("a \\"b\\"");\nremove_piece([1, 2]);\ncube(1);');
+    expect(r.removedParts).toEqual(['a "b"']);
+    expect(r.removedPieces).toEqual([]);
+  });
+});

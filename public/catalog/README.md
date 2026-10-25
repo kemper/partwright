@@ -105,7 +105,7 @@ preserves color regions and entry metadata), or use the `rethumb` mode of
 - A missing/broken entry renders a disabled placeholder tile rather than
   blocking the whole page.
 - Entries without an embedded thumbnail show the hexagon placeholder.
-- **Thumbnail orientation: iso azimuth ≈135° (the +X,−Y corner) by default.** The
+- **Thumbnail orientation: iso azimuth 45°, elevation 35° (the +X,−Y corner) by default.** The
   catalog 3/4 tile camera looks from the +X/−Y corner — by default, put the
   model's front face there. A face authored on flat +Y shows the *back* of the
   head in the tile. For voxel characters, see also `/ai/voxel.md` Gotchas.

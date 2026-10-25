@@ -33,7 +33,7 @@ export function showImportUrlModal(callbacks: ImportUrlModalCallbacks): void {
   intro.className = 'text-[12px] text-zinc-400 leading-relaxed';
   intro.textContent =
     'Paste a Partwright share link, or an http(s) link to a file ' +
-    '(.json / .partwright.json, .stl, .step / .stp, .svg, .vox, or an image).';
+    '(.json / .partwright.json, .stl, .3mf, .step / .stp, .svg, .vox, or an image).';
   shell.body.appendChild(intro);
 
   const input = document.createElement('input');

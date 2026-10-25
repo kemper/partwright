@@ -99,6 +99,20 @@ describe('Custom OpenAI-compatible endpoint', () => {
   // A 401 from a bridge like CLIProxyAPI has two causes with different fixes:
   // no key saved in this browser, or a key that doesn't match the bridge's
   // config. The message must say which, and echo the server's own reason.
+  // A CLIProxyAPI bridge whose subscription login lapsed answers chat turns
+  // with auth errors that never say "log in" — the provider appends the fix.
+  test('a lost bridge login gets the login command appended', async () => {
+    vi.stubGlobal('fetch', async () => new Response(
+      JSON.stringify({ error: { message: 'auth_not_found: no auth available', type: 'server_error' } }),
+      { status: 500 },
+    ));
+    const run = custom.streamTurn({ apiKey: 'pw-k', baseUrl: 'http://localhost:8317/v1', model: 'claude-opus-5-5', systemPrompt: 's', systemSuffix: '', history: [] as never[], tools: [] });
+    await expect(run).rejects.toThrow(/auth_not_found[\s\S]*--claude-login/);
+    const { isTransientError } = await import('../../src/ai/transientError');
+    const err = await run.catch((e: unknown) => e);
+    expect(isTransientError(err)).toBe(false);
+  });
+
   test('auth failures say whether a key was sent and echo the server reason', async () => {
     vi.stubGlobal('fetch', async (_input: unknown, init: { headers?: Record<string, string> }) => {
       const sent = new Headers(init?.headers as HeadersInit).get('authorization');
@@ -112,7 +126,7 @@ describe('Custom OpenAI-compatible endpoint', () => {
     const wrong = await custom.validateConnection('http://localhost:8317/v1', 'pw-stale');
     expect(wrong).toContain('rejected the API key');
     expect(wrong).toContain('Invalid API key');
-    expect(wrong).toContain('re-run setup step 2');
+    expect(wrong).toContain("step 2 command");
 
     await expect(custom.listModels('http://localhost:8317/v1', 'pw-stale')).rejects.toThrow(/rejected the API key.*Invalid API key/);
 

@@ -22,8 +22,30 @@ export function normalizeImportParts(raw: unknown, numTri: number): ImportedMesh
     return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : null;
   });
   const out: ImportedMeshParts = { names: names as string[], colors, triPart: r.triPart };
-  if (r.source && typeof r.source === 'object' && typeof r.source.detectorId === 'string') out.source = r.source;
+  if (r.source && typeof r.source === 'object' && typeof r.source.detectorId === 'string') {
+    out.source = { ...r.source };
+    if (r.source.seeds !== undefined) {
+      const seeds = Array.isArray(r.source.seeds) ? r.source.seeds.flatMap((s) => normalizeSeed(s)) : [];
+      out.source.seeds = seeds;
+    }
+  }
   return out;
+}
+
+type SavedSeed = NonNullable<NonNullable<ImportedMeshParts['source']>['seeds']>[number];
+
+/** Keep a saved pin's known fields (incl. `maxRadius` and `color`) when they
+ *  are well-formed; drop the pin when its label/point are not. */
+function normalizeSeed(raw: unknown): SavedSeed[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const s = raw as Partial<SavedSeed>;
+  if (typeof s.label !== 'string' || !s.label.trim()) return [];
+  if (!Array.isArray(s.point) || s.point.length !== 3 || s.point.some((v) => typeof v !== 'number' || !Number.isFinite(v))) return [];
+  const out: SavedSeed = { label: s.label, point: [s.point[0], s.point[1], s.point[2]] };
+  if (s.auto === true) out.auto = true;
+  if (typeof s.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(s.color)) out.color = s.color.toLowerCase();
+  if (typeof s.maxRadius === 'number' && Number.isFinite(s.maxRadius) && s.maxRadius > 0) out.maxRadius = s.maxRadius;
+  return [out];
 }
 
 export interface PartRun {
@@ -60,4 +82,95 @@ export function orderTrianglesByPart(
     runs.push({ part: k === partCount ? -1 : k, startTri: starts[k], endTri: starts[k + 1] });
   }
   return { triVerts: out, runs };
+}
+
+/** Drop the triangles of the parts whose indices are in `remove`, then cap
+ *  every opening that leaves with a fan of triangles to the opening's centroid,
+ *  so the mesh stays closed for `Manifold.ofMesh` — the import half of
+ *  `api.removePart`. A part that was its own closed shell leaves no opening.
+ *  Each cap joins the part that owns most of its opening's rim (the surface it
+ *  closes), and its centroid vertex averages the loop's vertex properties. The mesh must be welded (shared vertices), as
+ *  every import is. */
+export function removeImportPartTriangles(
+  mesh: { numProp: number; vertProperties: Float32Array; triVerts: Uint32Array },
+  triPart: Int32Array,
+  remove: ReadonlySet<number>,
+): { vertProperties: Float32Array; triVerts: Uint32Array; triPart: Int32Array; openings: number } {
+  const { numProp, vertProperties, triVerts } = mesh;
+  const numTri = triVerts.length / 3;
+  const numVert = vertProperties.length / numProp;
+  const kept: number[] = [];
+  const keptPart: number[] = [];
+  for (let t = 0; t < numTri; t++) {
+    if (remove.has(triPart[t])) continue;
+    kept.push(triVerts[t * 3], triVerts[t * 3 + 1], triVerts[t * 3 + 2]);
+    keptPart.push(triPart[t]);
+  }
+
+  // Directed edges of what's left; an edge whose reverse is missing borders
+  // an opening. Boundary edges keep the kept triangle's direction (a → b).
+  const edgeKey = (a: number, b: number) => a * numVert + b;
+  const edges = new Set<number>();
+  for (let i = 0; i < kept.length; i += 3) {
+    for (let k = 0; k < 3; k++) edges.add(edgeKey(kept[i + k], kept[i + (k + 1) % 3]));
+  }
+  const next = new Map<number, number[]>();
+  const rimPart = new Map<number, number>(); // boundary edge → its triangle's part
+  for (let i = 0; i < kept.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = kept[i + k], b = kept[i + (k + 1) % 3];
+      if (edges.has(edgeKey(b, a))) continue;
+      const out = next.get(a);
+      if (out) out.push(b); else next.set(a, [b]);
+      rimPart.set(edgeKey(a, b), keptPart[i / 3]);
+    }
+  }
+
+  const props = Array.from(vertProperties);
+  let openings = 0;
+  for (const start of [...next.keys()]) {
+    while ((next.get(start)?.length ?? 0) > 0) {
+      // Walk one loop of boundary edges back to `start`.
+      const loop: number[] = [start];
+      let cur = start;
+      for (let guard = 0; ; guard++) {
+        const outs = next.get(cur);
+        if (!outs || outs.length === 0 || guard > numVert) {
+          throw new Error('api.removePart: could not close the opening left by the removed part (its edge is not a simple loop).');
+        }
+        const nxt = outs.pop()!;
+        if (nxt === start) break;
+        loop.push(nxt);
+        cur = nxt;
+      }
+      // Fan the loop to a new vertex at its centroid. The boundary edge a → b
+      // belongs to a kept triangle, so the cap triangle runs b → a.
+      const c = props.length / numProp;
+      for (let p = 0; p < numProp; p++) {
+        let sum = 0;
+        for (const v of loop) sum += vertProperties[v * numProp + p];
+        props.push(sum / loop.length);
+      }
+      const votes = new Map<number, number>();
+      for (let i = 0; i < loop.length; i++) {
+        const part = rimPart.get(edgeKey(loop[i], loop[(i + 1) % loop.length])) ?? -1;
+        votes.set(part, (votes.get(part) ?? 0) + 1);
+      }
+      let capPart = -1;
+      let most = 0;
+      for (const [part, n] of votes) if (n > most) { most = n; capPart = part; }
+      for (let i = 0; i < loop.length; i++) {
+        const a = loop[i], b = loop[(i + 1) % loop.length];
+        kept.push(b, a, c);
+        keptPart.push(capPart);
+      }
+      openings++;
+    }
+  }
+  return {
+    vertProperties: new Float32Array(props),
+    triVerts: new Uint32Array(kept),
+    triPart: new Int32Array(keptPart),
+    openings,
+  };
 }

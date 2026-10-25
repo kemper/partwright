@@ -13,6 +13,8 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 import { deriveOptions } from '../reconstruct/sectionCode';
+import { BUTTON_SMALL_SECONDARY } from './styleConstants';
+import { registerTool, openTool, createToolNote, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 type Quality = 'draft' | 'standard' | 'fine';
 
@@ -38,6 +40,17 @@ const QUALITY_FACTOR: Record<Quality, number> = { draft: 0.25, standard: 1, fine
 
 let openPanel: HTMLDivElement | null = null;
 let currentClose: (() => void) | null = null;
+let currentState: (() => Record<string, unknown>) | null = null;
+
+/** Prefill keys for `openTool('convert-to-code', …)` — staged in the panel;
+ *  the user clicks Convert. */
+const CONVERT_PREFILL_SCHEMA: PrefillSchema = {
+  quality: { type: 'enum', values: ['draft', 'standard', 'fine'], description: 'Quality preset (default standard).' },
+  step: { type: 'number', min: 1e-6, description: 'Section step (world units).' },
+  edge: { type: 'number', min: 1e-6, description: 'Surface resolution (levelSet edge length).' },
+  dpTol: { type: 'number', min: 1e-6, description: 'Contour tolerance.' },
+  samples: { type: 'number', min: 1, integer: true, description: 'Faithfulness-report samples.' },
+};
 
 const registryEntry = { close(): void { currentClose?.(); } };
 
@@ -87,9 +100,18 @@ export interface ConvertToCodeModalOpts {
   context?: string;
   /** Cancel-button label override ("Keep mesh only" on the import ask). */
   cancelLabel?: string;
+  /** An alternative next step offered under the context line (the import
+   *  ask's "Detect parts…"), with an optional one-line pitch. Closes the
+   *  panel before running. */
+  secondaryAction?: { label: string; hint?: string; run: () => void };
+  /** Values to stage (validated against CONVERT_PREFILL_SCHEMA). */
+  prefill?: Record<string, unknown>;
+  /** An AI/API suggestion shown as the panel's context line. */
+  note?: string;
+  source?: ToolOpenContext['source'];
 }
 
-export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: ConvertToCodeModalOpts): void {
+export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: ConvertToCodeModalOpts): ToolOpenResult {
   if (openPanel) { openPanel.remove(); openPanel = null; currentClose = null; }
 
   const bbox = getBbox(api);
@@ -110,8 +132,22 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   const body = el('div', 'p-4 overflow-y-auto flex-1');
   panel.append(body);
 
+  if (modalOpts?.note) {
+    const note = createToolNote(modalOpts.note, modalOpts.source);
+    note.classList.add('mb-2');
+    body.append(note);
+  }
   if (modalOpts?.context) {
     body.append(el('p', 'text-xs text-zinc-200 mb-2', modalOpts.context));
+  }
+  const secondary = modalOpts?.secondaryAction;
+  let secondaryBtn: HTMLButtonElement | null = null;
+  if (secondary) {
+    const row = el('div', 'flex items-center gap-2 mb-3');
+    if (secondary.hint) row.append(el('span', 'text-xs text-zinc-400 flex-1', secondary.hint));
+    secondaryBtn = el('button', `${BUTTON_SMALL_SECONDARY} shrink-0 whitespace-nowrap min-h-11 md:min-h-0`, secondary.label);
+    row.append(secondaryBtn);
+    body.append(row);
   }
   body.append(
     el(
@@ -218,6 +254,15 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
     estimate.textContent = `≈ ${(cells / 1e6).toFixed(1)}M levelSet samples — build ${fmtSeconds(cells * SECONDS_PER_CELL)}`;
   }
   for (const f of fields) f.input.addEventListener('input', sync);
+  // Prefill (validated): stage the preset + thresholds; Convert stays a click.
+  const pre = modalOpts?.prefill ?? {};
+  const applied: Record<string, unknown> = {};
+  if (pre.quality !== undefined) { quality = pre.quality as Quality; applied.quality = quality; }
+  for (const f of fields) {
+    const v = pre[f.key];
+    if (typeof v === 'number') { f.input.value = String(v); applied[f.key] = v; }
+  }
+  if (fields.some(f => pre[f.key] !== undefined)) adv.open = true; // show what was staged
   sync();
 
   convertBtn.addEventListener('click', () => {
@@ -237,12 +282,13 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   function close(): void {
     panel.remove();
     document.removeEventListener('keydown', onEscape);
-    if (openPanel === panel) { openPanel = null; currentClose = null; }
+    if (openPanel === panel) { openPanel = null; currentClose = null; currentState = null; }
     closeViewportPanel(registryEntry);
   }
   currentClose = close;
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
+  secondaryBtn?.addEventListener('click', () => { close(); secondary!.run(); });
   document.addEventListener('keydown', onEscape);
 
   container.appendChild(panel);
@@ -250,6 +296,14 @@ export function openConvertToCodeModal(api: ConvertToCodeApi, modalOpts?: Conver
   panel.style.maxHeight = `calc(100vh - ${Math.max(0, panel.getBoundingClientRect().top)}px - 12px)`;
   openViewportPanel(registryEntry);
   openPanel = panel;
+  currentState = () => ({
+    quality,
+    step: readOverride('step') ?? null,
+    edge: readOverride('edge') ?? null,
+    dpTol: readOverride('dpTol') ?? null,
+    samples: readOverride('samples') ?? null,
+  });
+  return { applied, ignored: [] };
 }
 
 const BTN_BASE =
@@ -257,13 +311,23 @@ const BTN_BASE =
 
 /** Register the palette command and mount the Tools-popover pill. */
 export function initConvertToCodeUI(api: ConvertToCodeApi): void {
+  registerTool({
+    id: 'convert-to-code',
+    title: 'Convert model to code (reconstruct)',
+    hint: 'Tools',
+    prefillSchema: CONVERT_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openConvertToCodeModal(api, { prefill, note: ctx.note, source: ctx.source }),
+    getState: () => currentState?.() ?? null,
+    isOpen: () => openPanel !== null,
+    close: () => currentClose?.(),
+  });
   registerCommands([
     {
       id: 'convert-to-code',
       title: 'Convert model to code (reconstruct)',
       hint: 'Tools',
       keywords: 'reconstruct reverse engineer mesh stl import smooth remake parametric convert code',
-      run: () => openConvertToCodeModal(api),
+      run: () => { void openTool('convert-to-code'); },
     },
   ]);
 

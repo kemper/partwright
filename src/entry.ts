@@ -10,6 +10,7 @@
 // state in the query or a share hash.
 import { CHUNK_RELOAD_GUARD_KEY, chunkRecoveryAction } from './chunkReload';
 import { appRoute } from './deployment';
+import { sandboxHostAction } from './sandbox/sandboxHostGuard';
 
 function isLandingRoute(): boolean {
   // Compare the base-stripped route so this matches main.ts shouldShowLanding
@@ -132,12 +133,40 @@ window.addEventListener('vite:preloadError', (event) => {
   handleLoadFailure((event as Event & { payload?: unknown }).payload, isLandingRoute());
 });
 
-const landing = isLandingRoute();
-const appLoad = landing ? import('./landing/landingEntry') : import('./main');
-appLoad
-  .then(() => {
-    // Successful boot: release the retry budget so a future deploy in this
-    // long-lived tab still earns its own one-time auto-reload.
-    clearGuard();
-  })
-  .catch((err: unknown) => handleLoadFailure(err, landing));
+// Replace the page with a static notice when this host may not run the app.
+function showWrongHostNotice(): void {
+  const li = document.getElementById('landing-inline');
+  if (li) li.style.display = 'none';
+  const splash = document.getElementById('loading-splash');
+  if (!splash) return;
+  splash.innerHTML = '';
+  splash.style.display = 'flex';
+  const msg = document.createElement('div');
+  msg.style.cssText =
+    'max-width:360px;text-align:center;padding:24px;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.6;color:#a1a1aa';
+  msg.textContent = 'This address only hosts the Partwright engine sandbox. Open Partwright from its main address.';
+  splash.appendChild(msg);
+}
+
+// The engine-sandbox host must never run the app (src/sandbox/sandboxHostGuard.ts).
+// Decided before any app bundle loads or storage is touched.
+const hostAction = sandboxHostAction(
+  window.location.href,
+  import.meta.env.VITE_SANDBOX_ORIGIN,
+  import.meta.env.VITE_APP_ORIGIN,
+);
+if (hostAction?.kind === 'redirect') {
+  window.location.replace(hostAction.url);
+} else if (hostAction?.kind === 'block') {
+  showWrongHostNotice();
+} else {
+  const landing = isLandingRoute();
+  const appLoad = landing ? import('./landing/landingEntry') : import('./main');
+  appLoad
+    .then(() => {
+      // Successful boot: release the retry budget so a future deploy in this
+      // long-lived tab still earns its own one-time auto-reload.
+      clearGuard();
+    })
+    .catch((err: unknown) => handleLoadFailure(err, landing));
+}

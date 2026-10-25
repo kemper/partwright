@@ -10,6 +10,10 @@ import {
   smin,
   blurField,
   makeTrilinearSampler,
+  isoCrossings,
+  nearestPointDistances,
+  markTriangleSamples,
+  selectionWeightField,
   type GridSpec,
   type MeshLike,
 } from '../../src/geometry/meshSdf';
@@ -146,5 +150,53 @@ describe('smin', () => {
     expect(smin(10, 0, 2)).toBeCloseTo(0, 6);
     expect(smin(1, 1, 2)).toBeLessThan(1); // blend bulge
     expect(smin(3, 5, 0)).toBe(3);         // k=0 degenerates to min
+  });
+});
+
+describe('scoped-op helpers (#1093)', () => {
+  it('nearestPointDistances matches brute force', () => {
+    let seed = 3;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const cloud = Float64Array.from({ length: 900 }, () => rnd() * 20);
+    const queries = Float64Array.from({ length: 600 }, () => rnd() * 30 - 5);
+    const d = nearestPointDistances(cloud, queries);
+    for (let q = 0; q < 200; q++) {
+      let best = Infinity;
+      for (let i = 0; i < 300; i++) {
+        best = Math.min(best, Math.hypot(cloud[i * 3] - queries[q * 3], cloud[i * 3 + 1] - queries[q * 3 + 1], cloud[i * 3 + 2] - queries[q * 3 + 2]));
+      }
+      expect(d[q]).toBeCloseTo(best, 9);
+    }
+    expect(nearestPointDistances(new Float64Array(0), queries)[0]).toBe(Infinity);
+  });
+
+  it('isoCrossings lands on the iso-surface of a linear field', () => {
+    const spec: GridSpec = { nx: 6, ny: 4, nz: 4, origin: [0, 0, 0], voxel: 1 };
+    const field = new Float32Array(6 * 4 * 4);
+    for (let i = 0; i < field.length; i++) field[i] = (i % 6) - 2.3; // zero at x = 2.3
+    const all = Int32Array.from({ length: field.length }, (_, i) => i);
+    const pts = isoCrossings(field, spec, 0, all);
+    expect(pts.length).toBe(16 * 3); // one crossing per x-row
+    for (let i = 0; i < pts.length; i += 3) expect(pts[i]).toBeCloseTo(2.3, 5);
+  });
+
+  it('selection weights: 1 near the selected faces, fading to 0 past reach + blend', () => {
+    const spec = chooseGridForRadius([0, 0, 0], [10, 10, 10], 2, 2, 64)!;
+    const box = boxMesh([0, 0, 0], [10, 10, 10]);
+    // Select only the two +Z (top) triangles.
+    const mask = new Uint8Array(12);
+    const tv = box.triVerts, vp = box.vertProperties;
+    for (let t = 0; t < 12; t++) if ([0, 1, 2].every(c => vp[tv[t * 3 + c] * 3 + 2] === 10)) mask[t] = 1;
+    const mark = new Uint8Array(spec.nx * spec.ny * spec.nz);
+    markTriangleSamples(box, mask, spec, mark);
+    const w = selectionWeightField(mark, spec, 2, 2);
+    const at = (x: number, y: number, z: number) => {
+      const i = Math.round((x - spec.origin[0]) / spec.voxel), j = Math.round((y - spec.origin[1]) / spec.voxel), k = Math.round((z - spec.origin[2]) / spec.voxel);
+      return w[i + j * spec.nx + k * spec.nx * spec.ny];
+    };
+    expect(at(5, 5, 9)).toBe(1);   // just under the top face
+    expect(at(5, 5, 7)).toBeGreaterThan(0); // in the fade
+    expect(at(5, 5, 7)).toBeLessThan(1);
+    expect(at(5, 5, 2)).toBe(0);   // near the bottom: untouched
   });
 });

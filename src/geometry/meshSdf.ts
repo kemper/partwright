@@ -42,11 +42,12 @@ export function chooseGridForRadius(
   radius: number,
   padWorld: number,
   maxRes: number,
+  voxelsPerRadius = 2.5,
 ): GridSpec | null {
   const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const longest = Math.max(size[0], size[1], size[2], 1e-6) + 2 * padWorld;
   // Want voxel ≤ radius/2.5 for a well-resolved fillet; never finer than needed.
-  let voxel = radius / 2.5;
+  let voxel = radius / voxelsPerRadius;
   if (longest / voxel > maxRes) voxel = longest / maxRes;
   if (radius < 1.5 * voxel) return null;
   const origin: [number, number, number] = [min[0] - padWorld, min[1] - padWorld, min[2] - padWorld];
@@ -338,4 +339,165 @@ export function makeTrilinearSampler(field: Float32Array, spec: GridSpec): (x: n
     const c1 = c01 * (1 - ty) + c11 * ty;
     return c0 * (1 - tz) + c1 * tz;
   };
+}
+
+/** Mark (into `mask`, 1 = on) every lattice sample a selected triangle passes
+ *  near: each triangle with `triMask[t]` set is sampled on a barycentric grid
+ *  finer than half a voxel and its points snap to the nearest sample. The mark
+ *  is the seed set for {@link selectionWeightField}. */
+export function markTriangleSamples(mesh: MeshLike, triMask: Uint8Array, spec: GridSpec, mask: Uint8Array): void {
+  const { nx, ny, nz, origin, voxel } = spec;
+  const pos = positionsOf(mesh);
+  const tv = mesh.triVerts;
+  const step = voxel * 0.5;
+  for (let t = 0; t < mesh.numTri; t++) {
+    if (!triMask[t]) continue;
+    const a = tv[t * 3] * 3, b = tv[t * 3 + 1] * 3, c = tv[t * 3 + 2] * 3;
+    const e = Math.max(
+      Math.hypot(pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2]),
+      Math.hypot(pos[c] - pos[a], pos[c + 1] - pos[a + 1], pos[c + 2] - pos[a + 2]),
+      Math.hypot(pos[c] - pos[b], pos[c + 1] - pos[b + 1], pos[c + 2] - pos[b + 2]),
+    );
+    const n = Math.max(1, Math.ceil(e / step));
+    for (let i = 0; i <= n; i++) {
+      for (let j = 0; j <= n - i; j++) {
+        const u = i / n, v = j / n, w = 1 - u - v;
+        const x = pos[a] * w + pos[b] * u + pos[c] * v;
+        const y = pos[a + 1] * w + pos[b + 1] * u + pos[c + 1] * v;
+        const z = pos[a + 2] * w + pos[b + 2] * u + pos[c + 2] * v;
+        const ix = Math.round((x - origin[0]) / voxel), iy = Math.round((y - origin[1]) / voxel), iz = Math.round((z - origin[2]) / voxel);
+        if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) continue;
+        mask[ix + iy * nx + iz * nx * ny] = 1;
+      }
+    }
+  }
+}
+
+/** Per-sample weight in [0, 1] for a scoped lattice op: 1 within `reach`
+ *  (world units) of the marked samples, then a smooth (C²) fade to 0 over a
+ *  further `blend`; `blend` 0 is a hard edge at `reach`. */
+export function selectionWeightField(mask: Uint8Array, spec: GridSpec, reach: number, blend: number): Float32Array {
+  const d2 = edt3dSquared(i => mask[i] !== 0, spec.nx, spec.ny, spec.nz);
+  const w = new Float32Array(d2.length);
+  for (let i = 0; i < d2.length; i++) {
+    const d = Math.sqrt(d2[i]) * spec.voxel;
+    if (d <= reach) w[i] = 1;
+    else if (blend > 0 && d < reach + blend) {
+      const t = (d - reach) / blend;
+      const u = 1 - t * t;
+      w[i] = u * u;
+    }
+  }
+  return w;
+}
+
+/** Points where `field` crosses `iso` along lattice edges (linear
+ *  interpolation), checked only from the samples in `idx`. A dense sampling
+ *  of the iso-surface: the distance from a point a radius away to the nearest
+ *  crossing is within ~voxel²/(8·radius) of the distance to the surface. */
+export function isoCrossings(field: Float32Array, spec: GridSpec, iso: number, idx: Int32Array): Float64Array {
+  const { nx, ny, nz, origin, voxel } = spec;
+  const out: number[] = [];
+  const strides = [1, nx, nx * ny];
+  for (let q = 0; q < idx.length; q++) {
+    const i = idx[q];
+    const a = field[i] - iso;
+    const ix = i % nx, iy = Math.floor(i / nx) % ny, iz = Math.floor(i / (nx * ny));
+    const at = [ix, iy, iz];
+    const lim = [nx, ny, nz];
+    for (let axis = 0; axis < 3; axis++) {
+      if (at[axis] + 1 >= lim[axis]) continue;
+      const b = field[i + strides[axis]] - iso;
+      if ((a < 0) === (b < 0)) continue;
+      const t = a / (a - b);
+      out.push(
+        origin[0] + (ix + (axis === 0 ? t : 0)) * voxel,
+        origin[1] + (iy + (axis === 1 ? t : 0)) * voxel,
+        origin[2] + (iz + (axis === 2 ? t : 0)) * voxel,
+      );
+    }
+  }
+  return Float64Array.from(out);
+}
+
+/** Distance from each query point to the nearest point of `cloud` (xyz
+ *  triples), via a median-split k-d tree; Infinity when the cloud is empty.
+ *  Each query starts from the previous query's answer, so spatially coherent
+ *  queries (lattice order) prune almost everything at once. */
+export function nearestPointDistances(cloud: Float64Array, queries: Float64Array): Float64Array {
+  const n = cloud.length / 3;
+  const nq = queries.length / 3;
+  const out = new Float64Array(nq).fill(Infinity);
+  if (n === 0) return out;
+  // Implicit tree over a permutation of the points: a node is a range
+  // [lo, hi) whose median `mid` splits it on axisOf[mid].
+  const order = new Int32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  const axisOf = new Int8Array(n);
+  const build: number[] = [0, n];
+  while (build.length) {
+    const hi = build.pop()!, lo = build.pop()!;
+    if (hi - lo <= 1) continue;
+    let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity, mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
+    for (let i = lo; i < hi; i++) {
+      const o = order[i] * 3;
+      if (cloud[o] < mn0) mn0 = cloud[o]; if (cloud[o] > mx0) mx0 = cloud[o];
+      if (cloud[o + 1] < mn1) mn1 = cloud[o + 1]; if (cloud[o + 1] > mx1) mx1 = cloud[o + 1];
+      if (cloud[o + 2] < mn2) mn2 = cloud[o + 2]; if (cloud[o + 2] > mx2) mx2 = cloud[o + 2];
+    }
+    const ex = mx0 - mn0, ey = mx1 - mn1, ez = mx2 - mn2;
+    const axis = ex >= ey && ex >= ez ? 0 : ey >= ez ? 1 : 2;
+    const mid = (lo + hi) >> 1;
+    selectNthPoint(order, cloud, axis, lo, hi - 1, mid);
+    axisOf[mid] = axis;
+    build.push(lo, mid, mid + 1, hi);
+  }
+  const stack = new Int32Array(256);
+  let prev = 0;
+  for (let q = 0; q < nq; q++) {
+    const px = queries[q * 3], py = queries[q * 3 + 1], pz = queries[q * 3 + 2];
+    const dist2 = (i: number) => {
+      const o = order[i] * 3;
+      const dx = cloud[o] - px, dy = cloud[o + 1] - py, dz = cloud[o + 2] - pz;
+      return dx * dx + dy * dy + dz * dz;
+    };
+    let best = dist2(prev), bestI = prev;
+    let sp = 0;
+    stack[sp++] = 0; stack[sp++] = n;
+    while (sp > 0) {
+      const hi = stack[--sp], lo = stack[--sp];
+      if (hi <= lo) continue;
+      const mid = (lo + hi) >> 1;
+      const d = dist2(mid);
+      if (d < best) { best = d; bestI = mid; }
+      if (hi - lo === 1) continue;
+      const axis = axisOf[mid];
+      const diff = (axis === 0 ? px : axis === 1 ? py : pz) - cloud[order[mid] * 3 + axis];
+      // Near side last (popped first); the far side only if the plane is closer than best.
+      if (diff * diff < best) {
+        if (diff < 0) { stack[sp++] = mid + 1; stack[sp++] = hi; } else { stack[sp++] = lo; stack[sp++] = mid; }
+      }
+      if (diff < 0) { stack[sp++] = lo; stack[sp++] = mid; } else { stack[sp++] = mid + 1; stack[sp++] = hi; }
+    }
+    out[q] = Math.sqrt(best);
+    prev = bestI;
+  }
+  return out;
+}
+
+/** Quickselect on `order[lo..hi]` (inclusive) by the points' `axis`
+ *  coordinate, leaving the k-th smallest at `order[k]`. */
+function selectNthPoint(order: Int32Array, pts: Float64Array, axis: number, lo: number, hi: number, k: number): void {
+  while (hi > lo) {
+    const pivot = pts[order[(lo + hi) >> 1] * 3 + axis];
+    let i = lo, j = hi;
+    while (i <= j) {
+      while (pts[order[i] * 3 + axis] < pivot) i++;
+      while (pts[order[j] * 3 + axis] > pivot) j--;
+      if (i <= j) { const s = order[i]; order[i] = order[j]; order[j] = s; i++; j--; }
+    }
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else return;
+  }
 }

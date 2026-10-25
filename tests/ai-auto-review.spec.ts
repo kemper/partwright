@@ -70,6 +70,7 @@ test.describe('Automatic end-of-task review', () => {
     let reviews = 0;
     let chatCalls = 0;
     const reviewImages: string[][] = [];
+    const reviewTexts: string[] = [];
     await page.route('https://api.anthropic.com/**', async route => {
       const body = route.request().postDataJSON() as { system?: Array<{ text: string }>; messages: Array<{ role: string; content: unknown }> };
       const system = (body.system ?? []).map(b => b.text).join('\n');
@@ -78,6 +79,7 @@ test.describe('Automatic end-of-task review', () => {
         reviews++;
         const blocks = body.messages[0].content as Array<{ type: string; source?: { data?: string } }>;
         reviewImages.push(blocks.filter(b => b.type === 'image').map(b => b.source?.data ?? ''));
+        reviewTexts.push(blocks.filter(b => b.type === 'text').map(b => (b as { text?: string }).text ?? '').join('\n'));
         reply = reviews === 1
           ? textReply('rev1', 'Verdict: needs rework\nThe two Ø5 holes are blind: the cylinders are 2 tall starting at z=2, so they stop at the top face instead of cutting through the 4 mm plate. Make them ≥6 tall and start at z=-1.')
           : textReply('rev2', 'Verdict: pass\nBoth holes now cut fully through the plate; dimensions match the request.');
@@ -119,9 +121,57 @@ test.describe('Automatic end-of-task review', () => {
     expect(reviews).toBe(2);
     // The reviewer sees the user's reference image next to the render.
     for (const imgs of reviewImages) expect(imgs).toContain(REF_PNG);
+    // …and every message the user wrote, but none of the agent's replies.
+    for (const text of reviewTexts) {
+      expect(text).toContain('Here is the bracket I want to copy');
+      expect(text).toContain('Make a 40×20×4 mounting plate with two Ø5 through-holes');
+      expect(text).not.toContain('Got it.');
+      expect(text).not.toContain('Built the 40×20×4 bracket');
+    }
     // Exactly one fix round: build (2 calls) + fix (2 calls).
     expect(chatCalls).toBe(4);
     await page.screenshot({ path: 'test-results/auto-review.png' });
+  });
+
+  test('the 👁 review modal sends the reference images and the user\'s own messages', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* */ } });
+    const reviews: Array<{ text: string; images: string[] }> = [];
+    await page.route('https://api.anthropic.com/**', async route => {
+      const body = route.request().postDataJSON() as { messages: Array<{ role: string; content: unknown }> };
+      const blocks = body.messages[0].content as Array<{ type: string; text?: string; source?: { data?: string } }>;
+      reviews.push({
+        text: blocks.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n'),
+        images: blocks.filter(b => b.type === 'image').map(b => b.source?.data ?? ''),
+      });
+      await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream', 'access-control-allow-origin': '*' }, body: textReply('rev', 'Verdict: pass\nMatches the reference bracket.') });
+    });
+
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await seedAnthropic(page);
+    await page.reload();
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const heading = page.getByRole('heading', { name: 'AI Settings' });
+    if (await heading.isVisible().catch(() => false)) await page.keyboard.press('Escape');
+
+    await page.locator('#ai-panel button[title^="Get a second opinion"]').dispatchEvent('click');
+    const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'Get a second opinion' });
+    await expect(modal.getByText('1 image(s) you attached in this chat')).toBeVisible();
+    await expect(modal.getByText(/1 message\(s\) you wrote/)).toBeVisible();
+    await expect(modal.getByTestId('review-include-references')).toBeChecked();
+    await expect(modal.getByTestId('review-include-conversation')).toBeChecked();
+    await expect(modal.getByText('Capturing snapshot')).toHaveCount(0, { timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/review-modal-context.png' });
+    await modal.locator('button:has-text("Run review")').click();
+    await expect(page.locator('#ai-panel').getByText('Matches the reference bracket.')).toBeVisible({ timeout: 60_000 });
+
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0].images).toContain(REF_PNG);
+    expect(reviews[0].text).toContain("=== The user's messages in this chat");
+    expect(reviews[0].text).toContain('Here is the bracket I want to copy');
+    expect(reviews[0].text).not.toContain('Got it.');
   });
 
   test('the review prompt is visible and editable in AI Settings, and the reviewer receives the edit', async ({ page }) => {

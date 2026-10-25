@@ -31,16 +31,50 @@ export const DEFAULT_PARTS_VIEWS = ['front', 'right', 'back', 'iso'];
 export interface PartLegendEntry { id: number; name: string; color: string }
 
 
+/** A frame box (zoom target) for the parts render camera. */
+export type PartsFrame = { min: [number, number, number]; max: [number, number, number] };
+
+/** A view by name (`PARTS_RENDER_VIEWS`) or a custom camera angle. */
+export type PartsViewSpec = string | PartsRenderView;
+
+/** Resolve a view spec to a camera angle + tile label. */
+export function resolvePartsView(v: PartsViewSpec): PartsRenderView {
+  return typeof v === 'string' ? PARTS_RENDER_VIEWS[v] : v;
+}
+
+/** The padded bounding box of the triangles whose part index is `part`, or
+ *  null when the part has no triangles in `mesh`. */
+export function partFrame(mesh: MeshData, triPart: Int32Array, part: number, padding: number): PartsFrame | null {
+  const { vertProperties: vp, triVerts: tv, numProp } = mesh;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  let any = false;
+  for (let t = 0; t < triPart.length; t++) {
+    if (triPart[t] !== part) continue;
+    any = true;
+    for (let k = 0; k < 3; k++) {
+      const v = tv[t * 3 + k] * numProp;
+      for (let a = 0; a < 3; a++) {
+        if (vp[v + a] < min[a]) min[a] = vp[v + a];
+        if (vp[v + a] > max[a]) max[a] = vp[v + a];
+      }
+    }
+  }
+  if (!any) return null;
+  const pad = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]) * padding;
+  return { min: [min[0] - pad, min[1] - pad, min[2] - pad], max: [max[0] + pad, max[1] + pad, max[2] + pad] };
+}
+
 export function renderNumberedParts(
   mesh: MeshData,
   triColors: Uint8Array,
   /** Part index per displayed triangle (−1 = none). */
   triPartDisplayed: Int32Array,
   legend: PartLegendEntry[],
-  opts: { views: string[]; size: number; numbered: boolean },
+  opts: { views: PartsViewSpec[]; size: number; numbered: boolean; frame?: PartsFrame },
 ): { dataUrl: string; visibleIn: Record<number, string[]> } {
   const tile = opts.size;
-  const views = opts.views.map((v) => PARTS_RENDER_VIEWS[v]);
+  const views = opts.views.map(resolvePartsView);
   const cols = views.length <= 2 ? views.length : 2;
   const rows = Math.ceil(views.length / cols);
   const legendW = 190;
@@ -55,13 +89,13 @@ export function renderNumberedParts(
   const colored: MeshData = { ...mesh, triColors };
   const centroids = triangleCentroids(mesh);
   views.forEach((v, i) => {
-    const canvas = renderSingleViewCanvas(colored, { elevation: v.elevation, azimuth: v.azimuth, size: tile, edges: 'none' });
+    const canvas = renderSingleViewCanvas(colored, { elevation: v.elevation, azimuth: v.azimuth, size: tile, edges: 'none', frame: opts.frame });
     const x0 = (i % cols) * tile, y0 = Math.floor(i / cols) * tile;
     ctx.drawImage(canvas, x0, y0);
     ctx.fillStyle = '#ddd';
     ctx.font = '13px sans-serif';
     ctx.fillText(v.label, x0 + 8, y0 + 18);
-    const camera = buildViewCamera(mesh, { elevation: v.elevation, azimuth: v.azimuth });
+    const camera = buildViewCamera(mesh, { elevation: v.elevation, azimuth: v.azimuth, frame: opts.frame });
     const anchors = visibleAnchors(centroids, triPartDisplayed, legend.length, camera);
     anchors.forEach((a, partIdx) => {
       if (!a) return;
@@ -161,4 +195,10 @@ function drawTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: stri
   ctx.fillText(text, x, y + 0.5);
   ctx.textAlign = 'start';
   ctx.textBaseline = 'alphabetic';
+}
+
+/** One small un-numbered view of a partition (preset filmstrip tiles). */
+export function renderPartsThumbnail(mesh: MeshData, triColors: Uint8Array, view: string, size: number): string {
+  const v = PARTS_RENDER_VIEWS[view] ?? PARTS_RENDER_VIEWS.front;
+  return renderSingleViewCanvas({ ...mesh, triColors }, { elevation: v.elevation, azimuth: v.azimuth, size, edges: 'none' }).toDataURL('image/png');
 }

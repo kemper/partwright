@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
+import { meshDataToGeometry as indexedGeometry, triColoredGeometry } from './meshGeometry';
+import { previewProxy } from './previewProxy';
 import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegistry';
 import { presetIndex } from '../storage/db';
 import type { SessionAttachment, AttachedImage } from '../storage/attachment';
@@ -48,63 +50,14 @@ const VIEWS: ViewConfig[] = [
 ];
 
 function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry();
-
-  if (meshData.triColors) {
-    // Unindex to carry per-triangle colors as per-vertex attributes
-    const numTri = meshData.numTri;
-    const positions = new Float32Array(numTri * 3 * 3);
-    const colors = new Float32Array(numTri * 3 * 3);
-    const { vertProperties, triVerts, numProp, triColors } = meshData;
-
-    for (let t = 0; t < numTri; t++) {
-      const v0 = triVerts[t * 3];
-      const v1 = triVerts[t * 3 + 1];
-      const v2 = triVerts[t * 3 + 2];
-
-      for (let c = 0; c < 3; c++) {
-        positions[t * 9 + c] = vertProperties[v0 * numProp + c];
-        positions[t * 9 + 3 + c] = vertProperties[v1 * numProp + c];
-        positions[t * 9 + 6 + c] = vertProperties[v2 * numProp + c];
-      }
-
-      const r = triColors[t * 3] / 255;
-      const g = triColors[t * 3 + 1] / 255;
-      const b = triColors[t * 3 + 2] / 255;
-      const painted = (triColors as Uint8Array & { _painted?: Uint8Array })._painted;
-      const isPainted = painted ? painted[t] === 1 : (r !== 0 || g !== 0 || b !== 0);
-      // Unpainted base is light gray, NOT pure white, so the mesh
-      // silhouette is visible against the white render background.
-      // Pure white made unpainted parts of a model invisible against
-      // the bg — only the painted patches showed, which read as
-      // "the renderer is broken" to a model reasoning from the image.
-      const cr = isPainted ? r : UNPAINTED_BASE;
-      const cg = isPainted ? g : UNPAINTED_BASE;
-      const cb = isPainted ? b : UNPAINTED_BASE;
-
-      for (let v = 0; v < 3; v++) {
-        colors[t * 9 + v * 3] = cr;
-        colors[t * 9 + v * 3 + 1] = cg;
-        colors[t * 9 + v * 3 + 2] = cb;
-      }
-    }
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
-  } else {
-    const positions = new Float32Array(meshData.numVert * 3);
-    for (let i = 0; i < meshData.numVert; i++) {
-      positions[i * 3] = meshData.vertProperties[i * meshData.numProp];
-      positions[i * 3 + 1] = meshData.vertProperties[i * meshData.numProp + 1];
-      positions[i * 3 + 2] = meshData.vertProperties[i * meshData.numProp + 2];
-    }
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(meshData.triVerts, 1));
-    geometry.computeVertexNormals();
-  }
-
-  return geometry;
+  // Unpainted base is light gray, NOT pure white, so the mesh silhouette is
+  // visible against the white render background. Pure white made unpainted
+  // parts of a model invisible against the bg — only the painted patches
+  // showed, which read as "the renderer is broken" to a model reasoning from
+  // the image.
+  return meshData.triColors
+    ? triColoredGeometry(meshData as MeshData & { triColors: Uint8Array }, [UNPAINTED_BASE, UNPAINTED_BASE, UNPAINTED_BASE])
+    : indexedGeometry(meshData);
 }
 
 let offRenderer: THREE.WebGLRenderer | null = null;
@@ -165,14 +118,20 @@ function disposeScene(scene: THREE.Scene): void {
  *  feature edges (via EdgesGeometry past CREASE_ANGLE_DEG); `none` adds
  *  nothing. The overlay shares the solid mesh's geometry for the wireframe
  *  case, and builds a throwaway EdgesGeometry for the crease case —
- *  disposeScene releases both. */
+ *  disposeScene releases both. Crease edges are skipped past
+ *  `renderer.creaseEdgeMaxTriangles`: EdgesGeometry is a synchronous
+ *  main-thread pass that froze the app for seconds on a dense import. */
 function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode: EdgeMode): void {
   if (mode === 'wireframe') {
     scene.add(new THREE.Mesh(geometry, createBlackWireframeMaterial()));
-  } else if (mode === 'crease') {
+  } else if (mode === 'crease' && triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
     const edges = new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG);
     scene.add(new THREE.LineSegments(edges, createCreaseEdgeMaterial()));
   }
+}
+
+function triangleCount(geometry: THREE.BufferGeometry): number {
+  return (geometry.index ?? geometry.getAttribute('position')).count / 3;
 }
 
 /** Near/far clip planes for an offscreen camera framing a model of `maxDim`.
@@ -347,6 +306,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
+  /** Frame this world box instead of the whole mesh (zoom onto a part).
+   *  The rest of the mesh still renders — anything in front occludes. */
+  frame?: { min: [number, number, number]; max: [number, number, number] };
 }): THREE.Camera {
   const elevation = (options.elevation ?? 30) * Math.PI / 180;
   const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
@@ -364,9 +326,14 @@ export function buildViewCamera(meshData: MeshData, options: {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+  const meshDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  if (options.frame) {
+    [minX, minY, minZ] = options.frame.min;
+    [maxX, maxY, maxZ] = options.frame.max;
+  }
   const center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
   const bsize = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ);
-  const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z) || meshDim || 1;
   const dist = maxDim * 2;
 
   // Spherical to cartesian (Z-up)
@@ -381,7 +348,9 @@ export function buildViewCamera(meshData: MeshData, options: {
   // matching the standard slicer/CAD build-plate orientation.
   const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
   const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
-  const { near, far } = clipPlanes(maxDim);
+  const { near } = clipPlanes(maxDim);
+  // A framed (zoomed) view still has the whole mesh behind the focus box.
+  const { far } = clipPlanes(Math.max(maxDim, meshDim));
 
   let camera: THREE.Camera;
   if (options.ortho) {
@@ -391,6 +360,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
+    orthoCamera.updateMatrixWorld();
     camera = orthoCamera;
   } else {
     const perspCamera = new THREE.PerspectiveCamera(40, 1, near, far);
@@ -398,6 +368,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
     perspCamera.updateProjectionMatrix();
+    perspCamera.updateMatrixWorld();
     camera = perspCamera;
   }
   return camera;
@@ -409,10 +380,15 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   ortho?: boolean;
   size?: number;
   edges?: EdgeMode;
+  frame?: { min: [number, number, number]; max: [number, number, number] };
+  /** Draw a mesh over `renderer.thumbnailMaxTriangles` from a simplified
+   *  proxy (see previewProxy.ts). For version thumbnails only — renders an
+   *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
+  thumbnail?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
-  const geometry = meshDataToGeometry(meshData);
+  const geometry = meshDataToGeometry(options.thumbnail ? previewProxy(meshData, getConfig().renderer.thumbnailMaxTriangles) : meshData);
   const scene = createElevationScene(geometry, 0xffffff, options.edges);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
@@ -435,6 +411,82 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   disposeScene(scene);
   geometry.dispose();
   return canvas;
+}
+
+/** Flat, unlit, aliased REGION render for the photo-match score: returns one
+ *  int per pixel — -2 background, -1 a triangle with no region, ≥0 the
+ *  triangle's region index from `triRegion` (-3 there drops the triangle,
+ *  e.g. an excluded display base). Same camera as renderSingleView /
+ *  buildViewCamera. Rendered into a non-multisampled target with a raw
+ *  ShaderMaterial so the encoded ids come back bit-exact (no MSAA blending,
+ *  no lighting, no colour-space conversion). Rows are top-to-bottom. */
+export function renderRegionLabels(meshData: MeshData, triRegion: Int32Array, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+} = {}): { width: number; height: number; labels: Int32Array } {
+  const size = options.size ?? 512;
+  const { vertProperties, triVerts, numProp, numTri } = meshData;
+  let kept = 0;
+  for (let t = 0; t < numTri; t++) if (triRegion[t] !== -3) kept++;
+  const positions = new Float32Array(kept * 9);
+  const ids = new Float32Array(kept * 9);
+  let k = 0;
+  for (let t = 0; t < numTri; t++) {
+    const region = triRegion[t];
+    if (region === -3) continue;
+    // id+2 so background (alpha 0) and "no region" (-1 → 1) stay distinct;
+    // low byte in R, high byte in G.
+    const code = Math.max(-1, region) + 2;
+    const r = (code & 255) / 255, g = ((code >> 8) & 255) / 255;
+    for (let v = 0; v < 3; v++) {
+      const vi = triVerts[t * 3 + v];
+      positions[k * 9 + v * 3] = vertProperties[vi * numProp];
+      positions[k * 9 + v * 3 + 1] = vertProperties[vi * numProp + 1];
+      positions[k * 9 + v * 3 + 2] = vertProperties[vi * numProp + 2];
+      ids[k * 9 + v * 3] = r; ids[k * 9 + v * 3 + 1] = g; ids[k * 9 + v * 3 + 2] = 0;
+    }
+    k++;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('regionId', new THREE.BufferAttribute(ids, 3));
+  const material = new THREE.ShaderMaterial({
+    vertexShader: 'attribute vec3 regionId; varying vec3 vId; void main() { vId = regionId; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying vec3 vId; void main() { gl_FragColor = vec4(vId, 1.0); }',
+    side: THREE.DoubleSide,
+  });
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(geometry, material));
+  const camera = buildViewCamera(meshData, options);
+  const renderer = getOffscreenRenderer(size);
+  const target = new THREE.WebGLRenderTarget(size, size, { samples: 0, depthBuffer: true });
+  const prevTarget = renderer.getRenderTarget();
+  const prevClear = renderer.getClearColor(new THREE.Color());
+  const prevAlpha = renderer.getClearAlpha();
+  const buf = new Uint8Array(size * size * 4);
+  try {
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(target, 0, 0, size, size, buf);
+  } finally {
+    renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevClear, prevAlpha);
+    target.dispose();
+    disposeScene(scene);
+  }
+  const labels = new Int32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const src = (size - 1 - y) * size; // GL rows are bottom-up
+    for (let x = 0; x < size; x++) {
+      const o = (src + x) * 4;
+      labels[y * size + x] = buf[o + 3] === 0 ? -2 : (buf[o] | (buf[o + 1] << 8)) - 2;
+    }
+  }
+  return { width: size, height: size, labels };
 }
 
 /** Render a single named angle to a PNG data URL. */
