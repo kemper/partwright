@@ -4,9 +4,10 @@
 // glue. All functions take their inputs as arguments — no closures over
 // editor state.
 
-import { sliceMetrics, getBoundingBox } from './crossSection';
+import { sliceMetrics } from './crossSection';
 import { getUnits } from './units';
-import { edgeStats, aspectRatioOf, componentsOverlap } from './geometryHeuristics';
+import { edgeStats, aspectRatioOf } from './geometryHeuristics';
+import { computeManifoldFacts, type ManifoldFacts } from './manifoldFacts';
 import type { MeshData } from './types';
 
 /** Manifold runtime type — the manifold-3d package does not export
@@ -40,26 +41,30 @@ export function bboxFromMesh(mesh: MeshData): { min: [number, number, number]; m
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
+/** Triangle count past which the per-run stats skip the three auto-quartile
+ *  slices. Slicing is a synchronous main-thread Manifold op; on very dense
+ *  meshes it stalls the UI right after the geometry appears. The on-demand
+ *  slice tools (sliceAtZ/sliceAtZVisual/inspect) still work when the user or
+ *  agent explicitly asks for a section. */
+const STATS_SLICE_TRI_BUDGET = 250_000;
+
+/** Geometry-data stats for a mesh. The Manifold-dependent figures (volume,
+ *  genus, components, …) come from `facts` when given — computed by the
+ *  engine Worker over its live result for a big run — else from `manifold`.
+ *  With neither (render-only imports), they degrade to "not manifold". */
 export function computeGeometryStats(
   manifold: Manifold | null,
   meshData: MeshData,
   executionTimeMs?: number,
   sourceCode?: string,
+  facts?: ManifoldFacts | null,
 ): Record<string, unknown> {
+  const f = facts ?? (manifold ? computeManifoldFacts(manifold) : null);
   // Bounding box: prefer the manifold's own, but fall back to scanning the mesh
   // verts so render-only imports (manifold==null) still get usable bbox/dims/slices.
-  const bbox = (manifold && getBoundingBox(manifold)) || bboxFromMesh(meshData);
-
-  let volume = 0;
-  let surfaceArea = 0;
-  if (manifold) {
-    try {
-      volume = manifold.volume();
-      surfaceArea = manifold.surfaceArea();
-    } catch {
-      // fallback if methods unavailable
-    }
-  }
+  const bbox = f?.bbox || bboxFromMesh(meshData);
+  const volume = f?.volume ?? 0;
+  const surfaceArea = f?.surfaceArea ?? 0;
 
   const centroid = bbox
     ? [(bbox.min[0] + bbox.max[0]) / 2, (bbox.min[1] + bbox.max[1]) / 2, (bbox.min[2] + bbox.max[2]) / 2]
@@ -69,89 +74,17 @@ export function computeGeometryStats(
     ? [bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]]
     : null;
 
-  let componentCount = 1;
-  let containedComponents = 0;
-  // True when two separate solids' bounding boxes overlap (a boolean that
-  // didn't fuse, or an assembly to clearance-check) — a cheap interpenetration
-  // signal the headless preview already surfaces; mirrored here for the in-app AI.
-  let componentsInterpenetrate = false;
-  if (manifold) {
-    try {
-      const parts = manifold.decompose();
-      componentCount = parts.length;
-      if (parts.length > 1) {
-        // Identify enclosed components (fully inside another solid, or negative-volume
-        // artifacts). These won't detach in print and shouldn't trip floater warnings.
-        // The two fast pre-filters (volume comparison + bbox containment) reject the
-        // vast majority of pairs cheaply, so the expensive WASM intersect() call is
-        // only reached for plausible containment candidates — safe without a count cap.
-        interface PartInfo { vol: number; bb: { min: number[]; max: number[] } | null; m: Manifold }
-        const infos: PartInfo[] = parts.map((p: Manifold) => {
-          const bb = getBoundingBox(p);
-          const vol = (() => { try { return p.volume() as number; } catch { return 0; } })();
-          return { vol, bb, m: p };
-        });
-        // Cheap AABB-overlap pass over the decomposed parts (bboxes already in hand).
-        componentsInterpenetrate = componentsOverlap(
-          infos.filter((i) => i.bb).map((i) => ({ bbox: i.bb! })),
-        );
-        for (let j = 0; j < infos.length; j++) {
-          const smaller = infos[j];
-          if (smaller.vol <= 0) { containedComponents++; continue; }
-          for (let i = 0; i < infos.length; i++) {
-            if (i === j) continue;
-            const larger = infos[i];
-            if (larger.vol <= smaller.vol || !larger.bb || !smaller.bb) continue;
-            // Fast bbox filter: smaller must fit inside larger's bbox
-            let inside = true;
-            for (let ax = 0; ax < 3 && inside; ax++) {
-              if (smaller.bb.min[ax] < larger.bb.min[ax] - 0.01 ||
-                  smaller.bb.max[ax] > larger.bb.max[ax] + 0.01) inside = false;
-            }
-            if (!inside) continue;
-            // Precise check: intersection volume ≈ smaller's volume → fully enclosed
-            try {
-              const ix = larger.m.intersect(smaller.m);
-              const ixVol = ix.volume() as number;
-              ix.delete();
-              if (Math.abs(ixVol - smaller.vol) <= smaller.vol * 0.05) {
-                containedComponents++;
-                break;
-              }
-            } catch { /* ignore — boolean failed, skip this pair */ }
-          }
-        }
-      }
-      for (const p of parts) p.delete();
-    } catch {
-      // fallback
-    }
-  }
+  const componentCount = f?.componentCount ?? 1;
+  const containedComponents = f?.containedComponents ?? 0;
+  const componentsInterpenetrate = f?.componentsInterpenetrate ?? false;
 
   // Render-only imports lack a manifold; surface that fact in stats so the
   // status panel can show "not manifold" instead of a misleading default.
-  let isManifold = manifold !== null;
-  let manifoldStatus: string | null = manifold === null ? 'render-only (not manifold)' : null;
-  if (manifold) {
-    try {
-      const s = manifold.status();
-      isManifold = s === 0 || s === 'NoError';
-      if (!isManifold) {
-        manifoldStatus = String(s);
-      }
-    } catch {
-      // fallback
-    }
-  }
+  const isManifold = f ? f.isManifold : false;
+  const manifoldStatus: string | null = f ? f.manifoldStatus : 'render-only (not manifold)';
 
   const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  // Slicing is a synchronous main-thread Manifold op. On very dense meshes the
-  // three auto-quartile slices computed on every run stall the UI right after
-  // the geometry appears. Past a generous triangle budget, skip them — the
-  // on-demand slice tools (sliceAtZ/sliceAtZVisual/inspect) still work when the
-  // user or agent explicitly asks for a section.
-  const SLICE_TRI_BUDGET = 250_000;
-  if (bbox && manifold && meshData.numTri <= SLICE_TRI_BUDGET) {
+  if (bbox && manifold && meshData.numTri <= STATS_SLICE_TRI_BUDGET) {
     const zRange = bbox.max[2] - bbox.min[2];
     for (const pct of [25, 50, 75]) {
       const z = bbox.min[2] + zRange * (pct / 100);
@@ -186,7 +119,7 @@ export function computeGeometryStats(
     centroid,
     volume,
     surfaceArea,
-    genus: manifold ? (() => { try { return manifold.genus(); } catch { return null; } })() : null,
+    genus: f ? f.genus : null,
     isManifold,
     ...(manifoldStatus ? { manifoldStatus } : {}),
     componentCount,

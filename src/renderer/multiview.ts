@@ -165,14 +165,20 @@ function disposeScene(scene: THREE.Scene): void {
  *  feature edges (via EdgesGeometry past CREASE_ANGLE_DEG); `none` adds
  *  nothing. The overlay shares the solid mesh's geometry for the wireframe
  *  case, and builds a throwaway EdgesGeometry for the crease case —
- *  disposeScene releases both. */
+ *  disposeScene releases both. Crease edges are skipped past
+ *  `renderer.creaseEdgeMaxTriangles`: EdgesGeometry is a synchronous
+ *  main-thread pass that froze the app for seconds on a dense import. */
 function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode: EdgeMode): void {
   if (mode === 'wireframe') {
     scene.add(new THREE.Mesh(geometry, createBlackWireframeMaterial()));
-  } else if (mode === 'crease') {
+  } else if (mode === 'crease' && triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
     const edges = new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG);
     scene.add(new THREE.LineSegments(edges, createCreaseEdgeMaterial()));
   }
+}
+
+function triangleCount(geometry: THREE.BufferGeometry): number {
+  return (geometry.index ?? geometry.getAttribute('position')).count / 3;
 }
 
 /** Near/far clip planes for an offscreen camera framing a model of `maxDim`.

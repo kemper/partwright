@@ -97,6 +97,13 @@ export interface MeshResult {
    *  whether it truly hit it or failed far below. Only set for manifold-js runs;
    *  absent for the other engines (which own separate heaps). */
   engineHeapBytes?: number;
+  /** The Manifold-dependent stats (volume, genus, components, …) the Worker
+   *  computed over its live result Manifold. Only sent for a manifold-js run
+   *  of at least `renderer.lazyManifoldMinTriangles` triangles: the main
+   *  thread then uses these for the stats and defers rebuilding its own
+   *  Manifold (a multi-second `Manifold.ofMesh` on a big mesh) until a slice /
+   *  boolean / decompose actually needs one. */
+  manifoldFacts?: import('./manifoldFacts').ManifoldFacts;
   /** Number of occupied voxels in the grid this run produced. Only set by the
    *  voxel engine; absent for the mesh/CSG/BREP engines. Surfaced in the
    *  geometry-data stats so agents can confirm a voxel model's size without

@@ -9,7 +9,9 @@ import type { MeshData } from '../../geometry/types';
 // the slicer's tessellation). A tight tolerance treats those as distinct
 // vertices and the result fails Manifold.ofMesh()'s "every edge shared by
 // exactly two triangles" check. Callers should retry with progressively
-// looser tolerances when ofMesh rejects the output.
+// looser tolerances when ofMesh rejects the output — parse the soup ONCE with
+// `parseSTLSoup` and re-weld it with `weldSoup` per tolerance, rather than
+// re-parsing the bytes each time.
 
 export interface STLParseOptions {
   /** Coordinate quantization step before hashing. Vertices whose components
@@ -17,15 +19,26 @@ export interface STLParseOptions {
   weldTolerance?: number;
 }
 
+/** The unwelded triangle soup of an STL: 9 coordinates (3 vertices × xyz) per
+ *  triangle, in file order. Binary STLs store float32, ASCII parses to float64. */
+export type STLSoup = Float32Array | Float64Array;
+
+export const DEFAULT_STL_WELD_TOLERANCE = 1e-5;
+
 const ASCII_DETECT_PREFIX = 'solid';
 
 /** Parse any STL (binary or ASCII) into the MeshGL shape expected by Manifold.ofMesh. */
 export function parseSTL(bytes: Uint8Array, options: STLParseOptions = {}): MeshData | null {
-  const tolerance = options.weldTolerance ?? 1e-5;
-  if (isBinarySTL(bytes)) {
-    return parseBinarySTL(bytes, tolerance);
-  }
-  return parseAsciiSTL(bytes, tolerance);
+  const soup = parseSTLSoup(bytes);
+  return soup ? weldSoup(soup, options.weldTolerance ?? DEFAULT_STL_WELD_TOLERANCE) : null;
+}
+
+/** Parse STL bytes into an unwelded triangle soup. Null when the bytes aren't
+ *  an STL, are truncated, or hold a non-finite coordinate (rejected here rather
+ *  than letting a NaN/Infinity vertex fail export later with a misleading
+ *  "geometry" error). */
+export function parseSTLSoup(bytes: Uint8Array): STLSoup | null {
+  return isBinarySTL(bytes) ? parseBinarySoup(bytes) : parseAsciiSoup(bytes);
 }
 
 /** Heuristic: ASCII STL must start with `solid`, but some binary STLs do too,
@@ -46,111 +59,113 @@ function isBinarySTL(bytes: Uint8Array): boolean {
   return head !== ASCII_DETECT_PREFIX;
 }
 
-function parseBinarySTL(bytes: Uint8Array, weldTolerance: number): MeshData | null {
+function parseBinarySoup(bytes: Uint8Array): Float32Array | null {
   if (bytes.byteLength < 84) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const triCount = view.getUint32(80, true);
   const expectedSize = 84 + triCount * 50;
   if (bytes.byteLength < expectedSize) return null;
 
-  const vertIndex = new Map<string, number>();
-  const positions: number[] = [];
-  const tris: number[] = [];
-  const inv = 1 / weldTolerance;
-  const quantize = (v: number) => Math.round(v * inv) / inv;
-
+  const soup = new Float32Array(triCount * 9);
   let offset = 84;
+  let k = 0;
   for (let t = 0; t < triCount; t++) {
     offset += 12; // skip 12-byte normal
-    const triVerts: number[] = [];
-    for (let v = 0; v < 3; v++) {
-      const x = view.getFloat32(offset, true); offset += 4;
-      const y = view.getFloat32(offset, true); offset += 4;
-      const z = view.getFloat32(offset, true); offset += 4;
-      // Reject non-finite coords here rather than letting a NaN/Infinity vertex
-      // flow downstream and fail export later with a misleading "geometry" error.
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-      const key = `${quantize(x)},${quantize(y)},${quantize(z)}`;
-      let idx = vertIndex.get(key);
-      if (idx === undefined) {
-        idx = positions.length / 3;
-        positions.push(x, y, z);
-        vertIndex.set(key, idx);
-      }
-      triVerts.push(idx);
+    for (let c = 0; c < 9; c++) {
+      const v = view.getFloat32(offset, true); offset += 4;
+      if (!Number.isFinite(v)) return null;
+      soup[k++] = v;
     }
     offset += 2; // skip attribute byte count
-    if (
-      triVerts[0] !== triVerts[1] &&
-      triVerts[1] !== triVerts[2] &&
-      triVerts[0] !== triVerts[2]
-    ) {
-      tris.push(triVerts[0], triVerts[1], triVerts[2]);
+  }
+  return soup;
+}
+
+function parseAsciiSoup(bytes: Uint8Array): Float64Array | null {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  // Match "vertex x y z" lines, three per facet. We don't bother enforcing the
+  // facet/outer-loop framing — malformed files just produce a partial mesh,
+  // and Manifold.ofMesh will reject it loudly downstream if topology is bad.
+  const re = /vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/g;
+  const coords: number[] = [];
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const x = parseFloat(m[1]);
+    const y = parseFloat(m[2]);
+    const z = parseFloat(m[3]);
+    // Guard against overflow tokens like "1e999" (→ Infinity) producing a
+    // non-finite mesh; fail the parse cleanly instead.
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    coords.push(x, y, z);
+  }
+  const numTri = Math.floor(coords.length / 9);
+  if (numTri === 0) return null;
+  return Float64Array.from(coords.length === numTri * 9 ? coords : coords.slice(0, numTri * 9));
+}
+
+/** Weld a triangle soup by quantized position into an indexed mesh. Vertices
+ *  keep the position of their first occurrence, in first-seen order;
+ *  triangles that collapse (two corners welded together) are dropped. Null
+ *  when nothing survives. */
+export function weldSoup(soup: STLSoup, weldTolerance: number): MeshData | null {
+  const { positions, remap, numVert } = weldPositions(soup, soup.length / 3, weldTolerance);
+  const numIn = soup.length / 9;
+  const tris = new Uint32Array(numIn * 3);
+  let n = 0;
+  for (let t = 0; t < numIn; t++) {
+    const a = remap[t * 3], b = remap[t * 3 + 1], c = remap[t * 3 + 2];
+    if (a !== b && b !== c && a !== c) {
+      tris[n++] = a; tris[n++] = b; tris[n++] = c;
     }
   }
-
-  if (tris.length === 0) return null;
-
+  if (n === 0) return null;
   return {
-    vertProperties: new Float32Array(positions),
-    triVerts: new Uint32Array(tris),
-    numVert: positions.length / 3,
-    numTri: tris.length / 3,
+    vertProperties: positions,
+    triVerts: n === tris.length ? tris : tris.slice(0, n),
+    numVert,
+    numTri: n / 3,
     numProp: 3,
   };
 }
 
-function parseAsciiSTL(bytes: Uint8Array, weldTolerance: number): MeshData | null {
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-  const vertIndex = new Map<string, number>();
-  const positions: number[] = [];
-  const tris: number[] = [];
-  const inv = 1 / weldTolerance;
-  const quantize = (v: number) => Math.round(v * inv) / inv;
-
-  // Match "vertex x y z" lines, three per facet. We don't bother enforcing the
-  // facet/outer-loop framing — malformed files just produce a partial mesh,
-  // and Manifold.ofMesh will reject it loudly downstream if topology is bad.
-  const vertexLines = text.match(/vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/g);
-  if (!vertexLines || vertexLines.length < 3) return null;
-
-  const numTris = Math.floor(vertexLines.length / 3);
-  for (let t = 0; t < numTris; t++) {
-    const triVerts: number[] = [];
-    for (let v = 0; v < 3; v++) {
-      const m = /vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/.exec(vertexLines[t * 3 + v]);
-      if (!m) return null;
-      const x = parseFloat(m[1]);
-      const y = parseFloat(m[2]);
-      const z = parseFloat(m[3]);
-      // Guard against overflow tokens like "1e999" (→ Infinity) producing a
-      // non-finite mesh; fail the parse cleanly instead.
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-      const key = `${quantize(x)},${quantize(y)},${quantize(z)}`;
-      let idx = vertIndex.get(key);
-      if (idx === undefined) {
-        idx = positions.length / 3;
-        positions.push(x, y, z);
-        vertIndex.set(key, idx);
-      }
-      triVerts.push(idx);
+/** Merge xyz positions (stride 3) that round to the same `tolerance` grid
+ *  cell. Returns the unique positions (first occurrence kept, first-seen
+ *  order) and each input vertex's welded index.
+ *
+ *  An open-addressing hash over the quantized integer coordinates — a
+ *  string-keyed Map here took ~6 s for a 2M-triangle STL, and the weld runs
+ *  once per tolerance the import tries. */
+export function weldPositions(
+  pos: ArrayLike<number>,
+  count: number,
+  tolerance: number,
+): { positions: Float32Array; remap: Uint32Array; numVert: number } {
+  const inv = 1 / tolerance;
+  let cap = 16;
+  while (cap < count * 2) cap *= 2;
+  const mask = cap - 1;
+  const table = new Int32Array(cap).fill(-1);
+  // Quantized cell of each unique vertex, compared exactly on a hash hit.
+  const qx = new Float64Array(count), qy = new Float64Array(count), qz = new Float64Array(count);
+  const positions = new Float32Array(count * 3);
+  const remap = new Uint32Array(count);
+  let numVert = 0;
+  for (let v = 0; v < count; v++) {
+    const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
+    // `+ 0` folds -0 into 0 so both land in the same cell.
+    const ix = Math.round(x * inv) + 0, iy = Math.round(y * inv) + 0, iz = Math.round(z * inv) + 0;
+    let h = (Math.imul(ix | 0, 73856093) ^ Math.imul(iy | 0, 19349663) ^ Math.imul(iz | 0, 83492791)) & mask;
+    let idx = table[h];
+    while (idx !== -1 && (qx[idx] !== ix || qy[idx] !== iy || qz[idx] !== iz)) {
+      h = (h + 1) & mask;
+      idx = table[h];
     }
-    if (
-      triVerts[0] !== triVerts[1] &&
-      triVerts[1] !== triVerts[2] &&
-      triVerts[0] !== triVerts[2]
-    ) {
-      tris.push(triVerts[0], triVerts[1], triVerts[2]);
+    if (idx === -1) {
+      idx = numVert++;
+      table[h] = idx;
+      qx[idx] = ix; qy[idx] = iy; qz[idx] = iz;
+      positions[idx * 3] = x; positions[idx * 3 + 1] = y; positions[idx * 3 + 2] = z;
     }
+    remap[v] = idx;
   }
-
-  if (tris.length === 0) return null;
-
-  return {
-    vertProperties: new Float32Array(positions),
-    triVerts: new Uint32Array(tris),
-    numVert: positions.length / 3,
-    numTri: tris.length / 3,
-    numProp: 3,
-  };
+  return { positions: numVert === count ? positions : positions.slice(0, numVert * 3), remap, numVert };
 }

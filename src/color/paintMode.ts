@@ -16,6 +16,7 @@ import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors, notifyUserPaint } from './paintAccessors';
 import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
 import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
+import { getConfig } from '../config/appConfig';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
@@ -402,10 +403,16 @@ export function updatePaintMesh(mesh: MeshData): void {
     // Pre-warm in the background so activate() finds it ready.
     // Uses requestIdleCallback when available (Chrome/Firefox/Edge); falls back
     // to setTimeout so Safari still benefits from the deferral.
+    // An idle callback still runs as ONE synchronous task, so on a huge mesh
+    // (seconds to build) the prewarm would freeze an idle-looking app — e.g.
+    // right after switching objects. Past the cap, build only when paint
+    // actually opens.
     const prewarm = () => {
       if (currentMesh === mesh && adjacency === null) adjacency = buildAdjacency(mesh);
     };
-    if (typeof requestIdleCallback !== 'undefined') {
+    if (mesh.numTri > getConfig().ui.paintPrewarmMaxTriangles) {
+      // no prewarm — activate() builds on demand
+    } else if (typeof requestIdleCallback !== 'undefined') {
       requestIdleCallback(prewarm);
     } else {
       setTimeout(prewarm, 0);

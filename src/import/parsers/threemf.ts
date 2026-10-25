@@ -27,6 +27,7 @@
 import type { MeshData } from '../../geometry/types';
 import { dominantPaintColorState } from '../../export/paintColor3mf';
 import { openZip, type ZipArchive } from '../zipReader';
+import { weldPositions } from './stl';
 
 export interface ThreeMFPaletteEntry {
   /** `#rrggbb`, lower-case. */
@@ -946,23 +947,8 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
  *  but separately-modelled objects / some exporters duplicate seam vertices,
  *  which `Manifold.ofMesh` rejects as open edges. */
 export function weldMesh(mesh: MeshData, tolerance: number): MeshData {
-  const inv = 1 / tolerance;
-  const map = new Map<string, number>();
-  const remap = new Uint32Array(mesh.numVert);
-  const out: number[] = [];
-  const vp = mesh.vertProperties;
-  for (let v = 0; v < mesh.numVert; v++) {
-    const x = vp[v * 3], y = vp[v * 3 + 1], z = vp[v * 3 + 2];
-    const key = `${Math.round(x * inv)},${Math.round(y * inv)},${Math.round(z * inv)}`;
-    let idx = map.get(key);
-    if (idx === undefined) {
-      idx = out.length / 3;
-      out.push(x, y, z);
-      map.set(key, idx);
-    }
-    remap[v] = idx;
-  }
+  const { positions, remap, numVert } = weldPositions(mesh.vertProperties, mesh.numVert, tolerance);
   const triVerts = new Uint32Array(mesh.triVerts.length);
   for (let i = 0; i < triVerts.length; i++) triVerts[i] = remap[mesh.triVerts[i]];
-  return { vertProperties: new Float32Array(out), triVerts, numVert: out.length / 3, numTri: mesh.numTri, numProp: 3 };
+  return { vertProperties: positions, triVerts, numVert, numTri: mesh.numTri, numProp: 3 };
 }

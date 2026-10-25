@@ -168,6 +168,23 @@ function reqNum(o: Record<string, unknown>, k: string, field: string): void {
 function optNum(o: Record<string, unknown>, k: string, field: string): void {
   if (o[k] !== undefined && !isFiniteNum(o[k])) fail(`${field}.${k} must be a finite number`);
 }
+/** `MeshResult.manifoldFacts` — the Worker-computed stats of a big run. */
+function checkManifoldFacts(v: unknown): void {
+  if (v === undefined || v === null) return;
+  const field = 'manifoldFacts';
+  if (!isPlainObject(v)) fail(`${field} must be a plain object`);
+  onlyKeys(v, ['bbox', 'volume', 'surfaceArea', 'genus', 'isManifold', 'manifoldStatus', 'componentCount', 'containedComponents', 'componentsInterpenetrate'], field);
+  if (v.bbox !== null) {
+    if (!isPlainObject(v.bbox)) fail(`${field}.bbox must be { min, max } or null`);
+    onlyKeys(v.bbox, ['min', 'max'], `${field}.bbox`);
+    reqTuple(v.bbox, 'min', 3, `${field}.bbox`);
+    reqTuple(v.bbox, 'max', 3, `${field}.bbox`);
+  }
+  for (const k of ['volume', 'surfaceArea', 'componentCount', 'containedComponents']) reqNum(v, k, field);
+  if (v.genus !== null) reqNum(v, 'genus', field);
+  if (typeof v.isManifold !== 'boolean' || typeof v.componentsInterpenetrate !== 'boolean') fail(`${field} flags must be booleans`);
+  if (v.manifoldStatus !== null && typeof v.manifoldStatus !== 'string') fail(`${field}.manifoldStatus must be a string or null`);
+}
 function optAxis(o: Record<string, unknown>, k: string, field: string): void {
   if (o[k] !== undefined && !(typeof o[k] === 'string' && AXES.has(o[k] as string))) fail(`${field}.${k} must be 'x', 'y' or 'z'`);
 }
@@ -393,6 +410,7 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   optBool(msg.renderOnly, 'renderOnly');
   optFinite(msg.workerMs, 'workerMs');
   optFinite(msg.engineHeapBytes, 'engineHeapBytes');
+  checkManifoldFacts(msg.manifoldFacts);
   optFinite(msg.voxelCount, 'voxelCount');
   optFinite(msg.voxelPieceCount, 'voxelPieceCount');
   optFinite(msg.voxelRes, 'voxelRes');

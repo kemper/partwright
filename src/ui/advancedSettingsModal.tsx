@@ -676,6 +676,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={0.9} step={0.05}
           onChange={v => set('renderer', 'isolateGhostOpacity', v)}
         />
+        <Field cfgKey="renderer.creaseEdgeMaxTriangles"
+          label="Crease edges up to"
+          unit="triangles"
+          hint="Thumbnails and rendered views skip crease edges on meshes denser than this."
+          tooltip="Version thumbnails and renderViews outline a model's sharp edges (creases). Finding them scans every edge on the main thread, which froze the app for seconds after importing a dense scan — and at that density the lines are noise anyway. Above this many triangles the outline is skipped. 0 = never draw crease edges."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.creaseEdgeMaxTriangles}
+          value={c.renderer.creaseEdgeMaxTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'creaseEdgeMaxTriangles', v)}
+        />
+        <Field cfgKey="renderer.lazyManifoldMinTriangles"
+          label="Defer solid rebuild from"
+          unit="triangles"
+          hint="Big models skip rebuilding the solid after each run until a slice or boolean needs it."
+          tooltip="After every run the editor rebuilds a solid (Manifold) copy of the model for slicing, measuring and booleans. On a multi-million-triangle import that rebuild froze the app for seconds. From this many triangles, the engine computes the model's stats itself and the rebuild waits until a tool actually needs the solid. 0 = always defer."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.lazyManifoldMinTriangles}
+          value={c.renderer.lazyManifoldMinTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('renderer', 'lazyManifoldMinTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -1538,6 +1558,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.toolDialogOpenWaitMs}
           min={500} max={60_000} integer
           onChange={v => set('ui', 'toolDialogOpenWaitMs', v)}
+        />
+        <Field cfgKey="ui.paintPrewarmMaxTriangles"
+          label="Paint pre-warm up to"
+          unit="triangles"
+          hint="Bigger meshes prepare paint only when you open it."
+          tooltip="After each run the app quietly prepares the triangle-neighbour graph paint tools use, so Paint opens instantly. On a huge mesh that preparation takes seconds and froze the app while it looked idle (e.g. right after switching objects). Above this many triangles it waits until you open Paint. 0 = never pre-warm."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintPrewarmMaxTriangles}
+          value={c.ui.paintPrewarmMaxTriangles}
+          min={0} max={50_000_000} step={50_000} integer
+          onChange={v => set('ui', 'paintPrewarmMaxTriangles', v)}
         />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"
