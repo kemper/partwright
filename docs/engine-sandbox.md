@@ -185,14 +185,20 @@ and Pages' `_redirects` cannot match on the hostname.)
    `setEngineSandboxMode('origin')` returns an error).
 3. **The sandbox host never runs the app.** It serves the full build, so
    without a guard a user who opened `/editor` there would save sessions and
-   **AI keys into the sandbox origin's storage, exactly where `origin`-mode
-   Workers can read them.** `src/entry.ts` checks this first
-   (`sandboxHostAction` in `src/sandbox/sandboxHostGuard.ts`): on the exact
-   `VITE_SANDBOX_ORIGIN` origin it redirects to the first `VITE_APP_ORIGIN`
-   (path, query and hash kept) before loading any app bundle or touching
-   storage, and shows a static notice if no app origin is configured.
-   `sandbox.html` doesn't load `entry.ts`, so the frame is unaffected, and the
-   content pages (`/help`, `/catalog`, …) ship no app JS. Per-deploy hosts
+   **AI keys into the sandbox origin's storage.** Browsers partition
+   third-party storage today, so the framed Worker would normally see a
+   separate bucket, but partitioning can be disabled by policy, relaxed by
+   the Storage Access API, or changed by browsers later, so the app must not
+   rely on it. `src/entry.ts` checks this first (`sandboxHostAction` in
+   `src/sandbox/sandboxHostGuard.ts`): on the `VITE_SANDBOX_ORIGIN` origin, and
+   on `https://partwright-sandbox.pages.dev` by name in case the sandbox
+   project's build lacks the env var, it redirects to the first
+   `VITE_APP_ORIGIN` (falling back to `www.partwrightstudio.com` on the
+   production host), keeping path, query and hash, before loading any app
+   bundle or touching storage. It shows a static notice if there's nowhere to
+   send the visitor. `sandbox.html` doesn't load `entry.ts`, so the frame is
+   unaffected, and the content pages (`/help`, `/catalog`, …) ship no
+   storage-writing JS. Per-deploy hosts
    (`<hash>.partwright-sandbox.pages.dev`) are other origins the frame never
    runs on, so they don't need the guard. Keep new storage-touching code
    behind `entry.ts`'s dynamic imports.
@@ -200,7 +206,8 @@ and Pages' `_redirects` cannot match on the hostname.)
    https://partwright-sandbox.pages.dev` on the `/*` CSP in `public/_headers`
    (the dev/preview servers add it from `VITE_SANDBOX_ORIGIN`). The sandbox
    document's `frame-ancestors` already lists the production app hosts.
-   Changing the sandbox host means updating that `frame-src`.
+   Changing the sandbox host means updating that `frame-src` and
+   `PRODUCTION_SANDBOX_ORIGIN` in `src/sandbox/sandboxHostGuard.ts`.
 5. Optionally set `VITE_ENGINE_SANDBOX=origin` to make it the default. Until
    then the mode is opt-in per browser (Advanced Settings → Security, or
    `partwright.setEngineSandboxMode('origin')`), and the `/legal` "Code

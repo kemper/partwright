@@ -37,3 +37,19 @@ to fail without the guard.
 host-specific `_redirects` rules that Pages doesn't support. Added a
 never-delete warning for the project name, since a deleted pages.dev name can
 be claimed by someone else.
+
+## Human
+
+(No new request. Follow-up from the pre-ready review of #1121.)
+
+## Assistant
+
+## Key decisions
+
+**Fail closed without build env**: the guard only fired when the sandbox
+project's own build carried VITE_SANDBOX_ORIGIN, so a missing env var would
+have let the app boot there. The production sandbox host is now also matched
+by name, with www.partwrightstudio.com as the fallback target. The constant
+sits next to the `frame-src` it has to match. The doc now says storage
+partitioning would usually hide that data from the framed Worker, but that
+partitioning can't be relied on.
