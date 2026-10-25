@@ -55,3 +55,17 @@ with the sandbox off. A unit test asserts the duplicated constant matches.
 model code runs, so patched built-ins can't read or forge later traffic.
 #1109's lockdown pins the shim's `postMessage` and keeps its private
 same-origin asset fetch working through the shim's URL-resolving `fetch`.
+
+**Heartbeat instead of MessagePort `close`.** Chromium 141 never fired `close`
+on the app's port when the frame went away (verified by removing the iframe),
+so the host pings the frame (`renderer.engineSandboxHeartbeatMs`). About three
+unanswered pings restart the frame. A tick that itself fired late (the app's
+main thread stalled) only re-pings and never restarts, so a busy same-process
+frame isn't mistaken for a dead one. The e2e simulates the crash by removing
+the iframe: CDP `Page.crash` on the frame took down the whole page, because
+headless Chromium kept the opaque frame in the app's process here.
+
+**Surfacing the refusal.** API runs used to report a rejected run as
+"superseded — retry", which the AI loop treats as transient. Only the
+fail-closed refusal is now passed through verbatim (`runFailedMessage()`).
+Other rejections keep the old text, so the AI retry behaviour is unchanged.

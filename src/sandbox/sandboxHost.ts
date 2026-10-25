@@ -188,6 +188,9 @@ class SandboxHost {
   private readonly handles = new Map<string, SandboxedEngineWorker>();
   private readonly pendingSpawns: { id: string; port: MessagePort }[] = [];
   private readonly bootTimer: number;
+  private heartbeatTimer = 0;
+  private lastTickAt = 0;
+  private pingSentAt: number | null = null;
 
   constructor(mode: 'opaque' | 'origin', origin: string | null) {
     this.mode = mode;
@@ -232,7 +235,12 @@ class SandboxHost {
       }
       this.ready = true;
       for (const s of this.pendingSpawns.splice(0)) this.postSpawn(s.id, s.port);
+      this.startHeartbeat();
       notify();
+      return;
+    }
+    if (msg.type === 'pong') {
+      this.pingSentAt = null;
       return;
     }
     const handle = this.handles.get(msg.id);
@@ -240,6 +248,37 @@ class SandboxHost {
     if (msg.type === 'spawn_failed') failClosed(`a sandboxed engine worker could not be created (${msg.message})`);
     else handle.workerError(msg.message);
   };
+
+  /** Liveness: a frame whose renderer crashed (e.g. OOM-killed by model
+   *  code) never says so — no error event reaches the app, and pending runs
+   *  would hang. Ping it; ~3 unanswered intervals ⇒ restart the frame. A tick
+   *  that itself fired late (the app's own main thread was busy, and with a
+   *  same-process frame so was the frame's) only re-pings, never judges. */
+  private startHeartbeat(): void {
+    const interval = getConfig().renderer.engineSandboxHeartbeatMs;
+    this.lastTickAt = performance.now();
+    this.heartbeatTimer = window.setInterval(() => {
+      if (this.destroyed) return;
+      const now = performance.now();
+      const stalled = now - this.lastTickAt > interval * 2;
+      this.lastTickAt = now;
+      const win = this.frame.contentWindow;
+      if (!this.frame.isConnected || !win) {
+        restartFrame('the sandbox frame went away');
+        return;
+      }
+      if (stalled) {
+        this.pingSentAt = null;
+      } else if (this.pingSentAt !== null && now - this.pingSentAt > interval * 3) {
+        restartFrame('the sandbox frame stopped responding (renderer crashed?)');
+        return;
+      }
+      if (this.pingSentAt === null) {
+        this.pingSentAt = now;
+        win.postMessage({ type: 'ping', id: 'hb' }, this.targetOrigin);
+      }
+    }, interval);
+  }
 
   private postSpawn(id: string, port: MessagePort): void {
     this.frame.contentWindow?.postMessage({ type: 'spawn', id }, this.targetOrigin, [port]);
@@ -269,6 +308,7 @@ class SandboxHost {
     if (this.destroyed) return [];
     this.destroyed = true;
     window.clearTimeout(this.bootTimer);
+    window.clearInterval(this.heartbeatTimer);
     window.removeEventListener('message', this.onWindowMessage);
     for (const s of this.pendingSpawns.splice(0)) s.port.close();
     const handles = [...this.handles.values()];

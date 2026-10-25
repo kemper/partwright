@@ -262,6 +262,10 @@ export interface AppConfig {
      *  a frame crash or a stuck Worker spawn before it gives up and blocks
      *  model code in the tab (fail closed). Reset by every Worker that connects. */
     engineSandboxMaxFrameRestarts: number;
+    /** Engine-sandbox liveness ping interval (ms). The app pings the hidden
+     *  sandbox frame this often; a frame that misses ~3 pings in a row (its
+     *  renderer crashed or was OOM-killed) is replaced. */
+    engineSandboxHeartbeatMs: number;
     /** Spacing between Assembly-grid cells as a fraction of the largest part's
      *  footprint (0.25 ⇒ a quarter-cell gutter). */
     assemblyGridGutter: number;
@@ -651,6 +655,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     exportPoolSize: 8,
     engineSandboxBootTimeoutMs: 20_000,
     engineSandboxMaxFrameRestarts: 2,
+    engineSandboxHeartbeatMs: 2_000,
     assemblyGridGutter: 0.18,
   },
   import: {

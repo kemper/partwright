@@ -65,7 +65,7 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const APP = `http://localhost:${args.appPort}`;
 const SANDBOX = `http://localhost:${args.sandboxPort}`;
-const env = { ...process.env, VITE_SANDBOX_ORIGIN: SANDBOX };
+const env = { ...process.env, VITE_SANDBOX_ORIGIN: SANDBOX, VITE_APP_ORIGIN: APP };
 
 function detectChromium() {
   const sandboxRoot = '/opt/pw-browsers';
@@ -375,9 +375,9 @@ function summarize(results) {
     const w = [...new Set(s.map(x => String(x.workerCrossOriginIsolated)))].join('/');
     return m === 'off' ? 'n/a (app is COI)' : `${f} / ${w}`;
   }).join(' | ')} |`);
-  rows.push(`| Active mode / fallbacks | ${modes.map(m => {
+  rows.push(`| Active mode / unavailable | ${modes.map(m => {
     const s = byMode[m].map(r => r.finalStatus);
-    return `${[...new Set(s.map(x => x.active))].join('/')} / ${s.filter(x => x.fallbackReason).length}`;
+    return `${[...new Set(s.map(x => x.active))].join('/')} / ${s.filter(x => x.unavailableReason).length}`;
   }).join(' | ')} |`);
   return rows.join('\n');
 }

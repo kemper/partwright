@@ -1499,6 +1499,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={10} integer
           onChange={v => set('renderer', 'engineSandboxMaxFrameRestarts', v)}
         />
+        <Field cfgKey="renderer.engineSandboxHeartbeatMs"
+          label="Sandbox liveness ping"
+          unit="ms"
+          hint="How often the app checks the sandbox frame is alive (a dead frame is replaced after ~3 missed pings)."
+          tooltip="A model that exhausts memory can crash the hidden sandbox frame's renderer without the app hearing about it. The app pings the frame at this interval; when about three pings in a row go unanswered it replaces the frame, so the stuck run fails instead of hanging. Lower = faster recovery, higher = fewer wake-ups."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.engineSandboxHeartbeatMs}
+          value={c.renderer.engineSandboxHeartbeatMs}
+          min={500} max={30_000} integer
+          onChange={v => set('renderer', 'engineSandboxHeartbeatMs', v)}
+        />
       </Section>
 
       <Section title="UI">

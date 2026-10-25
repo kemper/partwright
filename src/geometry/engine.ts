@@ -19,7 +19,7 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
-import { createEngineWorker, prewarmEngineSandbox, type EngineWorkerHandle } from '../sandbox/sandboxHost';
+import { createEngineWorker, isEngineSandboxUnavailableError, prewarmEngineSandbox, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
 import { VoxelGrid } from './voxel/grid';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
@@ -341,8 +341,11 @@ function initEngineWorker(): void {
   markWorkerStarted('geometry');
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
-    // Reject all pending calls if the Worker crashes.
-    const crashErr = new Error(`Geometry Worker crashed: ${ev.message}`);
+    // Reject all pending calls if the Worker crashes. A fail-closed engine
+    // sandbox refusing to run model code isn't a crash: pass its message
+    // through as-is (the sandbox host already logged it).
+    const sandboxRefusal = isEngineSandboxUnavailableError(ev.message);
+    const crashErr = new Error(sandboxRefusal ? ev.message : `Geometry Worker crashed: ${ev.message}`);
     rejectAllPending(crashErr);
     // A Worker that dies before 'ready' (e.g. a fail-closed engine sandbox)
     // must also release callers awaiting the ready gate, or they hang.
@@ -353,6 +356,7 @@ function initEngineWorker(): void {
     // predictable callIds could match.
     engineWorker?.terminate();
     engineWorker = null;
+    if (sandboxRefusal) return;
     markWorkerRestarted('geometry', `crashed: ${ev.message}`);
     errorLog.capture({ level: 'error', source: 'engine', message: `Geometry worker crashed — next call will restart it: ${ev.message}` });
   };

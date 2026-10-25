@@ -13,7 +13,7 @@ export function mountEngineSandboxPill(container: HTMLElement): void {
   const pill = document.createElement('div');
   pill.id = 'engine-sandbox-pill';
   pill.setAttribute('role', 'status');
-  pill.className = 'absolute top-14 left-2 z-20 max-w-[calc(100%-1rem)] flex flex-wrap items-center gap-2 text-xs font-mono bg-zinc-900/90 px-2 py-1 rounded border';
+  pill.className = 'absolute bottom-16 md:bottom-auto md:top-14 left-2 z-20 max-w-[calc(100%-1rem)] flex flex-wrap items-center gap-2 text-xs font-mono bg-zinc-900/90 px-2 py-1 rounded border';
   pill.style.display = 'none';
   const label = document.createElement('span');
   const action = document.createElement('button');

@@ -75,6 +75,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     assemblyPoolSize: { min: 1, max: 16, integer: true },
     engineSandboxBootTimeoutMs: { min: 2_000, max: 120_000, integer: true },
     engineSandboxMaxFrameRestarts: { min: 0, max: 10, integer: true },
+    engineSandboxHeartbeatMs: { min: 500, max: 30_000, integer: true },
     exportPoolSize: { min: 1, max: 16, integer: true },
     assemblyGridGutter: { min: 0, max: 2 },
     ambientLightIntensity: { min: 0, max: 3 },

@@ -98,6 +98,9 @@ window.addEventListener('message', (event: MessageEvent) => {
       return;
     }
     spawn(msg.id, port);
+  } else if (msg.type === 'ping') {
+    // Liveness heartbeat — the app replaces a frame that stops answering.
+    post({ type: 'pong', id: msg.id });
   } else {
     workers.get(msg.id)?.terminate();
     workers.delete(msg.id);

@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
-  ENGINE_WORKER_MESSAGE_TYPES,
+  STATUS_MESSAGE_TYPE as APP_STATUS_TYPE,
   isAllowedEngineMessage,
   parseFrameMessage,
-  parseParentMessage,
   parseWorkerStatus,
 } from '../../src/sandbox/protocol';
+import {
+  STATUS_MESSAGE_TYPE as FRAME_STATUS_TYPE,
+  allowedParentOrigins,
+  parseParentMessage,
+} from '../../src/sandbox/frameProtocol';
+import { ENGINE_WORKER_MESSAGE_TYPES } from '../../src/geometry/workerMessageValidation';
 import {
   getEngineSandboxMode,
   isEngineSandboxMode,
@@ -27,13 +34,30 @@ describe('engine sandbox protocol guards', () => {
     expect(isAllowedEngineMessage({ type: 'execute_result', callId: 'x'.repeat(65) })).toBe(false);
   });
 
-  it('covers every Worker → main type engine.ts handles', () => {
-    // Keep in sync with the protocol header in src/geometry/engineWorker.ts.
-    for (const t of ['ready', 'execute_preview', 'execute_result', 'validate_result', 'detect_includes_result',
-      'exportSTEP_result', 'importSTEPToBrep_result', 'importSTEPToMesh_result', 'clearBrepImports_result',
-      'clearBrepShape_result', 'simplify_progress', 'simplify_result', 'enhance_progress', 'enhance_result', 'error']) {
-      expect(ENGINE_WORKER_MESSAGE_TYPES.has(t), t).toBe(true);
-    }
+  it('allow-lists exactly the message types engineWorker.ts posts', () => {
+    // Every `type: '…'` literal the engine Worker posts back to the main
+    // thread must be on the shared allow-list, and the list must not carry
+    // types the Worker never sends. (Main → Worker types are only *read* there,
+    // via `msg.type === '…'`, so they don't match this pattern.)
+    // Comments are stripped first: the file's protocol header lists both
+    // directions as `{ type: '…' }` examples.
+    const src = readFileSync(resolve(__dirname, '../../src/geometry/engineWorker.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const posted = new Set([...src.matchAll(/\btype:\s*'([A-Za-z_]+)'/g)].map(m => m[1]));
+    expect(posted.size).toBeGreaterThan(10);
+    expect([...posted].sort()).toEqual([...ENGINE_WORKER_MESSAGE_TYPES].sort());
+  });
+
+  it('keeps the app and frame copies of the status type identical', () => {
+    expect(APP_STATUS_TYPE).toBe(FRAME_STATUS_TYPE);
+  });
+
+  it('accepts parent messages only from the app origins', () => {
+    expect([...allowedParentOrigins('http://localhost:5202', undefined)]).toEqual(['http://localhost:5202']);
+    expect([...allowedParentOrigins('https://sandbox.example.com', 'https://www.example.com, https://example.com/x, junk')])
+      .toEqual(['https://sandbox.example.com', 'https://www.example.com', 'https://example.com']);
+    expect(allowedParentOrigins('null', 'javascript:alert(1)').size).toBe(0);
   });
 
   it('validates frame → app messages', () => {

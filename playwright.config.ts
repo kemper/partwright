@@ -57,10 +57,14 @@ const port = Number(process.env.E2E_PORT || 5173);
 // served from a DIFFERENT origin: a second dev server of this same checkout on
 // another port. The app server is told about it via VITE_SANDBOX_ORIGIN; with
 // the sandbox off (the default) that variable is inert.
-const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1);
+// port+1000 (not +1): parallel worktrees take neighbouring E2E_PORTs.
+const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1000);
 const devCommand = (p: number) => (p === 5173 ? 'npm run dev' : `npm run dev -- --port ${p} --strictPort`);
 const devEnv = {
   VITE_SANDBOX_ORIGIN: `http://localhost:${sandboxPort}`,
+  // The app origin the 'origin'-mode frame accepts spawn requests from (and
+  // its CSP frame-ancestors).
+  VITE_APP_ORIGIN: `http://localhost:${port}`,
   // Opaque-mode frames load modules cross-origin (Origin: null); the dev
   // server only answers those with CORS when this opt-in is set (vite.config.ts).
   PARTWRIGHT_SANDBOX_DEV_CORS: '1',
@@ -121,7 +125,9 @@ export default defineConfig({
       url: `http://localhost:${sandboxPort}/sandbox.html`,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
-      env: devEnv,
+      // Its own dependency pre-bundle cache, so the two dev servers of one
+      // checkout don't race on node_modules/.vite (vite.config.ts cacheDir).
+      env: { ...devEnv, VITE_CACHE_DIR: 'node_modules/.vite-sandbox-origin' },
     },
   ],
 });

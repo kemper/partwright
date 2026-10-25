@@ -44,7 +44,9 @@ interface SandboxStatus {
   frameCrossOriginIsolated: boolean | null;
   workerCrossOriginIsolated: boolean | null;
   frameOrigin: string | null;
-  fallbackReason: string | null;
+  unavailableReason: string | null;
+  frameRestarts: number;
+  pendingAfterReload: string;
   sandboxOrigin: string | null;
 }
 
@@ -60,16 +62,22 @@ async function run(page: Page, code: string, lang?: string): Promise<{ error?: s
   }, { code, lang });
 }
 
-/** Skip 'origin' mode when this server has no VITE_SANDBOX_ORIGIN (e.g. a
- *  reused `npm run dev` started without the Playwright config's env). */
+/** Skip when this dev server can't host the mode — e.g. a reused
+ *  `npm run dev` started without the Playwright config's env: 'origin' needs
+ *  VITE_SANDBOX_ORIGIN, 'opaque' needs the dev server's `Origin: null` CORS
+ *  opt-in (PARTWRIGHT_SANDBOX_DEV_CORS=1). */
 async function requireMode(page: Page, mode: Mode): Promise<void> {
   const s = await status(page);
   test.skip(mode === 'origin' && !s.sandboxOrigin, 'dev server has no VITE_SANDBOX_ORIGIN configured');
+  if (mode === 'opaque') {
+    const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
+    test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
+  }
   // Force the geometry Worker into existence and wait until it answers.
   const r = await run(page, 'const { Manifold } = api; return Manifold.cube([1, 1, 1]);');
   expect(r.error ?? null).toBeNull();
   const after = await status(page);
-  expect(after.fallbackReason, 'sandbox fell back to off').toBeNull();
+  expect(after.unavailableReason, 'sandbox unavailable').toBeNull();
   expect(after.active).toBe(mode);
   expect(after.state).toBe('ready');
   expect(after.frameCrossOriginIsolated).toBe(true);
@@ -216,12 +224,36 @@ for (const mode of MODES) {
         expect(probe.stores ?? []).not.toContain('aiKeys');
         expect(probe.dbs ?? []).not.toContain('partwright');
       }
-      // Every cross-origin fetch fails, and the frame CSP is the reason.
-      for (const [name, url] of Object.entries(targets)) {
+      // Every cross-origin fetch fails from model code. (With the #1109
+      // Worker lockdown `fetch` is already gone from the realm; the frame CSP
+      // below is the independent second layer.)
+      for (const name of Object.keys(targets)) {
         expect(probe.fetch[name], `${name} fetch`).toMatch(/^failed/);
+      }
+
+      // The frame CSP itself refuses those connections — checked in the
+      // frame's own document (its blob: Worker inherits this exact policy),
+      // where the lockdown doesn't apply.
+      const frame = page.frames().find(f => /\/sandbox(\.html)?$/.test(new URL(f.url()).pathname));
+      expect(frame, 'sandbox frame').toBeTruthy();
+      const cspProbe = await frame!.evaluate(async (urls) => {
+        const violations: { uri: string; directive: string }[] = [];
+        document.addEventListener('securitypolicyviolation', (e) => {
+          violations.push({ uri: e.blockedURI, directive: e.effectiveDirective });
+        });
+        const fetched: Record<string, string> = {};
+        for (const [name, url] of Object.entries(urls)) {
+          try { fetched[name] = 'status ' + (await fetch(url)).status; } catch (e) { fetched[name] = 'failed: ' + String(e); }
+        }
+        await new Promise(r => setTimeout(r, 100));
+        return { violations, fetched };
+      }, targets);
+      test.info().annotations.push({ type: 'frame-csp', description: JSON.stringify(cspProbe) });
+      for (const [name, url] of Object.entries(targets)) {
+        expect(cspProbe.fetched[name], `${name} fetch from the frame`).toMatch(/^failed/);
         expect(
-          probe.violations.some(v => v.directive === 'connect-src' && url.startsWith(v.uri)),
-          `${name} (${url}) should be a connect-src CSP violation; got ${JSON.stringify(probe.violations)}`,
+          cspProbe.violations.some(v => v.directive === 'connect-src' && url.startsWith(v.uri)),
+          `${name} (${url}) should be a connect-src CSP violation; got ${JSON.stringify(cspProbe.violations)}`,
         ).toBe(true);
       }
     });
@@ -238,6 +270,14 @@ for (const mode of MODES) {
       const vox = await run(page, "const v = api.voxels(); v.fillBox([0, 0, 0], [3, 3, 3], '#ff0000'); return v;", 'voxel');
       expect(vox.error ?? null).toBeNull();
       expect(vox.triangleCount).toBeGreaterThan(0);
+      // Voxel paint / export fetch the raw grid from the Worker
+      // ('voxel_grid_result' must pass the sandbox's message allow-list).
+      const grid = await page.evaluate(async () => {
+        const eng = await import('/src/geometry/engine.ts' as string);
+        const r = await eng.runVoxelGridInWorker("const v = api.voxels(); v.fillBox([0, 0, 0], [1, 1, 1], '#00ff00'); return v;");
+        return r.ok ? { ok: true, count: r.grid.size } : { ok: false, error: r.error };
+      });
+      expect(grid).toEqual({ ok: true, count: 8 });
 
       const scad = await run(page, 'difference() { cube(10, center=true); sphere(6.5, $fn=32); }', 'scad');
       expect(scad.error ?? null).toBeNull();
@@ -289,11 +329,86 @@ for (const mode of MODES) {
 
       // Still sandboxed after all of that (no silent fallback mid-way).
       const s = await status(page);
-      expect(s.fallbackReason).toBeNull();
+      expect(s.unavailableReason).toBeNull();
+      expect(s.state).toBe('ready');
       expect(s.active).toBe(mode);
     });
   });
 }
+
+test.describe('engine sandbox: frame crash', () => {
+  /** Simulate the frame dying (as when model code OOM-kills its renderer):
+   *  drop the iframe. Its document and Worker go away without any message to
+   *  the app; the host's liveness check has to notice. (CDP Page.crash would
+   *  be closer, but headless Chromium here keeps the frame in the app's
+   *  renderer process, so it crashes the whole page.) */
+  async function crashFrame(page: Page): Promise<void> {
+    await page.evaluate(() => document.querySelector('iframe[data-engine-sandbox]')?.remove());
+  }
+
+  test('a crashed frame is replaced and model code stays sandboxed', async ({ page }) => {
+    test.setTimeout(120_000);
+    await bootInMode(page, 'opaque');
+    await requireMode(page, 'opaque');
+    await crashFrame(page);
+    await expect.poll(async () => (await status(page)).frameRestarts, { timeout: 30_000 }).toBe(1);
+    expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(1);
+    const r = await run(page, 'const { Manifold } = api; return Manifold.cube([3, 3, 3]);');
+    expect(r.error ?? null).toBeNull();
+    expect(r.triangleCount).toBe(12);
+    const s = await status(page);
+    expect(s.state).toBe('ready');
+    expect(s.active).toBe('opaque');
+    expect(s.unavailableReason).toBeNull();
+  });
+
+  test('fails closed when the frame cannot be restarted, until an explicit bypass', async ({ page }) => {
+    test.setTimeout(120_000);
+    // No restart budget: the first crash makes the sandbox unavailable.
+    await page.addInitScript(() => {
+      if (window !== window.top) return;
+      try {
+        localStorage.setItem('partwright-app-config-v1', JSON.stringify({ renderer: { engineSandboxMaxFrameRestarts: 0 } }));
+      } catch { /* ignore */ }
+    });
+    await bootInMode(page, 'opaque');
+    await requireMode(page, 'opaque');
+    await crashFrame(page);
+    await expect.poll(async () => (await status(page)).state, { timeout: 30_000 }).toBe('unavailable');
+
+    // Fail closed: model code does not run anywhere, and no frame is left.
+    const blocked = await run(page, 'const { Manifold } = api; return Manifold.cube([3, 3, 3]);');
+    expect(blocked.error ?? '').toContain('engine sandbox unavailable');
+    expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
+    // The first-visit onboarding tour's backdrop would cover the pill.
+    await page.evaluate(() => document.querySelectorAll('.tour-backdrop, [class*="tour"]').forEach(e => e.remove()));
+    const pill = page.locator('#engine-sandbox-pill');
+    await expect(pill).toBeVisible();
+    await expect(pill).toContainText('Engine sandbox unavailable');
+
+    // The only way out is the explicit per-tab bypass.
+    await pill.getByRole('button', { name: 'Run without sandbox (this tab)' }).click();
+    await expect.poll(async () => (await status(page)).state).toBe('bypassed');
+    const ran = await run(page, 'const { Manifold } = api; return Manifold.cube([3, 3, 3]);');
+    expect(ran.error ?? null).toBeNull();
+    expect((await status(page)).active).toBe('off');
+    await expect(pill).toContainText('Running without the engine sandbox');
+  });
+});
+
+test('engine sandbox: mode is captured once per tab', async ({ page }) => {
+  await bootInMode(page, 'off');
+  // Another tab (shared localStorage) or the Settings select changes the mode:
+  // this tab keeps running as it started, and reports the pending value.
+  await page.evaluate(() => localStorage.setItem('partwright-engine-sandbox', 'opaque'));
+  const s = await status(page);
+  expect(s.requested).toBe('off');
+  expect(s.active).toBe('off');
+  expect(s.pendingAfterReload).toBe('opaque');
+  const r = await run(page, 'const { Manifold } = api; return Manifold.cube([2, 2, 2]);');
+  expect(r.error ?? null).toBeNull();
+  expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
+});
 
 test('engine sandbox: off by default', async ({ page }) => {
   await page.goto('/editor');

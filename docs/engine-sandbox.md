@@ -1,6 +1,9 @@
 # Engine sandbox — running model code on a separate origin
 
-Status: **opt-in, default off** (kemper/partwright#1090, "option 2").
+Status: **opt-in, default off** (kemper/partwright#1090, "option 2"). Builds on
+the engine-Worker lockdown (#1109, "option 1"), which strips network/storage
+globals from the Worker realm and keeps model code off the main thread; the
+sandbox adds an origin boundary under that.
 
 ## The problem
 
@@ -11,8 +14,10 @@ imported session / share link / catalog fork — is evaluated with
 `src/geometry/enginePool.ts`). That Worker is on the **app origin**, so the code
 can `indexedDB.open('partwright')` and read every store — including `aiKeys`
 (the user's provider API keys) — and `fetch` any `https:` host the app CSP
-allows. Verified with the sandbox off: model code lists all 13 app stores,
-opens `aiKeys`, and fetches a cross-origin URL with status 200.
+allows. Verified before #1109's lockdown with the sandbox off: model code
+listed all 13 app stores, opened `aiKeys`, and fetched a cross-origin URL with
+status 200. The lockdown removes those globals from the realm; the sandbox
+makes the *origin* itself worthless to model code even if a global ever leaks.
 
 The engine sandbox moves the Worker into a hidden iframe on a **different
 origin**, which has no path to the app's storage, and fences its network with
@@ -24,7 +29,7 @@ that frame's own CSP.
 |---|---|---|---|
 | `off` (default) | none — Worker created by the app | app origin: IndexedDB, `fetch` per app CSP | nothing |
 | `opaque` | `<iframe sandbox="allow-scripts" allow="cross-origin-isolated" src="/sandbox">` — same URL, **opaque origin** | IndexedDB refused (`SecurityError`), no localStorage, `connect-src 'self'` | CORS (`Access-Control-Allow-Origin: *`) on `/assets/*` and `/openscad-libs/*` (shipped in `public/_headers`) |
-| `origin` | `<iframe sandbox="allow-scripts allow-same-origin" allow="cross-origin-isolated" src="$VITE_SANDBOX_ORIGIN/sandbox">` | the sandbox origin's own (empty, partitioned) IndexedDB, no localStorage, `connect-src 'self'` (the sandbox origin) | a second hostname serving the same build + `VITE_SANDBOX_ORIGIN` at build time + `frame-src` in the app CSP |
+| `origin` | `<iframe sandbox="allow-scripts allow-same-origin" allow="cross-origin-isolated" src="$VITE_SANDBOX_ORIGIN/sandbox">` | the sandbox origin's own (empty, partitioned) IndexedDB, no localStorage, `connect-src 'self'` (the sandbox origin) | a second hostname serving ONLY the sandbox (see deployment) + `VITE_SANDBOX_ORIGIN` / `VITE_APP_ORIGIN` at build time + `frame-src` in the app CSP |
 
 Both sandbox modes were verified `crossOriginIsolated === true` in the frame
 **and** in its Worker (Chromium 141), so SharedArrayBuffer / the WASM engines
@@ -35,14 +40,19 @@ work unchanged.
 - **Per browser:** Settings (⚙) → *Security — engine sandbox* → pick a mode,
   reload. Or from the console: `partwright.setEngineSandboxMode('opaque')`,
   reload; `partwright.getEngineSandboxStatus()` reports what's in effect.
+  **The mode is captured once per tab**, at page load: changing the setting —
+  here or in another tab, which shares localStorage — never flips a running
+  tab; it shows up as `pendingAfterReload` until that tab reloads.
   The value lives in `localStorage['partwright-engine-sandbox']` (AppConfig
   only stores numbers/booleans). It is intentionally **not** an in-app AI tool
   — a prompt-injected session must not be able to switch it off.
 - **Per deployment:** build with `VITE_ENGINE_SANDBOX=opaque` (or `origin`) to
   change the default for everyone; a per-browser choice still wins.
-- **Tunable:** `renderer.engineSandboxBootTimeoutMs` (Settings, default 20 s)
-  — how long the frame + Worker may take to report cross-origin isolation
-  before falling back.
+- **Tunables** (Settings → Security): `renderer.engineSandboxBootTimeoutMs`
+  (default 20 s — frame load / Worker spawn deadline),
+  `renderer.engineSandboxMaxFrameRestarts` (default 2 — consecutive frame
+  restarts before failing closed), `renderer.engineSandboxHeartbeatMs`
+  (default 2 s — liveness ping; ~3 missed ⇒ frame restart).
 
 ## Architecture
 
@@ -65,7 +75,12 @@ app page (COOP same-origin, COEP require-corp)
   relay), though see the benchmark for what crossing a process costs.
 - **engineWorker.ts is untouched.** The shim redirects `self.postMessage` and
   re-dispatches port messages as `message` events, which is what the engine's
-  `self.onmessage` listens for.
+  `self.onmessage` listens for. It captures `MessagePort.prototype.postMessage`,
+  `dispatchEvent` and `MessageEvent` *before* any model code runs, so a model
+  that patches those built-ins can't read or forge later traffic; #1109's
+  lockdown then pins the redirected `postMessage`. The engine's private
+  same-origin asset fetch (`fetchAppAsset`) goes through the shim's
+  URL-resolving `fetch`.
 - **Why a classic blob Worker.** A blob Worker inherits the frame document's
   origin and **CSP** (an http-URL Worker would take its CSP from its own
   response headers, i.e. the app's `/*` policy). Chromium refuses a
@@ -75,25 +90,43 @@ app page (COOP same-origin, COEP require-corp)
   A blob Worker's base URL can't resolve root-relative paths, so the shim
   resolves string `fetch` URLs against its own module URL (BOSL2, fonts, the
   OCCT wasm).
-- **Handshake + fallback.** The Worker's first port message reports
+- **Fail closed.** The Worker's first port message reports
   `crossOriginIsolated` / `SharedArrayBuffer`. Until then the façade buffers
-  everything the client posts. If the frame or Worker isn't isolated, fails to
-  load, or misses the boot timeout, the sandbox is marked broken for the tab:
-  the façade spins up a direct Worker, replays the buffer and forwards its
-  events (the client never notices), and the user gets one toast + a `warn`
-  Diagnostic Log entry (`source: 'engine'`). `getEngineSandboxStatus()` then
-  reports `active: 'off'` with the `fallbackReason`.
+  what the client posts — and that buffer is only ever delivered to a
+  **sandboxed** Worker. Nothing falls back to an app-origin Worker on its own:
+  - a spawn that times out *after* the frame was ready, or a frame that stops
+    answering the liveness ping / disappears (its renderer crashed — e.g. model
+    code OOM-killed it), **restarts the iframe**: connected façades error out
+    (the client rejects what was in flight and asks for a new Worker), waiting
+    ones re-spawn with their buffer in the new frame. Bounded by
+    `engineSandboxMaxFrameRestarts` consecutive restarts;
+  - anything else — frame/Worker not cross-origin isolated, frame didn't load,
+    restart budget spent, `origin` mode misconfigured — marks the sandbox
+    **unavailable** for the tab: every queued and later engine call fails with
+    `engine sandbox unavailable: …`, no iframe is left, a `warn` Diagnostic Log
+    entry + one toast are emitted, and a **persistent status pill** in the
+    viewport offers the only way out: an explicit per-tab **Run without
+    sandbox (this tab)** (`partwright.runWithoutEngineSandbox()`, state
+    `bypassed`, its own warning pill). Reload re-enables the sandbox.
+- **Same Worker seam for every boot.** Boots, crash restarts, Cancel and
+  #1109's per-session recycle (`claimEngineWorker`) all go through
+  `createEngineWorker`, so a recycled Worker is just as sandboxed.
 - **Untrusted messages.** Everything from the frame / Worker is untrusted
   (`src/sandbox/protocol.ts`): frame messages must come from our iframe's
   `contentWindow` with the expected origin (`'null'` for opaque) and match a
   type + shape allow-list; Worker messages must be plain objects with an
   allow-listed engine `type` and a well-formed `callId`. Anything else is
-  dropped with a Diagnostic Log warning. Field-level validation of geometry
-  results stays engine.ts's job (option 1 hardens that side).
-- **Main-thread evaluation.** `exportParamSweep` and `setReferenceGeometry`
-  normally run model code synchronously on the main thread
-  (`executeCode`). While the sandbox is active they evaluate in the sandboxed
-  Worker instead (`setReferenceGeometry` then returns a Promise).
+  dropped with a Diagnostic Log warning. The engine type list is the one
+  #1109's field-level validator uses (`ENGINE_WORKER_MESSAGE_TYPES`); a unit
+  test pins it to the `type:` literals engineWorker.ts actually posts. In
+  `origin` mode the frame also checks the *sender* of `spawn`/`terminate`
+  against `VITE_APP_ORIGIN`, and its CSP `frame-ancestors` limits who may embed
+  it at all.
+- **No main-thread evaluation.** Since #1109 there is no synchronous
+  main-thread `executeCode`; `exportParamSweep`, `setReferenceGeometry` and
+  voxel paint/export all build in the (sandboxed) Worker.
+  `setReferenceGeometry` is async and drops a result overtaken by a newer
+  set/clear or a session switch.
 - **Early frame load.** `initEngine()` calls `prewarmEngineSandbox()` so the
   frame document + spawner load in parallel with the main thread's own WASM
   init.
@@ -107,8 +140,13 @@ site-wide `/*` headers:
 Cross-Origin-Resource-Policy: cross-origin
 Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval';
   worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none';
-  font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
+  font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'self' <app origin(s)>
 ```
+
+`frame-ancestors 'self'` covers `opaque` mode (the frame's URL origin is the
+app's); `public/_headers` adds the production app hosts for `origin` mode, and
+dev/preview add `VITE_APP_ORIGIN`.
 
 On Cloudflare Pages both CSP headers are delivered and the browser enforces
 **both** (the intersection), which is what we want; the COEP comes from `/*`.
@@ -127,19 +165,26 @@ from a sandboxed iframe. `vite preview` always mirrors the production
 1. **Add a second hostname to the same Cloudflare Pages project**, e.g.
    `sandbox.partwrightstudio.com` (Pages → Custom domains). It serves the
    identical build, so `/sandbox`, `/assets/*` and the wasm are there.
-2. **Build with** `VITE_SANDBOX_ORIGIN=https://sandbox.partwrightstudio.com`
-   (Pages → Settings → Environment variables, Production). Preview
-   deployments without it simply can't select `origin` mode (the option is
-   disabled; `setEngineSandboxMode('origin')` returns an error).
-3. **Allow framing it from the app**: add
+2. **REQUIRED — the sandbox host must not serve the app.** Redirect every
+   path on that host except `/sandbox`, `/assets/*` and `/openscad-libs/*`
+   (and their `/v1/` twins) to the app host, e.g. with absolute-URL rules in
+   `public/_redirects` (`https://sandbox.partwrightstudio.com/* https://www.partwrightstudio.com/:splat 302`
+   placed after explicit pass-through rules for the sandbox paths) or a
+   Cloudflare redirect rule. Otherwise a user who opens the full app on
+   `sandbox.<domain>` saves sessions and **AI keys into the sandbox origin's
+   storage — exactly where `origin`-mode Workers can read them.**
+3. **Build with** `VITE_SANDBOX_ORIGIN=https://sandbox.partwrightstudio.com`
+   and `VITE_APP_ORIGIN=https://www.partwrightstudio.com` (comma-separate
+   several app hosts) — Pages → Settings → Environment variables. The frame
+   refuses spawn requests from any other origin, so a missing
+   `VITE_APP_ORIGIN` makes `origin` mode fail closed. Preview deployments
+   without these simply can't select `origin` mode (the option is disabled;
+   `setEngineSandboxMode('origin')` returns an error).
+4. **Allow framing it from the app**: add
    `frame-src 'self' https://sandbox.partwrightstudio.com` to the `/*`
    `Content-Security-Policy` in `public/_headers` (the dev/preview servers add
-   it automatically from `VITE_SANDBOX_ORIGIN`).
-4. Optional hardening: scope the sandbox host with absolute-URL rules in
-   `_headers` (`https://sandbox.partwrightstudio.com/*`) — e.g. a
-   `frame-ancestors https://www.partwrightstudio.com` on `/sandbox`, and a
-   redirect of every non-`/sandbox`, non-asset path on that host to the app,
-   so the sandbox host isn't a second copy of the app.
+   it automatically from `VITE_SANDBOX_ORIGIN`). The sandbox document's
+   `frame-ancestors` already lists the production app hosts.
 5. Optionally set `VITE_ENGINE_SANDBOX=origin` to make it the default.
 
 Same-site note: `sandbox.partwrightstudio.com` is same-*site* as
@@ -156,15 +201,24 @@ storage anyway).
   `aiKeys` store is unreadable from model code; IndexedDB is refused
   (opaque) or empty/partitioned (origin); `localStorage` is absent; fetches
   to `https://example.com`, a loopback alias of the app host, and (origin
-  mode) the app origin all fail **with a `connect-src` CSP violation**; and
+  mode) the app origin all fail from model code, and the frame's own CSP
+  refuses them **with a `connect-src` violation** (probed in the frame
+  document, since #1109 already removes `fetch` from the Worker realm);
   manifold-js, voxel, SCAD, BREP (api.BREP + replicad), reference geometry
-  and the Assembly worker pool all work. Plus "off by default".
+  and the Assembly worker pool all work. Plus: a dead frame is replaced and
+  model code stays sandboxed; with no restart budget it **fails closed**
+  (runs refused, pill shown) until the explicit bypass; the mode is captured
+  once per tab; off by default.
 - `playwright.config.ts` starts a second dev server on `E2E_SANDBOX_PORT`
-  (default `E2E_PORT + 1`) as the sandbox origin and passes
-  `VITE_SANDBOX_ORIGIN` / `PARTWRIGHT_SANDBOX_DEV_CORS` to both servers (inert
-  while the sandbox is off). Origin-mode tests skip if a reused server lacks
-  the env.
-- `tests/unit/engineSandbox.test.ts` — protocol guards + the setting module.
+  (default `E2E_PORT + 1000`, clear of the parallel-worktree ports) as the
+  sandbox origin, with its own Vite `cacheDir` (`VITE_CACHE_DIR`), and passes
+  `VITE_SANDBOX_ORIGIN` / `VITE_APP_ORIGIN` / `PARTWRIGHT_SANDBOX_DEV_CORS` to
+  both servers (inert while the sandbox is off). Origin-mode tests skip if a
+  reused server lacks the env; opaque-mode tests skip if the server doesn't
+  answer `Origin: null` with CORS.
+- `tests/unit/engineSandbox.test.ts` — protocol guards, the parent-origin
+  check, app/frame constant parity, the Worker message-type list vs
+  engineWorker.ts, and the setting module.
 
 ## Performance
 
@@ -213,7 +267,7 @@ noise. Raw results: `bench-2026-10-24T23-26-54-253Z.json` (not committed).
 | Browser process tree PSS | 1107.6 MB (1088.3–1114.8) | 1117.3 MB (1111.5–1131.2) | 1105.4 MB (1087–1126.6) |
 | Renderer processes | 2 | 3 | 2 |
 | crossOriginIsolated (frame / worker) | n/a (app is COI) | true / true | true / true |
-| Active mode / fallbacks | off / 0 | opaque / 0 | origin / 0 |
+| Active mode / fallbacks¹ | off / 0 | opaque / 0 | origin / 0 |
 
 How to read it:
 
@@ -247,7 +301,9 @@ How to read it:
   attribute workers inside a cross-origin frame (0 MB rows; and the opaque
   frame is excluded from the total entirely), so use the PSS row.
 - **Isolation.** `crossOriginIsolated` was `true` in the frame **and** in its
-  Worker in every sandboxed run; no fallbacks occurred.
+  Worker in every sandboxed run; no fallbacks occurred. (¹ Measured before the
+  fail-closed rework and the #1109 merge; the bench now reports "unavailable"
+  in that row. The hot paths it measures are unchanged.)
 - **Unmeasured:** Firefox, WebKit, real network latency/bandwidth, low-end
   devices, and Chromium configurations where same-site frames get their own
   process (would add the cross-process copy to `origin` too).
@@ -256,12 +312,17 @@ How to read it:
 
 - **Chromium only measured.** Firefox and WebKit are unmeasured; the
   opaque-origin + COI + blob-Worker combination in particular needs checking
-  there (Safari's COI support in sandboxed frames is the main unknown). The
-  fallback keeps the app working if a browser refuses.
+  there (Safari's COI support in sandboxed frames is the main unknown). A
+  browser that refuses gets the fail-closed pill, not a silent downgrade.
 - **coi-serviceworker fallback.** If the deployment's COOP/COEP headers are
   stripped and the app relies on `coi-serviceworker.js`, the sandbox frame is
   not controlled by that service worker (opaque frames never are), so it isn't
-  isolated → the sandbox falls back to off (with the toast).
+  isolated → the sandbox is unavailable (fail closed, pill + bypass).
+- **Crash detection is a heartbeat.** Chromium 141 doesn't fire MessagePort
+  `close` when the frame's renderer dies, so a crash is noticed by ~3 missed
+  liveness pings (default ≈6 s) and in-flight runs fail then. The e2e
+  simulates a crash by removing the iframe (headless Chromium here keeps the
+  opaque frame in the app's renderer, so CDP `Page.crash` kills the page).
 - **`opaque` mode loses HTTP/code-cache reuse** — see the warm-reload rows:
   an opaque origin gets a fresh cache partition per frame instance, so every
   page load re-downloads the engine JS and wasm the Worker needs (~0.8 MB for
@@ -272,12 +333,8 @@ How to read it:
   (no credentials, no storage). It cannot reach IndexedDB, other origins, or
   the AI provider hosts.
 - **Message channel is the remaining boundary.** Model code can post
-  arbitrary messages on its port to the app; they're type-allow-listed here,
-  and field validation in engine.ts (option 1) is the defence in depth.
-- **Not covered:** the OpenSCAD/replicad engines' `init()` on the main thread
-  (no model code runs there), and any future code path that calls the sync
-  `executeCode` — use `executeCodeAsync` (or check `engineSandboxActive()` in
-  main.ts) for anything that evaluates user code.
+  arbitrary messages on its port to the app; they're type-allow-listed here
+  and field-validated by #1109 (`checkEngineWorkerMessage`).
 - **Legal copy.** `src/content/data/legal.ts` still says code is "not inside a
   hardened security sandbox" — accurate while the default is off; revisit it
   when the default flips.

@@ -364,7 +364,7 @@ import {
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
-import { getEngineSandboxStatus, runWithoutEngineSandbox } from './sandbox/sandboxHost';
+import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
 import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
@@ -372,6 +372,14 @@ import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 /** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
  *  reference build that was overtaken never draws its (stale) ghost. */
 let referenceGeometryGen = 0;
+
+/** Set when the most recent runCodeSync was refused by a fail-closed engine
+ *  sandbox, so API callers get that reason instead of the generic (and
+ *  AI-retryable) "superseded". Cleared at the start of every run. */
+let lastRunRejection: string | null = null;
+function runFailedMessage(): string {
+  return lastRunRejection ?? 'Run was superseded by a concurrent execution — retry';
+}
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -7478,7 +7486,7 @@ async function main() {
       return { error: `${why} The code was restored.` };
     };
     setValue(nextCode);
-    if (!(await runCodeSync(nextCode))) return { error: 'Run was superseded by a concurrent execution — retry.' };
+    if (!(await runCodeSync(nextCode))) return { error: runFailedMessage() };
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') return restore(`Deleting ${what} broke the run: ${geo.error ?? 'run error'}.`);
     const after = currentObjectPartsSummary();
@@ -7592,7 +7600,7 @@ async function main() {
     setValue(nextCode);
     if (!(await runCodeSync(nextCode))) {
       setValue(previousCode);
-      return { error: 'Run was superseded by a concurrent execution — retry.' };
+      return { error: runFailedMessage() };
     }
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') {
@@ -12351,7 +12359,7 @@ async function main() {
       }
       setValue(up.code);
       const applied = await runCodeSync(up.code);
-      if (!applied) return { error: 'Run was superseded by a concurrent execution — retry' };
+      if (!applied) return { error: runFailedMessage() };
       const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
       if (geo?.status === 'error') {
         // The edited code doesn't run — put the buffer back the way it was
@@ -12960,7 +12968,7 @@ async function main() {
       // and keep auto-framing (the same-session gate still frames a fresh run).
       const applied = await runCodeSync(src, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
-        return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+        return { status: 'error', error: runFailedMessage() };
       }
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       return { ...geo, printability: computePrintability(geo) };
@@ -13021,7 +13029,7 @@ async function main() {
       // matching the Customizer panel's onChange path (runCode preserves by
       // default). captureCameraToPreserve still auto-frames a session's first run.
       const applied = await runCodeSync(getValue(), { preserveCamera: true });
-      if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+      if (!applied) return { status: 'error', error: runFailedMessage() };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
         geometry,
@@ -15876,7 +15884,7 @@ async function main() {
       setValue(code);
       const applied = await runCodeSync(code, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
-        return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
+        return { passed: false, failures: [runFailedMessage()], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
@@ -16082,7 +16090,7 @@ async function main() {
       setValue(newCode);
       const forkApplied = await runCodeSync(newCode, { preserveCamera: true });
       if (!forkApplied) {
-        return { error: 'Run was superseded by a concurrent execution — retry' };
+        return { error: runFailedMessage() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
@@ -22327,6 +22335,7 @@ async function main() {
     // doesn't flicker an error on every keystroke.
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
+    lastRunRejection = null;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -22388,6 +22397,9 @@ async function main() {
       stopRunTimer();
       hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
+      // Surface the fail-closed sandbox refusal verbatim; other rejections keep
+      // the generic "superseded — retry" text the AI loop treats as transient.
+      lastRunRejection = isEngineSandboxUnavailableError(msg) ? msg : null;
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
       return false;

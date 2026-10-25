@@ -27,7 +27,8 @@ export const STATUS_MESSAGE_TYPE = '__sandbox_status';
 type FrameToParent =
   | { type: 'frame_ready'; coi: boolean; sab: boolean }
   | { type: 'spawn_failed'; id: string; message: string }
-  | { type: 'worker_error'; id: string; message: string };
+  | { type: 'worker_error'; id: string; message: string }
+  | { type: 'pong'; id: string };
 
 /** First message the Worker shim posts on its port, before the engine loads. */
 interface WorkerStatusMessage {
@@ -57,6 +58,9 @@ export function parseFrameMessage(data: unknown): FrameToParent | null {
     case 'frame_ready':
       if (typeof data.coi !== 'boolean' || typeof data.sab !== 'boolean') return null;
       return { type: 'frame_ready', coi: data.coi, sab: data.sab };
+    case 'pong':
+      if (!isId(data.id)) return null;
+      return { type: 'pong', id: data.id };
     case 'spawn_failed':
     case 'worker_error':
       if (!isId(data.id)) return null;
