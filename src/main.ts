@@ -342,6 +342,7 @@ import {
   setPartGroup,
   partSaveState,
   currentPartIsDirty,
+  dataURLToBlob,
   getState,
   setSessionThumbCamera,
   setSessionWorkCamera,
@@ -1710,6 +1711,7 @@ function captureThumbnail(
       elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
       azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
+      thumbnail: true,
     });
   } catch {
     return Promise.resolve(null);
@@ -1722,9 +1724,16 @@ function captureThumbnail(
       clearTimeout(timer);
       resolve(b);
     };
-    // Bound the wait: if toBlob never calls back, resolve null so the caller
-    // (save / snapshot) still completes.
-    const timer = setTimeout(() => finish(null), getConfig().renderer.thumbnailTimeoutMs);
+    // Bound the wait: if toBlob hasn't called back, encode synchronously
+    // instead. Its callback is a task queued behind whatever the main thread
+    // does next — after a big import that can be seconds of mesh upload /
+    // first frames, and resolving null there saved the version with no
+    // thumbnail. A sync PNG encode of the small tile takes milliseconds.
+    const timer = setTimeout(() => {
+      let b: Blob | null = null;
+      try { b = dataURLToBlob(canvas.toDataURL('image/png')); } catch { /* tainted / lost canvas */ }
+      finish(b);
+    }, getConfig().renderer.thumbnailTimeoutMs);
     try {
       canvas.toBlob(b => finish(b), 'image/png');
     } catch {

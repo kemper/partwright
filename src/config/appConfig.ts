@@ -163,11 +163,12 @@ export interface AppConfig {
      *  only when first needed instead of after every run. That rebuild is a
      *  synchronous `Manifold.ofMesh` — ~6 s of frozen UI at 2M triangles. */
     lazyManifoldMinTriangles: number;
-    /** Largest mesh (triangles) drawn as-is in offscreen renders (version
-     *  thumbnails, renderViews). Bigger meshes are drawn from a vertex-
-     *  clustered proxy of about this many triangles: the full mesh costs
-     *  seconds of GPU upload + raster for detail a small image can't show. */
-    previewMaxTriangles: number;
+    /** Largest mesh (triangles) drawn as-is in a version thumbnail. Bigger
+     *  meshes are drawn from a vertex-clustered proxy of about this many
+     *  triangles: the full mesh costs seconds of GPU upload + raster for
+     *  detail a thumbnail can't show. Above the ~500k catalog budget so
+     *  catalog thumbnails stay exact. renderViews etc. are never proxied. */
+    thumbnailMaxTriangles: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -211,7 +212,8 @@ export interface AppConfig {
     offscreenIdleDisposeMs: number;
     /** Pointer activity grace window (ms) that keeps on-demand rendering active. */
     pointerGraceMs: number;
-    /** Max time (ms) to wait for thumbnail generation before giving up. */
+    /** Max time (ms) to wait for the browser's background thumbnail encode
+     *  before encoding it synchronously instead. */
     thumbnailTimeoutMs: number;
     /** Projected triangle count above which the Quality panel's Apply asks for
      *  a Proceed/Cancel confirmation before running an enhance (the result is
@@ -386,6 +388,9 @@ export interface AppConfig {
      *  an idle callback after each run). An idle callback is still one
      *  synchronous task, and the build takes ~1 s at a few million triangles. */
     paintAdjacencyWorkerMinTriangles: number;
+    /** How long (ms) to wait for that Worker before building the graph on the
+     *  main thread instead (a Worker killed for memory may never answer). */
+    paintAdjacencyWorkerTimeoutMs: number;
     /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
      *  tool; the oldest drop past this). */
     maxPendingAppliedNotes: number;
@@ -650,7 +655,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     isolateGhostOpacity: 0.1,
     creaseEdgeMaxTriangles: 200_000,
     lazyManifoldMinTriangles: 250_000,
-    previewMaxTriangles: 400_000,
+    thumbnailMaxTriangles: 600_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -718,6 +723,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   ui: {
     toolDialogOpenWaitMs: 4000,
     paintAdjacencyWorkerMinTriangles: 300_000,
+    paintAdjacencyWorkerTimeoutMs: 60_000,
     maxPendingAppliedNotes: 6,
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,

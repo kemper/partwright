@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { neighborsOf, buildAdjacency } from '../../src/color/adjacency';
+import { buildAdjacency, type AdjacencyGraph } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
+
+/** The triangles adjacent to `t` in the CSR graph. */
+function neighborsOf(adjacency: AdjacencyGraph, t: number): Uint32Array {
+  return adjacency.nbFlat.subarray(adjacency.nbStart[t], adjacency.nbStart[t + 1]);
+}
 
 /** The original Map/Set implementation, kept as the reference the typed-array
  *  rewrite must match (same neighbour sets, any order). */

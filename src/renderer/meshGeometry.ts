@@ -16,22 +16,28 @@ import type { MeshData } from '../geometry/types';
 
 interface IndexedArrays { positions: Float32Array; normals: Float32Array }
 
-/** Per-MeshData cache of indexed positions + vertex normals. Keyed on the
- *  object, so a new run / version (a new MeshData) recomputes and the old
- *  entry is collected with its mesh. Consumers must not write to these
+/** Indexed positions + vertex normals for the last few meshes built — the
+ *  viewport and the thumbnail of one run share them. Bounded (not one entry
+ *  per live MeshData: the part-mesh cache alone holds several big meshes, and
+ *  these arrays add ~24 B per vertex). Consumers must not write to these
  *  arrays (geometry that edits positions — the per-triangle-coloured path —
  *  builds its own). */
 const indexedCache = new WeakMap<MeshData, IndexedArrays>();
+const indexedRecent: MeshData[] = [];
+const INDEXED_CACHE_ENTRIES = 2;
 
 function indexedArrays(mesh: MeshData): IndexedArrays {
   const hit = indexedCache.get(mesh);
   if (hit) return hit;
   const { vertProperties: vp, numProp: np, numVert, triVerts, numTri } = mesh;
-  const positions = new Float32Array(numVert * 3);
-  for (let i = 0; i < numVert; i++) {
-    positions[i * 3] = vp[i * np];
-    positions[i * 3 + 1] = vp[i * np + 1];
-    positions[i * 3 + 2] = vp[i * np + 2];
+  // Packed xyz already: use the mesh's own array (nothing writes to either).
+  const positions = np === 3 && vp.length === numVert * 3 ? vp : new Float32Array(numVert * 3);
+  if (positions !== vp) {
+    for (let i = 0; i < numVert; i++) {
+      positions[i * 3] = vp[i * np];
+      positions[i * 3 + 1] = vp[i * np + 1];
+      positions[i * 3 + 2] = vp[i * np + 2];
+    }
   }
   // Area-weighted vertex normals — the same result as Three's
   // computeVertexNormals: sum each face's unnormalized normal into its
@@ -49,6 +55,8 @@ function indexedArrays(mesh: MeshData): IndexedArrays {
   normalizeInPlace(normals);
   const out = { positions, normals };
   indexedCache.set(mesh, out);
+  indexedRecent.push(mesh);
+  if (indexedRecent.length > INDEXED_CACHE_ENTRIES) indexedCache.delete(indexedRecent.shift()!);
   return out;
 }
 

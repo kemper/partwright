@@ -181,7 +181,8 @@ function checkManifoldFacts(v: unknown, numTri: number | null): void {
     if (!isNonNegInt(p.count) || !(p.pieceOfTri instanceof Int32Array)) fail(`${field}.pieces must be { count, pieceOfTri: Int32Array }`);
     if (numTri !== null && p.pieceOfTri.length !== numTri) fail(`${field}.pieces.pieceOfTri must have one entry per triangle`);
     const count = p.count as number;
-    for (const x of p.pieceOfTri) if (x < -1 || x >= count) fail(`${field}.pieces.pieceOfTri entry out of range`);
+    const pot = p.pieceOfTri;
+    for (let i = 0; i < pot.length; i++) if (pot[i] < -1 || pot[i] >= count) fail(`${field}.pieces.pieceOfTri entry out of range`);
   }
   if (v.edges !== undefined) {
     if (!isPlainObject(v.edges)) fail(`${field}.edges must be { min, mean }`);

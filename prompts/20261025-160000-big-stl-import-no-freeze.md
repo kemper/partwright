@@ -144,3 +144,36 @@ targets a measured stall:
 **Result:** import 45 s → 37 s. Paint opens without a freeze. The remaining
 end-of-import busy time in this headless container is mostly software-GPU
 frame rendering, plus IndexedDB serializing the 67 MB mesh on `put()`.
+
+## Assistant
+
+## Round 2 review follow-ups
+
+- **Edge check was too permissive (blocking).** It approved a double-sided
+  sheet, a shell plus its reversed copy, and non-finite coordinates on the
+  3MF/STEP paths. `ofMesh` cancels reverse-twin triangles (which can leave
+  the mesh empty or open) and rejects non-finite vertices. The check now
+  returns "unsure" for twins, for meshes where every triangle is degenerate,
+  and for any non-finite referenced coordinate. It is cross-checked against
+  manifold-3d on 18 shapes: every "true" agrees, and each disputed case falls
+  back to the exact ofMesh trial.
+- **O(valence²) on fans.** Per-vertex edge lists are now sorted and searched
+  by binary search. A 50k-segment cone takes milliseconds instead of 12 s.
+- **Proxy scope.** Only version thumbnails use the simplified copy
+  (`thumbnail: true` on renderSingleViewCanvas). renderViews, highlights,
+  part renders and runIsolated stay exact. The setting is renamed
+  `renderer.thumbnailMaxTriangles`, default 600k (above the 500k catalog
+  budget).
+- **Geometry cache memory.** The cache is bounded to the last two meshes, and
+  `vertProperties` is used directly when it is already packed xyz.
+- **Paint while preparing.**
+  - Clicks while the graph is pending show a toast.
+  - A Worker that never answers falls back to a main-thread build after
+    `ui.paintAdjacencyWorkerTimeoutMs`.
+  - Results that land after Paint closes are dropped, and `deactivate` clears
+    the pending flag.
+- **Found while taking the proof screenshots (also broken on main):** the
+  user's file was saved with no version thumbnail. The thumbnail's `toBlob`
+  callback queued behind ~8 s of post-import main-thread work, so the 4 s
+  safety timeout won and saved null. On timeout it now encodes synchronously
+  with `toDataURL` (milliseconds for the tile) instead of giving up.

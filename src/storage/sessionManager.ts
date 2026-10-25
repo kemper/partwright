@@ -2116,7 +2116,7 @@ function blobToDataURL(blob: Blob): Promise<string> {
 }
 
 /** Decode a base64 data URL back into a Blob. Returns null on parse failure. */
-function dataURLToBlob(dataUrl: string): Blob | null {
+export function dataURLToBlob(dataUrl: string): Blob | null {
   const match = /^data:([^;,]+)(?:;base64)?,(.*)$/s.exec(dataUrl);
   if (!match) return null;
   const [, mime, payload] = match;

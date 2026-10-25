@@ -188,6 +188,35 @@ describe('isOrientedEdgeManifold', () => {
     expect(isOrientedEdgeManifold(parseSTL(binarySTL([...CUBE, ...shifted]))!)).toBe(true);
   });
 
+  it('rejects what ofMesh cancels or refuses: double-sided sheets, a shell plus its reversed copy, non-finite coordinates', () => {
+    const tri = (verts: number[], tris: number[]) => ({ vertProperties: Float32Array.from(verts), triVerts: Uint32Array.from(tris), numVert: verts.length / 3, numTri: tris.length / 3, numProp: 3 });
+    expect(isOrientedEdgeManifold(tri([0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 1, 2, 0, 2, 1]))).toBe(false);
+    expect(isOrientedEdgeManifold(tri([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]))).toBe(false);
+    const c = cube();
+    const flippedCopy = Uint32Array.from(c.triVerts);
+    for (let t = 0; t < c.numTri; t++) [flippedCopy[t * 3 + 1], flippedCopy[t * 3 + 2]] = [flippedCopy[t * 3 + 2], flippedCopy[t * 3 + 1]];
+    expect(isOrientedEdgeManifold({ ...c, triVerts: new Uint32Array([...c.triVerts, ...flippedCopy]), numTri: c.numTri * 2 })).toBe(false);
+    const nan = cube();
+    nan.vertProperties[4] = NaN;
+    expect(isOrientedEdgeManifold(nan)).toBe(false);
+  });
+
+  it('stays fast on a huge fan (a finely faceted cone)', () => {
+    // apex 0, base centre 1, rim 2..n+1: n side triangles + n cap triangles.
+    const n = 50_000;
+    const verts = [0, 0, 10, 0, 0, 0];
+    for (let i = 0; i < n; i++) verts.push(Math.cos((2 * Math.PI * i) / n), Math.sin((2 * Math.PI * i) / n), 0);
+    const tris: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = 2 + i, b = 2 + ((i + 1) % n);
+      tris.push(0, a, b, 1, b, a);
+    }
+    const m = { vertProperties: Float32Array.from(verts), triVerts: Uint32Array.from(tris), numVert: verts.length / 3, numTri: tris.length / 3, numProp: 3 };
+    const t0 = performance.now();
+    expect(isOrientedEdgeManifold(m)).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(1500);
+  });
+
   it('accepts two disjoint closed solids', () => {
     const shifted = CUBE.map(t => t.map(([x, y, z]) => [x + 30, y, z] as V));
     expect(isOrientedEdgeManifold(parseSTL(binarySTL([...CUBE, ...shifted]))!)).toBe(true);

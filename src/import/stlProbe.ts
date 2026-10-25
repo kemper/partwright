@@ -77,25 +77,63 @@ export function probeSTL(bytes: Uint8Array, opts: STLProbeOptions): STLProbeResu
   return { mesh: bestMesh, isManifold: false, manifoldError, maxTried, triCount: probe.numTri, vertCount: probe.numVert };
 }
 
-/** True when every directed edge a→b of the mesh occurs exactly as often as
- *  its reverse b→a — each edge's triangles pair up with opposite orientation.
- *  That is the property `Manifold.ofMesh` checks: it pairs each halfedge with
- *  an opposite one and fails "Not manifold" when one is left over (a pinched
- *  edge shared by two pairs of faces is fine — real sculpts have them). A
- *  welded mesh can't trip its other checks (out-of-range indices, non-finite
- *  coordinates), so a mesh that passes here is accepted there, at a fraction
- *  of the cost (a CSR pass, ~0.2 s, vs. ~10 s of halfedge build + sort at
- *  3.7M triangles). A mesh that fails still gets the exact ofMesh trial. */
-export function isOrientedEdgeManifold(mesh: Pick<MeshData, 'triVerts' | 'numTri' | 'numVert'>): boolean {
-  const { triVerts, numTri, numVert } = mesh;
+/** A cheap stand-in for "would `Manifold.ofMesh` accept this mesh?" that
+ *  settles the common clean case without the multi-second ofMesh (~10 s at
+ *  3.7M triangles). It is deliberately conservative: when it says true, ofMesh
+ *  accepts the mesh; when unsure it says false, and callers then run the exact
+ *  ofMesh trial. True requires all of:
+ *  - every referenced coordinate is finite (ofMesh: "Non-finite vertex");
+ *  - at least one non-degenerate triangle;
+ *  - no triangle has a reverse twin (same three vertices, opposite winding) —
+ *    ofMesh cancels such pairs, which can leave a mesh empty or open;
+ *  - every directed edge a→b occurs exactly as often as b→a — the halfedge
+ *    pairing ofMesh enforces ("Not manifold" otherwise). Pinched edges (two
+ *    pairs of faces on one edge, common in sculpts) pass, as in ofMesh.
+ *  Cross-checked against manifold-3d on clean, pinched, open, doubled and
+ *  non-finite meshes (tests/unit/stlProbe.test.ts). O(E log valence). */
+export function isOrientedEdgeManifold(mesh: Pick<MeshData, 'triVerts' | 'numTri' | 'numVert' | 'vertProperties' | 'numProp'>): boolean {
+  const { triVerts, numTri, numVert, vertProperties: vp, numProp: np } = mesh;
   if (numTri === 0) return false;
-  // Outgoing directed edges per vertex, as CSR.
-  const start = new Uint32Array(numVert + 1);
-  for (let i = 0; i < numTri * 3; i++) {
-    const v = triVerts[i];
-    if (v >= numVert) return false;
-    start[v + 1]++;
+  for (let i = 0; i < numTri * 3; i++) if (triVerts[i] >= numVert) return false;
+  for (let v = 0; v < numVert; v++) {
+    if (!Number.isFinite(vp[v * np]) || !Number.isFinite(vp[v * np + 1]) || !Number.isFinite(vp[v * np + 2])) return false;
   }
+
+  // Reverse twins: group triangles by their smallest vertex, key each by its
+  // other two vertices (sorted) plus winding parity, sort, and look for equal
+  // keys of opposite parity side by side.
+  const byMin = new Uint32Array(numVert + 1);
+  let nonDegenerate = 0;
+  for (let t = 0; t < numTri; t++) {
+    const a = triVerts[t * 3], b = triVerts[t * 3 + 1], c = triVerts[t * 3 + 2];
+    if (a !== b && b !== c && a !== c) nonDegenerate++;
+    byMin[Math.min(a, b, c) + 1]++;
+  }
+  if (nonDegenerate === 0) return false;
+  for (let v = 0; v < numVert; v++) byMin[v + 1] += byMin[v];
+  const keys = new Float64Array(numTri);
+  const fill = byMin.slice(0, numVert);
+  for (let t = 0; t < numTri; t++) {
+    const a = triVerts[t * 3], b = triVerts[t * 3 + 1], c = triVerts[t * 3 + 2];
+    // Rotate so the smallest vertex leads; the winding is then (lo, x, y).
+    const [lo, x, y] = a <= b && a <= c ? [a, b, c] : b <= c ? [b, c, a] : [c, a, b];
+    const parity = x < y ? 0 : 1;
+    keys[fill[lo]++] = (Math.min(x, y) * numVert + Math.max(x, y)) * 2 + parity;
+  }
+  for (let v = 0; v < numVert; v++) {
+    const lo = byMin[v], hi = byMin[v + 1];
+    if (hi - lo < 2) continue;
+    const group = keys.subarray(lo, hi).sort();
+    for (let i = 1; i < group.length; i++) {
+      // Same vertex pair (key >> 1), different parity (key & 1) → twins.
+      if (Math.floor(group[i] / 2) === Math.floor(group[i - 1] / 2) && group[i] !== group[i - 1]) return false;
+    }
+  }
+
+  // Edge pairing: outgoing edges per vertex as CSR, each list sorted so the
+  // forward run and the reverse count are both binary searches.
+  const start = new Uint32Array(numVert + 1);
+  for (let i = 0; i < numTri * 3; i++) start[triVerts[i] + 1]++;
   for (let v = 0; v < numVert; v++) start[v + 1] += start[v];
   const to = new Uint32Array(numTri * 3);
   const cursor = start.slice(0, numVert);
@@ -105,14 +143,22 @@ export function isOrientedEdgeManifold(mesh: Pick<MeshData, 'triVerts' | 'numTri
     to[cursor[b]++] = c;
     to[cursor[c]++] = a;
   }
+  for (let v = 0; v < numVert; v++) if (start[v + 1] - start[v] > 1) to.subarray(start[v], start[v + 1]).sort();
+  const countIn = (lo: number, hi: number, x: number): number => {
+    let l = lo, h = hi;
+    while (l < h) { const m = (l + h) >> 1; if (to[m] < x) l = m + 1; else h = m; }
+    let r = l;
+    while (r < hi && to[r] === x) r++;
+    return r - l;
+  };
   for (let a = 0; a < numVert; a++) {
-    for (let i = start[a]; i < start[a + 1]; i++) {
+    const end = start[a + 1];
+    for (let i = start[a]; i < end;) {
       const b = to[i];
-      let forward = 0;
-      for (let j = start[a]; j < start[a + 1]; j++) if (to[j] === b) forward++;
-      let back = 0;
-      for (let j = start[b]; j < start[b + 1]; j++) if (to[j] === a) back++;
-      if (forward !== back) return false;
+      let j = i + 1;
+      while (j < end && to[j] === b) j++;
+      if (countIn(start[b], start[b + 1], a) !== j - i) return false;
+      i = j;
     }
   }
   return true;

@@ -4,7 +4,7 @@ import type { MeshData } from '../geometry/types';
 
 export interface AdjacencyGraph {
   /** Adjacent triangles as CSR: the neighbours of triangle t are
-   *  `nbFlat[nbStart[t] .. nbStart[t + 1])` (see `neighborsOf`). Flat on
+   *  `nbFlat[nbStart[t] .. nbStart[t + 1])`. Flat on
    *  purpose — one typed-array view per triangle cost ~2 s to allocate at
    *  3.7M triangles, more than building the graph itself. */
   nbStart: Uint32Array;
@@ -14,11 +14,6 @@ export interface AdjacencyGraph {
   /** Triangle centroids — 3 floats per triangle (cx, cy, cz). Used by the
    *  brush tool's radius expansion (sphere query against centroids). */
   centroids: Float32Array;
-}
-
-/** The triangles adjacent to `t` (a view — don't mutate). */
-export function neighborsOf(adjacency: AdjacencyGraph, t: number): Uint32Array {
-  return adjacency.nbFlat.subarray(adjacency.nbStart[t], adjacency.nbStart[t + 1]);
 }
 
 /** Build a triangle adjacency graph from mesh data.

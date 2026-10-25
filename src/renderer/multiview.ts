@@ -49,9 +49,7 @@ const VIEWS: ViewConfig[] = [
   { name: 'Under Back-Right',  position: (d) => [d, d, -d],    up: [0, 0, 1] },
 ];
 
-function meshDataToGeometry(full: MeshData): THREE.BufferGeometry {
-  // Offscreen renders are small: draw a huge mesh from a lighter proxy.
-  const meshData = previewProxy(full, getConfig().renderer.previewMaxTriangles);
+function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
   // Unpainted base is light gray, NOT pure white, so the mesh silhouette is
   // visible against the white render background. Pure white made unpainted
   // parts of a model invisible against the bg — only the painted patches
@@ -383,10 +381,14 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   size?: number;
   edges?: EdgeMode;
   frame?: { min: [number, number, number]; max: [number, number, number] };
+  /** Draw a mesh over `renderer.thumbnailMaxTriangles` from a simplified
+   *  proxy (see previewProxy.ts). For version thumbnails only — renders an
+   *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
+  thumbnail?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
-  const geometry = meshDataToGeometry(meshData);
+  const geometry = meshDataToGeometry(options.thumbnail ? previewProxy(meshData, getConfig().renderer.thumbnailMaxTriangles) : meshData);
   const scene = createElevationScene(geometry, 0xffffff, options.edges);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
