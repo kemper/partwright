@@ -19,6 +19,9 @@ import {
   type RunStatus,
 } from '../diagnostics/workerStats';
 import { isFatalWasmFault } from './workerFaults';
+import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { VoxelGrid } from './voxel/grid';
+import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 import { formatEngineMemory, isEngineHeapHigh } from './engineMemory';
 import { sourceUsesBrep } from './brepRuntime';
 
@@ -67,29 +70,9 @@ function pickLang(lang?: Language): Language {
   return activeLanguage;
 }
 
-/** Synchronous execution — works for manifold-js only, stays on the main
- *  thread. Use for cases that need the live Manifold object immediately
- *  (e.g. phantom/reference geometry that inspects volume/bbox inline).
- *  For all other code execution use executeCodeAsync(). */
-export function executeCode(source: string, lang?: Language, paramOverrides?: Record<string, unknown>): MeshResult {
-  const l = pickLang(lang);
-  if (l === 'scad' || l === 'replicad') {
-    return {
-      mesh: null,
-      manifold: null,
-      error: `${l === 'scad' ? 'OpenSCAD' : 'BREP/replicad'} requires async execution — use executeCodeAsync() instead.`,
-    };
-  }
-  const engine = engines[l];
-  if (!engine.isReady()) {
-    return {
-      mesh: null,
-      manifold: null,
-      error: `${engine.id} engine not initialized yet — try again after loading completes.`,
-    };
-  }
-  return engine.run(source, paramOverrides);
-}
+// NB: there is deliberately no synchronous, main-thread `executeCode`. Model
+// code only ever runs in the sandboxed engine Worker (#1090) — use
+// executeCodeAsync(). The engine `run()` entry points throw in a document realm.
 
 // ── Geometry Worker client ──────────────────────────────────────────────────
 
@@ -111,6 +94,7 @@ let workerHoldsBrepShape = false;
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language; usesBrep?: boolean } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
+const pendingVoxelGrids  = new Map<string, { resolve: (r: { ok: true; grid: VoxelGrid } | { ok: false; error: string }) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
@@ -134,6 +118,7 @@ function geometryInFlight(): number {
     pendingExecutions.size +
     pendingValidations.size +
     pendingDetections.size +
+    pendingVoxelGrids.size +
     pendingStepExports.size +
     pendingStepBrepImports.size +
     pendingStepMeshImports.size +
@@ -196,6 +181,7 @@ function rejectAllPending(err: Error): void {
   }
   for (const p of pendingValidations.values()) p.reject(err);
   for (const p of pendingDetections.values()) p.reject(err);
+  for (const p of pendingVoxelGrids.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
   for (const p of pendingStepBrepImports.values()) p.reject(err);
   for (const p of pendingStepMeshImports.values()) p.reject(err);
@@ -206,6 +192,7 @@ function rejectAllPending(err: Error): void {
   pendingExecutions.clear();
   pendingValidations.clear();
   pendingDetections.clear();
+  pendingVoxelGrids.clear();
   pendingStepExports.clear();
   pendingStepBrepImports.clear();
   pendingStepMeshImports.clear();
@@ -258,7 +245,7 @@ export function cancelCurrentExecution(): void {
  *  state half-mutated, after which every subsequent call into the same instance
  *  faults instantly; recycling here is the only reliable recovery short of a
  *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
-function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): void {
+function recycleEngineWorker(reason: string, level: 'warn' | 'info' | 'debug' = 'warn'): void {
   // The routine high-heap reset ('info') is a clean stop, not a crash: it must
   // not climb the restart counter the worker-health panel reads as a crash loop.
   rejectAllPending(new Error(reason));
@@ -271,11 +258,76 @@ function recycleEngineWorker(reason: string, level: 'warn' | 'info' = 'warn'): v
   // make visible — so it bumps the restart counter like any other teardown.
   // Recovery, not a crash — warn rather than error, so it doesn't read as a
   // second hard failure to the user.
-  if (level === 'info') markWorkerStopped('geometry');
-  else markWorkerRestarted('geometry', reason);
-  errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
+  // 'debug' (session isolation) is routine on every session switch: a clean
+  // stop for the health panel and a devtools breadcrumb, no Diagnostic Log entry.
+  if (level === 'warn') markWorkerRestarted('geometry', reason);
+  else markWorkerStopped('geometry');
+  if (level !== 'debug') errorLog.capture({ level, source: 'engine', message: `Geometry worker recycled: ${reason}` });
   // eslint-disable-next-line no-console
   console.debug('[EngineWorker]', reason);
+}
+
+// ── Cross-session isolation ─────────────────────────────────────────────────
+// Model code shares the Worker realm with every later run in the same Worker,
+// so code from one session could patch built-ins or listen to `message` to
+// observe — or forge results for — another session's runs. main.ts sets the
+// active trust domain (the open session) in `trustDomain.ts`; every request
+// claims the Worker for a domain first: a Worker tagged with a DIFFERENT domain
+// is terminated and a fresh one boots, and the Worker is tagged with the
+// request's domain (it now holds that domain's code or data). Lazy: a session
+// switch costs nothing until the next request.
+let workerDomain: string | null = null;
+
+const STALE_DOMAIN_ERROR = 'Execution cancelled — the session changed before this request ran';
+/** Reason for the session-isolation recycle. Must read as a CANCEL (matched by
+ *  /cancel/i in rejectAllPending and the run paths) — an in-flight run of the
+ *  previous session is superseded, not failed. */
+const SESSION_ISOLATION_REASON = 'Execution cancelled — isolating sessions: fresh geometry worker for the newly opened session';
+
+interface WorkerClaim { worker: Worker; domain: string }
+
+/** Claim the engine Worker for `domain` (default: the active domain),
+ *  recycling a Worker that belongs to another domain and booting one if
+ *  needed. A caller that captured model code under an earlier domain passes
+ *  that domain explicitly; if the session has moved on, the request is
+ *  refused rather than run in the new session's Worker. */
+function claimEngineWorker(domain: string = getEngineTrustDomain()): WorkerClaim {
+  if (domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
+  if (engineWorker && workerDomain !== null && workerDomain !== domain) {
+    recycleEngineWorker(SESSION_ISOLATION_REASON, 'debug');
+  }
+  initEngineWorker();
+  workerDomain = domain;
+  return { worker: engineWorker!, domain };
+}
+
+// Pre-warm on a session switch: retire the old domain's Worker and start the
+// fresh one booting right away (~0.2 s of WASM init), so the new session's
+// first run — usually issued a moment later — doesn't pay the boot on its
+// critical path. The fresh Worker stays untagged until a request claims it.
+onEngineTrustDomainChange((domain) => {
+  if (engineWorker && workerDomain !== null && workerDomain !== domain) {
+    recycleEngineWorker(SESSION_ISOLATION_REASON, 'debug');
+    initEngineWorker();
+  }
+});
+
+/** Claim the Worker, then wait for it to be ready. */
+async function claimAndWait(domain?: string): Promise<WorkerClaim> {
+  const claim = claimEngineWorker(domain);
+  await workerReady;
+  return claim;
+}
+
+/** After awaiting `workerReady`, confirm the claimed Worker is still the live
+ *  one and still tagged with the claim's domain — a recycle or session switch
+ *  during the await must not let this request land in a different realm. */
+function ensureClaim(claim: WorkerClaim): Worker {
+  if (claim.domain !== getEngineTrustDomain()) throw new Error(STALE_DOMAIN_ERROR);
+  if (engineWorker !== claim.worker || workerDomain !== claim.domain) {
+    throw new Error('Execution cancelled — the geometry worker restarted before this request ran');
+  }
+  return claim.worker;
 }
 
 /** After a run that left the heap above the high-memory threshold, swap in a
@@ -296,6 +348,8 @@ function maybeResetHighHeapWorker(heapBytes: number | undefined, usesBrep: boole
 
 function initEngineWorker(): void {
   if (engineWorker) return;
+  // A brand-new Worker has run nobody's model code yet.
+  workerDomain = null;
   // A fresh Worker starts with none of the old one's BREP state.
   workerHoldsBrepImports = false;
   workerHoldsBrepShape = false;
@@ -326,8 +380,36 @@ function initEngineWorker(): void {
   engineWorker.postMessage({ type: 'init' });
 }
 
+/** The engine Worker runs untrusted model code, which can post its own
+ *  messages or tamper with the Worker's plumbing. A message that fails
+ *  validation never reaches the handlers below: the matching request fails
+ *  with a clear error and the Worker is recycled (its realm can no longer be
+ *  trusted). A malformed *preview* is just dropped — the full result follows. */
+function handleMalformedWorkerMessage(reason: string, callId: string | null, type: string | null): void {
+  const message = `Geometry worker sent a malformed${type ? ` ${type}` : ''} message (${reason})`;
+  if (type === 'execute_preview') {
+    errorLog.capture({ level: 'warn', source: 'engine', message });
+    return;
+  }
+  if (callId) {
+    const exec = pendingExecutions.get(callId);
+    if (exec) {
+      pendingExecutions.delete(callId);
+      recordGeometryRun(exec.meta, 'error', undefined, message);
+      exec.resolve({ mesh: null, manifold: null, error: message });
+    }
+  }
+  // recycleEngineWorker logs the teardown and rejects everything else in flight.
+  recycleEngineWorker(message);
+}
+
 function handleEngineWorkerMessage(event: MessageEvent): void {
-  const msg = event.data as { type: string } & Record<string, unknown>;
+  const check = checkEngineWorkerMessage(event.data);
+  if (!check.ok) {
+    handleMalformedWorkerMessage(check.reason, check.callId, check.type);
+    return;
+  }
+  const msg = check.msg;
 
   if (msg.type === 'ready') {
     workerReadyResolve?.();
@@ -403,13 +485,16 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       materialSpec: msg.materialSpec ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
-      paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
+      // The validator's normalized schema (re-run through normalizeParamSchema),
+      // never the Worker's raw array.
+      paramsSchema: check.paramsSchema,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
       voxelPieceCount: msg.voxelPieceCount as number | undefined,
       voxelRes: msg.voxelRes as number | undefined,
       voxelResMixed: msg.voxelResMixed as boolean | undefined,
       sdfLabelCounts: msg.sdfLabelCounts as Record<string, number> | undefined,
+      voxelGrid: msg.voxelGrid ?? undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
@@ -430,6 +515,26 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     if (!pending) return;
     pendingValidations.delete(callId);
     pending.resolve(msg.result as ValidateResult);
+    return;
+  }
+
+  if (msg.type === 'voxel_grid_result') {
+    const callId = msg.callId as string;
+    const pending = pendingVoxelGrids.get(callId);
+    if (!pending) return;
+    pendingVoxelGrids.delete(callId);
+    if (typeof msg.error === 'string' || !msg.grid) {
+      pending.resolve({ ok: false, error: (msg.error as string | null) ?? 'No voxel grid produced.' });
+      return;
+    }
+    try {
+      pending.resolve({ ok: true, grid: VoxelGrid.fromTransfer(msg.grid) });
+    } catch (e) {
+      // Malformed grid data from the (untrusted) Worker — fail and recycle.
+      const reason = e instanceof Error ? e.message : String(e);
+      pending.resolve({ ok: false, error: `Geometry worker sent a malformed voxel grid (${reason})` });
+      recycleEngineWorker(`Geometry worker sent a malformed voxel grid (${reason})`);
+    }
     return;
   }
 
@@ -578,6 +683,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingValidations.delete(callId ?? '');
       pendingDetections.get(callId)?.reject(err);
       pendingDetections.delete(callId ?? '');
+      pendingVoxelGrids.get(callId)?.reject(err);
+      pendingVoxelGrids.delete(callId ?? '');
       pendingStepExports.get(callId)?.reject(err);
       pendingStepExports.delete(callId ?? '');
       pendingStepBrepImports.get(callId)?.reject(err);
@@ -614,12 +721,14 @@ export async function executeCodeAsync(
   onPreview?: (result: MeshResult) => void,
   explicitImports?: ImportedMesh[],
   explicitCompanions?: Record<string, string>,
+  /** `domain`: the trust domain the caller captured `source` under (loops
+   *  that capture code and then await). Refused if the session has changed. */
+  opts?: { domain?: string },
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
   // Ensure the Worker is booted.
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait(opts?.domain));
 
   const callId = `exec-${++callIdCounter}`;
 
@@ -650,7 +759,24 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+  });
+}
+
+/** Evaluate voxel model code in the sandboxed engine Worker and return the
+ *  resulting grid, rebuilt on this thread from validated DATA. Used by Voxel
+ *  Studio when no up-to-date grid from the last render is cached. Never
+ *  rejects for model errors (`{ ok: false, error }`); rejects only when the
+ *  Worker is torn down mid-request. */
+export async function runVoxelGridInWorker(
+  code: string,
+  params?: Record<string, unknown>,
+): Promise<{ ok: true; grid: VoxelGrid } | { ok: false; error: string }> {
+  const worker = ensureClaim(await claimAndWait());
+  const callId = `voxgrid-${++callIdCounter}`;
+  return new Promise((resolve, reject) => {
+    pendingVoxelGrids.set(callId, { resolve, reject });
+    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
   });
 }
 
@@ -684,8 +810,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
   const l = pickLang(lang);
   if (l === 'scad') {
     // Route SCAD through the Worker so its Emscripten init doesn't block.
-    initEngineWorker();
-    await workerReady;
+    const worker = ensureClaim(await claimAndWait());
     const callId = `val-${++callIdCounter}`;
     const timeoutMs = getWorkerOpTimeoutMs('scad');
     return new Promise<ValidateResult>((resolve, reject) => {
@@ -702,7 +827,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
         resolve: (r) => { clearTimeout(timer); resolve(r); },
         reject:  (e) => { clearTimeout(timer); reject(e); },
       });
-      engineWorker!.postMessage({ type: 'validate', callId, code: source, lang: l });
+      worker.postMessage({ type: 'validate', callId, code: source, lang: l });
     });
   }
   return validateCode(source, l);
@@ -715,9 +840,9 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
  *  resolves to `null`, which the caller reads as "couldn't determine" and falls
  *  back to its static regex candidates — distinct from an empty result. */
 export async function detectScadIncludesAsync(source: string): Promise<string[] | null> {
-  initEngineWorker();
+  let worker: Worker;
   try {
-    await workerReady;
+    worker = ensureClaim(await claimAndWait());
   } catch {
     return null;
   }
@@ -735,7 +860,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
       // Worker restart / hard error → "couldn't determine".
       reject: () => { clearTimeout(timer); resolve(null); },
     });
-    engineWorker!.postMessage({ type: 'detect_includes', callId, code: source });
+    worker.postMessage({ type: 'detect_includes', callId, code: source });
   });
 }
 
@@ -745,8 +870,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
  *  message rather than treating it as a hard error. Any *real* failure
  *  (worker dead, OCCT threw) rejects. */
 export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `step-${++callIdCounter}`;
   return new Promise<Blob | null>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -758,7 +882,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       resolve: (b) => { clearTimeout(timer); resolve(b); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'exportSTEP', callId });
+    worker.postMessage({ type: 'exportSTEP', callId });
   });
 }
 
@@ -772,8 +896,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
   // `await workerReady` and the postMessage, or a Worker reset in that gap
   // (e.g. the high-heap reset after a run) leaves `engineWorker` null.
   const bytes = await blob.arrayBuffer();
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `stepin-brep-${++callIdCounter}`;
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -785,7 +908,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
       resolve: (n) => { clearTimeout(timer); resolve(n); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
+    worker.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
   });
 }
 
@@ -796,8 +919,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
 export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
   // File read first — see importSTEPToBrep.
   const bytes = await blob.arrayBuffer();
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `stepin-mesh-${++callIdCounter}`;
   return new Promise<MeshData>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -809,15 +931,14 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
       resolve: (m) => { clearTimeout(timer); resolve(m); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
+    worker.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
   });
 }
 
 /** Drop any pending BREP imports. Called when the user opens a different
  *  session or clears them explicitly. */
 export async function clearBrepImports(): Promise<void> {
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `clearbrepin-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -829,7 +950,7 @@ export async function clearBrepImports(): Promise<void> {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'clearBrepImports', callId });
+    worker.postMessage({ type: 'clearBrepImports', callId });
   });
 }
 
@@ -838,8 +959,7 @@ export async function clearBrepImports(): Promise<void> {
  *  switching the active language away from replicad, so a later exportSTEP
  *  can't return a stale shape that belongs to a different session. */
 export async function clearBrepShape(): Promise<void> {
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `clearbrepshape-${++callIdCounter}`;
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -851,7 +971,7 @@ export async function clearBrepShape(): Promise<void> {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'clearBrepShape', callId });
+    worker.postMessage({ type: 'clearBrepShape', callId });
   });
 }
 
@@ -891,8 +1011,7 @@ export async function simplifyInWorker(
   directTolerance?: number,
 ): Promise<SimplifyWorkerResult | null> {
   if (signal?.aborted) throw new SimplifyAbortError();
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `simplify-${++callIdCounter}`;
 
   return new Promise<SimplifyWorkerResult | null>((resolve, reject) => {
@@ -914,7 +1033,7 @@ export async function simplifyInWorker(
         // next iteration boundary and resolves the pending promise with
         // cancelled=true (which surfaces as `null` here, not a reject — the
         // caller treats the cancel like a no-op reduction).
-        engineWorker?.postMessage({ type: 'simplify_cancel', callId });
+        worker.postMessage({ type: 'simplify_cancel', callId });
         // Eagerly reject with AbortError so the caller can distinguish
         // user-cancel from "no reduction possible" — we still clean up the
         // worker-side flag via the eventual simplify_result that arrives.
@@ -935,7 +1054,7 @@ export async function simplifyInWorker(
       numProp: mesh.numProp,
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
-    engineWorker!.postMessage(
+    worker.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
         ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
@@ -979,8 +1098,7 @@ export async function enhanceInWorker(
   directEdgeLength?: number,
 ): Promise<EnhanceWorkerResult | null> {
   if (signal?.aborted) throw new EnhanceAbortError();
-  initEngineWorker();
-  await workerReady;
+  const worker = ensureClaim(await claimAndWait());
   const callId = `enhance-${++callIdCounter}`;
 
   return new Promise<EnhanceWorkerResult | null>((resolve, reject) => {
@@ -998,7 +1116,7 @@ export async function enhanceInWorker(
     });
     if (signal) {
       abortListener = () => {
-        engineWorker?.postMessage({ type: 'enhance_cancel', callId });
+        worker.postMessage({ type: 'enhance_cancel', callId });
         const pending = pendingEnhances.get(callId);
         if (pending) {
           pendingEnhances.delete(callId);
@@ -1019,7 +1137,7 @@ export async function enhanceInWorker(
     // override) and pass it through — the Worker's own getConfig only sees
     // static defaults.
     const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
-    engineWorker!.postMessage(
+    worker.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,

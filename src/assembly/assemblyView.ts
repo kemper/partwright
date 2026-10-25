@@ -22,6 +22,7 @@ import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
 import { pruneParamValues } from '../geometry/params';
 import type { ImportedMesh } from '../import/importedMesh';
 import { buildInPool, disposeEnginePool } from '../geometry/enginePool';
+import { getEngineTrustDomain } from '../geometry/trustDomain';
 import {
   enterAssemblyMode, exitAssemblyMode, setAssemblyPart, moveAssemblyPart, frameAssembly, refreshAssemblyBounds,
 } from '../renderer/viewport';
@@ -77,6 +78,10 @@ const baseline = new Map<string, ParamValues>();
 let framedOnce = false;
 /** Bumped on each open so a stale async build from a previous session is dropped. */
 let generation = 0;
+/** Trust domain (session) the open view's parts belong to (#1090): builds
+ *  dispatched after a session switch are refused instead of running this
+ *  session's code in the next session's pool. */
+let viewDomain = '';
 
 export function isAssemblyViewOpen(): boolean {
   return open;
@@ -107,6 +112,7 @@ export async function openAssemblyView(h: AssemblyHost): Promise<void> {
   host = h;
   framedOnce = false;
   const gen = ++generation;
+  viewDomain = getEngineTrustDomain();
 
   enterAssemblyMode();
 
@@ -169,6 +175,7 @@ async function buildPart(rec: PartRecord): Promise<void> {
     const res = await buildInPool({
       code: rec.code, lang: rec.lang, params: rec.values,
       imports: rec.imports, companionFiles: rec.companionFiles,
+      domain: viewDomain,
     });
     if (gen !== generation || rec.buildSeq !== seq) return; // superseded
     if (res.mesh) onPartBuilt(gen, rec, res.mesh, res.paramsSchema);

@@ -456,10 +456,13 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
 // (or) partwright.deactivateVoxelPaint() to cancel without saving
 ```
 
-- `activateVoxelPaint()` re-runs the current code locally to capture the grid
-  + per-triangle voxel/normal provenance. Works on smooth-surfaced grids too
-  (editing happens on the blocky preview; the rounding is preserved). Returns
-  `{ error }` outside voxel sessions or if the code doesn't return a grid.
+- `activateVoxelPaint()` captures the grid from the last render of the current
+  code (model code only runs in the sandboxed engine Worker, so **run the model
+  first** after editing — e.g. `await partwright.run(code)`) plus per-triangle
+  voxel/normal provenance. Works on smooth-surfaced grids too (editing happens
+  on the blocky preview; the rounding is preserved). Returns `{ error }` outside
+  voxel sessions, when the code hasn't been run since it changed, or if it
+  doesn't return a grid. `exportVOX`/`exportVOXData` use the same last-render grid.
 - `setVoxelTool(tool)` — `'view' | 'paint' | 'add' | 'remove' | 'bucket' |
   'level' | 'boxAdd' | 'boxRemove'`. `'view'` is the non-editing default (orbit +
   rounded preview); the rest edit (and render blocks). Returns `{ tool }` or `{ error }`.

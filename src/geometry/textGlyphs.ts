@@ -12,6 +12,7 @@
 
 import type { Font } from 'opentype.js';
 import { assetPath } from '../deployment';
+import { fetchAppAsset } from './workerLockdown';
 
 type Vec2 = [number, number];
 
@@ -24,6 +25,12 @@ const FONT_FILES: Record<FontVariant, string> = {
   'bold-italic': 'LiberationSans-BoldItalic.ttf',
 };
 const FONTS_PREFIX = assetPath('/openscad-libs/fonts');
+// Variant list + full URLs fixed at module load, before any model code runs in
+// this Worker, and iterated with plain loops — so code that patched
+// Object.keys / Array.prototype.map can't steer what gets fetched (#1090).
+const FONT_VARIANTS: readonly FontVariant[] = Object.freeze(['regular', 'bold', 'italic', 'bold-italic'] as FontVariant[]);
+const FONT_URLS: readonly string[] = Object.freeze(FONT_VARIANTS.map(v => `${FONTS_PREFIX}/${FONT_FILES[v]}`));
+const promiseAll = Promise.all.bind(Promise) as (values: Promise<unknown>[]) => Promise<unknown[]>;
 
 const fontCache = new Map<FontVariant, Font>();
 let loadPromise: Promise<void> | null = null;
@@ -41,15 +48,21 @@ export function sourceUsesManifoldText(code: string): boolean {
 export async function preloadTextFonts(): Promise<void> {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
-    const variants = Object.keys(FONT_FILES) as FontVariant[];
-    const [opentypeMod, ...buffers] = await Promise.all([
-      import('opentype.js'),
-      ...variants.map(async (v) => {
-        const r = await fetch(`${FONTS_PREFIX}/${FONT_FILES[v]}`);
+    const variants = FONT_VARIANTS;
+    const loads: Promise<unknown>[] = [import('opentype.js')];
+    for (let i = 0; i < variants.length; i++) {
+      const v = variants[i];
+      const url = FONT_URLS[i];
+      loads[loads.length] = (async () => {
+        const r = await fetchAppAsset(url);
         if (!r.ok) throw new Error(`api.text: failed to fetch font "${v}": ${r.status}`);
         return r.arrayBuffer();
-      }),
-    ]);
+      })();
+    }
+    const settled = await promiseAll(loads);
+    const opentypeMod = settled[0] as typeof import('opentype.js');
+    const buffers: ArrayBuffer[] = [];
+    for (let i = 1; i < settled.length; i++) buffers[buffers.length] = settled[i] as ArrayBuffer;
     // Vite's browser interop puts parse on the namespace; Node SSR keeps the
     // CJS module on `.default`. Accept either so headless preview works too.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

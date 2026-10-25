@@ -21,6 +21,9 @@ import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
 import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
+import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { errorLog } from '../diagnostics/errorLog';
+import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
 
 export interface PoolBuildRequest {
   code: string;
@@ -35,6 +38,11 @@ export interface PoolBuildRequest {
    *  part actually starts meshing, as opposed to waiting behind others). Lets a
    *  per-part progress UI flip a row from "queued" to "rendering". */
   onStart?: () => void;
+  /** The trust domain (session) the caller captured `code` under — see
+   *  trustDomain.ts. Defaults to the active domain. A build whose domain is no
+   *  longer active is refused, so a flow that outlives a session switch can't
+   *  respawn the pool and run the old session's code next to the new one's. */
+  domain?: string;
 }
 
 export interface PoolBuildResult {
@@ -142,7 +150,18 @@ function ensureWorkers(): void {
   while (workers.length < n) workers.push(spawnWorker());
 }
 
-function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
+function handleMessage(pw: PoolWorker, data: unknown): void {
+  // Pool workers run untrusted model code too: validate before acting, and on
+  // a malformed message fail that worker's jobs and replace it (see engine.ts).
+  const check = checkEngineWorkerMessage(data);
+  if (!check.ok) {
+    if (check.type === 'execute_preview') return; // pool never asks for previews
+    const message = `Assembly build worker sent a malformed${check.type ? ` ${check.type}` : ''} message (${check.reason})`;
+    errorLog.capture({ level: 'warn', source: 'engine', message });
+    failWorker(pw, new Error(message));
+    return;
+  }
+  const msg = check.msg;
   if (msg.type === 'ready') {
     pw.ready = true;
     respawns = 0; // a healthy worker resets the give-up budget
@@ -182,7 +201,7 @@ function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
   job.resolve({
     mesh,
     error: (msg.error as string | null) ?? null,
-    paramsSchema: (msg.paramsSchema as PoolBuildResult['paramsSchema']) ?? undefined,
+    paramsSchema: check.paramsSchema, // normalized by the validator, not the Worker's raw array
     labelMap: labelMapEntries ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)])) : undefined,
     labelColors: labelColorEntries && labelColorEntries.length > 0 ? new Map(labelColorEntries) : undefined,
     paintOps: (msg.paintOps as PoolBuildResult['paintOps']) ?? undefined,
@@ -226,6 +245,9 @@ function dispatch(pw: PoolWorker, job: Job): void {
 /** Build one part in the pool. Spawns workers on first use. Concurrency is
  *  bounded by the pool size; excess calls queue and run as workers free up. */
 export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
+  if ((req.domain ?? getEngineTrustDomain()) !== getEngineTrustDomain()) {
+    return Promise.reject(new Error('Build cancelled — the session changed before it ran'));
+  }
   ensureWorkers();
   return new Promise<PoolBuildResult>((resolve, reject) => {
     queue.push({ req, resolve, reject });
@@ -235,8 +257,8 @@ export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
 
 /** Tear down the pool and reject anything still queued. Call when the Assembly
  *  view closes so the extra WASM heaps are released. */
-export function disposeEnginePool(): void {
-  const err = new Error('Assembly view closed');
+export function disposeEnginePool(reason = 'Assembly view closed'): void {
+  const err = new Error(reason);
   for (const pw of workers) {
     for (const job of pw.inflight.values()) job.reject(err);
     try { pw.worker.terminate(); } catch { /* already gone */ }
@@ -248,3 +270,7 @@ export function disposeEnginePool(): void {
   // sizes from its own config again.
   sizeOverride = null;
 }
+
+// Pool workers belong to the session whose parts they built (#1090): drop them
+// (and anything queued) the moment the active session changes.
+onEngineTrustDomainChange(() => { disposeEnginePool('Build cancelled — the session changed'); });
