@@ -108,14 +108,16 @@ async function cf(url, init = {}, attempt = 0) {
   return body;
 }
 
-async function listAll(url) {
+// Page sizes differ per endpoint: the projects list rejects per_page > 10
+// (error 8000024), while deployments accepts 25.
+async function listAll(url, perPage) {
   const all = [];
   const sep = url.includes('?') ? '&' : '?';
   for (let page = 1; ; page++) {
-    const body = await cf(`${url}${sep}page=${page}&per_page=25`);
+    const body = await cf(`${url}${sep}page=${page}&per_page=${perPage}`);
     all.push(...body.result);
     const info = body.result_info ?? {};
-    const totalPages = info.total_pages ?? Math.ceil((info.total_count ?? 0) / (info.per_page || 25));
+    const totalPages = info.total_pages ?? Math.ceil((info.total_count ?? 0) / (info.per_page || perPage));
     if (!body.result.length || page >= totalPages) break;
   }
   return all;
@@ -124,7 +126,7 @@ async function listAll(url) {
 const deploymentsUrl = (project) => `${accountBase}/${encodeURIComponent(project)}/deployments`;
 const branchOf = (d) => d.deployment_trigger?.metadata?.branch ?? '(unknown)';
 
-const projects = opts.projects.length ? opts.projects : (await listAll(accountBase)).map((p) => p.name);
+const projects = opts.projects.length ? opts.projects : (await listAll(accountBase, 10)).map((p) => p.name);
 if (!projects.length) {
   console.log('no Pages projects in this account.');
   process.exit(0);
@@ -144,7 +146,7 @@ const isTarget = (d) => {
 const targets = [];
 if (opts.keep.length) console.log(`keeping branches: ${opts.keep.join(', ')}`);
 for (const project of projects) {
-  const deployments = await listAll(`${deploymentsUrl(project)}?env=preview`);
+  const deployments = await listAll(`${deploymentsUrl(project)}?env=preview`, 25);
   const selected = deployments.filter(isTarget);
   const byBranch = new Map();
   for (const d of selected) byBranch.set(branchOf(d), (byBranch.get(branchOf(d)) ?? 0) + 1);
