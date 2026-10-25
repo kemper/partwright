@@ -42,6 +42,15 @@ function tryManifold(mod: ManifoldModule, mesh: MeshData): ManifoldTrial {
   }
 }
 
+// Load manifold-3d up front and say `ready`: the client transfers the file's
+// bytes only after this, so a Worker that can't load (a stale chunk after a
+// deploy, a WASM init failure) fails BEFORE the bytes leave the main thread,
+// which can then still probe them itself.
+loadManifold().then(
+  () => self.postMessage({ type: 'ready' }),
+  (err) => self.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) }),
+);
+
 self.onmessage = async (e: MessageEvent<ProbeMsg>) => {
   const msg = e.data;
   try {

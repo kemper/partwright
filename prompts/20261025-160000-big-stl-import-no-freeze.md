@@ -65,3 +65,33 @@ probe still on the main thread.
 
 Also made a pre-existing flaky assertion in import-merge-select.spec.ts poll
 (it fails 2/6 on unmodified main — one-shot URL read racing updateURL).
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**Worker fallback was dead after the transfer.** The bytes were transferred in
+the same tick as `new Worker`, so a Worker that failed to load (a stale chunk
+after a deploy, a WASM init failure) left nothing for the main-thread fallback.
+The Worker now loads manifold-3d first and posts `ready`, and only then does the
+client transfer the bytes. `onmessageerror` and a failing `postMessage` reject
+cleanly. The three API import paths (`importMeshData`, `inspectMeshData`,
+`importFromUrl`) catch and return `{ error }`, keeping the no-throw API contract.
+
+**Simplify forced the deferred build.** Its open-time "is this solid?" check now
+reads the Worker facts. Restoring the simplify baseline re-defers using the
+baseline's stored facts.
+
+**A failed deferred build left "manifold" stats.** `liveManifold()`'s catch now
+drops the facts, logs the failure and refreshes the stats, so the stats and the
+tools agree the model is render-only.
+
+**Facts are now paired with the mesh they describe** (`deferManifold` /
+`manifoldFactsFor`), so the part-mesh cache and Simplify only reuse facts for
+that exact mesh.
+
+**Smaller fixes.**
+- `getBoundingBox` returns a copy of the bbox.
+- `query({ boundingBox })` no longer forces the build.
+- The weld's per-vertex arrays grow with the unique-vertex count. On the user's
+  file the probe went from 14 s to 10.9 s, with a far lower peak heap.

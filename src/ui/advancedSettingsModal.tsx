@@ -690,7 +690,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           label="Defer solid rebuild from"
           unit="triangles"
           hint="Big models skip rebuilding the solid after each run until a slice or boolean needs it."
-          tooltip="After every run the editor rebuilds a solid (Manifold) copy of the model for slicing, measuring and booleans. On a multi-million-triangle import that rebuild froze the app for seconds. From this many triangles, the engine computes the model's stats itself and the rebuild waits until a tool actually needs the solid. 0 = always defer."
+          tooltip="After every run the editor rebuilds a solid (Manifold) copy of the model for slicing, measuring and booleans. On a multi-million-triangle import that rebuild froze the app for seconds. From this many triangles, the engine computes the model's stats itself and the rebuild waits until a tool actually needs the solid. Deferred models skip the stats' automatic quartile cross-sections (meshes over 250k triangles skip them anyway). 0 = always defer."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.lazyManifoldMinTriangles}
           value={c.renderer.lazyManifoldMinTriangles}
           min={0} max={50_000_000} step={50_000} integer

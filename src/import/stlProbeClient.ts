@@ -22,10 +22,10 @@ export interface STLProbeControl {
 
 
 /** Probe STL bytes in the Worker. Rejects with STLProbeAbortError on abort,
- *  or a plain Error when the Worker fails (callers may fall back to probing
- *  on the main thread while `bytes` is still attached). The bytes' buffer is
- *  TRANSFERRED (zero-copy; cloning 100 MB stalls the UI for ~0.4 s), so
- *  `bytes` is detached once the Worker has them — pass a copy to keep them. */
+ *  or a plain Error when the Worker fails. The bytes' buffer is TRANSFERRED
+ *  (zero-copy; cloning 100 MB stalls the UI for ~0.4 s) once the Worker has
+ *  loaded manifold-3d, so a Worker that fails to start leaves `bytes` intact
+ *  for a main-thread fallback; after the hand-off they are detached. */
 export function probeSTLInWorker(bytes: Uint8Array, configuredTolerance: number, ctl?: STLProbeControl): Promise<STLProbeResult | null> {
   return new Promise((resolve, reject) => {
     if (ctl?.signal?.aborted) { reject(new STLProbeAbortError()); return; }
@@ -37,33 +37,40 @@ export function probeSTLInWorker(bytes: Uint8Array, configuredTolerance: number,
       return;
     }
     let settled = false;
-    const finish = () => {
+    const fail = (err: Error) => {
+      if (settled) return;
       settled = true;
       ctl?.signal?.removeEventListener('abort', onAbort);
       w.terminate();
+      reject(err);
     };
-    const onAbort = () => {
-      if (settled) return;
-      finish();
-      reject(new STLProbeAbortError());
-    };
+    const onAbort = () => fail(new STLProbeAbortError());
     w.onmessage = (e: MessageEvent<{ type: string; fraction?: number; message?: string; result?: STLProbeResult | null }>) => {
       const m = e.data;
+      if (settled) return;
+      if (m.type === 'ready') {
+        // Transfer only a buffer the view owns outright; a view into a larger
+        // buffer is copied rather than detaching the caller's other data.
+        const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
+        try {
+          w.postMessage({ type: 'probe', bytes, configuredTolerance }, whole ? [bytes.buffer as ArrayBuffer] : []);
+        } catch (err) {
+          fail(err instanceof Error ? err : new Error(String(err)));
+        }
+        return;
+      }
       if (m.type === 'progress') { ctl?.onProgress?.(m.fraction ?? 0, m.message ?? ''); return; }
-      if (settled) return;
-      if (m.type === 'done') { finish(); resolve(m.result ?? null); return; }
-      finish();
-      reject(new Error(m.message ?? 'STL probe failed'));
+      if (m.type === 'done') {
+        settled = true;
+        ctl?.signal?.removeEventListener('abort', onAbort);
+        w.terminate();
+        resolve(m.result ?? null);
+        return;
+      }
+      fail(new Error(m.message ?? 'STL probe failed'));
     };
-    w.onerror = (e) => {
-      if (settled) return;
-      finish();
-      reject(new Error(e.message || 'STL probe worker error'));
-    };
+    w.onerror = (e) => fail(new Error(e.message || 'STL probe worker error'));
+    w.onmessageerror = () => fail(new Error('STL probe worker sent an unreadable message'));
     ctl?.signal?.addEventListener('abort', onAbort, { once: true });
-    // Transfer only a buffer the view owns outright; a view into a larger
-    // buffer is copied rather than detaching the caller's other data.
-    const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
-    w.postMessage({ type: 'probe', bytes, configuredTolerance }, whole ? [bytes.buffer as ArrayBuffer] : []);
   });
 }

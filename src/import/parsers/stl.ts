@@ -144,9 +144,20 @@ export function weldPositions(
   while (cap < count * 2) cap *= 2;
   const mask = cap - 1;
   const table = new Int32Array(cap).fill(-1);
-  // Quantized cell of each unique vertex, compared exactly on a hash hit.
-  const qx = new Float64Array(count), qy = new Float64Array(count), qz = new Float64Array(count);
-  const positions = new Float32Array(count * 3);
+  // Per unique vertex: its quantized cell (compared exactly on a hash hit) and
+  // position. Sized for the unique count, not the input count — an STL soup
+  // repeats each vertex ~6×, and at a few million triangles allocating these
+  // per input vertex cost hundreds of MB — growing by doubling as needed.
+  let room = Math.min(count, Math.max(1024, count >> 2));
+  let qx = new Float64Array(room), qy = new Float64Array(room), qz = new Float64Array(room);
+  let positions = new Float32Array(room * 3);
+  const grow = () => {
+    room = Math.min(count, room * 2);
+    const nx = new Float64Array(room); nx.set(qx); qx = nx;
+    const ny = new Float64Array(room); ny.set(qy); qy = ny;
+    const nz = new Float64Array(room); nz.set(qz); qz = nz;
+    const np = new Float32Array(room * 3); np.set(positions); positions = np;
+  };
   const remap = new Uint32Array(count);
   let numVert = 0;
   for (let v = 0; v < count; v++) {
@@ -160,6 +171,7 @@ export function weldPositions(
       idx = table[h];
     }
     if (idx === -1) {
+      if (numVert === room) grow();
       idx = numVert++;
       table[h] = idx;
       qx[idx] = ix; qy[idx] = iy; qz[idx] = iz;
@@ -167,5 +179,5 @@ export function weldPositions(
     }
     remap[v] = idx;
   }
-  return { positions: numVert === count ? positions : positions.slice(0, numVert * 3), remap, numVert };
+  return { positions: numVert === room ? positions : positions.slice(0, numVert * 3), remap, numVert };
 }

@@ -751,8 +751,24 @@ let currentManifold: any = null;
  *  `liveManifold()`, never `currentManifold` directly. */
 let pendingManifoldMesh: MeshData | null = null;
 /** The Worker-computed stats describing the current (built or pending)
- *  Manifold; null when the main thread computes them itself. */
+ *  Manifold, and the mesh they describe; null when the main thread computes
+ *  the stats itself. */
 let currentManifoldFacts: ManifoldFacts | null = null;
+let currentManifoldFactsMesh: MeshData | null = null;
+
+/** Defer the current Manifold: `facts` (from the engine Worker) describe
+ *  `mesh`, and the Manifold is built from it on first `liveManifold()`.
+ *  Call after `releaseCurrentManifold()`. */
+function deferManifold(mesh: MeshData, facts: ManifoldFacts): void {
+  pendingManifoldMesh = mesh;
+  currentManifoldFacts = facts;
+  currentManifoldFactsMesh = mesh;
+}
+
+/** The Worker facts for `mesh`, if the current ones describe it. */
+function manifoldFactsFor(mesh: MeshData | null): ManifoldFacts | null {
+  return mesh && currentManifoldFactsMesh === mesh ? currentManifoldFacts : null;
+}
 
 /** The current model's Manifold, built on first use when it was deferred.
  *  Null for render-only models (or when the deferred build fails). */
@@ -764,8 +780,15 @@ function liveManifold(): any {
     const mod = getModule();
     try {
       currentManifold = mod ? mod.Manifold.ofMesh(mesh) : null;
-    } catch {
+    } catch (e) {
+      // The Worker said solid but the rebuild disagrees — trust the rebuild,
+      // drop the Worker stats and refresh them, so the stats and the
+      // slice/boolean tools agree that the model is render-only.
       currentManifold = null;
+      currentManifoldFacts = null;
+      currentManifoldFactsMesh = null;
+      errorLog.capture({ level: 'warn', source: 'engine', message: `Rebuilding the model's solid on the main thread failed; treating it as render-only: ${e instanceof Error ? e.message : String(e)}` });
+      updateGeometryData();
     }
   }
   return currentManifold;
@@ -780,12 +803,17 @@ function releaseCurrentManifold(): void {
   currentManifold = null;
   pendingManifoldMesh = null;
   currentManifoldFacts = null;
+  currentManifoldFactsMesh = null;
 }
 
 /** Bounding box of the current model without forcing a deferred Manifold
  *  build: the Worker's facts when the build was deferred, else the Manifold's. */
 function currentManifoldBBox(): { min: [number, number, number]; max: [number, number, number] } | null {
-  if (pendingManifoldMesh && currentManifoldFacts) return currentManifoldFacts.bbox;
+  if (pendingManifoldMesh && currentManifoldFacts) {
+    // A copy: callers (incl. the console API) may mutate it.
+    const bb = currentManifoldFacts.bbox;
+    return bb ? { min: [...bb.min], max: [...bb.max] } : null;
+  }
   const m = liveManifold();
   return m ? getBoundingBox(m) : null;
 }
@@ -3248,7 +3276,7 @@ async function saveCurrentVersion(label?: string): Promise<
         modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
-        manifoldFacts: currentManifoldFacts,
+        manifoldFacts: manifoldFactsFor(meshToCache),
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -8768,8 +8796,7 @@ async function main() {
       if (cachedEntry.manifoldFacts) {
         // A big mesh: reuse its Worker stats and defer the main-thread
         // rebuild, so switching objects doesn't freeze on `Manifold.ofMesh`.
-        pendingManifoldMesh = cachedEntry.meshData;
-        currentManifoldFacts = cachedEntry.manifoldFacts;
+        deferManifold(cachedEntry.meshData, cachedEntry.manifoldFacts);
       } else {
         const mod = getModule();
         try {
@@ -8812,6 +8839,7 @@ async function main() {
       }
       syncClipSliderBounds();
       simplifyBaselineMesh = null;
+      simplifyBaselineFacts = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
@@ -8891,7 +8919,7 @@ async function main() {
           modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
-          manifoldFacts: currentManifoldFacts,
+          manifoldFacts: manifoldFactsFor(currentMeshData),
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -10218,6 +10246,9 @@ async function main() {
   // imported-style version. The baseline persists across panel open/close and
   // is cleared whenever a code run replaces the geometry.
   let simplifyBaselineMesh: MeshData | null = null;
+  // The engine Worker's stats for the baseline (a big mesh whose Manifold
+  // build was deferred), so restoring it defers again instead of freezing.
+  let simplifyBaselineFacts: ManifoldFacts | null = null;
   // Baseline mesh with triColors baked in (set when the panel opens with paint
   // active). Used as the color source for all carry operations in this session.
   let simplifyBaselineColoredMesh: MeshData | null = null;
@@ -10257,22 +10288,28 @@ async function main() {
     paintBaseMesh = mesh;
     releaseCurrentManifold();
     const mod = getModule();
-    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
-    // simplify / enhance / paint-refine result can come back not-quite-manifold
-    // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
-    // "Not manifold" on those. Without this guard the exception escapes the
-    // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
-    // AND the stats / printability refresh below is skipped — so the user gets
-    // no warning that the model went non-manifold (the exact bug reported for
-    // paint → enhance → paint → simplify). Fall back to render-only and warn.
-    try {
-      currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
-    } catch {
-      currentManifold = null;
-      showToast(
-        "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
-        { variant: 'warn', source: 'engine', durationMs: 6000 },
-      );
+    if (mesh === simplifyBaselineMesh && simplifyBaselineFacts) {
+      // Restoring a big simplify baseline: its Worker stats still hold, so
+      // defer the Manifold build again rather than freezing on ofMesh.
+      deferManifold(mesh, simplifyBaselineFacts);
+    } else {
+      // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+      // simplify / enhance / paint-refine result can come back not-quite-manifold
+      // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
+      // "Not manifold" on those. Without this guard the exception escapes the
+      // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
+      // AND the stats / printability refresh below is skipped — so the user gets
+      // no warning that the model went non-manifold (the exact bug reported for
+      // paint → enhance → paint → simplify). Fall back to render-only and warn.
+      try {
+        currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+      } catch {
+        currentManifold = null;
+        showToast(
+          "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+          { variant: 'warn', source: 'engine', durationMs: 6000 },
+        );
+      }
     }
     updateMesh(mesh);
     updatePaintMesh(mesh);
@@ -10364,11 +10401,16 @@ async function main() {
       if (!currentMeshData) {
         return { ok: false, reason: "Run some code first — there’s no model to simplify." };
       }
-      if (!liveManifold()) {
+      // Judge "solid?" from the Worker's stats when the Manifold build was
+      // deferred: building it here would freeze on exactly the huge meshes
+      // people simplify (Simplify itself runs on the mesh, in a Worker).
+      const facts = manifoldFactsFor(paintBaseMesh ?? currentMeshData);
+      if (!(facts ? facts.isManifold : liveManifold())) {
         return { ok: false, reason: "Simplify needs a solid (manifold) model. Render-only imports can’t be reduced." };
       }
       if (!simplifyBaselineMesh) {
         simplifyBaselineMesh = currentMeshData;
+        simplifyBaselineFacts = manifoldFactsFor(currentMeshData);
         // Snapshot colors once so all carry operations in this session use the
         // same source — even after apply clears the regions module state.
         if (modelHasColor()) {
@@ -13816,7 +13858,8 @@ async function main() {
         };
       }
       if (split === 'object' || split === 'plate') return { error: `importMeshData(opts.split): '${split}' is for 3MF — an STL splits by 'piece'.` };
-      const parsed = await parseSTLBytes(bytes, filename);
+      const parsed = await parseSTLBytes(bytes, filename).catch((e: Error) => ({ error: `Could not read "${filename}" as an STL file: ${e.message}` }));
+      if (parsed && 'error' in parsed) return parsed;
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
       if (splitting) {
         const dest = splitTarget();
@@ -13872,7 +13915,8 @@ async function main() {
           splitModes: ['none', ...(result.objects.length > 1 ? ['object'] : []), ...(platesInUse(result) > 1 ? ['plate'] : [])],
         };
       }
-      const parsed = await parseSTLBytes(bytes, filename);
+      const parsed = await parseSTLBytes(bytes, filename).catch((e: Error) => ({ error: `Could not read "${filename}" as an STL file: ${e.message}` }));
+      if (parsed && 'error' in parsed) return parsed;
       if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
       const base = filename.replace(/\.[^.]+$/, '');
       const items = importPieceItems(parsed.mesh, base) ?? [{ name: base, triangles: triangleRange(0, parsed.mesh.numTri) }];
@@ -16760,12 +16804,15 @@ async function main() {
 
       const result: Record<string, unknown> = {};
 
-      if (!liveManifold()) {
+      // Only slices / decompose need the solid; a bbox alone mustn't force a
+      // deferred Manifold build on a big mesh.
+      const needsSolid = (opts.sliceAt?.length ?? 0) > 0 || !!opts.decompose;
+      if (needsSolid ? !liveManifold() : !currentManifoldBBox()) {
         return { error: 'No geometry loaded' };
       }
 
       if (opts.boundingBox) {
-        result.boundingBox = getBoundingBox(liveManifold());
+        result.boundingBox = currentManifoldBBox();
       }
 
       if (opts.sliceAt && opts.sliceAt.length > 0) {
@@ -17789,7 +17836,8 @@ async function main() {
       }
       let placed: ApiImportResult | { error: string };
       if (source === 'STL') {
-        const mesh = await parseSTLBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+        const mesh = await parseSTLBytes(new Uint8Array(await file.arrayBuffer()), file.name).catch((e: Error) => ({ error: `importFromUrl: could not read "${file.name}" as an STL file: ${e.message}` }));
+        if (mesh && 'error' in mesh) return mesh;
         if (!mesh) return { error: `importFromUrl: could not parse "${file.name}" as an STL file.` };
         placed = await placeMeshAtApiTarget(mesh, file.name, po.target, name, 'importFromUrl');
       } else if (source === 'STEP') {
@@ -22704,8 +22752,7 @@ async function main() {
       } else if (result.manifoldFacts && result.mesh === engineMesh) {
         // A big run: the Worker sent its stats, so defer the (seconds-long)
         // main-thread rebuild until something needs the solid.
-        pendingManifoldMesh = result.mesh;
-        currentManifoldFacts = result.manifoldFacts;
+        deferManifold(result.mesh, result.manifoldFacts);
       } else {
         const mod = getModule();
         // SCAD / replicad engines deliberately tolerate non-watertight output
@@ -22831,6 +22878,7 @@ async function main() {
       // A fresh run replaces the geometry, so any simplify baseline is stale.
       // Drop it and let an open panel re-snapshot the new mesh.
       simplifyBaselineMesh = null;
+      simplifyBaselineFacts = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
