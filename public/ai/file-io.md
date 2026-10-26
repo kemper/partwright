@@ -272,7 +272,7 @@ await partwright.importMeshFiles([
   mode: 'object',     // one object per model (default) | 'file': one per file | 'none': one object, each model a named part
   layout: 'grid',     // 'keep' (where the files put them) | 'center' (each on the origin, on the plate) | 'grid' (side by side)
   convert: false,     // true: rebuild each new object as editable code (render-only models stay meshes)
-  target: 'new-object', // 'new-session' (default) | 'new-object' (this session) | 'current-object' (mode 'none', no convert)
+  target: 'new-object', // 'new-session' (default) | 'new-object' (this session) | 'current-object' (mode 'none'; fills an empty object)
   models: [0, 2],     // optional: only these models
   skipExisting: true, // default: leave out models already imported into this session
 })
@@ -294,8 +294,10 @@ await partwright.importMeshFiles([
   re-running a cancelled batch only adds what's missing; the UI dialog shows
   them unticked with an "Already imported" note (re-ticked when the target is
   a new session).
-- **Not with `current-object`:** `convert: true` would rebuild the current
-  object's own code too, so that combination is refused.
+- **`current-object`:** an EMPTY current object (untouched starter code, no
+  saved version — e.g. one just made with `createObject()`) is filled by the
+  import rather than combined with. Otherwise the models are combined into it,
+  and `convert: true` is refused (it would rebuild the object's own code too).
 - In `object` mode, a 3MF's objects are grouped under its file name in the
   object list. Colours from 3MF files carry over through one merged palette.
 - Capped by **Advanced settings → Import → Max files per import** (default 50),

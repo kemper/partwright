@@ -56,7 +56,7 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
       target: 'current-part',
       title: opts.currentPartTitle ?? (opts.addReplacesStarter ? `Use for current object — ${partLabel}` : `Add to current object — ${partLabel}`),
       desc: opts.currentPartDesc ?? (opts.addReplacesStarter
-        ? 'Make this mesh the contents of the current (empty) object.'
+        ? 'Make the import the contents of the current object, which is still empty.'
         : 'Combine it with the geometry already in this object (composed as separate pieces).'),
       disabled: !opts.canAddToCurrent,
       disabledReason: opts.addDisabledReason,

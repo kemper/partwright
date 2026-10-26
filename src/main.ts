@@ -4163,7 +4163,7 @@ async function main() {
     // against the relief mesh's own triangle order, which compose-into would
     // scramble — same out-of-scope call BREP imports make.
     let sessionId: string;
-    if (!interactive || !getState().session || currentPartIsExpendable()) {
+    if (!interactive || nothingToProtect()) {
       ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
     } else {
       const target = await showImportTargetModal({
@@ -4797,7 +4797,7 @@ async function main() {
       // No session, or the only part is an expendable starter: open a fresh BREP
       // session named after the file (legacy behavior). The target modal only
       // exists to protect real work, and a fresh/expendable editor has none.
-      if (!state.session || currentPartIsExpendable()) return openInNewSession();
+      if (nothingToProtect()) return openInNewSession();
 
       // A session is open: offer new-part / new-session (current-part is out of
       // scope — composing an exact BREP shape into a mesh part isn't supported).
@@ -5420,7 +5420,8 @@ async function main() {
     const base = filename.replace(/\.[^.]+$/, '');
     const items = threeMFItems(result);
     const state = getState();
-    const protect = !!state.session && !currentPartIsExpendable();
+    const protect = !nothingToProtect();
+    const empty = protect && currentPartIsExpendable();
     const choice = await showMeshImportModal({
       filename,
       summary: describe3MFSource(result),
@@ -5429,7 +5430,7 @@ async function main() {
       modes: platesInUse(result) > 1 ? ['object', 'plate', 'none'] : ['object', 'none'],
       baseName: base,
       maxObjects: getConfig().import.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
     });
     if (!choice) return false;
     const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
@@ -5438,12 +5439,21 @@ async function main() {
     if (!built) return false;
     const { entries, infos } = built;
     if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
-    const ids = await placeImportedObjects(entries, protect ? choice.destination : 'new-session', base);
+    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base);
     if (ids.length > 0) {
       const info = ids.length === 1 ? infos[0] : mergeColorInfos(infos);
       showToast(describe3MFImport(filename, result, info, ids.length, entries[0].probe.mesh.numTri), { variant: 'success', source: 'import' });
     }
     return ids.length > 0;
+  }
+
+  /** Where a multi-object import goes, from the dialog's answer: a new
+   *  session when there was nothing to protect (no destination was offered),
+   *  and "the current object" filling an empty one (`reuse-current`: the
+   *  first object becomes it, the rest new objects). */
+  function multiImportDestination(protect: boolean, empty: boolean, chosen: MeshImportDestination): MeshImportDestination | 'reuse-current' {
+    if (!protect) return 'new-session';
+    return chosen === 'current-object' && empty ? 'reuse-current' : chosen;
   }
 
   // === Multi-file mesh import (several STL / 3MF files at once) ===
@@ -5525,7 +5535,7 @@ async function main() {
     selected: number[];
     layout: MultiFileLayout;
     convert: boolean;
-    destination: MeshImportDestination;
+    destination: MeshImportDestination | 'reuse-current';
   }
 
   /** The name for what a multi-file import makes as a whole (its session, or
@@ -5726,7 +5736,8 @@ async function main() {
     }
     const cancelledMsg = () => showToast('Cancelled the import — nothing was added.', { variant: 'neutral', source: 'import' });
     const state = getState();
-    const protect = !!state.session && !currentPartIsExpendable();
+    const protect = !nothingToProtect();
+    const empty = protect && currentPartIsExpendable();
     // What the session already holds — read while the files are read.
     const existingP = protect ? sessionImportSignatures() : Promise.resolve([]);
     const read = await readMeshFiles(files.map(f => ({ name: f.name, read: async () => new Uint8Array(await f.arrayBuffer()) })));
@@ -5764,10 +5775,10 @@ async function main() {
       offerConvert: true,
       baseName: multiFileImportName(source, source.items.map((_, i) => i)),
       maxObjects: cfg.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
     });
     if (!choice) return false;
-    const destination = protect ? choice.destination : 'new-session';
+    const destination = multiImportDestination(protect, empty, choice.destination);
     const placed = await placeMultiFileImport(source, fileNames, read.renderOnly, {
       mode: choice.mode,
       selected: choice.selected,
@@ -6023,6 +6034,23 @@ async function main() {
   function currentPartIsExpendable(): boolean {
     const s = getState();
     return !!s.currentPart && !s.currentVersion && isStarterCode(getValue());
+  }
+
+  /** Nothing an interactive import needs to ask about: no session, or a
+   *  session whose ONLY object is an untouched starter. Such an import opens
+   *  its own session, as it always has. A session with other objects always
+   *  gets the "where should it go?" choice — even while an empty new object is
+   *  open, which the choice then offers to fill. */
+  function nothingToProtect(): boolean {
+    const s = getState();
+    return !s.session || (currentPartIsExpendable() && s.parts.length <= 1);
+  }
+
+  /** After an import fills the open (empty) object: name it after the import,
+   *  unless the user already gave it a name of their own. */
+  async function nameFilledObject(name: string): Promise<void> {
+    const cur = getState().currentPart;
+    if (cur && /^Object \d+$/.test(cur.name) && cur.name !== name) await renamePart(cur.id, name);
   }
 
   /** Save the current part's editor content as a version when it holds real,
@@ -6377,25 +6405,33 @@ async function main() {
     // No session, or the only part is an expendable starter: import as before —
     // a fresh session named after the file. The target modal only exists to
     // protect real work, and a fresh/expendable editor has none to protect.
-    if (!state.session || currentPartIsExpendable()) {
+    if (nothingToProtect()) {
       await importCodePayload(code, language, sessionName);
       return true;
     }
 
-    // Past this point the current part holds real work (not an expendable
-    // starter), so the current-part choice can only compose-into — and only
-    // when the import is composable (voxel bakes to a mesh; a BREP starter
-    // can't compose into a mesh part).
-    const canAddToCurrent = !!state.currentPart && opts.composable;
+    // An empty open object (a new one in a session with others) is filled by
+    // the import. Otherwise the current part holds real work, so the
+    // current-part choice can only compose-into — and only when the import is
+    // composable (voxel bakes to a mesh; a BREP starter can't compose into a
+    // mesh part).
+    const empty = currentPartIsExpendable();
+    const canAddToCurrent = !!state.currentPart && (empty || opts.composable);
     const target = await showImportTargetModal({
       title,
       filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent,
+      addReplacesStarter: empty,
       addDisabledReason: !opts.composable ? opts.composeDisabledReason : undefined,
-      recommend: 'new-part',
+      recommend: empty ? 'current-part' : 'new-part',
     });
     if (!target) return false;
+    if (target === 'current-part' && empty) {
+      await applyCodeToCurrentPart(code, language);
+      await nameFilledObject(sessionName);
+      return true;
+    }
 
     if (target === 'new-session') {
       await importCodePayload(code, language, sessionName);
@@ -6540,25 +6576,32 @@ async function main() {
     // No session, or the only part is an expendable starter: import as before —
     // a fresh session named after the file. The target modal only exists to
     // protect real work, and a fresh/expendable editor has none to protect.
-    if (!state.session || currentPartIsExpendable()) {
+    if (nothingToProtect()) {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
       return true;
     }
 
-    // Past this point the current part holds real work (not an expendable
-    // starter), so "current part" always means compose-into, never replace.
+    // An empty open object (a new one in a session with others) is filled by
+    // the import — the default. Otherwise the current part holds real work, so
+    // "current part" means compose-into, never replace, and the default is a
+    // new part so an import never silently overwrites it.
+    const empty = currentPartIsExpendable();
     const target = await showImportTargetModal({
       filename,
       currentPartName: state.currentPart?.name ?? null,
-      canAddToCurrent: parsed.isManifold && !!state.currentPart,
+      canAddToCurrent: !!state.currentPart && (empty || parsed.isManifold),
+      addReplacesStarter: empty,
       addDisabledReason: !parsed.isManifold
         ? 'Render-only meshes can’t be combined into an existing object.'
         : undefined,
-      // Default to a new part so an import never silently overwrites the
-      // current part's real work.
-      recommend: 'new-part',
+      recommend: empty ? 'current-part' : 'new-part',
     });
     if (!target) return false;
+    if (target === 'current-part' && empty) {
+      await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions);
+      await nameFilledObject(sessionName);
+      return true;
+    }
 
     if (target === 'new-session') {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
@@ -6607,8 +6650,8 @@ async function main() {
       }
     };
 
-    if (!state.session || currentPartIsExpendable()) {
-      // No real "current part" to attach to (no session, or just starter code) —
+    if (nothingToProtect()) {
+      // No real work to attach to (no session, or just a starter object) —
       // import straight into a fresh session. Pass companions directly so they're
       // registered before the first compile (tabs appear immediately) and MEMFS
       // already contains them on that one compile — no second run needed.
@@ -6628,7 +6671,8 @@ async function main() {
       currentPartDesc: "Replace this object's code with the imported file. The current code is saved as a version first.",
       // Companion attach only makes sense for a .scad imported into a SCAD part.
       canAddAsCompanion: lang === 'scad' && getActiveLanguage() === 'scad',
-      recommend: 'new-part',
+      // An empty open object (a new one in a session with others): fill it.
+      recommend: currentPartIsExpendable() ? 'current-part' : 'new-part',
     });
     if (!target) return false;
     if (target === 'companion-file') {
@@ -6648,8 +6692,10 @@ async function main() {
       await seedNewPartWithCode(code, sessionName, lang, companions);
     } else {
       // current-part: replace current part's code with the imported file.
+      const empty = currentPartIsExpendable();
       await preserveCurrentEditsIfNeeded();
       await applyCodeToCurrentPart(code, lang, companions);
+      if (empty) await nameFilledObject(sessionName);
     }
     return true;
   }
@@ -14416,7 +14462,8 @@ async function main() {
       if (files.length > max) return { error: `importMeshFiles: ${files.length} files is over the ${max}-file limit (Advanced settings → Import).` };
       const mode = opts.mode ?? 'object';
       if (po.target === 'current-object' && mode !== 'none') return { error: "importMeshFiles: target 'current-object' needs mode 'none' (everything as one object)." };
-      if (po.target === 'current-object' && opts.convert) return { error: "importMeshFiles: convert can't be combined with target 'current-object' — it would rebuild the current object's own code. Import into a new object, then convertToCode() if you want." };
+      const fillEmpty = po.target === 'current-object' && currentPartIsExpendable();
+      if (po.target === 'current-object' && opts.convert && !fillEmpty) return { error: "importMeshFiles: convert can't be combined with target 'current-object' — it would rebuild the current object's own code. Import into a new object, then convertToCode() if you want." };
       const blocked = apiImportSessionCheck(po.target, 'importMeshFiles');
       if (blocked) return blocked;
       const bytes: Uint8Array[] = [];
@@ -14451,7 +14498,8 @@ async function main() {
         selected,
         layout: opts.layout ?? suggestMultiFileLayout(source, { overlap: cfg.multiImportOverlapRatio, similarSize: cfg.multiImportSimilarSizeRatio }),
         convert: !!opts.convert,
-        destination: po.target === 'new-object' ? 'this-session' : po.target === 'current-object' ? 'current-object' : 'new-session',
+        // An empty current object is filled (its starter code replaced), not combined.
+        destination: po.target === 'new-object' ? 'this-session' : fillEmpty ? 'reuse-current' : po.target === 'current-object' ? 'current-object' : 'new-session',
       }, { sessionName: po.sessionName, confirmRenderOnly: false });
       if (!placed) return { error: 'importMeshFiles: nothing was imported (cancelled).' };
       const ids = placed.ids.filter((id): id is string => !!id);

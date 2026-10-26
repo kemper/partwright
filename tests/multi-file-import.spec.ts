@@ -121,15 +121,34 @@ test.describe('Multi-file mesh import', () => {
     expect((await objects(page)).map(o => o.name)).toEqual(['cube', 'tower', 'Base', 'Peg', 'Lid']);
   });
 
+  test('in a project with an empty new object open, the files fill it', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('host');
+      await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'base');
+      await pw.createObject();
+    });
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles(files().slice(0, 2));
+    const modal = page.getByRole('dialog', { name: 'Import 2 files' });
+    await expect(modal).toBeVisible({ timeout: 30_000 });
+    await expect(modal.getByRole('radio', { name: /The current object .*\(empty\)/ })).toBeChecked();
+    await modal.getByRole('button', { name: 'Import 2 objects' }).click();
+    await expect(page.getByText('Imported 2 objects from 2 files.')).toBeVisible({ timeout: 60_000 });
+    // The empty object became the first model; the second is a new object.
+    expect((await objects(page)).map(o => o.name)).toEqual(['Object 1', 'cube', 'tower']);
+  });
+
   test('importMeshFiles: one object per file, converted to code, skipping existing models', async ({ page }) => {
     test.setTimeout(150_000);
     const payload = files().map(f => ({ filename: f.name, base64: f.buffer.toString('base64') }));
     const res = await page.evaluate(async (data) => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const bad = await pw.importMeshFiles([{ filename: 'a.obj', base64: 'AAAA' }]);
-      const badTarget = await pw.importMeshFiles(data.slice(0, 1), { mode: 'none', target: 'current-object', convert: true });
       const first = await pw.importMeshFiles(data.slice(0, 1), { convert: true }) as { importedObjects: { name: string }[]; converted: number };
       const code = pw.getCode() as string;
+      // The open object now holds real work: converting into it is refused.
+      const badTarget = await pw.importMeshFiles(data.slice(1, 2), { mode: 'none', target: 'current-object', convert: true });
       const second = await pw.importMeshFiles(data, { target: 'new-object', mode: 'file', layout: 'keep' }) as {
         importedObjects: { name: string }[]; models: { name: string; imported: boolean; skipped?: string }[];
       };

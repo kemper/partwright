@@ -62,6 +62,10 @@ interface MeshImportModalOptions {
     currentObjectName: string | null;
     /** Whether "Add to current object" is possible at all (single-object mode only). */
     canAddToCurrent: boolean;
+    /** The current object is still empty (a new one): the import fills it — the
+     *  first object, when it makes several — in any mode, and that's the
+     *  default destination. */
+    currentIsEmpty?: boolean;
   };
 }
 
@@ -309,7 +313,7 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
               aria-checked={active}
               data-mode={m}
               class={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${active ? 'border-blue-500 bg-blue-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
-              onClick={() => store.set({ mode: m, ...(m !== 'none' && st.destination === 'current-object' ? { destination: 'this-session' as const } : {}) })}
+              onClick={() => store.set({ mode: m, ...(m !== 'none' && st.destination === 'current-object' && !opts.destinations?.currentIsEmpty ? { destination: 'this-session' as const } : {}) })}
             >
               <div class="text-sm text-zinc-100 font-medium">{modeText(opts, m).title}</div>
               <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">{modeText(opts, m).desc(n, grouped)}</div>
@@ -389,12 +393,12 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
             {
               value: 'code',
               title: 'Convert to editable code',
-              desc: st.destination === 'current-object'
+              desc: st.destination === 'current-object' && !opts.destinations?.currentIsEmpty
                 ? 'Not when adding to the current object — it would rebuild that object’s own code too.'
                 : st.mode === 'object' || st.mode === 'piece'
                   ? 'Rebuilds each object as smooth, editable code. Takes a few seconds per object; models that aren’t clean solids stay meshes.'
                   : 'Rebuilds each object as smooth, editable code. Its named parts aren’t kept. Takes a few seconds per object.',
-              enabled: st.destination !== 'current-object',
+              enabled: st.destination !== 'current-object' || !!opts.destinations?.currentIsEmpty,
             },
           ]}
           onChange={v => store.set({ convert: v === 'code' })}
@@ -409,7 +413,12 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
           options={[
             { value: 'this-session', title: 'This session', desc: 'Add as new objects, each with its own version history.', enabled: true },
             { value: 'new-session', title: 'A new session', desc: 'Leave the current session untouched.', enabled: true },
-            {
+            opts.destinations.currentIsEmpty ? {
+              value: 'current-object',
+              title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''} (empty)`,
+              desc: st.mode === 'none' ? 'Make the import its contents.' : 'The first object fills it; any others become new objects.',
+              enabled: true,
+            } : {
               value: 'current-object',
               title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
               desc: st.mode !== 'none'
@@ -465,7 +474,7 @@ export function showMeshImportModal(opts: MeshImportModalOptions): Promise<MeshI
     const store = createStore({
       mode: opts.modes[0] ?? 'none',
       selected: opts.items.map(it => !it.skipNote),
-      destination: opts.destinations ? 'this-session' : 'new-session',
+      destination: opts.destinations ? (opts.destinations.currentIsEmpty ? 'current-object' : 'this-session') : 'new-session',
       layout: opts.initialLayout ?? opts.layouts?.[0] ?? 'keep',
       convert: false,
     });

@@ -92,3 +92,26 @@ fixed here:
   Diagnostic Log, not one toast per object. The interactive path has a
   try/catch.
 - The layout-suggestion thresholds became config knobs.
+
+### Empty open object (#1147)
+
+The human reported that importing an STL into an existing project created a
+new session instead of asking. The cause was the gate every interactive
+import used: `currentPartIsExpendable()` looked only at the open object, so an
+empty new object (made with "+") counted as "nothing to protect" even in a
+session with other objects.
+
+- A new `nothingToProtect()` replaces that gate in every interactive import:
+  STL, code file, generated code, relief, STEP, multi-object 3MF and
+  multi-file. It is true only for no session, or a session whose only object
+  is an untouched starter. A fresh editor keeps its one-step import.
+- With an empty object open in a bigger session, the dialogs offer to fill it
+  and make that the default. This reuses the import-target modal's
+  `addReplacesStarter` option (it existed but nothing used it). The
+  multi-object dialogs map it to the placer's `reuse-current`: the first
+  object fills it and the rest become new objects. A filled object named
+  "Object N" takes the import's name.
+- The API's `importMeshFiles` with `target: 'current-object'` likewise fills
+  an empty object, and converting is allowed then.
+- Relief and STEP (BREP) only get the gate fix. Their "current object" choice
+  stays disabled, since they can't fill or combine.
