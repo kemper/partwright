@@ -5,6 +5,38 @@
 import type { ExportOptions } from '../storage/sessionManager';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
+import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { armDialogConfirm } from './dialogConfirmGuard';
+
+/** The include-flag keys an `openTool('export-session')` prefill may set. */
+export const EXPORT_SESSION_FLAGS = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat'] as const;
+
+/** Pre-set values for the NEXT session-export dialog. It only opens staged —
+ *  the user still clicks Export. */
+export interface ExportOptionsPrefill extends Partial<Record<(typeof EXPORT_SESSION_FLAGS)[number], boolean>> {
+  /** Version indices to keep in the file (default: all). */
+  versions?: number[];
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
+
+let stagedPrefill: { prefill: ExportOptionsPrefill; settle: (r: ToolOpenResult) => void } | null = null;
+let openDialog: { state: () => Record<string, unknown>; close: () => void } | null = null;
+
+/** Stage a prefill for the next showExportOptionsDialog; resolves when it opens
+ *  ({applied, ignored}) or rejects the prefill ({error} — nothing shows). */
+export function stageExportOptionsPrefill(prefill: ExportOptionsPrefill): Promise<ToolOpenResult> {
+  stagedPrefill?.settle({ error: 'superseded by a newer prefill' });
+  return new Promise(resolve => { stagedPrefill = { prefill, settle: resolve }; });
+}
+export function clearExportOptionsPrefill(reason: string): void {
+  if (!stagedPrefill) return;
+  stagedPrefill.settle({ error: reason });
+  stagedPrefill = null;
+}
+export function isExportOptionsOpen(): boolean { return openDialog !== null; }
+export function getExportOptionsState(): Record<string, unknown> | null { return openDialog?.state() ?? null; }
+export function closeExportOptionsDialog(): void { openDialog?.close(); }
 
 /** Keys of {@link ExportOptions} that map to a simple on/off checkbox. */
 type BooleanOptionKey = Exclude<keyof ExportOptions, 'versionIndices'>;
@@ -61,15 +93,34 @@ export function showExportOptionsDialog(
   versions: { index: number; label: string }[] = [],
 ): Promise<ExportOptions | null> {
   return new Promise((resolve) => {
+    // A staged openTool prefill is validated against the real version list
+    // first; a bad one never shows the dialog.
+    const staged = stagedPrefill;
+    stagedPrefill = null;
+    const applied: Record<string, unknown> = {};
+    const ignored: string[] = [];
+    if (staged?.prefill.versions) {
+      const known = new Set(versions.map(v => v.index));
+      const bad = staged.prefill.versions.filter(i => !known.has(i));
+      if (bad.length || staged.prefill.versions.length === 0) {
+        staged.settle({ error: staged.prefill.versions.length === 0 ? 'versions must list at least one version' : `versions: no version ${bad.join(', ')} (versions: ${versions.map(v => v.index).join(', ') || 'none'})` });
+        resolve(null);
+        return;
+      }
+      if (versions.length > 1) applied.versions = [...staged.prefill.versions]; else ignored.push('versions');
+    }
     let result: ExportOptions | null = null;
+    let disarmConfirm: () => void = () => {};
     const shell = createModalShell({
       title: 'Export session',
       scrollable: true,
       onClose: () => {
-        document.removeEventListener('keydown', onEnter);
+        disarmConfirm();
+        openDialog = null;
         resolve(result);
       },
     });
+    if (staged?.prefill.note) shell.body.appendChild(createToolNote(staged.prefill.note, staged.prefill.source));
 
     const sub = document.createElement('p');
     sub.className = 'text-[11px] text-zinc-400 leading-relaxed';
@@ -84,7 +135,9 @@ export function showExportOptionsDialog(
 
       const input = document.createElement('input');
       input.type = 'checkbox';
-      input.checked = opt.defaultValue;
+      const stagedFlag = staged?.prefill[opt.key as (typeof EXPORT_SESSION_FLAGS)[number]];
+      input.checked = stagedFlag ?? opt.defaultValue;
+      if (stagedFlag !== undefined) applied[opt.key] = stagedFlag;
       input.className = 'mt-0.5 w-4 h-4 accent-blue-500 cursor-pointer';
       checkboxes.set(opt.key, input);
 
@@ -165,7 +218,7 @@ export function showExportOptionsDialog(
         row.className = 'flex items-center gap-2 py-1 cursor-pointer hover:bg-zinc-700/40 rounded px-2 -mx-2';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = true;
+        cb.checked = applied.versions ? (applied.versions as number[]).includes(v.index) : true;
         cb.className = 'w-4 h-4 accent-blue-500 cursor-pointer';
         cb.dataset.index = String(v.index);
         versionChecks.push(cb);
@@ -192,15 +245,22 @@ export function showExportOptionsDialog(
         syncExportEnabled();
       });
       for (const c of versionChecks) c.addEventListener('change', syncExportEnabled);
+      if (applied.versions) syncExportEnabled();
     }
 
     // Modal shell handles Escape; we add Enter-to-confirm so the keyboard
-    // flow matches the previous standalone implementation.
-    function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); confirm(); }
-    }
-    document.addEventListener('keydown', onEnter);
-
-    exportBtn.focus();
+    // flow matches the previous standalone implementation. An AI-staged open
+    // is guarded: no Export focus, Enter arms only after the user interacts.
+    disarmConfirm = armDialogConfirm({ within: shell.body, primary: exportBtn, onConfirm: confirm, guarded: !!staged });
+    openDialog = {
+      state: () => {
+        const out: Record<string, unknown> = {};
+        for (const [key, input] of checkboxes) out[key] = input.checked;
+        if (versionChecks.length > 0) out.versions = versionChecks.filter(c => c.checked).map(c => Number(c.dataset.index));
+        return out;
+      },
+      close: () => { result = null; shell.close(); },
+    };
+    staged?.settle({ applied, ignored });
   });
 }

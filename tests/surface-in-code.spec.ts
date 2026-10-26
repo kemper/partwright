@@ -312,6 +312,34 @@ test.describe('api.surface.* (textures declared in code)', () => {
     expect(grip!.triangleCount).toBeGreaterThan(100);
   });
 
+  test('select scope takes a shared selector (part AND facing) (#1093)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { getGeometryData: () => Promise<{ boundingBox: { x: [number, number] } }> } }).partwright;
+      await pw.createSession('surface-scope-select');
+      const base = [
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip');",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+      ];
+      const run = async (scope: string) => {
+        const r = await pw.run([...base, `api.surface.knurl({ ${scope}, cellWidth: 2.4, amplitude: 0.7 });`, 'return box.add(ball);'].join('\n')) as { triangleCount?: number; error?: string | null };
+        return { error: r.error ?? null, tris: r.triangleCount ?? 0, minX: (await pw.getGeometryData()).boundingBox.x[0] };
+      };
+      const plain = await pw.run([...base, 'return box.add(ball);'].join('\n')) as { triangleCount?: number };
+      return { whole: await run("label: 'grip'"), top: await run("select: { label: 'grip', where: { facing: 'up' } }"), plainTris: plain.triangleCount ?? 0 };
+    });
+
+    expect(out.top.error).toBeNull();
+    expect(out.top.tris).toBeGreaterThan(out.plainTris);
+    // Knurling the whole grip pushes its -X side out; the top-only selector
+    // leaves that side exactly where it was.
+    expect(out.whole.minX).toBeLessThan(-14.3);
+    expect(out.top.minX).toBeCloseTo(-14, 3);
+  });
+
   test('region scope textures a patch near a point', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
@@ -354,6 +382,6 @@ test.describe('api.surface.* (textures declared in code)', () => {
       return { badPoint: badPoint?.error ?? '', both: both?.error ?? '' };
     });
     expect(errs.badPoint).toContain('point');
-    expect(errs.both).toContain('not both');
+    expect(errs.both).toContain('not several');
   });
 });

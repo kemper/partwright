@@ -14,6 +14,7 @@ import { showToast } from './toast';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
+import { registerTool, createToolNote, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 
 type Mode = 'parametric' | 'bake' | 'auto';
 type PlaceOpts = {
@@ -40,6 +41,16 @@ export interface PlaceApi {
 
 let openModal: HTMLDivElement | null = null;
 let currentPlaceClose: (() => void) | null = null;
+let currentPlaceState: (() => Record<string, unknown>) | null = null;
+
+/** Prefill keys for `openTool('tool-place', …)` — the rotation is staged in the
+ *  boxes; the user still clicks "Apply rotation" (or a drop/center/mirror
+ *  action). */
+const PLACE_PREFILL_SCHEMA: PrefillSchema = {
+  rotate: { type: 'vec3', description: 'Rotation [x, y, z] in degrees to stage in the Rotate boxes.' },
+  mode: { type: 'enum', values: ['parametric', 'bake'], description: 'Write-back: keep editable code or bake to a mesh.' },
+  preserveColor: { type: 'boolean', description: 'Keep paint on bake (painted models only).' },
+};
 
 const placeRegistryEntry = { close(): void { currentPlaceClose?.(); } };
 
@@ -74,7 +85,11 @@ function bboxSummary(api: PlaceApi): string | null {
   return null;
 }
 
-export function openPlaceModal(api: PlaceApi): void {
+export function openPlaceModal(api: PlaceApi, opts?: { prefill?: Record<string, unknown>; note?: string; source?: ToolOpenContext['source'] }): ToolOpenResult {
+  const p = opts?.prefill ?? {};
+  if (p.mode === 'parametric' && !api.canPlaceParametric()) {
+    return { error: "mode 'parametric' isn't available for this model (needs an unpainted manifold-js or voxel model) — use 'bake'" };
+  }
   if (openModal) { openModal.remove(); openModal = null; currentPlaceClose = null; }
 
   const canParametric = api.canPlaceParametric();
@@ -103,6 +118,7 @@ export function openPlaceModal(api: PlaceApi): void {
   const body = el('div', 'px-4 py-3 flex flex-col gap-3 overflow-y-auto flex-1 min-h-0');
   panel.append(body);
 
+  if (opts?.note) body.append(createToolNote(opts.note, opts.source));
   body.append(el('p', 'text-[11px] text-zinc-400 leading-snug',
     'Reposition or reorient the model: drop it to the floor, center it, rotate it, mirror it, or auto lay-flat.'));
 
@@ -257,24 +273,64 @@ export function openPlaceModal(api: PlaceApi): void {
     panel.remove();
     openModal = null;
     currentPlaceClose = null;
+    currentPlaceState = null;
     closeViewportPanel(placeRegistryEntry);
     document.removeEventListener('keydown', onPlaceEscape);
   };
   closeBtn.addEventListener('click', close);
   closeFooterBtn.addEventListener('click', close);
 
+  // Prefill (validated): stage values only — every action stays a user click.
+  const applied: Record<string, unknown> = {};
+  const ignored: string[] = [];
+  if (Array.isArray(p.rotate)) {
+    const r = p.rotate as number[];
+    (['x', 'y', 'z'] as const).forEach((axis, i) => { axisInputs[axis].value = String(r[i]); });
+    applied.rotate = r;
+  }
+  if (p.mode !== undefined) {
+    mode = p.mode as 'parametric' | 'bake';
+    for (const radio of panel.querySelectorAll<HTMLInputElement>('input[name="place-writeback"]')) radio.checked = radio.value === mode;
+    syncColorRow();
+    applied.mode = mode;
+  }
+  if (p.preserveColor !== undefined) {
+    if (hasColor) {
+      preserveColor = p.preserveColor as boolean;
+      const cb = colorRow?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      if (cb) cb.checked = preserveColor;
+      applied.preserveColor = preserveColor;
+    } else ignored.push('preserveColor');
+  }
+
   container.append(panel);
   setInitialPanelPosition(panel);
   currentPlaceClose = close;
+  currentPlaceState = () => ({
+    rotate: (['x', 'y', 'z'] as const).map(a => parseFloat(axisInputs[a].value) || 0),
+    mode,
+    preserveColor,
+  });
   openViewportPanel(placeRegistryEntry);
   document.addEventListener('keydown', onPlaceEscape);
   openModal = panel as HTMLDivElement;
+  return { applied, ignored };
 }
 
 const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
 
 export function initPlaceUI(api: PlaceApi): void {
+  registerTool({
+    id: 'tool-place',
+    title: 'Place / orient on bed',
+    hint: 'Tools',
+    prefillSchema: PLACE_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openPlaceModal(api, { prefill, note: ctx.note, source: ctx.source }),
+    getState: () => currentPlaceState?.() ?? null,
+    isOpen: () => openModal !== null,
+    close: () => currentPlaceClose?.(),
+  });
   registerCommands([
     {
       id: 'place-model',

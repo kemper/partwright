@@ -16,6 +16,8 @@ import { showToast } from './toast';
 import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
+import { registerTool, openTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
+import { assetPath } from '../deployment';
 import {
   type CharacterSpec,
   type Proportions,
@@ -31,8 +33,9 @@ import {
   LOCK_HAIR_STYLES,
   BUILDS, SEXES, FACE_SHAPES, LID_STYLES, NOSE_TYPES, LIP_SHAPES, BROW_SHAPES,
   HAIR_LENGTHS, LOCK_SHAPES, HAIR_CROWNS, SLEEVES, PANTS_RISES, PRINT_FONTS,
-  PRINT_DEFAULT, isPrintableText,
+  PRINT_DEFAULT, isPrintableText, normalizeSpec, validateSpec,
 } from '../figure/characterSpec';
+import { randomSpec, seededRandom } from '../figure/characterRandom';
 
 /** The slice of the console API the panel drives. */
 export interface CharacterCreatorApi {
@@ -44,6 +47,16 @@ export interface CharacterCreatorApi {
 }
 
 let openClose: (() => void) | null = null;
+let currentSpec: (() => CharacterSpec) | null = null;
+
+interface CharacterOpenOpts {
+  /** A Character Creator spec (same shape as `buildCharacter`, partial specs
+   *  merge onto the default) to show in the controls — UNBUILT: the editor is
+   *  untouched until the user edits, presses Preview, or saves. */
+  spec?: unknown;
+  note?: string;
+  source?: ToolOpenContext['source'];
+}
 
 // ---- small DOM helpers (vanilla, matching paramsPanel's idiom) -------------
 
@@ -195,6 +208,22 @@ function textRow(
   return labelledRow(label, input);
 }
 
+/** Thumbnail stand-in when a preset's baked image is missing: a tiny
+ *  head-over-body silhouette in the preset's own skin/hair/top/pants colours. */
+function fallbackFigure(spec: CharacterSpec): HTMLElement {
+  const wrap = el('div', 'flex flex-col items-center gap-px');
+  wrap.setAttribute('aria-hidden', 'true');
+  const head = el('span', 'w-5 h-5 rounded-full border-t-4');
+  head.style.background = spec.colors.skin;
+  head.style.borderTopColor = spec.hair.style === 'bald' ? spec.colors.skin : spec.colors.hair;
+  const torso = el('span', 'w-7 h-6 rounded-t-md');
+  torso.style.background = spec.clothing.top.on ? spec.colors.top : spec.colors.skin;
+  const legs = el('span', 'w-5 h-5');
+  legs.style.background = spec.clothing.pants.on ? spec.colors.pants : spec.colors.skin;
+  wrap.append(head, torso, legs);
+  return wrap;
+}
+
 /** A collapsible group (native <details>) for the less-used knobs, so the panel
  *  stays short. `open` holds the ids the user expanded — it survives the
  *  wholesale control rebuilds. */
@@ -234,7 +263,18 @@ const EXPRESSIONS: [string, string][] = [
   ['neutral', 'Neutral'], ['slightFrown', 'Slight frown'], ['frown', 'Frown'], ['deepFrown', 'Deep frown'],
 ];
 
-export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
+export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: CharacterOpenOpts): ToolOpenResult {
+  // Validate a handed-in spec before touching any open panel.
+  let initialSpec: CharacterSpec | null = null;
+  if (openOpts?.spec !== undefined) {
+    if (!openOpts.spec || typeof openOpts.spec !== 'object' || Array.isArray(openOpts.spec)) {
+      return { error: 'spec must be a Character Creator spec object (see /ai/figure.md)' };
+    }
+    const normalized = normalizeSpec(openOpts.spec);
+    const problems = validateSpec(normalized);
+    if (problems.length > 0) return { error: `spec: ${problems.join('; ')}` };
+    initialSpec = normalized;
+  }
   if (openClose) { openClose(); openClose = null; }
 
   // Live-preview debounce state — declared before the shell so onClose can
@@ -251,14 +291,16 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   const shell = createToolPanelShell({
     title: 'Character Creator',
     width: 'w-[20rem]',
-    onClose: () => { closed = true; window.clearTimeout(timer); },
+    onClose: () => { closed = true; window.clearTimeout(timer); if (openClose === shell.close) { openClose = null; currentSpec = null; } },
   });
   openClose = shell.close;
 
   // Restore the spec from the current code if it was made here; otherwise start
   // from the default (and remember whether it's safe to auto-preview on open).
+  // A handed-in spec (AI / API) wins, shown unbuilt.
   const existing = decodeSpecComment(api.getCode());
-  let spec: CharacterSpec = existing ? existing : cloneSpec(DEFAULT_SPEC);
+  let spec: CharacterSpec = initialSpec ?? (existing ? existing : cloneSpec(DEFAULT_SPEC));
+  currentSpec = () => spec;
   const currentCodeEmpty = api.getCode().trim() === '';
 
   // Generating overwrites the editor buffer. When the panel opens over
@@ -294,21 +336,91 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   };
 
   // A change handler that mutates the spec then re-previews.
-  const onEdit = (mutate: (s: CharacterSpec) => void): void => { mutate(spec); preview(); };
+  // An edit moves the spec off whichever preset it started from, so drop the
+  // card highlight (markActive is defined with the preset list below).
+  const onEdit = (mutate: (s: CharacterSpec) => void): void => { mutate(spec); markActive(null); preview(); };
 
   const body = shell.body;
+  if (openOpts?.note) body.appendChild(createToolNote(openOpts.note, openOpts.source));
 
-  // --- Quick presets ---
-  const presetWrap = el('div', 'flex flex-wrap gap-1');
-  presetWrap.setAttribute('role', 'group');
-  presetWrap.setAttribute('aria-label', 'Character presets');
+  // --- Start from a preset (scrollable pick-list) or roll a random one ---
+  // Each card shows a baked thumbnail (public/character-presets/<id>.webp, see
+  // scripts/bake-character-presets.mjs) with the preset's palette as a fallback
+  // strip, so the list is scannable even before/without the image.
+  const presetHeader = el('div', 'flex items-center justify-between gap-2 mt-1');
+  const presetTitle = sectionTitle('Start from a preset');
+  presetTitle.classList.remove('mt-1');
+  const randomBtn = el('button', `${BUTTON_SMALL_SECONDARY} ${TOUCH}`);
+  randomBtn.textContent = '🎲 Random';
+  const RANDOM_TITLE = 'Build a brand-new random character (click again for another)';
+  randomBtn.title = RANDOM_TITLE;
+  randomBtn.addEventListener('click', () => {
+    // Keep the stand + placement — print-setup choices, not part of "who".
+    const { base: keepBase, place: keepPlace } = spec;
+    // Seeded so a roll you like can be re-created with
+    // partwright.randomCharacter({ seed }) — the seed shows on hover.
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    spec = randomSpec(seededRandom(seed));
+    spec.base = keepBase;
+    spec.place = keepPlace;
+    randomBtn.title = `${RANDOM_TITLE} — last roll: seed ${seed}`;
+    markActive(null);
+    rebuild();
+    preview({ immediate: true });
+  });
+  presetHeader.append(presetTitle, randomBtn);
+
+  const presetList = el('div', 'grid grid-cols-2 gap-1.5 max-h-[15rem] shrink-0 overflow-y-auto pr-0.5');
+  presetList.setAttribute('role', 'list');
+  presetList.setAttribute('aria-label', 'Character presets');
+  const cards = new Map<string, HTMLButtonElement>();
+  const markActive = (id: string | null): void => {
+    for (const [cid, card] of cards) {
+      const on = cid === id;
+      card.classList.toggle('border-blue-500', on);
+      card.classList.toggle('border-zinc-700', !on);
+      card.setAttribute('aria-pressed', String(on));
+    }
+  };
   for (const p of CHARACTER_PRESETS) {
-    const b = el('button', `${BUTTON_SMALL_SECONDARY} ${TOUCH}`);
-    b.textContent = p.label;
-    b.addEventListener('click', () => { spec = p.patch(); rebuild(); preview({ immediate: true }); });
-    presetWrap.appendChild(b);
+    const preset = p.patch();
+    const item = el('div');
+    item.setAttribute('role', 'listitem');
+    const card = el('button', 'w-full h-full flex flex-col items-stretch text-left rounded border border-zinc-700 bg-zinc-800/60 [@media(hover:hover)]:hover:bg-zinc-700/70 overflow-hidden transition-colors');
+    card.setAttribute('aria-label', p.label);
+    card.setAttribute('aria-pressed', 'false');
+    card.title = `${p.label} — ${p.description}`;
+
+    // Light tile = the bake's own render background (scripts/bake-character-presets.mjs).
+    const thumbWrap = el('div', 'relative h-20 bg-[#f4f4f6] flex items-center justify-center');
+    const strip = el('div', 'absolute inset-x-0 bottom-0 h-1.5 flex');
+    for (const hex of [preset.colors.skin, preset.colors.hair, preset.colors.top, preset.colors.pants]) {
+      const seg = el('span', 'flex-1');
+      seg.style.background = hex;
+      strip.appendChild(seg);
+    }
+    const img = el('img', 'h-full w-full object-contain');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = assetPath(`/character-presets/${p.id}.webp`);
+    img.addEventListener('error', () => { img.remove(); thumbWrap.prepend(fallbackFigure(preset)); });
+    thumbWrap.append(img, strip);
+
+    const text = el('div', 'px-1.5 py-1');
+    const name = el('div', 'text-[12px] text-zinc-100 font-medium leading-tight truncate');
+    name.textContent = p.label;
+    const desc = el('div', 'text-[10px] text-zinc-400 leading-tight line-clamp-2');
+    desc.textContent = p.description;
+    text.append(name, desc);
+
+    card.append(thumbWrap, text);
+    card.addEventListener('click', () => { spec = p.patch(); markActive(p.id); rebuild(); preview({ immediate: true }); });
+    cards.set(p.id, card);
+    item.appendChild(card);
+    presetList.appendChild(item);
   }
-  body.append(sectionTitle('Start from a preset'), presetWrap);
+  body.append(presetHeader, presetList);
 
   // The controls live in a container we can wholesale-rebuild when a preset
   // replaces the entire spec (simpler than threading setters to every widget).
@@ -621,22 +733,44 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
       if (previewAfterSave && !closed) { previewAfterSave = false; preview({ immediate: true }); }
     }
   });
+  // A handed-in spec opens unbuilt: offer an explicit Preview beside Save.
+  if (initialSpec) {
+    const previewBtn = el('button', BUTTON_SMALL_SECONDARY);
+    previewBtn.textContent = 'Preview';
+    previewBtn.title = 'Build this character in the viewport (does not save)';
+    previewBtn.addEventListener('click', () => preview({ immediate: true }));
+    shell.footer.appendChild(previewBtn);
+  }
   shell.footer.appendChild(saveBtn);
 
   // Auto-preview on open only when it can't clobber unsaved work: an existing
-  // character (already on screen — just refresh) or an empty editor.
-  if (existing || currentCodeEmpty) preview();
+  // character (already on screen — just refresh) or an empty editor. Never for
+  // a handed-in spec — the user decides when to build it.
+  if (!initialSpec && (existing || currentCodeEmpty)) preview();
+  return { applied: initialSpec ? { spec: cloneSpec(initialSpec) } : {}, ignored: [] };
 }
 
 /** Wire the Character Creator into the command palette and the Tools menu. */
 export function initCharacterCreatorUI(api: CharacterCreatorApi): void {
+  registerTool({
+    id: 'character-creator',
+    title: 'Character Creator',
+    hint: 'Figure',
+    prefillSchema: {
+      spec: { type: 'object', description: 'Character Creator spec (same shape as buildCharacter; partial specs merge onto the default). Shown unbuilt.' },
+    },
+    open: (prefill, ctx) => openCharacterCreatorPanel(api, { spec: prefill?.spec, note: ctx.note, source: ctx.source }),
+    getState: () => (currentSpec ? { spec: cloneSpec(currentSpec()) } : null),
+    isOpen: () => openClose !== null,
+    close: () => openClose?.(),
+  });
   registerCommands([
     {
       id: 'character-creator',
       title: 'Character Creator',
       hint: 'Figure',
       keywords: 'character creator figure person human body pose face hair clothing avatar mannequin doll people sdf',
-      run: () => openCharacterCreatorPanel(api),
+      run: () => { void openTool('character-creator'); },
     },
   ]);
 

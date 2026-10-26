@@ -224,10 +224,27 @@ between configs of the same detector, the keys whose values differ; for a detect
 appears once, what it changed from its defaults (feature options included), e.g.
 `2. crease-watershed · creaseWeight=4 growth=summed`.
 
+## Editing the parts after accepting them
+
+Accepted parts are ordinary labels, so the shaping ops can target them by name.
+Edit the import in code on top of `api.importWithParts(0)`; the import itself is
+never modified:
+
+```js
+let m = api.importWithParts(0);
+m = api.sculpt.transform(m, { select: { label: 'head' }, scale: 1.2, blend: 3 });   // bigger head, eased into the neck
+m = api.sculpt.transform(m, { select: { label: 'ball' }, translate: [4, 0, 0] });     // nudge the ball forward
+m = api.twist(m, { select: { label: 'arm' }, degrees: 30, axis: 'x', blend: 2 });
+return m;
+```
+
+Labels survive these ops, so the part colours and `paintByLabel` keep working.
+The full selector syntax is in [/ai/deform.md](/ai/deform.md#selecting-part-of-a-shape).
+
 ## Notes
 
 - **Detection runs on the import's own mesh** (`importIndex`, default 0), in a background Worker. On a 460k-triangle scan, the first run analyses the surface in about 1 s; re-runs and edits take a fraction of that. Nothing is saved until `acceptParts`.
 - **Code you've restructured is left alone.** `acceptParts` only rewrites `Manifold.ofMesh(api.imports[i])` to `api.importWithParts(i)`. If your code loads the import some other way, call `api.importWithParts(i)` yourself. It returns a Manifold like `ofMesh`, and the labels survive later booleans.
 - **Re-detection keeps the draft.** A second `detectParts` goes into the existing draft as an undoable step: colours carry over by name, and locked parts and anything outside a focus stay as they are. `editParts({ops:[{op:'undo'}]})` steps back.
 - **Presets are listed per detector** in `listPartDetectors()` (`presets: [{name, params, featureOptions?}]`). The ranking score balances `grooveCoverage` against `grooveFidelity` (F1), discounted by stray islands and unassigned area. It's a heuristic, so look at the thumbnails too.
-- **Some operations drop parts.** Baking a surface texture or rescaling rebuilds the import's mesh, and the parts don't carry over yet. Re-detect afterwards.
+- **Some operations drop parts.** Baking a surface texture or rescaling rebuilds the import's mesh, and the parts don't carry over yet. Re-detect afterwards. In code, `api.round` / `api.smoothWeld` keep the parts when you pass `keepLabels: true`. To edit one detected part as a solid (scale the head, turn an arm, delete or swap a piece), use `api.editPart(api.importWithParts(0), 'head', { scale: 1.2 })` — see [deform](/ai/deform.md#editpart--edit-one-part-as-a-solid) — and confirm only that part moved with `diffVersions(a, b, { geometry: true })`.

@@ -4,6 +4,7 @@ import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrep
 import { getManifoldModule, manifoldJsEngine, resolveLabelMap } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
+import { assertModelCodeRealm } from '../workerLockdown';
 
 // === replicad engine — Phase A of the BREP integration ===
 //
@@ -92,6 +93,7 @@ export const replicadEngine: Engine = {
  *  stats, paint persistence) keep working, and stash the live BrepShape in
  *  `lastShape` so STEP export can find it. */
 export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+  assertModelCodeRealm('BREP model code');
   if (!manifoldModule || !getBrepNamespace()) {
     const error = 'BREP/replicad engine not initialised.';
     return { mesh: null, manifold: null, error };

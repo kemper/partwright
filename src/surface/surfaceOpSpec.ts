@@ -2,11 +2,14 @@
 // code. This is the single source of truth for which surface modifiers can be
 // expressed as code and which option keys each one accepts.
 //
-// It is intentionally a leaf module (no imports): the Worker sandbox
-// (`engines/manifoldJs.ts`) imports it to *validate* `api.surface.*` calls, and
-// the main thread (`surfaceOps.ts`) imports it to *apply* them. Keeping the spec
-// here avoids pulling the heavy modifier math (which is main-thread + WebGPU)
-// into the Worker bundle, and avoids a module cycle.
+// It is intentionally a leaf module (its one import, the selector parser, is
+// itself a pure leaf): the Worker sandbox (`engines/manifoldJs.ts`) imports it
+// to *validate* `api.surface.*` calls, and the main thread (`surfaceOps.ts`)
+// imports it to *apply* them. Keeping the spec here avoids pulling the heavy
+// modifier math (which is main-thread + WebGPU) into the Worker bundle, and
+// avoids a module cycle.
+
+import { parseSelector, type Selector } from '../geometry/selector';
 
 /** Surface modifiers that can be recorded in code as `api.surface.<id>(...)`.
  *  A subset of `SurfaceModifierId` (`src/surface/modifiers.ts`): the ones that
@@ -30,10 +33,14 @@ export type SurfaceOpId =
  *     shape of a unioned model can be textured (e.g. a knurled grip on a
  *     smooth body).
  *   - `point` — every triangle whose surface sits within `radius` of a
- *     world-space point, e.g. captured from a viewport click. */
+ *     world-space point, e.g. captured from a viewport click.
+ *   - `select` — any shared selector (`src/geometry/selector.ts`): parts,
+ *     balls, facing / bounds tests, combined with OR / AND / except. `label`
+ *     and `region` are shorthands for the two simplest forms. */
 export type SurfaceScope =
   | { kind: 'label'; label: string }
-  | { kind: 'point'; point: [number, number, number]; radius: number };
+  | { kind: 'point'; point: [number, number, number]; radius: number }
+  | { kind: 'select'; select: Selector };
 
 /** A scope resolved to seed points + a catch radius (computed main-side from
  *  the base mesh, then handed to the surface Worker). The Worker selects every
@@ -78,11 +85,11 @@ export const SURFACE_OP_IDS = Object.keys(SURFACE_OP_FIELDS) as SurfaceOpId[];
 /** Reserved option keys that scope an op to part of the model rather than name
  *  a per-modifier parameter (see {@link SurfaceScope}). Handled separately from
  *  `SURFACE_OP_FIELDS`. */
-export const SURFACE_SCOPE_KEYS = ['label', 'region'] as const;
+export const SURFACE_SCOPE_KEYS = ['label', 'region', 'select'] as const;
 
 /** Validate and split a raw `api.surface.<id>(opts)` options object into the
  *  per-modifier scalar `params` and an optional `scope` (from the reserved
- *  `label` / `region` keys). Throws an `Error` with an actionable message on
+ *  `label` / `region` / `select` keys). Throws an `Error` with an actionable message on
  *  anything invalid. Pure + dependency-free, so the Worker sandbox recorder
  *  (`engines/manifoldJs.ts`) and the console twin (`applySurfaceTextureAsCode`
  *  in `main.ts`) share ONE source of truth and can't drift. */
@@ -90,8 +97,8 @@ export function parseSurfaceOpts(
   id: SurfaceOpId,
   opts: Record<string, unknown>,
 ): { params: Record<string, number | boolean | string>; scope?: SurfaceScope } {
-  if ('label' in opts && 'region' in opts) {
-    throw new Error(`api.surface.${id}: pass either label or region to scope the op, not both.`);
+  if (SURFACE_SCOPE_KEYS.filter(k => k in opts).length > 1) {
+    throw new Error(`api.surface.${id}: pass one of label, region or select to scope the op, not several.`);
   }
   const allowed = SURFACE_OP_FIELDS[id];
   const params: Record<string, number | boolean | string> = {};
@@ -108,8 +115,12 @@ export function parseSurfaceOpts(
       scope = parseRegionScope(id, v);
       continue;
     }
+    if (k === 'select') {
+      scope = { kind: 'select', select: parseSelector(v, `api.surface.${id}.select`) };
+      continue;
+    }
     if (!allowed.includes(k)) {
-      throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')} (or scope keys: label, region).`);
+      throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')} (or scope keys: label, region, select).`);
     }
     if (typeof v === 'number') {
       if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);

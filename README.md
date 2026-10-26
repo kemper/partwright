@@ -1,19 +1,45 @@
 # Partwright
 
-A browser-based CAD tool designed for AI-driven 3D modeling. Write JavaScript code, get instant 3D geometry — no backend, no installs.
+A free, browser-based 3D CAD tool where every model is code, and you can bring your own AI to build it with you. Write JavaScript or OpenSCAD (or let an AI write it), get real 3D geometry instantly, then paint it, texture it, and export it for 3D printing. No backend, no account, no install.
 
-Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM boolean engine), [Three.js](https://threejs.org/) (rendering), and [CodeMirror](https://codemirror.net/) (editor).
+**Try it:** [www.partwrightstudio.com](https://www.partwrightstudio.com)
+
+Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM booleans), [OpenSCAD](https://openscad.org/), [OpenCASCADE](https://dev.opencascade.org/) via [replicad](https://replicad.xyz/), [Three.js](https://threejs.org/) (rendering), and [CodeMirror](https://codemirror.net/) (editor).
 
 ## What it does
 
-- **Code-driven CAD** — Write JS that constructs 3D geometry using primitives, booleans, extrusions, and revolves. Hit Run, see the result.
-- **AI-friendly** — A `window.partwright` console API lets AI agents create, validate, and iterate on designs programmatically. Structured geometry data (volume, bounding box, cross-sections) is always available in the DOM for verification.
-- **Session & versioning** — Save multiple design variations, then open a gallery view to compare them side-by-side. Ideal for AI workflows that generate N variations for human review.
-- **Multi-view rendering** — Interactive 3D viewport plus headless `renderViews`/`renderView` APIs that composite any set of angles on demand (including a `box` preset covering all six orthographic faces).
-- **Cross-sections** — Slice geometry at any Z height, inspect the 2D profile as SVG.
-- **Color regions** — Paint coplanar face regions with the in-app paint mode or the `paintRegion` console API; colors flow through GLB and 3MF exports for multi-material slicing.
-- **Export** — GLB, STL, OBJ, and 3MF download. GLB and 3MF carry per-region colors when present.
-- **Share links** — Turn the current version into a public link that encodes the whole design in the URL hash (gzipped, client-side — nothing is uploaded to any server). Opening a link shows a read-only preview (thumbnail + code + stats); the shared code never runs until the viewer chooses to fork it into their own local session.
+**Modeling — every model is code**
+- **Four engines in one app:** JavaScript on a fast **mesh** kernel (manifold-3d), **OpenSCAD** (with BOSL2 for threads, gears, and rounded parts), **BREP** solids on OpenCASCADE (true fillets/chamfers and STEP export), and a **voxel** engine for blocky, colored, Minecraft-style models.
+- **Parametric by default:** declare `api.params` and get customizer sliders. Signed-distance fields for organic shapes, 3D text, and Blender-style shaping (bend, twist, taper, wrap, sculpt, rounding, scatter).
+- **Tinkercad-style Arrange mode** for dropping in primitives and placing parts, plus multi-object assemblies with named parts that survive booleans.
+- **Character Creator:** build posable, printable figures (body, face, hair, outfits, footwear, held accessories) with sliders and no code.
+- **Catalog of ~160 ready-made models** and an **Ideas** page of starter prompts.
+
+**AI — bring your own**
+- **Built-in AI assistant** with five provider types: **Anthropic**, **OpenAI**, **Google Gemini**, any **OpenAI-compatible** endpoint (Ollama, LM Studio, llama.cpp, vLLM…), or a **local model running in your browser on WebGPU** (free, no key). Keys stay in your browser and requests go straight to the provider.
+- The AI writes the code, renders the model from several angles, reads geometry stats, and fixes its own mistakes. Plan mode, auto-continue, spend caps, voice input, and image attachments.
+- **Cross-provider review:** have one model critique another model's work, by hand or automatically at the end of each task.
+- **Photo-driven flows:** a stylized bust from a photo, Photo → 3D, **convert an imported mesh back into editable code**, and **split an imported mesh into named, paintable parts** (hair, face, shirt…).
+- **External agents** (Claude Code, browser extensions, MCP) can drive everything through the `window.partwright` console API.
+
+**Color, texture & effects**
+- **Multi-color painting:** brush, bucket fill, whole-part recolor, and projecting an image or logo onto the surface.
+- **Filament palette manager:** build a palette from a photo, then paint by filament slot so colors map to your AMS.
+- **Surface textures:** fuzzy skin, knit, cable knit, waffle, fur/velvet, woven, knurl, Voronoi, smoothing, and voxelize. Apply them to the whole model or one region, declared in code so they're never baked in.
+- **Engrave / emboss** text and images, and an **image → relief** wizard for printable tiles, keychains, and stepped reliefs.
+- Viewport material presets (brass, glass…) and studio lighting.
+
+**Import & export**
+- **Export:** 3MF (multi-color, multi-plate, with Bambu Studio / OrcaSlicer project files for your exact printer), STL, OBJ, GLB, STEP, VOX, and turntable / exploded-view videos.
+- **Import:** STL, 3MF (with filament colours, plates, and named parts from Bambu Studio, OrcaSlicer, or PrusaSlicer), STEP, SVG, MagicaVoxel `.vox`, images (as reliefs or voxel art), sessions, and files from a URL.
+
+**Workflow**
+- **Sessions & versions:** every save is a version. Compare them side by side in a gallery or diff view, keep notes, and attach reference images.
+- **Analysis:** cross-sections, a measure tool, dimensions, and a printability indicator.
+- **Share links** encode the whole design in the URL hash (gzipped, client-side, nothing uploaded). Opening one shows a read-only preview, and the shared code never runs until the viewer chooses to fork it.
+- Command palette (⌘K / Ctrl+K), keyboard shortcuts, light/dark themes, and a mobile-friendly layout.
+
+**Private by design:** a static site with no backend. Geometry runs in WebAssembly in your browser, and your work is saved in your browser's IndexedDB. Model code runs in a locked-down Worker with no network or storage access, and an opt-in sandbox can move it to a separate origin. See [SECURITY.md](SECURITY.md).
 
 ## Feedback & support
 
@@ -36,7 +62,7 @@ Open [http://localhost:5173/](http://localhost:5173/) for the landing page, or [
 
 ## How it works
 
-The editor runs user code in a sandboxed function. Code receives an `api` object with `Manifold`, `CrossSection`, and `setCircularSegments`, and must `return` a Manifold:
+The editor runs user code in a locked-down Web Worker. Code receives an `api` object with `Manifold`, `CrossSection`, and `setCircularSegments`, and must `return` a Manifold:
 
 ```javascript
 const { Manifold, CrossSection } = api;
@@ -61,10 +87,13 @@ Shortcuts adapt to your OS — use **⌘** on macOS and **Ctrl** elsewhere.
 
 | Action | macOS | Windows / Linux | What it does |
 |--------|-------|-----------------|--------------|
+| Command palette | ⌘ K | Ctrl + K | Search and run any action by name. |
+| Shortcut cheat sheet | ? | ? | Show every keyboard shortcut (when not typing in a field). |
 | Undo | ⌘ Z | Ctrl + Z | Undo the last paint region or annotation stroke (whichever tool is active). In the code editor, its built-in undo applies. |
 | Redo | ⇧ ⌘ Z | Ctrl + Shift + Z, or Ctrl + Y | Redo the last undone paint region or annotation stroke. |
 | Save version | ⌘ S | Ctrl + S | Snapshot the current code, geometry, paint, and annotations as a new version. |
 | Format code | ⇧ ⌥ F | Shift + Alt + F | Reformat the editor contents. |
+| Find / Replace | ⌘ F / ⌘ ⌥ F | Ctrl + F / Ctrl + Alt + F | Open the code editor's find or find-and-replace panel. |
 | Save notes | ⌘ Enter | Ctrl + Enter | Save the Notes textarea (when focused). |
 | Close / cancel | Escape | Escape | Close the open dropdown, modal, paint/annotate panel, cross-section overlay, or exit the tour. |
 
@@ -78,7 +107,13 @@ That said: **when you connect your own AI agent, it uses your API tokens.** AI-d
 
 ## AI Agent Setup
 
-AI agents (Claude Code, etc.) interact with the app via `window.partwright` in the browser. The legacy `window.mainifold` alias still works for older prompts and tools. There are several ways to give an AI agent browser access:
+### Built-in assistant (no setup beyond a key)
+
+Click **✦ Use AI** in the editor toolbar, pick a provider, and paste your API key, or choose **Run a local model in your browser** to download a WebGPU model instead. The chat panel docks on the right. Keys are stored in your browser's IndexedDB and every request goes directly from your browser to the provider. See the in-app [Help page](https://www.partwrightstudio.com/help) for the full tour of providers, toggles, and spend caps.
+
+### External agents
+
+External AI agents (Claude Code, etc.) can also drive the app via `window.partwright` in the browser. The legacy `window.mainifold` alias still works for older prompts and tools. There are several ways to give an AI agent browser access:
 
 ### Option 1: Claude in Chrome extension (recommended)
 
@@ -108,9 +143,11 @@ Best for: automated/headless workflows, CI pipelines, or when you don't want to 
 
 ### The workflow
 
-Whichever option you use, the AI agent navigates to `http://localhost:5173/editor`, then uses the `window.partwright` console API to create sessions, write geometry code, validate results with assertions, save versions, and hand you a gallery URL for review.
+Whichever option you use, the AI agent navigates to the editor (`https://www.partwrightstudio.com/editor`, or `http://localhost:5173/editor` for a local dev server), then uses the `window.partwright` console API to create sessions, write geometry code, validate results with assertions, save versions, and hand you a gallery URL for review.
 
-See `CLAUDE.md` for the full API reference and recommended iteration patterns.
+See [`public/ai.md`](public/ai.md) (served at `/ai.md`) for the full API reference and recommended iteration patterns.
+
+CLI agents working in a clone of this repo can also use the headless tools: `npm run model:preview -- <file.js>` renders a model snippet and prints its stats in about two seconds, and `node bin/partwright.mjs` drives the full app from the command line. See [`docs/headless-cli.md`](docs/headless-cli.md).
 
 ## Console API
 
@@ -127,6 +164,9 @@ partwright.exportGLB()           // Download GLB (carries vertex colors)
 partwright.exportSTL()           // Download STL
 partwright.exportOBJ()           // Download OBJ
 partwright.export3MF()           // Download 3MF (carries per-region materials)
+partwright.exportSTEP()          // Download STEP (BREP sessions)
+partwright.exportVOX()           // Download MagicaVoxel .vox (voxel sessions)
+partwright.exportTurntable()     // Record a turntable video of the viewport
 
 // Sessions — save/compare design iterations
 await partwright.createSession("Gear variations")
@@ -137,24 +177,15 @@ partwright.getGalleryUrl()       // URL for gallery view
 partwright.paintRegion({ point: [10,0,5], normal: [0,0,1], color: [1,0,0] })
 partwright.listRegions()
 partwright.clearColors()
+
+partwright.help()                // List every method with a one-line description
 ```
 
 Geometry stats are also always available as JSON in `#geometry-data` for DOM scraping.
 
-## Examples
+## Catalog
 
-The toolbar dropdown includes built-in examples:
-
-| Example | What it demonstrates |
-|---------|---------------------|
-| Basic Shapes | Primitives and booleans |
-| Twisted Vase | Stacked cylinders with twist |
-| Boolean Demo | Union, difference, intersection |
-| Chess Rook | Revolve profile + circular array |
-| Spur Gear | Involute tooth profile, extrude, bore |
-| L-Bracket | Plate with fillets and bolt holes |
-| Desk Organizer | Rounded rectangles, hollowing |
-| Christmas Tree | Stacked cones with ornaments |
+The [`/catalog`](https://www.partwrightstudio.com/catalog) page holds about 160 ready-made models: mechanical parts, print-in-place fidgets, figures, voxel scenes, assemblies, and more. It's searchable and filterable, and every entry opens as an editable session. Model sources live in [`examples/`](examples/) and the baked entries in [`public/catalog/`](public/catalog/).
 
 ## Deployment
 
@@ -174,23 +205,28 @@ The app deploys via [Cloudflare Pages](https://pages.cloudflare.com/). Three bra
 
 ## Architecture
 
-Static site — vanilla TypeScript + Vite, no backend or framework.
+Static site — vanilla TypeScript + Vite (with Preact for some panels), no backend.
 
 ```
 src/
-  geometry/engine.ts      Manifold WASM init + sandboxed code execution
+  geometry/engine.ts        Engine dispatcher + Worker client
+  geometry/engineWorker.ts  Worker that runs model code; lazy-loads non-default engines
+  geometry/engines/         manifold-js (default), OpenSCAD, replicad (BREP), voxel
   geometry/crossSection.ts  Z-slice to SVG/polygon conversion
-  renderer/viewport.ts    Three.js interactive viewport
-  renderer/multiview.ts   Offscreen multi-angle render API (renderViews/renderView)
-  editor/codeEditor.ts    CodeMirror editor setup
-  ui/layout.ts            Split-pane layout
-  ui/toolbar.ts           Top toolbar with examples dropdown
-  export/gltf.ts          GLB export (with vertex colors)
-  export/stl.ts           STL export
-  export/obj.ts           OBJ export
-  export/threemf.ts       3MF export (per-region basematerials + pid)
-  color/                  Paint mode, coplanar flood-fill, region persistence
+  renderer/viewport.ts      Three.js interactive viewport
+  renderer/multiview.ts     Offscreen multi-angle render API (renderViews/renderView)
+  editor/codeEditor.ts      CodeMirror editor setup
+  ai/                       Built-in AI chat: providers, chat loop, tool schemas
+  color/                    Paint mode, flood fill, filament palettes, region persistence
+  surface/                  Surface textures (knit, fur, knurl, Voronoi, engrave, …)
+  reconstruct/              Mesh → code reconstruction
+  import/                   STL / STEP / SVG / VOX / image import
+  export/                   GLB, STL, OBJ, 3MF (incl. Bambu projects), VOX, video
+  storage/                  Sessions, versions, and IndexedDB persistence
+  ui/                       Toolbar, panels, modals, command palette
 ```
+
+Heavy engines load only when first used: OpenSCAD on the first SCAD run, OpenCASCADE on the first BREP use, and WebLLM on the first local-model turn.
 
 Requires `Cross-Origin-Embedder-Policy` and `Cross-Origin-Opener-Policy` headers for SharedArrayBuffer / WASM threads (configured in `vite.config.ts`).
 
@@ -205,7 +241,7 @@ Requires `Cross-Origin-Embedder-Policy` and `Cross-Origin-Opener-Policy` headers
 
 Partwright is designed to be controlled by AI agents, which means you're trusting the app not to embed hidden instructions that trick your AI into doing something harmful. See [SECURITY.md](SECURITY.md) for the full trust model, what the app can and can't do, and how to verify it yourself.
 
-**TL;DR:** No backend, no accounts, only privacy-first anonymous analytics (Cloudflare Web Analytics — cookieless, aggregate, never sees your designs), no hidden DOM instructions, 7 well-known dependencies, enforced Content Security Policy.
+**TL;DR:** No backend, no accounts, only privacy-first anonymous analytics (Cloudflare Web Analytics — cookieless, aggregate, never sees your designs), no hidden DOM instructions, well-known open-source dependencies, and a Content Security Policy that blocks external scripts.
 
 ## Coordinate system
 

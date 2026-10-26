@@ -70,15 +70,15 @@ return body.add(head); // FIGURE-MARKER`, 'v1');
   // starter code (the core regression: the old path left "Object 1" selected).
   await expect(page.locator('.cm-content')).toContainText('FIGURE-MARKER', { timeout: 15_000 });
 
-  // The selected part's id is the second part (it's the active one).
-  const selectedIsPart2 = await page.evaluate(() => {
+  // The selected part's id is the second part (it's the active one). Polled:
+  // the URL update can land just after the editor shows the new code.
+  await expect.poll(() => page.evaluate(() => {
     const parts = (window as unknown as { partwright: PW }).partwright.listParts();
     const activePart = new URLSearchParams(window.location.search).get('part');
     // When only one part exists the URL omits `part`; with two it carries the
     // active id. The active part should be the newly-added "Object 2".
     return activePart === null || activePart === parts[1].id;
-  });
-  expect(selectedIsPart2).toBe(true);
+  }), { timeout: 10_000 }).toBe(true);
 
   // The merged part's version was given a thumbnail (live capture on select).
   await expect.poll(async () => page.evaluate(async () => {

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildAdjacency } from '../../src/color/adjacency';
+import { buildAdjacency, type AdjacencyGraph } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
+
+/** The triangles adjacent to `t` in the CSR graph. */
+function neighborsOf(adjacency: AdjacencyGraph, t: number): Uint32Array {
+  return adjacency.nbFlat.subarray(adjacency.nbStart[t], adjacency.nbStart[t + 1]);
+}
 
 /** The original Map/Set implementation, kept as the reference the typed-array
  *  rewrite must match (same neighbour sets, any order). */
@@ -71,10 +76,10 @@ describe('buildAdjacency', () => {
     const mesh = splitGrid(12);
     const got = buildAdjacency(mesh);
     const want = referenceNeighbors(mesh);
-    expect(got.neighbors.length).toBe(mesh.numTri);
+    expect(got.nbStart.length).toBe(mesh.numTri + 1);
     for (let t = 0; t < mesh.numTri; t++) {
-      expect(new Set(got.neighbors[t])).toEqual(want[t]);
-      expect(got.neighbors[t].length).toBe(want[t].size); // no duplicates
+      expect(new Set(neighborsOf(got, t))).toEqual(want[t]);
+      expect(neighborsOf(got, t).length).toBe(want[t].size); // no duplicates
     }
   });
 
@@ -86,9 +91,9 @@ describe('buildAdjacency', () => {
       numVert: 6,
       numTri: 2,
     } as MeshData;
-    const { neighbors } = buildAdjacency(mesh);
-    expect([...neighbors[0]]).toEqual([1]);
-    expect([...neighbors[1]]).toEqual([0]);
+    const adj = buildAdjacency(mesh);
+    expect([...neighborsOf(adj, 0)]).toEqual([1]);
+    expect([...neighborsOf(adj, 1)]).toEqual([0]);
   });
 
   it('stays fast on grid-aligned coordinates (voxel / integer-dimensioned meshes)', () => {
@@ -111,10 +116,10 @@ describe('buildAdjacency', () => {
       numTri: tris.length / 3,
     } as MeshData;
     const started = performance.now();
-    const { neighbors } = buildAdjacency(mesh);
+    const adj = buildAdjacency(mesh);
     const ms = performance.now() - started;
     // An interior triangle of a regular grid touches 12 others by corner.
-    expect(neighbors[(n / 2) * n * 2 + n].length).toBe(12);
+    expect(neighborsOf(adj, (n / 2) * n * 2 + n).length).toBe(12);
     expect(ms).toBeLessThan(3000);
   });
 });

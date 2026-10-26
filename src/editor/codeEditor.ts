@@ -478,6 +478,12 @@ export function setValue(code: string): void {
   }
 }
 
+/** What `setValue(code)` would put in the editor (auto-format applied when
+ *  enabled) — lets callers tell whether editor contents came from `code`. */
+export function formatAsEditorWould(code: string): string {
+  return autoFormatEnabled ? applyFormat(code, currentLanguage) : code;
+}
+
 function applyFormat(code: string, lang: EditorLanguage): string {
   if (lang === 'scad') return code;
   try {
@@ -647,6 +653,21 @@ export function revealFirstDiagnostic(): void {
   editorView.dispatch({
     selection: { anchor: first.from, head: first.to },
     effects: EditorView.scrollIntoView(first.from, { y: 'center' }),
+  });
+  editorView.focus();
+}
+
+/** Select `[from, to)` and scroll it into the middle of the editor (e.g. the
+ *  Objects rail's "Go to code" on a part's api.label call). */
+export function revealRange(from: number, to: number): void {
+  if (!editorView) return;
+  const len = editorView.state.doc.length;
+  const a = Math.max(0, Math.min(from, len));
+  const b = Math.max(a, Math.min(to, len));
+  markEditorScrollIntent();
+  editorView.dispatch({
+    selection: { anchor: a, head: b },
+    effects: EditorView.scrollIntoView(a, { y: 'center' }),
   });
   editorView.focus();
 }

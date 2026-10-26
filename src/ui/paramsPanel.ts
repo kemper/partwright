@@ -12,6 +12,7 @@ import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from '.
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { createColorSwatch } from './colorPickerModal';
 import { createSliderEntry, formatEntry } from './sliderEntry';
+import { setToolNote, type ToolOpenContext } from './toolRegistry';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -47,6 +48,9 @@ export interface ParamsPanelController {
   isOpen(): boolean;
   /** Whether the active model declares any parameters. */
   hasParams(): boolean;
+  /** Show (or clear, with null) a "Suggested by AI: …" line above the widgets
+   *  — openTool('tool-customize'). Cleared when the panel closes. */
+  setNote(note: string | null | undefined, source?: ToolOpenContext['source']): void;
 }
 
 const OVERLAY_BTN = 'px-2 py-0.5 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
@@ -96,6 +100,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   header.appendChild(closeBtn);
   root.appendChild(header);
 
+  // AI note slot (openTool prefill) — outside `body`, which rebuilds on a schema change.
+  const noteHost = document.createElement('div');
+  noteHost.className = 'px-2.5 pt-2 empty:hidden';
+  root.appendChild(noteHost);
+
   // Scrollable body holding the widgets.
   const body = document.createElement('div');
   body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(60vh,22rem)]';
@@ -133,6 +142,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
       }
       requestAnimationFrame(() => { clampIntoViewRef?.(); });
     } else if (!willOpen && wasOpen) {
+      noteHost.replaceChildren();
       closeViewportPanel(registryEntry);
       document.removeEventListener('keydown', onParamsEscape);
       escapeListenerActive = false;
@@ -227,6 +237,10 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
     isOpen,
     hasParams() { return paramCount > 0; },
+    setNote(note, source) {
+      setToolNote(noteHost, note, source);
+      noteHost.querySelector('[data-tool-note]')?.classList.remove('mb-2');
+    },
   };
 }
 

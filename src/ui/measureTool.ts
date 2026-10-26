@@ -72,6 +72,24 @@ export function clear(): void {
   }
 }
 
+/** Show a measurement between two given points (activating the tool if
+ *  needed) — the `openTool('tool-measure', {points})` prefill. The user can
+ *  click to clear it and drag a new one. Returns the distance. */
+export function showPoints(p1: [number, number, number], p2: [number, number, number]): number {
+  if (mode === 'inactive') activate();
+  if (moveHandler || upHandler) endDrag(new PointerEvent('pointerup'));
+  clearMeasurement();
+  point1 = new THREE.Vector3(...p1);
+  point2 = new THREE.Vector3(...p2);
+  currentDistance = measureDistance(p1, p2);
+  startMeasurement(point1, viewportContainer);
+  updateMeasurementTarget(point2, currentDistance);
+  mode = 'displaying';
+  canvas.style.cursor = '';
+  dragEndTime = Date.now();
+  return currentDistance;
+}
+
 export function getState(): MeasureState {
   return {
     active: mode !== 'inactive',

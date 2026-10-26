@@ -15,7 +15,8 @@ import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
-import { getBrepNamespace, setBrepRemovedParts, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
+import { setSelectorLabels } from '../selector';
+import { getBrepNamespace, setBrepRemovedParts, peekBrepToManifoldLabels, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../import/importParts';
 import type { RegionDescriptor } from '../../color/regions';
@@ -23,6 +24,8 @@ import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '.
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
+import { assertModelCodeRealm } from '../workerLockdown';
+import { MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS, type ApiPaintDescriptorKind } from '../apiPaintSpec';
 import { withoutPiecesAt } from '../removePieces';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -255,6 +258,7 @@ export const manifoldJsEngine: Engine = {
   },
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    assertModelCodeRealm('manifold-js model code');
     if (!manifoldModule) {
       return { mesh: null, manifold: null, error: 'Engine not initialized' };
     }
@@ -293,7 +297,10 @@ export const manifoldJsEngine: Engine = {
     // renders them as the model-color underlay. The code is the source of truth,
     // so these are never written to the paint sidecar. Last-recorded wins on
     // overlap, in declaration order. Cleared on every run.
-    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
+    // Typed against the shared API_PAINT_DESCRIPTOR_KINDS (apiPaintSpec.ts),
+    // which the Worker→main validator allow-lists — a new kind must be added
+    // there or this won't compile.
+    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor & { kind: ApiPaintDescriptorKind } }[] = [];
     let paintSeq = 0;
 
     // Viewport material declared in code via `api.material(...)` — a shading
@@ -548,6 +555,9 @@ export const manifoldJsEngine: Engine = {
         if (!Array.isArray(colors) || colors.length < 2) {
           throw new Error('api.paint.pattern colors: expected an array of at least 2 colors [base, mark, third?].');
         }
+        if (colors.length > MAX_PAINT_PATTERN_COLORS) {
+          throw new Error(`api.paint.pattern: at most ${MAX_PAINT_PATTERN_COLORS} colors per pattern (got ${colors.length}).`);
+        }
         const rgbColors = colors.map((c, i) => paintColor(c, `api.paint.pattern colors[${i}]`));
         let scopeObj: PatternScope | undefined;
         if (scope !== undefined) {
@@ -596,6 +606,9 @@ export const manifoldJsEngine: Engine = {
         let anchorPts: [number, number, number][] | undefined;
         if (anchors !== undefined) {
           if (!Array.isArray(anchors)) throw new Error('api.paint.pattern anchors: expected an array of [x, y, z] points.');
+          if (anchors.length > MAX_PAINT_PATTERN_ANCHORS) {
+            throw new Error(`api.paint.pattern: at most ${MAX_PAINT_PATTERN_ANCHORS} anchors per pattern (got ${anchors.length}).`);
+          }
           anchorPts = anchors.map((a, i) => paintVec3(a, `api.paint.pattern anchors[${i}]`));
         }
         const descriptor: RegionDescriptor = {
@@ -836,6 +849,8 @@ export const manifoldJsEngine: Engine = {
       alongCurve: meshOpsNamespace.alongCurve,
       round: meshOpsNamespace.round,
       smoothWeld: meshOpsNamespace.smoothWeld,
+      // Edit one part as a solid (cut at its seam, transform, re-attach):
+      editPart: meshOpsNamespace.editPart,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:
@@ -922,6 +937,19 @@ export const manifoldJsEngine: Engine = {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
       // BREP.label honours api.removePart too (Phase C: BREP inside a JS run).
       setBrepRemovedParts(removedParts);
+      // Selector `label` terms (sculpt / deform / scatter `select:`) resolve
+      // against this run's labels — read live, so a label declared just before
+      // the op that selects it is found. BREP.label parts (BREP.toManifold)
+      // only merge into labelRegistry after the run, so peek at those too.
+      const allLabelRegistries = () => [labelRegistry, ...peekBrepToManifoldLabels()];
+      setSelectorLabels({
+        ids: (name) => {
+          const ids: number[] = [];
+          for (const reg of allLabelRegistries()) for (const [id, n] of reg) if (n === name) ids.push(id);
+          return ids.length > 0 ? ids : null;
+        },
+        names: () => [...new Set(allLabelRegistries().flatMap(reg => [...reg.values()]))],
+      });
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
@@ -1039,6 +1067,7 @@ export const manifoldJsEngine: Engine = {
       };
     } finally {
       setBrepRemovedParts(null);
+      setSelectorLabels(null);
       // Stop tracking, then free every intermediate the run created. The value
       // the user returned (`result`) is spared — its lifecycle belongs to the
       // caller (the worker frees it after extracting the mesh; the sync path in

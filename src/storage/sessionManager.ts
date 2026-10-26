@@ -210,8 +210,15 @@ import { isQuotaError } from './quota';
  *           `acceptParts` and turned into real labels by
  *           `api.importWithParts(i)`. Malformed parts are dropped (the mesh
  *           still imports). Additive; older readers ignore the field.
+ *  - `1.21` — colour-region descriptors gain a `colorMatch` kind (the Paint
+ *           panel's Replace within a part: every triangle of the region's
+ *           `withinPart` drawn in `seedColor`, re-matched by colour on every
+ *           reconcile). It lives inside the opaque descriptor, so serialize /
+ *           import carry it verbatim. Pre-1.21 builds don't know the kind; this
+ *           build resolves any unknown kind to an empty region instead of
+ *           failing, so a later kind degrades the same way.
  */
-export const SCHEMA_VERSION = '1.20';
+export const SCHEMA_VERSION = '1.21';
 
 const CURRENT_MAJOR = 1;
 
@@ -675,7 +682,10 @@ export function getVersionFromURL(): number | null {
 
 // === Session operations ===
 
-export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<Session> {
+/** Create a session and make it current. `firstObjectName` names its one
+ *  starting object (default "Object 1"); imports pass the file's name so the
+ *  first import is named like every later one (which `createPart(name)`s). */
+export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel', firstObjectName?: string): Promise<Session> {
   // Clean up the previous session if it was empty
   if (currentState.session) {
     await deleteIfEmpty(currentState.session.id);
@@ -685,7 +695,7 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
   const lang = language ?? getActiveLanguage();
   const session = await dbCreateSession(name, lang);
   // Every session starts with one part; the current-part pointer references it.
-  const part = await dbCreatePart(session.id, DEFAULT_PART_NAME, 0);
+  const part = await dbCreatePart(session.id, firstObjectName?.trim() || DEFAULT_PART_NAME, 0);
   await dbUpdateSession(session.id, { currentPartId: part.id });
   session.currentPartId = part.id;
   currentState = { session, parts: [part], currentPart: part, currentVersion: null, versionCount: 0 };
@@ -2106,7 +2116,7 @@ function blobToDataURL(blob: Blob): Promise<string> {
 }
 
 /** Decode a base64 data URL back into a Blob. Returns null on parse failure. */
-function dataURLToBlob(dataUrl: string): Blob | null {
+export function dataURLToBlob(dataUrl: string): Blob | null {
   const match = /^data:([^;,]+)(?:;base64)?,(.*)$/s.exec(dataUrl);
   if (!match) return null;
   const [, mime, payload] = match;

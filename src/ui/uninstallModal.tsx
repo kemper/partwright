@@ -51,7 +51,7 @@ function UninstallBody(props: {
         const by = (s: string) => counts.find(c => c.store === s)?.count ?? 0;
         next.modelingData = `${by('sessions')} session(s), ${by('versions')} version(s), ${by('notes')} note(s)`;
         next.chats = `${by('aiChats')} message(s)`;
-        next.apiKeys = `${by('aiKeys')} key(s)`;
+        next.apiKeys = `${by('aiKeys')} key(s), ${by('aiEndpoints')} saved endpoint(s)`;
         next.attachments = `${by('aiAttachments')} image(s)`;
       } catch { /* leave placeholders */ }
       try { next.preferences = `${listLocalStorageEntries().length} setting key(s)`; } catch { /* ignore */ }

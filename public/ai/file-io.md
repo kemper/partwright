@@ -2,6 +2,8 @@
 
 The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` methods trigger a browser download — the file goes to the user's Downloads folder, which an AI agent can't observe. Likewise, `Import` opens an OS file picker that an agent can't dismiss. Use the `*Data()` methods below instead: they return file contents over the API and skip the picker entirely.
 
+**In-app chat:** the assistant downloads through ONE tool, **`exportModel({format, objects?, filename?})`** — `format` `'stl' | 'obj' | 'glb' | '3mf'` (the current object, or several bundled with `objects`), `'3mf-objects'` (the Bambu Studio / OrcaSlicer plate project; default every object), `'step'` (BREP sessions) or `'vox'` (voxel sessions). It saves a file to the user's computer, so the user confirms each call; the prompt names the format and the objects. It returns `{ ok, format, filename?, parts? }` or `{ error }`.
+
 ## Export — return bytes over the API
 ```js
 // 3D model formats — binary blobs come back as base64
@@ -24,6 +26,11 @@ const vox = await partwright.exportVOXData()
 // Session JSON — returns the parsed object directly, no decoding needed
 const ses = await partwright.exportSessionData()
 // -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }
+
+// Lower level: just the ExportedSession object, with include* toggles. Defaults to
+// the current session; thumbnails are OFF by default (annotations, notes and colour
+// regions ON). Returns null when there is no such session, { error } on bad args.
+const raw = await partwright.exportSession(undefined, { includeThumbnails: true, includeNotes: false })
 
 // Editor source as text
 const src = await partwright.exportCodeData()
@@ -85,6 +92,26 @@ const r = await partwright.export3MFObjectsData(undefined, 'assembly', { bambu: 
 // -> { filename, mimeType, base64: "...", sizeBytes, objects: 3 }
 ```
 
+## 3MF filament colours
+
+Every distinct colour in a 3MF becomes its **own filament** in Bambu Studio / OrcaSlicer — so a figure painted "black" five times with five slightly different blacks opens with five black filaments. In the app, both 3MF exports open a **Filament colors** step that pre-merges near-identical shades (tolerance slider, default from Advanced Settings → UI → *Export colour merging*), caps the count (**Max filaments**, e.g. 4 for one AMS), and lets the user re-assign or recolour each filament. It is **export-only**: the session's paint is never changed.
+
+The console twins take the same choices as options on `export3MF`, `export3MFData`, `export3MFObjects` and `export3MFObjectsData` (no option = every colour exported as-is, the historical behaviour):
+
+- `mergeColors: number` — merge colours within this perceptual distance (CIE76 ΔE) of a more-used colour. ~2 is barely visible; **10** merges shades that look the same on the model.
+- `maxColors: number` — after merging, fold the least-used colours into their nearest kept colour until at most this many remain.
+- `colorMap: { "#from": "#to" }` — explicit recolours/merges keyed on the ORIGINAL colours (as `listExportColors` lists them). An entry for a colour overrides where the auto-merge sent it; an entry for a kept colour also carries every colour merged into it. Chains collapse (`a→b, b→c` sends both to `c`); a cycle (`a→b, b→a`) is rejected.
+
+Merge targets are always colours the model already uses (never a blend). Unpainted faces on a painted model export as the default blue `#4a9eff` (`unpainted: true` in the listing) — map it with `colorMap` if that matters.
+
+```js
+partwright.listExportColors({ mergeColors: 10 })
+// -> { colors: [{ hex: "#1f1712", triangles: 179313, share: 0.378, names: ["hair"] }, …],
+//      merges: { "#1b1b1b": "#1f1712", "#f2f2ef": "#f7f7f4", … }, filaments: 5 }
+await partwright.export3MFData('figure', { mergeColors: 10, maxColors: 4 })
+await partwright.export3MFObjects(undefined, 'figure', { mergeColors: 10, colorMap: { '#1f1712': '#111111' } })
+```
+
 ## Multi-object OBJ / STL / GLB
 
 The same object-bake pipeline backs OBJ, STL, and GLB. Each takes `(objectIds?, filename?)` (default: every object) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, objects }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-object session (the single button auto-routes to the object picker when the session has more than one object). Each format bundles objects the way its file format does best:
@@ -111,6 +138,11 @@ Like 3MF, each object's **latest version** is re-baked with its colours (code-de
 const r = await partwright.importSessionData(parsedJson)
 // -> { sessionId } or { error }
 
+// Same, from an already-parsed object (e.g. exportSession() output): validates the
+// shape, regenerates thumbnails and opens the session
+await partwright.importSession(exported)
+// -> { id, name, warning? } or { error }
+
 // Import raw source as a new session
 await partwright.importCodeData(code, 'manifold-js')           // optional sessionName arg
 await partwright.importCodeData(scadCode, 'scad', 'my-shape')
@@ -120,10 +152,109 @@ await partwright.importCodeData(scadCode, 'scad', 'my-shape')
 // click. `base64` may be a bare base64 string or a `data:` URL; it round-trips
 // with exportSTLData().base64.
 const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: 'imported part' })
-// -> { sessionId, isManifold, triangleCount, vertexCount } or { error }
+// -> { sessionId, target, object, isManifold, triangleCount, vertexCount } or { error }
 // isManifold:false = welded render-only (displays + exports, but no booleans /
 // paint / cross-sections) — typical for sculpted or scanned models.
+
+// The same call imports a .3mf package (detected by the filename or ZIP magic):
+// Bambu Studio / OrcaSlicer / PrusaSlicer projects and plain 3MF from any tool.
+// Build-item + component transforms are baked in, units converted to mm, the
+// model recentred on XY (z=0 stays the plate), modifier/support parts skipped.
+// Colours come in as paint regions: slicer filament assignments (per object /
+// part extruder + per-triangle MMU painting — triangles the slicer split between
+// filaments take the majority filament) or plain-3MF basematerials /
+// m:colorgroup. The file's filament palette becomes the ACTIVE palette (reused
+// if an identical one exists) with regions bound to its slots, so a re-export
+// maps back onto the same AMS/MMU slots. Pass { adoptPalette: false } to keep
+// the current palette. Round-trips with export3MFData().base64.
+const tmf = await partwright.importMeshData(base64, 'model.3mf')
+// -> { sessionId, isManifold, triangleCount, vertexCount, format: '3mf',
+//      flavor: 'bambu'|'prusa'|'generic', colorSource: 'filaments'|'materials'|'none',
+//      palette: [{ name, hex }], colorRegions, activePalette,
+//      objects: [{ name, triangleCount, firstTriangle, plate? }], plates: [{ id, name }] }
+
+// MagicaVoxel .vox and STEP from base64 bytes, the same way:
+await partwright.importVoxData(base64, 'castle.vox')                    // -> {…, voxelCount}
+await partwright.importStepData(base64, 'bracket.step')                 // exact BREP object (STEP export kept)
+await partwright.importStepData(base64, 'bracket.step', { mode: 'mesh' }) // tessellated mesh import
+
+// From a URL — the Import → From URL… dialog, headless:
+await partwright.importFromUrl('https://example.com/part.stl', { target: 'new-object' })
+await partwright.importFromUrl('https://…/#share=…')   // share link: decoded locally, new session
+// -> { kind: 'remote'|'share', source?, filename?, sessionId, target?, object? } or { error }
 ```
+
+**Where an import lands — `target`.** Every byte/URL import takes `opts.target`, the
+API twin of the import-target dialog:
+
+| `target` | Result |
+|---|---|
+| `'new-session'` (default) | a fresh session named after the file (`sessionName` overrides) |
+| `'new-object'` | a new object in the current session; it becomes current |
+| `'current-object'` | combined into the current object: a mesh / voxel import is composed with its geometry (a blank starter object is replaced instead). A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
+
+Targets other than `'new-session'` need an open session. Unsaved work on the current
+object is saved as a version first, exactly as in the dialog.
+
+`importFromUrl` fetches in the browser (CORS and the page CSP apply; 25 MB cap,
+`import.remoteFetchTimeoutMs` timeout) and routes by type: `.partwright.json` → a new
+session; `.stl` / `.step` / `.vox` → as above (`stepMode: 'mesh'` tessellates STEP);
+`.js` / `.scad` → code. Share links, session files and `.js` / `.scad` run model code when
+imported, so `geometryOnly: true` refuses them (the in-app assistant always passes it and asks
+the user to use Import → From URL…, which previews first — a code-bearing URL is refused before the user is even asked to confirm). Images and SVGs need a converter — use `importImageAsRelief({src})`,
+`importImageAsVoxels(url)` or `importSvgAsRelief({svgText})`.
+
+### Multi-object files — one object per 3MF object, plate, or STL piece
+
+By default a file imports as ONE object. A 3MF often holds several objects
+(a Bambu/Orca project can spread them across several build plates), and an STL
+can hold several separate solids. `split` makes one object each instead — the
+console twin of the **Import 3MF** chooser the UI opens for a multi-object 3MF,
+and of the **Split into N objects** button offered after a multi-body STL import.
+
+```js
+// Look first (no import): the objects / plates / pieces a split works with.
+await partwright.inspectMeshData(base64, 'kit.3mf')
+// -> { format: '3mf', flavor, title?, triangleCount,
+//      objects: [{ index, name, triangleCount, plate?, parts?: [name] }],
+//      plates: [{ id, name, objectCount }], palette, splitModes: ['none', 'object', 'plate'] }
+await partwright.inspectMeshData(base64, 'blocks.stl')
+// -> { format: 'stl', triangleCount, isManifold, pieces: [{ index, name, triangleCount }], splitModes }  (one piece for a single solid)
+
+// One object per 3MF object, threaded under its plate in the object list:
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'object' })
+// One object per build plate (each keeps its plate's layout):
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'plate' })
+// Only some objects (indices from inspectMeshData), as separate objects:
+await partwright.importMeshData(base64, 'kit.3mf', { split: 'object', objects: [0, 2] })
+// One object per separate solid of an STL (largest first):
+await partwright.importMeshData(base64, 'blocks.stl', { split: 'piece' })
+// -> adds importedObjects: [{ id, name, group? }]; isManifold is true only when every object is.
+```
+
+Each object is recentred on its own XY origin (z = 0 stays the plate) and keeps
+its colours; the file's palette is adopted once for all of them.
+
+**Parts inside an object become labelled parts.** A Bambu/Orca object made of
+several parts (each `<part>` with its own name and filament), a PrusaSlicer
+object with several volumes, or a plain-3MF object built from components imports
+with those parts as labels — the code loads it with `api.importWithParts(0)`,
+and `listObjectParts()` / the object list show each part by the slicer's name
+(an unnamed one becomes "Part N"). When several 3MF objects share one Partwright
+object (`split: 'plate'`, or a whole file as one object), each 3MF object becomes
+a part ("<object> · <part>" for one that has parts of its own). This applies
+with or without `split`. `objects`
+without `split` imports just those objects as one. A split lands in a new session,
+or with `target: 'new-object'` as new objects in the current session
+(`'current-object'` is refused — a split makes separate objects). Splits are capped by
+**Advanced settings → Import → Max objects per split import** (default 100).
+
+To split an object that's already imported — a single, unedited mesh import —
+call `await partwright.splitImportIntoObjects()` (-> `{ objects: [{ id, name }] }`):
+the largest piece becomes the object's next version (its history keeps the whole
+mesh) and the others become new objects. It refuses a painted object (the
+pieces would come in uncoloured). For any other object, move pieces out one at
+a time with `extractObjectPiece(index)`.
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.

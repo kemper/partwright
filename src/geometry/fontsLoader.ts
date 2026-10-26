@@ -16,6 +16,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { assetPath } from '../deployment';
+import { fetchAppAsset } from './workerLockdown';
 
 const FONTS_PREFIX = assetPath('/openscad-libs/fonts');
 const FONT_MEMFS_DIR = '/usr/share/fonts';
@@ -27,12 +28,17 @@ const FONTS_CONF_XML = `<?xml version="1.0"?>
   <cachedir>/tmp/fc-cache</cachedir>
 </fontconfig>`;
 
-const FONT_FILES = [
+// Frozen, and the full URLs are built here at module load — before any model
+// code runs in this Worker — so a patched Array.prototype / template path
+// can't change what gets fetched (#1090).
+const FONT_FILES: readonly string[] = Object.freeze([
   'LiberationSans-Regular.ttf',
   'LiberationSans-Bold.ttf',
   'LiberationSans-Italic.ttf',
   'LiberationSans-BoldItalic.ttf',
-];
+]);
+const FONT_URLS: readonly string[] = Object.freeze(FONT_FILES.map(name => `${FONTS_PREFIX}/${name}`));
+const promiseAll = Promise.all.bind(Promise) as <T>(values: Promise<T>[]) => Promise<T[]>;
 
 let fontsPromise: Promise<Map<string, Uint8Array>> | null = null;
 let loadedFonts: Map<string, Uint8Array> | null = null;
@@ -45,14 +51,20 @@ export async function preloadFonts(): Promise<void> {
   if (loadedFonts) return;
   if (!fontsPromise) {
     fontsPromise = (async () => {
-      const entries: [string, Uint8Array][] = await Promise.all(
-        FONT_FILES.map(async (name) => {
-          const r = await fetch(`${FONTS_PREFIX}/${name}`);
+      const loads: Promise<[string, Uint8Array]>[] = [];
+      for (let i = 0; i < FONT_FILES.length; i++) {
+        const name = FONT_FILES[i];
+        const url = FONT_URLS[i];
+        loads[loads.length] = (async () => {
+          const r = await fetchAppAsset(url);
           if (!r.ok) throw new Error(`Failed to fetch font ${name}: ${r.status}`);
           return [name, new Uint8Array(await r.arrayBuffer())] as [string, Uint8Array];
-        }),
-      );
-      return new Map(entries);
+        })();
+      }
+      const entries = await promiseAll(loads);
+      const out = new Map<string, Uint8Array>();
+      for (let i = 0; i < entries.length; i++) out.set(entries[i][0], entries[i][1]);
+      return out;
     })();
   }
   loadedFonts = await fontsPromise;
