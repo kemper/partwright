@@ -75,6 +75,12 @@ export const MANIFOLD_SEEDS = String.raw`(() => {
   tryPush('paramsValue', () => api.params({ w: { type: 'number', default: 1 } }));
   tryPush('errValidation', () => Manifold.sphere());
   tryPush('errEmbind', () => Manifold.cube('bad'));
+  // The glue's own error classes: an embind BindingError (bad argument type),
+  // manifold-3d's ManifoldError (invalid mesh), a use-after-delete.
+  tryPush('errBinding', () => cube.add(5));
+  tryPush('errManifold', () => new Manifold({}));
+  tryPush('errDeleted', () => { const t = Manifold.cube([1, 1, 1]); t.delete(); return t.volume(); });
+  tryPush('errCrossSection', () => cs.add(5));
   tryPush('errLabel', () => api.label(1, 'x'));
   tryPush('errPaint', () => api.paint.box({}));
   if (api.BREP) tryPush('errBrep', () => api.BREP.box('bad'));

@@ -38,7 +38,7 @@ export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'enhance_result',
   // Dev builds only: the engine-realm report the e2e tier asks for
   // (engineWorker.ts `inspect_realm`, engine.ts `inspectEngineRealm`).
-  'inspect_realm_result',
+  ...(import.meta.env?.DEV ? ['inspect_realm_result'] : []),
 ]);
 
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);

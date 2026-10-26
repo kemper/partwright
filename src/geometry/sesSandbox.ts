@@ -25,11 +25,12 @@ import { installModelCompiler, type ModelFn } from './modelEval';
 import { ValidationError } from '../validation/apiValidation';
 import {
   SES_LOCKDOWN_OPTIONS,
+  analyzeFreeGlobals,
+  type FreeGlobals,
   explainSesRejection,
   neutralizeSesRejections,
   preludeNames,
-  undeclaredHint,
-  undeclaredNames,
+  rewriteFreeTypeof,
   wrapModelSource,
 } from './sesModelSource';
 
@@ -114,7 +115,7 @@ export async function enableSesSandbox(): Promise<SesReport> {
   // Engine-realm classes whose instances model code receives and that no
   // engine run hardens through its `api`: the error class api validation
   // throws, and Blob (BREP `blobSTEP()`) — a host prototype lockdown doesn't
-  // touch. tests/engine-lockdown.spec.ts ("no shared mutable state") walks
+  // touch. tests/engine-ses.spec.ts ("no shared mutable state") walks
   // what model code can reach and fails on anything missed here.
   harden(ValidationError);
   if (typeof g.Blob === 'function') harden(g.Blob);
@@ -128,35 +129,110 @@ export async function enableSesSandbox(): Promise<SesReport> {
   const names = preludeNames(globalNames);
   const known = new Set<string>([...globalNames, 'api', 'arguments', 'undefined', 'NaN', 'Infinity']);
 
+  // The free-global analysis parses the source (~120 ms for the largest
+  // catalog entry, a 360 KB reconstruction; a few ms for typical models).
+  // validate() and the run that follows compile the same text, so remember
+  // the last few results.
+  const freeCache = new Map<string, FreeGlobals>();
+  const freeGlobalsOf = (jsCode: string): FreeGlobals => {
+    let r = freeCache.get(jsCode);
+    if (r) {
+      freeCache.delete(jsCode);
+    } else {
+      r = analyzeFreeGlobals(jsCode, known);
+      if (freeCache.size >= 4) freeCache.delete(freeCache.keys().next().value as string);
+    }
+    freeCache.set(jsCode, r);
+    return r;
+  };
+
   const compile = (jsCode: string): ModelFn => {
     // A fresh compartment per run: nothing one run stores on its global
     // object survives into the next run.
     const c = newCompartment();
+    // Strict-JS ReferenceErrors for undeclared names (SES reads them as
+    // undefined): a throwing accessor per free global on this run's
+    // compartment global — shadowed by any local binding, so it fires only
+    // when such a read actually executes — and `typeof <name>` rewritten so it
+    // still answers 'undefined'. See analyzeFreeGlobals.
+    const free = freeGlobalsOf(jsCode);
+    for (const name of free.names) installFreeGlobalTrap(c.globalThis, name, free.firstLine.get(name) ?? 1);
+    if (free.typeofOperands.length > 0) installFreeTypeof(c.globalThis);
+    const src = rewriteFreeTypeof(jsCode, free.typeofOperands, (name) => `${FREE_TYPEOF}(${JSON.stringify(name)})`);
     let fn: ModelFn;
     try {
-      fn = c.evaluate(wrapModelSource(neutralizeSesRejections(jsCode), names)) as ModelFn;
+      fn = c.evaluate(wrapModelSource(neutralizeSesRejections(src), names)) as ModelFn;
     } catch (e) {
       throw explainCompileError(e);
     }
-    return (api: unknown) => {
-      try {
-        return fn(api);
-      } catch (e) {
-        annotateUndeclared(e, jsCode, known);
-        throw e;
-      }
-    };
+    return fn;
   };
 
   // Self-test before anything relies on it: model code must not see the
   // Worker global, and the wrapper must hand `api` through.
-  const probe = compile('return [typeof postMessage, typeof self, typeof navigator, api];')(42) as unknown[];
-  if (!Array.isArray(probe) || probe[0] !== 'undefined' || probe[1] !== 'undefined' || probe[2] !== 'undefined' || probe[3] !== 42) {
+  const probe = compile('return [typeof globalThis.postMessage, typeof globalThis.self, typeof globalThis.navigator, typeof self, api];')(42) as unknown[];
+  if (!Array.isArray(probe) || probe.slice(0, 4).some((t) => t !== 'undefined') || probe[4] !== 42) {
     throw new Error(`compartment self-test failed (${JSON.stringify(probe)})`);
   }
+  let undeclared: unknown = null;
+  try { compile('return postMessage;')(null); } catch (e) { undeclared = e; }
+  if (!(undeclared instanceof ReferenceError)) throw new Error('compartment self-test failed (an undeclared name did not throw ReferenceError)');
 
   installModelCompiler(compile, harden);
   return { ms: Math.round((performance.now() - t0) * 10) / 10, globals: names };
+}
+
+/** Name of the per-compartment helper `typeof <free name>` is rewritten to
+ *  call (rewriteFreeTypeof). Not a valid name for model code to collide with
+ *  by accident. */
+const FREE_TYPEOF = '$partwrightFreeTypeof$';
+
+/** `typeof x` for a free global `x` answers what plain JS would: 'undefined'
+ *  while `x` is still the throwing accessor, or the type of the value once the
+ *  code made `x` a real global (`globalThis[k] = …`, which the accessor's
+ *  setter turns into a data property). */
+function installFreeTypeof(g: object): void {
+  Object.defineProperty(g, FREE_TYPEOF, {
+    value: (name: string): unknown => {
+      const d = Object.getOwnPropertyDescriptor(g, name);
+      return d && 'value' in d ? d.value : undefined;
+    },
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+}
+
+/** Make reading `name` from compartment global `g` throw
+ *  `ReferenceError: <name> is not defined` (with the user's line in
+ *  `modelLineNumber`, for the editor). Assigning it — `globalThis[k] = v` with a
+ *  computed key — turns it into an ordinary global, as in plain JS. */
+function installFreeGlobalTrap(g: object, name: string, firstLine: number): void {
+  Object.defineProperty(g, name, {
+    get() {
+      const err = new ReferenceError(`${name} is not defined`) as ReferenceError & { modelLineNumber?: number };
+      err.modelLineNumber = modelLineFromStack(err.stack) ?? firstLine;
+      throw err;
+    },
+    set(v: unknown) {
+      Object.defineProperty(g, name, { value: v, writable: true, enumerable: true, configurable: true });
+    },
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+/** The user's line from a V8 stack thrown inside the free-global accessor:
+ *  the first frame below the accessor that sits in compartment-evaluated code
+ *  (`<anonymous>:L:C`, where the wrapper keeps user line N on line N). */
+function modelLineFromStack(stack: unknown): number | null {
+  if (typeof stack !== 'string') return null;
+  const lines = stack.split('\n');
+  for (let i = 2; i < lines.length; i++) {
+    const m = /<anonymous>:(\d+):\d+\)?\s*$/.exec(lines[i]);
+    if (m) return Number(m[1]);
+  }
+  return null;
 }
 
 /** A compile-time error, with SES source rejections mapped to the user's
@@ -176,14 +252,4 @@ function explainCompileError(e: unknown): unknown {
     try { (e as SyntaxError & { modelLineNumber?: number }).modelLineNumber = ln; } catch { /* frozen */ }
   }
   return e;
-}
-
-/** Append the undeclared-name hint to a runtime TypeError (see
- *  sesModelSource.ts). Best-effort: a frozen error is left alone. */
-function annotateUndeclared(e: unknown, jsCode: string, known: ReadonlySet<string>): void {
-  if (!(e instanceof TypeError)) return;
-  try {
-    const hint = undeclaredHint(undeclaredNames(jsCode, known));
-    if (hint && !e.message.includes(hint)) e.message += hint;
-  } catch { /* best-effort */ }
 }

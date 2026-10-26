@@ -266,6 +266,15 @@ for model code". In short:
 - **Kill switch.** `localStorage['partwright.sesSandbox'] = 'off'` (per browser)
   or build/dev with `VITE_SES_SANDBOX=0`. Off is exactly the pre-#1127
   behaviour (`new Function`, `ses` never loaded).
+- **Known residual: the WASM heap.** SES freezes JavaScript objects, not
+  WebAssembly memory. Every embind instance model code holds carries a `$$`
+  record (`$$.ptr`, `$$.ptrType`, `registeredClass.rawDestructor`,
+  `getActualType`, `upcast`) that stays writable/callable — embind itself
+  mutates it (`delete()`, `clone()`), so it can't be hardened — and through it
+  model code can read, write and free manifold-3d heap memory. The heap
+  persists across runs within a session's Worker (a new session gets a fresh
+  Worker), so within one session a run can still corrupt or observe geometry
+  state a later run uses. It grants no capability beyond the heap's contents.
 - **Relation to this sandbox.** SES bounds the *realm* (model code can't name
   the Worker global or patch shared built-ins/api objects); the frame bounds
   the *origin*. Inside the frame both apply (e2e: engine-ses.spec "the #1110

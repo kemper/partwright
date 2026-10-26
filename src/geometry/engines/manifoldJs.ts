@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { compileModelCode, hardenModelShared } from '../modelEval';
-import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { createParamCapture } from '../params';
@@ -168,12 +168,33 @@ function installRunWrappersOnce(Manifold: any, CrossSection: any): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function hardenInstanceReachables(Manifold: any, CrossSection: any): void {
   if (manifoldModule?.Mesh) hardenModelShared(manifoldModule.Mesh);
+  // The error classes the glue throws at model code (embind's extendError
+  // classes and manifold-3d's ManifoldError): their constructors assign
+  // `this.stack = this.toString() + …` / `this.code = …`, so a prototype patched
+  // by one run would run inside later runs. Harden the module's exports, and
+  // the classes actually thrown (provoked once below), in case one isn't
+  // exported.
+  for (const name of ['ManifoldError', 'BindingError', 'InternalError', 'UnboundTypeError']) {
+    const cls = manifoldModule?.[name];
+    if (typeof cls === 'function') hardenModelShared(cls);
+  }
+  const hardenThrown = (provoke: () => unknown): void => {
+    try { provoke(); } catch (e) {
+      const ctor = (e as { constructor?: unknown } | null)?.constructor;
+      if (typeof ctor === 'function' && ctor !== Error && ctor !== TypeError && ctor !== RangeError) hardenModelShared(ctor);
+    }
+  };
   const probes: Array<{ $$?: { ptrType?: unknown }; delete?: () => void }> = [];
   try {
     const cube = Manifold.cube([1, 1, 1]);
     probes.push(cube, cube.translate([0, 0, 0]), new Manifold(cube.getMesh()));
     const sq = CrossSection.square([1, 1]);
     probes.push(sq, sq.translate([0, 0]), new CrossSection(sq.toPolygons()));
+    hardenThrown(() => cube.add(5)); // embind BindingError (bad argument type)
+    hardenThrown(() => new Manifold({})); // ManifoldError (invalid mesh)
+    const dead = Manifold.cube([1, 1, 1]);
+    dead.delete();
+    hardenThrown(() => dead.volume()); // BindingError (deleted object)
   } catch { /* best-effort: tests/engine-ses.spec.ts "no shared mutable state" is the check */ }
   for (const p of probes) {
     const ptrType = p?.$$?.ptrType;
@@ -1092,7 +1113,6 @@ export const manifoldJsEngine: Engine = {
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
-      const isSyntaxError = e instanceof SyntaxError;
       let hint: string | undefined;
 
       // Enhance common WASM error messages with actionable hints
@@ -1116,7 +1136,7 @@ export const manifoldJsEngine: Engine = {
         mesh: null,
         manifold: null,
         error: msg,
-        diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
+        diagnostics: modelCodeDiagnostics(jsCode, msg, e, hint),
         paramsSchema: paramCapture.collectSchema(),
       };
     } finally {

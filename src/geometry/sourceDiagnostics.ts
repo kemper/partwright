@@ -182,3 +182,18 @@ export function runtimeDiagnostic(message: string, hint?: string, source = 'Runt
     hint,
   }];
 }
+
+/** Diagnostics for an error thrown while compiling or running JS model code:
+ *  syntax errors located by the parser; a runtime error that carries the
+ *  user's line (`modelLineNumber`, e.g. the SES sandbox's ReferenceError for an
+ *  undeclared name) underlines that line; anything else is unlocated. */
+export function modelCodeDiagnostics(code: string, message: string, error: unknown, hint?: string): SourceDiagnostic[] {
+  if (error instanceof SyntaxError) return javaScriptSyntaxDiagnostics(code, message, error);
+  const line = error instanceof Error ? (error as ErrorWithLocation).modelLineNumber : undefined;
+  if (typeof line === 'number' && line >= 1) {
+    const { from, to } = lineRange(code, line, 1);
+    const loc = offsetToLocation(code, from);
+    return [{ message, severity: 'error', source: 'JavaScript', hint, from, to, line: loc.line, column: loc.column }];
+  }
+  return runtimeDiagnostic(message, hint, 'JavaScript');
+}

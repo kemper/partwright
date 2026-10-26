@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { compileModelCode, hardenModelShared, type ModelFn } from '../modelEval';
-import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
 import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
 import { createParamCapture, type ParamCapture } from '../params';
@@ -111,7 +111,6 @@ export const voxelEngine: Engine = {
       result = fn(api);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      const isSyntaxError = e instanceof SyntaxError;
       // The schema rides on error returns too (matching manifold-js) so a
       // model that declared params before throwing keeps its Customizer panel
       // live for correction. `collectSchema()` returns whatever was captured
@@ -120,9 +119,7 @@ export const voxelEngine: Engine = {
         mesh: null,
         manifold: null,
         error: msg,
-        diagnostics: isSyntaxError
-          ? javaScriptSyntaxDiagnostics(jsCode, msg, e)
-          : runtimeDiagnostic(msg, undefined, 'JavaScript'),
+        diagnostics: modelCodeDiagnostics(jsCode, msg, e),
         paramsSchema: capture.collectSchema(),
       };
     }

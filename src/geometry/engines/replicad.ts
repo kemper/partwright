@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { compileModelCode, hardenModelShared } from '../modelEval';
-import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { ensureBrepLoaded, getBrepNamespace, isBrepShape, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, ofMeshWithLabels, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine, resolveLabelMap, ensureManifoldRunWrappers } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
@@ -214,10 +214,9 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    const isSyntaxError = e instanceof SyntaxError;
     userScriptError = {
       error: msg,
-      diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, undefined, 'JavaScript'),
+      diagnostics: modelCodeDiagnostics(jsCode, msg, e),
     };
   } finally {
     setBrepRemovedParts(null);

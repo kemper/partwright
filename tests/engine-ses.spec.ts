@@ -10,7 +10,8 @@ import { markCode, checkCode, MANIFOLD_SEEDS, VOXEL_SEEDS, REPLICAD_SEEDS } from
 //     from `api` (and from what api calls return) finds no way back;
 //   - shared state: nothing one run writes is visible to the next run in the
 //     same Worker (api, embind classes, namespaces, BREP, error classes);
-//   - error UX: undeclared-name hint, SES source rejections mapped to the
+//   - error UX: strict-JS ReferenceErrors for undeclared names (with the
+//     line), SES source rejections mapped to the
 //     user's line, comments/strings containing `import(` etc. still run;
 //   - endowments: Math.random, Date.now, Float*Array, console, performance;
 //   - kill switch: `partwright.sesSandbox = 'off'` restores the pre-#1127
@@ -238,7 +239,82 @@ test.describe('SES model-code sandbox', () => {
     expect(out.next.volume).toBeCloseTo(8, 6);
   });
 
-  test('error UX: undeclared-name hint, and comments/strings mentioning import( / eval( / --> still run', async ({ page }) => {
+  test('undeclared names throw ReferenceError like strict JS — only when the read runs, with the line', async ({ page }) => {
+    await boot(page);
+    const out = await page.evaluate(async () => {
+      const e = await import('/src/geometry/engine.ts');
+      const run = async (code: string) => {
+        const r = await e.executeCodeAsync(code, 'manifold-js');
+        return { error: r.error ?? null, tris: r.mesh?.numTri ?? 0, line: r.diagnostics?.[0]?.line ?? null };
+      };
+      return {
+        bare: await run('return zzznotdefined123;'),
+        fallback: await run('const { Manifold } = api;\n\nconst s = siz || 10;\nreturn Manifold.cube([s, 1, 1]);'),
+        // First reference (line 2) is dead code; the read that runs is on line 4.
+        laterLine: await run('const { Manifold } = api;\nif (false) late;\nfunction f() {\n  return late;\n}\nreturn f();'),
+        // typeof guards, dead code, uncalled helpers and code-made globals all still run.
+        valid: await run([
+          'const { Manifold } = api;',
+          'const n = typeof navigator !== "undefined" && navigator.hardwareConcurrency ? 2 : 1;',
+          'const w = typeof (window) === "undefined" ? 1 : window.x;',
+          'if (false) nope();',
+          'function never() { return alsoNope; }',
+          'globalThis["made"] = 3; const k = "other" + "Made"; globalThis[k] = 4;',
+          'return Manifold.cube([n + w, made, otherMade]);',
+        ].join('\n')),
+        // Known gap: declared somewhere, but not in scope where it's read —
+        // SES reads it as undefined (strict JS would throw ReferenceError).
+        outOfScope: await run('const { Manifold } = api;\nfunction g() { const Manfold = 1; return Manfold; }\nreturn Manfold.cube([1, 1, 1]);'),
+      };
+    });
+    expect(out.bare).toEqual({ error: 'zzznotdefined123 is not defined', tris: 0, line: 1 });
+    expect(out.fallback).toEqual({ error: 'siz is not defined', tris: 0, line: 3 });
+    expect(out.laterLine).toEqual({ error: 'late is not defined', tris: 0, line: 4 });
+    expect(out.valid.error).toBeNull();
+    expect(out.valid.tris).toBe(12);
+    expect(out.outOfScope.error).toBe("Cannot read properties of undefined (reading 'cube')");
+  });
+
+  test('the glue error classes (embind BindingError, ManifoldError) cannot carry code into a later run', async ({ page }) => {
+    await boot(page);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      const attempt = await pw.run(`
+        const { Manifold } = api;
+        const tried = {};
+        const grab = (f) => { try { f(); } catch (e) { return e; } return null; };
+        const errs = { binding: grab(() => Manifold.cube([1, 1, 1]).add(5)), manifold: grab(() => new Manifold({})),
+          deleted: grab(() => { const t = Manifold.cube([1, 1, 1]); t.delete(); return t.volume(); }) };
+        for (const [k, e] of Object.entries(errs)) {
+          if (!e) { tried[k] = 'no error'; continue; }
+          try { e.constructor.prototype.toString = () => 'PWNED'; tried[k] = 'WROTE'; } catch (x) { tried[k] = 'refused'; }
+          try { Object.defineProperty(e.constructor.prototype, 'code', { set() { globalThis.leak = 1; } }); tried[k + '.code'] = 'WROTE'; } catch (x) { tried[k + '.code'] = 'refused'; }
+        }
+        throw new Error('TRIED:' + JSON.stringify(tried));`);
+      const next = await pw.run(`
+        const { Manifold } = api;
+        let msg = '';
+        try { Manifold.cube([1, 1, 1]).add(5); } catch (e) { msg = String(e) + ' ' + String(e.stack).slice(0, 80); }
+        throw new Error('NEXT:' + JSON.stringify({ msg }));`);
+      return { attempt: attempt.error ?? '', next: next.error ?? '' };
+    });
+    const tried = payload(out.attempt, 'TRIED') as Record<string, string>;
+    for (const [k, v] of Object.entries(tried)) expect(v, k).not.toBe('WROTE');
+    expect(tried.binding).toBe('refused');
+    expect((payload(out.next, 'NEXT') as { msg: string }).msg).not.toContain('PWNED');
+  });
+
+  test('typeof a free name answers like plain JS, also after the code makes it a global', async ({ page }) => {
+    await boot(page);
+    const r = await run(page, `
+      const before = typeof madeLater;
+      const k = 'made' + 'Later';
+      globalThis[k] = 5;
+      throw new Error('T:' + JSON.stringify({ before, after: typeof madeLater, value: madeLater, other: typeof (neverMade) }));`);
+    expect(payload(r.error, 'T')).toEqual({ before: 'undefined', after: 'number', value: 5, other: 'undefined' });
+  });
+
+  test('error UX: browser globals are not defined, and comments/strings mentioning import( / eval( / --> still run', async ({ page }) => {
     await boot(page);
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
@@ -256,8 +332,8 @@ test.describe('SES model-code sandbox', () => {
       const realEval = await pw.run('const { Manifold } = api;\nconst v = eval("1");\nreturn Manifold.cube(1);');
       return { typo: typo.error ?? '', browserGlobal: browserGlobal.error ?? '', comments, realEval: realEval.error ?? '' };
     });
-    expect(out.typo).toMatch(/^Cannot read properties of undefined \(reading 'cube'\)\nHint: `Manfold` is not defined/);
-    expect(out.browserGlobal).toMatch(/Hint: `navigator` is not defined/);
+    expect(out.typo).toBe('Manfold is not defined');
+    expect(out.browserGlobal).toBe('navigator is not defined');
     expect(out.comments.error ?? null).toBeNull();
     // The literals kept their values: "import(1) eval(2) <!-- -->" is 26 chars,
     // `tpl import( 26` is 14, and `i --> 0` looped 3 times.
