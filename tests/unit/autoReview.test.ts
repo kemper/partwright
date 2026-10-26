@@ -36,9 +36,10 @@ describe('parseReviewVerdict', () => {
 describe('shouldAutoReview', () => {
   const base = { enabled: true, reason: 'end_turn' as const, modelChangingToolCalls: 2, planning: false, hadError: false, spentUsd: 0.2, spendCapUsd: 2 };
   it('reviews a clean turn that changed the model', () => expect(shouldAutoReview(base)).toBe(true));
-  it('skips when off, planning, errored, capped, inspect-only, or over the spend cap', () => {
+  it('skips when off, planning, waiting on answers, errored, capped, inspect-only, or over the spend cap', () => {
     expect(shouldAutoReview({ ...base, enabled: false })).toBe(false);
     expect(shouldAutoReview({ ...base, planning: true })).toBe(false);
+    expect(shouldAutoReview({ ...base, awaitingAnswers: true })).toBe(false);
     expect(shouldAutoReview({ ...base, hadError: true })).toBe(false);
     expect(shouldAutoReview({ ...base, reason: 'iteration_cap' })).toBe(false);
     expect(shouldAutoReview({ ...base, modelChangingToolCalls: 0 })).toBe(false);

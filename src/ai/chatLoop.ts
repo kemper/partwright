@@ -18,7 +18,7 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -647,6 +647,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // we let any other tools in the batch run (they may be the final actions),
     // then stop cleanly below instead of looping.
     const calledFinish = autoResume && result.toolCalls.some(tc => tc.name === FINISH_TOOL);
+    // askUser / proposePlan hand the next move to the user (in any mode, with
+    // or without auto-continue).
+    const handedToUser = result.toolCalls.find(tc => TURN_ENDING_TOOLS.has(tc.name) && offeredTools.has(tc.name));
 
     // Execute tools, then loop with the results posted back. Tools run
     // synchronously against window.partwright and can't be cancelled mid-
@@ -720,6 +723,16 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     if (calledFinish && !finishBatchErrored && queuedBlocks.length === 0) {
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'end_turn', detail: 'finish', iterations: iter + 1 });
       return workingHistory;
+    }
+    // A card was shown: wait for the user. Not when the card's own input was
+    // rejected (the model gets to fix it) or the human already queued a reply
+    // (delivered above, so loop on to it).
+    if (handedToUser && queuedBlocks.length === 0) {
+      const cardIdx = result.toolCalls.indexOf(handedToUser);
+      if (toolResults[cardIdx]?.isError !== true) {
+        callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'end_turn', detail: handedToUser.name, iterations: iter + 1 });
+        return workingHistory;
+      }
     }
   }
 

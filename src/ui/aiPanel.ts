@@ -28,7 +28,7 @@ import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
 import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
-import { latestAssistantText, planAwaitsAnswers } from '../ai/planReply';
+import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
@@ -46,7 +46,7 @@ import { getState, setSessionAiPreference, refreshCurrentSession } from '../stor
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
 import { cancelCurrentExecution } from '../geometry/engine';
@@ -632,7 +632,24 @@ export function setAiPanelRouteActive(active: boolean): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
+  // Mid-turn reloads (auto-compaction, stall retries) can run before this
+  // turn's plan request is persisted; the turn re-syncs when it ends.
+  if (!state.inFlight) syncPendingPlanFromHistory();
   updateRewindButtons();
+}
+
+/** The plan awaiting a decision is read from the transcript, so the plan bar
+ *  comes back after a reload or when this tab takes control of the session. */
+function syncPendingPlanFromHistory(): void {
+  const pending = derivePendingPlan(state.history);
+  state.pendingPlanApproval = pending
+    ? {
+      originalText: splitPartSelectionContext(pending.requestWords).rest,
+      originalImages: pending.requestImages,
+      historyLengthBefore: pending.requestIndex,
+    }
+    : null;
+  renderPlanApprovalBar();
 }
 
 // === Per-session AI preference ===
@@ -2050,8 +2067,7 @@ function renderPlanApprovalBar(): void {
   // A planning turn either ends on a plan or on questions the model needs
   // answered first. Questions lead with "answer below" — Build stays on offer
   // (the model then picks its own defaults), but as the quieter choice.
-  const reply = latestAssistantText(state.history, state.pendingPlanApproval.historyLengthBefore);
-  const awaitingAnswers = planAwaitsAnswers(reply);
+  const { awaitingAnswers } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
   planApprovalBarEl.dataset.planState = awaitingAnswers ? 'questions' : 'plan';
 
   const label = document.createElement('span');
@@ -2092,7 +2108,7 @@ async function approvePlan(): Promise<void> {
   const reviewRequest = state.pendingPlanApproval.originalText;
   // The approval carries the plan the user is approving, so the build turn is
   // anchored to it (and the hand-off from planning is explicit).
-  const plan = latestAssistantText(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const plan = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore).text;
 
   const settings = loadSettings();
   // Preflight may open the key modal and retry this later, so the plan stays
@@ -2275,6 +2291,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   // Tool results (user role) get rendered as collapsed bubbles
   if (msg.role === 'user' && msg.toolResults && msg.toolResults.length > 0) {
     for (const tr of msg.toolResults) {
+      // A card tool's acknowledgement: the card above already shows it.
+      if (!tr.isError && tr.content === CARD_TOOL_ACK) continue;
       wrap.appendChild(renderToolResultBubble(tr));
     }
   }
@@ -2357,7 +2375,9 @@ function renderMessage(msg: ChatMessage): HTMLElement {
 
   if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
     for (const tc of msg.toolCalls) {
-      wrap.appendChild(renderToolCallChip(tc.name, tc.input));
+      if (tc.name === ASK_USER_TOOL) wrap.appendChild(renderAskUserCard(tc));
+      else if (tc.name === PROPOSE_PLAN_TOOL) wrap.appendChild(renderPlanCard(tc));
+      else wrap.appendChild(renderToolCallChip(tc.name, tc.input));
     }
   }
 
@@ -2795,6 +2815,155 @@ async function launchReview(): Promise<void> {
       setTransientStatus('Review posted to the chat.');
     },
   });
+}
+
+/** Per askUser card (tool-call id): the option indices picked for each
+ *  question, kept across transcript re-renders until the answers are sent. */
+const askSelections = new Map<string, number[][]>();
+
+/** The askUser card: each question with its options as chips. Only the card
+ *  the conversation is waiting on is interactive. A lone single-choice
+ *  question sends on click; otherwise picks toggle and "Send answers" sends
+ *  them (with anything typed in the input) as the user's next message. */
+function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
+  const questions = parseAskUser(tc.input);
+  if (questions.length === 0) return renderToolCallChip(tc.name, tc.input);
+  const live = writeOwner && !state.inFlight && pendingAskUser(state.history)?.call.id === tc.id;
+  const selections = askSelections.get(tc.id) ?? questions.map(() => []);
+  const quickSend = questions.length === 1 && !questions[0].multiSelect && questions[0].options.length > 0;
+
+  const card = document.createElement('div');
+  card.className = `max-w-[95%] w-full rounded-lg border border-sky-700/60 bg-sky-900/15 px-3 py-2 flex flex-col gap-2${live ? '' : ' opacity-75'}`;
+  card.dataset.askUserCard = tc.id;
+  const head = document.createElement('div');
+  head.className = 'text-xs font-medium text-sky-200';
+  head.textContent = live ? '❓ The AI needs your input' : '❓ The AI asked';
+  card.appendChild(head);
+
+  questions.forEach((q, qi) => {
+    const qEl = document.createElement('div');
+    qEl.className = 'text-[13px] text-zinc-100 leading-snug';
+    qEl.textContent = questions.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
+    card.appendChild(qEl);
+    if (q.options.length === 0) return;
+    const row = document.createElement('div');
+    row.className = 'flex flex-wrap gap-1.5';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', q.question);
+    q.options.forEach((opt, oi) => {
+      const picked = selections[qi]?.includes(oi) ?? false;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = !live;
+      btn.setAttribute('aria-pressed', String(picked));
+      btn.className = `text-left px-2 py-1 rounded border text-[12px] leading-tight transition-colors ${picked
+        ? 'border-sky-400 bg-sky-600/40 text-white'
+        : 'border-zinc-600 bg-zinc-800 text-zinc-200'}${live ? ' hover:border-sky-400 hover:bg-zinc-700' : ' cursor-default'}`;
+      btn.textContent = opt.label;
+      if (opt.description) {
+        btn.title = opt.description;
+        const note = document.createElement('span');
+        note.className = 'block text-[10px] text-zinc-400';
+        note.textContent = opt.description;
+        btn.appendChild(note);
+      }
+      btn.addEventListener('click', () => {
+        if (quickSend) { void submitAskUserAnswers(tc.id, questions, [[oi]]); return; }
+        const current = selections[qi] ?? [];
+        selections[qi] = q.multiSelect
+          ? (current.includes(oi) ? current.filter(x => x !== oi) : [...current, oi])
+          : (current.includes(oi) ? [] : [oi]);
+        askSelections.set(tc.id, selections);
+        card.replaceWith(renderAskUserCard(tc));
+      });
+      row.appendChild(btn);
+    });
+    card.appendChild(row);
+  });
+
+  if (live) {
+    const foot = document.createElement('div');
+    foot.className = 'flex items-center gap-2';
+    const hint = document.createElement('span');
+    hint.className = 'text-[11px] text-zinc-400 flex-1';
+    hint.textContent = quickSend ? 'Pick one, or type your own answer below.' : 'Pick answers, or type your own below.';
+    foot.appendChild(hint);
+    if (!quickSend) {
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+      send.textContent = 'Send answers';
+      send.addEventListener('click', () => { void submitAskUserAnswers(tc.id, questions, selections); });
+      foot.appendChild(send);
+    }
+    card.appendChild(foot);
+  }
+  return card;
+}
+
+/** Re-render the question cards in the transcript: whether one is the live
+ *  card depends on the turn being over, which the last render (mid-turn)
+ *  couldn't know. */
+function refreshAskUserCards(): void {
+  if (!transcriptEl) return;
+  for (const el of transcriptEl.querySelectorAll<HTMLElement>('[data-ask-user-card]')) {
+    const id = el.dataset.askUserCard;
+    const tc = state.history.flatMap(m => m.toolCalls ?? []).find(c => c.id === id);
+    if (tc) el.replaceWith(renderAskUserCard(tc));
+  }
+}
+
+/** Send a question card's answers (plus anything typed) as the user's next
+ *  message — through sendMessage, so plan mode and queueing apply as usual. */
+async function submitAskUserAnswers(callId: string, questions: AskUserQuestion[], selections: number[][]): Promise<void> {
+  if (!inputEl || state.inFlight) return;
+  const text = answersText(questions, selections, inputEl.value);
+  if (!text) { inputEl.focus(); return; }
+  inputEl.value = text;
+  inputEl.dispatchEvent(new Event('input'));
+  askSelections.delete(callId);
+  await sendMessage();
+}
+
+/** The proposePlan card: summary, numbered steps, assumptions. Build / Discard
+ *  live in the plan bar, which reads this card. */
+function renderPlanCard(tc: PersistedToolCall): HTMLElement {
+  const plan = parseProposedPlan(tc.input);
+  if (!plan) return renderToolCallChip(tc.name, tc.input);
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] w-full rounded-lg border border-amber-700/60 bg-amber-900/10 px-3 py-2 flex flex-col gap-1.5 text-[13px] text-zinc-100 leading-snug';
+  card.dataset.planCard = tc.id;
+  const head = document.createElement('div');
+  head.className = 'text-xs font-medium text-amber-200';
+  head.textContent = '📋 Plan';
+  card.appendChild(head);
+  const summary = document.createElement('div');
+  summary.className = 'whitespace-pre-wrap';
+  summary.textContent = plan.summary;
+  card.appendChild(summary);
+  const steps = document.createElement('ol');
+  steps.className = 'list-decimal pl-5 flex flex-col gap-0.5';
+  for (const step of plan.steps) {
+    const li = document.createElement('li');
+    li.textContent = step;
+    steps.appendChild(li);
+  }
+  card.appendChild(steps);
+  if (plan.assumptions.length > 0) {
+    const label = document.createElement('div');
+    label.className = 'mt-1 text-[11px] uppercase tracking-wide text-zinc-400';
+    label.textContent = 'Assumptions';
+    card.appendChild(label);
+    const list = document.createElement('ul');
+    list.className = 'list-disc pl-5 text-zinc-300 flex flex-col gap-0.5';
+    for (const a of plan.assumptions) {
+      const li = document.createElement('li');
+      li.textContent = a;
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+  }
+  return withCopyButton(card, 'assistant', () => planMarkdown(plan));
 }
 
 function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLElement {
@@ -3575,7 +3744,7 @@ async function sendMessage(): Promise<void> {
     }
 
     await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
-    renderPlanApprovalBar();
+    syncPendingPlanFromHistory();
     return;
   }
 
@@ -3603,6 +3772,8 @@ function formatTurnOutcome(o: TurnOutcome): string {
   const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
   switch (o.reason) {
     case 'end_turn':
+      if (o.detail === ASK_USER_TOOL) return `❓ waiting for your answers · ${cost} · ${iters}${tools}`;
+      if (o.detail === PROPOSE_PLAN_TOOL) return `📋 plan ready · ${cost} · ${iters}${tools}`;
       return `✓ done · ${cost} · ${iters}${tools}`;
     case 'empty_final':
       return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
@@ -3946,6 +4117,7 @@ async function runTurnWithStallRetry(
     state.inFlightController = null;
     setSendButtonMode('send');
     updateRewindButtons();
+    refreshAskUserCards();
 
     // Bug fix — reunite a conversation split by a mid-turn session switch.
     // chatLoop stamps every message of a turn with the session active when the
@@ -4025,6 +4197,7 @@ async function runTurnWithStallRetry(
       reason: finalOutcome.reason,
       modelChangingToolCalls: countModelChangingCalls(state.history, roundStartedAt, isModelChangingTool),
       planning: toggles.planFirst || state.pendingPlanApproval !== null,
+      awaitingAnswers: pendingAskUser(state.history) !== null,
       hadError: state.history.some(m => m.errored),
       spentUsd: totalCost(state.history),
       spendCapUsd: SPEND_CAP_USD[toggles.maxSpend],
@@ -4174,6 +4347,7 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
     state.inFlightController = null;
     setSendButtonMode('send');
     updateRewindButtons();
+    refreshAskUserCards();
   }
 }
 
