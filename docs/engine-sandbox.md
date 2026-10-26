@@ -3,7 +3,12 @@
 Status: **opt-in, default off** (kemper/partwright#1090, "option 2"). Builds on
 the engine-Worker lockdown (#1109, "option 1"), which strips network/storage
 globals from the Worker realm and keeps model code off the main thread; the
-sandbox adds an origin boundary under that.
+sandbox adds an origin boundary under that. Inside whichever Worker runs it,
+model code is evaluated in an SES Compartment (#1127, **on by default** — see
+[SES compartment](#ses-compartment-1127) below), which bounds the *realm*: no
+Worker global, frozen built-ins. The layers are complementary — the iframe
+bounds the *origin* (no app IndexedDB even after an escape), SES bounds the
+*realm*.
 
 ## The problem
 
@@ -233,9 +238,80 @@ processes, measured for `opaque` below at ≈7 ms for 205k triangles and
 downloads the engine once rather than on every page load. Third-party storage
 partitioning applies; the frame needs no storage.
 
+## SES compartment (#1127)
+
+Independent of the mode above, every engine Worker — the editor's, each
+Assembly/export pool Worker, and the Worker inside this sandbox frame —
+evaluates model code in a Hardened JavaScript (SES) `Compartment`, **on by
+default**. Full design notes: docs/architecture-notes.md → "SES compartment
+for model code". In short:
+
+- **Ordering.** Worker `init`: SES `lockdown()` → engine init (manifold-3d;
+  OpenSCAD/OpenCASCADE load lazily later on frozen intrinsics) →
+  `workerLockdown`'s denylist + default-deny audit (#1119), which allowlists
+  the capability-free globals SES installs (`workerGlobalAllowlist.ts`, group
+  `ses`). Any SES failure fails closed with the usual "Geometry engine refused
+  to start for security reasons" refusal + Diagnostic Log entry.
+- **Preset.** `evalTaming: 'unsafe-eval'` (else SDF figures 4.3× slower —
+  the engine's own `new Function` code would run under SES's `with`
+  evaluator), `overrideTaming: 'min'` (else BOSL2 ~2× slower), and the
+  error/console/stack/locale/trapping options relaxed so the engine realm
+  behaves exactly as before. A fresh compartment per run, with a prelude that
+  binds the compartment globals as local `const`s (else hot model closures are
+  1.85× slower).
+- **Glue fix.** `overrideTaming: 'min'` needs a build-time rewrite of the
+  override-mistake assignments in the manifold-3d and replicad-opencascadejs
+  glue (`src/geometry/sesGlueFix.ts`, Vite plugin `sesOverrideMistakeFix`);
+  `tests/unit/sesGlueFix.test.ts` pins the rewrite count per installed file.
+- **Kill switch.** `localStorage['partwright.sesSandbox'] = 'off'` (per browser)
+  or build/dev with `VITE_SES_SANDBOX=0`. Off is exactly the pre-#1127
+  behaviour (`new Function`, `ses` never loaded).
+- **Relation to this sandbox.** SES bounds the *realm* (model code can't name
+  the Worker global or patch shared built-ins/api objects); the frame bounds
+  the *origin*. Inside the frame both apply (e2e: engine-ses.spec "the #1110
+  iframe-sandbox Worker runs model code under SES too").
+
+**Performance (SES on vs off)** — measured with the opt-in
+`SES_PERF=1 E2E_PORT=5291 npx playwright test ses-bench --grep perf`
+(dev server, headless Chromium 141, medians; Worker init = `init` → `ready`
+over 5 fresh Workers; runs = Worker-side compute time):
+
+Measured 2026-10-26, 4 CPUs, one Worker per page:
+
+| | SES off | SES on | on / off |
+|---|---|---|---|
+| Worker init (`init` → `ready`) | 32 ms | 59 ms (SES itself ~35–40 ms) | +27 ms |
+| trivial cube (15 runs) | 0 ms | 1 ms | +≈1 ms (fresh compartment + hardening the run's `api`) |
+| 64-sphere union, ~150k tris (5) | 812 ms | 844 ms | 1.04 |
+| `levelSet` + model-code JS closure (3) | 1470 ms | 1415 ms | 0.96 |
+| SDF figure `cat_calico` (3) | 5235 ms | 5177 ms | 0.99 |
+| BOSL2 `modular_drawer_bin` (2) | 23300 ms | 23495 ms | 1.01 |
+
+Runs are within noise; the init cost is paid once per Worker (per session, and
+per Assembly pool Worker). `ses` is its own lazy chunk (`sesLoader-*.js`,
+86 KB minified) on the Worker's start path; the kill switch never loads it.
+
+**Catalog sweep** — `SES_SWEEP=1 E2E_PORT=5291 npx playwright test ses-bench
+--grep sweep` runs every `public/catalog` entry with SES on and off and fails
+on any difference in triangle count or volume (≈45 min; results in
+`.ses-bench/`, `SES_SWEEP_ONLY=a,b` to narrow).
+
+Last run (2026-10-26, 161 entries): **158 identical, 0 different**, 3
+failing identically in both modes (`mechanical_orrery`, `pocket_watch` — the
+180 s cap; `sdf_gyroid_chamber` — "memory access out of bounds" in a
+long-lived Worker). Two entries timed out once, one in each mode (`diva` with
+SES on, `dog_dalmatian` with SES off), and rendered identically when re-run
+(`SES_SWEEP_ONLY`): one long-lived page running ~160 heavy models in a row
+occasionally stalls. Worker time over the 111 models above 200 ms: total
++6.8 %, per-model on/off median 1.10 (p10 0.91, p90 1.25) — per-model noise in
+a 45-minute run is ±25 %; the controlled perf runs above are the measurement.
+
 ## Testing
 
-- `tests/engine-sandbox.spec.ts` — per mode: a value saved through the app's
+- `tests/engine-sandbox.spec.ts` — per mode (the storage/network probe runs
+  with the SES kill switch on, i.e. assuming model code already holds the
+  Worker realm; under SES it can't even name `indexedDB`/`fetch`): a value
+  saved through the app's
   `aiKeys` store is unreadable from model code; IndexedDB is refused
   (opaque) or empty/partitioned (origin); `localStorage` is absent; fetches
   to `https://example.com`, a loopback alias of the app host, and (origin
@@ -373,6 +449,7 @@ How to read it:
 - **Message channel is the remaining boundary.** Model code can post
   arbitrary messages on its port to the app; they're type-allow-listed here
   and field-validated by #1109 (`checkEngineWorkerMessage`).
-- **Legal copy.** `src/content/data/legal.ts` still says code is "not inside a
-  hardened security sandbox" — accurate while the default is off; revisit it
-  when the default flips.
+- **Legal copy.** `src/content/data/legal.ts` describes the default (SES
+  compartment in a locked-down Worker, #1127) as layers of defence, not a
+  guarantee; it doesn't claim the origin sandbox, which is still opt-in —
+  revisit it if this sandbox's default flips.
