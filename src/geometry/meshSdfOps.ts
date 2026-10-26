@@ -3,8 +3,8 @@
 // for ARBITRARY Manifolds (any boolean result, import, or
 // helper output), no `api.sdf` authoring required.
 //
-// Both ops share one pipeline: rasterize the input solid(s) onto a lattice
-// (meshSdf.ts), derive a signed distance field, transform it (open/close for
+// All of them share one pipeline: rasterize the input solid(s) onto a lattice
+// (meshSdf.ts), derive a signed distance field, transform it (shift for offset/shell, open/close for
 // rounding, polynomial smooth-min for welding), then lower the result back to a
 // Manifold with `Manifold.levelSet` over a trilinear sampler. Accuracy is
 // O(voxel); `chooseGridForRadius` sizes the lattice so the voxel is well under
@@ -69,20 +69,21 @@ function resolveGrid(
   radius: number,
   resolution: number | undefined,
   where: string,
+  param = 'radius',
+  // Pad by the radius plus a closing ring so dilation never clips at the lattice edge.
+  pad = radius * 2,
 ): GridSpec {
   const maxRes = resolution === undefined ? DEFAULT_MAX_RES : resolution;
   need(Number.isInteger(maxRes) && maxRes >= 32 && maxRes <= 320, `${where}.resolution must be an integer in 32..320`);
-  // Pad by the radius plus a closing ring so dilation never clips at the lattice edge.
-  const pad = radius * 2;
   const spec = chooseGridForRadius(bounds.min, bounds.max, radius, pad, maxRes);
   if (!spec) {
     const size = [bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1], bounds.max[2] - bounds.min[2]];
     const longest = Math.max(...size);
     throw new Error(
-      `meshOps: ${where}: radius ${radius} is too small to resolve on this model ` +
+      `meshOps: ${where}: ${param} ${radius} is too small to resolve on this model ` +
       `(model spans ~${longest.toFixed(1)} units; at resolution ${maxRes} the lattice voxel is ` +
-      `~${(longest / maxRes).toFixed(2)} units and the radius must be at least ~1.5 voxels). ` +
-      `Use a larger radius, or raise { resolution } (max 320).`,
+      `~${(longest / maxRes).toFixed(2)} units and the ${param} must be at least ~1.5 voxels). ` +
+      `Use a larger ${param}, or raise { resolution } (max 320).`,
     );
   }
   return spec;
@@ -495,24 +496,39 @@ export function createMeshSdfOps(module: any) {
    *  levelSet of the exact signed distance, computed on a band of lattice
    *  samples on that side of the surface only. `null` when nothing is left
    *  (an inward offset deeper than the model is thick everywhere). */
-  function offsetSurface(m: any, distance: number, resolution: number | undefined, where: string): { out: any | null; voxel: number } {
+  function offsetSurface(m: any, distance: number, resolution: number | undefined, where: string, param: string): any | null {
     const mesh = m.getMesh();
     const d = Math.abs(distance);
-    const spec = resolveGrid(bboxOf(m), d, resolution, where);
+    const bounds = bboxOf(m);
+    // Room for the grown surface plus a few voxels; an inward offset needs
+    // only the few voxels (a wider pad would just coarsen a capped lattice).
+    const maxRes = resolution === undefined ? DEFAULT_MAX_RES : resolution;
+    const longest = Math.max(...bounds.max.map((v, i) => v - bounds.min[i]));
+    const roughVoxel = Math.max(d / 2.5, (longest + 2 * Math.max(distance, 0)) / Math.max(maxRes - 8, 1));
+    const spec = resolveGrid(bounds, d, resolution, where, param, Math.max(distance, 0) + 3 * roughVoxel);
     const occ = rasterizeOccupancy(mesh, spec);
     const raster = signedFieldFromOccupancy(occ, spec);
-    // Exact distances only where the new surface can be: from just across the
-    // input surface out to a few voxels past `distance` on its side.
-    const margin = 2 * spec.voxel;
-    const side = new Uint8Array(raster.length);
-    for (let i = 0; i < raster.length; i++) side[i] = (distance > 0 ? raster[i] > -margin : raster[i] < margin) ? 1 : 0;
-    const band = bandSamples(raster, spec, d + 3 * spec.voxel, side);
+    // Exact distances wherever the new surface can be: every sample within a
+    // few voxels past `distance` of a TRIANGLE (not of a raster sign change —
+    // a fin or slot thinner than a voxel never flips the raster, and the
+    // offset around it would be lost), on the offset's side of the surface.
+    // `occ` is an exact per-sample inside test, so it picks the side.
+    const mark = new Uint8Array(raster.length);
+    markTriangleSamples(mesh, new Uint8Array(mesh.numTri).fill(1), spec, mark);
+    const d2 = edt3dSquared(i => mark[i] !== 0, spec.nx, spec.ny, spec.nz);
+    const reach = ((d + 3 * spec.voxel) / spec.voxel) ** 2, close = 4; // (2 voxels)²
+    const within = new Uint8Array(raster.length);
+    for (let i = 0; i < raster.length; i++) {
+      within[i] = d2[i] <= reach && (d2[i] <= close || (occ[i] !== 0) === (distance < 0)) ? 1 : 0;
+    }
+    const band = bandSamples(raster, spec, Infinity, within);
     const field = exactField(mesh, occ, raster, band);
     for (let i = 0; i < field.length; i++) field[i] -= distance;
     const out = levelSetFromField(Manifold, field, spec);
-    if (out.isEmpty()) return { out: null, voxel: spec.voxel };
-    // An inward offset of a noisy surface can leave voxel-sized crumbs.
-    return { out: dropSlivers(out, spec.voxel), voxel: spec.voxel };
+    if (out.isEmpty()) return null;
+    // An inward offset of a noisy surface can leave crumbs under a voxel³;
+    // inside a shell each would be a pointless sealed void in the wall.
+    return dropSlivers(out, spec.voxel, 1);
   }
 
   function checkOpts(opts: any, allowed: string[], where: string, required: string): void {
@@ -544,12 +560,12 @@ export function createMeshSdfOps(module: any) {
     checkOpts(opts, ['distance', 'resolution', 'keepLabels'], 'offset', 'distance');
     need(isFiniteNum(opts.distance) && opts.distance !== 0, 'offset.distance must be a non-zero number (> 0 grows, < 0 shrinks)');
     need(!m.isEmpty(), 'offset(m): input manifold is empty');
-    const { out } = offsetSurface(m, opts.distance, opts.resolution, 'offset');
+    const out = offsetSurface(m, opts.distance, opts.resolution, 'offset', 'distance');
     if (!out) {
-      throw new Error(
-        `meshOps: offset: shrinking by ${-opts.distance} removed the whole model — it is nowhere thicker than ` +
-        `${(-2 * opts.distance).toFixed(2)} units. Use a smaller distance.`,
-      );
+      throw new Error(opts.distance < 0
+        ? `meshOps: offset: shrinking by ${-opts.distance} removed the whole model — it is nowhere thicker than ` +
+          `${(-2 * opts.distance).toFixed(2)} units. Use a smaller distance.`
+        : `meshOps: offset: growing by ${opts.distance} produced an empty surface — is the input a closed solid?`);
     }
     return opts.keepLabels ? withCarriedLabels(out, [m]) : out;
   }
@@ -582,7 +598,7 @@ export function createMeshSdfOps(module: any) {
     need(side === 'inside' || side === 'outside', "shell.side must be 'inside' or 'outside'");
     need(!m.isEmpty(), 'shell(m): input manifold is empty');
     const t = opts.thickness;
-    const { out: wall } = offsetSurface(m, side === 'inside' ? -t : t, opts.resolution, 'shell');
+    const wall = offsetSurface(m, side === 'inside' ? -t : t, opts.resolution, 'shell', 'thickness');
     if (!wall) {
       throw new Error(
         `meshOps: shell: the model is nowhere thicker than ${(2 * t).toFixed(2)} units, so a ${t}-unit wall ` +

@@ -38,3 +38,25 @@ hand-written lines.
 **Open masks stay a boolean**: There is no `open:` option. The shell returns
 a closed hollow solid, and the docs show cutting the back off with a box.
 That keeps the API small and lets the user choose where the opening goes.
+
+## Assistant
+
+## Review follow-up
+
+**Band chosen by triangle distance, not raster distance**: The review
+subagent reproduced a real defect. A fin or slot thinner than a lattice
+voxel never flips the occupancy raster, so the raster-based band skipped the
+samples next to it. Growing the solid lost the fin, and an inside shell
+broke open into the slot. That second case is the mask failure mode: lip
+lines, eyelids and nostrils. The band now uses the EDT from samples the
+triangles pass through (the way `nearScope` works), and the side comes from
+the exact per-sample `occ`. Regression tests cover the fin and 0.3/0.5/3-wide
+slots.
+
+**Padding and limits**: An inward offset no longer pads the lattice by 2·d,
+which made a capped lattice coarser. The ~925k-triangle shell went from 15 s
+to 12 s. The too-small error now names the parameter the caller passed
+(`distance`/`thickness`). The docs give the measured minimum (≈ 1.5 × span ÷
+resolution: a 0.3 clearance works up to ~37 units at 192 and ~63 at 320).
+The docs also spell out how the SDF `node.shell` and `BREP.shell`
+conventions differ from `api.shell`.

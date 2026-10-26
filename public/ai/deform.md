@@ -202,9 +202,9 @@ const hollow = api.shell(m, {
   thickness: 2,          // wall thickness, world units
   side: 'inside',        // 'inside' (default): hollow it, outer surface unchanged
                          // 'outside': a skin around it; inner surface = m's surface
-  resolution: 192,       // lattice cap (32..320); higher = finer inner wall, slower
+  resolution: 192,       // lattice-size cap (32..320); only matters on big models / thin walls
 });
-const bigger = api.offset(m, { distance: 0.3 });   // grow by 0.3 (fit clearance)
+const bigger = api.offset(m, { distance: 0.3 });   // grow by 0.3 (fit clearance, small part)
 const thinner = api.offset(m, { distance: -1 });   // shrink by 1
 ```
 
@@ -233,12 +233,26 @@ rounded, and features thinner than `2·|distance|` vanish when shrinking. The
 output is a remeshed surface; pass `keepLabels: true` to carry `api.label` parts
 across (same mechanism as `round`).
 
-Cost: one lattice pass, independent of the input's triangle count past the
-nearest-surface queries — about **15 s for a ~1M-triangle head** at the default
-resolution. The wall thickness must be at least ~1.5 lattice voxels (the error
-message says the minimum and how to raise `resolution`). For a big import,
-`partwright.simplifyModel(...)` it once first so every later run is cheaper.
-Stay in `api.sdf` (`node.shell(t)`) when the model is already an SDF tree.
+**Smallest distance / thickness.** The op runs on a lattice capped at
+`resolution` cells along the model's longest side, and the distance (or
+thickness) must span at least ~1.5 cells: **minimum ≈ 1.5 × model span ÷
+resolution** — ~1.6 units on a 200-unit head at the default 192, ~0.9 at
+`resolution: 320`. A 0.3 fit clearance therefore works on a part up to ~38
+units across (~64 at 320); for a larger assembly, offset just the mating
+feature and union it back. The error message states the limit. Below the cap,
+`resolution` changes nothing (the lattice is already as fine as the distance
+needs).
+
+Cost: one lattice pass, roughly independent of the input's triangle count past
+the nearest-surface queries — about **12 s for a ~1M-triangle head** at the
+default resolution. For a big import, `partwright.simplifyModel(...)` it once
+first so every later run is cheaper.
+
+**Not the same as the other shells.** `api.sdf`'s `node.shell(t)` is CENTRED on
+the surface (`|f| − t/2`: half the wall outside, half inside) — use it when the
+model is already an SDF tree and that's what you want. `BREP.shell(shape, -t,
+{ topZ: true })` (replicad sessions) is negative-inward and needs an open-face
+filter. `api.shell`'s default puts the whole wall INSIDE the input surface.
 
 ## smoothWeld — smoothUnion for plain meshes
 

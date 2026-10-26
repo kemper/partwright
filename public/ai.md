@@ -118,8 +118,8 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Organic surface texture (rock / bark / coral / terrain) | `node.displace(amount, api.sdf.noise({...}))` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Fractal plant / coral / branching structure | `api.sdf.lsystem({ axiom, rules, iterations })` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
-| Hollow ANY finished solid (import, sculpt, boolean result) to a uniform wall — mask, helmet, lamp, vase | `api.shell(m, {thickness, side?})` (keeps the outer surface exact; cut an opening with a boolean) -> `/ai/deform.md` | (not available) | `BREP.shell(shape, t)` -> `/ai/replicad.md` |
-| Grow / shrink ANY solid uniformly (3D offset) — clearance, fit allowance, thicken | `api.offset(m, {distance})` (> 0 grows, < 0 shrinks) -> `/ai/deform.md` | `minkowski()` with a sphere (slow) | (not available) |
+| Hollow ANY finished solid (import, sculpt, boolean result) to a uniform wall — mask, helmet, lamp, vase | `api.shell(m, {thickness, side?})` (keeps the outer surface exact; cut an opening with a boolean) -> `/ai/deform.md` | (not available) | `BREP.shell(shape, -t, { topZ: true })` (negative = inward; needs an open face) -> `/ai/replicad.md` |
+| Grow / shrink ANY solid uniformly (3D offset) — clearance, fit allowance, thicken | `api.offset(m, {distance})` (> 0 grows, < 0 shrinks; min distance ≈ 1.5 × model span ÷ `resolution`) -> `/ai/deform.md` | `minkowski()` with a sphere (slow) | (not available) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |

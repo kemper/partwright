@@ -39,6 +39,18 @@ describe('meshOps.offset', () => {
     expect(() => ops.offset(Manifold.cube([20, 20, 2], true), { distance: -1.5 })).toThrow(/nowhere thicker/);
   });
 
+  it('offsets a fin thinner than the lattice voxel (the raster cannot see it)', () => {
+    const m = Manifold.cube([20, 20, 20], true).add(Manifold.cube([15, 0.3, 4], true).translate([16.5 - 0.1, 0, 0]));
+    const out = ops.offset(m, { distance: 2 });
+    expect(out.boundingBox().max[0]).toBeGreaterThan(25.5);
+    expect(m.subtract(out).isEmpty()).toBe(true);
+  });
+
+  it('names the parameter the caller passed in the too-small error', () => {
+    expect(() => ops.offset(Manifold.cube([200, 200, 200]), { distance: 0.3 })).toThrow(/distance 0.3 is too small/);
+    expect(() => ops.shell(Manifold.cube([200, 200, 200]), { thickness: 0.3 })).toThrow(/thickness 0.3 is too small/);
+  });
+
   it('rejects bad options', () => {
     const s = Manifold.sphere(5, 24);
     expect(() => ops.offset(s, { distance: 0 })).toThrow(/non-zero/);
@@ -64,6 +76,19 @@ describe('meshOps.shell', () => {
     expect(probe([0, 0, 0])).toBe(false);
     expect(probe([0, 0, 13.5])).toBe(true);
     expect(probe([0, 0, 11])).toBe(false);
+  });
+
+  it('keeps the wall sealed beside a slot narrower than the lattice voxel', () => {
+    for (const w of [0.3, 0.5, 3]) {
+      const m = Manifold.cube([30, 30, 30], true).subtract(Manifold.cube([w, 40, 20], true).translate([0, 0, 15 - 10 + 0.01]));
+      const out = ops.shell(m, { thickness: 3 });
+      const vols = out.decompose().map((p: any) => p.volume());
+      // One solid plus one sealed (negative-volume) cavity.
+      expect(vols.filter((v: number) => v < 0).length, `slot ${w}`).toBe(1);
+      // No point of the wall next to the slot is hollow.
+      const nearSlot = Manifold.cube([w + 2 * 2.5, 30, 20], true).translate([0, 0, 5]);
+      expect(m.intersect(nearSlot).subtract(out).volume(), `slot ${w}`).toBeLessThan(1);
+    }
   });
 
   it("side: 'outside' wraps a skin around the input", () => {
