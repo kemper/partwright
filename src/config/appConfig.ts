@@ -360,6 +360,13 @@ export interface AppConfig {
      *  piece). Each becomes its own object with a version, so this bounds the
      *  run time of a split import. */
     maxSplitObjects: number;
+    /** Max mesh files (STL / 3MF) one import may take at once. Every file is
+     *  read before the import dialog opens, so this bounds that wait and the
+     *  memory it holds. */
+    maxImportFiles: number;
+    /** Gap between models when a multi-file import arranges them in a grid,
+     *  as a fraction of the models' average footprint size. */
+    multiImportGridGap: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -761,6 +768,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxEntryMB: 1024,
     threeMfMaxColors: 256,
     maxSplitObjects: 100,
+    maxImportFiles: 50,
+    multiImportGridGap: 0.2,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,

@@ -41,7 +41,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderRegionLabels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
-import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession, listSessionImportSignatures } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -144,6 +144,7 @@ import { fetchRemoteBytes } from './import/remoteFetch';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
 import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
+import { alreadyImportedItems, buildMultiFileSource, layoutMultiFileSource, suggestMultiFileLayout, type MultiFileInput, type MultiFileLayout, type MultiFileSource } from './import/multiFileImport';
 import { showScadCompanionModal } from './ui/scadCompanionModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
 import { showImageImportKindModal } from './ui/imageImportKindModal';
@@ -5342,14 +5343,17 @@ async function main() {
   }
 
   /** Cut the planned groups of a 3MF out as objects ready to place: each one
-   *  recentred on its own XY origin, manifold-probed, and coloured from the
-   *  file's filament / material assignments. */
+   *  recentred on its own XY origin (unless `recenter` is false: a multi-file
+   *  import has laid them out already), manifold-probed, and coloured from the
+   *  file's filament / material assignments. `sourceOf` names the file (and
+   *  format) each object's import records — by default `filename` as a 3MF. */
   async function build3MFObjectEntries(
     result: ThreeMFParseResult,
     filename: string,
     groups: ReturnType<typeof planImportSplit>,
     items: ImportSplitItem[],
     adoptPalette: boolean,
+    opts: { recenter?: boolean; sourceOf?: (g: ReturnType<typeof planImportSplit>[number]) => { filename: string; format: ImportedMesh['format'] } } = {},
   ): Promise<{ entries: ImportObjectEntry[]; infos: (ThreeMFColorInfo | undefined)[] } | null> {
     const base = filename.replace(/\.[^.]+$/, '');
     const paletteName = `${result.title || base} (3MF)`;
@@ -5369,8 +5373,9 @@ async function main() {
           if (cancelled) return null;
         }
         const g = groups[i];
-        const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
-        const p3: Parsed3MF = { ...(await probeIndexedMesh(sub.mesh, filename, '3mf')), result, triColor: sub.triColor! };
+        const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: opts.recenter !== false });
+        const src = opts.sourceOf?.(g) ?? { filename, format: '3mf' as const };
+        const p3: Parsed3MF = { ...(await probeIndexedMesh(sub.mesh, src.filename, src.format)), result, triColor: sub.triColor! };
         attach3MFParts(p3.probe.mesh, items, g);
         const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
         entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
@@ -5429,6 +5434,279 @@ async function main() {
     return ids.length > 0;
   }
 
+  // === Multi-file mesh import (several STL / 3MF files at once) ===
+
+  /** One file handed to a multi-file import. */
+  interface MeshFileSource { name: string; read: () => Promise<Uint8Array> }
+
+  /** Read and parse the files of a multi-file import under one progress
+   *  modal (Cancel stops it). A file that won't parse is reported, not fatal.
+   *  `kept[i]` is the index into `files` of `inputs[i]`. Null when cancelled. */
+  async function readMeshFiles(files: MeshFileSource[]): Promise<{ inputs: MultiFileInput[]; kept: number[]; failed: string[] } | null> {
+    const abort = new AbortController();
+    const progressId = startProgress({ title: `Reading ${files.length} files`, message: `File 1 of ${files.length}`, onCancel: () => abort.abort() });
+    const inputs: MultiFileInput[] = [];
+    const kept: number[] = [];
+    const failed: string[] = [];
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const label = `File ${i + 1} of ${files.length}: ${f.name}`;
+        updateProgress(progressId, i / files.length, label);
+        // Let the bar paint (and a Cancel click land) between files.
+        await new Promise(r => setTimeout(r, 0));
+        if (abort.signal.aborted) return null;
+        try {
+          const bytes = await f.read();
+          if (/\.3mf$/i.test(f.name) || looksLikeZip(bytes)) {
+            const r = await read3MF(bytes);
+            // A scan with thousands of colours comes in uncoloured, like a
+            // single 3MF import — and without draining the others' palette.
+            const coloured = r.colorSource !== 'none' && r.palette.length <= getConfig().import.threeMfMaxColors;
+            inputs.push({ name: f.name, format: '3mf', mesh: r.mesh, objects: r.objects, ...(coloured ? { triColor: r.triColor, palette: r.palette } : {}) });
+          } else {
+            const parsed = await parseSTLBytes(bytes, f.name, {
+              signal: abort.signal,
+              onProgress: (fraction, message) => updateProgress(progressId, (i + fraction) / files.length, `${label} — ${message}`),
+            });
+            if (!parsed) { failed.push(`${f.name} (not an STL file)`); continue; }
+            inputs.push({ name: f.name, format: 'stl', mesh: parsed.mesh });
+          }
+          kept.push(i);
+        } catch (e) {
+          if (e instanceof STLProbeAbortError || abort.signal.aborted) return null;
+          failed.push(`${f.name} (${(e as Error).message})`);
+        }
+      }
+    } finally {
+      endProgress(progressId);
+    }
+    return { inputs, kept, failed };
+  }
+
+  /** What to do with a multi-file import (the dialog's answer, or the API's). */
+  interface MultiFileChoice {
+    mode: ImportSplitMode;
+    /** Indices into the source's items. */
+    selected: number[];
+    layout: MultiFileLayout;
+    convert: boolean;
+    destination: MeshImportDestination;
+  }
+
+  /** The name for what a multi-file import makes as a whole (its session, or
+   *  its one object): the file's name when everything selected comes from one
+   *  file, else "<first> and N more". */
+  function multiFileImportName(source: MultiFileSource, selected: number[]): string {
+    const files = [...new Set(selected.map(i => source.items[i].file))];
+    const first = source.files[files[0] ?? 0] ?? 'Import';
+    return files.length <= 1 ? first : `${first} and ${files.length - 1} more`;
+  }
+
+  /** The source files of an object a multi-file import makes, for its import
+   *  record: the file itself, or a list when the object mixes files. */
+  function multiFileObjectSource(source: MultiFileSource, fileNames: string[], items: number[]): { filename: string; format: ImportedMesh['format'] } {
+    const files = [...new Set(items.map(i => source.items[i].file))];
+    const format = files.some(f => /\.3mf$/i.test(fileNames[f])) ? '3mf' : 'stl';
+    if (files.length === 1) return { filename: fileNames[files[0]], format };
+    const shown = files.slice(0, 4).map(f => fileNames[f]).join(', ');
+    return { filename: files.length > 4 ? `${shown} and ${files.length - 4} more` : shown, format };
+  }
+
+  /** Lay out, cut out and place the objects of a multi-file import, then (when
+   *  asked) convert them to code. Null when nothing was made (cancelled, or
+   *  nothing selected). */
+  async function placeMultiFileImport(source: MultiFileSource, fileNames: string[], choice: MultiFileChoice, opts: { sessionName?: string; confirmRenderOnly?: boolean } = {}): Promise<{
+    entries: ImportObjectEntry[];
+    ids: (string | null)[];
+    infos: (ThreeMFColorInfo | undefined)[];
+    converted: number;
+    convertFailed: string[];
+  } | null> {
+    const name = multiFileImportName(source, choice.selected);
+    const groups = planImportSplit(source.items, choice.mode, { selected: choice.selected, files: source.files, baseName: name });
+    if (groups.length === 0) return null;
+    const mesh = layoutMultiFileSource(source, choice.layout, { selected: choice.selected, gapRatio: getConfig().import.multiImportGridGap });
+    // The merged files read like one 3MF to the shared object builder: their
+    // triangles, the merged palette, and a title for the adopted palette.
+    const merged = {
+      mesh,
+      triColor: source.triColor,
+      palette: source.palette,
+      colorSource: source.palette.length > 0 ? 'materials' : 'none',
+      title: name,
+    } as unknown as ThreeMFParseResult;
+    const built = await build3MFObjectEntries(merged, `${name}.3mf`, groups, source.items, true, {
+      recenter: false,
+      sourceOf: g => multiFileObjectSource(source, fileNames, g.items),
+    });
+    if (!built) return null;
+    const { entries, infos } = built;
+    if (opts.confirmRenderOnly !== false && !(await confirmRenderOnlyObjects('the selected files', entries))) return null;
+    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name);
+    let converted = 0;
+    let convertFailed: string[] = [];
+    if (choice.convert) {
+      const targets = entries
+        .map((e, i) => ({ id: ids[i], name: e.name, solid: e.probe.isManifold }))
+        .filter((t): t is { id: string; name: string; solid: boolean } => !!t.id && t.solid);
+      ({ converted, failed: convertFailed } = await convertObjectsToCode(targets));
+      const skipped = entries.filter((e, i) => ids[i] && !e.probe.isManifold).length;
+      if (skipped > 0) convertFailed.push(`${skipped} render-only object${skipped === 1 ? '' : 's'} (not a clean solid) stayed a mesh`);
+    }
+    return { entries, ids, infos, converted, convertFailed };
+  }
+
+  /** Convert several objects to code, one after another, under one progress
+   *  modal. Cancel stops the conversion running and skips the rest; the open
+   *  object afterwards is the first one. */
+  async function convertObjectsToCode(targets: { id: string; name: string }[]): Promise<{ converted: number; failed: string[] }> {
+    const failed: string[] = [];
+    let converted = 0;
+    if (targets.length === 0) return { converted, failed };
+    let cancelled = false;
+    const progressId = startProgress({
+      title: 'Converting to code',
+      message: `Object 1 of ${targets.length}`,
+      onCancel: () => { cancelled = true; surfaceCarveCancel?.(); },
+    });
+    const open = async (id: string) => {
+      if (getState().currentPart?.id === id) return;
+      const v = await changePart(id);
+      if (v) await loadVersionIntoEditor(v, { skipSurface: true, skipDraftSave: true });
+    };
+    try {
+      for (let i = 0; i < targets.length && !cancelled; i++) {
+        const t = targets[i];
+        updateProgress(progressId, i / targets.length, `Object ${i + 1} of ${targets.length}: ${t.name}`);
+        await open(t.id);
+        const r = await convertCurrentObjectToCode(undefined, { quiet: true }) as { error?: string };
+        if (cancelled) break;
+        if (r.error) failed.push(`${t.name}: ${r.error}`);
+        else converted++;
+      }
+    } finally {
+      endProgress(progressId);
+    }
+    if (targets.length > 1) {
+      await open(targets[0].id);
+      resetView();
+    }
+    return { converted, failed };
+  }
+
+  /** One line about the files of a multi-file import, for the dialog. */
+  function describeMultiFileImport(inputs: MultiFileInput[], source: MultiFileSource): string {
+    const stl = inputs.filter(i => i.format === 'stl').length;
+    const mf = inputs.length - stl;
+    const bits: string[] = [];
+    if (stl > 0) bits.push(`${stl} STL`);
+    if (mf > 0) bits.push(`${mf} 3MF`);
+    bits.push(`${source.items.length} model${source.items.length === 1 ? '' : 's'}`, `${source.mesh.numTri.toLocaleString()} triangles`);
+    if (source.palette.length > 0) bits.push(`${source.palette.length} colour${source.palette.length === 1 ? '' : 's'}`);
+    return bits.join(' · ');
+  }
+
+  /** The result toast of a multi-file import. */
+  function describeMultiFileResult(fileCount: number, made: number, mode: ImportSplitMode, converted: number, convertFailed: string[], skipped: number): string {
+    let msg = mode === 'none' || made === 1
+      ? `Imported ${fileCount} file${fileCount === 1 ? '' : 's'} as one object`
+      : `Imported ${made} objects from ${fileCount} file${fileCount === 1 ? '' : 's'}`;
+    if (converted > 0) msg += `, ${converted} converted to code`;
+    if (skipped > 0) msg += `. Skipped ${skipped} model${skipped === 1 ? '' : 's'} already in this session`;
+    msg += '.';
+    if (convertFailed.length > 0) msg += ` Not converted: ${convertFailed.slice(0, 3).join('; ')}${convertFailed.length > 3 ? `; and ${convertFailed.length - 3} more` : ''}.`;
+    return msg;
+  }
+
+  /** Import several STL / 3MF files at once (file picker or drop): read them
+   *  all, ask how to bring them in — one object per model, per file, or one
+   *  object with each model as a part; how to lay them out; mesh or code; and
+   *  where — then build. Models already in the session start unticked, so
+   *  re-importing after a cancelled import picks up where it stopped. */
+  async function importMeshFilesInteractive(files: File[]): Promise<boolean> {
+    const max = getConfig().import.maxImportFiles;
+    if (files.length > max) {
+      showToast(`${files.length} files is over the ${max}-file import limit (Advanced settings → Import). Import them in smaller batches.`, { variant: 'warn', source: 'import' });
+      return false;
+    }
+    const read = await readMeshFiles(files.map(f => ({ name: f.name, read: async () => new Uint8Array(await f.arrayBuffer()) })));
+    if (!read) {
+      showToast('Cancelled the import — nothing was added.', { variant: 'neutral', source: 'import' });
+      return false;
+    }
+    if (read.failed.length > 0) {
+      showToast(`Couldn’t read ${read.failed.length} file${read.failed.length === 1 ? '' : 's'}: ${read.failed.slice(0, 3).join('; ')}${read.failed.length > 3 ? '; …' : ''}`, { variant: 'warn', source: 'import' });
+    }
+    if (read.inputs.length === 0) return false;
+    // One readable file left: the single-file import (its own choices).
+    if (read.inputs.length === 1) return handleImportFile(files[read.kept[0]]);
+
+    const source = buildMultiFileSource(read.inputs);
+    const fileNames = read.inputs.map(i => i.name);
+    const state = getState();
+    const protect = !!state.session && !currentPartIsExpendable();
+    const existing = protect && state.session ? await listSessionImportSignatures(state.session.id) : [];
+    const already = alreadyImportedItems(source, fileNames, existing);
+    const suggested = suggestMultiFileLayout(source);
+    const fileHasSeveral = source.files.some((_, f) => source.items.filter(it => it.file === f).length > 1);
+    const choice = await showMeshImportModal({
+      title: `Import ${read.inputs.length} files`,
+      filename: `${read.inputs.length} files`,
+      summary: describeMultiFileImport(read.inputs, source),
+      items: source.items.map((it, i) => ({ name: it.name, triangleCount: it.count, file: it.file, ...(already[i] ? { skipNote: 'Already imported' } : {}) })),
+      plates: [],
+      files: fileNames,
+      modes: ['object', ...(fileHasSeveral ? ['file' as const] : []), 'none'],
+      layouts: ['keep', 'center', 'grid'],
+      initialLayout: suggested,
+      offerConvert: true,
+      baseName: multiFileImportName(source, source.items.map((_, i) => i)),
+      maxObjects: getConfig().import.maxSplitObjects,
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart } } : {}),
+    });
+    if (!choice) return false;
+    const placed = await placeMultiFileImport(source, fileNames, {
+      mode: choice.mode,
+      selected: choice.selected,
+      layout: choice.layout ?? suggested,
+      convert: !!choice.convert,
+      destination: protect ? choice.destination : 'new-session',
+    });
+    if (!placed) return false;
+    const made = placed.ids.filter(Boolean).length;
+    if (made === 0) return false;
+    const skipped = already.filter((a, i) => a && !choice.selected.includes(i)).length;
+    const usedFiles = new Set(choice.selected.map(i => source.items[i].file));
+    const stopped = placed.entries.length - made;
+    const result = describeMultiFileResult(usedFiles.size, made, choice.mode, placed.converted, placed.convertFailed, skipped);
+    showToast(stopped > 0
+      ? `${result} Stopped before ${stopped} more — import the same files again to add them (the ones already in start unticked).`
+      : result, { variant: stopped > 0 ? 'neutral' : 'success', source: 'import', ...(stopped > 0 ? { durationMs: getConfig().ui.undoToastDurationMs } : {}) });
+    // Recent Imports: each file, so any one can be re-imported on its own.
+    for (const f of usedFiles) {
+      const file = files[read.kept[f]];
+      await registerImportSnapshot(file, file.name, /\.3mf$/i.test(file.name) ? '3MF' : 'STL');
+    }
+    return true;
+  }
+
+  /** Several files picked or dropped at once. STL and 3MF files import
+   *  together; anything else imports on its own (the first one). */
+  async function handleImportFiles(files: File[]): Promise<void> {
+    if (files.length === 0) return;
+    if (files.length === 1) { await handleImportFile(files[0]); return; }
+    const meshes = files.filter(f => /\.(stl|3mf)$/i.test(f.name));
+    if (meshes.length >= 2) {
+      const others = files.length - meshes.length;
+      if (others > 0) showToast(`Only STL and 3MF files import together — skipped ${others} other file${others === 1 ? '' : 's'}.`, { variant: 'neutral', source: 'import' });
+      await importMeshFilesInteractive(meshes);
+      return;
+    }
+    showToast(`Several files import together only when they are STL or 3MF — imported ${files[0].name} on its own.`, { variant: 'neutral', source: 'import' });
+    await handleImportFile(files[0]);
+  }
+
   /** The render-only ask for a split import: one dialog for every object that
    *  won't form a clean manifold (the classic single-mesh dialog for one). */
   async function confirmRenderOnlyObjects(filename: string, entries: ImportObjectEntry[]): Promise<boolean> {
@@ -5466,13 +5744,19 @@ async function main() {
    *  the first object is left open. Cancel on the progress modal stops after
    *  the object being built. Returns the ids of the objects written. */
   async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<string[]> {
+    return (await placeImportedObjectsAligned(entries, destination, sessionName)).filter((id): id is string => !!id);
+  }
+
+  /** `placeImportedObjects`, returning one id per entry (null where the
+   *  object wasn't made — cancelled, or it failed). */
+  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<(string | null)[]> {
     if (entries.length === 0) return [];
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     if (destination === 'current-object') {
       const cur = getState().currentPart;
       if (entries.length === 1 && entries[0].probe.isManifold && cur) {
         await preserveCurrentEditsIfNeeded();
-        return (await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? [cur.id] : [];
+        return [(await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? cur.id : null];
       }
       if (entries.length === 1 && !entries[0].probe.isManifold) {
         showToast('Render-only meshes can’t be combined into an existing object — added it as a new object instead.', { variant: 'neutral', source: 'import' });
@@ -5527,7 +5811,7 @@ async function main() {
       // The camera is still framed on the last object built; frame this one.
       resetView();
     }
-    return ids.filter((id): id is string => !!id);
+    return entries.map((_, i) => ids[i] ?? null);
   }
 
   /** The pieces of an import mesh as split items ("<object> · piece N",
@@ -6521,9 +6805,8 @@ async function main() {
       }
     }
 
-    // Default: import the first importable file.
-    const first = all[0];
-    await handleImportFile(first);
+    // Several STL / 3MF files import together; otherwise the first file.
+    await handleImportFiles(all);
   });
 
   // Mesh export actions, shared by the toolbar and the command palette so the
@@ -7464,6 +7747,7 @@ async function main() {
       exportRawCode(getValue(), getActiveLanguage());
     },
     onImportFile: async (file) => { await handleImportFile(file); },
+    onImportFiles: async (files) => { await handleImportFiles(files); },
     onImportFromURL: () => { openImportFromUrl(); },
     onImportInboxEntry: handleReimportInboxEntry,
     onCreateRelief: () => {
@@ -8092,6 +8376,72 @@ async function main() {
   // syncEditorFromURL render — so the click handler attached just below can
   // close over them without a temporal-dead-zone error. They're assigned in
   // buildSurfaceModifierProgress far below.
+  /** `partwright.convertToCode` for the open object: rebuild it as smooth,
+   *  editable code (saved as a version) and measure it against the source.
+   *  `quiet` drops the per-object success toast (a batch reports once). */
+  async function convertCurrentObjectToCode(opts?: { quality?: 'draft' | 'standard' | 'fine'; step?: number; edge?: number; dpTol?: number; samples?: number }, { quiet = false }: { quiet?: boolean } = {}) {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded — run or import a mesh first' };
+      if (getActiveLanguage() !== 'manifold-js') {
+        // The generated code is manifold-js; converting a SCAD/BREP/voxel
+        // session would silently switch engines. Explicit error > silent bake.
+        return { error: `convertToCode requires a manifold-js session (active language: ${getActiveLanguage()})` };
+      }
+      const q = opts?.quality ?? 'standard';
+      if (!['draft', 'standard', 'fine'].includes(q)) return { error: `convertToCode: quality must be 'draft'|'standard'|'fine' (got ${String(q)})` };
+      for (const k of ['step', 'edge', 'dpTol'] as const) {
+        const v = opts?.[k];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
+          return { error: `convertToCode: ${k} must be a positive, finite number (got ${String(v)})` };
+        }
+      }
+      if (opts?.samples !== undefined && (!Number.isInteger(opts.samples) || opts.samples < 100 || opts.samples > 200000)) {
+        return { error: `convertToCode: samples must be an integer in 100..200000 (got ${String(opts.samples)})` };
+      }
+      const budget = Math.round(getConfig().import.reconstructCellBudget * (q === 'draft' ? 0.25 : q === 'fine' ? 4 : 1));
+      // Capture the source soup BEFORE the run replaces the model.
+      const source = toTriangleSoup(currentMeshData);
+      // Slicing a large mesh runs for seconds in the Worker — own the shared
+      // inline "Rendering… Xs" + Cancel (same slots as the engrave carve) so
+      // the user gets live feedback and a real interrupt, not a fading toast.
+      surfaceCarveAbort?.abort();              // supersede an in-flight owner
+      const abort = new AbortController();
+      surfaceCarveAbort = abort;
+      surfaceCarveCancel = () => abort.abort();
+      startRunTimer(performance.now());
+      let generated;
+      try {
+        generated = await generateCodeInWorker(source, {
+          cellBudget: budget,
+          step: opts?.step,
+          edge: opts?.edge,
+          dpTol: opts?.dpTol,
+          sourceName: getActiveImports()[0]?.filename,
+        }, { signal: abort.signal });
+      } finally {
+        // Only the current owner may clear the indicator — a superseded call
+        // must not hide the timer the newer one just started.
+        if (surfaceCarveAbort === abort) {
+          stopRunTimer();
+          setStatus(statusBar, 'ready', 'Ready');
+          surfaceCarveAbort = null;
+          surfaceCarveCancel = null;
+        }
+      }
+      const saved = await partwrightAPI.runAndSave(generated.code, `convert to code (${q})`) as { error?: string; version?: unknown; geometry?: unknown };
+      if (saved.error) return { error: `generated code failed to run: ${saved.error}`, stats: generated.stats };
+      if (!currentMeshData) return { error: 'conversion ran but produced no mesh', stats: generated.stats };
+      const metrics = await evaluateInWorker(source, toTriangleSoup(currentMeshData), opts?.samples ?? getConfig().import.reconstructEvalSamples);
+      const fmt = (v: number) => Number(v.toPrecision(3));
+      void partwrightAPI.addSessionNote(
+        `[MEASUREMENT] convertToCode(${q}): chamfer=${fmt(metrics.chamfer)}, p99=${fmt(metrics.candToTarget.p99)}, max=${fmt(metrics.hausdorff)} (sampling noise floor ~${fmt(metrics.sampleSpacing)}); ${generated.stats.components} component(s), ${generated.stats.sections} sections, ${generated.stats.bandedSegments} banded segment(s)`,
+      );
+      for (const w of generated.stats.warnings) showToast(w, { variant: 'warn', source: 'reconstruct' });
+      if (!quiet) showToast(`Converted to code — mean deviation ${fmt(metrics.chamfer)}, max ${fmt(metrics.hausdorff)}`, { variant: 'success', source: 'reconstruct' });
+      return { ok: true, stats: generated.stats, metrics, version: saved.version, geometry: saved.geometry };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  }
+
   let surfaceCarveAbort: AbortController | null = null;
   let surfaceCarveCancel: (() => void) | null = null;
 
@@ -13034,67 +13384,9 @@ async function main() {
      *  (fastest) | 'standard' | 'fine' (smoothest); step/edge/dpTol override
      *  the auto-derived resolution (world units, smaller = finer + slower). */
     async convertToCode(opts?: { quality?: 'draft' | 'standard' | 'fine'; step?: number; edge?: number; dpTol?: number; samples?: number }) {
-      try {
-        if (!currentMeshData) return { error: 'No model loaded — run or import a mesh first' };
-        if (getActiveLanguage() !== 'manifold-js') {
-          // The generated code is manifold-js; converting a SCAD/BREP/voxel
-          // session would silently switch engines. Explicit error > silent bake.
-          return { error: `convertToCode requires a manifold-js session (active language: ${getActiveLanguage()})` };
-        }
-        const q = opts?.quality ?? 'standard';
-        if (!['draft', 'standard', 'fine'].includes(q)) return { error: `convertToCode: quality must be 'draft'|'standard'|'fine' (got ${String(q)})` };
-        for (const k of ['step', 'edge', 'dpTol'] as const) {
-          const v = opts?.[k];
-          if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
-            return { error: `convertToCode: ${k} must be a positive, finite number (got ${String(v)})` };
-          }
-        }
-        if (opts?.samples !== undefined && (!Number.isInteger(opts.samples) || opts.samples < 100 || opts.samples > 200000)) {
-          return { error: `convertToCode: samples must be an integer in 100..200000 (got ${String(opts.samples)})` };
-        }
-        const budget = Math.round(getConfig().import.reconstructCellBudget * (q === 'draft' ? 0.25 : q === 'fine' ? 4 : 1));
-        // Capture the source soup BEFORE the run replaces the model.
-        const source = toTriangleSoup(currentMeshData);
-        // Slicing a large mesh runs for seconds in the Worker — own the shared
-        // inline "Rendering… Xs" + Cancel (same slots as the engrave carve) so
-        // the user gets live feedback and a real interrupt, not a fading toast.
-        surfaceCarveAbort?.abort();              // supersede an in-flight owner
-        const abort = new AbortController();
-        surfaceCarveAbort = abort;
-        surfaceCarveCancel = () => abort.abort();
-        startRunTimer(performance.now());
-        let generated;
-        try {
-          generated = await generateCodeInWorker(source, {
-            cellBudget: budget,
-            step: opts?.step,
-            edge: opts?.edge,
-            dpTol: opts?.dpTol,
-            sourceName: getActiveImports()[0]?.filename,
-          }, { signal: abort.signal });
-        } finally {
-          // Only the current owner may clear the indicator — a superseded call
-          // must not hide the timer the newer one just started.
-          if (surfaceCarveAbort === abort) {
-            stopRunTimer();
-            setStatus(statusBar, 'ready', 'Ready');
-            surfaceCarveAbort = null;
-            surfaceCarveCancel = null;
-          }
-        }
-        const saved = await partwrightAPI.runAndSave(generated.code, `convert to code (${q})`) as { error?: string; version?: unknown; geometry?: unknown };
-        if (saved.error) return { error: `generated code failed to run: ${saved.error}`, stats: generated.stats };
-        if (!currentMeshData) return { error: 'conversion ran but produced no mesh', stats: generated.stats };
-        const metrics = await evaluateInWorker(source, toTriangleSoup(currentMeshData), opts?.samples ?? getConfig().import.reconstructEvalSamples);
-        const fmt = (v: number) => Number(v.toPrecision(3));
-        void partwrightAPI.addSessionNote(
-          `[MEASUREMENT] convertToCode(${q}): chamfer=${fmt(metrics.chamfer)}, p99=${fmt(metrics.candToTarget.p99)}, max=${fmt(metrics.hausdorff)} (sampling noise floor ~${fmt(metrics.sampleSpacing)}); ${generated.stats.components} component(s), ${generated.stats.sections} sections, ${generated.stats.bandedSegments} banded segment(s)`,
-        );
-        for (const w of generated.stats.warnings) showToast(w, { variant: 'warn', source: 'reconstruct' });
-        showToast(`Converted to code — mean deviation ${fmt(metrics.chamfer)}, max ${fmt(metrics.hausdorff)}`, { variant: 'success', source: 'reconstruct' });
-        return { ok: true, stats: generated.stats, metrics, version: saved.version, geometry: saved.geometry };
-      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+      return convertCurrentObjectToCode(opts);
     },
+
     /** Measure how close the current model is to imported mesh `index`
      *  (default 0): chamfer (mean surface deviation) and hausdorff (worst
      *  point) from matched point-cloud samples of both surfaces. Distances
@@ -13860,7 +14152,7 @@ async function main() {
           if (opts.adoptPalette !== undefined) assertBoolean(opts.adoptPalette, 'importMeshData(opts.adoptPalette)');
           if (opts.split !== undefined) assertEnum(opts.split, ['none', 'object', 'plate', 'piece'], 'importMeshData(opts.split)');
           if (opts.objects !== undefined) {
-            if (!Array.isArray(opts.objects) || opts.objects.length === 0) throw new Error('importMeshData(opts.objects) must be a non-empty array of object indices');
+            if (!Array.isArray(opts.objects) || opts.objects.length === 0) throw new ValidationError('importMeshData(opts.objects) must be a non-empty array of object indices');
             opts.objects.forEach((n, i) => assertNumber(n, `importMeshData(opts.objects[${i}])`, { min: 0, integer: true }));
           }
         }
@@ -13971,6 +14263,94 @@ async function main() {
         isManifold: parsed.isManifold,
         triangleCount: parsed.mesh.numTri,
         vertexCount: parsed.mesh.numVert,
+      };
+    },
+
+    /** Import several STL / 3MF files at once — the console twin of choosing
+     *  several files in the Import dialog. `files`: `[{ filename, base64 }]`.
+     *  Models are numbered file by file: an STL is one model, a 3MF one per
+     *  object (in `inspectMeshData` order). `mode`: 'object' (one object per
+     *  model, the default), 'file' (one per file) or 'none' (one object, each
+     *  model a named part). `layout`: 'keep' | 'center' | 'grid' (default:
+     *  'grid' when the models would pile up, else 'keep'). `convert`: rebuild
+     *  each new object as code. `models`: indices to import (default all).
+     *  `skipExisting` (default true): leave out models already imported into
+     *  the open session (same file name and triangle count). `target`:
+     *  'new-session' (default), 'new-object' (this session), or
+     *  'current-object' (mode 'none' only).
+     *  -> `{ target, sessionId, object, importedObjects: [{ id, name, group? }],
+     *  models: [{ index, file, name, triangleCount, imported, skipped? }],
+     *  converted, notConverted }` or `{ error }`. */
+    async importMeshFiles(files: { filename: string; base64: string }[], opts: { sessionName?: string; target?: 'new-session' | 'new-object' | 'current-object'; mode?: 'object' | 'file' | 'none'; layout?: MultiFileLayout; convert?: boolean; models?: number[]; skipExisting?: boolean } = {}) {
+      const check = guard(() => {
+        if (!Array.isArray(files) || files.length === 0) throw new ValidationError('importMeshFiles(files) must be a non-empty array of { filename, base64 }');
+        files.forEach((f, i) => {
+          const o = assertObject(f, `importMeshFiles(files[${i}])`)!;
+          assertNoUnknownKeys(o, ['filename', 'base64'], `importMeshFiles(files[${i}])`);
+          assertString(o.filename, `importMeshFiles(files[${i}].filename)`, { allowEmpty: false });
+          assertString(o.base64, `importMeshFiles(files[${i}].base64)`, { allowEmpty: false });
+          if (!/\.(stl|3mf)$/i.test(o.filename as string)) throw new ValidationError(`importMeshFiles(files[${i}].filename): only .stl and .3mf files import together (got "${String(o.filename)}")`);
+        });
+        if (opts && typeof opts === 'object') {
+          if (opts.mode !== undefined) assertEnum(opts.mode, ['object', 'file', 'none'], 'importMeshFiles(opts.mode)');
+          if (opts.layout !== undefined) assertEnum(opts.layout, ['keep', 'center', 'grid'], 'importMeshFiles(opts.layout)');
+          if (opts.convert !== undefined) assertBoolean(opts.convert, 'importMeshFiles(opts.convert)');
+          if (opts.skipExisting !== undefined) assertBoolean(opts.skipExisting, 'importMeshFiles(opts.skipExisting)');
+          if (opts.models !== undefined) {
+            if (!Array.isArray(opts.models) || opts.models.length === 0) throw new ValidationError('importMeshFiles(opts.models) must be a non-empty array of model indices');
+            opts.models.forEach((n, i) => assertNumber(n, `importMeshFiles(opts.models[${i}])`, { min: 0, integer: true }));
+          }
+        }
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const po = parseApiImportOpts(opts, 'importMeshFiles', ['mode', 'layout', 'convert', 'models', 'skipExisting']);
+      if ('error' in po) return po;
+      const max = getConfig().import.maxImportFiles;
+      if (files.length > max) return { error: `importMeshFiles: ${files.length} files is over the ${max}-file limit (Advanced settings → Import).` };
+      const mode = opts.mode ?? 'object';
+      if (po.target === 'current-object' && mode !== 'none') return { error: "importMeshFiles: target 'current-object' needs mode 'none' (everything as one object)." };
+      const blocked = apiImportSessionCheck(po.target, 'importMeshFiles');
+      if (blocked) return blocked;
+      const bytes: Uint8Array[] = [];
+      for (const [i, f] of files.entries()) {
+        const b = decodeBase64Bytes(f.base64);
+        if (!b) return { error: `importMeshFiles(files[${i}].base64): not valid base64-encoded data.` };
+        bytes.push(b);
+      }
+      const read = await readMeshFiles(files.map((f, i) => ({ name: f.filename, read: async () => bytes[i] })));
+      if (!read) return { error: 'importMeshFiles: cancelled.' };
+      if (read.failed.length > 0) return { error: `importMeshFiles: couldn't read ${read.failed.join('; ')}` };
+      const source = buildMultiFileSource(read.inputs);
+      const fileNames = read.inputs.map(i => i.name);
+      const bad = opts.models?.find(i => i >= source.items.length);
+      if (bad !== undefined) return { error: `importMeshFiles(opts.models): no model ${bad} — the files hold ${source.items.length}.` };
+      const session = getState().session;
+      const existing = po.target !== 'new-session' && session && opts.skipExisting !== false ? await listSessionImportSignatures(session.id) : [];
+      const already = alreadyImportedItems(source, fileNames, existing);
+      const selected = (opts.models ?? source.items.map((_, i) => i)).filter(i => !already[i]);
+      const models = source.items.map((it, index) => ({
+        index, file: fileNames[it.file], name: it.name, triangleCount: it.count,
+        imported: selected.includes(index), ...(already[index] ? { skipped: 'already imported' } : {}),
+      }));
+      if (selected.length === 0) return { ...apiImportResult(po.target), importedObjects: [], models, converted: 0, notConverted: [] };
+      const groups = planImportSplit(source.items, mode, { selected, files: source.files, baseName: multiFileImportName(source, selected) });
+      const maxObjects = getConfig().import.maxSplitObjects;
+      if (groups.length > maxObjects) return { error: `importMeshFiles: that makes ${groups.length} objects, over the ${maxObjects}-object limit (Advanced settings → Import).` };
+      const placed = await placeMultiFileImport(source, fileNames, {
+        mode,
+        selected,
+        layout: opts.layout ?? suggestMultiFileLayout(source),
+        convert: !!opts.convert,
+        destination: po.target === 'new-object' ? 'this-session' : po.target === 'current-object' ? 'current-object' : 'new-session',
+      }, { sessionName: po.sessionName, confirmRenderOnly: false });
+      if (!placed) return { error: 'importMeshFiles: nothing was imported (cancelled).' };
+      const ids = placed.ids.filter((id): id is string => !!id);
+      return {
+        ...apiImportResult(po.target),
+        importedObjects: splitImportSummary(placed.entries, ids).importedObjects,
+        models,
+        converted: placed.converted,
+        notConverted: placed.convertFailed,
       };
     },
 
@@ -21462,6 +21842,7 @@ async function main() {
         'importSession': { signature: 'await importSession(exportedSession) -- Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
         'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?, target?: "new-session"|"new-object"|"current-object", adoptPalette?, split?, objects?}) -- Import STL (binary/ASCII) or 3MF bytes (Bambu/Orca/Prusa/plain; colours + filament palette carried). Default a new session; STL can also go into a new or the current object (3MF is new-session only); split "object"|"plate" (3MF) / "piece" (STL) makes one object each, in a new session or (target "new-object") this one -> {sessionId, target, object?, isManifold, triangleCount, vertexCount, (3MF:) palette, colorRegions, activePalette, objects, plates, (split:) importedObjects} or {error}', docs: '/ai/file-io.md' },
+        'importMeshFiles': { signature: 'await importMeshFiles([{filename, base64}, …], {sessionName?, target?: "new-session"|"new-object"|"current-object", mode?: "object"|"file"|"none", layout?: "keep"|"center"|"grid", convert?, models?, skipExisting?}) -- Import several STL / 3MF files at once (mixed). One object per model (default), per file, or one object with each model a named part; laid out as the files place them, centred, or in a grid; optionally converted to code. Models already in the session are skipped unless skipExisting is false -> {sessionId, target, importedObjects, models: [{index, file, name, triangleCount, imported, skipped?}], converted, notConverted} or {error}', docs: '/ai/file-io.md' },
         'inspectMeshData': { signature: 'await inspectMeshData(base64, filename) -- Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?,parts?}], plates, palette, splitModes} | STL {pieces, splitModes} or {error}', docs: '/ai/file-io.md' },
         'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         'importImageAsRelief': { signature: "await importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) -- Colour tile / stepped-relief object from an image (data: or http(s) URL) -> {sessionId} or {error}", docs: '/ai/relief.md' },

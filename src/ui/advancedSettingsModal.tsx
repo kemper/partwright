@@ -1123,6 +1123,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2} max={1000} integer
           onChange={v => set('import', 'maxSplitObjects', v)}
         />
+        <Field cfgKey="import.maxImportFiles"
+          label="Max files per import"
+          unit="files"
+          hint="Most STL / 3MF files you can import at once."
+          tooltip="Choosing or dropping several STL and 3MF files imports them together. Every file is read before the import dialog opens, so very large batches take a while and hold all their meshes in memory; past this many the import is refused with a notice."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxImportFiles}
+          value={c.import.maxImportFiles}
+          min={2} max={1000} integer
+          onChange={v => set('import', 'maxImportFiles', v)}
+        />
+        <Field cfgKey="import.multiImportGridGap"
+          label="Grid gap"
+          unit="× size"
+          hint="Space between models when a multi-file import arranges them in a grid."
+          tooltip="A fraction of the models' average footprint size: 0.2 leaves a fifth of a typical model's width between neighbours."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportGridGap}
+          value={c.import.multiImportGridGap}
+          min={0} max={5} step={0.05}
+          onChange={v => set('import', 'multiImportGridGap', v)}
+        />
         <Field cfgKey="import.voxelDefaultMaxSize"
           label="Voxel default max size"
           unit="voxels"

@@ -256,6 +256,43 @@ mesh) and the others become new objects. It refuses a painted object (the
 pieces would come in uncoloured). For any other object, move pieces out one at
 a time with `extractObjectPiece(index)`.
 
+### Several files at once — `importMeshFiles`
+
+Choosing or dropping several STL and 3MF files (mixed) in the UI imports them
+together through one **Import N files** dialog; `importMeshFiles` is its
+console twin. Models are numbered file by file: an STL is one model, a 3MF one
+per object (its `inspectMeshData` order).
+
+```js
+await partwright.importMeshFiles([
+  { filename: 'bracket.stl', base64: b1 },
+  { filename: 'bolt.stl', base64: b2 },
+  { filename: 'kit.3mf', base64: b3 },
+], {
+  mode: 'object',     // one object per model (default) | 'file': one per file | 'none': one object, each model a named part
+  layout: 'grid',     // 'keep' (where the files put them) | 'center' (each on the origin, on the plate) | 'grid' (side by side)
+  convert: false,     // true: rebuild each new object as editable code (render-only models stay meshes)
+  target: 'new-object', // 'new-session' (default) | 'new-object' (this session) | 'current-object' (mode 'none' only)
+  models: [0, 2],     // optional: only these models
+  skipExisting: true, // default: leave out models already imported into this session
+})
+// -> { sessionId, target, object, importedObjects: [{ id, name, group? }],
+//      models: [{ index, file, name, triangleCount, imported, skipped? }], converted, notConverted }
+```
+
+- **Layout default:** `grid` when two models would sit on top of each other
+  (separately made parts, each modelled around the origin), else `keep` (an
+  assembly whose files share one coordinate frame).
+- **Already imported:** a model counts as already in the session when some
+  version of an object holds an import of the same file name with the model's
+  triangle count (or the whole file's). `skipExisting` leaves those out, so
+  re-running a cancelled batch only adds what's missing; the UI dialog shows
+  them unticked with an "Already imported" note.
+- In `object` mode, a 3MF's objects are grouped under its file name in the
+  object list. Colours from 3MF files carry over through one merged palette.
+- Capped by **Advanced settings → Import → Max files per import** (default 50)
+  and **Max objects per split import**.
+
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.
 ```js
