@@ -272,26 +272,37 @@ await partwright.importMeshFiles([
   mode: 'object',     // one object per model (default) | 'file': one per file | 'none': one object, each model a named part
   layout: 'grid',     // 'keep' (where the files put them) | 'center' (each on the origin, on the plate) | 'grid' (side by side)
   convert: false,     // true: rebuild each new object as editable code (render-only models stay meshes)
-  target: 'new-object', // 'new-session' (default) | 'new-object' (this session) | 'current-object' (mode 'none' only)
+  target: 'new-object', // 'new-session' (default) | 'new-object' (this session) | 'current-object' (mode 'none', no convert)
   models: [0, 2],     // optional: only these models
   skipExisting: true, // default: leave out models already imported into this session
 })
 // -> { sessionId, target, object, importedObjects: [{ id, name, group? }],
-//      models: [{ index, file, name, triangleCount, imported, skipped? }], converted, notConverted }
+//      models: [{ index, file, name, triangleCount, imported, skipped? }], converted, notes }
 ```
 
 - **Layout default:** `grid` when two models would sit on top of each other
   (separately made parts, each modelled around the origin), else `keep` (an
   assembly whose files share one coordinate frame).
+- **Layout units:** in `object` mode each model moves on its own; in `file`
+  and `none` modes each FILE moves as a unit, so a 3MF keeps its own
+  arrangement inside the object.
 - **Already imported:** a model counts as already in the session when some
   version of an object holds an import of the same file name with the model's
-  triangle count (or the whole file's). `skipExisting` leaves those out, so
+  triangle count (or the whole file's). Each such import accounts for one
+  model (the one named like its object first), so one imported foot doesn't
+  tick off all four identical feet. `skipExisting` leaves those out, so
   re-running a cancelled batch only adds what's missing; the UI dialog shows
-  them unticked with an "Already imported" note.
+  them unticked with an "Already imported" note (re-ticked when the target is
+  a new session).
+- **Not with `current-object`:** `convert: true` would rebuild the current
+  object's own code too, so that combination is refused.
 - In `object` mode, a 3MF's objects are grouped under its file name in the
   object list. Colours from 3MF files carry over through one merged palette.
-- Capped by **Advanced settings → Import → Max files per import** (default 50)
-  and **Max objects per split import**.
+- Capped by **Advanced settings → Import → Max files per import** (default 50),
+  **Max triangles per multi-file import** (default 20M, all files together)
+  and **Max objects per split import**. When the files together carry more
+  colours than the 3MF colour cap, the files that would overflow it come in
+  uncoloured (listed in `notes`).
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.

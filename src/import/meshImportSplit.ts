@@ -165,15 +165,19 @@ export function pieceItems(pieceOfTri: Int32Array, count: number): ImportSplitIt
 /** Cut `tris` (source triangle ids, in the order given) out of `mesh` as a
  *  compact mesh of its own, with the matching `triColor` entries. With
  *  `recenter`, the result's XY bounding-box centre moves to the origin (Z is
- *  kept: z = 0 is the build plate). */
+ *  kept: z = 0 is the build plate). `remap` is an optional scratch vertex map
+ *  (length `mesh.numVert`, all -1, and all -1 again on return) for callers
+ *  cutting many pieces from one big mesh, so each cut costs its own size
+ *  rather than the whole mesh's. */
 export function extractTriangles(
   mesh: MeshData,
   triColor: Int32Array | null,
   tris: ArrayLike<number>,
-  opts: { recenter?: boolean } = {},
+  opts: { recenter?: boolean; remap?: Int32Array } = {},
 ): { mesh: MeshData; triColor: Int32Array | null } {
   const np = mesh.numProp;
-  const remap = new Int32Array(mesh.numVert).fill(-1);
+  const remap = opts.remap ?? new Int32Array(mesh.numVert).fill(-1);
+  const used: number[] = [];
   const triVerts = new Uint32Array(tris.length * 3);
   const outColor = triColor ? new Int32Array(tris.length) : null;
   let numVert = 0;
@@ -181,16 +185,16 @@ export function extractTriangles(
     const t = tris[i];
     for (let k = 0; k < 3; k++) {
       const v = mesh.triVerts[t * 3 + k];
-      if (remap[v] < 0) remap[v] = numVert++;
+      if (remap[v] < 0) { remap[v] = numVert++; used.push(v); }
       triVerts[i * 3 + k] = remap[v];
     }
     if (outColor) outColor[i] = triColor![t];
   }
   const vertProperties = new Float32Array(numVert * 3);
-  for (let v = 0; v < remap.length; v++) {
+  for (const v of used) {
     const r = remap[v];
-    if (r < 0) continue;
     for (let k = 0; k < 3; k++) vertProperties[r * 3 + k] = mesh.vertProperties[v * np + k];
+    remap[v] = -1;
   }
   if (opts.recenter && numVert > 0) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

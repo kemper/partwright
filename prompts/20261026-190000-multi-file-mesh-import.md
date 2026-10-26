@@ -61,3 +61,34 @@ toasting per object.
 Also fixed in passing: `importMeshData(opts.objects)` threw a plain `Error`
 inside `guard()`, which escaped as an exception instead of returning
 `{ error }`.
+
+### Review follow-ups
+
+An independent review of the draft found one blocker and several gaps, all
+fixed here:
+
+- **Convert + "the current object" rewrote the user's object.** Those two
+  choices now exclude each other in the dialog. The API refuses the
+  combination, and placement never converts an object that existed before.
+- **"Already imported" false positives.** A file of identical objects (four
+  feet) was entirely ticked off by one import. Each distinct import (by id)
+  now accounts for one model, preferring the model named like its object.
+- **A new session is not "this session".** Choosing it re-ticks the flagged
+  models, and nothing counts as skipped.
+- **Layout by file in `file` / `none` modes,** so centring or gridding never
+  pulls a 3MF's own objects apart.
+- **Bounds.** A total-triangle cap across all files
+  (`import.maxImportTotalTriangles`), checked while reading so a huge batch
+  stops early. The per-file copies are dropped once merged. `keep` no longer
+  copies the mesh. Cutting the objects reuses one scratch vertex map, so it
+  isn't O(objects × all vertices).
+- **No second weld ladder** for an STL the reader already found isn't a clean
+  solid.
+- **Colours.** The merged palette is capped, so one many-colour file loses its
+  colours instead of every file losing theirs. Skipped colours and 3MF
+  modifier parts are reported.
+- **Cancel during placement** no longer starts the conversion step. A
+  conversion that finishes during a cancel is counted. Warnings go to the
+  Diagnostic Log, not one toast per object. The interactive path has a
+  try/catch.
+- The layout-suggestion thresholds became config knobs.

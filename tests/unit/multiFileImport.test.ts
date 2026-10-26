@@ -72,6 +72,15 @@ describe('buildMultiFileSource', () => {
     expect(src.triColor[24]).toBe(1);
     expect(src.triColor[36]).toBe(2);
   });
+
+  it('leaves a file uncoloured when its colours would take the merged palette past the cap', () => {
+    const other: MultiFileInput = { ...kit, name: 'kit2.3mf', palette: [{ name: 'Green', hex: '#00ff00' }, { name: 'Pink', hex: '#ff00ff' }] };
+    const src = buildMultiFileSource([kit, other], { maxColors: 3 });
+    expect(src.palette.map(p => p.name)).toEqual(['Red', 'Blue']);
+    expect(src.uncolouredFiles).toEqual([1]);
+    expect(src.triColor[12]).toBe(1);
+    expect(src.triColor[24]).toBe(-1);
+  });
 });
 
 describe('layoutMultiFileSource', () => {
@@ -80,11 +89,6 @@ describe('layoutMultiFileSource', () => {
     stl('b.stl', box([10, 10, 5], [12, 14, 6])),
     stl('c.stl', box([-1, -1, 0], [1, 1, 1])),
   ]);
-
-  it('keep leaves everything where the files put it', () => {
-    const m = layoutMultiFileSource(src, 'keep', { gapRatio: 0.2 });
-    expect(Array.from(m.vertProperties)).toEqual(Array.from(src.mesh.vertProperties));
-  });
 
   it('center puts each model on the origin, on the plate', () => {
     const m = layoutMultiFileSource(src, 'center', { gapRatio: 0.2 });
@@ -106,21 +110,38 @@ describe('layoutMultiFileSource', () => {
     }
   });
 
+  it('moving by file keeps a 3MF’s objects where they are relative to each other', () => {
+    const withKit = buildMultiFileSource([stl('a.stl', box([-1, -1, 0], [1, 1, 2])), kit]);
+    const m = layoutMultiFileSource(withKit, 'center', { gapRatio: 0.2, unit: 'file' });
+    const left = bboxOf(m, 12, 12), right = bboxOf(m, 24, 12);
+    // The kit spans x 0..6 (boxes at 0..1 and 5..6): centred as a whole.
+    expect(left.min[0]).toBeCloseTo(-3);
+    expect(right.max[0]).toBeCloseTo(3);
+    expect(right.min[0] - left.max[0]).toBeCloseTo(4);
+  });
+
+  it('keep returns the source mesh itself (no copy)', () => {
+    expect(layoutMultiFileSource(src, 'keep', { gapRatio: 0.2 })).toBe(src.mesh);
+  });
+
   it('grid moves only the selected models', () => {
     const m = layoutMultiFileSource(src, 'grid', { selected: [0, 2], gapRatio: 0.2 });
     expect(bboxOf(m, 12, 12).min).toEqual([10, 10, 5]);
   });
 });
 
+const heur = { overlap: 0.5, similarSize: 0.25 };
+const heurSrc = (inputs: MultiFileInput[]) => buildMultiFileSource(inputs);
+
 describe('suggestMultiFileLayout', () => {
   it('suggests a grid when separately made models would pile up on the origin', () => {
     const src = buildMultiFileSource([stl('a.stl', box([-1, -1, 0], [1, 1, 2])), stl('b.stl', box([-1.2, -1, 0], [1, 1.1, 1]))]);
-    expect(suggestMultiFileLayout(src)).toBe('grid');
+    expect(suggestMultiFileLayout(src, heur)).toBe('grid');
   });
 
   it('keeps positions for an assembly (side by side, or a small part inside a big one)', () => {
-    expect(suggestMultiFileLayout(buildMultiFileSource([stl('a.stl', box([0, 0, 0], [1, 1, 1])), stl('b.stl', box([3, 0, 0], [4, 1, 1]))]))).toBe('keep');
-    expect(suggestMultiFileLayout(buildMultiFileSource([stl('case.stl', box([0, 0, 0], [10, 10, 4])), stl('pin.stl', box([4, 4, 0], [5, 5, 6]))]))).toBe('keep');
+    expect(suggestMultiFileLayout(heurSrc([stl('a.stl', box([0, 0, 0], [1, 1, 1])), stl('b.stl', box([3, 0, 0], [4, 1, 1]))]), heur)).toBe('keep');
+    expect(suggestMultiFileLayout(heurSrc([stl('case.stl', box([0, 0, 0], [10, 10, 4])), stl('pin.stl', box([4, 4, 0], [5, 5, 6]))]), heur)).toBe('keep');
   });
 });
 
@@ -135,6 +156,15 @@ describe('alreadyImportedItems', () => {
 
   it('matches every object of a file that came in as one object', () => {
     expect(alreadyImportedItems(src, names, [{ filename: 'kit.3mf', numTri: 24 }])).toEqual([false, true, true]);
+  });
+
+  it('one import of a file accounts for one of its identical objects, preferring the object’s own name', () => {
+    // The kit's two objects have 12 triangles each; one came in as "right".
+    expect(alreadyImportedItems(src, names, [{ filename: 'kit.3mf', numTri: 12, id: 'm1', objectName: 'right' }])).toEqual([false, false, true]);
+    // Versions of one object share its import id: still one.
+    expect(alreadyImportedItems(src, names, [{ filename: 'kit.3mf', numTri: 12, id: 'm1' }, { filename: 'kit.3mf', numTri: 12, id: 'm1' }])).toEqual([false, true, false]);
+    // Two distinct imports: both.
+    expect(alreadyImportedItems(src, names, [{ filename: 'kit.3mf', numTri: 12, id: 'm1' }, { filename: 'kit.3mf', numTri: 12, id: 'm2' }])).toEqual([false, true, true]);
   });
 
   it('does not match a different triangle count (an edited file)', () => {

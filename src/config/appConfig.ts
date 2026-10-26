@@ -367,6 +367,17 @@ export interface AppConfig {
     /** Gap between models when a multi-file import arranges them in a grid,
      *  as a fraction of the models' average footprint size. */
     multiImportGridGap: number;
+    /** Most triangles all the files of a multi-file import may hold together.
+     *  They are merged into one mesh (plus a laid-out copy) before the
+     *  objects are cut out, so this bounds that memory. */
+    maxImportTotalTriangles: number;
+    /** Multi-file layout default: two models count as "piled up" (so the grid
+     *  is suggested) when their footprints overlap by more than this fraction
+     *  of the smaller one… */
+    multiImportOverlapRatio: number;
+    /** …and the smaller footprint is at least this fraction of the bigger (a
+     *  small part nested in a big one reads as an assembly: keep positions). */
+    multiImportSimilarSizeRatio: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -770,6 +781,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxSplitObjects: 100,
     maxImportFiles: 50,
     multiImportGridGap: 0.2,
+    maxImportTotalTriangles: 20_000_000,
+    multiImportOverlapRatio: 0.5,
+    multiImportSimilarSizeRatio: 0.25,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,

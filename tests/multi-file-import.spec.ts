@@ -104,6 +104,18 @@ test.describe('Multi-file mesh import', () => {
     await expect(modal.getByLabel('Import Base')).toBeChecked();
     await expect(modal.locator('[data-skip-note]')).toHaveCount(2);
     await page.screenshot({ path: 'test-results/multi-file-reimport.png' });
+    // For a new session nothing is "already in": the flagged models re-tick.
+    await modal.getByRole('radio', { name: /A new session/ }).check();
+    await expect(modal.getByLabel('Import cube')).toBeChecked();
+    await expect(modal.locator('[data-skip-note]')).toHaveCount(0);
+    await modal.getByRole('radio', { name: /This session/ }).check();
+    await expect(modal.getByLabel('Import cube')).not.toBeChecked();
+    // Converting and adding to the current object exclude each other.
+    await modal.locator('[data-mode="none"]').click();
+    await modal.getByRole('radio', { name: /Convert to editable code/ }).check();
+    await expect(modal.getByRole('radio', { name: /The current object/ })).toBeDisabled();
+    await modal.getByRole('radio', { name: /Mesh only/ }).check();
+    await modal.locator('[data-mode="object"]').click();
     await modal.getByRole('button', { name: 'Import 3 objects' }).click();
     await expect(page.getByText(/Imported 3 objects from 1 file\. Skipped 2 models already in this session/)).toBeVisible({ timeout: 60_000 });
     expect((await objects(page)).map(o => o.name)).toEqual(['cube', 'tower', 'Base', 'Peg', 'Lid']);
@@ -115,14 +127,16 @@ test.describe('Multi-file mesh import', () => {
     const res = await page.evaluate(async (data) => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const bad = await pw.importMeshFiles([{ filename: 'a.obj', base64: 'AAAA' }]);
+      const badTarget = await pw.importMeshFiles(data.slice(0, 1), { mode: 'none', target: 'current-object', convert: true });
       const first = await pw.importMeshFiles(data.slice(0, 1), { convert: true }) as { importedObjects: { name: string }[]; converted: number };
       const code = pw.getCode() as string;
       const second = await pw.importMeshFiles(data, { target: 'new-object', mode: 'file', layout: 'keep' }) as {
         importedObjects: { name: string }[]; models: { name: string; imported: boolean; skipped?: string }[];
       };
-      return { bad, first, code, second, objects: (pw.listObjects() as { name: string }[]).map(o => o.name) };
+      return { bad, badTarget, first, code, second, objects: (pw.listObjects() as { name: string }[]).map(o => o.name) };
     }, payload);
     expect((res.bad as { error?: string }).error).toMatch(/only \.stl and \.3mf/);
+    expect((res.badTarget as { error?: string }).error).toMatch(/convert can't be combined with target 'current-object'/);
     expect(res.first.converted).toBe(1);
     expect(res.first.importedObjects.map(o => o.name)).toEqual(['cube']);
     // Converted: the code rebuilds the shape without the import.

@@ -1148,19 +1148,21 @@ export async function getSessionLatestVersion(sessionId: string): Promise<Versio
   return loadedVersion(versions.reduce((latest, v) => (v.timestamp > latest.timestamp ? v : latest)));
 }
 
-/** The mesh imports (file name + triangle count) any version of the session
- *  holds — what a multi-file import checks to skip models that are already
- *  in. Every version counts, so an object later converted to code still
- *  shows its import. Read from the stored records without unpacking, so no
- *  mesh data is loaded. */
-export async function listSessionImportSignatures(sessionId: string): Promise<{ filename: string; numTri: number }[]> {
+/** The mesh imports (file name + triangle count, the import's id and the
+ *  object holding it) any version of the session holds — what a multi-file
+ *  import checks to skip models that are already in. Every version counts, so
+ *  an object later converted to code still shows its import. Read from the
+ *  stored records without unpacking, so no mesh data is loaded. */
+export async function listSessionImportSignatures(sessionId: string): Promise<{ filename: string; numTri: number; id?: string; partId: string }[]> {
   const store = await tx('versions', 'readonly');
   const versions = await reqToPromise(store.index('sessionId').getAll(IDBKeyRange.only(sessionId))) as Version[];
-  const out: { filename: string; numTri: number }[] = [];
+  const out: { filename: string; numTri: number; id?: string; partId: string }[] = [];
   for (const v of versions) {
     for (const m of v.importedMeshes ?? []) {
-      const { filename, numTri } = (m ?? {}) as { filename?: unknown; numTri?: unknown };
-      if (typeof filename === 'string' && typeof numTri === 'number') out.push({ filename, numTri });
+      const { filename, numTri, id } = (m ?? {}) as { filename?: unknown; numTri?: unknown; id?: unknown };
+      if (typeof filename === 'string' && typeof numTri === 'number') {
+        out.push({ filename, numTri, ...(typeof id === 'string' ? { id } : {}), partId: v.partId });
+      }
     }
   }
   return out;

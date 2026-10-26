@@ -179,13 +179,13 @@ function Check(props: { checked: boolean; indeterminate?: boolean; label: string
   );
 }
 
-function ItemRow(props: { item: MeshImportModalItem; checked: boolean; indent: boolean; onToggle: (v: boolean) => void }) {
+function ItemRow(props: { item: MeshImportModalItem; checked: boolean; indent: boolean; showNote: boolean; onToggle: (v: boolean) => void }) {
   const { item, checked, indent } = props;
   return (
     <label class={`flex items-center gap-2 min-h-11 md:min-h-0 py-1 px-1.5 rounded hover:bg-zinc-800 cursor-pointer ${indent ? 'pl-6' : ''}`}>
       <Check checked={checked} label={`Import ${item.name}`} onChange={props.onToggle} />
       <span class="text-[12px] text-zinc-200 truncate flex-1 min-w-0" title={item.name}>{item.name}</span>
-      {item.skipNote && <span class="text-[10px] text-amber-400 shrink-0" data-skip-note>{item.skipNote}</span>}
+      {item.skipNote && props.showNote && <span class="text-[10px] text-amber-400 shrink-0" data-skip-note>{item.skipNote}</span>}
       <TriCount n={item.triangleCount} />
     </label>
   );
@@ -279,7 +279,15 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
     if (s !== undefined) perSection.set(s, (perSection.get(s) ?? 0) + 1);
   }
   const grouped = opts.files ? perSection.size > 1 && [...perSection.values()].some(n => n > 1) : perSection.size > 1;
-  const skipped = opts.items.filter(it => it.skipNote).length;
+  // "Already in this session" means nothing for a new session: there the
+  // flagged models start ticked like the rest.
+  const toNew = st.destination === 'new-session';
+  const skipped = toNew ? 0 : opts.items.filter(it => it.skipNote).length;
+  const setDestination = (destination: MeshImportDestination) => {
+    const wasNew = st.destination === 'new-session', isNew = destination === 'new-session';
+    if (wasNew === isNew) { store.set({ destination }); return; }
+    store.set({ destination, selected: st.selected.map((on, i) => (opts.items[i].skipNote ? isNew : on)) });
+  };
 
   return (
     <>
@@ -323,7 +331,7 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
           {sections.map(sec => {
             if (!sec.plate) {
               return sec.items.map(i => (
-                <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={false} onToggle={v => setItem(i, v)} />
+                <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={false} showNote={!toNew} onToggle={v => setItem(i, v)} />
               ));
             }
             const on = sec.items.filter(i => st.selected[i]).length;
@@ -347,7 +355,7 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
                   <span class="text-[10px] text-zinc-500 shrink-0">{sec.items.length} {opts.files ? 'model' : 'object'}{sec.items.length === 1 ? '' : 's'} · {tris.toLocaleString()} tris</span>
                 </label>
                 {sec.items.map(i => (
-                  <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={true} onToggle={v => setItem(i, v)} />
+                  <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={true} showNote={!toNew} onToggle={v => setItem(i, v)} />
                 ))}
               </div>
             );
@@ -381,10 +389,12 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
             {
               value: 'code',
               title: 'Convert to editable code',
-              desc: st.mode === 'object' || st.mode === 'piece'
-                ? 'Rebuilds each object as smooth, editable code. Takes a few seconds per object; models that aren’t clean solids stay meshes.'
-                : 'Rebuilds each object as smooth, editable code. Its named parts aren’t kept. Takes a few seconds per object.',
-              enabled: true,
+              desc: st.destination === 'current-object'
+                ? 'Not when adding to the current object — it would rebuild that object’s own code too.'
+                : st.mode === 'object' || st.mode === 'piece'
+                  ? 'Rebuilds each object as smooth, editable code. Takes a few seconds per object; models that aren’t clean solids stay meshes.'
+                  : 'Rebuilds each object as smooth, editable code. Its named parts aren’t kept. Takes a few seconds per object.',
+              enabled: st.destination !== 'current-object',
             },
           ]}
           onChange={v => store.set({ convert: v === 'code' })}
@@ -404,11 +414,12 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
               title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
               desc: st.mode !== 'none'
                 ? 'Only when importing everything as one object.'
+                : st.convert ? 'Not with Convert to editable code — it would rebuild this object’s own code too.'
                 : opts.destinations.canAddToCurrent ? 'Combine it with the geometry already in this object.' : 'This mesh can’t be combined into an existing object.',
-              enabled: st.mode === 'none' && opts.destinations.canAddToCurrent,
+              enabled: st.mode === 'none' && !st.convert && opts.destinations.canAddToCurrent,
             },
           ]}
-          onChange={v => store.set({ destination: v })}
+          onChange={setDestination}
         />
       )}
     </>

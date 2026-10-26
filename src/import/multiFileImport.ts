@@ -44,6 +44,9 @@ export interface MultiFileSource {
   items: MultiFileItem[];
   /** File names without extension, indexed by `MultiFileItem.file`. */
   files: string[];
+  /** Files whose colours were left out: merging them would have taken the
+   *  palette past `maxColors`. */
+  uncolouredFiles: number[];
 }
 
 const baseName = (name: string) => name.replace(/\.[^.]+$/, '') || name;
@@ -71,17 +74,22 @@ function cutRun(mesh: MeshData, first: number, count: number, remap: Int32Array)
 }
 
 /** Merge the files into one source. Items keep file order, and a 3MF's
- *  objects keep the file's order. */
-export function buildMultiFileSource(inputs: MultiFileInput[]): MultiFileSource {
+ *  objects keep the file's order. A file whose colours would take the merged
+ *  palette past `maxColors` comes in uncoloured (the others keep theirs). */
+export function buildMultiFileSource(inputs: MultiFileInput[], opts: { maxColors?: number } = {}): MultiFileSource {
   const pieces: { mesh: MeshData; triColor: Int32Array | null }[] = [];
   const items: MultiFileItem[] = [];
   const palette: { name: string; hex: string }[] = [];
   const paletteIndex = new Map<string, number>();
+  const uncolouredFiles: number[] = [];
   let triOffset = 0;
 
   inputs.forEach((input, file) => {
+    const fresh = new Set((input.palette ?? []).map(e => e.hex.toLowerCase()).filter(k => !paletteIndex.has(k)));
+    const fits = palette.length + fresh.size <= (opts.maxColors ?? Infinity);
+    if (!fits) uncolouredFiles.push(file);
     // This file's palette slots → merged palette indices.
-    const slotMap = (input.palette ?? []).map(entry => {
+    const slotMap = (fits ? input.palette ?? [] : []).map(entry => {
       const key = entry.hex.toLowerCase();
       let idx = paletteIndex.get(key);
       if (idx === undefined) {
@@ -138,6 +146,7 @@ export function buildMultiFileSource(inputs: MultiFileInput[]): MultiFileSource 
     palette,
     items,
     files: inputs.map(i => baseName(i.name)),
+    uncolouredFiles,
   };
 }
 
@@ -184,8 +193,11 @@ function itemBoxes(source: MultiFileSource): Box[] {
 
 /** The layout to start with: `grid` when two of the models sit mostly on top
  *  of each other (separately made parts, each modelled around the origin),
- *  else `keep` (they were placed relative to each other — an assembly). */
-export function suggestMultiFileLayout(source: MultiFileSource): MultiFileLayout {
+ *  else `keep` (they were placed relative to each other — an assembly).
+ *  "Mostly": their footprints overlap by more than `overlap` of the smaller
+ *  one, and the smaller is at least `similarSize` of the bigger (a small part
+ *  nested in a big one is an assembly). */
+export function suggestMultiFileLayout(source: MultiFileSource, opts: { overlap: number; similarSize: number }): MultiFileLayout {
   const boxes = itemBoxes(source);
   const area = (b: Box) => Math.max(0, b.max[0] - b.min[0]) * Math.max(0, b.max[1] - b.min[1]);
   for (let i = 0; i < boxes.length; i++) {
@@ -194,82 +206,125 @@ export function suggestMultiFileLayout(source: MultiFileSource): MultiFileLayout
       const w = Math.min(a.max[0], b.max[0]) - Math.max(a.min[0], b.min[0]);
       const d = Math.min(a.max[1], b.max[1]) - Math.max(a.min[1], b.min[1]);
       if (w <= 0 || d <= 0) continue;
-      // Overlap covering most of the smaller footprint, between models of a
-      // similar size: a small part nested in a big one is an assembly.
       const small = Math.min(area(a), area(b)), big = Math.max(area(a), area(b));
-      if (small > 0 && (w * d) / small > 0.5 && small / big > 0.25) return 'grid';
+      if (small > 0 && (w * d) / small > opts.overlap && small / big >= opts.similarSize) return 'grid';
     }
   }
   return 'keep';
 }
 
-/** A copy of the merged mesh with the `selected` items moved per `layout`
- *  (others stay put). `gapRatio` is the grid gap as a fraction of the
- *  models' average footprint size. */
-export function layoutMultiFileSource(source: MultiFileSource, layout: MultiFileLayout, opts: { selected?: number[]; gapRatio: number }): MeshData {
+/** The merged mesh with the `selected` items moved per `layout` (a copy;
+ *  `keep` returns the source mesh itself, which callers must not modify).
+ *  Items move together in units: each item (`unit: 'item'`), or each file
+ *  (`unit: 'file'` — a 3MF's objects keep their arrangement, for an import
+ *  that puts a file, or everything, into one object). `gapRatio` is the grid
+ *  gap as a fraction of the units' average footprint size. */
+export function layoutMultiFileSource(source: MultiFileSource, layout: MultiFileLayout, opts: { selected?: number[]; gapRatio: number; unit?: 'item' | 'file' }): MeshData {
+  if (layout === 'keep') return source.mesh;
   const vp = source.mesh.vertProperties.slice();
   const mesh: MeshData = { ...source.mesh, vertProperties: vp };
-  if (layout === 'keep') return mesh;
   const selected = opts.selected ?? source.items.map((_, i) => i);
   const ranges = itemVertexRanges(source);
-  const boxes = ranges.map(r => boxOf(vp, r.start, r.end));
-  const offsets = new Map<number, [number, number, number]>();
+  // Units, in order of first appearance, with their items' combined box.
+  const unitOf = (i: number) => (opts.unit === 'file' ? `f${source.items[i].file}` : `i${i}`);
+  const units = new Map<string, { items: number[]; box: Box }>();
+  for (const i of selected) {
+    const r = ranges[i];
+    if (r.end < r.start) continue;
+    const b = boxOf(vp, r.start, r.end);
+    const u = units.get(unitOf(i));
+    if (!u) { units.set(unitOf(i), { items: [i], box: b }); continue; }
+    u.items.push(i);
+    for (let k = 0; k < 3; k++) {
+      u.box.min[k] = Math.min(u.box.min[k], b.min[k]);
+      u.box.max[k] = Math.max(u.box.max[k], b.max[k]);
+    }
+  }
+  const list = [...units.values()];
+  const offsets: [number, number, number][] = [];
 
   if (layout === 'center') {
-    for (const i of selected) {
-      const b = boxes[i];
-      offsets.set(i, [-(b.min[0] + b.max[0]) / 2, -(b.min[1] + b.max[1]) / 2, -b.min[2]]);
-    }
+    for (const { box: b } of list) offsets.push([-(b.min[0] + b.max[0]) / 2, -(b.min[1] + b.max[1]) / 2, -b.min[2]]);
   } else {
     // Shelf packing: fill rows left to right up to a width that makes the
     // whole layout roughly square, then centre the layout on the origin.
-    const dims = selected.map(i => [boxes[i].max[0] - boxes[i].min[0], boxes[i].max[1] - boxes[i].min[1]] as const);
-    const mean = dims.length > 0 ? dims.reduce((s, [w, d]) => s + (w + d) / 2, 0) / dims.length : 0;
+    const dims = list.map(({ box: b }) => [b.max[0] - b.min[0], b.max[1] - b.min[1]] as const);
+    const mean = dims.length > 0 ? dims.reduce((sum, [w, d]) => sum + (w + d) / 2, 0) / dims.length : 0;
     const gap = Math.max(mean * opts.gapRatio, 0);
-    const totalArea = dims.reduce((s, [w, d]) => s + (w + gap) * (d + gap), 0);
+    const totalArea = dims.reduce((sum, [w, d]) => sum + (w + gap) * (d + gap), 0);
     const rowWidth = Math.max(Math.sqrt(totalArea), ...dims.map(([w]) => w));
-    const placed: { i: number; x: number; y: number }[] = [];
+    const placed: { x: number; y: number }[] = [];
     let x = 0, y = 0, rowDepth = 0, maxX = 0;
-    selected.forEach((i, k) => {
-      const [w, d] = dims[k];
+    dims.forEach(([w, d]) => {
       if (x > 0 && x + w > rowWidth) { x = 0; y += rowDepth + gap; rowDepth = 0; }
-      placed.push({ i, x: x + w / 2, y: y + d / 2 });
+      placed.push({ x: x + w / 2, y: y + d / 2 });
       maxX = Math.max(maxX, x + w);
       x += w + gap;
       rowDepth = Math.max(rowDepth, d);
     });
     const totalDepth = y + rowDepth;
-    for (const p of placed) {
-      const b = boxes[p.i];
+    list.forEach(({ box: b }, k) => {
       // Rows run from the back (+Y) toward the viewer, like reading order.
-      const cx = p.x - maxX / 2, cy = totalDepth / 2 - p.y;
-      offsets.set(p.i, [cx - (b.min[0] + b.max[0]) / 2, cy - (b.min[1] + b.max[1]) / 2, -b.min[2]]);
-    }
+      const cx = placed[k].x - maxX / 2, cy = totalDepth / 2 - placed[k].y;
+      offsets.push([cx - (b.min[0] + b.max[0]) / 2, cy - (b.min[1] + b.max[1]) / 2, -b.min[2]]);
+    });
   }
 
-  for (const [i, [dx, dy, dz]] of offsets) {
-    const r = ranges[i];
-    for (let v = r.start; v <= r.end; v++) {
-      vp[v * 3] += dx;
-      vp[v * 3 + 1] += dy;
-      vp[v * 3 + 2] += dz;
+  list.forEach(({ items }, k) => {
+    const [dx, dy, dz] = offsets[k];
+    for (const i of items) {
+      const r = ranges[i];
+      for (let v = r.start; v <= r.end; v++) {
+        vp[v * 3] += dx;
+        vp[v * 3 + 1] += dy;
+        vp[v * 3 + 2] += dz;
+      }
     }
-  }
+  });
   return mesh;
 }
 
-/** The import signature an object's mesh import leaves behind. */
-export interface ImportSignature { filename: string; numTri: number }
+/** The import signature an object's mesh import leaves behind: the import's
+ *  file name and triangle count, its id (stable across the object's
+ *  versions), and the name of the object holding it. */
+export interface ImportSignature { filename: string; numTri: number; id?: string; objectName?: string }
 
-/** Which items look already imported into the session: some object holds an
- *  import of the same file with the item's triangle count (it came in as its
- *  own object) or with the whole file's (the file came in as one object). */
+/** Which items look already imported into the session. Each distinct import
+ *  of a file with an item's triangle count accounts for ONE item of that file
+ *  with that count — an item named like the object holding the import first,
+ *  then in file order — so a file of identical objects (four feet) isn't all
+ *  ticked off by one. An import with the whole file's triangle count (the
+ *  file came in as one object) accounts for every item of the file. */
 export function alreadyImportedItems(source: MultiFileSource, fileNames: string[], existing: ImportSignature[]): boolean[] {
-  const have = new Set(existing.map(s => `${s.filename}\0${s.numTri}`));
+  // Distinct imports per (file, triangle count), with their objects' names.
+  const imports = new Map<string, Map<string, string | undefined>>();
+  for (const sig of existing) {
+    const key = `${sig.filename}\0${sig.numTri}`;
+    if (!imports.has(key)) imports.set(key, new Map());
+    imports.get(key)!.set(sig.id ?? key, sig.objectName);
+  }
   const fileTotals = new Map<number, number>();
   for (const it of source.items) fileTotals.set(it.file, (fileTotals.get(it.file) ?? 0) + it.count);
-  return source.items.map(it => {
-    const name = fileNames[it.file];
-    return have.has(`${name}\0${it.count}`) || have.has(`${name}\0${fileTotals.get(it.file)}`);
+  const out = source.items.map(it => imports.has(`${fileNames[it.file]}\0${fileTotals.get(it.file)}`));
+  // Group the remaining items by (file, count) and spend that key's imports.
+  const byKey = new Map<string, number[]>();
+  source.items.forEach((it, i) => {
+    if (out[i]) return;
+    const key = `${fileNames[it.file]}\0${it.count}`;
+    if (!imports.has(key)) return;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key)!.push(i);
   });
+  for (const [key, members] of byKey) {
+    const owners = [...imports.get(key)!.values()];
+    let budget = owners.length;
+    const names = new Set(owners.filter((n): n is string => !!n).map(n => n.toLowerCase()));
+    for (const i of members) {
+      if (budget > 0 && names.has(source.items[i].name.toLowerCase())) { out[i] = true; budget--; }
+    }
+    for (const i of members) {
+      if (budget > 0 && !out[i]) { out[i] = true; budget--; }
+    }
+  }
+  return out;
 }

@@ -1143,6 +1143,34 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={5} step={0.05}
           onChange={v => set('import', 'multiImportGridGap', v)}
         />
+        <Field cfgKey="import.maxImportTotalTriangles"
+          label="Max triangles per multi-file import"
+          unit="tris"
+          hint="Most triangles all the files imported together may hold."
+          tooltip="Files imported together are merged into one mesh (plus a laid-out copy) before their objects are cut out, so a batch of big files needs several times their size in memory. Past this many triangles in total the import is refused with a notice; import the files in smaller batches."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxImportTotalTriangles}
+          value={c.import.maxImportTotalTriangles}
+          min={10_000} max={200_000_000} integer
+          onChange={v => set('import', 'maxImportTotalTriangles', v)}
+        />
+        <Field cfgKey="import.multiImportOverlapRatio"
+          label="Grid suggestion: overlap"
+          hint="How much two models must overlap for a multi-file import to suggest the grid layout."
+          tooltip="A fraction of the smaller model's footprint. Separately made parts are usually modelled around the origin, so they overlap almost completely; parts of an assembly sit side by side. Above this overlap (between models of similar size, below) the dialog starts on Arrange in a grid instead of Keep file positions."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportOverlapRatio}
+          value={c.import.multiImportOverlapRatio}
+          min={0} max={1} step={0.05}
+          onChange={v => set('import', 'multiImportOverlapRatio', v)}
+        />
+        <Field cfgKey="import.multiImportSimilarSizeRatio"
+          label="Grid suggestion: similar size"
+          hint="How close in size two overlapping models must be for the grid to be suggested."
+          tooltip="The smaller footprint as a fraction of the bigger. A small part inside a big one (a pin in a case) overlaps it fully but is an assembly, so below this ratio the dialog keeps the file positions."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportSimilarSizeRatio}
+          value={c.import.multiImportSimilarSizeRatio}
+          min={0} max={1} step={0.05}
+          onChange={v => set('import', 'multiImportSimilarSizeRatio', v)}
+        />
         <Field cfgKey="import.voxelDefaultMaxSize"
           label="Voxel default max size"
           unit="voxels"
