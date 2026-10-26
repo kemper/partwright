@@ -785,6 +785,33 @@ partwright.assertPaint({
 - `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
 
+## Cleaning up a region — grow, shrink, despeckle, combine
+
+Bucket fills on scanned or organic meshes rarely land perfectly: a few stray triangles on the far side of a seam, pin-holes where the fill skipped a triangle, a one-triangle sliver along the border. These ops edit an existing region **in place** — it keeps its id, name, colour, palette slot and layer — and each is **one `undoLastPaint()` step** (undo restores the region as it was). Regions are addressed by id or name from `listRegions()`.
+
+```js
+// Drop pieces smaller than 10 triangles; fill enclosed unpainted holes of ≤ 10.
+partwright.despeckleRegion({ region: 'sock', minIslandTriangles: 10, maxHoleTriangles: 10 });
+// -> { id, name, op: 'despeckle', triangles, before, added, removed, islandsRemoved, holesFilled }
+
+partwright.growRegion({ region: 'sock', steps: 1, zMax: 18.5 });  // +1 ring, never above z=18.5
+partwright.shrinkRegion({ region: 'hair', steps: 2 });            // peel 2 rings off the border
+
+// Boolean ops — only `region` changes; the `with` regions are left as they are.
+partwright.combineRegions({ region: 'skin', op: 'subtract', with: ['eyes', 'mouth'] });
+partwright.combineRegions({ region: 'sock', op: 'union', with: 'sock touch-up' });
+partwright.removeRegion(/* the touch-up's id */);
+```
+
+- **One step = one ring of triangles** (triangles that share a corner). The ops follow the surface, so they don't jump across a gap the way a box would — but a grow will happily follow the surface across a crease-less join, so clamp it with `withinBox` / `zMin` / `zMax` (by triangle centroid).
+- **Close / open.** `growRegion(1)` then `shrinkRegion(1)` is a morphological *close*: it fills notches that bite into the region from its border (which despeckle leaves alone — they're open to the outside, not enclosed holes) while keeping the border where it was. `shrinkRegion(1)` then `growRegion(1)` is an *open*: it removes thin spurs and one-triangle slivers poking out of it.
+- **Despeckle never erases a region outright** — the largest piece is always kept, and a "hole" must touch the region (a separate mesh piece isn't filled). Pass `0` to skip either half.
+- **They clean up specks and gaps; they don't smooth a jagged edge.** Grow/shrink move a sawtooth boundary by one triangle — it's still a sawtooth. For a clean line use a smooth selector (see *Clean (non-jagged) fill boundaries* above).
+- **Edits rebake the region as an id-baked triangle set** (the same kind `paintFaces` makes), so the original selector (seed, box, label) is no longer replayed for it — re-run the edit after a code change. On a mesh that smooth paint has subdivided, the stored ids are the *base* triangles under the edit, so after a later rebuild or reload the region snaps out to whole base triangles (same as the paint brush).
+- **Not editable:** smooth (mesh-refining) regions — smooth slabs/boxes/cylinders and brush strokes — because the edit would discard the refined edge they own, and image-stamp / pattern regions, which carry per-triangle colours.
+
+In-app AI: one tool, `editRegion({op: 'grow'|'shrink'|'despeckle'|'union'|'subtract'|'intersect', region, …})`.
+
 ## Recoloring regions in bulk
 
 `replaceColor({from, to, tolerance?})` recolors **every** region whose color matches `from` (within `tolerance`, default 0.01) to `to`. Colors are `[r,g,b]` in 0..1 — the same range as `paintFaces`/`paintRegion`. Returns `{ replaced: count }`.
