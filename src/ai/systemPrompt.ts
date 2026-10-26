@@ -164,8 +164,9 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '- Key design decisions and any trade-offs',
       '- The concrete steps you will take to implement it',
       '',
-      'If you need clarification before you can write a useful plan, ask your questions now.',
-      'The user will approve the plan (triggering a new turn with full tools) or reply to refine it further.',
+      'If you need answers before you can write a useful plan, ask only those questions and stop — no plan yet. Number them, keep them few, and give the default you would pick for each, so the user can just say "defaults are fine". End your message with the questions.',
+      'Otherwise write the plan and list any assumptions you made, so the user can correct them.',
+      'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
     // When 3D-printing optimization is also on, fold the design rules into the
     // plan so the proposed approach is print-aware from the outset.

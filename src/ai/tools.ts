@@ -2740,6 +2740,17 @@ export function declinedToolMessage(name: string): string {
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
+/** The tool result for a call to a tool that wasn't offered this turn. The
+ *  tool list is the gate (plan mode, the Run/Save/Paint/Notes scopes), but a
+ *  model can still emit a name it saw earlier in the conversation — so the
+ *  chat loop refuses it rather than running it. */
+export function unofferedToolMessage(name: string, planning: boolean): string {
+  if (planning) {
+    return `[Not run — ${name} is not available while planning. The user hasn't approved a plan yet, so nothing may be changed or executed. Finish this turn with your plan (or your questions); the build tools unlock when the user approves]`;
+  }
+  return `[Not run — ${name} is not available this turn (it is switched off in the chat's settings or not part of your tool set). Use the tools you were given, or tell the user what you need]`;
+}
+
 /** Result for a confirm-required tool when no confirmation prompt can be shown
  *  (no UI callback wired for this turn). Confirmation fails CLOSED. */
 export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the user\'s confirmation and no confirmation prompt is available. Ask the user to do it from the UI instead]';

@@ -27,7 +27,8 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
+import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
+import { latestAssistantText, planAwaitsAnswers } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
@@ -74,8 +75,8 @@ interface PanelState {
    *  Cleared when the user sends a new message (conversation has diverged). */
   rewindStack: ChatMessage[][];
   /** Set when planFirst mode has generated a plan and is awaiting user
-   *  approval. Cleared on approve (which fires the real execution turn) or
-   *  reject (which removes planning messages from history and restores the
+   *  approval. Cleared on Build (which fires the real execution turn) or
+   *  Discard (which removes planning messages from history and restores the
    *  original input). null when no plan is pending. */
   pendingPlanApproval: {
     originalText: string;
@@ -1654,7 +1655,7 @@ function renderToggleStrip(): void {
   primary.appendChild(togglePill(
     '📋 Plan',
     toggles.planFirst,
-    'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
+    'Plan first: when ON, the AI writes a step-by-step plan (or asks its questions) before doing any work. Answer or revise by typing; nothing is built until you click Build. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
       renderToggleStrip();
@@ -2046,31 +2047,48 @@ function renderPlanApprovalBar(): void {
   planApprovalBarEl.classList.remove('hidden');
   planApprovalBarEl.replaceChildren();
 
+  // A planning turn either ends on a plan or on questions the model needs
+  // answered first. Questions lead with "answer below" — Build stays on offer
+  // (the model then picks its own defaults), but as the quieter choice.
+  const reply = latestAssistantText(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const awaitingAnswers = planAwaitsAnswers(reply);
+  planApprovalBarEl.dataset.planState = awaitingAnswers ? 'questions' : 'plan';
+
   const label = document.createElement('span');
   label.className = 'text-[11px] text-amber-200 flex-1';
-  label.textContent = '📋 Plan mode — type to refine, or approve/reject.';
+  label.textContent = awaitingAnswers
+    ? '❓ The AI has questions — answer below to keep planning.'
+    : '📋 Plan ready — type below to revise it, or build it.';
   planApprovalBarEl.appendChild(label);
 
-  const approveBtn = document.createElement('button');
-  approveBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
-  approveBtn.textContent = '✓ Approve';
-  approveBtn.title = 'Approve this plan and start building.';
-  approveBtn.addEventListener('click', () => { void approvePlan(); });
-  planApprovalBarEl.appendChild(approveBtn);
+  const primary = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+  const secondary = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
 
-  const rejectBtn = document.createElement('button');
-  rejectBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
-  rejectBtn.textContent = '✗ Reject';
-  rejectBtn.title = 'Reject this plan and edit your request.';
-  rejectBtn.addEventListener('click', () => { void rejectPlan(); });
-  planApprovalBarEl.appendChild(rejectBtn);
+  const buildBtn = document.createElement('button');
+  buildBtn.className = awaitingAnswers ? secondary : primary;
+  buildBtn.textContent = awaitingAnswers ? 'Build anyway' : '✓ Build it';
+  buildBtn.title = awaitingAnswers
+    ? 'Skip the questions: the AI picks sensible defaults and starts building.'
+    : 'Approve this plan and start building.';
+  buildBtn.addEventListener('click', () => { void approvePlan(); });
+  planApprovalBarEl.appendChild(buildBtn);
+
+  const discardBtn = document.createElement('button');
+  discardBtn.className = secondary;
+  discardBtn.textContent = '✗ Discard plan';
+  discardBtn.title = 'Drop this plan and put your request back in the input to edit.';
+  discardBtn.addEventListener('click', () => { void rejectPlan(); });
+  planApprovalBarEl.appendChild(discardBtn);
 }
 
 async function approvePlan(): Promise<void> {
   if (!state.pendingPlanApproval) return;
   // The automatic review grades the built result against the ORIGINAL
-  // request, not this turn's "Plan approved" message.
+  // request, not this turn's approval message.
   const reviewRequest = state.pendingPlanApproval.originalText;
+  // The approval carries the plan the user is approving, so the build turn is
+  // anchored to it (and the hand-off from planning is explicit).
+  const plan = latestAssistantText(state.history, state.pendingPlanApproval.historyLengthBefore);
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
 
@@ -2083,11 +2101,11 @@ async function approvePlan(): Promise<void> {
   stalledByWatchdog = false;
   pinTranscriptToBottom();
   // Approval is the hand-off from planning to building: force planFirst off for
-  // this turn so the model actually receives the tool list. Leaving it on would
-  // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
-  // the approved turn could only re-plan, never execute.
+  // this turn so the model actually receives the full tool list. Leaving it on
+  // would keep the read-only plan-mode list, so the approved turn could only
+  // re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
-    { type: 'text', text: PLAN_APPROVED_TEXT },
+    { type: 'text', text: planApprovalText(plan) },
   ], { reviewRequest });
 }
 
@@ -2292,7 +2310,20 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         wrap.appendChild(line);
         continue;
       }
-      const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
+      // Plan-mode turns: show the user's own words under a small chip, not
+      // the instructions the app wraps them in. The approval carries the plan
+      // for the model's benefit; on screen it's a one-line marker (the plan
+      // is the reply right above it).
+      const plan = msg.role === 'user' ? planTurn(b.text) : null;
+      if (plan?.kind === 'approved') {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] text-blue-300/80';
+        line.dataset.planApproved = '';
+        line.textContent = '✓ Plan approved — building';
+        wrap.appendChild(line);
+        continue;
+      }
+      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, plan ? PLAN_TURN_CHIP[plan.kind] : undefined);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
         // onAssistantText can rewrite its textContent and the thinking-box
@@ -2612,7 +2643,22 @@ function renderAutoResumeDivider(): HTMLElement {
   return el;
 }
 
-function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
+const PLAN_TURN_CHIP: Record<'request' | 'refine', string> = {
+  request: '📋 Plan first',
+  refine: '📋 Plan revision',
+};
+
+/** A small context line at the top of a user bubble (plan-mode turn, the
+ *  selected part). */
+function appendBubbleChip(bubble: HTMLElement, text: string): HTMLElement {
+  const chip = document.createElement('div');
+  chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+  chip.textContent = text;
+  bubble.appendChild(chip);
+  return chip;
+}
+
+function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean, planChip?: string): HTMLElement {
   const bubble = document.createElement('div');
   const baseClass = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug';
   if (compacted) {
@@ -2622,19 +2668,12 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
+  if (planChip) appendBubbleChip(bubble, planChip).dataset.planChip = '';
   // The Objects-list selection rides along as a context line; show it as a
   // chip rather than raw "[Selected in …]" text in the user's own bubble.
   const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
-  if (context) {
-    const chip = document.createElement('div');
-    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
-    chip.title = 'The part selected in the Objects list was sent as context';
-    chip.textContent = `◎ ${context}`;
-    bubble.appendChild(chip);
-    bubble.appendChild(document.createTextNode(rest));
-  } else {
-    bubble.textContent = text;
-  }
+  if (context) appendBubbleChip(bubble, `◎ ${context}`).title = 'The part selected in the Objects list was sent as context';
+  bubble.appendChild(document.createTextNode(rest));
   return bubble;
 }
 
@@ -3463,7 +3502,8 @@ async function sendMessage(): Promise<void> {
   // The Objects-list selection is chat context: "make it red" means the part
   // the user has selected.
   const partKeys = getSelectedPartKeys();
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText });
+  const textWithContext = partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText;
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: textWithContext });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
@@ -3508,12 +3548,12 @@ async function sendMessage(): Promise<void> {
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
       planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + textWithContext });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
       planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + textWithContext });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,

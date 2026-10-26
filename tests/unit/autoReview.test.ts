@@ -11,7 +11,7 @@ import {
   shouldAutoReview,
   userConversation,
 } from '../../src/ai/autoReview';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, UI_APPLIED_NOTE_PREFIX } from '../../src/ai/userWords';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, UI_APPLIED_NOTE_PREFIX, planApprovalText } from '../../src/ai/userWords';
 import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
@@ -143,6 +143,16 @@ describe('userConversation', () => {
     ];
     expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket', 'Use M4 holes']);
     expect(latestUserRequest(history)).toBe('Use M4 holes');
+  });
+
+  it('skips an approval turn that carries the plan text', () => {
+    const history = [
+      msg('user', `${PLAN_FIRST_PREFIX}Make a bracket`, 1),
+      msg('assistant', 'Plan: two holes', 2),
+      msg('user', planApprovalText('Plan: two holes'), 3),
+    ];
+    expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket']);
+    expect(latestUserRequest(history)).toBe('Make a bracket');
   });
 
   it('drops "[UI · app note]" blocks, also ahead of a plan-first turn', () => {
