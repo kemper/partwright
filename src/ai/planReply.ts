@@ -152,21 +152,42 @@ function replyText(m: ChatMessage): string {
   return m.blocks.map(b => (b.type === 'text' ? b.text : '')).join('\n').trim();
 }
 
-/** What one exchange's replies amount to: a proposePlan card is the plan, an
- *  askUser card is questions, otherwise all their text (a plan written,
- *  checked with a render, then signed off spans several messages) goes
- *  through the heuristic. null when they hold nothing. */
-function readReplies(replies: ChatMessage[]): { text: string; awaitingAnswers: boolean } | null {
-  for (let i = replies.length - 1; i >= 0; i--) {
-    const planCall = cardCall(replies[i], PROPOSE_PLAN_TOOL);
+/** The card call of `name` in history[index] if it was actually shown — its
+ *  tool result is the acknowledgement, not a validation error (a rejected
+ *  call doesn't count; the model fixes it or answers in text). */
+function shownCard(history: ChatMessage[], index: number, name: string): PersistedToolCall | undefined {
+  const call = cardCall(history[index], name);
+  if (!call) return undefined;
+  for (let j = index + 1; j < history.length; j++) {
+    const result = history[j].toolResults?.find(r => r.toolUseId === call.id);
+    if (result) return !result.isError && result.content === CARD_TOOL_ACK ? call : undefined;
+    if (history[j].role === 'assistant') break;
+  }
+  return undefined;
+}
+
+/** What one exchange's replies (history indices) amount to: a shown
+ *  proposePlan card is the plan, a shown askUser card is questions,
+ *  otherwise all their text (a plan written, checked with a render, then
+ *  signed off spans several messages) goes through the heuristic. null when
+ *  they hold nothing. */
+function readReplies(history: ChatMessage[], indices: number[]): { text: string; awaitingAnswers: boolean } | null {
+  for (let k = indices.length - 1; k >= 0; k--) {
+    const planCall = shownCard(history, indices[k], PROPOSE_PLAN_TOOL);
     const plan = planCall ? parseProposedPlan(planCall.input) : null;
     if (plan) return { text: planMarkdown(plan), awaitingAnswers: false };
-    const askCall = cardCall(replies[i], ASK_USER_TOOL);
+    const askCall = shownCard(history, indices[k], ASK_USER_TOOL);
     const questions = askCall ? parseAskUser(askCall.input) : [];
     if (questions.length > 0) return { text: questions.map(q => `- ${q.question}`).join('\n'), awaitingAnswers: true };
   }
-  const text = replies.map(replyText).filter(Boolean).join('\n\n');
+  const text = indices.map(i => replyText(history[i])).filter(Boolean).join('\n\n');
   return text ? { text, awaitingAnswers: planAwaitsAnswers(text) } : null;
+}
+
+function replyIndices(history: ChatMessage[], from: number, to: number): number[] {
+  const out: number[] = [];
+  for (let i = from; i < to; i++) if (isReply(history[i])) out.push(i);
+  return out;
 }
 
 /** The plan (or questions) the planning exchange from `fromIndex` on ended
@@ -178,21 +199,23 @@ export function latestPlanReply(history: ChatMessage[], fromIndex: number): { te
   let end = history.length;
   for (let i = history.length - 1; i >= start; i--) {
     if (!isTypedUserMessage(history[i])) continue;
-    const read = readReplies(history.slice(i + 1, end).filter(isReply));
+    const read = readReplies(history, replyIndices(history, i + 1, end));
     if (read) return read;
     end = i;
   }
-  return readReplies(history.slice(start, end).filter(isReply)) ?? { text: '', awaitingAnswers: false };
+  return readReplies(history, replyIndices(history, start, end)) ?? { text: '', awaitingAnswers: false };
 }
 
-/** The askUser card the conversation is waiting on: in the latest assistant
- *  message, with nothing typed since. Its message id + call, or null. */
+/** The askUser card the conversation is waiting on: shown in the latest
+ *  assistant message, with nothing typed since. Its message id + call, or
+ *  null. (Call ids alone aren't unique: Gemini and local number them per
+ *  response, so callers key cards by message id + call id.) */
 export function pendingAskUser(history: ChatMessage[]): { messageId: string; call: PersistedToolCall } | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (isTypedUserMessage(m)) return null;
     if (m.role !== 'assistant') continue;
-    const call = cardCall(m, ASK_USER_TOOL);
+    const call = shownCard(history, i, ASK_USER_TOOL);
     return call ? { messageId: m.id, call } : null;
   }
   return null;

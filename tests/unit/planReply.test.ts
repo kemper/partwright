@@ -138,17 +138,42 @@ describe('card tools', () => {
     expect(answersText(qs, [[], []], '  ')).toBe('');
   });
 
-  it('reads cards ahead of text in the latest reply', () => {
-    const planned = [msg('user', 'plan it', 0), msg('assistant', 'Here it is.', 1, { toolCalls: [{ id: 'p', name: 'proposePlan', input: PLAN_INPUT }] })];
+  const carrier = (id: string, seq: number, content = CARD_TOOL_ACK, isError = false): ChatMessage => ({
+    id: `r${seq}`, sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: id, content, isError }], createdAt: seq, seq,
+  });
+
+  it('reads shown cards ahead of text in the latest reply', () => {
+    const planned = [msg('user', 'plan it', 0), msg('assistant', 'Here it is.', 1, { toolCalls: [{ id: 'p', name: 'proposePlan', input: PLAN_INPUT }] }), carrier('p', 2)];
     expect(latestPlanReply(planned, 0)).toEqual({ text: planMarkdown(parseProposedPlan(PLAN_INPUT)!), awaitingAnswers: false });
-    const asked = [msg('user', 'plan it', 0), msg('assistant', '', 1, { toolCalls: [{ id: 'a', name: 'askUser', input: ASK }] })];
+    const asked = [msg('user', 'plan it', 0), msg('assistant', '', 1, { toolCalls: [{ id: 'a', name: 'askUser', input: ASK }] }), carrier('a', 2)];
     expect(latestPlanReply(asked, 0)).toEqual({ text: '- How tall?\n- Which features?', awaitingAnswers: true });
+  });
+
+  it('ignores a card call that was rejected, reading the text that followed', () => {
+    const history = [
+      msg('user', 'plan it', 0),
+      msg('assistant', '', 1, { toolCalls: [{ id: 'a', name: 'askUser', input: ASK }] }),
+      carrier('a', 2, 'askUser: questions[0].options[0].label must be a non-empty string.', true),
+      msg('assistant', '1. Revolve the profile.\n2. Hollow it.', 3),
+    ];
+    expect(latestPlanReply(history, 0)).toEqual({ text: '1. Revolve the profile.\n2. Hollow it.', awaitingAnswers: false });
+    expect(pendingAskUser(history)).toBeNull();
   });
 });
 
 describe('pendingAskUser', () => {
   const ask = msg('assistant', '', 1, { toolCalls: [{ id: 'a', name: 'askUser', input: ASK }] });
   const carrier: ChatMessage = { id: 'r', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'a', content: CARD_TOOL_ACK, isError: false }], createdAt: 2, seq: 2 };
+
+  it('tells apart cards whose call ids repeat across responses', () => {
+    const first = msg('assistant', '', 1, { toolCalls: [{ id: 'gemini_call_0', name: 'askUser', input: ASK }] });
+    const firstAck: ChatMessage = { ...carrier, id: 'r1', toolResults: [{ toolUseId: 'gemini_call_0', content: CARD_TOOL_ACK, isError: false }] };
+    const second = msg('assistant', '', 4, { id: 'second', toolCalls: [{ id: 'gemini_call_0', name: 'askUser', input: { questions: [{ question: 'Colour?' }] } }] });
+    const secondAck: ChatMessage = { ...carrier, id: 'r2', seq: 5, toolResults: [{ toolUseId: 'gemini_call_0', content: CARD_TOOL_ACK, isError: false }] };
+    const pending = pendingAskUser([msg('user', 'hi', 0), first, firstAck, msg('user', '60 mm', 3), second, secondAck]);
+    expect(pending?.messageId).toBe('second');
+    expect(parseAskUser(pending!.call.input)[0].question).toBe('Colour?');
+  });
 
   it('is the askUser card in the latest reply until the user types', () => {
     expect(pendingAskUser([msg('user', 'hi', 0), ask, carrier])?.call.id).toBe('a');

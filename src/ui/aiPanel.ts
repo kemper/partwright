@@ -639,9 +639,11 @@ async function loadHistoryForCurrentSession(): Promise<void> {
 }
 
 /** The plan awaiting a decision is read from the transcript, so the plan bar
- *  comes back after a reload or when this tab takes control of the session. */
+ *  comes back after a reload or when this tab takes control of the session.
+ *  Only while the Plan pill is on: turning it off is how the user leaves plan
+ *  mode and keeps the conversation (Discard deletes it). */
 function syncPendingPlanFromHistory(): void {
-  const pending = derivePendingPlan(state.history);
+  const pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
   state.pendingPlanApproval = pending
     ? {
       originalText: splitPartSelectionContext(pending.requestWords).rest,
@@ -813,6 +815,9 @@ function applyOwnership(owned: boolean): void {
   // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
+  // The plan bar and question cards are owner-only controls.
+  renderPlanApprovalBar();
+  refreshAskUserCards();
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
   // Gaining write-ownership of a real session — "Take control" in a new tab —
@@ -1675,6 +1680,9 @@ function renderToggleStrip(): void {
     'Plan first: when ON, the AI writes a step-by-step plan (or asks its questions) before doing any work. Answer or revise by typing; nothing is built until you click Build. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
+      // Off leaves plan mode (a pending plan's bar goes; its messages stay);
+      // on picks a pending plan back up from the transcript.
+      if (!state.inFlight) syncPendingPlanFromHistory();
       renderToggleStrip();
     },
   ));
@@ -2057,12 +2065,14 @@ function formatDuration(ms: number): string {
 
 function renderPlanApprovalBar(): void {
   if (!planApprovalBarEl) return;
-  if (!state.pendingPlanApproval || state.inFlight) {
+  // A tab only viewing the session can't build or discard its plan.
+  if (!state.pendingPlanApproval || state.inFlight || !writeOwner) {
     planApprovalBarEl.classList.add('hidden');
     return;
   }
   planApprovalBarEl.classList.remove('hidden');
   planApprovalBarEl.replaceChildren();
+  planApprovalBarEl.title = 'Turn off 📋 Plan to leave plan mode and keep the conversation.';
 
   // A planning turn either ends on a plan or on questions the model needs
   // answered first. Questions lead with "answer below" — Build stays on offer
@@ -2102,7 +2112,7 @@ function renderPlanApprovalBar(): void {
 let approvingPlan = false;
 
 async function approvePlan(): Promise<void> {
-  if (!state.pendingPlanApproval || approvingPlan) return;
+  if (!state.pendingPlanApproval || approvingPlan || !writeOwner) return;
   // The automatic review grades the built result against the ORIGINAL
   // request, not this turn's approval message.
   const reviewRequest = state.pendingPlanApproval.originalText;
@@ -2138,7 +2148,7 @@ async function approvePlan(): Promise<void> {
 }
 
 async function rejectPlan(): Promise<void> {
-  if (!state.pendingPlanApproval) return;
+  if (!state.pendingPlanApproval || !writeOwner) return;
   const { originalText, originalImages, historyLengthBefore } = state.pendingPlanApproval;
 
   const msgsToRemove = state.history.slice(historyLengthBefore);
@@ -2267,7 +2277,7 @@ function renderQueuedPreview(): HTMLElement {
     if (b.type === 'text' && b.text.trim().length > 0) {
       const bubble = document.createElement('div');
       bubble.className = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug bg-blue-600/70 text-white border border-amber-400/50 ring-1 ring-amber-400/30';
-      bubble.textContent = b.text;
+      bubble.textContent = planTurn(b.text)?.words ?? b.text;
       bubble.title = 'Queued — will be delivered to the AI at the next pause.';
       wrap.appendChild(bubble);
     } else if (b.type === 'image') {
@@ -2375,7 +2385,7 @@ function renderMessage(msg: ChatMessage): HTMLElement {
 
   if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
     for (const tc of msg.toolCalls) {
-      if (tc.name === ASK_USER_TOOL) wrap.appendChild(renderAskUserCard(tc));
+      if (tc.name === ASK_USER_TOOL) wrap.appendChild(renderAskUserCard(msg.id, tc));
       else if (tc.name === PROPOSE_PLAN_TOOL) wrap.appendChild(renderPlanCard(tc));
       else wrap.appendChild(renderToolCallChip(tc.name, tc.input));
     }
@@ -2817,24 +2827,29 @@ async function launchReview(): Promise<void> {
   });
 }
 
-/** Per askUser card (tool-call id): the option indices picked for each
- *  question, kept across transcript re-renders until the answers are sent. */
+/** Per askUser card (`messageId:callId` — call ids alone repeat across
+ *  responses on Gemini and local): the option indices picked for each
+ *  question, kept across re-renders until the answers are sent. */
 const askSelections = new Map<string, number[][]>();
 
 /** The askUser card: each question with its options as chips. Only the card
- *  the conversation is waiting on is interactive. A lone single-choice
- *  question sends on click; otherwise picks toggle and "Send answers" sends
- *  them (with anything typed in the input) as the user's next message. */
-function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
+ *  the conversation is waiting on is interactive (and only in the tab that
+ *  owns the session). A lone single-choice question sends on click;
+ *  otherwise picks toggle and "Send answers" sends them (with anything typed
+ *  in the input) as the user's next message. */
+function renderAskUserCard(messageId: string, tc: PersistedToolCall): HTMLElement {
   const questions = parseAskUser(tc.input);
   if (questions.length === 0) return renderToolCallChip(tc.name, tc.input);
-  const live = writeOwner && !state.inFlight && pendingAskUser(state.history)?.call.id === tc.id;
-  const selections = askSelections.get(tc.id) ?? questions.map(() => []);
+  const key = `${messageId}:${tc.id}`;
+  const pending = pendingAskUser(state.history);
+  const live = writeOwner && !state.inFlight && pending?.messageId === messageId && pending.call.id === tc.id;
+  const selections = askSelections.get(key) ?? questions.map(() => []);
   const quickSend = questions.length === 1 && !questions[0].multiSelect && questions[0].options.length > 0;
 
   const card = document.createElement('div');
   card.className = `max-w-[95%] w-full rounded-lg border border-sky-700/60 bg-sky-900/15 px-3 py-2 flex flex-col gap-2${live ? '' : ' opacity-75'}`;
   card.dataset.askUserCard = tc.id;
+  card.dataset.messageId = messageId;
   const head = document.createElement('div');
   head.className = 'text-xs font-medium text-sky-200';
   head.textContent = live ? '❓ The AI needs your input' : '❓ The AI asked';
@@ -2855,10 +2870,11 @@ function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.disabled = !live;
+      btn.dataset.option = `${qi}:${oi}`;
       btn.setAttribute('aria-pressed', String(picked));
-      btn.className = `text-left px-2 py-1 rounded border text-[12px] leading-tight transition-colors ${picked
+      btn.className = `text-left px-2 py-1 min-h-[44px] md:min-h-0 rounded border text-[12px] leading-tight transition-colors ${picked
         ? 'border-sky-400 bg-sky-600/40 text-white'
-        : 'border-zinc-600 bg-zinc-800 text-zinc-200'}${live ? ' hover:border-sky-400 hover:bg-zinc-700' : ' cursor-default'}`;
+        : 'border-zinc-600 bg-zinc-800 text-zinc-200'}${live ? ' [@media(hover:hover)]:hover:border-sky-400 [@media(hover:hover)]:hover:bg-zinc-700' : ' cursor-default'}`;
       btn.textContent = opt.label;
       if (opt.description) {
         btn.title = opt.description;
@@ -2868,13 +2884,16 @@ function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
         btn.appendChild(note);
       }
       btn.addEventListener('click', () => {
-        if (quickSend) { void submitAskUserAnswers(tc.id, questions, [[oi]]); return; }
+        if (quickSend) { void submitAskUserAnswers(key, questions, [[oi]]); return; }
         const current = selections[qi] ?? [];
         selections[qi] = q.multiSelect
           ? (current.includes(oi) ? current.filter(x => x !== oi) : [...current, oi])
           : (current.includes(oi) ? [] : [oi]);
-        askSelections.set(tc.id, selections);
-        card.replaceWith(renderAskUserCard(tc));
+        askSelections.set(key, selections);
+        const next = renderAskUserCard(messageId, tc);
+        card.replaceWith(next);
+        // Keep keyboard focus on the chip that was toggled.
+        next.querySelector<HTMLButtonElement>(`[data-option="${qi}:${oi}"]`)?.focus();
       });
       row.appendChild(btn);
     });
@@ -2891,9 +2910,9 @@ function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
     if (!quickSend) {
       const send = document.createElement('button');
       send.type = 'button';
-      send.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+      send.className = 'shrink-0 px-2 py-1 min-h-[44px] md:min-h-0 rounded text-[11px] font-medium bg-blue-600 [@media(hover:hover)]:hover:bg-blue-500 text-white';
       send.textContent = 'Send answers';
-      send.addEventListener('click', () => { void submitAskUserAnswers(tc.id, questions, selections); });
+      send.addEventListener('click', () => { void submitAskUserAnswers(key, questions, selections); });
       foot.appendChild(send);
     }
     card.appendChild(foot);
@@ -2902,26 +2921,26 @@ function renderAskUserCard(tc: PersistedToolCall): HTMLElement {
 }
 
 /** Re-render the question cards in the transcript: whether one is the live
- *  card depends on the turn being over, which the last render (mid-turn)
- *  couldn't know. */
+ *  card depends on the turn being over and on owning the session, which the
+ *  last render may not have known. */
 function refreshAskUserCards(): void {
   if (!transcriptEl) return;
   for (const el of transcriptEl.querySelectorAll<HTMLElement>('[data-ask-user-card]')) {
-    const id = el.dataset.askUserCard;
-    const tc = state.history.flatMap(m => m.toolCalls ?? []).find(c => c.id === id);
-    if (tc) el.replaceWith(renderAskUserCard(tc));
+    const messageId = el.dataset.messageId ?? '';
+    const tc = state.history.find(m => m.id === messageId)?.toolCalls?.find(c => c.id === el.dataset.askUserCard);
+    if (tc) el.replaceWith(renderAskUserCard(messageId, tc));
   }
 }
 
 /** Send a question card's answers (plus anything typed) as the user's next
  *  message — through sendMessage, so plan mode and queueing apply as usual. */
-async function submitAskUserAnswers(callId: string, questions: AskUserQuestion[], selections: number[][]): Promise<void> {
-  if (!inputEl || state.inFlight) return;
+async function submitAskUserAnswers(key: string, questions: AskUserQuestion[], selections: number[][]): Promise<void> {
+  if (!inputEl || state.inFlight || !writeOwner) return;
   const text = answersText(questions, selections, inputEl.value);
   if (!text) { inputEl.focus(); return; }
   inputEl.value = text;
   inputEl.dispatchEvent(new Event('input'));
-  askSelections.delete(callId);
+  askSelections.delete(key);
   await sendMessage();
 }
 
@@ -3250,7 +3269,10 @@ function queueCurrentInput(): void {
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
   const blocks: ChatBlock[] = [];
-  if (text.length > 0) blocks.push({ type: 'text', text });
+  // Typed while a plan is being written: it's a revision of that plan, and
+  // marked as one so the pending plan survives in the transcript.
+  if (state.pendingPlanApproval) blocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + text });
+  else if (text.length > 0) blocks.push({ type: 'text', text });
   for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
   state.queuedBlocks.push(...blocks);
   // Relay newly-queued blocks into the Worker so its drain hook picks them
@@ -3280,7 +3302,7 @@ function renderQueuedBadge(): void {
   // which message they queued at a glance (handy if they queued more than
   // one before the agent paused).
   const preview = textBlocks.length > 0 && textBlocks[0].type === 'text'
-    ? textBlocks[0].text.split('\n')[0].slice(0, 80)
+    ? (planTurn(textBlocks[0].text)?.words ?? textBlocks[0].text).split('\n')[0].slice(0, 80)
     : `${imageCount} image${imageCount === 1 ? '' : 's'}`;
   const more = state.queuedBlocks.length > 1 ? ` (+${state.queuedBlocks.length - 1} more)` : '';
 
@@ -3349,6 +3371,8 @@ async function rewindTurn(): Promise<void> {
   // "step back and start over" wouldn't actually recover. Repair the exposed
   // history and persist it so the post-rewind state is always sendable.
   await persistToolHistoryRepair();
+  // The transcript changed under the plan: re-read whether one is pending.
+  syncPendingPlanFromHistory();
   renderTranscript();
   updateRewindButtons();
 }
@@ -3379,6 +3403,8 @@ async function fastForwardTurn(): Promise<void> {
     if (insertAt === -1) state.history.push(msg);
     else state.history.splice(insertAt, 0, msg);
   }
+  // The transcript changed under the plan: re-read whether one is pending.
+  syncPendingPlanFromHistory();
   renderTranscript();
   updateRewindButtons();
 }
@@ -3703,7 +3729,10 @@ async function sendMessage(): Promise<void> {
   // if they had been scrolled up reading earlier history.
   pinTranscriptToBottom();
 
-  if (settings.toggles.planFirst || state.pendingPlanApproval) {
+  // Answering a question card the AI asked mid-build continues that build,
+  // even with the Plan pill on — it isn't a new request to plan.
+  const answeringCard = !state.pendingPlanApproval && pendingAskUser(state.history) !== null;
+  if ((settings.toggles.planFirst && !answeringCard) || state.pendingPlanApproval) {
     // Plan-first mode or an in-flight plan refinement: keep tools off so the
     // model can't execute anything until the user approves. If this is a
     // follow-up (pendingPlanApproval is already set), the user is replying to
@@ -3711,10 +3740,8 @@ async function sendMessage(): Promise<void> {
     // message as-is; the planning prefix is only for the very first turn.
     const planToggles: ChatToggles = {
       ...settings.toggles,
-      // The pending-approval state is the source of truth for "we're planning,"
-      // not the live Plan pill — force planFirst on so a refinement turn keeps
-      // its empty tool list and plan-mode suffix even if the user toggled the
-      // pill off while a plan was pending.
+      // A pending plan implies the pill is on (turning it off clears the
+      // plan), but keep this turn in plan mode explicitly.
       planFirst: true,
       scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
       autoResume: false,
@@ -3728,13 +3755,14 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + textWithContext });
+      // The prefix goes on even with no text (images only): it is what marks
+      // the message as part of the plan when the state is re-read from the
+      // transcript.
+      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_REFINE_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + textWithContext });
+      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_FIRST_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -3748,7 +3776,8 @@ async function sendMessage(): Promise<void> {
     return;
   }
 
-  await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
+  // Only a card answer reaches here with the pill on; it builds with full tools.
+  await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, blocks);
 }
 
 /** Wraps runTurn with: in-progress indicator, stall watchdog, and bounded

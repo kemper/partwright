@@ -37,6 +37,31 @@ describe('Gemini streamTurn', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('merges a tool-result turn and the typed answer after it into one user content', async () => {
+    // A question card (askUser) ends the turn on a tool-result message; the
+    // user's answer is the next message. Gemini gets one user turn.
+    let captured = '';
+    vi.stubGlobal('fetch', async (_input: unknown, init: { body?: string }) => {
+      captured = String(init?.body ?? '');
+      const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+      return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    });
+    const history = [
+      { id: 'u0', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'make a vase' }], createdAt: 0, seq: 0 },
+      { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'gemini_call_0', name: 'askUser', input: { questions: [{ question: 'Lid?' }] } }], createdAt: 0, seq: 1 },
+      { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'gemini_call_0', content: 'shown' }], createdAt: 0, seq: 2 },
+      { id: 'u2', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'No lid' }], createdAt: 0, seq: 3 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any;
+    await gemini.streamTurn({ apiKey: 'k', model: 'gemini-2.5-flash', systemPrompt: 'sys', systemSuffix: '', history, tools: [] });
+
+    const roles = JSON.parse(captured).contents.map((c: { role: string }) => c.role);
+    expect(roles).toEqual(['user', 'model', 'user']);
+    const last = JSON.parse(captured).contents[2].parts;
+    expect(last[0].functionResponse.name).toBe('askUser');
+    expect(last[last.length - 1].text).toBe('No lid');
+  });
+
   test('captures a text turn thoughtSignature from a trailing empty-text part', async () => {
     // Regression for the "Gemini stalls after thinking" bug: Gemini 3 streams a
     // text response's thought signature on a trailing part whose text is empty.

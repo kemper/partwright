@@ -199,9 +199,12 @@ test.describe('plan mode flow', () => {
       const body = route.request().postDataJSON() as AnthropicBody;
       bodies.push(body);
       const n = bodies.length;
-      const reply = n === 1 ? toolReply('ask', 'askUser', ASK_INPUT)
+      // Gemini/local number tool calls per response, so reuse one id to
+      // check cards are told apart by message, not just call id.
+      const reply = n === 1 ? toolReply('same', 'askUser', ASK_INPUT)
         : n === 2 ? toolReply('plan', 'proposePlan', PLAN_INPUT)
-          : textReply(`m${n}`, 'Built the vase.');
+          : n === 3 ? toolReply('same', 'askUser', { questions: [{ question: 'Glaze finish?', options: [{ label: 'Matte' }, { label: 'Gloss' }] }] })
+            : textReply(`m${n}`, 'Built the vase.');
       await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream', 'access-control-allow-origin': '*' }, body: reply });
     });
     await setUpAnthropic(page, true);
@@ -221,6 +224,8 @@ test.describe('plan mode flow', () => {
     // The card's acknowledgement isn't shown as a tool-result chip.
     await expect(panel.getByText('Shown to the user as a card', { exact: false })).toHaveCount(0);
     await card.getByRole('button', { name: /60 mm/ }).click();
+    // Toggling a chip keeps keyboard focus on it.
+    await expect(card.getByRole('button', { name: /60 mm/ })).toBeFocused();
     await card.getByRole('button', { name: 'Handle' }).click();
     await card.getByRole('button', { name: 'Lid' }).click();
     await expect(card.getByRole('button', { name: 'Lid' })).toHaveAttribute('aria-pressed', 'true');
@@ -240,23 +245,42 @@ test.describe('plan mode flow', () => {
     await expect(card.getByRole('button', { name: /60 mm/ })).toBeDisabled();
     await page.screenshot({ path: 'test-results/plan-cards-plan.png' });
 
-    // 3. The pending plan survives a reload.
+    // 3. The pending plan survives a reload; the Plan pill turns it off and on.
     await page.reload();
     await waitForEditorReady(page);
     await openAiPanel(page);
     await expect(panel.locator('[data-plan-card]')).toBeVisible({ timeout: 30_000 });
-    await expect(panel.locator('[data-plan-state]')).toHaveAttribute('data-plan-state', 'plan');
+    const planBar = panel.locator('[data-plan-state]');
+    await expect(planBar).toHaveAttribute('data-plan-state', 'plan');
+    const pill = panel.getByRole('button', { name: /📋 Plan/ });
+    await pill.click();
+    await expect(planBar).toBeHidden();
+    await expect(panel.locator('[data-plan-card]')).toBeVisible();
+    await pill.click();
+    await expect(planBar).toBeVisible();
 
     // 4. Build sends the plan as Markdown with the full tool list.
-    await panel.locator('[data-plan-state]').getByRole('button', { name: /Build it/ }).click();
-    await expect(panel.getByText('Built the vase.')).toBeVisible({ timeout: 30_000 });
-    const build = bodies[bodies.length - 1];
+    await planBar.getByRole('button', { name: /Build it/ }).click();
+    const buildCard = panel.locator('[data-ask-user-card]').last();
+    await expect(buildCard).toContainText('Glaze finish?', { timeout: 30_000 });
+    const build = bodies[2];
     expect(lastUserText(build)).toContain('[Plan approved');
     expect(lastUserText(build)).toContain('2. Hollow it with 2 mm walls.');
     expect(lastUserText(build)).toContain('- Open top, no lid.');
     const buildTools = (build.tools ?? []).map(t => t.name);
     expect(buildTools).toContain('runAndSave');
     expect(buildTools).not.toContain('proposePlan');
+
+    // 5. A question during the build: only the newest card is live, and the
+    //    answer continues the build (full tools, no plan wrapping) even with
+    //    the Plan pill on.
+    await expect(panel.locator('[data-ask-user-card]').first().getByRole('button', { name: /60 mm/ })).toBeDisabled();
+    await buildCard.getByRole('button', { name: 'Matte' }).click();
+    await expect(panel.getByText('Built the vase.')).toBeVisible({ timeout: 30_000 });
+    const answer = bodies[3];
+    expect(lastUserText(answer)).toBe('- Glaze finish? → Matte');
+    expect((answer.tools ?? []).map(t => t.name)).toContain('runAndSave');
+    await expect(planBar).toBeHidden();
   });
 
   test('askUser outside plan mode: one click answers a single question', async ({ page }) => {

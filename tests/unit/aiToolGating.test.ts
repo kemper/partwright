@@ -170,7 +170,11 @@ describe('AI tool gating invariants', () => {
         if (k === 'items' && v && typeof v === 'object') walk(v as Record<string, unknown>, `${path}[]`);
       }
     };
-    const all = buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false }));
+    // Both lists: plan-only tools (proposePlan) are sent to Gemini too.
+    const all = [
+      ...buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false })),
+      ...buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: true })),
+    ];
     for (const t of all) walk(t.input_schema as unknown as Record<string, unknown>, t.name);
     expect(bad).toEqual([]);
   });

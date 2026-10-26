@@ -37,3 +37,23 @@ input and sends, so plan-mode refinement, queueing and owner checks apply unchan
 single-choice question sends on click.
 
 **Auto-review** skips turns that end waiting on an askUser card: the work is paused, not done.
+
+## Assistant (review follow-up)
+
+A review pass found nine problems; all fixed in the follow-up commit.
+
+- **Repeated call ids**: Gemini and local number tool calls per response, so cards are keyed by
+  message id + call id (live check, selections, refresh), not call id alone.
+- **Answering a mid-build question with the Plan pill on** went down the plan path. A message that
+  answers a pending askUser card (and no plan is pending) now continues the build with full tools.
+- **Plan markers**: queued messages during a plan turn, and image-only plan messages, now carry the
+  plan prefix, so the transcript-derived pending plan doesn't vanish.
+- **Rewind / fast-forward** re-derive the pending plan.
+- **Viewer tabs**: plan bar and cards are owner-only, and Build/Discard check ownership.
+- **Rejected card calls** don't count; only a card whose tool result is the acknowledgement does.
+- **Exit from a stale plan**: turning the Plan pill off leaves plan mode (messages kept), and a
+  pending plan is restored from the transcript only while the pill is on. Chosen over a third bar
+  button because it reuses the control that already means "plan mode", and it persists.
+- **Consecutive user turns**: Gemini and the local prompt-engineered builder now merge a tool-result
+  turn with the typed turn after it; askUser makes that sequence the normal path, not a corner case.
+- Chips get 44 px touch targets on mobile, hover gated on `(hover: hover)`, and keep focus on toggle.
