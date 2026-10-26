@@ -1810,12 +1810,12 @@ const ALL_TOOLS: ToolDefinition[] = [
           properties: {
             axis: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
             angleDeg: { type: 'number' },
-            smooth: { type: 'boolean', description: 'Smooth the painted edge along the analytic cylinder by refining boundary triangles. Default true; false = fast, follows the existing triangles.' },
-        resolution: { type: 'number', description: 'Smooth-edge density: model bbox diagonal / resolution. Default 256.' },
-        maxEdge: { type: 'number', description: 'Explicit max boundary edge length in mesh units; overrides resolution.' },
-      },
+          },
           required: ['axis', 'angleDeg'],
         },
+        smooth: { type: 'boolean', description: 'Smooth the painted edge along the analytic cylinder by refining boundary triangles. Default true; false = fast, follows the existing triangles.' },
+        resolution: { type: 'number', description: 'Smooth-edge density: model bbox diagonal / resolution. Default 256.' },
+        maxEdge: { type: 'number', description: 'Explicit max boundary edge length in mesh units; overrides resolution.' },
         topOnly: { type: 'boolean', description: 'Shortcut: only upward-facing triangles (normal within 30° of +Z).' },
         coverageMode: {
           type: 'string',

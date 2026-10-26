@@ -125,6 +125,29 @@ return v;`);
     expect(r.regions).toEqual(['lid']);
   });
 
+  test('importSession keeps in-code surface textures (applied from cache or recoverable)', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('import-texture');
+      pw.clearColors();
+      await pw.runAndSave('return api.Manifold.sphere(10, 24);', 'plain');
+      const plainTris = pw.getGeometryData().triangleCount;
+      await pw.runAndSave('api.surface.knurl({});\nreturn api.Manifold.sphere(10, 24);', 'knurled');
+      await pw.ensureSurfaceTexturesApplied();
+      const texturedTris = pw.getGeometryData().triangleCount;
+      const data = await pw.exportSession();
+      await pw.createSession('elsewhere');
+      await pw.runAndSave('return api.Manifold.cube([4, 4, 4]);', 'c');
+      await pw.importSession(data);
+      const ensured = await pw.ensureSurfaceTexturesApplied();
+      return { plainTris, texturedTris, ensured, importedTris: pw.getGeometryData().triangleCount };
+    });
+    expect(r.texturedTris).toBeGreaterThan(r.plainTris);
+    expect(r.ensured.ok).toBe(true);
+    expect(r.importedTris).toBe(r.texturedTris);
+  });
+
   test('a parametric transform saves the live Customizer values with the new version', async () => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

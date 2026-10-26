@@ -807,7 +807,7 @@ export async function runVoxelGridInWorker(
   const callId = `voxgrid-${++callIdCounter}`;
   return new Promise((resolve, reject) => {
     pendingVoxelGrids.set(callId, { resolve, reject });
-    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
+    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples });
   });
 }
 

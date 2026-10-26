@@ -172,6 +172,13 @@ describe('AI tool gating invariants', () => {
         if (!FREE_FORM.has(key)) bad.push(key);
         else if (!(`${leaf}Json` in siblings)) bad.push(`${key} (free-form but no ${leaf}Json fallback)`);
       }
+      // A shared shape must not grow stray fields (an insertion that landed in
+      // the wrong block once nested paintInCylinder's top-level smooth knobs
+      // inside normalCone, where the API never reads them).
+      if (path.split('.').pop() === 'normalCone' && props) {
+        const keys = Object.keys(props).sort().join(',');
+        if (keys !== 'angleDeg,axis') bad.push(`${tool}.${path} has fields {${keys}}`);
+      }
       for (const [k, v] of Object.entries(props ?? {})) walk(tool, path ? `${path}.${k}` : k, v, props!);
     };
     const all = buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false }));

@@ -3624,14 +3624,14 @@ async function main() {
         if (thumb) await updateVersionThumbnail(version.id, thumb);
       }
     }
-    // Fire-and-forget: render a snapshot for each remaining version that
-    // imported without a thumbnail. Runs AFTER the user is already on the new
-    // part, fully offscreen, so it never disturbs the live viewport or editor.
     else if (getState().session?.id === session.id) {
       // A chat- or notes-only export: show the starter (and restore its
       // attachments) rather than leaving the previous session's model up.
       await loadPartIntoEditor(null, { skipDraftSave: true });
     }
+    // Fire-and-forget: render a snapshot for each remaining version that
+    // imported without a thumbnail. Runs AFTER the user is already on the new
+    // part, fully offscreen, so it never disturbs the live viewport or editor.
     void backfillImportedThumbnails(session.id);
     return { sessionId: session.id, name: session.name };
   }
@@ -8695,12 +8695,13 @@ async function main() {
     // Import via the app's one import path (validation, newer-schema warning,
     // full version load, offscreen thumbnail backfill in each version's own
     // engine) — not a per-version re-run in whatever engine is active.
-    async (data: unknown) => {
+    async (data: unknown, accept: () => void) => {
       const validated = validateSessionPayload(data);
       if (!validated) {
         showToast('Invalid session file.', { variant: 'warn', source: 'import' });
         return;
       }
+      accept();
       await importSessionPayload(validated);
     },
     startNewSessionInEditor,
@@ -11793,7 +11794,7 @@ async function main() {
     return null;
   }
 
-  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean; toastBakeWarning?: boolean }): Promise<Record<string, unknown>> {
     // Refuse to bake while a coarse fast-preview is on screen: the modifier would
     // bind to the throwaway low-res mesh, which the full-quality render is about
     // to replace. Tell the user to let it finish (it auto-completes in seconds).
@@ -11804,9 +11805,11 @@ async function main() {
     }
     // Capture the language *before* the commit switches it, so we can warn when a
     // SCAD/BREP session is silently baked to a mesh. Pass warnOnBake:false only
-    // when the caller already reports that loss itself.
+    // when the caller already reports that loss itself, and toastBakeWarning:
+    // false when the caller toasts the returned `warnings` (the Place modal).
     const priorLang = getActiveLanguage();
     const warnOnBake = opts?.warnOnBake !== false;
+    const toastBakeWarning = opts?.toastBakeWarning !== false;
     // For manifold results the modifier already baked colors into its input and
     // carried them through subdivision — result.mesh.triColors has the correct
     // per-triangle paint (dense mesh, same shape as the engine output). We use
@@ -11870,7 +11873,7 @@ async function main() {
         }
       }
       const bakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'manifold-js') : null;
-      if (bakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
+      if (bakeWarning && toastBakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
       const allWarnings = [...(bakeWarning ? [bakeWarning] : []), ...colorWarnings];
       return {
         ok: true,
@@ -11893,7 +11896,7 @@ async function main() {
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
     const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
-    if (voxelBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
+    if (voxelBakeWarning && toastBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
     return {
       ok: true,
       label: result.label,
@@ -11986,8 +11989,9 @@ async function main() {
       const preserve = preserveColor ?? true;
       // Let the commit add the engine warning (SCAD/BREP source and STEP export
       // lost): the reasons above say why it baked, not what the bake costs —
-      // and an explicit mode 'bake' had no warning at all.
-      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve);
+      // and an explicit mode 'bake' had no warning at all. It's returned, not
+      // toasted: the Place modal toasts the result's warnings once.
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { toastBakeWarning: false });
     }
     if (!warnings.length || result.error) return result;
     const own = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
@@ -21928,9 +21932,6 @@ async function main() {
     };
   }
 
-  /** Resolve the normalCone to use for a paint op. Explicit cone wins;
-   *  `topOnly: true` is sugar for "upward-facing within ~30° of +Z" and
-   *  is the most common case the agent over-paints without. */
   /** A region by id (number) or name (string). A digit string that names no
    *  region is read as an id — providers that type an untyped param as a
    *  string (Gemini) send ids that way. */
@@ -21940,6 +21941,9 @@ async function main() {
     return regions.find(r => r.name === ref) ?? (/^\d+$/.test(ref) ? regions.find(r => r.id === Number(ref)) : undefined);
   }
 
+  /** Resolve the normalCone to use for a paint op. Explicit cone wins;
+   *  `topOnly: true` is sugar for "upward-facing within ~30° of +Z" and
+   *  is the most common case the agent over-paints without. */
   function resolvePaintCone(
     explicit: { axis: [number, number, number]; angleDeg: number } | undefined,
     topOnly: boolean | undefined,
@@ -22550,6 +22554,28 @@ async function main() {
     });
   }
 
+  /** The `skipSurface` counterpart of applySurfaceTextures (imports, which
+   *  must not block on a 30–120 s texture compute): a texture already in the
+   *  memo cache (e.g. seeded from the version's persisted texture) is applied
+   *  — that's instant — and anything else is parked behind the Re-apply pill,
+   *  so the user and ensureSurfaceTexturesApplied() can still bring it back
+   *  instead of the model silently rendering untextured. */
+  async function deferSurfaceTextures(result: MeshResult, src: string): Promise<void> {
+    const ops = result.surfaceOps;
+    if (!ops || ops.length === 0 || !result.mesh) {
+      lastAppliedSurface = null;
+      hideSurfaceReapplyPill();
+      return;
+    }
+    const baseKey = meshContentKey(result.mesh);
+    if (surfaceCacheStatus(baseKey, ops).cached) {
+      await applySurfaceTextures(result, src);
+      return;
+    }
+    lastAppliedSurface = null;
+    parkSurfaceChain({ base: result.mesh, ops, baseKey, src }, stalePillText(ops.length));
+  }
+
   async function applySurfaceTextures(result: MeshResult, src: string): Promise<void> {
     // Each mesh-producing run re-establishes what (if any) applied texture the
     // live mesh carries; stale-by-default until a branch below applies one.
@@ -22888,6 +22914,7 @@ async function main() {
       // swaps in a new mesh invalidates them.
       const engineMesh = result.mesh;
       if (!opts.skipSurface) await applySurfaceTextures(result, src);
+      else await deferSurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;

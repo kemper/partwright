@@ -25,8 +25,9 @@ let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((version: Version | null, switchedSession: boolean) => void | Promise<void>) | null = null;
 /** Imports a parsed session file and opens it — the app's one import path
  *  (validation, newer-schema warnings, offscreen thumbnail backfill), so the
- *  modal's Import behaves exactly like the toolbar's. */
-type ImportPayloadFn = (data: unknown) => Promise<void>;
+ *  modal's Import behaves exactly like the toolbar's. It validates first and
+ *  calls `accept()` only for a real session file, right before importing. */
+type ImportPayloadFn = (data: unknown, accept: () => void) => Promise<void>;
 
 let importPayloadFn: ImportPayloadFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
@@ -81,12 +82,13 @@ export async function showSessionList(): Promise<void> {
       try {
         const data: unknown = JSON.parse(await file.text());
         if (!importPayloadFn) return;
-        // Push the editor entry before the session-mutating open so the Back
-        // button returns to the prior session (updateURL only replaceState's).
-        updateAppHistory(appPath('/editor'), 'push');
-        // Close first: opening the imported model can take a while.
-        closeModal();
-        await importPayloadFn(data);
+        await importPayloadFn(data, () => {
+          // Push the editor entry before the session-mutating open so the Back
+          // button returns to the prior session (updateURL only replaceState's),
+          // and close first: opening the imported model can take a while.
+          updateAppHistory(appPath('/editor'), 'push');
+          closeModal();
+        });
       } catch (e) {
         showToast('Failed to import session: ' + (e as Error).message, { variant: 'warn', source: 'import' });
       }

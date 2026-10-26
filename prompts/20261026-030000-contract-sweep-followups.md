@@ -55,3 +55,29 @@ branch and pass here; unit gating/dispatch tests in `aiToolGating.test.ts`.
 Merging objects' SCAD companions, off-editor bake params and the assembly
 language fallback are one-line pairings with their already-correct twins,
 covered by the existing e2e sets rather than new specs.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**`paintInCylinder`'s smooth knobs were nested inside `normalCone`** by the
+schema-insertion script (it found the last `},` before `required`). Moved them
+to the top level and extended the unit guard: a `normalCone` must have exactly
+`{axis, angleDeg}`.
+
+**No double toast.** Dropping `warnOnBake: false` made the commit toast the
+engine warning AND return it, and the Place modal toasts the returned warnings
+— two toasts. `commitSurfaceModifier` gained `toastBakeWarning`; the transform
+path returns the warning without toasting it, so the modal shows it once.
+
+**Imports no longer silently drop `api.surface.*` textures.** The shared import
+path loads with `skipSurface` (a texture compute can take minutes), which the
+modal and API paths didn't use before. `skipSurface` now applies a texture
+that's already in the memo cache (seeded from the version's persisted texture)
+and otherwise parks the chain behind the Re-apply pill, so the user and
+`ensureSurfaceTexturesApplied()` can still recover it — for every import path,
+not just the two this PR rerouted. Proven by a test that fails without it.
+
+**Validate before navigating**: the modal's Import pushes history and closes
+only for a real session file. **The `voxel_grid` message carries the v.sdf
+budget too**, so a respawned Worker doesn't fall back to the default.

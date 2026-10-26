@@ -632,7 +632,10 @@ self.onmessage = async (event: MessageEvent) => {
   // Voxel Studio activation when the main thread has no up-to-date grid from
   // the last render. The main thread never evaluates model code (#1090).
   if (msg.type === 'voxel_grid') {
-    const { callId, code, params } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null };
+    const { callId, code, params, voxelSdfMaxSamples } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null; voxelSdfMaxSamples?: number };
+    // Same v.sdf budget seed as `execute` — a respawned Worker may never have
+    // seen an execute message before its first voxel_grid.
+    if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
     try {
       const r = runVoxelGrid(code, params ?? undefined);
       if (!r.ok) {
