@@ -60,3 +60,7 @@ to 12 s. The too-small error now names the parameter the caller passed
 resolution: a 0.3 clearance works up to ~37 units at 192 and ~63 at 320).
 The docs also spell out how the SDF `node.shell` and `BREP.shell`
 conventions differ from `api.shell`.
+
+## Assistant
+
+Added a 4-Ls retro for this PR (retros/inbox/20261026-210500-mesh-shell-offset.md).
