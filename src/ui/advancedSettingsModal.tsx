@@ -815,6 +815,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'thumbnailMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.containmentSamples"
+          label="Enclosed-piece samples"
+          hint="Points tested per piece when checking big models for pieces sealed inside others."
+          tooltip="For big models the engine checks whether a separate piece sits entirely inside another (an internal part, a sealed cavity) by testing a few points of it. Enclosed pieces don't trigger the floating-part warning. More points catch odd shapes that poke out between samples, at a small cost in speed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.containmentSamples}
+          value={c.renderer.containmentSamples}
+          min={1} max={256} integer
+          onChange={v => set('renderer', 'containmentSamples', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -1004,6 +1013,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.surfaceTexturePersistMaxTriangles}
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
+        />
+        <Field cfgKey="renderer.storedArrayBlobMinKB"
+          label="Store big arrays as files from"
+          unit="KB"
+          hint="Mesh data at least this big is saved as a Blob, so saving and opening big versions doesn't freeze the app."
+          tooltip="A saved version's mesh arrays (an imported model's vertices and triangles, a persisted texture, detected parts) are copied on the main thread when written to or read from browser storage as plain arrays — about half a second for a 3.7M-triangle import. Arrays at least this big are stored as Blobs instead, which the browser writes and reads in the background. 0 stores every array as a Blob. Versions saved either way load the same."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.storedArrayBlobMinKB}
+          value={c.renderer.storedArrayBlobMinKB}
+          min={0} max={1_048_576} integer
+          onChange={v => set('renderer', 'storedArrayBlobMinKB', v)}
         />
         <Field cfgKey="renderer.paintRefinePersistMaxTriangles"
           label="Cache smooth-paint mesh up to"

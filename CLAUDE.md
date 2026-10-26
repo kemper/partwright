@@ -530,6 +530,8 @@ Always await `txn.oncomplete` before returning from functions that modify Indexe
 
 **Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
 
+**Saved versions store their big typed arrays as Blobs.** `saveVersion`/`putVersion` pack every typed array of at least `renderer.storedArrayBlobMinKB` (import meshes, persisted textures, detected parts) into a Blob marker (`src/storage/storedArrays.ts`), because `put()` structured-clones plain arrays on the main thread (~0.5–1.4 s for a 3.7M-triangle import). The `db.ts` readers (`listVersions`, `getVersionById`, …) unpack them, and records written before this read back unchanged. So read versions through those helpers: a raw `getAll()` on the `versions` store (or a `DeletedObject`'s `versions`) sees the markers.
+
 ### Session Schema Migrations
 
 When adding a field to the persisted session schema, **seven locations must stay in sync** — missing one trips a CI test or silently corrupts imports:

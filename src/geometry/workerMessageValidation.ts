@@ -523,7 +523,8 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
         optBool(data.exceeded, 'exceeded');
         optFinite(data.triangleCount, 'triangleCount');
         optFinite(data.tolerance, 'tolerance');
-        checkMeshField(data.mesh, 'mesh', true);
+        checkManifoldFacts(data.manifoldFacts, checkMeshField(data.mesh, 'mesh', true));
+        optString(data.manifoldError, 'manifoldError');
         break;
     }
   } catch (e) {

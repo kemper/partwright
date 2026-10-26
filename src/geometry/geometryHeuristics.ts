@@ -22,14 +22,23 @@ export function edgeStats(
 ): { min: number; mean: number } {
   let min = Infinity, sum = 0, n = 0;
   const vp = vertProperties;
-  const d = (a: number, b: number): number => Math.hypot(
-    vp[a * numProp] - vp[b * numProp],
-    vp[a * numProp + 1] - vp[b * numProp + 1],
-    vp[a * numProp + 2] - vp[b * numProp + 2],
-  );
+  // Plain sqrt and no per-triangle array: this runs over every edge of the
+  // mesh on each run (Math.hypot + a temp array per triangle cost ~1 s at
+  // 3.7M triangles).
+  const d = (a: number, b: number): number => {
+    const dx = vp[a * numProp] - vp[b * numProp];
+    const dy = vp[a * numProp + 1] - vp[b * numProp + 1];
+    const dz = vp[a * numProp + 2] - vp[b * numProp + 2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  };
   for (let t = 0; t < numTri; t++) {
     const a = triVerts[t * 3], b = triVerts[t * 3 + 1], c = triVerts[t * 3 + 2];
-    for (const e of [d(a, b), d(b, c), d(c, a)]) { if (e < min) min = e; sum += e; n++; }
+    const e0 = d(a, b), e1 = d(b, c), e2 = d(c, a);
+    if (e0 < min) min = e0;
+    if (e1 < min) min = e1;
+    if (e2 < min) min = e2;
+    sum += e0 + e1 + e2;
+    n += 3;
   }
   return { min: n ? +min.toFixed(4) : 0, mean: n ? +(sum / n).toFixed(4) : 0 };
 }

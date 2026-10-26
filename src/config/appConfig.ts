@@ -210,6 +210,11 @@ export interface AppConfig {
      *  detail a thumbnail can't show. Above the ~500k catalog budget so
      *  catalog thumbnails stay exact. renderViews etc. are never proxied. */
     thumbnailMaxTriangles: number;
+    /** Points per enclosed-piece test in the engine Worker's stats for big
+     *  models: a piece counts as enclosed (no floater warning) when all of
+     *  these sample points lie inside the larger piece. More = fewer misses
+     *  on oddly shaped pieces, slower. */
+    containmentSamples: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -271,6 +276,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Typed arrays (mesh vertices, triangles, part ids…) at least this many
+     *  KB in a saved version are stored in IndexedDB as Blobs. Saving or
+     *  reading a plain array copies it on the main thread (~0.5 s for a
+     *  3.7M-triangle import); a Blob is written and read out of line.
+     *  0 = every array. */
+    storedArrayBlobMinKB: number;
     /** Triangle count above which the smooth-paint REFINED mesh (the mesh
      *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
      *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
@@ -709,6 +720,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     creaseEdgeMaxTriangles: 200_000,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
+    containmentSamples: 12,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -728,6 +740,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    storedArrayBlobMinKB: 64,
     paintRefinePersistMaxTriangles: 1_000_000,
     paintRefineCacheMaxMB: 256,
     paintRefineCacheTouchMinutes: 60,

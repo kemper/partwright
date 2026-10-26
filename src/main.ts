@@ -25,7 +25,7 @@ import { selectTriangles, type LabelLookup } from './geometry/selector';
 import { meshDiff, deviationColors } from './geometry/meshDiff';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
 import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
 import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
@@ -150,10 +150,10 @@ import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
-import { isOrientedEdgeManifold, probeSTL, weldToleranceLadder, type STLProbeResult } from './import/stlProbe';
+import { isOrientedEdgeManifold, probeIndexed, probeSTL, type IndexedProbeResult, type STLProbeResult } from './import/stlProbe';
 import type { ManifoldFacts } from './geometry/manifoldFacts';
-import { probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
-import { parse3MF, weldMesh, type ThreeMFParseResult } from './import/parsers/threemf';
+import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
+import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
@@ -1753,8 +1753,12 @@ function captureThumbnail(
 async function snapshotMeshAsVersion(
   mesh: MeshData,
   sourceCode: string,
+  /** The engine Worker's stats for `mesh`, when it has them: skips the
+   *  throwaway (multi-second on a big mesh) main-thread Manifold. */
+  facts?: ManifoldFacts | null,
 ): Promise<{ thumbnail: Blob | null; geometryData: Record<string, unknown> | null }> {
   const thumbnail = await captureThumbnail(mesh);
+  if (facts) return { thumbnail, geometryData: withSessionContext(computeGeometryStats(null, mesh, undefined, sourceCode, facts)) };
   const mod = getModule();
   const manifold = mod ? mod.Manifold.ofMesh(mesh) : null;
   try {
@@ -5044,12 +5048,6 @@ async function main() {
     return { ...probe, mesh: toImportedMesh(filename, probe.mesh) };
   }
 
-  /** Weld tolerances to try for an already-indexed mesh (3MF); see
-   *  `weldToleranceLadder` in stlProbe.ts. */
-  function meshWeldToleranceLadder(mesh: MeshData): number[] {
-    return weldToleranceLadder(mesh, getConfig().import.stlWeldTolerance);
-  }
-
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
    *  Tries progressively looser weld tolerances to absorb float-precision noise.
    *  If the mesh still won't form a manifold (common for sculpted/scanned models
@@ -5129,21 +5127,31 @@ async function main() {
   /** The STL manifold probe for an already-indexed mesh (a 3MF, or one object
    *  cut out of it): the raw mesh first, then the weld-tolerance ladder.
    *  Welding keeps triangle order, so per-triangle colours stay aligned with
-   *  the returned `source`. */
-  function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): { probe: ParsedSTLProbe; source: MeshData } {
-    const first = quickManifoldTrial(raw);
-    if (first.ok) return { probe: { mesh: toImportedMesh(filename, raw, format), isManifold: true }, source: raw };
-    let manifoldError: string | null = first.error;
-    let maxTried = 0;
-    for (const tol of meshWeldToleranceLadder(raw)) {
-      const welded = weldMesh(raw, tol);
-      const trial = quickManifoldTrial(welded);
-      if (trial.ok) return { probe: { mesh: toImportedMesh(filename, welded, format), isManifold: true }, source: welded };
-      manifoldError = trial.error;
-      if (tol > maxTried) maxTried = tol;
+   *  the returned `source`. A clean mesh is settled by the quick check here;
+   *  one that fails it gets the exact ofMesh ladder in the probe Worker
+   *  (seconds per trial on a big mesh), or here if the Worker can't run. */
+  async function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): Promise<{ probe: ParsedSTLProbe; source: MeshData }> {
+    const configuredTolerance = getConfig().import.stlWeldTolerance;
+    let r: IndexedProbeResult;
+    if (isOrientedEdgeManifold(raw)) {
+      r = { mesh: raw, isManifold: true, welded: false };
+    } else if (raw.numTri < getConfig().renderer.lazyManifoldMinTriangles) {
+      // Small (e.g. one object of a split 3MF): ofMesh is milliseconds here,
+      // cheaper than spawning the Worker and loading manifold-3d into it.
+      r = probeIndexed(raw, { configuredTolerance, tryManifold: tryConstructManifold });
+    } else {
+      try {
+        r = await probeIndexedInWorker(raw, configuredTolerance);
+      } catch (e) {
+        errorLog.capture({ level: 'warn', source: 'import', message: `Mesh probe worker failed; checking on the main thread instead: ${(e as Error).message}` });
+        r = probeIndexed(raw, { configuredTolerance, tryManifold: tryConstructManifold });
+      }
     }
+    // Unless the probe welded, keep the caller's own mesh (the Worker's is a copy).
+    const source = r.isManifold && r.welded ? r.mesh : raw;
+    if (r.isManifold) return { probe: { mesh: toImportedMesh(filename, source, format), isManifold: true }, source };
     return {
-      probe: { mesh: toImportedMesh(filename, raw, format), isManifold: false, manifoldError, maxTried, triCount: raw.numTri, vertCount: raw.numVert },
+      probe: { mesh: toImportedMesh(filename, raw, format), isManifold: false, manifoldError: r.manifoldError, maxTried: r.maxTried, triCount: raw.numTri, vertCount: raw.numVert },
       source: raw,
     };
   }
@@ -5151,12 +5159,12 @@ async function main() {
   /** Non-interactive 3MF parse + manifold probe of the whole (merged) model.
    *  Throws on an unreadable package. */
   async function parse3MFBytes(bytes: Uint8Array, filename: string): Promise<Parsed3MF> {
-    return probeWhole3MF(await read3MF(bytes), filename);
+    return await probeWhole3MF(await read3MF(bytes), filename);
   }
 
   /** The whole (merged) 3MF as one import, its parts as labels. */
-  function probeWhole3MF(result: ThreeMFParseResult, filename: string): Parsed3MF {
-    const p3: Parsed3MF = { ...probeIndexedMesh(result.mesh, filename, '3mf'), result, triColor: result.triColor };
+  async function probeWhole3MF(result: ThreeMFParseResult, filename: string): Promise<Parsed3MF> {
+    const p3: Parsed3MF = { ...(await probeIndexedMesh(result.mesh, filename, '3mf')), result, triColor: result.triColor };
     const items = threeMFItems(result);
     attach3MFParts(p3.probe.mesh, items, { name: '', items: items.map((_, i) => i) });
     return p3;
@@ -5277,7 +5285,7 @@ async function main() {
       return false;
     }
     if (result.objects.length >= 2) return importMultiObject3MF(result, file.name);
-    const p3 = probeWhole3MF(result, file.name);
+    const p3 = await probeWhole3MF(result, file.name);
     if (!p3.probe.isManifold && !(await confirmRenderOnlyImport(file.name, p3.probe))) return false;
     return place3MFImport({ parsed: { mesh: p3.probe.mesh, isManifold: p3.probe.isManifold }, p3 }, file.name);
   }
@@ -5362,7 +5370,7 @@ async function main() {
         }
         const g = groups[i];
         const sub = extractTriangles(result.mesh, result.triColor, groupTriangles(items, g), { recenter: true });
-        const p3: Parsed3MF = { ...probeIndexedMesh(sub.mesh, filename, '3mf'), result, triColor: sub.triColor! };
+        const p3: Parsed3MF = { ...(await probeIndexedMesh(sub.mesh, filename, '3mf')), result, triColor: sub.triColor! };
         attach3MFParts(p3.probe.mesh, items, g);
         const seeder = build3MFSeeder(p3, paletteName, adoptPalette);
         entries.push({ name: g.name, ...(g.group ? { group: g.group } : {}), probe: p3.probe, seed: seeder?.seed });
@@ -5532,11 +5540,13 @@ async function main() {
 
   /** Cut planned piece groups out of an STL-style import as objects (each
    *  recentred on its own XY origin and manifold-probed). */
-  function pieceObjectEntries(mesh: MeshData, filename: string, items: ImportSplitItem[], groups: ReturnType<typeof planImportSplit>): ImportObjectEntry[] {
-    return groups.map(g => {
+  async function pieceObjectEntries(mesh: MeshData, filename: string, items: ImportSplitItem[], groups: ReturnType<typeof planImportSplit>): Promise<ImportObjectEntry[]> {
+    const entries: ImportObjectEntry[] = [];
+    for (const g of groups) {
       const sub = extractTriangles(mesh, null, groupTriangles(items, g), { recenter: true });
-      return { name: g.name, probe: probeIndexedMesh(sub.mesh, filename, 'stl').probe };
-    });
+      entries.push({ name: g.name, probe: (await probeIndexedMesh(sub.mesh, filename, 'stl')).probe });
+    }
+    return entries;
   }
 
   /** Split the current object's mesh import into one object per piece (the
@@ -5559,7 +5569,7 @@ async function main() {
     const max = getConfig().import.maxSplitObjects;
     if (items.length > max) return { error: `splitImportIntoObjects: ${items.length} pieces is over the ${max}-object limit (Advanced settings → Import → Max objects per split import).` };
     const groups = planImportSplit(items, 'piece', { baseName: cur.name });
-    const entries = pieceObjectEntries(imp, imp.filename, items, groups);
+    const entries = await pieceObjectEntries(imp, imp.filename, items, groups);
     const ids = await placeImportedObjects(entries, 'reuse-current', cur.name);
     const parts = getState().parts;
     return { objects: ids.map(id => ({ id, name: parts.find(p => p.id === id)?.name ?? '' })) };
@@ -10324,7 +10334,12 @@ async function main() {
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
   // the tail of runCodeSync so exports / slicing / measurements stay correct.
-  function applyLiveGeometry(mesh: MeshData): void {
+  //
+  // `prebuilt` skips the main-thread `Manifold.ofMesh` (seconds on a big
+  // mesh): the engine Worker's stats for the result (`facts`) or its verdict
+  // that the result isn't a solid (`error`), or a Manifold the caller already
+  // built for exactly this mesh (`manifold`, owned from here on).
+  function applyLiveGeometry(mesh: MeshData, prebuilt: { facts?: ManifoldFacts; error?: string; manifold?: unknown } = {}): void {
     // Bump the paint generation so any in-flight subdivision worker discards
     // its result instead of stamping a refined mesh built from the OLD base
     // over the new geometry.
@@ -10333,10 +10348,16 @@ async function main() {
     paintBaseMesh = mesh;
     releaseCurrentManifold();
     const mod = getModule();
-    if (mesh === simplifyBaselineMesh && simplifyBaselineFacts) {
-      // Restoring a big simplify baseline: its Worker stats still hold, so
-      // defer the Manifold build again rather than freezing on ofMesh.
-      deferManifold(mesh, simplifyBaselineFacts);
+    const facts = prebuilt.facts ?? (mesh === simplifyBaselineMesh ? simplifyBaselineFacts : null);
+    if (prebuilt.manifold) {
+      currentManifold = prebuilt.manifold;
+    } else if (facts) {
+      // A big result (or a restored big simplify baseline): the Worker's
+      // stats hold, so defer the Manifold build rather than freezing on ofMesh.
+      deferManifold(mesh, facts);
+    } else if (prebuilt.error) {
+      currentManifold = null;
+      showNonManifoldResultToast();
     } else {
       // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
       // simplify / enhance / paint-refine result can come back not-quite-manifold
@@ -10350,16 +10371,20 @@ async function main() {
         currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
       } catch {
         currentManifold = null;
-        showToast(
-          "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
-          { variant: 'warn', source: 'engine', durationMs: 6000 },
-        );
+        showNonManifoldResultToast();
       }
     }
     updateMesh(mesh);
     updatePaintMesh(mesh);
     updateGeometryData();
     syncClipSliderBounds();
+  }
+
+  function showNonManifoldResultToast(): void {
+    showToast(
+      "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+      { variant: 'warn', source: 'engine', durationMs: 6000 },
+    );
   }
 
   /** Apply geometry and ensure colors from the regions module are re-rendered.
@@ -10396,7 +10421,7 @@ async function main() {
   // triangle count, or null when the baseline changed underneath us or the op
   // produced no change (the panel surfaces null as a "nothing to do" warning).
   function commitMeshOpResult(
-    result: { mesh: MeshData; triangleCount: number } | null,
+    result: ({ mesh: MeshData; triangleCount: number } & MeshOpFacts) | null,
     baseline: MeshData,
     coloredBaseline: MeshData | null,
   ): { triangleCount: number } | null {
@@ -10409,9 +10434,9 @@ async function main() {
       resetPaintWorkerState();
       clearRegions({ snapshot: false });
       clearModelColorRegions();
-      applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
+      applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh), { facts: result.manifoldFacts, error: result.manifoldError });
     } else {
-      applyLiveGeometry(result.mesh);
+      applyLiveGeometry(result.mesh, { facts: result.manifoldFacts, error: result.manifoldError });
     }
     return { triangleCount: result.triangleCount };
   }
@@ -10535,7 +10560,7 @@ async function main() {
         signal,
       );
       if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
-      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount, manifoldFacts: result.manifoldFacts, manifoldError: result.manifoldError } : null;
       return commitMeshOpResult(meshResult, baseline, coloredBaseline);
     },
 
@@ -10571,7 +10596,7 @@ async function main() {
         edgeLength,
       );
       if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
-      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount, manifoldFacts: result.manifoldFacts, manifoldError: result.manifoldError } : null;
       return commitMeshOpResult(meshResult, baseline, coloredBaseline);
     },
 
@@ -10605,7 +10630,7 @@ async function main() {
         const parentId = current?.id ?? null;
         let savedOriginal = false;
         if (!current || editorContentDiffersFrom(current.code)) {
-          const original = await snapshotMeshAsVersion(baseline, originalCode);
+          const original = await snapshotMeshAsVersion(baseline, originalCode, simplifyBaselineFacts);
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
 
@@ -13935,7 +13960,7 @@ async function main() {
         if (bad !== undefined) return { error: `importMeshData(opts.objects): no piece ${bad} — the mesh has ${items.length} (see inspectMeshData).` };
         const groups = planImportSplit(items, split, { selected: opts?.objects, baseName: sessionName });
         if (groups.length > maxObjects) return { error: `importMeshData: splitting makes ${groups.length} objects, over the ${maxObjects}-object limit (Advanced settings → Import).` };
-        const entries = pieceObjectEntries(parsed.mesh, filename, items, groups);
+        const entries = await pieceObjectEntries(parsed.mesh, filename, items, groups);
         const ids = await placeImportedObjects(entries, dest, sessionName);
         return { ...apiImportResult(po.target), ...splitImportSummary(entries, ids) };
       }
@@ -14979,9 +15004,17 @@ async function main() {
         numTri: mesh.numTri,
         numProp: mesh.numProp,
       };
-      applyLiveGeometry(meshData);
       const status = typeof cleaned.status === 'function' ? cleaned.status() : 0;
-      try { cleaned.delete?.(); } catch { /* applyLiveGeometry rebuilt currentManifold */ }
+      // Hand `cleaned` over as the current Manifold (it IS this mesh's solid)
+      // instead of rebuilding one from the mesh — unless it came out broken,
+      // which shows as render-only with the usual warning.
+      const healthy = !status || status === 0 || status === 'NoError';
+      if (healthy) {
+        applyLiveGeometry(meshData, { manifold: cleaned });
+      } else {
+        try { cleaned.delete?.(); } catch { /* already freed */ }
+        applyLiveGeometry(meshData, { error: String(status) });
+      }
       return {
         ok: !status || status === 0 || status === 'NoError',
         volumeDelta: after.volume - before.volume,
@@ -22688,6 +22721,17 @@ async function main() {
     if (fastPreviewPillEl) fastPreviewPillEl.style.display = 'none';
   }
 
+  /** The active import's mesh when `src` is exactly the generated single-
+   *  import wrapper (see generateImportCode) and the mesh is big enough for
+   *  the engine's rebuild to be slow; else null. */
+  function importWrapperPreviewMesh(src: string): MeshData | null {
+    const body = src.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, '');
+    if (body !== 'const{Manifold}=api;returnManifold.ofMesh(api.imports[0]);' && body !== 'returnapi.importWithParts(0);') return null;
+    const imp = getActiveImports()[0];
+    if (!imp || imp.numTri < getConfig().renderer.lazyManifoldMinTriangles) return null;
+    return { vertProperties: imp.vertProperties, triVerts: imp.triVerts, numVert: imp.numVert, numTri: imp.numTri, numProp: imp.numProp };
+  }
+
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
@@ -22748,6 +22792,24 @@ async function main() {
         }
       : undefined;
 
+    // A big import's wrapper code (`Manifold.ofMesh(api.imports[0])`) spends
+    // seconds in the engine rebuilding a solid from a mesh we already hold —
+    // e.g. the first time a big object is opened after a reload. Show that
+    // mesh right away (it IS the result's geometry) under the fast-preview
+    // pill; the engine's result replaces it as usual.
+    // Display only: the model state (currentMeshData, its Manifold, paint,
+    // labels) keeps describing the previous model until the result lands, and
+    // a cancelled or failed run puts the previous display back.
+    const importPreview = previewLang === 'manifold-js' ? importWrapperPreviewMesh(src) : null;
+    const displayedBeforePreview = importPreview ? getDisplayedMesh() : null;
+    const undoImportPreview = () => {
+      if (importPreview && displayedBeforePreview) updateMesh(displayedBeforePreview, { skipAutoFrame: true });
+    };
+    if (importPreview) {
+      updateMesh(importPreview, { skipAutoFrame: preservedCameraPose !== null });
+      showFastPreviewPill();
+    }
+
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     // The Customizer values this run was REQUESTED with (they can change while
@@ -22764,6 +22826,7 @@ async function main() {
       _running = false;
       stopRunTimer();
       hideFastPreviewPill();
+      undoImportPreview();
       const msg = err instanceof Error ? err.message : String(err);
       // Surface a fail-closed sandbox / lockdown refusal verbatim; other
       // rejections keep the generic "superseded — retry" text the AI loop
@@ -22803,6 +22866,7 @@ async function main() {
     syncParamsPanel(result.paramsSchema);
 
     if (result.error) {
+      undoImportPreview();
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';

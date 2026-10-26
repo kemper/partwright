@@ -8,6 +8,22 @@ import {
 } from './attachment';
 
 export type { AttachedImage, SessionAttachment, AttachmentKind } from './attachment';
+import { packStoredArrays, unpackStoredArrays } from './storedArrays';
+import { getConfig } from '../config/appConfig';
+
+/** A version as written to the `versions` store: its big typed arrays (import
+ *  meshes, persisted textures, detected parts) become Blobs, so the put does
+ *  not copy them on the main thread. Every reader below unpacks; records that
+ *  only move between stores (the bin, migrations) stay packed. */
+function storedVersion(v: Version): Version {
+  return packStoredArrays(v, getConfig().renderer.storedArrayBlobMinKB * 1024);
+}
+
+function loadedVersion(v: Version): Promise<Version>;
+function loadedVersion(v: Version | null | undefined): Promise<Version | null>;
+async function loadedVersion(v: Version | null | undefined): Promise<Version | null> {
+  return v ? unpackStoredArrays(v) : null;
+}
 
 export interface Session {
   id: string;
@@ -831,7 +847,9 @@ export async function updatePartGroups(ids: string[], group: string | null): Pro
 
 /** An object moved to the bin: its part row plus everything that was deleted
  *  with it (versions + per-part editor drafts), kept verbatim so a restore puts
- *  back exactly what was there — ids, version indices and unsaved work. */
+ *  back exactly what was there — ids, version indices and unsaved work. The
+ *  versions are in their stored form (big arrays as Blobs, see
+ *  {@link storedVersion}). */
 export interface DeletedObject {
   /** The deleted part's id (an object can only be in the bin once). */
   id: string;
@@ -1061,7 +1079,7 @@ export async function saveVersion(
         ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(appVersion ? { appVersion } : {}),
       };
-      const putReq = store.put(v);
+      const putReq = store.put(storedVersion(v));
       putReq.onsuccess = () => resolve(v);
       putReq.onerror = () => reject(putReq.error);
     };
@@ -1084,6 +1102,7 @@ export async function listVersions(partId: string): Promise<Version[]> {
   const store = await tx('versions', 'readonly');
   const index = store.index('partId');
   const versions = await reqToPromise(index.getAll(IDBKeyRange.only(partId))) as Version[];
+  await Promise.all(versions.map(v => loadedVersion(v)));
   return versions.sort((a, b) => a.index - b.index);
 }
 
@@ -1095,12 +1114,12 @@ export async function getLatestVersion(partId: string): Promise<Version | null> 
 export async function getVersionByIndex(partId: string, index: number): Promise<Version | null> {
   const store = await tx('versions', 'readonly');
   const idx = store.index('partId_index');
-  return reqToPromise(idx.get([partId, index])) as Promise<Version | null>;
+  return loadedVersion(await reqToPromise(idx.get([partId, index])) as Version | undefined);
 }
 
 export async function getVersionById(id: string): Promise<Version | null> {
   const store = await tx('versions', 'readonly');
-  return reqToPromise(store.get(id)) as Promise<Version | null>;
+  return loadedVersion(await reqToPromise(store.get(id)) as Version | undefined);
 }
 
 export async function getVersionCount(partId: string): Promise<number> {
@@ -1126,7 +1145,7 @@ export async function getSessionLatestVersion(sessionId: string): Promise<Versio
   const index = store.index('sessionId');
   const versions = await reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Version[];
   if (versions.length === 0) return null;
-  return versions.reduce((latest, v) => (v.timestamp > latest.timestamp ? v : latest));
+  return loadedVersion(versions.reduce((latest, v) => (v.timestamp > latest.timestamp ? v : latest)));
 }
 
 export async function deleteVersion(id: string): Promise<void> {
@@ -1219,7 +1238,7 @@ export async function clearVersionParentRefs(parentId: string, partId: string): 
 export async function putVersion(version: Version): Promise<void> {
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
-  txn.objectStore('versions').put(version);
+  txn.objectStore('versions').put(storedVersion(version));
   await txComplete(txn);
 }
 
