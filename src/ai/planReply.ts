@@ -24,17 +24,27 @@ function isQuestionLine(line: string): boolean {
   return bare.endsWith('?') || /\?\**\s*(\(|\[|—|–|-\s)/.test(bare);
 }
 
+/** A list item ("1. …", "- …", "* …"). */
+const LIST_ITEM_RE = /^(\d+[.)]|[-*•])\s+/;
+
 /** True when a plan-mode reply ends by asking the user something: its last
  *  line is a question, a question list is followed only by a one-line closer,
  *  or its final section is a "Questions" / "Clarifications" list with at
- *  least one question in it. */
+ *  least one question in it. A plan that merely closes with one polite
+ *  question ("Does this look good?") is still a plan. */
 export function planAwaitsAnswers(text: string): boolean {
   const lines = text.trim().split('\n').map(l => l.trim());
   const nonEmpty = lines.filter(Boolean);
   if (nonEmpty.length === 0) return false;
 
-  // The last paragraph ends with a question.
-  if (isQuestionLine(nonEmpty[nonEmpty.length - 1])) return true;
+  // The last paragraph ends with a question — unless it is the only question
+  // and follows a list of steps that aren't questions (a plan's sign-off).
+  if (isQuestionLine(nonEmpty[nonEmpty.length - 1])) {
+    const body = nonEmpty.slice(0, -1);
+    const politeCloser = !body.some(isQuestionLine)
+      && body.some(l => LIST_ITEM_RE.test(l) && !isQuestionLine(l));
+    return !politeCloser;
+  }
 
   // A question list followed by a one-line closer ("Let me know and I'll
   // write the plan.").
@@ -52,17 +62,32 @@ export function planAwaitsAnswers(text: string): boolean {
   return QUESTION_HEADING_RE.test(heading) && nonEmpty.slice(headingIdx + 1).some(l => l.includes('?'));
 }
 
-/** The text of the latest assistant reply at or after `fromIndex` — the plan
- *  (or questions) a planning turn ended on. '' when there is none. */
+/** A user message the person (or the app on their behalf) actually sent —
+ *  not a tool-result carrier or an auto-continue nudge. */
+function isTypedUserMessage(m: ChatMessage): boolean {
+  return m.role === 'user' && !m.autoResumeNudge && m.blocks.some(b => b.type === 'text' || b.type === 'image');
+}
+
+/** Assistant text that is the model's reply — not an error bubble, a stop
+ *  notice or a compaction summary. */
+function replyText(m: ChatMessage): string {
+  if (m.role !== 'assistant' || m.errored || m.stopNotice || m.compacted) return '';
+  return m.blocks.map(b => (b.type === 'text' ? b.text : '')).join('\n').trim();
+}
+
+/** The plan (or questions) the planning exchange from `fromIndex` on ended
+ *  with: all reply text after the last user message that got one (a plan
+ *  written, checked with a render, then signed off spans several messages).
+ *  A turn that only errored falls back to the reply before it. '' when there
+ *  is none. */
 export function latestAssistantText(history: ChatMessage[], fromIndex: number): string {
-  for (let i = history.length - 1; i >= Math.max(0, fromIndex); i--) {
-    const m = history[i];
-    if (m.role !== 'assistant') continue;
-    const text = m.blocks
-      .map(b => (b.type === 'text' ? b.text : ''))
-      .join('\n')
-      .trim();
+  const start = Math.max(0, fromIndex);
+  let end = history.length;
+  for (let i = history.length - 1; i >= start; i--) {
+    if (!isTypedUserMessage(history[i])) continue;
+    const text = history.slice(i + 1, end).map(replyText).filter(Boolean).join('\n\n');
     if (text) return text;
+    end = i;
   }
-  return '';
+  return history.slice(start, end).map(replyText).filter(Boolean).join('\n\n');
 }

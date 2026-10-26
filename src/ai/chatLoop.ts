@@ -18,7 +18,7 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -759,8 +759,9 @@ async function executeAllWithRetry(
       continue;
     }
     // A tool that wasn't offered this turn never runs (`finish` is a no-op
-    // control sentinel, so it's harmless either way).
-    if (!offeredTools.has(tc.name) && tc.name !== FINISH_TOOL) {
+    // control sentinel, so it's harmless either way; a pre-rename name counts
+    // as the tool it stands for).
+    if (!offeredTools.has(LEGACY_TOOL_ALIASES[tc.name] ?? tc.name) && tc.name !== FINISH_TOOL) {
       const refused: PersistedToolResult = { toolUseId: tc.id, content: unofferedToolMessage(tc.name, toggles.planFirst), isError: true };
       results.push(refused);
       callbacks.onToolResult?.(tc.id, tc.name, refused);

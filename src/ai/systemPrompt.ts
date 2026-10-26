@@ -165,7 +165,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '- The concrete steps you will take to implement it',
       '',
       'If you need answers before you can write a useful plan, ask only those questions and stop — no plan yet. Number them, keep them few, and give the default you would pick for each, so the user can just say "defaults are fine". End your message with the questions.',
-      'Otherwise write the plan and list any assumptions you made, so the user can correct them.',
+      'Otherwise write the plan and list any assumptions you made, so the user can correct them. End a plan with its assumptions, not with a question like "Does this look good?" — the user has a Build button for that.',
       'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
     // When 3D-printing optimization is also on, fold the design rules into the

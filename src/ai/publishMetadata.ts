@@ -12,6 +12,7 @@ import { gatherReviewContext } from './review';
 import { loadSettings } from './settings';
 import { getKey, listMessages } from './db';
 import { activeModel } from './types';
+import { planTurn } from './userWords';
 import { generateId } from '../storage/db';
 import { recordEvent } from './diagnostics';
 import { parseAiPublishMetadata, type PublishMetadata } from '../publish/publishTargets';
@@ -62,7 +63,7 @@ async function recentChatSummary(sessionId: string, maxMessages = 12): Promise<s
   for (const m of recent) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     const text = m.blocks
-      .map(b => (b.type === 'text' || b.type === 'review' ? b.text : ''))
+      .map(b => (b.type === 'review' ? b.text : b.type === 'text' ? (m.role === 'user' ? planTurn(b.text)?.words ?? b.text : b.text) : ''))
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim();

@@ -39,7 +39,7 @@ test.describe('plan mode flow', () => {
     await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* */ } });
   });
 
-  test('a planning turn cannot run a tool it was not offered', async ({ page }) => {
+  test('a planning turn cannot run a tool it was not offered (pre-rename names still map)', async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto('/editor');
     await waitForEditorReady(page);
@@ -61,9 +61,10 @@ test.describe('plan mode flow', () => {
       window.fetch = async (input: unknown, init?: RequestInit) => {
         if (new URL(String(input), location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
-        // First call: the model ignores plan mode and tries to write code.
+        // First call: the model ignores plan mode and tries to write code, and
+        // reads the objects under their pre-rename tool name (still allowed).
         const frame = n === 1
-          ? 'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"setCode","args":{"code":"return api.Manifold.sphere(5);"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}'
+          ? 'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"setCode","args":{"code":"return api.Manifold.sphere(5);"}}},{"functionCall":{"name":"listParts","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}'
           : 'data: {"candidates":[{"content":{"parts":[{"text":"Here is the plan."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}';
         return new Response(new Blob([frame + '\r\n\r\n']), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       };
@@ -79,11 +80,14 @@ test.describe('plan mode flow', () => {
       return { results, codeUnchanged: pw.getCode() === codeBefore };
     });
 
-    expect(out.results).toHaveLength(1);
+    expect(out.results).toHaveLength(2);
     expect(out.results[0].name).toBe('setCode');
     expect(out.results[0].isError).toBe(true);
     expect(out.results[0].content).toContain('not available while planning');
     expect(out.codeUnchanged).toBe(true);
+    // A pre-rename name counts as the read-only tool it stands for.
+    expect(out.results[1].name).toBe('listParts');
+    expect(out.results[1].isError).toBe(false);
   });
 
   test('questions, then a plan, then Build sends the plan with full tools', async ({ page }) => {

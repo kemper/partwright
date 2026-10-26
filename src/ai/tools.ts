@@ -2740,6 +2740,18 @@ export function declinedToolMessage(name: string): string {
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
+/** Pre-rename tool names `executeTool` still dispatches (a chat whose history
+ *  carries them, or a model that reaches for the old name). The offered-tools
+ *  gate checks the current name they stand for. */
+export const LEGACY_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  listParts: 'listObjects',
+  getCurrentPart: 'getCurrentObject',
+  createPart: 'createObject',
+  changePart: 'changeObject',
+  renamePart: 'renameObject',
+  deletePart: 'deleteObject',
+};
+
 /** The tool result for a call to a tool that wasn't offered this turn. The
  *  tool list is the gate (plan mode, the Run/Save/Paint/Notes scopes), but a
  *  model can still emit a name it saw earlier in the conversation — so the

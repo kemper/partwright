@@ -2081,20 +2081,32 @@ function renderPlanApprovalBar(): void {
   planApprovalBarEl.appendChild(discardBtn);
 }
 
+/** Set while Build is between its click and the build turn starting, so a
+ *  double click can't start two build turns. */
+let approvingPlan = false;
+
 async function approvePlan(): Promise<void> {
-  if (!state.pendingPlanApproval) return;
+  if (!state.pendingPlanApproval || approvingPlan) return;
   // The automatic review grades the built result against the ORIGINAL
   // request, not this turn's approval message.
   const reviewRequest = state.pendingPlanApproval.originalText;
   // The approval carries the plan the user is approving, so the build turn is
   // anchored to it (and the hand-off from planning is explicit).
   const plan = latestAssistantText(state.history, state.pendingPlanApproval.historyLengthBefore);
-  state.pendingPlanApproval = null;
-  renderPlanApprovalBar();
 
   const settings = loadSettings();
-  const apiKey = await preflightTurn(settings, () => { void approvePlan(); });
-  if (apiKey === PREFLIGHT_ABORT) return;
+  // Preflight may open the key modal and retry this later, so the plan stays
+  // pending until we know the build turn will run.
+  approvingPlan = true;
+  let apiKey: Awaited<ReturnType<typeof preflightTurn>>;
+  try {
+    apiKey = await preflightTurn(settings, () => { void approvePlan(); });
+  } finally {
+    approvingPlan = false;
+  }
+  if (apiKey === PREFLIGHT_ABORT || !state.pendingPlanApproval) return;
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
 
   state.rewindStack = [];
   progressState.retryCount = 0;
@@ -2332,7 +2344,7 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         bubble.dataset.liveBubble = msg.id;
         wrap.appendChild(bubble);
       } else if (b.text.trim().length > 0) {
-        wrap.appendChild(withCopyButton(bubble, msg.role, () => bubble.textContent ?? ''));
+        wrap.appendChild(withCopyButton(bubble, msg.role, () => (plan ? plan.words : bubble.textContent ?? '')));
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
@@ -4360,6 +4372,9 @@ function triggerStallRetry(): void {
  *                   exchange. Best when full history doesn't matter —
  *                   like driving the modeler. */
 async function maybeAutoCompact(): Promise<void> {
+  // A pending plan is anchored by its position in the history; compacting
+  // would shift it (and could fold the plan itself into a summary).
+  if (state.pendingPlanApproval) return;
   const settings = loadSettings();
   const mode = settings.autoCompactMode;
   if (mode === 'off' || mode === 'conservative') return;
@@ -4432,6 +4447,10 @@ async function maybeAutoCompact(): Promise<void> {
 async function runCompact(): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before compacting.');
+    return;
+  }
+  if (state.pendingPlanApproval) {
+    setTransientStatus('Build or discard the pending plan before compacting.');
     return;
   }
   const settings = loadSettings();

@@ -44,6 +44,14 @@ describe('planAwaitsAnswers', () => {
     expect(planAwaitsAnswers(`${plan}\n\nLet me know if this looks good.`)).toBe(false);
   });
 
+  it('treats a lone polite question after a plan as a plan', () => {
+    const plan = '## Plan\n1. Revolve the profile.\n2. Hollow it.\n\n## Assumptions\n- Units are mm.';
+    expect(planAwaitsAnswers(`${plan}\n\nDoes this plan look good to you?`)).toBe(false);
+    expect(planAwaitsAnswers(`${plan}\n\nWant me to adjust anything before building?`)).toBe(false);
+    // …but not when the list itself is questions.
+    expect(planAwaitsAnswers('1. How tall?\n2. What colour?\n\nAnything else I should know?')).toBe(true);
+  });
+
   it('ignores questions that are not in the final section', () => {
     const reply = '## Questions\nShould it be hollow?\n\n## Plan\n1. Make it solid.\n2. Fillet the edges.';
     expect(planAwaitsAnswers(reply)).toBe(false);
@@ -56,15 +64,28 @@ describe('planAwaitsAnswers', () => {
 });
 
 describe('latestAssistantText', () => {
-  const m = (role: 'user' | 'assistant', text: string, seq: number): ChatMessage => ({
-    id: `m${seq}`, sessionId: 's', role, blocks: text ? [{ type: 'text', text }] : [], createdAt: seq, seq,
+  const m = (role: 'user' | 'assistant', text: string, seq: number, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id: `m${seq}`, sessionId: 's', role, blocks: text ? [{ type: 'text', text }] : [], createdAt: seq, seq, ...extra,
   });
 
-  it('returns the last assistant reply with text at or after fromIndex', () => {
-    const history = [m('assistant', 'old plan', 0), m('user', 'plan it', 1), m('assistant', 'new plan', 2), m('assistant', '', 3)];
-    expect(latestAssistantText(history, 1)).toBe('new plan');
-    expect(latestAssistantText(history, 3)).toBe('');
+  it('joins the reply after the last user message, from fromIndex on', () => {
+    const history = [m('assistant', 'old plan', 0), m('user', 'plan it', 1), m('assistant', 'new plan', 2), m('assistant', '', 3), m('assistant', 'Ready when you are.', 4)];
+    expect(latestAssistantText(history, 1)).toBe('new plan\n\nReady when you are.');
     expect(latestAssistantText([m('assistant', 'old plan', 0), m('user', 'x', 1)], 1)).toBe('');
+  });
+
+  it('skips error bubbles, falling back to the previous reply', () => {
+    const history = [
+      m('user', 'plan it', 0), m('assistant', 'the plan', 1),
+      m('user', 'make it taller', 2), m('assistant', 'Anthropic API error 529', 3, { errored: true }),
+    ];
+    expect(latestAssistantText(history, 0)).toBe('the plan');
+  });
+
+  it('ignores tool-result carriers and compaction summaries', () => {
+    const toolCarrier: ChatMessage = { id: 't', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'x', content: 'ok', isError: false }], createdAt: 2, seq: 2 };
+    const history = [m('user', 'plan it', 0), m('assistant', 'part one', 1), toolCarrier, m('assistant', 'summary', 3, { compacted: true }), m('assistant', 'part two', 4)];
+    expect(latestAssistantText(history, 0)).toBe('part one\n\npart two');
   });
 });
 
