@@ -5,7 +5,7 @@
 // exports; this Worker owns the expensive execution path.
 //
 // Protocol — Main → Worker:
-//   { type: 'init' }
+//   { type: 'init', ses?, sesTestFail? }   (ses: false = SES kill switch, #1127)
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'detect_includes',   callId, code }
@@ -19,9 +19,10 @@
 //   { type: 'simplify_cancel',   callId }
 //   { type: 'enhance',           callId, mesh, targetTriangles, maxEdgeLength }
 //   { type: 'enhance_cancel',    callId }
+//   { type: 'inspect_realm',     callId }   (dev builds only)
 //
 // Protocol — Worker → Main:
-//   { type: 'ready' }
+//   { type: 'ready', initMs, compiler, sesMs }
 //   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
@@ -35,6 +36,7 @@
 //   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
 //   { type: 'enhance_progress',        callId, fraction }
 //   { type: 'enhance_result',          callId, mesh, triangleCount, cancelled, error }
+//   { type: 'inspect_realm_result',    callId, report }   (dev builds only)
 //   { type: 'error',                   callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
@@ -56,8 +58,10 @@ import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
-import { lockdownGlobalScope } from './workerLockdown';
+import { lockdownGlobalScope, enumerateChain } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
+import { enableSesSandbox } from './sesSandbox';
+import { modelCompilerName } from './modelEval';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -106,8 +110,46 @@ let initPromise: Promise<void> | null = null;
 let lockdownState: 'pending' | 'ok' | 'failed' = 'pending';
 let lockdownFailure = '';
 
+// ── SES lockdown + Compartment evaluation (#1127) ────────────────────────
+// ON unless the init message says `ses: false` (the kill switch in
+// sesSandboxFlag.ts) — a Worker that never got an init message still runs
+// SES before its first model code. Ordering, enforced below:
+//   1. SES `lockdown()` — before ANY engine glue initialises, so no engine
+//      code ever sees unfrozen intrinsics (sesSandbox.ts);
+//   2. engine init (manifold-3d; the lazy engines load later, on frozen
+//      intrinsics — sesGlueFix.ts rewrites the glue that needs it);
+//   3. workerLockdown (#1090/#1119): the network/storage denylist and the
+//      default-deny allowlist audit of the Worker global, which also sees the
+//      globals SES installs (allowlisted in workerGlobalAllowlist.ts).
+// Fail closed: if SES can't lock down, model code never runs and the app
+// shows the lockdown refusal (lockdownRefusal.ts).
+let sesWanted = true;
+let sesPromise: Promise<void> | null = null;
+let sesFailure = '';
+let sesInitMs: number | null = null;
+
+function startSes(testFail: boolean): Promise<void> {
+  if (!sesPromise) {
+    sesPromise = (testFail
+      ? Promise.reject(new Error('lockdown() failed (simulated: partwright.sesSandbox = test-fail)'))
+      : enableSesSandbox().then((r) => { sesInitMs = r.ms; })
+    ).catch((err: unknown) => {
+      sesFailure = err instanceof Error ? err.message : String(err);
+    });
+  }
+  return sesPromise;
+}
+
 function lockdownNow(): void {
   if (lockdownState !== 'pending') return;
+  if (sesWanted && (sesPromise === null || sesFailure)) {
+    // SES was requested but isn't in place: refuse, never fall back to the
+    // unsandboxed compiler.
+    lockdownState = 'failed';
+    lockdownFailure = `SES lockdown failed: ${sesFailure || 'not started'}`;
+    console.error(`[lockdown] ${formatLockdownRefusal(lockdownFailure)}`);
+    return;
+  }
   try {
     const report = lockdownGlobalScope(self);
     // Names the allowlist audit removed that the explicit denylist didn't —
@@ -134,6 +176,8 @@ function lockdownNow(): void {
  *  lockdown failed (the caller must refuse the request), else null. */
 async function ensureSandboxLocked(): Promise<string | null> {
   if (lockdownState === 'pending') {
+    // A request that raced ahead of `init` still gets SES first.
+    if (sesWanted) await startSes(false);
     // Let an in-flight manifold-3d init finish its WASM fetch first; it runs
     // before any model code, so the global fetch is still the pristine one.
     if (initPromise) { try { await initPromise; } catch { /* reported by init */ } }
@@ -144,11 +188,46 @@ async function ensureSandboxLocked(): Promise<string | null> {
     : formatLockdownRefusal(lockdownFailure);
 }
 
+/** Dev-only engine-realm report (see the `inspect_realm` message). */
+function inspectRealm(): Record<string, unknown> {
+  const g = self as unknown as Record<string, unknown>;
+  const urlStatics: Record<string, unknown> = {};
+  const URLCtor = g.URL as Record<string, unknown> | undefined;
+  for (const n of ['createObjectURL', 'revokeObjectURL']) {
+    const d = URLCtor ? Object.getOwnPropertyDescriptor(URLCtor, n) : undefined;
+    let call: string;
+    try {
+      call = 'returned:' + String((URLCtor?.[n] as (x: unknown) => unknown)(n === 'createObjectURL' ? new Blob(['x']) : 'blob:x'));
+    } catch (e) { call = 'threw:' + String(e instanceof Error ? e.message : e); }
+    urlStatics[n] = { type: typeof d?.value, writable: !!d?.writable, configurable: !!d?.configurable, call };
+  }
+  const nav = g.navigator;
+  return {
+    compiler: modelCompilerName(),
+    sesWanted,
+    global: enumerateChain(self, 'self').entries,
+    navigator: nav !== null && typeof nav === 'object' ? enumerateChain(nav, 'navigator').entries : [],
+    urlStatics,
+    frozen: {
+      objectPrototype: Object.isFrozen(Object.prototype),
+      arrayPrototype: Object.isFrozen(Array.prototype),
+      functionPrototype: Object.isFrozen(Function.prototype),
+    },
+  };
+}
+
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
   // ── init ───────────────────────────────────────────────────────────────
   if (msg.type === 'init') {
+    const initStart = performance.now();
+    // Decided synchronously, before the first await, so a request racing the
+    // init sees the same choice. Only an explicit `false` turns SES off.
+    if (!initPromise && sesPromise === null) sesWanted = msg.ses !== false;
+    // 1. SES lockdown before any engine glue initialises.
+    if (sesWanted) await startSes(import.meta.env.DEV && msg.sesTestFail === true);
+    // 2. Engine init. 3. workerLockdown (lockdownNow) below.
     if (!initPromise) initPromise = manifoldJsEngine.init();
     try {
       await initPromise;
@@ -165,7 +244,7 @@ self.onmessage = async (event: MessageEvent) => {
     }
     lockdownNow();
     if (lockdownState === 'ok') {
-      self.postMessage({ type: 'ready' });
+      self.postMessage({ type: 'ready', initMs: Math.round(performance.now() - initStart), compiler: modelCompilerName(), sesMs: sesInitMs });
     } else {
       self.postMessage({ type: 'error', callId: null, message: formatLockdownRefusal(lockdownFailure) });
     }
@@ -180,6 +259,16 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ type: 'error', callId: typeof msg.callId === 'string' ? msg.callId : null, message: lockErr });
       return;
     }
+  }
+
+  // ── inspect_realm (dev builds only) ──────────────────────────────────────
+  // Report on the ENGINE realm after lockdown — the Worker global's remaining
+  // names (for the #1119 allowlist audit e2e test) and the SES state. Model
+  // code can't do this itself under SES (it can't name the Worker global), and
+  // only the app can send this message. Production builds drop the branch.
+  if (import.meta.env.DEV && msg.type === 'inspect_realm') {
+    self.postMessage({ type: 'inspect_realm_result', callId: msg.callId, report: inspectRealm() });
+    return;
   }
 
   // ── execute ────────────────────────────────────────────────────────────

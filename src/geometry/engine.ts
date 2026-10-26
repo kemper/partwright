@@ -1,4 +1,5 @@
 import type { MeshData, MeshResult } from './types';
+import { engineInitMessage } from './sesSandboxFlag';
 import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
@@ -106,6 +107,8 @@ const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => 
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
 const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingClearBrepShapes = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+/** Dev-only engine-realm reports (inspectEngineRealm). */
+const pendingRealmInspections = new Map<string, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -130,6 +133,7 @@ function geometryInFlight(): number {
     pendingStepMeshImports.size +
     pendingClearBrepImports.size +
     pendingClearBrepShapes.size +
+    pendingRealmInspections.size +
     pendingSimplifies.size +
     pendingEnhances.size
   );
@@ -193,6 +197,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingStepMeshImports.values()) p.reject(err);
   for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingClearBrepShapes.values()) p.reject(err);
+  for (const p of pendingRealmInspections.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
@@ -204,6 +209,7 @@ function rejectAllPending(err: Error): void {
   pendingStepMeshImports.clear();
   pendingClearBrepImports.clear();
   pendingClearBrepShapes.clear();
+  pendingRealmInspections.clear();
   pendingSimplifies.clear();
   pendingEnhances.clear();
 }
@@ -400,7 +406,17 @@ function initEngineWorker(): void {
     // eslint-disable-next-line no-console
     console.debug('[EngineWorker] messageerror', ev);
   };
-  engineWorker.postMessage({ type: 'init' });
+  engineWorker.postMessage(engineInitMessage());
+}
+
+/** What the current geometry Worker reported when it became ready: its init
+ *  time (SES lockdown + manifold-3d init + global audit), which model-code
+ *  compiler it runs (`'ses-compartment'`, or `'function'` with the SES kill
+ *  switch on), and how long SES took. Null until the first Worker is ready.
+ *  Read by the e2e tier and the perf measurements in docs/engine-sandbox.md. */
+let engineWorkerReadyInfo: { initMs: number | null; compiler: string | null; sesMs: number | null } | null = null;
+export function getEngineWorkerReadyInfo(): typeof engineWorkerReadyInfo {
+  return engineWorkerReadyInfo;
 }
 
 /** The engine Worker runs untrusted model code, which can post its own
@@ -437,6 +453,11 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   if (msg.type === 'ready') {
     // Ready signal for tooling/benchmarks (scripts/bench-engine-sandbox.mjs).
     performance.mark('partwright:engine-worker-ready');
+    engineWorkerReadyInfo = {
+      initMs: typeof msg.initMs === 'number' ? msg.initMs : null,
+      compiler: typeof msg.compiler === 'string' ? msg.compiler : null,
+      sesMs: typeof msg.sesMs === 'number' ? msg.sesMs : null,
+    };
     workerReadyResolve?.();
     workerReadyResolve = null;
     return;
@@ -622,6 +643,15 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'inspect_realm_result') {
+    const callId = msg.callId as string;
+    const pending = pendingRealmInspections.get(callId);
+    if (!pending) return;
+    pendingRealmInspections.delete(callId);
+    pending.resolve(msg.report as Record<string, unknown>);
+    return;
+  }
+
   if (msg.type === 'clearBrepShape_result') {
     const callId = msg.callId as string;
     const pending = pendingClearBrepShapes.get(callId);
@@ -724,6 +754,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingClearBrepImports.delete(callId ?? '');
       pendingClearBrepShapes.get(callId)?.reject(err);
       pendingClearBrepShapes.delete(callId ?? '');
+      pendingRealmInspections.get(callId)?.reject(err);
+      pendingRealmInspections.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
       pendingEnhances.get(callId)?.reject(err);
@@ -982,6 +1014,23 @@ export async function clearBrepImports(): Promise<void> {
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
     worker.postMessage({ type: 'clearBrepImports', callId });
+  });
+}
+
+/** Dev builds only: ask the geometry Worker for a report on its ENGINE realm
+ *  after lockdown — the names left on its global's prototype chain and on
+ *  navigator's (workerLockdown `enumerateChain` entries), the URL blob-registry
+ *  statics, which compiler model code runs under, and whether the shared
+ *  intrinsics are frozen. Model code can't produce this itself under SES (it
+ *  can't name the Worker global); tests/engine-lockdown.spec.ts runs the
+ *  #1119 allowlist planner on it. */
+export async function inspectEngineRealm(): Promise<Record<string, unknown>> {
+  if (!import.meta.env.DEV) throw new Error('inspectEngineRealm is only available in dev builds');
+  const worker = ensureClaim(await claimAndWait());
+  const callId = `inspect-${++callIdCounter}`;
+  return new Promise((resolve, reject) => {
+    pendingRealmInspections.set(callId, { resolve, reject });
+    worker.postMessage({ type: 'inspect_realm', callId });
   });
 }
 

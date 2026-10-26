@@ -22,13 +22,16 @@ type PW = Record<string, (...args: unknown[]) => unknown>;
 const MODES = ['opaque', 'origin'] as const;
 type Mode = (typeof MODES)[number];
 
-async function bootInMode(page: Page, mode: Mode | 'off'): Promise<void> {
+async function bootInMode(page: Page, mode: Mode | 'off', ses: 'on' | 'off' = 'on'): Promise<void> {
   // The init script also runs in the sandbox frame, where localStorage is
   // unavailable (opaque) or another origin's — only set it in the app.
-  await page.addInitScript((m) => {
+  await page.addInitScript(({ m, ses }) => {
     if (window !== window.top) return;
-    try { localStorage.setItem('partwright-engine-sandbox', m); } catch { /* ignore */ }
-  }, mode);
+    try {
+      localStorage.setItem('partwright-engine-sandbox', m);
+      if (ses === 'off') localStorage.setItem('partwright.sesSandbox', 'off');
+    } catch { /* ignore */ }
+  }, { m: mode, ses });
   await page.goto('/editor');
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: PW }).partwright?.run,
@@ -191,7 +194,11 @@ for (const mode of MODES) {
   test.describe(`engine sandbox: ${mode}`, () => {
     test('model code cannot reach app storage, keys or the network', async ({ page }) => {
       test.setTimeout(120_000);
-      await bootInMode(page, mode);
+      // This proves the ORIGIN layer, assuming model code already holds the
+      // Worker realm — so it runs with the SES kill switch on: under SES (the
+      // default) model code can't name `self`/`indexedDB`/`fetch` at all, nor
+      // stash the probe on the Worker global between runs (engine-ses.spec).
+      await bootInMode(page, mode, 'off');
       await requireMode(page, mode);
       await saveAppKey(page);
 

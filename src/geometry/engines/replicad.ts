@@ -1,7 +1,8 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
+import { compileModelCode, hardenModelShared } from '../modelEval';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, ofMeshWithLabels, type BrepShape } from '../brepRuntime';
-import { getManifoldModule, manifoldJsEngine, resolveLabelMap } from './manifoldJs';
+import { ensureBrepLoaded, getBrepNamespace, isBrepShape, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, ofMeshWithLabels, type BrepShape } from '../brepRuntime';
+import { getManifoldModule, manifoldJsEngine, resolveLabelMap, ensureManifoldRunWrappers } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
 import { assertModelCodeRealm } from '../workerLockdown';
@@ -74,7 +75,7 @@ export const replicadEngine: Engine = {
     // Same parse check as manifold-js: build the Function without executing.
     // Catches syntax errors before paying the WASM round-trip.
     try {
-      new Function('api', `"use strict";\n${jsCode}`);
+      compileModelCode(jsCode);
       return { valid: true };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -195,9 +196,14 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
   let userScriptError: { error: string; diagnostics?: ReturnType<typeof runtimeDiagnostic> } | null = null;
   try {
     setBrepRemovedParts(removedParts);
-    const fn = new Function('api', `"use strict";\n${jsCode}`);
+    // Under SES, deep-freeze what this run's `api` reaches (BREP namespace,
+    // the manifold-3d classes — wrapped first, see ensureManifoldRunWrappers)
+    // so nothing model code does to them outlives the run. No-op without SES.
+    ensureManifoldRunWrappers();
+    hardenModelShared(api);
+    const fn = compileModelCode(jsCode);
     const result = fn(api) as unknown;
-    if (!result || typeof result !== 'object' || !('_shape' in result)) {
+    if (!isBrepShape(result)) {
       const error = 'BREP code must `return` a BREP shape (from api.BREP.box/cylinder/sphere/etc., optionally piped through .fillet/.chamfer/.fuse/.cut/.intersect).';
       userScriptError = {
         error,

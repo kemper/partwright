@@ -36,6 +36,9 @@ export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'simplify_result',
   'enhance_progress',
   'enhance_result',
+  // Dev builds only: the engine-realm report the e2e tier asks for
+  // (engineWorker.ts `inspect_realm`, engine.ts `inspectEngineRealm`).
+  'inspect_realm_result',
 ]);
 
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
@@ -515,6 +518,9 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
       case 'simplify_progress':
       case 'enhance_progress':
         checkFraction(data.fraction);
+        break;
+      case 'inspect_realm_result':
+        if (!isPlainObject(data.report)) fail('report must be a plain object');
         break;
       case 'simplify_result':
       case 'enhance_result':

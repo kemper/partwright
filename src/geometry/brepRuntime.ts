@@ -227,24 +227,46 @@ export interface LabelSignature {
   points: Float32Array;
 }
 
+/** Engine-private state behind a BrepShape wrapper. Kept in a WeakMap, never
+ *  on the wrapper: model code must not reach the replicad shape — through it
+ *  (`shape.oc`) it would reach the whole OpenCASCADE Emscripten module, whose
+ *  mutable members (embind classes, the WASM heap views, `_malloc`, `FS`, …)
+ *  outlive the run and can't be hardened (#1127). It also means a hand-made
+ *  object can't pose as a BREP shape. */
+interface BrepInternals {
+  /** The underlying replicad AnyShape. */
+  readonly shape: AnyShape;
+  /** Face hashcode → label, propagated through every op. Empty by default;
+   *  populated by `BREP.label(shape, name)`. Kept beside the shape rather than
+   *  on the OCCT shape itself because OCCT doesn't have a place to hang user
+   *  metadata that survives `clone()`. */
+  readonly faceLabels: ReadonlyMap<number, string>;
+  /** Spatial fallback signatures for label resolution. See the comment on
+   *  `LabelSignature`. Each labeled face contributes one. */
+  readonly labelSignatures: ReadonlyArray<LabelSignature>;
+  /** Optional per-label color (normalized RGB 0..1), keyed by label *name* —
+   *  the same granularity and convention as the manifold-js engine's
+   *  `labelColors`. Populated by `BREP.label(shape, name, { color })` and
+   *  carried forward unchanged through every op (color is keyed by name, not
+   *  by face hash, so it survives transforms and booleans untouched). Empty by
+   *  default. */
+  readonly labelColors: ReadonlyMap<string, [number, number, number]>;
+}
+
+const BREP_INTERNALS = new WeakMap<object, BrepInternals>();
+
+/** True for a wrapper this module handed out (not a look-alike object). */
+export function isBrepShape(x: unknown): x is BrepShape {
+  return typeof x === 'object' && x !== null && BREP_INTERNALS.has(x);
+}
+
+function brepInternals(s: BrepShape): BrepInternals {
+  const i = BREP_INTERNALS.get(s);
+  if (!i) throw new Error('expected a BREP shape (returned by BREP.box/cylinder/etc.).');
+  return i;
+}
+
 export interface BrepShape {
-  /** Internal — the underlying replicad AnyShape. Kept out of public docs. */
-  readonly _shape: AnyShape;
-  /** Internal — face hashcode → label, propagated through every op. Empty
-   *  by default; populated by `BREP.label(shape, name)`. Kept on the wrapper
-   *  rather than on the OCCT shape itself because OCCT doesn't have a place
-   *  to hang user metadata that survives `clone()`. */
-  readonly _faceLabels: ReadonlyMap<number, string>;
-  /** Internal — spatial fallback signatures for label resolution. See the
-   *  comment on `LabelSignature`. Each labeled face contributes one. */
-  readonly _labelSignatures: ReadonlyArray<LabelSignature>;
-  /** Internal — optional per-label color (normalized RGB 0..1), keyed by
-   *  label *name* — the same granularity and convention as the manifold-js
-   *  engine's `labelColors`. Populated by `BREP.label(shape, name, { color })`
-   *  and carried forward unchanged through every op (color is keyed by name,
-   *  not by face hash, so it survives transforms and booleans untouched).
-   *  Empty by default. */
-  readonly _labelColors: ReadonlyMap<string, [number, number, number]>;
   /** Round (radius) edges of the shape. Without a filter every edge is
    *  rounded; pass an `EdgeFilter` for selective filleting (the headline BREP
    *  feature mesh kernels can't match — e.g. only the top rim of a cylinder
@@ -320,10 +342,6 @@ function wrapInner(
   // for unary ops, two for binary (clone both sides) — small enough that the
   // per-run cleanup absorbs it without ceremony.
   const w: BrepShape = {
-    _shape: shape,
-    _faceLabels: faceLabels,
-    _labelSignatures: labelSignatures,
-    _labelColors: labelColors,
     fillet(radius: number, filter?: EdgeFilter) {
       if (typeof radius !== 'number' || !isFinite(radius) || radius <= 0) {
         throw new Error('BREP.fillet(radius): radius must be a positive number.');
@@ -449,6 +467,7 @@ function wrapInner(
       try { shape.delete?.(); } catch { /* already freed */ }
     },
   };
+  BREP_INTERNALS.set(w, { shape, faceLabels, labelSignatures, labelColors });
   return w;
 }
 
@@ -577,8 +596,8 @@ function labeledBooleanOp(
   if (!replicadModule) {
     throw new Error('BREP runtime not loaded — call ensureBrepLoaded() first.');
   }
-  const aClone = self._shape.clone();
-  const bClone = other._shape.clone();
+  const aClone = brepInternals(self).shape.clone();
+  const bClone = brepInternals(other).shape.clone();
   let next: AnyShape;
   if (op === 'fuse') next = aClone.fuse(bClone);
   else if (op === 'cut') next = aClone.cut(bClone);
@@ -587,10 +606,10 @@ function labeledBooleanOp(
   // (the resolver picks nearest across the union at toMesh time). Face
   // hashes don't propagate cleanly through replicad's fuse, so we leave
   // _faceLabels empty for the result and lean entirely on signatures.
-  const mergedSignatures: LabelSignature[] = [...self._labelSignatures, ...other._labelSignatures];
+  const mergedSignatures: LabelSignature[] = [...brepInternals(self).labelSignatures, ...brepInternals(other).labelSignatures];
   // Colors are keyed by label name; merge both inputs. `self` wins on a name
   // collision (matches the left-to-right reduce mental model of fuseAll/etc.).
-  const mergedColors: LabelColorMap = new Map([...other._labelColors, ...self._labelColors]);
+  const mergedColors: LabelColorMap = new Map([...brepInternals(other).labelColors, ...brepInternals(self).labelColors]);
   return wrap(next, new Map(), mergedSignatures, mergedColors);
 }
 
@@ -826,7 +845,7 @@ function buildEdgeFinder(filter: EdgeFilter): (finder: AnyShape) => AnyShape {
 }
 
 function assertShape(s: unknown, where: string): asserts s is BrepShape {
-  if (!s || typeof s !== 'object' || !('_shape' in s)) {
+  if (!isBrepShape(s)) {
     throw new Error(`${where}(other): expected a BREP shape (returned by BREP.box/cylinder/etc.).`);
   }
 }
@@ -1225,10 +1244,10 @@ function reduceShapes(
     // the original — matches the immutability contract of every other op.
     if (op === 'fuse' || op === 'cut' || op === 'intersect') {
       return wrap(
-        shapes[0]._shape.clone(),
-        new Map(shapes[0]._faceLabels),
-        [...shapes[0]._labelSignatures],
-        new Map(shapes[0]._labelColors),
+        brepInternals(shapes[0]).shape.clone(),
+        new Map(brepInternals(shapes[0]).faceLabels),
+        [...brepInternals(shapes[0]).labelSignatures],
+        new Map(brepInternals(shapes[0]).labelColors),
       );
     }
   }
@@ -1365,7 +1384,7 @@ export function consumeBrepToManifoldLabelColors(): LabelColorMap[] {
  *  `Map<label, Set<triangleId>>` out of a returned BrepShape so the engine
  *  can attach it to the MeshResult and paintByLabel works. */
 export function extractLabelMap(shape: BrepShape): BrepLabelMap {
-  return buildLabelMapFromShape(shape._shape, shape._faceLabels, shape._labelSignatures);
+  return buildLabelMapFromShape(brepInternals(shape).shape, brepInternals(shape).faceLabels, brepInternals(shape).labelSignatures);
 }
 
 /** Engine helper for the replicad-language engine: pull the per-label colors
@@ -1375,7 +1394,7 @@ export function extractLabelMap(shape: BrepShape): BrepLabelMap {
  *  path the manifold-js engine's `labelColors` takes. Empty map when no colors
  *  were declared. */
 export function extractLabelColors(shape: BrepShape): LabelColorMap {
-  return new Map(shape._labelColors);
+  return new Map(brepInternals(shape).labelColors);
 }
 
 let cachedNamespace: BrepNamespace | null = null;
@@ -1429,7 +1448,7 @@ export function createBrepNamespace(): BrepNamespace {
       // emits it as `MeshResult.labelColors` so the model renders + exports
       // self-colored without a paintByLabel pass (same derived-underlay path as
       // manifold-js). Last write per name wins.
-      const colors: LabelColorMap = new Map(shape._labelColors);
+      const colors: LabelColorMap = new Map(brepInternals(shape).labelColors);
       if (options !== undefined && options !== null) {
         if (typeof options !== 'object' || Array.isArray(options)) {
           throw new Error('BREP.label(shape, name, options): options must be an object like { color: "#rrggbb" }');
@@ -1458,9 +1477,9 @@ export function createBrepNamespace(): BrepNamespace {
       //     each face's centre regardless of surface type (planar, cylinder,
       //     sphere, NURBS) and is what `buildLabelMapFromShape` consumes
       //     too, so the resolver and labeler see the same data.
-      const labels = new Map<number, string>(shape._faceLabels);
-      const signatures: LabelSignature[] = [...shape._labelSignatures];
-      const mesh = shape._shape.mesh({ tolerance: 0.01, angularTolerance: 12 });
+      const labels = new Map<number, string>(brepInternals(shape).faceLabels);
+      const signatures: LabelSignature[] = [...brepInternals(shape).labelSignatures];
+      const mesh = brepInternals(shape).shape.mesh({ tolerance: 0.01, angularTolerance: 12 });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const faceGroups: Array<{ start: number; count: number; faceId: number }> = mesh.faceGroups;
       const vertices: number[] = mesh.vertices;
@@ -1505,7 +1524,7 @@ export function createBrepNamespace(): BrepNamespace {
           points: points.subarray(0, p),
         });
       }
-      return wrap(shape._shape.clone(), labels, signatures, colors);
+      return wrap(brepInternals(shape).shape.clone(), labels, signatures, colors);
     },
     fuseAll(shapes) {
       return reduceShapes(shapes, 'fuse', 'BREP.fuseAll');
@@ -1526,7 +1545,7 @@ export function createBrepNamespace(): BrepNamespace {
     },
     listEdges(shape, filter) {
       assertShape(shape, 'BREP.listEdges');
-      return listShapeEdges(shape._shape, filter);
+      return listShapeEdges(brepInternals(shape).shape, filter);
     },
     circularPattern(shape, count, opts) {
       assertShape(shape, 'BREP.circularPattern');
@@ -1595,7 +1614,7 @@ export function createBrepNamespace(): BrepNamespace {
       const copies: BrepShape[] = [];
       for (let i = 0; i < count; i++) {
         const d = step * i;
-        copies.push(i === 0 ? wrap(shape._shape.clone(), new Map(shape._faceLabels), shape._labelSignatures, new Map(shape._labelColors)) : shape.translate([ux * d, uy * d, uz * d]));
+        copies.push(i === 0 ? wrap(brepInternals(shape).shape.clone(), new Map(brepInternals(shape).faceLabels), brepInternals(shape).labelSignatures, new Map(brepInternals(shape).labelColors)) : shape.translate([ux * d, uy * d, uz * d]));
       }
       return reduceShapes(copies, 'fuse', 'BREP.linearPattern');
     },
@@ -1680,13 +1699,13 @@ export function createBrepNamespace(): BrepNamespace {
         throw new Error('BREP.shell(shape, thickness, filter): an openFaceFilter is required — OCCT shell needs to know which face to remove for the opening. Try {topZ: true} to open the top face of a box/cylinder.');
       }
       try {
-        const finderFn = (f: AnyShape) => applyFaceFilter(f, openFaceFilter, shape._shape);
-        const next = shape._shape.clone().shell(thickness, finderFn);
+        const finderFn = (f: AnyShape) => applyFaceFilter(f, openFaceFilter, brepInternals(shape).shape);
+        const next = brepInternals(shape).shape.clone().shell(thickness, finderFn);
         // Faces that survive the shell keep their position; labels
         // propagate via the same hash-survivor mechanism fillet/chamfer
         // use. Removed face's label is dropped (correct — it no longer
         // exists). Signatures pass through unchanged.
-        return wrap(next, propagateByHashSurvivor(next, new Map(shape._faceLabels)), shape._labelSignatures, new Map(shape._labelColors));
+        return wrap(next, propagateByHashSurvivor(next, new Map(brepInternals(shape).faceLabels)), brepInternals(shape).labelSignatures, new Map(brepInternals(shape).labelColors));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         throw new Error(`BREP.shell failed (thickness: ${thickness}): ${msg}

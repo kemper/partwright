@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
 import { prerenderContentPages } from './src/content/build/prerenderPlugin';
 import { rebaseHtmlPaths, basePrefix } from './src/content/rebasePaths';
+import { isSesGlueModule, rewriteOverrideMistakes } from './src/geometry/sesGlueFix';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -185,6 +186,26 @@ function injectAnalyticsBeacon(): Plugin {
       // (script-src 'self') would block the beacon anyway.
       if (isSandboxDocPath(ctx.path) || ctx.filename === resolve(__dirname, 'sandbox.html')) return html;
       return html.replace('</body>', `  ${BEACON}\n</body>`);
+    },
+  };
+}
+
+// SES (#1127): the engine Worker freezes every shared intrinsic with
+// `lockdown()` BEFORE the engines initialise, and Emscripten/embind glue
+// assigns `X.prototype.constructor` / `.toString` / `this.message` on objects
+// that inherit those (now frozen) properties — the "override mistake", which
+// throws. Rewrite just those assignments in the manifold-3d and
+// replicad-opencascadejs glue into equivalent own-property defines (see
+// src/geometry/sesGlueFix.ts; the unit test pins the rewrite counts).
+// Registered for the main bundle and the Worker bundle.
+function sesOverrideMistakeFix(): Plugin {
+  return {
+    name: 'partwright-ses-override-mistake-fix',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!isSesGlueModule(id)) return null;
+      const out = rewriteOverrideMistakes(code);
+      return out.count > 0 ? { code: out.code, map: null } : null;
     },
   };
 }
@@ -376,7 +397,7 @@ return {
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), engineSandboxHeaders(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
+  plugins: [sesOverrideMistakeFix(), tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), engineSandboxHeaders(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -388,9 +409,16 @@ return {
     // ES module Workers support code-splitting and are required when
     // Worker files import other modules (agentWorker, engineWorker).
     format: 'es',
+    plugins: () => [sesOverrideMistakeFix()],
   },
   optimizeDeps: {
-    exclude: ['manifold-3d']
+    exclude: ['manifold-3d'],
+    // The engine Worker imports `ses` (src/geometry/sesLoader.js) on its first
+    // init — after the dev server's start-up dependency scan, which doesn't
+    // follow `new Worker(new URL(…))`. Pre-bundle it up front so its runtime
+    // discovery doesn't trigger a full page reload in the middle of a session
+    // (or an e2e test).
+    include: ['ses'],
   },
   // A second dev server of the same checkout (the engine-sandbox origin in
   // playwright.config.ts) points this elsewhere so the two don't race on

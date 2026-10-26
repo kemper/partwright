@@ -7,14 +7,22 @@ import {
 } from '../src/geometry/workerGlobalAllowlist';
 import { ENUMERATE_CHAIN_SOURCE } from './helpers/enumerateChainSource';
 
-// Engine-Worker sandbox lockdown (#1090). Model code runs via
-// `new Function('api', code)` inside the geometry Worker; after the init
-// handshake the Worker's global scope is stripped of every network / storage /
+// Engine-Worker sandbox lockdown (#1090). After the init handshake the
+// geometry Worker's global scope is stripped of every network / storage /
 // cross-context capability (src/geometry/workerLockdown.ts). These tests run
 // hostile model code that probes for those capabilities and reports what it
 // found by throwing a JSON payload (surfaced as the run's `error`), then check
 // that the engines that lazy-load assets AFTER lockdown (SCAD + BOSL2/fonts,
 // BREP/OCCT, STEP export) still work through the private same-origin fetch.
+//
+// Since #1127 model code runs in an SES Compartment by default and can't name
+// the Worker global at all (tests/engine-ses.spec.ts covers that layer). The
+// realm-lockdown probes below are still the defence-in-depth layer for an
+// engine realm whose compartment was escaped, so they run with the SES kill
+// switch on (`partwright.sesSandbox = 'off'`) — model code then evaluates with
+// `new Function` in the Worker realm, exactly as before #1127 — and the
+// allowlist audit is checked from the engine realm itself (dev-only
+// `inspectEngineRealm`) with SES on, where lockdown + the audit compose.
 
 type PW = {
   run: (code: string) => Promise<{ error?: string | null; triangleCount?: number; isManifold?: boolean }>;
@@ -23,7 +31,15 @@ type PW = {
   exportSTEP?: () => Promise<unknown>;
 };
 
-async function boot(page: Page): Promise<void> {
+/** Boot the editor. `ses: 'off'` sets the SES kill switch (model code then
+ *  runs in the Worker realm with `new Function`, as before #1127). */
+async function boot(page: Page, ses: 'on' | 'off' = 'on'): Promise<void> {
+  if (ses === 'off') {
+    await page.addInitScript(() => {
+      if (window !== window.top) return;
+      try { localStorage.setItem('partwright.sesSandbox', 'off'); } catch { /* ignore */ }
+    });
+  }
   await page.goto('/editor');
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
@@ -126,9 +142,12 @@ function expectAllBlocked(report: Record<string, unknown>): void {
 }
 
 test.describe('Engine sandbox lockdown', () => {
-  test.beforeEach(async ({ page }) => { await boot(page); });
+  test.beforeEach(async ({ page }, testInfo) => {
+    // Probes that need model code in the Worker REALM (SES off, see header).
+    await boot(page, /\(SES off\)/.test(testInfo.title) ? 'off' : 'on');
+  });
 
-  test('manifold-js model code cannot reach network, storage, or other contexts', async ({ page }) => {
+  test('manifold-js model code cannot reach network, storage, or other contexts (SES off)', async ({ page }) => {
     const out = await page.evaluate(async (code) => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       return pw.run(code);
@@ -144,7 +163,7 @@ test.describe('Engine sandbox lockdown', () => {
     expect(cube.triangleCount).toBe(12);
   });
 
-  test('voxel model code is locked down too', async ({ page }) => {
+  test('voxel model code is locked down too (SES off)', async ({ page }) => {
     const out = await page.evaluate(async (code) => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       await pw.setActiveLanguage('voxel');
@@ -153,7 +172,7 @@ test.describe('Engine sandbox lockdown', () => {
     expectAllBlocked(parseProbe(out.error));
   });
 
-  test('a crafted Worker → main message is rejected and the worker recovers', async ({ page }) => {
+  test('a crafted Worker → main message is rejected and the worker recovers (SES off)', async ({ page }) => {
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       const forged = await pw.run(`
@@ -269,7 +288,7 @@ test.describe('Engine sandbox lockdown', () => {
     expect(out.mainThreadRan).toBe(false);
   });
 
-  test('a new session gets a fresh worker realm (no cross-session observation)', async ({ page }) => {
+  test('a new session gets a fresh worker realm (no cross-session observation) (SES off)', async ({ page }) => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -384,8 +403,18 @@ test.describe('Engine sandbox lockdown', () => {
 // the direct Worker and for the #1110 iframe-sandbox Worker (a classic blob:
 // Worker whose global differs slightly).
 test.describe('Engine sandbox lockdown — global allowlist', () => {
-  for (const mode of ['off', 'opaque'] as const) {
-    test(`the Worker global holds only allowlisted names (engine sandbox: ${mode})`, async ({ page }) => {
+  // SES on (the default): model code can't name the Worker global, so the
+  // realm is inspected from the engine side (dev-only inspect_realm message).
+  // This is where SES lockdown and the audit compose: lockdown runs first, the
+  // audit sees the globals SES installed. SES off: model code enumerates the
+  // realm itself, as before #1127.
+  const CONFIGS = [
+    { mode: 'off', ses: 'on' },
+    { mode: 'opaque', ses: 'on' },
+    { mode: 'off', ses: 'off' },
+  ] as const;
+  for (const { mode, ses } of CONFIGS) {
+    test(`the Worker global holds only allowlisted names (engine sandbox: ${mode}, SES: ${ses})`, async ({ page }) => {
       const denied: string[] = [];
       page.on('console', (msg) => {
         const m = /\[lockdown\] default-deny removed \d+ non-allowlisted globals: (.*)$/.exec(msg.text());
@@ -399,20 +428,41 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
         const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
         test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
       }
-      await boot(page);
-      const out = await page.evaluate(async (code) => {
+      await boot(page, ses);
+      const out = await page.evaluate(async ({ code, ses }) => {
         const pw = (window as unknown as { partwright: PW & { getEngineSandboxStatus: () => { active: string; unavailableReason: string | null } } }).partwright;
+        if (ses === 'on') {
+          const cube = await pw.run('return api.Manifold.cube([1, 1, 1]);');
+          const engine = await import('/src/geometry/engine.ts');
+          const report = await engine.inspectEngineRealm();
+          return { error: cube.error ?? null, report, sandbox: pw.getEngineSandboxStatus() };
+        }
         const r = await pw.run(code);
-        return { error: r.error ?? null, sandbox: pw.getEngineSandboxStatus() };
-      }, ENUMERATE_CODE);
+        return { error: r.error ?? null, report: null, sandbox: pw.getEngineSandboxStatus() };
+      }, { code: ENUMERATE_CODE, ses });
       if (mode === 'opaque') {
         expect(out.sandbox.unavailableReason, 'sandbox unavailable').toBeNull();
         expect(out.sandbox.active).toBe('opaque');
       }
-      const m = /ENUM:(\{.*\})/.exec(out.error ?? '');
-      expect(m, `unexpected error: ${out.error}`).toBeTruthy();
       type UrlStatic = { type: string; writable: boolean; configurable: boolean; call: string };
-      const found = JSON.parse(m![1]) as { global: ChainEntry[]; navigator: ChainEntry[]; urlStatics: Record<string, UrlStatic> };
+      type Found = { global: ChainEntry[]; navigator: ChainEntry[]; urlStatics: Record<string, UrlStatic> };
+      let found: Found;
+      if (ses === 'on') {
+        expect(out.error).toBeNull();
+        const report = out.report as Found & { compiler: string; frozen: Record<string, boolean> };
+        expect(report.compiler).toBe('ses-compartment');
+        expect(report.frozen).toEqual({ objectPrototype: true, arrayPrototype: true, functionPrototype: true });
+        found = report;
+        // SES's own globals are still there (allowlisted, capability-free) —
+        // proof the audit ran AFTER lockdown and saw them.
+        const live = new Set(found.global.filter((e) => !e.inert).map((e) => e.label));
+        for (const name of ['harden', 'Compartment', 'lockdown']) expect(live.has(name), name).toBe(true);
+      } else {
+        const m = /ENUM:(\{.*\})/.exec(out.error ?? '');
+        expect(m, `unexpected error: ${out.error}`).toBeTruthy();
+        found = JSON.parse(m![1]) as Found;
+        expect(found.global.some((e) => e.label === 'harden' && !e.inert), 'no SES globals with the kill switch on').toBe(false);
+      }
       // URL stays, but its blob-registry statics are pinned throwing stubs: no
       // `blob:` URL can be minted into the origin-wide registry.
       for (const name of ['createObjectURL', 'revokeObjectURL']) {
@@ -433,12 +483,36 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
       expect(found.navigator.some((e) => e.label === 'permissions' && !e.inert)).toBe(false);
       expect(denied, 'the Worker logs what default-deny removed').toEqual(expect.arrayContaining(['self.MessageChannel']));
       // Reported, not asserted: the list changes with every Chromium release.
-      console.log(`[allowlist ${mode}] default-deny removed ${denied.length} globals the denylist doesn't name`);
+      console.log(`[allowlist ${mode}, SES ${ses}] default-deny removed ${denied.length} globals the denylist doesn't name`);
     });
   }
 
-  test('a lockdown refusal reaches the Diagnostic Log with the offending names', async ({ page }) => {
+  test('an SES lockdown failure fails closed: refusal message, Diagnostic Log, no model code runs', async ({ page }) => {
+    // Dev-only flag value: the Worker acts as if lockdown() threw.
+    await page.addInitScript(() => {
+      if (window !== window.top) return;
+      try { localStorage.setItem('partwright.sesSandbox', 'test-fail'); } catch { /* ignore */ }
+    });
     await boot(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const r = await pw.run('globalThis.__ran = 1; return api.Manifold.cube(1);');
+      const { errorLog } = await import('/src/diagnostics/errorLog.ts');
+      const entries = errorLog.getEntries().filter((e: { source?: string; message: string }) => e.source === 'engine' && /refused to start for security reasons/.test(e.message));
+      return { error: r.error ?? '', triangleCount: r.triangleCount ?? 0, entries: entries.map((e: { level: string; message: string }) => ({ level: e.level, message: e.message })) };
+    });
+    expect(out.error).toMatch(/Geometry engine refused to start for security reasons.*SES lockdown failed/);
+    expect(out.triangleCount).toBe(0);
+    expect(out.entries.length).toBeGreaterThanOrEqual(1);
+    expect(out.entries[0].level).toBe('error');
+    expect(out.entries[0].message).toMatch(/SES lockdown failed/);
+  });
+
+  test('a lockdown refusal reaches the Diagnostic Log with the offending names', async ({ page }) => {
+    // Model code forges the Worker's refusal on the message channel, which
+    // needs the Worker realm: SES off.
+    await boot(page, 'off');
     // A real refusal needs a browser whose Worker global can't be scrubbed, so
     // drive the main-thread path with the Worker's own refusal message (model
     // code can post on the pinned channel; the app treats it like a refusal).

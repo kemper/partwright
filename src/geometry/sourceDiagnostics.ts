@@ -6,6 +6,9 @@ const MAX_SYNTAX_DIAGNOSTICS = 5;
 interface ErrorWithLocation extends Error {
   lineNumber?: number;
   columnNumber?: number;
+  /** The user's own line, set by the SES model compiler (sesSandbox.ts), whose
+   *  wrapper doesn't shift lines — preferred over `lineNumber`. */
+  modelLineNumber?: number;
 }
 
 function clampOffset(source: string, offset: number): number {
@@ -109,11 +112,14 @@ export function javaScriptSyntaxDiagnostics(source: string, message: string, err
   if (diagnostics.length > 0) return diagnostics;
 
   const locatedError = error instanceof Error ? error as ErrorWithLocation : null;
-  if (locatedError?.lineNumber) {
-    // The Function constructor prepends `"use strict";\n`, so browser-provided
-    // line numbers for that generated body are one line higher than user code.
-    const line = Math.max(1, locatedError.lineNumber - 1);
-    const column = Math.max(1, locatedError.columnNumber ?? 1);
+  if (locatedError?.modelLineNumber || locatedError?.lineNumber) {
+    // The legacy Function constructor prepends `"use strict";\n`, so
+    // browser-provided line numbers for that generated body are one line
+    // higher than user code. The SES compiler reports the user's line as-is.
+    const line = locatedError.modelLineNumber
+      ? Math.max(1, locatedError.modelLineNumber)
+      : Math.max(1, (locatedError.lineNumber ?? 1) - 1);
+    const column = locatedError.modelLineNumber ? 1 : Math.max(1, locatedError.columnNumber ?? 1);
     const { from, to } = lineRange(source, line, column);
     const loc = offsetToLocation(source, from);
     return [{
