@@ -848,6 +848,8 @@ export const manifoldJsEngine: Engine = {
       taper: meshOpsNamespace.taper,
       alongCurve: meshOpsNamespace.alongCurve,
       round: meshOpsNamespace.round,
+      offset: meshOpsNamespace.offset,
+      shell: meshOpsNamespace.shell,
       smoothWeld: meshOpsNamespace.smoothWeld,
       // Edit one part as a solid (cut at its seam, transform, re-attach):
       editPart: meshOpsNamespace.editPart,

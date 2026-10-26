@@ -1,5 +1,6 @@
-// `api.round` + `api.smoothWeld` — mesh-side morphological rounding and
-// smooth-min welding for ARBITRARY Manifolds (any boolean result, import, or
+// `api.round` + `api.offset`/`api.shell` + `api.smoothWeld` — mesh-side
+// morphological rounding, uniform offsetting/hollowing, and smooth-min welding
+// for ARBITRARY Manifolds (any boolean result, import, or
 // helper output), no `api.sdf` authoring required.
 //
 // Both ops share one pipeline: rasterize the input solid(s) onto a lattice
@@ -490,6 +491,108 @@ export function createMeshSdfOps(module: any) {
     return opts.keepLabels ? withCarriedLabels(out, [m]) : out;
   }
 
+  /** The surface `distance` units out from (> 0) or into (< 0) `m`, as a
+   *  levelSet of the exact signed distance, computed on a band of lattice
+   *  samples on that side of the surface only. `null` when nothing is left
+   *  (an inward offset deeper than the model is thick everywhere). */
+  function offsetSurface(m: any, distance: number, resolution: number | undefined, where: string): { out: any | null; voxel: number } {
+    const mesh = m.getMesh();
+    const d = Math.abs(distance);
+    const spec = resolveGrid(bboxOf(m), d, resolution, where);
+    const occ = rasterizeOccupancy(mesh, spec);
+    const raster = signedFieldFromOccupancy(occ, spec);
+    // Exact distances only where the new surface can be: from just across the
+    // input surface out to a few voxels past `distance` on its side.
+    const margin = 2 * spec.voxel;
+    const side = new Uint8Array(raster.length);
+    for (let i = 0; i < raster.length; i++) side[i] = (distance > 0 ? raster[i] > -margin : raster[i] < margin) ? 1 : 0;
+    const band = bandSamples(raster, spec, d + 3 * spec.voxel, side);
+    const field = exactField(mesh, occ, raster, band);
+    for (let i = 0; i < field.length; i++) field[i] -= distance;
+    const out = levelSetFromField(Manifold, field, spec);
+    if (out.isEmpty()) return { out: null, voxel: spec.voxel };
+    // An inward offset of a noisy surface can leave voxel-sized crumbs.
+    return { out: dropSlivers(out, spec.voxel), voxel: spec.voxel };
+  }
+
+  function checkOpts(opts: any, allowed: string[], where: string, required: string): void {
+    need(opts && typeof opts === 'object', `${where}(m, opts): opts object with { ${required} } is required`);
+    for (const k of Object.keys(opts)) {
+      if (!allowed.includes(k)) throw new Error(`meshOps: ${where}: unknown option "${k}" (allowed: ${allowed.join(', ')})`);
+    }
+    need(opts.keepLabels === undefined || typeof opts.keepLabels === 'boolean', `${where}.keepLabels must be true or false`);
+  }
+
+  interface OffsetOpts {
+    /** World units to grow (> 0) or shrink (< 0) the solid by, along the
+     *  surface normal everywhere. */
+    distance: number;
+    /** Lattice resolution cap along the longest axis (default 192, max 320). */
+    resolution?: number;
+    /** Keep the input's api.label parts on the offset surface (default false). */
+    keepLabels?: boolean;
+  }
+
+  /** Grow or shrink ANY solid by a uniform distance — a true 3D offset
+   *  (Minkowski with a ball), the mesh-side analogue of Blender's Solidify
+   *  "offset" or a CAD "offset surface". Positive grows (convex edges come out
+   *  rounded), negative shrinks (thin features thinner than 2·|distance|
+   *  vanish). The result is a remeshed levelSet surface, accurate to a
+   *  fraction of the lattice voxel. */
+  function offset(m: any, opts: OffsetOpts): any {
+    need(isManifold(m), 'offset(m, {distance}): m must be a Manifold');
+    checkOpts(opts, ['distance', 'resolution', 'keepLabels'], 'offset', 'distance');
+    need(isFiniteNum(opts.distance) && opts.distance !== 0, 'offset.distance must be a non-zero number (> 0 grows, < 0 shrinks)');
+    need(!m.isEmpty(), 'offset(m): input manifold is empty');
+    const { out } = offsetSurface(m, opts.distance, opts.resolution, 'offset');
+    if (!out) {
+      throw new Error(
+        `meshOps: offset: shrinking by ${-opts.distance} removed the whole model — it is nowhere thicker than ` +
+        `${(-2 * opts.distance).toFixed(2)} units. Use a smaller distance.`,
+      );
+    }
+    return opts.keepLabels ? withCarriedLabels(out, [m]) : out;
+  }
+
+  interface ShellOpts {
+    /** Wall thickness in world units. */
+    thickness: number;
+    /** Where the wall goes relative to the input surface: 'inside' (default —
+     *  hollow the solid, outer surface unchanged) or 'outside' (a skin around
+     *  it, inner surface = the input's surface, e.g. a mould or a sleeve). */
+    side?: 'inside' | 'outside';
+    /** Lattice resolution cap along the longest axis (default 192, max 320). */
+    resolution?: number;
+    /** Carry the input's api.label parts onto the NEW wall surface too
+     *  (default false; the input's own surface keeps its labels regardless). */
+    keepLabels?: boolean;
+  }
+
+  /** Hollow ANY solid to a uniform wall thickness — the mesh-side analogue of
+   *  Blender's Solidify / CAD "shell". The input's own surface is kept EXACTLY
+   *  (tessellation, sculpt detail, labels); only the new wall surface is
+   *  remeshed. Regions thinner than 2·thickness stay solid. The result is a
+   *  closed hollow solid: cut an opening with a boolean (e.g. subtract a box
+   *  behind a face to make a mask). */
+  function shell(m: any, opts: ShellOpts): any {
+    need(isManifold(m), 'shell(m, {thickness}): m must be a Manifold');
+    checkOpts(opts, ['thickness', 'side', 'resolution', 'keepLabels'], 'shell', 'thickness');
+    need(isFiniteNum(opts.thickness) && opts.thickness > 0, 'shell.thickness must be a positive number');
+    const side = opts.side ?? 'inside';
+    need(side === 'inside' || side === 'outside', "shell.side must be 'inside' or 'outside'");
+    need(!m.isEmpty(), 'shell(m): input manifold is empty');
+    const t = opts.thickness;
+    const { out: wall } = offsetSurface(m, side === 'inside' ? -t : t, opts.resolution, 'shell');
+    if (!wall) {
+      throw new Error(
+        `meshOps: shell: the model is nowhere thicker than ${(2 * t).toFixed(2)} units, so a ${t}-unit wall ` +
+        `leaves nothing to hollow. Use a smaller thickness, or side: 'outside'.`,
+      );
+    }
+    const surface = opts.keepLabels ? withCarriedLabels(wall, [m]) : wall;
+    return side === 'inside' ? m.subtract(surface) : surface.subtract(m);
+  }
+
   interface SmoothWeldOpts {
     /** Blend radius in world units — how far the smooth fillet reaches from the seam. */
     radius: number;
@@ -846,5 +949,5 @@ export function createMeshSdfOps(module: any) {
     return kept.length === pieces.length ? out : Manifold.compose(kept);
   }
 
-  return { round, smoothWeld, editPart };
+  return { round, offset, shell, smoothWeld, editPart };
 }
