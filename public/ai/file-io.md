@@ -28,9 +28,11 @@ const ses = await partwright.exportSessionData()
 // -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }
 
 // Lower level: just the ExportedSession object, with include* toggles. Defaults to
-// the current session; thumbnails are OFF by default (annotations, notes and colour
-// regions ON). Returns null when there is no such session, { error } on bad args.
-const raw = await partwright.exportSession(undefined, { includeThumbnails: true, includeNotes: false })
+// the current session; thumbnails are OFF by default (annotations, notes, colour
+// regions AND the AI chat transcript ON — pass includeChat: false before sharing a
+// file with someone). exportSessionData takes the same toggles (minus
+// includeColorRegions). Returns null when there is no such session, { error } on bad args.
+const raw = await partwright.exportSession(undefined, { includeThumbnails: true, includeNotes: false, includeChat: false })
 
 // Editor source as text
 const src = await partwright.exportCodeData()

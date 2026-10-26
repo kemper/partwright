@@ -149,6 +149,36 @@ describe('AI tool gating invariants', () => {
     for (const n of ['healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection']) expect(OBJECT_TARGETABLE_TOOLS.has(n), n).toBe(true);
   });
 
+  test('forkVersion follows the save scope (it runs code and commits a version)', () => {
+    const noSave = names(toggles({ scope: { ...ALL_ON, saveVersions: false }, planFirst: false }));
+    const noRun = names(toggles({ scope: { ...ALL_ON, runCode: false }, planFirst: false }));
+    expect(noSave.has('forkVersion')).toBe(false);
+    expect(noRun.has('forkVersion')).toBe(false);
+    expect(isModelChangingTool('forkVersion')).toBe(true);
+  });
+
+  test('every object param declares its fields (Gemini can fill it)', () => {
+    // Gemini sanitizes an object with no `properties` to `properties: {}` and
+    // then sends it empty — a required `box` arrives as {} and the call fails
+    // every time. Genuinely free-form maps instead carry a `<key>Json` string
+    // sibling the model can fill.
+    const FREE_FORM = new Set(['setParams.values', 'applySurfaceTexture.opts', 'openTool.prefill']);
+    const bad: string[] = [];
+    const walk = (tool: string, path: string, schema: Record<string, unknown>, siblings: Record<string, unknown>) => {
+      const props = schema.properties as Record<string, Record<string, unknown>> | undefined;
+      if (path && schema.type === 'object' && (!props || Object.keys(props).length === 0)) {
+        const key = `${tool}.${path}`;
+        const leaf = path.split('.').pop()!;
+        if (!FREE_FORM.has(key)) bad.push(key);
+        else if (!(`${leaf}Json` in siblings)) bad.push(`${key} (free-form but no ${leaf}Json fallback)`);
+      }
+      for (const [k, v] of Object.entries(props ?? {})) walk(tool, path ? `${path}.${k}` : k, v, props!);
+    };
+    const all = buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false }));
+    for (const t of all) walk(t.name, '', t.input_schema as unknown as Record<string, unknown>, {});
+    expect(bad).toEqual([]);
+  });
+
   test('tool schemas stay inside the Gemini-safe keyword subset', () => {
     // Gemini 400s the WHOLE tool list on an unknown JSON-Schema keyword.
     // sanitizeSchemaForGemini strips the STRIPPED set; everything else must
@@ -356,6 +386,36 @@ describe('AI tool dispatch', () => {
     expect(shown[0].length).toBeLessThan(260);
     expect(shown[0]).toMatch(/… \(5000 chars\)$/);
     expect(computeCodeDiff('a', 'b').diff).toBe('- a\n+ b');
+  });
+
+  test('free-form maps accept a JSON-string fallback; assertPaint folds its range param', async () => {
+    const calls = stubApi();
+    const ok = await executeTool('setParams', { valuesJson: '{"width":50}' });
+    expect(ok.isError).toBe(false);
+    expect(calls.find(c => c.method === 'setParams')?.args[0]).toEqual({ width: 50 });
+    const badJson = await executeTool('setParams', { valuesJson: '{width' });
+    expect(badJson.content).toContain('valuesJson is not valid JSON');
+    const missing = await executeTool('setParams', {});
+    expect(missing.content).toContain('values is required');
+
+    await executeTool('applySurfaceTexture', { id: 'knit', optsJson: '{"amplitude":0.5}' });
+    expect(calls.find(c => c.method === 'applySurfaceTexture')?.args[1]).toEqual({ amplitude: 0.5 });
+
+    await executeTool('assertPaint', { region: 'sock', expectedTriangleRange: { min: 10 } });
+    expect(calls.find(c => c.method === 'assertPaint')?.args[0]).toEqual({ region: 'sock', expectedTriangleCount: { min: 10 } });
+    const both = await executeTool('assertPaint', { region: 'sock', expectedTriangleCount: 3, expectedTriangleRange: { min: 1 } });
+    expect(both.content).toContain('not both');
+  });
+
+  test('an object target that arrives as a digit string resolves as an index', async () => {
+    const calls = stubApi({
+      listObjects: () => [
+        { id: 'a', name: 'Base', order: 0, isCurrent: true },
+        { id: 'b', name: 'Lid', order: 1, isCurrent: false },
+      ],
+    });
+    await executeTool('getCode', { object: '1' });
+    expect(calls.find(c => c.method === 'changeObject')?.args[0]).toBe('b');
   });
 
   test('executeTool does not mutate the caller\'s input (retries reuse it)', async () => {

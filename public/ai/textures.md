@@ -57,8 +57,10 @@ return body;
 ```
 
 - Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
-  `.woven`, `.knurl`, `.voronoi`, `.smooth`. Each takes the **same options** as its
-  `apply*` tool (size-relative defaults fill in anything you omit). There's also
+  `.woven`, `.knurl`, `.voronoi`, `.smooth`. Each takes the same **texture** options
+  as its `apply*` tool (size-relative defaults fill in anything you omit) — but
+  not the bake-only `preserveColor` / `selectedTriangles`, which an op rejects
+  as unknown (colours carry through in-code textures automatically). There's also
   a generic `api.surface.apply('knit', { … })` form.
 - **`applySurfaceTextureAsCode(id, opts?)`** writes the call into the code for
   you: it updates an existing `api.surface.<id>` call in place (or inserts one
@@ -128,8 +130,9 @@ return body;
 
   Scoping is the code-path counterpart of the bake path's `selectedTriangles`
   patch, and the label's color carries onto the textured region automatically.
-  (Scope keys are ignored on the bake path — pass them only in manifold-js code
-  or with `applySurfaceTexture` mode `'auto'`/`'code'`.)
+  (Scope keys work only on the code path: `applySurfaceTexture` returns an error
+  when they meet the bake path — pass them only in manifold-js code or with
+  mode `'auto'`/`'code'` in a manifold-js session.)
 - This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.

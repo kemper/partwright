@@ -58,6 +58,7 @@ import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance,
 import type { MeshData } from './types';
 import { lockdownGlobalScope } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
+import { applyWorkerImportConfig } from '../config/appConfig';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -184,7 +185,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, voxelSdfMaxSamples } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -194,7 +195,11 @@ self.onmessage = async (event: MessageEvent) => {
       companionFiles?: Record<string, string>;
       sdfPreviewScale?: number | null;
       manifoldFactsMinTriangles?: number;
+      voxelSdfMaxSamples?: number;
     };
+    // The Worker has no localStorage: apply the user's saved v.sdf budget
+    // before model code reads getConfig().import.voxelSdfMaxSamples.
+    if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.

@@ -790,7 +790,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 

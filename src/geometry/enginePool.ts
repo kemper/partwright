@@ -267,6 +267,7 @@ function dispatch(pw: PoolWorker, job: Job): void {
     imports: wireImports,
     circularSegments: getDefaultCircularSegments(),
     params: params ?? null,
+    voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples,
     ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
   });
 }

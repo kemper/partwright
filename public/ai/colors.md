@@ -830,7 +830,7 @@ await partwright.paintImage({
 })
 ```
 
-- **Placement:** pass `view` (auto-anchored at the model centre, optionally centred on a `label`) for the common case, OR explicit `at` + `normal` for precision — get those from `probeRay({origin, direction})` (returns hit point + face normal), `probePixel`, or a known face centre. With `view`, the projection direction is the view axis (front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z) and the surface anchor is found by ray-casting toward the model centre.
+- **Placement:** pass `view` (auto-anchored at the model centre, optionally centred on a `label`) for the common case, OR explicit `at` + `normal` for precision — get those from `probeRay(origin, direction)` (positional; `.hits[0]` has the hit point + face normal), `probePixel`, or a known face centre. With `view`, the projection direction is the view axis (front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z) and the surface anchor is found by ray-casting toward the model centre.
 - Only **forward-facing** triangles inside the footprint are painted, and a depth slab stops paint bleeding through to the far side.
 - After painting, **verify** with `renderView`/`renderViews` from the projection direction — confirm the graphic landed where you intended and is the right size before saving.
 - The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.

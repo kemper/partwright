@@ -51,7 +51,8 @@ export interface PartInfo {
   size: [number, number, number];
   area: number;
   triangleCount: number;
-  /** 1-based piece numbers the selection touches (empty when it's one piece). */
+  /** 0-based piece indices the selection touches — the same index every
+   *  piece-taking call uses (shown 1-based, like the rail's "Piece N"). */
   pieces: number[];
 }
 
@@ -425,8 +426,8 @@ function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, 
     line.dataset.partInfo = '';
     line.className = 'px-0.5 text-[10px] text-zinc-500 tabular-nums leading-snug';
     const parts = [`${fmt(info.size[0])} × ${fmt(info.size[1])} × ${fmt(info.size[2])}`, `area ${fmt(info.area)}`];
-    if (info.pieces.length > 1) parts.push(`spans pieces ${info.pieces.join(', ')}`);
-    else if (info.pieces.length === 1 && view.pieces.length > 1 && !key.startsWith('piece:')) parts.push(`piece ${info.pieces[0]}`);
+    if (info.pieces.length > 1) parts.push(`spans pieces ${info.pieces.map(p => p + 1).join(', ')}`);
+    else if (info.pieces.length === 1 && view.pieces.length > 1 && !key.startsWith('piece:')) parts.push(`piece ${info.pieces[0] + 1}`);
     line.textContent = parts.join(' · ');
     line.title = 'Bounding-box size, surface area and the separate solids this touches';
     drawer.appendChild(line);
