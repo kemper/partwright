@@ -262,6 +262,14 @@ test.describe('SES model-code sandbox', () => {
           'globalThis["made"] = 3; const k = "other" + "Made"; globalThis[k] = 4;',
           'return Manifold.cube([n + w, made, otherMade]);',
         ].join('\n')),
+        // Assigning an undeclared name throws too (strict JS)…
+        typoAssign: await run('const { Manifold } = api;\nlet width = 10;\nwidht = 20;\nreturn Manifold.cube([width, 1, 1]);'),
+        undeclaredLoop: await run('const { Manifold } = api;\nfor (i = 0; i < 3; i++) {}\nreturn Manifold.cube(1);'),
+        // …unless the code writes globals through a computed globalThis key,
+        // where `x = …` and `globalThis[k] = …` can't be told apart.
+        computedGlobal: await run('const { Manifold } = api;\nconst k = "s" + "z";\nglobalThis[k] = 2;\nsz = sz + 1;\nreturn Manifold.cube([sz, 1, 1]);'),
+        // Inherited global properties read like plain JS.
+        inherited: await run('const { Manifold } = api;\nif (typeof toString !== "function" || typeof hasOwnProperty !== "function") throw new Error("typeof inherited");\nreturn Manifold.cube(1);'),
         // Known gap: declared somewhere, but not in scope where it's read —
         // SES reads it as undefined (strict JS would throw ReferenceError).
         outOfScope: await run('const { Manifold } = api;\nfunction g() { const Manfold = 1; return Manfold; }\nreturn Manfold.cube([1, 1, 1]);'),
@@ -270,6 +278,11 @@ test.describe('SES model-code sandbox', () => {
     expect(out.bare).toEqual({ error: 'zzznotdefined123 is not defined', tris: 0, line: 1 });
     expect(out.fallback).toEqual({ error: 'siz is not defined', tris: 0, line: 3 });
     expect(out.laterLine).toEqual({ error: 'late is not defined', tris: 0, line: 4 });
+    expect(out.typoAssign).toEqual({ error: 'widht is not defined', tris: 0, line: 3 });
+    expect(out.undeclaredLoop).toEqual({ error: 'i is not defined', tris: 0, line: 2 });
+    expect(out.computedGlobal.error).toBeNull();
+    expect(out.computedGlobal.tris).toBe(12);
+    expect(out.inherited.error).toBeNull();
     expect(out.valid.error).toBeNull();
     expect(out.valid.tris).toBe(12);
     expect(out.outOfScope.error).toBe("Cannot read properties of undefined (reading 'cube')");

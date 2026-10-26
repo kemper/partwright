@@ -217,6 +217,30 @@ describe('analyzeFreeGlobals (strict-JS ReferenceError for undeclared names)', (
     expect(out.split('\n').length).toBe(src.split('\n').length);
   });
 
+  it('flags code that can create globals the analysis cannot name', () => {
+    const esc = (code: string) => analyzeFreeGlobals(code, known).globalThisEscapes;
+    expect(esc('const w = widht; return w;')).toBe(false);
+    expect(esc('globalThis.x = 1; globalThis?.y; globalThis["z"] = 2; return x;')).toBe(false);
+    expect(esc('const k = "a"; globalThis[k] = 1; return a;')).toBe(true);
+    expect(esc('globalThis["a" + 1] = 1;')).toBe(true);
+    expect(esc('Object.assign(globalThis, { a: 1 }); return a;')).toBe(true);
+    expect(esc('const g = globalThis; g.a = 1;')).toBe(true);
+    expect(esc('(0, eval)("1");')).toBe(true);
+  });
+
+  it('skips the analysis when an identifier is written with a unicode escape, or the parse has errors', () => {
+    for (const code of ['let \\u0061 = 1; return typeof a + zzz;', 'let a = 1; return typeof \\u0061 + zzz;', 'const x = ; return zzz;']) {
+      const r = analyzeFreeGlobals(code, known);
+      expect(r.names, code).toEqual([]);
+      expect(r.typeofOperands, code).toEqual([]);
+    }
+  });
+
+  it('counts first-reference lines in one pass, in document order', () => {
+    const r = analyzeFreeGlobals('a1;\n\nb2;\na1;\n\n\nc6;', known);
+    expect([...r.firstLine]).toEqual([['a1', 1], ['b2', 3], ['c6', 7]]);
+  });
+
   it('leaves names the code puts on globalThis itself alone', () => {
     expect(free('globalThis.made = 1; globalThis["alsoMade"] = 2; return made + alsoMade;')).toEqual([]);
   });

@@ -40,6 +40,7 @@
 import { parseLabelColor } from '../color/labelColor';
 import { orderTrianglesByPart } from '../import/importParts';
 import { fetchAppAsset } from './workerLockdown';
+import { hardenModelShared } from './modelEval';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ReplicadModule = any;
@@ -144,6 +145,13 @@ async function doInit(): Promise<void> {
   if (!wasmResp.ok) throw new Error(`Failed to load the OpenCASCADE WASM (${wasmResp.status})`);
   const wasmBinary = new Uint8Array(await wasmResp.arrayBuffer());
   const OC = await opencascade({ locateFile: () => wasmUrl, wasmBinary });
+  // Under SES (#1127), freeze the glue's error classes: their constructors
+  // assign `this.stack = this.toString() + …`, so a prototype patched by one
+  // run (from a caught error) would run inside later runs. No-op without SES.
+  for (const name of ['BindingError', 'InternalError', 'UnboundTypeError']) {
+    const cls = (OC as Record<string, unknown>)[name];
+    if (typeof cls === 'function') hardenModelShared(cls);
+  }
   replicad.setOC(OC);
   replicadModule = replicad;
   occtModule = OC;

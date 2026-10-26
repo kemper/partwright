@@ -5,7 +5,7 @@
 // exports; this Worker owns the expensive execution path.
 //
 // Protocol — Main → Worker:
-//   { type: 'init', ses?, sesTestFail? }   (ses: false = SES kill switch, #1127)
+//   { type: 'init', ses?, sesTestFail?, sesUndeclaredCheckMaxChars? }   (ses: false = SES kill switch, #1127)
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'detect_includes',   callId, code }
@@ -62,6 +62,7 @@ import { lockdownGlobalScope, enumerateChain } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
 import { enableSesSandbox } from './sesSandbox';
 import { modelCompilerName } from './modelEval';
+import { getConfig } from '../config/appConfig';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -127,12 +128,15 @@ let sesWanted = true;
 let sesPromise: Promise<void> | null = null;
 let sesFailure = '';
 let sesInitMs: number | null = null;
+/** AppConfig `geometry.sesUndeclaredCheckMaxChars`, from the init message (a
+ *  Worker's getConfig() only sees the defaults). */
+let sesUndeclaredCheckMaxChars = getConfig().geometry.sesUndeclaredCheckMaxChars;
 
 function startSes(testFail: boolean): Promise<void> {
   if (!sesPromise) {
     sesPromise = (testFail
       ? Promise.reject(new Error('lockdown() failed (simulated: partwright.sesSandbox = test-fail)'))
-      : enableSesSandbox().then((r) => { sesInitMs = r.ms; })
+      : enableSesSandbox({ undeclaredCheckMaxChars: sesUndeclaredCheckMaxChars }).then((r) => { sesInitMs = r.ms; })
     ).catch((err: unknown) => {
       sesFailure = err instanceof Error ? err.message : String(err);
     });
@@ -224,7 +228,12 @@ self.onmessage = async (event: MessageEvent) => {
     const initStart = performance.now();
     // Decided synchronously, before the first await, so a request racing the
     // init sees the same choice. Only an explicit `false` turns SES off.
-    if (!initPromise && sesPromise === null) sesWanted = msg.ses !== false;
+    if (!initPromise && sesPromise === null) {
+      sesWanted = msg.ses !== false;
+      if (typeof msg.sesUndeclaredCheckMaxChars === 'number' && Number.isFinite(msg.sesUndeclaredCheckMaxChars) && msg.sesUndeclaredCheckMaxChars >= 0) {
+        sesUndeclaredCheckMaxChars = msg.sesUndeclaredCheckMaxChars;
+      }
+    }
     // 1. SES lockdown before any engine glue initialises.
     if (sesWanted) await startSes(import.meta.env.DEV && msg.sesTestFail === true);
     // 2. Engine init. 3. workerLockdown (lockdownNow) below.

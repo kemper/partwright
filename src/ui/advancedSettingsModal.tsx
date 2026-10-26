@@ -1385,6 +1385,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10} max={100} integer
           onChange={v => set('geometry', 'engineHeapHighPct', v)}
         />
+        <Field
+          label="Undeclared-name check limit"
+          unit="characters"
+          hint="Longer model code skips the 'X is not defined' check."
+          tooltip="Model code runs in a hardened sandbox where an undeclared name would read as undefined; before each run the code is scanned so a typo throws 'X is not defined' like normal JavaScript. The scan costs about half a millisecond per KB of code on every run, so code longer than this skips it (undeclared names then read as undefined). Applies to geometry engines started after the change."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.sesUndeclaredCheckMaxChars}
+          value={c.geometry.sesUndeclaredCheckMaxChars}
+          min={0} max={10_000_000} integer
+          onChange={v => set('geometry', 'sesUndeclaredCheckMaxChars', v)}
+        />
       </Section>
 
       <Section title="Part detection">

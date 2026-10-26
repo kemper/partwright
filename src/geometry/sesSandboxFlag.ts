@@ -16,6 +16,8 @@
 // Worker treats a missing field as ON, so a Worker can only run without SES
 // when the trusted app explicitly asked for it.
 
+import { getConfig } from '../config/appConfig';
+
 const KEY = 'partwright.sesSandbox';
 
 /** Result of reading the flag. `'test-fail'` (dev builds only) makes the Worker
@@ -46,9 +48,12 @@ function readFlag(): SesFlag {
   return resolveSesFlag(stored, env, import.meta.env?.DEV === true);
 }
 
-/** The engine Worker's `init` message. */
-export function engineInitMessage(): { type: 'init'; ses: boolean; sesTestFail?: true } {
+/** The engine Worker's `init` message. `sesUndeclaredCheckMaxChars` carries
+ *  the user's AppConfig override into the Worker (where getConfig() only sees
+ *  the defaults). */
+export function engineInitMessage(): { type: 'init'; ses: boolean; sesTestFail?: true; sesUndeclaredCheckMaxChars: number } {
   const flag = readFlag();
-  if (flag === 'test-fail') return { type: 'init', ses: true, sesTestFail: true };
-  return { type: 'init', ses: flag === 'on' };
+  const sesUndeclaredCheckMaxChars = getConfig().geometry.sesUndeclaredCheckMaxChars;
+  if (flag === 'test-fail') return { type: 'init', ses: true, sesTestFail: true, sesUndeclaredCheckMaxChars };
+  return { type: 'init', ses: flag === 'on', sesUndeclaredCheckMaxChars };
 }

@@ -85,7 +85,12 @@ function buildEndowments(g: G, harden: <T>(x: T) => T): G {
 /** Load SES, lock the realm down, and route model compilation through fresh
  *  Compartments. Must run before any engine initialises and before any model
  *  code. Throws (caller fails closed) when anything doesn't check out. */
-export async function enableSesSandbox(): Promise<SesReport> {
+export interface SesOptions {
+  /** Model code longer than this skips the undeclared-name analysis. */
+  undeclaredCheckMaxChars: number;
+}
+
+export async function enableSesSandbox(opts: SesOptions): Promise<SesReport> {
   const t0 = performance.now();
   await import('./sesLoader.js');
   const g = globalThis as unknown as G;
@@ -127,19 +132,23 @@ export async function enableSesSandbox(): Promise<SesReport> {
   const newCompartment = () => new Compartment({ globals: endowments, __options__: true });
   const globalNames = Object.getOwnPropertyNames(newCompartment().globalThis);
   const names = preludeNames(globalNames);
-  const known = new Set<string>([...globalNames, 'api', 'arguments', 'undefined', 'NaN', 'Infinity']);
+  // Plus everything the compartment global inherits (toString,
+  // hasOwnProperty, …): a bare read of those resolves, so they're never free.
+  const known = new Set<string>([...globalNames, ...Object.getOwnPropertyNames(Object.prototype), 'api', 'arguments', 'undefined', 'NaN', 'Infinity']);
+  const SKIPPED: FreeGlobals = { names: [], firstLine: new Map(), typeofOperands: [], globalThisEscapes: true };
 
-  // The free-global analysis parses the source (~120 ms for the largest
-  // catalog entry, a 360 KB reconstruction; a few ms for typical models).
-  // validate() and the run that follows compile the same text, so remember
-  // the last few results.
+  // The free-global analysis parses the source (~0.5 ms per KB: ~8 ms for
+  // cat_calico, ~176 ms for the 363 KB benchy-reconstruction entry). Sources
+  // past `undeclaredCheckMaxChars` (AppConfig geometry.sesUndeclaredCheckMaxChars)
+  // skip it — undeclared names then read as undefined. validate() and the run
+  // that follows compile the same text, so remember the last few results.
   const freeCache = new Map<string, FreeGlobals>();
   const freeGlobalsOf = (jsCode: string): FreeGlobals => {
     let r = freeCache.get(jsCode);
     if (r) {
       freeCache.delete(jsCode);
     } else {
-      r = analyzeFreeGlobals(jsCode, known);
+      r = jsCode.length > opts.undeclaredCheckMaxChars ? SKIPPED : analyzeFreeGlobals(jsCode, known);
       if (freeCache.size >= 4) freeCache.delete(freeCache.keys().next().value as string);
     }
     freeCache.set(jsCode, r);
@@ -156,7 +165,7 @@ export async function enableSesSandbox(): Promise<SesReport> {
     // when such a read actually executes — and `typeof <name>` rewritten so it
     // still answers 'undefined'. See analyzeFreeGlobals.
     const free = freeGlobalsOf(jsCode);
-    for (const name of free.names) installFreeGlobalTrap(c.globalThis, name, free.firstLine.get(name) ?? 1);
+    for (const name of free.names) installFreeGlobalTrap(c.globalThis, name, free.firstLine.get(name) ?? 1, free.globalThisEscapes);
     if (free.typeofOperands.length > 0) installFreeTypeof(c.globalThis);
     const src = rewriteFreeTypeof(jsCode, free.typeofOperands, (name) => `${FREE_TYPEOF}(${JSON.stringify(name)})`);
     let fn: ModelFn;
@@ -174,9 +183,12 @@ export async function enableSesSandbox(): Promise<SesReport> {
   if (!Array.isArray(probe) || probe.slice(0, 4).some((t) => t !== 'undefined') || probe[4] !== 42) {
     throw new Error(`compartment self-test failed (${JSON.stringify(probe)})`);
   }
-  let undeclared: unknown = null;
-  try { compile('return postMessage;')(null); } catch (e) { undeclared = e; }
-  if (!(undeclared instanceof ReferenceError)) throw new Error('compartment self-test failed (an undeclared name did not throw ReferenceError)');
+  const undeclaredProbe = 'return postMessage;';
+  if (undeclaredProbe.length <= opts.undeclaredCheckMaxChars) {
+    let undeclared: unknown = null;
+    try { compile(undeclaredProbe)(null); } catch (e) { undeclared = e; }
+    if (!(undeclared instanceof ReferenceError)) throw new Error('compartment self-test failed (an undeclared name did not throw ReferenceError)');
+  }
 
   installModelCompiler(compile, harden);
   return { ms: Math.round((performance.now() - t0) * 10) / 10, globals: names };
@@ -203,18 +215,23 @@ function installFreeTypeof(g: object): void {
   });
 }
 
-/** Make reading `name` from compartment global `g` throw
- *  `ReferenceError: <name> is not defined` (with the user's line in
- *  `modelLineNumber`, for the editor). Assigning it — `globalThis[k] = v` with a
- *  computed key — turns it into an ordinary global, as in plain JS. */
-function installFreeGlobalTrap(g: object, name: string, firstLine: number): void {
+/** Make reading or assigning `name` on compartment global `g` throw
+ *  `ReferenceError: <name> is not defined`, as strict JS does for an
+ *  undeclared name (with the user's line in `modelLineNumber`, for the
+ *  editor). When the code can create globals the analysis can't see
+ *  (`globalThisEscapes`: `globalThis[k] = v`, `Object.assign(globalThis, …)`),
+ *  assigning instead turns the name into an ordinary global — the one case
+ *  where the assignment can't be told apart from `globalThis[k] = v`. */
+function installFreeGlobalTrap(g: object, name: string, firstLine: number, assignCreates: boolean): void {
+  const fail = (): never => {
+    const err = new ReferenceError(`${name} is not defined`) as ReferenceError & { modelLineNumber?: number };
+    err.modelLineNumber = modelLineFromStack(err.stack) ?? firstLine;
+    throw err;
+  };
   Object.defineProperty(g, name, {
-    get() {
-      const err = new ReferenceError(`${name} is not defined`) as ReferenceError & { modelLineNumber?: number };
-      err.modelLineNumber = modelLineFromStack(err.stack) ?? firstLine;
-      throw err;
-    },
+    get: fail,
     set(v: unknown) {
+      if (!assignCreates) fail();
       Object.defineProperty(g, name, { value: v, writable: true, enumerable: true, configurable: true });
     },
     enumerable: false,
@@ -224,7 +241,9 @@ function installFreeGlobalTrap(g: object, name: string, firstLine: number): void
 
 /** The user's line from a V8 stack thrown inside the free-global accessor:
  *  the first frame below the accessor that sits in compartment-evaluated code
- *  (`<anonymous>:L:C`, where the wrapper keeps user line N on line N). */
+ *  (`<anonymous>:L:C`, where the wrapper keeps user line N on line N). V8
+ *  (Chromium) stacks only: Firefox and Safari format eval frames differently,
+ *  return null here, and the error falls back to the name's first reference. */
 function modelLineFromStack(stack: unknown): number | null {
   if (typeof stack !== 'string') return null;
   const lines = stack.split('\n');

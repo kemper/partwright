@@ -22,6 +22,8 @@
 
 import { javascriptLanguage } from '@codemirror/lang-javascript';
 
+type SyntaxNode = ReturnType<typeof javascriptLanguage.parser.parse>['topNode'];
+
 /** Options passed to SES `lockdown()` in the engine Worker. Only the first
  *  two are load-bearing; the rest keep the engine realm's own behaviour
  *  (errors, stacks, console, locale) exactly as before SES. */
@@ -254,7 +256,15 @@ export interface FreeGlobals {
   firstLine: Map<string, number>;
   /** Source ranges of the `typeof <name>` operands among those names. */
   typeofOperands: Array<{ from: number; to: number }>;
+  /** True when the code can create globals the analysis can't name: it uses
+   *  `globalThis` as a value (`Object.assign(globalThis, …)`, `const g =
+   *  globalThis`), indexes it with a computed key (`globalThis[k]`), or names
+   *  `eval`. The caller then lets assigning a free name create a global (as
+   *  `globalThis[k] = v` would) instead of throwing ReferenceError. */
+  globalThisEscapes: boolean;
 }
+
+const NO_FREE_GLOBALS: FreeGlobals = Object.freeze({ names: [], firstLine: new Map(), typeofOperands: [], globalThisEscapes: true }) as FreeGlobals;
 
 /**
  * Find the free global identifiers of model code, so the SES compiler can make
@@ -276,8 +286,25 @@ export function analyzeFreeGlobals(jsCode: string, known: ReadonlySet<string>): 
   const declared = new Set<string>();
   const viaGlobalThis = new Set<string>();
   const refs: Array<{ name: string; from: number; to: number; typeofOperand: boolean }> = [];
+  let globalThisEscapes = false;
+  // Bail out (analyse nothing; undeclared names then read as undefined) on
+  // anything Lezer can't parse: a syntax error (the compile fails anyway),
+  // syntax newer than the grammar, or a unicode-escaped identifier
+  // (`let \u0061`), which Lezer doesn't support — and a name it can't decode
+  // must never be guessed free.
+  let unparsed = false;
   javascriptLanguage.parser.parse(jsCode).cursor().iterate((node) => {
+    if (unparsed) return false;
+    if (node.type.isError) {
+      unparsed = true;
+      return false;
+    }
     const n = node.name;
+    if ((n === 'VariableDefinition' || n === 'VariableName' || n === 'PropertyName' || n === 'PropertyDefinition' || n === 'LabelName')
+      && jsCode.slice(node.from, node.to).includes('\\')) {
+      unparsed = true;
+      return false;
+    }
     if (n === 'VariableDefinition' || (n === 'PropertyName' && node.node.parent?.name === 'PatternProperty')) {
       declared.add(jsCode.slice(node.from, node.to));
       return;
@@ -300,6 +327,9 @@ export function analyzeFreeGlobals(jsCode: string, known: ReadonlySet<string>): 
       isRef = p?.name === 'Property' && p.firstChild?.from === node.from && p.lastChild?.to === node.to;
     }
     if (!isRef) return;
+    const text = jsCode.slice(node.from, node.to);
+    if (text === 'eval') globalThisEscapes = true;
+    if (text === 'globalThis' && n === 'VariableName' && !isStaticGlobalThisAccess(node.node)) globalThisEscapes = true;
     // `typeof x` / `typeof (x)` / `typeof ((x))` — the operand is the bare name.
     let operand = node.node;
     let parent = operand.parent;
@@ -310,20 +340,40 @@ export function analyzeFreeGlobals(jsCode: string, known: ReadonlySet<string>): 
     const typeofOperand = parent?.name === 'UnaryExpression' && parent.firstChild?.name === 'typeof' && parent.lastChild?.from === operand.from;
     refs.push({ name: jsCode.slice(node.from, node.to), from: node.from, to: node.to, typeofOperand });
   });
+  if (unparsed) return NO_FREE_GLOBALS;
   const names: string[] = [];
   const firstLine = new Map<string, number>();
   const typeofOperands: Array<{ from: number; to: number }> = [];
+  // refs are in document order: count lines in one forward pass.
+  let line = 1;
+  let scanned = 0;
   for (const r of refs) {
     if (declared.has(r.name) || known.has(r.name) || viaGlobalThis.has(r.name)) continue;
     if (r.typeofOperand) typeofOperands.push({ from: r.from, to: r.to });
     if (!firstLine.has(r.name)) {
+      for (let i = jsCode.indexOf('\n', scanned); i !== -1 && i < r.from; i = jsCode.indexOf('\n', i + 1)) line++;
+      scanned = r.from;
       names.push(r.name);
-      let line = 1;
-      for (let i = jsCode.indexOf('\n'); i !== -1 && i < r.from; i = jsCode.indexOf('\n', i + 1)) line++;
       firstLine.set(r.name, line);
     }
   }
-  return { names, firstLine, typeofOperands };
+  return { names, firstLine, typeofOperands, globalThisEscapes };
+}
+
+/** `globalThis.x`, `globalThis?.x` or `globalThis['x']` (a literal key) — a
+ *  read or write of one statically known global. Anything else (a computed
+ *  key, or `globalThis` passed around as a value) can create globals the
+ *  analysis can't see. */
+function isStaticGlobalThisAccess(node: SyntaxNode): boolean {
+  const parent = node.parent;
+  if (parent?.name !== 'MemberExpression' || parent.firstChild?.from !== node.from) return false;
+  for (let c = node.nextSibling; c; c = c.nextSibling) {
+    if (c.name === 'PropertyName') return true;
+    if (c.name === 'String') return true;
+    if (c.name === '.' || c.name === '?.' || c.name === '[') continue;
+    return false;
+  }
+  return false;
 }
 
 /** Replace each `typeof <free name>` operand with `replacement(name)`, so the
