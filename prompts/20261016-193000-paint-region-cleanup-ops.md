@@ -116,3 +116,28 @@ existing tests) is untouched: `growMask(…, allow)` for the spatial clamp,
 as big as the set — the low-poly-cube bug). The API's `maxHoleTriangles` stays
 inclusive ("at most N"), so regionEdit passes `maxHole + 1` to triSetOps'
 exclusive threshold. The old unit cases were ported onto triSetOps unchanged.
+
+## Assistant
+
+## Sync with main (undo groups, part scope, CSR adjacency, base-id helper)
+
+Main moved a long way while the stack waited; four things overlapped:
+
+- **Undo groups** (`runAsUndoGroup`, e.g. `paintAlongBoundary`) collided with
+  this PR's sequence-stamped undo. Merged semantics: undo reverses the most
+  recent operation (highest `seq`) and, if it belongs to a group, every other
+  member of that group with it; redo restores the group in order. An edit
+  copies its original's fields, so it now explicitly does *not* inherit the
+  original's group — otherwise undoing the edit would also undo the
+  original's siblings (unit-tested).
+- **Part scope (`withinPart`)**: a region confined to a part must stay
+  confined after an edit, so the edit is clipped with the store's
+  `clipToPart` and the rebaked `triangles` descriptor keeps `withinPart`.
+  Verified the e2e test fails without the clip (grow spreads to z = 20).
+- **Base ids**: main independently fixed the same refined-mesh `paintFaces`
+  bug with `baseTriangleIds` ({ids, live}). Dropped this PR's duplicate
+  helper and route region edits through main's, so edits and paintFaces
+  behave identically (live set widens to whole base triangles, matching a
+  reload).
+- **Adjacency is now flat CSR** (`nbStart`/`nbFlat`) — the same layout as
+  triSetOps' `TriAdjacency`, so region edits reinterpret the arrays (no copy).

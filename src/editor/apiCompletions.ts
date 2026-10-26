@@ -108,6 +108,8 @@ const SDF_STATIC: Completion[] = [
   fn('noise', '({seed?, frequency?, octaves?, lacunarity?, gain?, ridged?})', 'Seeded fBm noise field — pass the returned (x,y,z)=>number to node.displace() for organic texture (rock/bark/coral).'),
   fn('lsystem', '({axiom, rules, iterations, angle?, length?, radius?, radiusScale?, blend?, label?, leaf?})', 'Grow a fractal plant/coral/branching structure into an SDF node of welded capsules. Optional foliage spheres via leaf.'),
   fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),
+  val('figure', 'namespace', 'Posable humanoid figure builder — rig + parts (people / characters / busts). See /ai/figure.md.', 'variable'),
+  val('creature', 'namespace', 'Creature feature kit — eyes / muzzle / ears / feet / hands / crease / build for creatures & mascots. See /ai/creature.md.', 'variable'),
 ];
 
 const SDF_INSTANCE: Completion[] = [
@@ -196,6 +198,8 @@ const API_MEMBERS: Completion[] = [
   fn('importWithParts', '(index = 0)', 'Manifold.ofMesh(api.imports[i]) plus the parts committed by part detection, registered as labels.'),
   fn('label', '(shape, name)', 'Tag a shape so painted regions can target it by name.'),
   fn('labeledUnion', '(parts)', 'Union [{name, shape}, …], tagging each part for later paint-by-label.'),
+  fn('removePart', '(name)', 'Delete an api.label part: a later api.label(shape, name) returns an empty Manifold. Call it first.'),
+  fn('removePiece', '([x,y,z])', 'Delete the separate piece touching this point from the returned model.'),
   // Flat aliases of meshOps verbs — same functions, promoted for shorter agent code.
   fn('intersects', '(a, b)', 'true iff Manifolds a and b have non-zero volumetric overlap (bbox fast-reject).'),
   fn('contains', '(outer, inner)', 'true iff outer fully contains inner (inner − outer is empty).'),

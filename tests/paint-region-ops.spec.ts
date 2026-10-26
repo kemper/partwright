@@ -205,4 +205,26 @@ test.describe('region clean-up ops', () => {
     expect(r.holesFilled).toBe(0);
     expect(r.triangles).toBe(2);
   });
+
+  test('growRegion keeps a part-confined region (withinPart) inside its part', async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.clearColors();
+      await pw.run(`const { Manifold } = api;
+const base = api.label(Manifold.cube([20, 20, 10]).refine(4), 'base');
+const top = api.label(Manifold.cube([20, 20, 10]).refine(4).translate([0, 0, 10]), 'top');
+return base.add(top);`);
+      const p = pw.paintInBox({ box: { min: [-1, -1, -1], max: [21, 21, 2] }, color: [1, 0, 0], name: 'band', withinPart: 'base' });
+      const g = pw.growRegion({ region: 'band', steps: 60 });
+      const band = pw.listRegions().find((x: { name: string }) => x.name === 'band');
+      return { p, g, band };
+    });
+    expect(r.p.error).toBeUndefined();
+    expect(r.g.error).toBeUndefined();
+    expect(r.g.added).toBeGreaterThan(0);
+    // 60 rings would cover the whole model; the part scope stops it at z = 10.
+    expect(r.band.bbox.max[2]).toBeLessThanOrEqual(10.001);
+  });
 });
+

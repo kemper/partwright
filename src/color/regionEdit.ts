@@ -8,10 +8,9 @@
 
 import type { MeshData } from '../geometry/types';
 import { buildAdjacency } from './adjacency';
-import { getRegions, replaceRegion, type ColorRegion } from './regions';
+import { clipToPart, getRegions, replaceRegion, type ColorRegion } from './regions';
 import { descriptorRefines } from './refinePipeline';
 import {
-  adjacencyFromNeighborLists,
   despeckleMaskReport,
   growMask,
   intersectMask,
@@ -100,7 +99,10 @@ export function applyRegionEdit(
   opts: RegionEditOptions,
   /** Maps the edited current-mesh set to the ids the `triangles` descriptor
    *  stores (base-mesh ids once the mesh is refined). Identity by default. */
-  descriptorIds: (tris: Set<number>) => number[] = (tris) => [...tris],
+  /** Maps the edited current-mesh set to what the `triangles` descriptor
+   *  stores (`ids` — base-mesh ids once smooth paint has refined the mesh)
+   *  and the live set that matches them. Identity by default. */
+  toBaseIds: (tris: Set<number>) => { ids: number[]; live: Set<number> } = (tris) => ({ ids: [...tris], live: tris }),
 ): RegionEditResult | { error: string } {
   if (!opts || typeof opts !== 'object') return { error: 'region edit requires an options object' };
   if (!isRef(opts.region)) return { error: 'region must be a region id (integer) or name (string) — see listRegions()' };
@@ -111,8 +113,12 @@ export function applyRegionEdit(
   if (why) return { error: why };
 
   const before = region.triangles;
-  const { neighbors, centroids } = buildAdjacency(mesh);
-  const adj = adjacencyFromNeighborLists(neighbors);
+  const { nbStart, nbFlat, centroids } = buildAdjacency(mesh);
+  // Same CSR layout as triSetOps' TriAdjacency — reinterpret, don't copy.
+  const adj = {
+    start: new Int32Array(nbStart.buffer, nbStart.byteOffset, nbStart.length),
+    nbr: new Int32Array(nbFlat.buffer, nbFlat.byteOffset, nbFlat.length),
+  };
   const beforeMask = maskFromIndices(mesh.numTri, before);
   let next: Set<number>;
   const toSet = (m: Uint8Array) => new Set(maskToIndices(m));
@@ -186,6 +192,13 @@ export function applyRegionEdit(
       return { error: `unknown region edit op ${JSON.stringify((opts as { op?: unknown }).op)} — expected grow | shrink | despeckle | union | subtract | intersect` };
   }
 
+  // A region confined to a part (`withinPart`) stays confined: clip the edit
+  // to the part and keep the scope on the rebaked descriptor.
+  const withinPart = region.descriptor.withinPart;
+  if (withinPart) next = clipToPart(region.descriptor, next).triangles;
+  const based = toBaseIds(next);
+  next = based.live;
+
   let added = 0, removed = 0;
   for (const t of next) if (!before.has(t)) added++;
   for (const t of before) if (!next.has(t)) removed++;
@@ -193,7 +206,7 @@ export function applyRegionEdit(
     return { error: `${opts.op} would leave region "${region.name}" empty — nothing changed. Use removeRegion(${region.id}) to delete it.` };
   }
   if (added > 0 || removed > 0) {
-    replaceRegion(region.id, next, { kind: 'triangles', ids: descriptorIds(next) }, mesh);
+    replaceRegion(region.id, next, { kind: 'triangles', ids: based.ids, ...(withinPart ? { withinPart } : {}) }, mesh);
   }
   return { id: region.id, name: region.name, op: opts.op, triangles: next.size, before: before.size, added, removed, ...extra };
 }

@@ -15,14 +15,18 @@ import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
-import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
+import { setSelectorLabels } from '../selector';
+import { getBrepNamespace, setBrepRemovedParts, peekBrepToManifoldLabels, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
-import { normalizeImportParts, orderTrianglesByPart } from '../../import/importParts';
+import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../import/importParts';
 import type { RegionDescriptor } from '../../color/regions';
 import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { wasmFaultHint } from '../workerFaults';
+import { assertModelCodeRealm } from '../workerLockdown';
+import { MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS, type ApiPaintDescriptorKind } from '../apiPaintSpec';
+import { withoutPiecesAt } from '../removePieces';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -254,6 +258,7 @@ export const manifoldJsEngine: Engine = {
   },
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    assertModelCodeRealm('manifold-js model code');
     if (!manifoldModule) {
       return { mesh: null, manifold: null, error: 'Engine not initialized' };
     }
@@ -292,7 +297,10 @@ export const manifoldJsEngine: Engine = {
     // renders them as the model-color underlay. The code is the source of truth,
     // so these are never written to the paint sidecar. Last-recorded wins on
     // overlap, in declaration order. Cleared on every run.
-    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
+    // Typed against the shared API_PAINT_DESCRIPTOR_KINDS (apiPaintSpec.ts),
+    // which the Worker→main validator allow-lists — a new kind must be added
+    // there or this won't compile.
+    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor & { kind: ApiPaintDescriptorKind } }[] = [];
     let paintSeq = 0;
 
     // Viewport material declared in code via `api.material(...)` — a shading
@@ -312,6 +320,37 @@ export const manifoldJsEngine: Engine = {
     // on every run. See `src/surface/surfaceOps.ts`.
     const surfaceOps: SurfaceOp[] = [];
 
+    // Parts deleted in code via `api.removePart(name)` — what the object list's
+    // part ✕ writes. A later `api.label(shape, name)` for a removed name returns
+    // an empty Manifold, so the part drops out of every union it feeds (and is
+    // never registered, so it doesn't list as a lost part). Order matters: the
+    // removal must run before the label, hence the guard in removePart.
+    const removedParts = new Set<string>();
+    const removePart = (name: unknown): void => {
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error("api.removePart(name): name must be a non-empty string naming an api.label(...) part, e.g. api.removePart('wheel')");
+      }
+      for (const declared of labelRegistry.values()) {
+        if (declared === name) {
+          throw new Error(`api.removePart('${name}') must come before api.label(…, '${name}') — move it to the top of the code.`);
+        }
+      }
+      removedParts.add(name);
+    };
+
+    // Pieces (separate solids) deleted in code via `api.removePiece([x, y, z])`
+    // — what the object list's piece ✕ writes. Applied to the returned model
+    // after the code runs: every separate piece touching one of these points is
+    // dropped. A point (not an index) so the right piece stays removed when
+    // edits elsewhere reorder the pieces.
+    const removedPieces: [number, number, number][] = [];
+    const removePiece = (point: unknown): void => {
+      if (!Array.isArray(point) || point.length !== 3 || point.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error('api.removePiece(point): point must be [x, y, z] — a point on or inside the separate piece to remove.');
+      }
+      removedPieces.push(point as [number, number, number]);
+    };
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const label = (shape: any, name: unknown, options?: unknown): any => {
       if (!shape || typeof shape.asOriginal !== 'function' || typeof shape.add !== 'function') {
@@ -320,6 +359,7 @@ export const manifoldJsEngine: Engine = {
       if (typeof name !== 'string' || name.length === 0) {
         throw new Error('api.label(shape, name): name must be a non-empty string');
       }
+      if (removedParts.has(name)) return Manifold.union([]);
       // Optional { color } — a hex string ('#rrggbb' / '#rgb', same form as a
       // `color` param so `{ color: p.accent }` works) or an [r,g,b] array 0..1.
       if (options !== undefined && options !== null) {
@@ -405,6 +445,14 @@ export const manifoldJsEngine: Engine = {
       const keys = Object.keys(rest);
       if (keys.length > 0) throw new Error(`${where}: unknown key(s) ${keys.map(k => `"${k}"`).join(', ')}.`);
     };
+    // `withinPart: 'name'` on box / slab / cylinder clips the paint to one
+    // part (an api.label region, or a detected part of an import) — so a band
+    // or blob can't bleed across the part's edge.
+    const paintWithin = (v: unknown, where: string): { withinPart?: string } => {
+      if (v === undefined) return {};
+      if (typeof v !== 'string' || v.length === 0) throw new Error(`${where} withinPart: expected a part (label) name.`);
+      return { withinPart: v };
+    };
     const AXIS_NORMAL: Record<string, [number, number, number]> = {
       x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
     };
@@ -412,21 +460,21 @@ export const manifoldJsEngine: Engine = {
     const paint = {
       /** Paint every triangle inside an axis-aligned box. `min`/`max` are world-space corners. */
       box(opts: unknown): void {
-        const o = paintObj(opts, 'api.paint.box({ min, max, color })');
-        const { min, max, color, ...rest } = o;
+        const o = paintObj(opts, 'api.paint.box({ min, max, color, withinPart? })');
+        const { min, max, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.box', rest);
         const lo = paintVec3(min, 'api.paint.box min');
         const hi = paintVec3(max, 'api.paint.box max');
         const rgb = paintColor(color, 'api.paint.box');
         const center: [number, number, number] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
         const size: [number, number, number] = [Math.abs(hi[0] - lo[0]), Math.abs(hi[1] - lo[1]), Math.abs(hi[2] - lo[2])];
-        paintOps.push({ name: `paint·box ${++paintSeq}`, color: rgb, descriptor: { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box' } });
+        paintOps.push({ name: `paint·box ${++paintSeq}`, color: rgb, descriptor: { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box', ...paintWithin(withinPart, 'api.paint.box') } });
       },
       /** Paint a flat band (slab). Give `axis: 'x'|'y'|'z'` or an explicit `normal`,
        *  plus `offset` (signed distance along the normal to the band centre) and `thickness`. */
       slab(opts: unknown): void {
-        const o = paintObj(opts, "api.paint.slab({ axis, offset, thickness, color })");
-        const { axis, normal, offset, thickness, color, ...rest } = o;
+        const o = paintObj(opts, "api.paint.slab({ axis, offset, thickness, color, withinPart? })");
+        const { axis, normal, offset, thickness, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.slab', rest);
         let nrm: [number, number, number];
         if (axis !== undefined) {
@@ -441,13 +489,13 @@ export const manifoldJsEngine: Engine = {
         const thk = paintNum(thickness, 'api.paint.slab thickness');
         if (thk <= 0) throw new Error('api.paint.slab thickness: must be > 0.');
         const rgb = paintColor(color, 'api.paint.slab');
-        paintOps.push({ name: `paint·slab ${++paintSeq}`, color: rgb, descriptor: { kind: 'slab', normal: nrm, offset: off, thickness: thk } });
+        paintOps.push({ name: `paint·slab ${++paintSeq}`, color: rgb, descriptor: { kind: 'slab', normal: nrm, offset: off, thickness: thk, ...paintWithin(withinPart, 'api.paint.slab') } });
       },
       /** Paint a (possibly annular) vertical cylinder shell. `center` is [x, y];
        *  `rMin` (default 0) / `rMax` are radii; `zMin` / `zMax` bound the height. */
       cylinder(opts: unknown): void {
-        const o = paintObj(opts, 'api.paint.cylinder({ center, rMin, rMax, zMin, zMax, color })');
-        const { center, rMin, rMax, zMin, zMax, color, ...rest } = o;
+        const o = paintObj(opts, 'api.paint.cylinder({ center, rMin, rMax, zMin, zMax, color, withinPart? })');
+        const { center, rMin, rMax, zMin, zMax, color, withinPart, ...rest } = o;
         paintRejectUnknown('api.paint.cylinder', rest);
         if (!Array.isArray(center) || center.length !== 2 || center.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
           throw new Error('api.paint.cylinder center: expected [x, y] (two finite numbers).');
@@ -460,7 +508,7 @@ export const manifoldJsEngine: Engine = {
         if (r0 < 0 || r1 <= r0) throw new Error('api.paint.cylinder: require 0 <= rMin < rMax.');
         if (z1 <= z0) throw new Error('api.paint.cylinder: require zMin < zMax.');
         const rgb = paintColor(color, 'api.paint.cylinder');
-        paintOps.push({ name: `paint·cyl ${++paintSeq}`, color: rgb, descriptor: { kind: 'cylinder', center: c, rMin: r0, rMax: r1, zMin: z0, zMax: z1 } });
+        paintOps.push({ name: `paint·cyl ${++paintSeq}`, color: rgb, descriptor: { kind: 'cylinder', center: c, rMin: r0, rMax: r1, zMin: z0, zMax: z1, ...paintWithin(withinPart, 'api.paint.cylinder') } });
       },
       /** Recolour triangles belonging to an existing `api.label(shape, name)` region.
        *  Call as `api.paint.label('name', color)` or `api.paint.label({ label, color })`. */
@@ -488,17 +536,27 @@ export const manifoldJsEngine: Engine = {
        *   - pattern: 'stripes' (tabby/tiger/zebra/brindle) | 'spots' (leopard/dalmatian)
        *              | 'patches' (calico/cow/tortie) | 'gradient' (siamese points)
        *              | 'checker' (3D checkerboard by cell parity)
+       *              | 'soccer' (truncated-icosahedron ball: 12 pentagons, fit to the scope)
        *   - colors:  [base, mark, third?] — hex or [r,g,b]; ≥2 required
-       *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model */
+       *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model
+       *   - withinPart: clip to one part (label), like the other api.paint ops
+       *  In-code paint is whole-triangle: `smooth` (sub-triangle seams) is only
+       *  available on the user paint layer via `partwright.paintPattern`. */
       pattern(opts: unknown): void {
-        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors? })");
-        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, ...rest } = o;
+        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, withinPart? })");
+        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, withinPart, ...rest } = o;
+        if ('smooth' in rest || 'maxEdge' in rest) {
+          throw new Error('api.paint.pattern: smooth / maxEdge are not supported in model code — in-code paint colours whole triangles (the model underlay never subdivides). For crisp sub-triangle seams use the console/AI method partwright.paintPattern({ pattern, colors, withinPart, smooth: true }), which saves the pattern as user paint.');
+        }
         paintRejectUnknown('api.paint.pattern', rest);
         if (typeof pattern !== 'string' || !COLOR_PATTERN_KINDS.includes(pattern as ColorPatternKind)) {
           throw new Error(`api.paint.pattern pattern: expected one of ${COLOR_PATTERN_KINDS.map(k => `'${k}'`).join(', ')}.`);
         }
         if (!Array.isArray(colors) || colors.length < 2) {
           throw new Error('api.paint.pattern colors: expected an array of at least 2 colors [base, mark, third?].');
+        }
+        if (colors.length > MAX_PAINT_PATTERN_COLORS) {
+          throw new Error(`api.paint.pattern: at most ${MAX_PAINT_PATTERN_COLORS} colors per pattern (got ${colors.length}).`);
         }
         const rgbColors = colors.map((c, i) => paintColor(c, `api.paint.pattern colors[${i}]`));
         let scopeObj: PatternScope | undefined;
@@ -548,6 +606,9 @@ export const manifoldJsEngine: Engine = {
         let anchorPts: [number, number, number][] | undefined;
         if (anchors !== undefined) {
           if (!Array.isArray(anchors)) throw new Error('api.paint.pattern anchors: expected an array of [x, y, z] points.');
+          if (anchors.length > MAX_PAINT_PATTERN_ANCHORS) {
+            throw new Error(`api.paint.pattern: at most ${MAX_PAINT_PATTERN_ANCHORS} anchors per pattern (got ${anchors.length}).`);
+          }
           anchorPts = anchors.map((a, i) => paintVec3(a, `api.paint.pattern anchors[${i}]`));
         }
         const descriptor: RegionDescriptor = {
@@ -561,6 +622,7 @@ export const manifoldJsEngine: Engine = {
           ...(coverage !== undefined ? { coverage: paintNum(coverage, 'api.paint.pattern coverage') } : {}),
           ...(seed !== undefined ? { seed: paintNum(seed, 'api.paint.pattern seed') } : {}),
           ...(anchorPts ? { anchors: anchorPts } : {}),
+          ...paintWithin(withinPart, 'api.paint.pattern'),
         };
         paintOps.push({ name: `paint·pattern ${pattern} ${++paintSeq}`, color: rgbColors[0], descriptor });
       },
@@ -681,7 +743,20 @@ export const manifoldJsEngine: Engine = {
       if (!parts || parts.names.length === 0) {
         return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts: src.triVerts });
       }
-      const { triVerts, runs } = orderTrianglesByPart(src.triVerts, parts.triPart, parts.names.length);
+      // Parts deleted via api.removePart: drop their triangles and cap the
+      // openings they leave, so the import stays a closed solid.
+      let vertProperties = src.vertProperties;
+      let srcTriVerts = src.triVerts;
+      let triPart = parts.triPart;
+      const removed = new Set<number>();
+      parts.names.forEach((name, i) => { if (removedParts.has(name)) removed.add(i); });
+      if (removed.size > 0) {
+        const cut = removeImportPartTriangles({ numProp: src.numProp, vertProperties, triVerts: srcTriVerts }, triPart, removed);
+        vertProperties = cut.vertProperties;
+        srcTriVerts = cut.triVerts;
+        triPart = cut.triPart;
+      }
+      const { triVerts, runs } = orderTrianglesByPart(srcTriVerts, triPart, parts.names.length);
       const base = Manifold.reserveIDs(runs.length);
       const runIndex = new Uint32Array(runs.length + 1);
       const runOriginalID = new Uint32Array(runs.length);
@@ -696,7 +771,7 @@ export const manifoldJsEngine: Engine = {
         const rgb = color ? parseLabelColor(color) : null;
         if (rgb) labelColors.set(name, rgb);
       });
-      return Manifold.ofMesh({ numProp: src.numProp, vertProperties: src.vertProperties, triVerts, runIndex, runOriginalID });
+      return Manifold.ofMesh({ numProp: src.numProp, vertProperties, triVerts, runIndex, runOriginalID });
     };
 
     // SDF namespace is constructed per-run because it needs to close over
@@ -774,6 +849,8 @@ export const manifoldJsEngine: Engine = {
       alongCurve: meshOpsNamespace.alongCurve,
       round: meshOpsNamespace.round,
       smoothWeld: meshOpsNamespace.smoothWeld,
+      // Edit one part as a solid (cut at its seam, transform, re-attach):
+      editPart: meshOpsNamespace.editPart,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:
@@ -787,6 +864,8 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
       label,
       labeledUnion,
+      removePart,
+      removePiece,
       paint,
       surface,
       material,
@@ -856,6 +935,21 @@ export const manifoldJsEngine: Engine = {
 
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
+      // BREP.label honours api.removePart too (Phase C: BREP inside a JS run).
+      setBrepRemovedParts(removedParts);
+      // Selector `label` terms (sculpt / deform / scatter `select:`) resolve
+      // against this run's labels — read live, so a label declared just before
+      // the op that selects it is found. BREP.label parts (BREP.toManifold)
+      // only merge into labelRegistry after the run, so peek at those too.
+      const allLabelRegistries = () => [labelRegistry, ...peekBrepToManifoldLabels()];
+      setSelectorLabels({
+        ids: (name) => {
+          const ids: number[] = [];
+          for (const reg of allLabelRegistries()) for (const [id, n] of reg) if (n === name) ids.push(id);
+          return ids.length > 0 ? ids : null;
+        },
+        names: () => [...new Set(allLabelRegistries().flatMap(reg => [...reg.values()]))],
+      });
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
@@ -880,16 +974,33 @@ export const manifoldJsEngine: Engine = {
         };
       }
 
+      // Labels from `BREP.toManifold(...)` calls during this run: each queued
+      // its originalID → name registry, so they resolve from the final mesh's
+      // provenance (through any booleans) exactly like `api.label` ones.
+      for (const registry of consumeBrepToManifoldLabels()) {
+        for (const [id, name] of registry) labelRegistry.set(id, name);
+      }
+
+      // Labels present before api.removePiece drops pieces — a label that lived
+      // only on removed pieces is gone, not "lost", so its colour is dropped too.
+      let labelsBeforePieceRemoval: Map<string, Set<number>> | undefined;
+      if (removedPieces.length > 0) {
+        labelsBeforePieceRemoval = resolveLabelMap(result.getMesh(), labelRegistry);
+        result = withoutPiecesAt(Manifold, result, removedPieces);
+      }
+
       const mesh = result.getMesh();
-      // Merge any BREP-side labels that flowed through `BREP.toManifold(...)`
-      // calls during this run. Each call queued a `Map<label, Set<triangleId>>`
-      // built against the welded BREP tessellation — the same mesh-data we
-      // then handed to `Manifold.ofMesh`. As long as the user didn't run
-      // further booleans on the resulting Manifold (which would remap
-      // triangle ids), the ids are still valid in the final mesh. If the
-      // same label name comes from both BREP and an `api.label` call, the
-      // triangle sets union — friendliest answer.
-      const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
+      // A name used by both a BREP label and an `api.label` call unions — the
+      // registry maps several ids to the same name.
+      const labelMap = resolveLabelMap(mesh, labelRegistry);
+      if (labelsBeforePieceRemoval) {
+        for (const [name, before] of labelsBeforePieceRemoval) {
+          if (before.size > 0 && !labelMap?.get(name)?.size) {
+            labelMap?.delete(name);
+            labelColors.delete(name);
+          }
+        }
+      }
       // Fold in any colors declared via `BREP.label(s, name, { color })` in this
       // run (Phase C). An `api.label` color for the same name wins (it's the
       // more direct manifold-side declaration), so only set names not already
@@ -955,6 +1066,8 @@ export const manifoldJsEngine: Engine = {
         paramsSchema: paramCapture.collectSchema(),
       };
     } finally {
+      setBrepRemovedParts(null);
+      setSelectorLabels(null);
       // Stop tracking, then free every intermediate the run created. The value
       // the user returned (`result`) is spared — its lifecycle belongs to the
       // caller (the worker frees it after extracting the mesh; the sync path in
@@ -998,35 +1111,11 @@ export const manifoldJsEngine: Engine = {
   },
 };
 
-/** Union-merge any number of `Map<label, Set<triangleId>>` into a single
- *  map. The primary use case is folding BREP `BREP.toManifold` labels in
- *  alongside manifold-js `api.label` labels so `paintByLabel` sees both —
- *  see the run() caller. Returns `undefined` only when every input was
- *  undefined / empty (keeps the existing "no labels this run" sentinel). */
-function mergeLabelMaps(
-  primary: Map<string, Set<number>> | undefined,
-  extras: ReadonlyArray<Map<string, Set<number>>>,
-): Map<string, Set<number>> | undefined {
-  if (extras.length === 0) return primary;
-  const out: Map<string, Set<number>> = primary ?? new Map();
-  for (const m of extras) {
-    for (const [name, tris] of m) {
-      let set = out.get(name);
-      if (!set) {
-        set = new Set<number>();
-        out.set(name, set);
-      }
-      for (const t of tris) set.add(t);
-    }
-  }
-  return out.size === 0 ? undefined : out;
-}
-
 /** Walk the result mesh's `runOriginalID` + `runIndex` arrays and bucket
  *  triangles by the human-readable name registered for each id at
  *  `api.label()` time. Multiple runs may carry the same id (a labelled
  *  shape used in two places of the union) — the bucket merges them. */
-function resolveLabelMap(
+export function resolveLabelMap(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mesh: any,
   registry: Map<number, string>,
@@ -1050,3 +1139,4 @@ function resolveLabelMap(
   }
   return out;
 }
+

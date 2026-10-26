@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runVoxelForPaint } from '../../src/geometry/engines/voxel';
+import { runVoxelGrid, voxelPaintRunFromGrid } from '../../src/geometry/engines/voxel';
 import { gridToMeshWithProvenance } from '../../src/geometry/voxel/mesher';
 import { VoxelGrid } from '../../src/geometry/voxel/grid';
 
@@ -9,30 +9,33 @@ import { VoxelGrid } from '../../src/geometry/voxel/grid';
 // code returns a usable grid + provenance, and the provenance maps each
 // triangle to a voxel cell we can mutate.
 
-describe('runVoxelForPaint', () => {
-  it('returns a grid + provenance for valid voxel code', () => {
-    const r = runVoxelForPaint(`
+describe('runVoxelGrid + voxelPaintRunFromGrid', () => {
+  it('returns a grid (Worker side) and provenance (main side) for valid voxel code', () => {
+    const r = runVoxelGrid(`
       const v = api.voxels();
       v.set(0, 0, 0, '#ff0000');
       v.set(1, 0, 0, '#00ff00');
       return v;
     `);
     if (!r.ok) throw new Error(r.error);
-    expect(r.data.grid.size).toBe(2);
-    expect(r.data.mesh.numTri).toBe(20); // 12 + 12 − 4 culled shared faces
-    expect(r.data.triVoxel.length).toBe(r.data.mesh.numTri * 3);
+    // Cross the "Worker boundary" the way the app does: as transfer data.
+    const grid = VoxelGrid.fromTransfer(r.grid.toTransfer());
+    const run = voxelPaintRunFromGrid(grid);
+    expect(run.grid.size).toBe(2);
+    expect(run.mesh.numTri).toBe(20); // 12 + 12 - 4 culled shared faces
+    expect(run.triVoxel.length).toBe(run.mesh.numTri * 3);
   });
 
   it('reports a clear error for syntax + return-type failures', () => {
-    const bad = runVoxelForPaint('this is not js');
+    const bad = runVoxelGrid('this is not js');
     expect(bad.ok).toBe(false);
     if (bad.ok) throw new Error('expected failure');
     expect(bad.error).toBeTruthy();
 
-    const wrongReturn = runVoxelForPaint('return 42;');
+    const wrongReturn = runVoxelGrid('return 42;');
     expect(wrongReturn.ok).toBe(false);
 
-    const empty = runVoxelForPaint('return api.voxels();');
+    const empty = runVoxelGrid('return api.voxels();');
     expect(empty.ok).toBe(false);
   });
 });

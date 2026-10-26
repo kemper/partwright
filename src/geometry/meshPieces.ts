@@ -77,14 +77,14 @@ export function computeMeshPieces(mesh: PieceMesh): MeshPieces {
   }
 
   // Number the roots in first-triangle order so piece 0 is stable.
-  const rootToPiece = new Map<number, number>();
+  const rootToPiece = new Int32Array(numVert).fill(-1);
+  let count = 0;
   for (let t = 0; t < numTri; t++) {
     const r = find(triVerts[t * 3]);
-    let p = rootToPiece.get(r);
-    if (p === undefined) { p = rootToPiece.size; rootToPiece.set(r, p); }
-    pieceOfTri[t] = p;
+    if (rootToPiece[r] < 0) rootToPiece[r] = count++;
+    pieceOfTri[t] = rootToPiece[r];
   }
-  return { count: rootToPiece.size, pieceOfTri };
+  return { count, pieceOfTri };
 }
 
 /** Union every pair of vertices at the same quantized position. Numeric (sort
@@ -122,7 +122,8 @@ export interface ObjectPartSummary {
 
 export interface ObjectPieceSummary {
   index: number;
-  triangles: number[];
+  /** Ascending triangle ids (a view into one shared buffer — don't mutate). */
+  triangles: Uint32Array;
   /** The part (label) covering most of this piece's surface area, if any. */
   part?: string;
 }
@@ -159,11 +160,21 @@ export function summarizeObjectParts(
     for (let t = 0; t < mesh.numTri; t++) if (owner[t] < 0) unlabeled.push(t);
   }
 
-  const pieceTris: number[][] = Array.from({ length: pieces.count }, () => []);
+  // Counting sort into one typed buffer: pushing millions of ids onto
+  // per-piece JS arrays was most of this function's cost on a big mesh.
+  const start = new Uint32Array(pieces.count + 1);
   for (let t = 0; t < mesh.numTri; t++) {
     const p = pieces.pieceOfTri[t];
-    if (p >= 0) pieceTris[p].push(t);
+    if (p >= 0) start[p + 1]++;
   }
+  for (let p = 0; p < pieces.count; p++) start[p + 1] += start[p];
+  const flat = new Uint32Array(start[pieces.count]);
+  const cursor = start.slice(0, pieces.count);
+  for (let t = 0; t < mesh.numTri; t++) {
+    const p = pieces.pieceOfTri[t];
+    if (p >= 0) flat[cursor[p]++] = t;
+  }
+  const pieceTris = Array.from({ length: pieces.count }, (_, p) => flat.subarray(start[p], start[p + 1]));
   // Weight by surface area, not triangle count: a finely-tessellated handle
   // shouldn't out-vote the big, coarsely-meshed body it's attached to.
   const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
@@ -188,4 +199,70 @@ export function summarizeObjectParts(
   });
 
   return { parts, unlabeled, pieces: summaries };
+}
+
+export interface TriangleSetStats {
+  min: [number, number, number];
+  max: [number, number, number];
+  /** Total surface area of the set. */
+  area: number;
+}
+
+/** Bounding box + surface area of a triangle subset (a part or a piece).
+ *  Null for an empty set. */
+export function triangleSetStats(mesh: PieceMesh, tris: Iterable<number>): TriangleSetStats | null {
+  const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  let area = 0;
+  let any = false;
+  for (const t of tris) {
+    if (t < 0 || t >= mesh.numTri) continue;
+    any = true;
+    const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
+    for (const o of [a, b, c]) {
+      for (let k = 0; k < 3; k++) {
+        const v = vp[o + k];
+        if (v < min[k]) min[k] = v;
+        if (v > max[k]) max[k] = v;
+      }
+    }
+    const ux = vp[b] - vp[a], uy = vp[b + 1] - vp[a + 1], uz = vp[b + 2] - vp[a + 2];
+    const vx = vp[c] - vp[a], vy = vp[c + 1] - vp[a + 1], vz = vp[c + 2] - vp[a + 2];
+    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    area += Math.sqrt(cx * cx + cy * cy + cz * cz) / 2;
+  }
+  return any ? { min, max, area } : null;
+}
+
+/** A standalone mesh of just `tris` (positions only, re-indexed compactly;
+ *  per-triangle colours carried when present) — e.g. to export one piece. */
+export function extractSubMesh<M extends PieceMesh & { triColors?: Uint8Array | null }>(mesh: M, tris: Iterable<number>): { vertProperties: Float32Array; triVerts: Uint32Array; numTri: number; numVert: number; numProp: number; triColors?: Uint8Array } {
+  const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+  const remap = new Map<number, number>();
+  const verts: number[] = [];
+  const outTris: number[] = [];
+  const colors: number[] = [];
+  for (const t of tris) {
+    if (t < 0 || t >= mesh.numTri) continue;
+    for (let k = 0; k < 3; k++) {
+      const v = tv[t * 3 + k];
+      let nv = remap.get(v);
+      if (nv === undefined) {
+        nv = remap.size;
+        remap.set(v, nv);
+        verts.push(vp[v * np], vp[v * np + 1], vp[v * np + 2]);
+      }
+      outTris.push(nv);
+    }
+    if (mesh.triColors) colors.push(mesh.triColors[t * 3], mesh.triColors[t * 3 + 1], mesh.triColors[t * 3 + 2]);
+  }
+  return {
+    vertProperties: new Float32Array(verts),
+    triVerts: new Uint32Array(outTris),
+    numTri: outTris.length / 3,
+    numVert: remap.size,
+    numProp: 3,
+    ...(mesh.triColors ? { triColors: new Uint8Array(colors) } : {}),
+  };
 }

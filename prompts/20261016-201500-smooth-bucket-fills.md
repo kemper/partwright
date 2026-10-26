@@ -79,3 +79,25 @@ smooth fill's live edge can drift slightly from the reloaded one (the coverage
 field depends on the base tessellation, unlike the analytic smooth shapes);
 non-active objects export at triangle resolution (the bake has no clip step).
 Both are rare, and caching the field against the run base is a larger change.
+
+## Assistant
+
+## Sync with main (shared refine pipeline, part scope, export ctx, CSR adjacency)
+
+- Main independently consolidated `descriptorRefines` / `collectRefineRegions`
+  into refinePipeline.ts (the same dedupe this PR did) and added smooth
+  patterns; kept both — the smooth-fill branch sits alongside the pattern one.
+- Main restructured `resolveDescriptorTriangles` around a `ResolveContext` for
+  baking non-active objects. That replaces this PR's ad-hoc `base` parameter:
+  the smooth branch now uses `smoothFillBase(mesh, ctx)` — the object's own
+  mesh under a bake ctx, else the live paint base.
+- Part scope (`withinPart`) composes with smooth fills: the descriptor carries
+  both, and main's resolver wrapper clips the smooth result to the part.
+- **Real regression caught by the unit tests:** main changed the clip's snap
+  tolerance to `CLIP_SNAP_EPS × region.maxEdge` *in field units*. This PR's
+  region used a dimensionless field with `maxEdge: Infinity` ("clip only"), so
+  every vertex counted as on the contour and nothing was cut. The field is now
+  world-scaled by the band's mean edge length and `maxEdge` is that length —
+  snap still means "coverage within 1% of 0.5", and the linear field still
+  means no subdivision.
+- Adjacency is flat CSR now; the near-band shortcut walks `nbStart`/`nbFlat`.

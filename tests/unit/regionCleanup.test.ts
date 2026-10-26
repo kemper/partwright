@@ -19,6 +19,9 @@ import {
 // thin Set-based wrappers use the same options src/color/regionEdit.ts passes
 // (inclusive maxHole, keepLargestIsland, protectOutside) so the cases below
 // pin the paint semantics on real mesh adjacency.
+/** Per-triangle neighbour lists from buildAdjacency's flat CSR. */
+const listsOf = (g: { nbStart: Uint32Array; nbFlat: Uint32Array }): number[][] =>
+  Array.from({ length: g.nbStart.length - 1 }, (_, i) => Array.from(g.nbFlat.subarray(g.nbStart[i], g.nbStart[i + 1])));
 type Nb = ArrayLike<ArrayLike<number>>;
 const sz = (nb: Nb) => nb.length;
 const toMask = (s: Iterable<number>, nb: Nb) => maskFromIndices(sz(nb), s);
@@ -43,7 +46,7 @@ const combineTriangles = (a: Set<number>, others: Set<number>[], op: 'union' | '
   for (const o of others) m = f(m, maskFromIndices(n, o));
   return toSet(m);
 };
-import { addRegion, clearRegions, getRegions, replaceRegion, removeLastRegion, redoLastRegion, serialize } from '../../src/color/regions';
+import { addRegion, clearRegions, getRegions, replaceRegion, removeLastRegion, redoLastRegion, runAsUndoGroup, serialize } from '../../src/color/regions';
 
 /** Flat n×n grid of unit quads, two triangles each. Triangle index for cell
  *  (i, j) is 2·(j·n + i) (+1 for the upper triangle). */
@@ -76,7 +79,7 @@ function cells(n: number, i0: number, i1: number, j0: number, j1: number): Set<n
 
 const N = 12;
 const mesh = grid(N);
-const { neighbors } = buildAdjacency(mesh);
+const neighbors = listsOf(buildAdjacency(mesh));
 
 describe('paint-region clean-up on triSetOps', () => {
   it('grow adds rings and respects the allow filter', () => {
@@ -183,9 +186,33 @@ describe('despeckle on a low-poly closed piece', () => {
     const v = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]].flat();
     const f = [0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7];
     const cube: MeshData = { vertProperties: new Float32Array(v), triVerts: new Uint32Array(f), numVert: 8, numTri: 12, numProp: 3 };
-    const { neighbors: nb } = buildAdjacency(cube);
+    const nb = listsOf(buildAdjacency(cube));
     const r = despeckleTriangles(new Set([2, 3]), nb, 12, { minIslandTriangles: 10, maxHoleTriangles: 10 });
     expect(r.holesFilled).toBe(0);
     expect([...r.triangles].sort()).toEqual([2, 3]);
   });
 });
+
+describe('replaceRegion with undo groups', () => {
+  it('an edit of a group member undoes alone; the group still undoes together', () => {
+    clearRegions();
+    const [a] = runAsUndoGroup(() => [
+      addRegion('A', [1, 0, 0], 'face-pick', { kind: 'triangles', ids: [0] }, new Set([0])),
+      addRegion('B', [0, 1, 0], 'face-pick', { kind: 'triangles', ids: [1] }, new Set([1])),
+    ]);
+    replaceRegion(a.id, new Set([0, 2]), { kind: 'triangles', ids: [0, 2] });
+    // Undo #1: only the edit reverts — B (same group as A's original) stays.
+    removeLastRegion();
+    expect(getRegions().map(r => r.name)).toEqual(['A', 'B']);
+    expect(getRegions()[0].triangles.size).toBe(1);
+    // Undo #2: the group comes off together.
+    removeLastRegion();
+    expect(getRegions()).toHaveLength(0);
+    // Redo puts the group back in order, then the edit.
+    redoLastRegion();
+    expect(getRegions().map(r => r.name)).toEqual(['A', 'B']);
+    redoLastRegion();
+    expect(getRegions()[0].triangles.size).toBe(2);
+  });
+});
+

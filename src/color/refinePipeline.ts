@@ -23,18 +23,30 @@ import { slabRefineRegion } from './slabPaint';
 import { shapeRefineRegion } from './boxPaint';
 import { cylinderRefineRegion } from './cylinderPaint';
 import { isSmoothFill, smoothFillFor } from './smoothFill';
+import { patternRefineRegion, patternSupportsSmooth, type PatternContext } from './colorPattern';
+
+type PatternDescriptor = Extract<RegionDescriptor, { kind: 'pattern' }>;
+
+/** Supplies a smooth pattern descriptor's context (fitted sphere, scope mask —
+ *  resolved against the base mesh, see `PatternContext`). The main thread
+ *  computes it from labels/parts; the Worker reads the copy the main thread
+ *  sent. Null ⇒ the pattern is skipped (no refinement). */
+export type PatternContextProvider = (d: PatternDescriptor, index: number) => PatternContext | null;
 
 /** True when a descriptor drives mesh subdivision: any brush stroke, a slab /
- *  oriented shape / cylinder with smoothing enabled (`smooth` + a positive
- *  `maxEdge`), or a bucket fill with `smooth` set. Descriptors saved before
- *  smoothing existed omit those fields and refine nothing, preserving their
- *  original blocky edges. Shared by the main thread and the subdivision worker
- *  so both always agree on the refine set. */
+ *  oriented shape / cylinder / smooth-capable pattern with smoothing enabled
+ *  (`smooth` + a positive `maxEdge`), or a bucket fill with `smooth` set.
+ *  Descriptors saved before smoothing existed omit those fields and refine
+ *  nothing, preserving their blocky edges. The single predicate shared by
+ *  main.ts and the Worker. */
 export function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
   if (isSmoothFill(d)) return true;
   if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
     return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  }
+  if (d.kind === 'pattern') {
+    return !!d.smooth && (d.maxEdge ?? 0) > 0 && patternSupportsSmooth(d.pattern);
   }
   return false;
 }
@@ -80,17 +92,21 @@ export function buildBrushStrokeFromDescriptor(
   return stroke;
 }
 
-/** Build the ordered refine regions (brush footprints, slab / oriented-shape
- *  boundaries) for a descriptor list. Brush strokes go through
- *  `buildBrushStrokeFromDescriptor`; slabs / shapes call their own region
- *  builders. Descriptors that don't drive subdivision are skipped. */
+/** Build the ordered refine regions (brush footprints, slab / oriented-shape /
+ *  cylinder boundaries, smooth pattern boundaries) for a descriptor list. Brush
+ *  strokes go through `brushBuilder` (default `buildBrushStrokeFromDescriptor`);
+ *  patterns need a `patternContext` provider (their scope lives in labels the
+ *  Worker can't see). Descriptors that don't drive subdivision are skipped.
+ *  The ONE implementation: main.ts and the Worker both call this. */
 export function collectRefineRegions(
   descriptors: RegionDescriptor[],
   base: MeshData,
   brushBuilder: (d: Extract<RegionDescriptor, { kind: 'brushStroke' }>) => BrushStroke = (d) => buildBrushStrokeFromDescriptor(d, base),
+  patternContext?: PatternContextProvider,
 ): RefineRegion[] {
   const regions: RefineRegion[] = [];
-  for (const d of descriptors) {
+  for (let i = 0; i < descriptors.length; i++) {
+    const d = descriptors[i];
     if (d.kind === 'brushStroke') {
       regions.push(brushRefineRegion(brushBuilder(d)));
     } else if (d.kind === 'slab' && descriptorRefines(d)) {
@@ -101,6 +117,10 @@ export function collectRefineRegions(
       regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
     } else if (isSmoothFill(d)) {
       regions.push(smoothFillFor(d, base).refine);
+    } else if (d.kind === 'pattern' && descriptorRefines(d) && patternContext) {
+      const ctx = patternContext(d, i);
+      const region = ctx ? patternRefineRegion(d, ctx, d.maxEdge!) : null;
+      if (region) regions.push(region);
     }
   }
   return regions;
@@ -120,6 +140,11 @@ export interface RefinePipelineResult {
   brushStrokeTriangles: Map<number, Uint32Array>;
 }
 
+/** Progress callback for a refine: `done` of `total` steps finished, with a
+ *  short human-readable label for the step now running. A step is one refining
+ *  descriptor's stroke build, its subdivision pass, or its footprint lookup. */
+export type RefineProgress = (done: number, total: number, label: string) => void;
+
 /** Refine `input` under `descriptors` (built against `base` for stroke
  *  resolution) and resolve every brushStroke descriptor's footprint triangles
  *  on the refined mesh.
@@ -133,17 +158,25 @@ export function refineMeshPipeline(
   base: MeshData,
   input: MeshData,
   descriptors: RegionDescriptor[],
+  patternContext?: PatternContextProvider,
+  onProgress?: RefineProgress,
 ): RefinePipelineResult {
+  const refining = descriptors.filter(descriptorRefines).length;
+  const strokeCount = descriptors.filter(d => d.kind === 'brushStroke').length;
+  const total = strokeCount + refining + strokeCount;
+  let done = 0;
   // Build refine regions once, remembering the resolved brush strokes so we
   // can resolve their footprint triangles on the refined mesh below without
   // rebuilding the geodesic field / normals a second time.
   const brushStrokes = new Map<number, BrushStroke>();
   const regions = collectRefineRegions(descriptors, base, (d) => {
+    onProgress?.(done, total, `Tracing stroke ${brushStrokes.size + 1} of ${strokeCount}`);
     const stroke = buildBrushStrokeFromDescriptor(d, base);
+    done++;
     const idx = descriptors.indexOf(d);
     brushStrokes.set(idx, stroke);
     return stroke;
-  });
+  }, patternContext);
 
   if (regions.length === 0) {
     return {
@@ -153,10 +186,14 @@ export function refineMeshPipeline(
     };
   }
 
-  const { mesh, childToParent } = buildRefinedMesh(input, regions);
+  const { mesh, childToParent } = buildRefinedMesh(input, regions, onProgress && ((i, n) => {
+    onProgress(done + i, total, `Smoothing edge ${i + 1} of ${n}`);
+  }));
+  done += regions.length;
 
   const brushStrokeTriangles = new Map<number, Uint32Array>();
   for (const [idx, stroke] of brushStrokes) {
+    onProgress?.(done++, total, 'Finding painted triangles');
     const tris = strokeFootprintTriangles(mesh, stroke);
     brushStrokeTriangles.set(idx, Uint32Array.from(tris));
   }

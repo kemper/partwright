@@ -53,6 +53,15 @@ const r = await partwright.runAndSave(code, "v2 - added towers", {
 // r.galleryUrl   = gallery URL for human review
 ```
 
+**Not sure whether to re-run?** `commitWithColors` picks for you. Code that differs from the
+editor gets a full `runAndSave`; omitted or unchanged code gets a `saveVersion` snapshot of the
+in-memory geometry and colors (no wasted WASM re-run for a paint-only change):
+
+```js
+const r = await partwright.commitWithColors({ code, label: "v3 - painted", assertions: { isManifold: true } });
+// r.routed = 'run' | 'snapshot', plus the runAndSave / saveVersion result fields — or { error }
+```
+
 ## Forking a prior version
 
 When iterating on a design, the common flow is *load a previous version, tweak it, save as a new version*.
@@ -166,9 +175,30 @@ const r = await partwright.createSessionWithVersions("Castle", [
   { code: v3Code, label: "v3 - gate" },
 ]);
 // r.session = {id, name}
-// r.versions = [{version, geometry}, ...]
+// r.versions = [{version, geometry}, ...]  (a superseded run gives {version: null, error})
 // r.galleryUrl = "/editor?session=abc&gallery"
 ```
+
+The session uses the active engine (`getActiveLanguage()`); each entry is run and saved in order.
+
+## Session lifecycle — console / external agents
+
+The in-app chat agent works inside the one open session; these are for the browser console and
+external agents. Value-returning calls return `{ error }` on bad input.
+
+```js
+partwright.getSessionState()            // cheap snapshot: {session:{id,name}|null, currentPart, parts:[{id,name,order,isCurrent}], currentVersion:{index,label}|null, versionCount}
+partwright.getSessionUrl()              // this-browser URL (IndexedDB-local; hand the user getShareLink() instead)
+await partwright.navigateVersion('prev') // or 'next' — step one version, switching engine to that version's language
+                                        // -> {id, index, label}, null at either end, or {error}
+await partwright.renameSession('Castle v2')        // current session (or pass an id as the 2nd arg) -> {success} or {error}
+await partwright.closeSession()                    // close; an empty session is discarded
+await partwright.deleteSession(id)                 // PERMANENT: the session and all its objects/versions -> {success} or {error}
+await partwright.clearAllSessions()                // PERMANENT: every session in this browser
+```
+
+`deleteSession` and `clearAllSessions` can't be undone — export first (`exportSessionData()`, see
+`/ai/file-io.md`) if there's any doubt.
 
 ## Session notes — tracking design context
 
@@ -190,6 +220,13 @@ await partwright.addSessionNote("[DECISION] Omitted right wall on end pieces for
 await partwright.addSessionNote("[MEASUREMENT] Tongue width = outerW - 2*wallT = 133.7mm");
 await partwright.addSessionNote("[ATTEMPT] v2 tried 3mm walls but too flimsy. Increased to 5mm in v3");
 await partwright.addSessionNote("[TODO] Add chamfer to bottom edge for easier print removal");
+```
+
+Fix or retire a note by id (from `listSessionNotes()`):
+
+```js
+await partwright.updateSessionNote(noteId, "[DECISION] Walls 5mm (was 3mm)");  // -> {success} or {error}
+await partwright.deleteSessionNote(noteId);                                     // -> {success} or {error}
 ```
 
 Version-level notes go in the `runAndSave` assertions object:
@@ -235,3 +272,63 @@ Read the notes and version history before making changes. The notes tell you:
 7. When done, briefly say what you built — it's already saved as a version, so you don't need to produce any link.
    - **In-app chat assistant:** do NOT mint or paste a share/export URL into the conversation. The encoded share link is enormous and pasting it just burns the user's tokens, and the user already has a **Share** button (↗) in the toolbar that builds one on demand. Just confirm the work is saved.
    - **External / console agents** (driving Partwright from outside the browser, e.g. via the console or Claude Code) have no toolbar to click, so hand the user a **share link**: `const { url } = await partwright.getShareLink()` — a self-contained, read-only URL that encodes the whole design so anyone can open and fork it. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
+
+## Mesh quality — curvature, simplify, enhance
+
+The Quality panel (Tools → ○ Quality) is reachable from code:
+
+```js
+partwright.getCurvatureQuality()
+// -> {quality:'highest', segments:128, customSegments, language, presets:{low:16,…,ultra:1024}, defaultSegments}
+await partwright.setCurvatureQuality({ quality: 'medium' })   // or { segments: 48 } (3..4096)
+// -> {quality, segments, geometry:{triangleCount, isManifold, componentCount}} — re-runs the model
+```
+
+Curvature quality is the DEFAULT circle-segment count primitives use when your code passes none.
+It is per tab (not saved in versions) and resets on reload to the Advanced Settings default
+(`ui.defaultQuality`, `ui.scadDefaultQuality`). To fix one faceted feature, pass a segment count
+in the code instead; change the quality when the whole model is too faceted or too heavy.
+
+`simplifyModel` is the panel's Simplify / Enhance. It works on the rendered **mesh** and saves the
+result as a new version — a baked mesh (import wrapper), not parametric code — so treat it as a
+finishing step:
+
+```js
+await partwright.simplifyModel({ targetTris: 20000 })                     // simplify to ~20k triangles
+await partwright.simplifyModel({ targetEdge: 0.5 })                       // drop detail below 0.5 units
+await partwright.simplifyModel({ mode: 'enhance', targetEdge: 1, amount: 2 }) // split edges longer than 0.5
+// -> {ok, mode, before, after, version:{index,label}, message, warnings?} or {error}
+```
+
+Pass exactly one of `targetTris` / `targetEdge`. `amount` (1..6, only with `targetEdge`)
+strengthens it: simplify multiplies the tolerance, enhance halves the edge length per step.
+`preserveColor` (default true) carries paint across. Enhance refuses a projected result over
+`renderer.enhanceMaxTriangles`; over `renderer.enhanceWarnTriangles` it runs and returns a warning.
+SCAD/BREP models come back with a bake warning (the parametric source is replaced by a mesh).
+
+## App settings — `getAppConfig` / `setAppConfig`
+
+```js
+partwright.getAppConfig().renderer.enhanceMaxTriangles
+// -> {value: 5000000, default: 5000000, min: 100000, max: 100000000, integer: true}
+partwright.setAppConfig('import', 'voxelDefaultMaxSize', 96)   // -> {section, key, value, previous}
+```
+
+Every Advanced Settings (⚙) field is readable and settable, validated exactly like the field
+(same type, min/max, integer); keys without a field are not settable. Values persist in this
+browser and apply immediately, except rendering settings that need a reload. The in-app assistant
+may only change a short allow-list of result-affecting settings, and the user confirms each change.
+
+## Debugging with the Diagnostic Log
+
+```js
+await partwright.getDiagnosticLog({ level: 'error', limit: 10 })
+await partwright.getDiagnosticLog({ source: ['engine', 'import'] })
+// -> {entries:[{id, time, level, source, message, detail?}], matched, total}
+```
+
+The log (toolbar ⚠) collects engine failures, import/export problems, uncaught exceptions,
+intercepted console warnings and every toast, newest first. Read it before guessing why something
+failed. Anything that looks like a credential — API keys, `Authorization` headers, `?key=` URL
+parameters, `user:password@` URL userinfo — is redacted, and so is every provider key saved in
+this browser, whatever its format. The default `limit` is `ui.diagnosticLogApiLimit`.

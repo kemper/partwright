@@ -15,6 +15,7 @@ import { streamTurn as geminiStreamTurn } from './gemini';
 import { streamTurn as customStreamTurn } from './custom';
 import { streamLocalTurn } from './local';
 import { getKey } from './db';
+import { resolveCustomApiKey } from './customEndpoints';
 import { loadSettings } from './settings';
 import type { ChatMessage, Provider, TurnUsage } from './types';
 
@@ -83,7 +84,7 @@ export async function streamOneShotTurn(req: OneShotRequest): Promise<OneShotRes
   if (req.provider === 'custom') {
     const baseUrl = loadSettings().toggles.customBaseUrl;
     if (!baseUrl.trim()) throw new Error('Custom endpoint URL required. Set it in AI Settings → Custom.');
-    const key = req.apiKey ?? (await getKey('custom'))?.apiKey ?? '';
+    const key = req.apiKey ?? await resolveCustomApiKey(baseUrl);
     const r = await customStreamTurn({
       apiKey: key,
       baseUrl,

@@ -129,7 +129,8 @@ export function resolveSmoothFillTriangles(
   d: SmoothFillDescriptor,
   base: MeshData,
   mesh: MeshData,
-  adjacency?: { neighbors: ArrayLike<ArrayLike<number>> } | null,
+  /** Flat CSR adjacency for `mesh` (`buildAdjacency`'s nbStart/nbFlat). */
+  adjacency?: { nbStart: ArrayLike<number>; nbFlat: ArrayLike<number> } | null,
 ): Set<number> {
   const field = smoothFillFor(d, base);
   const out = new Set<number>();
@@ -152,7 +153,7 @@ export function resolveSmoothFillTriangles(
     if (field.nearBand(cx, cy, cz)) label[t] = field.inside(cx, cy, cz) ? 1 : 2;
     else far.push(t);
   }
-  const { neighbors } = adjacency;
+  const { nbStart, nbFlat } = adjacency;
   const stack: number[] = [];
   for (const start of far) {
     if (label[start] !== 0) continue;
@@ -161,9 +162,8 @@ export function resolveSmoothFillTriangles(
     stack.push(start);
     while (stack.length > 0) {
       const t = stack.pop()!;
-      const ns = neighbors[t];
-      for (let i = 0; i < ns.length; i++) {
-        const n = ns[i];
+      for (let i = nbStart[t]; i < nbStart[t + 1]; i++) {
+        const n = nbFlat[i];
         if (label[n] !== 0) continue; // near-band triangles were decided above
         label[n] = v;
         stack.push(n);
@@ -370,7 +370,22 @@ export function buildSmoothFillField(base: MeshData, tris: Set<number>, smoothne
 
   const bandFound = lo[0] <= hi[0];
   const pad = bandFound ? 1e-6 * (Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) + 1) : 0;
-  const field = (px: number, py: number, pz: number) => 0.5 - coverage(px, py, pz);
+  // World-scale the field by the band's mean edge length L: the refine
+  // pipeline reads `field` and `maxEdge` in mesh units (its clip snaps vertices
+  // within CLIP_SNAP_EPS × maxEdge of the contour, its straight-edge skip uses
+  // maxEdge × 1e-3), so a dimensionless 0.5 − coverage with an unbounded
+  // maxEdge would make every vertex count as "on" the contour and nothing
+  // would be cut. Scaled, the snap means "coverage within 1% of 0.5".
+  let edgeSum = 0, edgeCount = 0;
+  for (const bt of bandTris) {
+    for (let k = 0; k < 3; k++) {
+      const i = triVerts[bt * 3 + k] * P, j = triVerts[bt * 3 + ((k + 1) % 3)] * P;
+      edgeSum += Math.hypot(vp[i] - vp[j], vp[i + 1] - vp[j + 1], vp[i + 2] - vp[j + 2]);
+      edgeCount++;
+    }
+  }
+  const unit = edgeCount > 0 && edgeSum > 0 ? edgeSum / edgeCount : 1;
+  const field = (px: number, py: number, pz: number) => (0.5 - coverage(px, py, pz)) * unit;
   const classify = (a: number[], b: number[], c: number[]): TriClass => {
     const fa = field(a[0], a[1], a[2]), fb = field(b[0], b[1], b[2]), fc = field(c[0], c[1], c[2]);
     if (fa < 0 && fb < 0 && fc < 0) return 'inside';
@@ -383,9 +398,10 @@ export function buildSmoothFillField(base: MeshData, tris: Set<number>, smoothne
       ? { min: [lo[0] - pad, lo[1] - pad, lo[2] - pad], max: [hi[0] + pad, hi[1] + pad, hi[2] + pad] }
       : { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] },
     // The field is linear inside every base triangle, so subdividing buys
-    // nothing — clip only. (selectByClassify skips triangles finer than this,
-    // and this is ≥ every edge.)
-    maxEdge: Infinity,
+    // nothing — clip only: selectByClassify skips triangles finer than this
+    // and, for coarser ones, sees a straight (linear) field and skips those
+    // too. It also sets the clip's snap tolerance (see `unit` above).
+    maxEdge: unit,
     classify,
     field,
   };

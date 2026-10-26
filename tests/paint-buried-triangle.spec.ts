@@ -29,13 +29,14 @@ test('edge-smoothing paint leaves no large unpainted triangle inside the footpri
   });
 
   const result = await page.evaluate(async ({ code, descriptor }) => {
-    const { manifoldJsEngine } = await import('/src/geometry/engines/manifoldJs.ts');
+    // Model code only runs in the sandboxed engine Worker (#1090) — the
+    // main-thread engine entry points refuse — so build the base mesh there.
+    const { executeCodeAsync } = await import('/src/geometry/engine.ts');
     const { refineMeshPipeline, buildBrushStrokeFromDescriptor } = await import('/src/color/refinePipeline.ts');
     const { strokeSignedDist } = await import('/src/color/subdivide.ts');
 
-    await manifoldJsEngine.init();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const base = (manifoldJsEngine.run(code) as any).mesh;
+    const base = (await executeCodeAsync(code, 'manifold-js') as any).mesh;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const descriptors = [descriptor as any];

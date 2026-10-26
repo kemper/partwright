@@ -11,6 +11,8 @@ import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
 import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { createColorSwatch } from './colorPickerModal';
+import { createSliderEntry, formatEntry } from './sliderEntry';
+import { setToolNote, type ToolOpenContext } from './toolRegistry';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -46,6 +48,9 @@ export interface ParamsPanelController {
   isOpen(): boolean;
   /** Whether the active model declares any parameters. */
   hasParams(): boolean;
+  /** Show (or clear, with null) a "Suggested by AI: …" line above the widgets
+   *  — openTool('tool-customize'). Cleared when the panel closes. */
+  setNote(note: string | null | undefined, source?: ToolOpenContext['source']): void;
 }
 
 const OVERLAY_BTN = 'px-2 py-0.5 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
@@ -95,6 +100,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   header.appendChild(closeBtn);
   root.appendChild(header);
 
+  // AI note slot (openTool prefill) — outside `body`, which rebuilds on a schema change.
+  const noteHost = document.createElement('div');
+  noteHost.className = 'px-2.5 pt-2 empty:hidden';
+  root.appendChild(noteHost);
+
   // Scrollable body holding the widgets.
   const body = document.createElement('div');
   body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(60vh,22rem)]';
@@ -132,6 +142,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
       }
       requestAnimationFrame(() => { clampIntoViewRef?.(); });
     } else if (!willOpen && wasOpen) {
+      noteHost.replaceChildren();
       closeViewportPanel(registryEntry);
       document.removeEventListener('keydown', onParamsEscape);
       escapeListenerActive = false;
@@ -226,6 +237,10 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
     isOpen,
     hasParams() { return paramCount > 0; },
+    setNote(note, source) {
+      setToolNote(noteHost, note, source);
+      noteHost.querySelector('[data-tool-note]')?.classList.remove('mb-2');
+    },
   };
 }
 
@@ -260,63 +275,26 @@ export function buildWidget(spec: ParamSpec, onChange: (key: string, value: Para
     const max = spec.max ?? (typeof spec.default === 'number' ? Math.max(spec.default * 2, spec.default + 10) : 100);
     const step = spec.step ?? (isInt ? 1 : (max - min) / 100 || 1);
 
-    const numInput = document.createElement('input');
-    numInput.type = 'number';
-    // Narrow, mono, right-aligned — reads like the old readout but is editable.
-    numInput.className = 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none';
-    // The field is intentionally *unconstrained* — no min/max attributes — so
-    // the user can type (and spinner-step) a value beyond the author's declared
-    // bounds. min/max only size the slider's convenient range; params.ts honors
-    // an out-of-range typed value rather than clamping it.
-    numInput.step = String(step);
-    labelRow.appendChild(numInput);
-    row.appendChild(labelRow);
-
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.className = 'w-full accent-blue-400 cursor-pointer';
-    slider.min = String(min);
-    slider.max = String(max);
-    slider.step = String(step);
-
-    // Push a value into both controls. When it falls outside the declared
-    // [min, max] (a typed/persisted override that exceeds the slider's range),
-    // grow the slider's bounds to include it so the thumb tracks the true value
-    // instead of pinning at an edge; values inside the range restore it.
-    const reflect = (n: number) => {
-      slider.min = String(Math.min(min, n));
-      slider.max = String(Math.max(max, n));
-      slider.value = String(n);
-      numInput.value = String(n);
-    };
-
-    slider.addEventListener('input', () => { numInput.value = slider.value; });
-    slider.addEventListener('change', () => {
-      const n = isInt ? Math.round(Number(slider.value)) : Number(slider.value);
-      reflect(n);
-      onChange(spec.key, n);
+    // The field is intentionally *unconstrained* (no hard bounds) so the user
+    // can type — and spinner-step — a value beyond the author's declared range;
+    // min/max only size the slider. A value outside it grows the slider's
+    // bounds so the thumb tracks the true value instead of pinning at an edge.
+    const entry = createSliderEntry({
+      min, max, step, value: typeof spec.default === 'number' ? spec.default : min,
+      hardMin: -Infinity, hardMax: Infinity, integer: isInt,
+      format: v => formatEntry(v),
+      overflow: 'grow',
+      dragCommit: 'change',
+      onChange: v => onChange(spec.key, v),
+      rangeClass: 'w-full accent-blue-400 cursor-pointer',
+      // Narrow, mono, right-aligned — reads like the old readout but is editable.
+      inputClass: 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none',
     });
-    row.appendChild(slider);
+    labelRow.appendChild(entry.input);
+    row.appendChild(labelRow);
+    row.appendChild(entry.range);
 
-    const commitField = () => {
-      const raw = Number(numInput.value);
-      if (numInput.value.trim() === '' || !Number.isFinite(raw)) {
-        // Empty / unparseable — revert the field to the slider's value, no run.
-        numInput.value = slider.value;
-        return;
-      }
-      const n = isInt ? Math.round(raw) : raw;
-      reflect(n);
-      onChange(spec.key, n);
-    };
-    numInput.addEventListener('change', commitField);
-    // Enter commits without leaving the field (change already fires on blur).
-    numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); numInput.blur(); } });
-
-    setValue = (v) => {
-      const n = typeof v === 'number' ? v : Number(v);
-      reflect(n);
-    };
+    setValue = (v) => entry.set(typeof v === 'number' ? v : Number(v));
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');
     wrap.className = 'flex items-center';

@@ -30,7 +30,7 @@ apply→save→verify workflow:
 
 | Operation | What it does | Notes |
 |-----------|--------------|-------|
-| `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
+| `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian. `iterations` 1–100 (default 4; more = rounder) | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
 | `engraveModel({ text, raised, through, depth, size, color, axis, side, posU, posV, curveAxis, resolution })` | **Stamps text onto the model** — recessed channels (engrave), holes cut clean through the wall (`through:true`, a stencil), or a **raised relief** (`raised:true`, emboss). `color` paints the letters. Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes or adds** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
@@ -113,6 +113,18 @@ return body;
     click). The Surface panel's **Scope → Near point** picker writes this for you
     from a click; for code, read `getGeometryData()`'s `boundingBox`/`centroid`
     to choose a point.
+  - `select: <selector>` — any selector the shaping ops take
+    ([deform](/ai/deform.md#selecting-part-of-a-shape)): parts, balls, facing /
+    bounds tests, combined with OR / AND / `except`. `label` and `region` are
+    shorthands for the two simplest forms. Pass one of the three keys. Like a
+    `label` scope, the selected faces become seed points with a catch radius
+    of about one mean edge, so the texture's border is approximate (it can
+    reach a little past a facing/bounds edge on a coarse mesh).
+
+    ```js
+    api.surface.knurl({ select: { label: 'grip', where: { facing: 'up' } }, cellWidth: 2.4 }); // top of the grip only
+    api.surface.fuzzy({ select: { except: { label: 'base' } } });                              // everything but the base
+    ```
 
   Scoping is the code-path counterpart of the bake path's `selectedTriangles`
   patch, and the label's color carries onto the textured region automatically.
