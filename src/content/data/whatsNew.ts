@@ -26,6 +26,86 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 25, 2026',
+    headline: 'Partwright 1.9 — safer model code, 3MF import and part editing',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.9',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Huge meshes stay responsive',
+            body: 'Importing or switching to very large meshes no longer freezes the app, and the first imported object is named after its file.',
+          },
+          {
+            title: 'Memory warnings',
+            body: 'Partwright warns when the geometry engine is using a lot of memory and resets it after heavy runs.',
+          },
+        ],
+      },
+      {
+        label: 'Import & export',
+        items: [
+          {
+            title: '3MF import',
+            body: 'Import 3MF files (Bambu, Orca and Prusa projects or plain 3MF) with colours and palette. Multi-object files can be split into separate objects by object or plate.',
+          },
+          {
+            title: 'Cleaner 3MF palettes',
+            body: 'Near-identical colours are merged in a 3MF export’s filament palette.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Edit parts from the Objects rail',
+            body: 'Select parts in the rail to scope paint, sculpt, deforms and scatter, shift-click to select several, then move, split, isolate, rename or bake them.',
+          },
+          {
+            title: 'Round and smoothWeld keep your parts',
+            body: 'Scoped round/smoothWeld can keep api.label parts, and there is a new api.editPart helper.',
+          },
+          {
+            title: 'Creature kit',
+            body: 'A new api.sdf.creature kit with an example creature, plus a random-character button and scrollable presets in the character creator.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'More for the AI to drive',
+            body: 'The AI can prefill the remaining tool panels, knows what you applied, and has the rest of the Partwright tools. Reviews now see your reference images and your own messages.',
+          },
+          {
+            title: 'Custom endpoints',
+            body: 'Save custom OpenAI-compatible endpoints, with context sizing for local models.',
+          },
+        ],
+      },
+      {
+        label: 'Security',
+        items: [
+          {
+            title: 'Locked-down model code',
+            body: 'Model code runs in a locked-down engine Worker that cannot reach the network or storage, with an opt-in cross-origin iframe sandbox in Settings → Security.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 20, 2026',
     headline: 'Partwright 1.8.1 — refreshed AI model list',
     groups: [
