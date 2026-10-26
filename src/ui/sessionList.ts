@@ -13,7 +13,7 @@ import {
   type ExportedSession,
 } from '../storage/sessionManager';
 import type { ImportedMesh } from '../import/importedMesh';
-import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
+import { getSessionLatestVersion, getSessionVersionCount, type Version } from '../storage/db';
 import { languageBadge } from './languageBadge';
 import { showToast } from './toast';
 import { confirmDialog, promptDialog } from './dialogs';
@@ -21,7 +21,9 @@ import { updateAppHistory } from './appHistory';
 import { appPath } from '../deployment';
 
 let modalEl: HTMLElement | null = null;
-let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
+/** Loads the session `openSession` just opened into the editor — its version
+ *  (code, language, params, paint, annotations), or null when it has none. */
+let onLoadVersion: ((version: Version | null) => void | Promise<void>) | null = null;
 type RegenerateThumbnailFn = (
   code: string,
   importedMeshes: ImportedMesh[] | undefined,
@@ -31,11 +33,11 @@ let regenerateThumbnailFn: RegenerateThumbnailFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
-  loadCode: (code: string) => void | Promise<void>,
+  loadVersion: (version: Version | null) => void | Promise<void>,
   regenerateThumbnail?: RegenerateThumbnailFn,
   onNewSession?: () => void,
 ): void {
-  onLoadVersion = loadCode;
+  onLoadVersion = loadVersion;
   regenerateThumbnailFn = regenerateThumbnail ?? null;
   onNewSessionFn = onNewSession ?? null;
 }
@@ -89,7 +91,7 @@ export async function showSessionList(): Promise<void> {
         // button returns to the prior session (updateURL only replaceState's).
         updateAppHistory(appPath('/editor'), 'push');
         const version = await openSession(session.id);
-        if (version && onLoadVersion) onLoadVersion(version.code);
+        if (onLoadVersion) await onLoadVersion(version);
         closeModal();
       } catch (e) {
         showToast('Failed to import session: ' + (e as Error).message, { variant: 'warn', source: 'import' });
@@ -176,9 +178,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
   row.addEventListener('click', async () => {
     updateAppHistory(appPath('/editor'), 'push'); // push before mutating so Back returns to the prior session
     const version = await openSession(session.id);
-    if (version && onLoadVersion) {
-      await onLoadVersion(version.code);
-    }
+    if (onLoadVersion) await onLoadVersion(version);
     closeModal();
   });
 

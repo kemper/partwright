@@ -7217,11 +7217,13 @@ async function main() {
     }
 
     const sessionId = state.session!.id;
-    // Single-version, lean payload: no chat, no notes. Name the shared session
-    // after the current part when the session is multi-part so the preview reads
-    // sensibly (the share covers only the current part's current version).
+    // Single-version, lean payload: no chat, no notes, and only the current
+    // object (the preview and Fork read `versions[0]`, so the other objects'
+    // histories must not ride along). Name the shared session after the current
+    // part when the session is multi-part so the preview reads sensibly.
     const exported = await exportSession(sessionId, {
       versionIndices: [versionIndex],
+      onlyCurrentPart: true,
       includeChat: false,
       includeNotes: false,
     });
@@ -8645,21 +8647,10 @@ async function main() {
 
   // Init session list
   initSessionList(
-    async (code: string) => {
-      // Restore the engine to the loaded version's language. The opened
-      // session's current-version pointer was just refreshed by openSession,
-      // so currentVersion.language (with session-level fallback) is the
-      // right signal here — not session.language alone, which would miss
-      // mixed-language sessions where the active version uses the other
-      // engine.
-      const st = getState();
-      const versionLang = effectiveVersionLanguage(st.currentVersion, st.session);
-      if (versionLang !== getActiveLanguage()) {
-        await switchLanguage(versionLang);
-      }
-      setValue(code);
-      runCode(code);
-    },
+    // The full version load (language, imports, params, paint, annotations),
+    // the same path the URL router uses — so the outgoing session's paint and
+    // annotations never carry over into the one just opened.
+    (version) => loadPartIntoEditor(version),
     async (code: string, importedMeshes) => {
       // Seed this version's imported meshes so `api.imports[0]` resolves to its
       // own geometry when the thumbnail is regenerated (else a stale capture).
@@ -15171,18 +15162,10 @@ async function main() {
       const check = guard(() => assertString(id, 'openSession(id)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const version = await openSession(id);
-      if (version) {
-        // Restore engine to the loaded version's language (per-version since
-        // schema 1.8, with session-level fallback for older data).
-        const lang = effectiveVersionLanguage(version, getState().session);
-        if (lang !== getActiveLanguage()) {
-          await switchLanguage(lang);
-        }
-        setValue(version.code);
-        await runCodeSync(version.code, { preserveCamera: true });
-      }
-      // Attachments are session-level — restore regardless of whether a version loaded.
-      await restoreAttachmentsForActiveSession();
+      // Full version load (language, imports, params, paint, annotations,
+      // attachments), so the previous session's paint and annotations don't
+      // carry over. An empty session gets its starter, as on the URL path.
+      if (getState().session?.id === id) await loadPartIntoEditor(version);
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
 
@@ -17085,7 +17068,8 @@ async function main() {
       });
       if (bad) return bad;
       if (!currentMeshData) return null;
-      const size = (v.size as number | undefined) ?? 500;
+      // Same default as renderView, so an omitted size probes the image it rendered.
+      const size = (v.size as number | undefined) ?? getRenderBudget().defaultPx;
       const [px, py] = opts.pixel;
       if (px < 0 || px >= size || py < 0 || py >= size) {
         return { error: `probePixel.pixel [${px}, ${py}] is outside the ${size}×${size} viewport. Pixel (0,0) is top-left, (${size - 1},${size - 1}) is bottom-right.` };
@@ -17140,7 +17124,7 @@ async function main() {
         const elevation = assertNumber(v.elevation, 'probePixels(pixels, view).elevation', { optional: true, min: -90, max: 90 });
         const azimuth = assertNumber(v.azimuth, 'probePixels(pixels, view).azimuth', { optional: true });
         const ortho = assertBoolean(v.ortho, 'probePixels(pixels, view).ortho', { optional: true });
-        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? 500;
+        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? getRenderBudget().defaultPx;
         const pts: [number, number][] = list.map((p, i) => {
           let xy: number[];
           if (Array.isArray(p)) xy = assertNumberTuple(p, 2, `probePixels(pixels)[${i}]`);
@@ -20227,8 +20211,11 @@ async function main() {
       name?: string;
       /** Inherits the same topOnly shortcut as paintInBox. */
       topOnly?: boolean;
+      withinPart?: string;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintComponent requires { index, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintComponent');
+      if (scopeErr) return { error: scopeErr };
       if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintComponent.index must be a non-negative integer (from listComponents)' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
       if (!liveManifold()) return { error: 'No geometry loaded — run code first.' };
@@ -20249,7 +20236,7 @@ async function main() {
           min: [bb.min[0] - pad, bb.min[1] - pad, bb.min[2] - pad] as [number, number, number],
           max: [bb.max[0] + pad, bb.max[1] + pad, bb.max[2] + pad] as [number, number, number],
         };
-        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly });
+        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly, withinPart: opts.withinPart });
       } catch (err) {
         return { error: `paintComponent failed: ${err instanceof Error ? err.message : String(err)}` };
       } finally {
@@ -21390,7 +21377,7 @@ async function main() {
         'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
         'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
-        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?, withinPart?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
         'getLabelNames': { signature: 'getLabelNames() -- Just the label names registered by the current run -> string[] (empty when none; lighter than listLabels)', docs: '/ai/colors.md' },
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
