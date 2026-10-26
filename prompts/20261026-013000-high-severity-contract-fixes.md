@@ -46,3 +46,27 @@ current code too, so paint following the code is consistent.
 
 **Proof:** `tests/ai-contract-fixes.spec.ts` — all five tests fail on
 `origin/main` and pass on the branch.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**Session switches never stash the outgoing buffer as a draft.** Routing
+openSession through `loadPartIntoEditor` brought along its language-change
+draft save, which ran after `openSession` had already pointed state at the new
+session — so a cross-language open wrote the OUTGOING session's code and paint
+into the INCOMING session's draft slot (proven by a test that fails without the
+fix). `openSession`, the session list and the URL router (popstate A→B, a
+latent case of the same bug) now pass `skipDraftSave` on a session switch.
+
+**A cancelled render still applies the version's annotations and the
+session's attachments** — they don't need the mesh, and skipping them left the
+previous session's live.
+
+**The session list closes before the load**, so a slow compile doesn't hold the
+modal open (inviting a competing click), and an open failure after Import is
+reported as such rather than as an import failure.
+
+**Every view render defaults to the budget size** (`paintPreview`/
+`paintExplain` thumbnails, `runIsolated`'s view), so probing one of those images
+without a size lines up too.

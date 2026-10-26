@@ -8650,7 +8650,9 @@ async function main() {
     // The full version load (language, imports, params, paint, annotations),
     // the same path the URL router uses — so the outgoing session's paint and
     // annotations never carry over into the one just opened.
-    (version) => loadPartIntoEditor(version),
+    // `switchedSession`: the editor buffer still holds the outgoing session,
+    // so it must not be stashed as a draft of the opened one.
+    (version, switchedSession) => loadPartIntoEditor(version, { skipDraftSave: switchedSession }),
     async (code: string, importedMeshes) => {
       // Seed this version's imported meshes so `api.imports[0]` resolves to its
       // own geometry when the thumbnail is regenerated (else a stale capture).
@@ -8916,7 +8918,14 @@ async function main() {
         // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
         // _runGeneration past the one our call started): that newer run owns the
         // store and must not be clobbered with this version's descriptors.
-        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        if (_runGeneration === genBeforeRun + 1) {
+          stageUnresolvedColorRegions(version.geometryData);
+          // Annotations and attachments don't need the mesh — apply them, or a
+          // cancelled render of a newly opened session keeps the previous
+          // session's live (and a later save/attach would persist them here).
+          applyVersionAnnotations(version);
+        }
+        await restoreAttachmentsForActiveSession();
         return;
       }
       // Store the freshly compiled result so the next switch back is instant.
@@ -9594,7 +9603,9 @@ async function main() {
       if (needsSessionLoad || needsPartLoad || needsVersionLoad) {
         const version = await openSession(sessionId, versionIndex ?? undefined, partId ?? undefined);
         if (version) {
-          await loadVersionIntoEditor(version);
+          // A session switch (e.g. Back from B to A): the buffer is the other
+          // session's, so it must not be stashed as this one's language draft.
+          await loadVersionIntoEditor(version, { skipDraftSave: needsSessionLoad });
           // restoreDraftIfNewer self-gates: it only acts when this is the
           // latest version (the tip the user edits), not an older one they
           // navigated back to.
@@ -15161,11 +15172,14 @@ async function main() {
     async openSession(id: string) {
       const check = guard(() => assertString(id, 'openSession(id)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const prevSessionId = getState().session?.id;
       const version = await openSession(id);
       // Full version load (language, imports, params, paint, annotations,
       // attachments), so the previous session's paint and annotations don't
       // carry over. An empty session gets its starter, as on the URL path.
-      if (getState().session?.id === id) await loadPartIntoEditor(version);
+      // The editor buffer still holds the OUTGOING session, so never stash it
+      // as a language draft of the one just opened.
+      if (getState().session?.id === id) await loadPartIntoEditor(version, { skipDraftSave: prevSessionId !== id });
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
 
@@ -16592,7 +16606,8 @@ async function main() {
       if (meshData) {
         try {
           if (view) {
-            thumbnail = renderSingleView(meshData, view);
+            // Same default size as renderView / probePixel, so a probe of this view lines up.
+            thumbnail = renderSingleView(meshData, { ...view, size: view.size ?? getRenderBudget().defaultPx });
           } else {
             const canvas = renderCompositeCanvas(meshData);
             thumbnail = canvas.toDataURL('image/png');
@@ -21661,7 +21676,7 @@ async function main() {
   ): string | null {
     const triColors = buildTriColors(mesh.numTri) ?? createEmptyTriColors(mesh.numTri);
     overlayPainted(triColors, highlightTriangles, [1, 230 / 255, 0]);
-    return renderSingleView({ ...mesh, triColors }, viewOpts);
+    return renderSingleView({ ...mesh, triColors }, { ...viewOpts, size: viewOpts.size ?? getRenderBudget().defaultPx });
   }
 
   /** For a triangle set, compute total surface area, the largest single-

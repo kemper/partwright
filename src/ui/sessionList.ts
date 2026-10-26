@@ -9,6 +9,7 @@ import {
   clearAllSessions,
   exportSession,
   effectiveVersionLanguage,
+  getState,
   type Session,
   type ExportedSession,
 } from '../storage/sessionManager';
@@ -22,8 +23,9 @@ import { appPath } from '../deployment';
 
 let modalEl: HTMLElement | null = null;
 /** Loads the session `openSession` just opened into the editor — its version
- *  (code, language, params, paint, annotations), or null when it has none. */
-let onLoadVersion: ((version: Version | null) => void | Promise<void>) | null = null;
+ *  (code, language, params, paint, annotations), or null when it has none.
+ *  `switchedSession` is true when a different session was open before. */
+let onLoadVersion: ((version: Version | null, switchedSession: boolean) => void | Promise<void>) | null = null;
 type RegenerateThumbnailFn = (
   code: string,
   importedMeshes: ImportedMesh[] | undefined,
@@ -33,7 +35,7 @@ let regenerateThumbnailFn: RegenerateThumbnailFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
-  loadVersion: (version: Version | null) => void | Promise<void>,
+  loadVersion: (version: Version | null, switchedSession: boolean) => void | Promise<void>,
   regenerateThumbnail?: RegenerateThumbnailFn,
   onNewSession?: () => void,
 ): void {
@@ -90,9 +92,15 @@ export async function showSessionList(): Promise<void> {
         // Push the editor entry before the session-mutating open so the Back
         // button returns to the prior session (updateURL only replaceState's).
         updateAppHistory(appPath('/editor'), 'push');
+        const prevSessionId = getState().session?.id;
         const version = await openSession(session.id);
-        if (onLoadVersion) await onLoadVersion(version);
         closeModal();
+        // The load can take a while (a slow model compile) and reports its own
+        // errors — it isn't part of the import, so don't hold the modal or
+        // blame the import for it.
+        void Promise.resolve(onLoadVersion?.(version, prevSessionId !== session.id)).catch((e: unknown) => {
+          showToast('Imported, but opening it failed: ' + (e instanceof Error ? e.message : String(e)), { variant: 'warn', source: 'import' });
+        });
       } catch (e) {
         showToast('Failed to import session: ' + (e as Error).message, { variant: 'warn', source: 'import' });
       }
@@ -177,9 +185,12 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
 
   row.addEventListener('click', async () => {
     updateAppHistory(appPath('/editor'), 'push'); // push before mutating so Back returns to the prior session
+    const prevSessionId = getState().session?.id;
     const version = await openSession(session.id);
-    if (onLoadVersion) await onLoadVersion(version);
+    // Close first: the load can take tens of seconds for a slow model, and a
+    // modal left open invites a second, competing click.
     closeModal();
+    await onLoadVersion?.(version, prevSessionId !== session.id);
   });
 
   // Thumbnail preview (same render as the landing-page session tiles)

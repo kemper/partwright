@@ -123,6 +123,25 @@ test.describe('AI contract fixes (#1134)', () => {
     expect(r.inB).toEqual([]);
   });
 
+  test("opening a session in another language doesn't stash the outgoing session's code as its draft", async () => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const b = await pw.createSession('draft-B');
+      await pw.runAndSave('return api.Manifold.cube([4, 4, 4]);', 'b-js');
+      await pw.createSession('draft-A');
+      await pw.setActiveLanguage('scad');
+      await pw.runAndSave('cube([7, 7, 7]); // session A marker', 'a-scad');
+      await pw.openSession(b.id);
+      const sm = await import('/src/storage/sessionManager.ts');
+      const st = sm.getState();
+      const draft = await sm.readDraft(b.id, 'scad', st.currentPart?.id);
+      return { lang: pw.getActiveLanguage(), draftCode: draft?.code ?? null };
+    });
+    expect(r.lang).toBe('manifold-js');
+    expect(r.draftCode ?? '').not.toContain('session A marker');
+  });
+
   test('a share link from a multi-object session carries only the current object', async () => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

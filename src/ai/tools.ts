@@ -3125,6 +3125,17 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
         if (mismatch) return { content: mismatch, isError: true };
       }
     }
+    if (LEGACY_SCOPE_TOOLS.has(name) && input.scope !== undefined) {
+      const label = (input.scope as { label?: unknown } | null)?.label;
+      if (typeof label !== 'string' || !label) {
+        return { content: 'scope must be { label: "<part name>" } — prefer withinPart: "<part name>"', isError: true };
+      }
+      if (input.withinPart !== undefined && input.withinPart !== label) {
+        return { content: `scope.label "${label}" and withinPart "${String(input.withinPart)}" disagree — pass only withinPart`, isError: true };
+      }
+      input.withinPart = label;
+      delete input.scope;
+    }
     const api = getApi();
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
@@ -3142,17 +3153,6 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
         const focusErr = await focusTargetObject(api, target);
         if (focusErr) return { content: focusErr, isError: true };
       }
-    }
-    if (LEGACY_SCOPE_TOOLS.has(name) && input.scope !== undefined) {
-      const label = (input.scope as { label?: unknown } | null)?.label;
-      if (typeof label !== 'string' || !label) {
-        return { content: 'scope must be { label: "<part name>" } — prefer withinPart: "<part name>"', isError: true };
-      }
-      if (input.withinPart !== undefined && input.withinPart !== label) {
-        return { content: `scope.label "${label}" and withinPart "${String(input.withinPart)}" disagree — pass only withinPart`, isError: true };
-      }
-      input.withinPart = label;
-      delete input.scope;
     }
     // Tools that ship images back to the model bypass the generic JSON
     // dispatch — they need the data-URL → multimodal-image wrapping.
