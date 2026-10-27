@@ -62,3 +62,28 @@ now in one place, and any change to it (the new `console` parameter) yields a
 fresh alert fingerprint wherever it lives. So I kept the design. The release
 skill's CodeQL row now names `modelConsole.ts` as the known site, the call
 site has a comment saying so, and the PR asks an admin to dismiss the alert.
+
+## Assistant
+
+## Review follow-up
+
+A work-reviewer pass found no blockers. I fixed all three should-fix items:
+
+- **BREP shapes**: `console.log(shape)` walked the entire OpenCASCADE
+  Emscripten module through the wrapper's `_shape.oc`. A BREP shape now prints
+  as `BrepShape`, and any object with `HEAP8`/`HEAPU8` prints as
+  `[WASM module]`.
+- **`runAndSave` race**: it now snapshots the run's logs right after
+  `runCodeSync`, so a run started during the save's awaits can't replace them.
+- **Declaring `console`**: top-level `const console` collides with the new
+  parameter. `compileModel` rethrows that SyntaxError with an explanation, and
+  ai.md says `console` is reserved like `api`. Renaming the parameter wouldn't
+  fully fix it (a `var` shim still collides with `const`).
+
+I also took the nits:
+- The formatter is now a small recursive clone with an ancestor path, so a
+  shared reference no longer prints as "[Circular]", nested Errors print, and
+  depth is capped.
+- The Worker installs the log caps next to `setActiveImports`, after the
+  lazy-init awaits.
+- help() lists `logs?` on every run API.

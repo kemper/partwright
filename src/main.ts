@@ -16739,14 +16739,16 @@ async function main() {
         return { passed: false, failures: [runFailedMessage()], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+      // This run's logs, before the saves below give another run a chance to replace them.
+      const logsField = lastRunLogsField();
 
       if (assertions) {
         if (newGeoData.status === 'error') {
-          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...lastRunLogsField() };
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...logsField };
         }
         const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...lastRunLogsField() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...logsField };
         }
       }
 
@@ -16782,7 +16784,7 @@ async function main() {
         ...(lostLabels ? { lostLabels } : {}),
         ...(colorRegions.length > 0 ? { colorRegions } : {}),
         ...(unmatchedPaintReport() ? { unmatchedPaint: unmatchedPaintReport() } : {}),
-        ...lastRunLogsField(),
+        ...logsField,
       };
     },
 
@@ -21740,20 +21742,20 @@ async function main() {
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
         'getParams': { signature: 'getParams() -- Customizer schema the current model declared via api.params({...}) plus resolved values -> {schema, values} ({schema: [], values: {}} when none)', docs: '/ai.md#customizer-parameters-apiparams' },
-        'setParams': { signature: "await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params}; {error} when the model declares no params; {status: 'error', error: 'Run was superseded...'} when a concurrent run won (retry)", docs: '/ai.md#customizer-parameters-apiparams' },
+        'setParams': { signature: "await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params, logs?}; {error} when the model declares no params; {status: 'error', error: 'Run was superseded...'} when a concurrent run won (retry)", docs: '/ai.md#customizer-parameters-apiparams' },
         'getActiveLanguage': { signature: "getActiveLanguage() -- Active engine -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'", docs: '/ai.md#switching-engines' },
         'setActiveLanguage': { signature: "await setActiveLanguage(lang) -- Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the current buffer as a per-language draft and restores the target's draft. Versions keep their own language. Throws on a bad lang", docs: '/ai.md#switching-engines' },
         'isRunning': { signature: 'isRunning() -- Whether geometry code is executing right now -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Isolated execution
-        'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail}', docs: '/ai.md#testing-without-side-effects' },
-        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats}', docs: '/ai.md#assertions----structured-validation' },
-        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[]}', docs: '/ai.md#debugging-disconnected-components' },
+        'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail, logs?}', docs: '/ai.md#testing-without-side-effects' },
+        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats, logs?}', docs: '/ai.md#assertions----structured-validation' },
+        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[], logs?}', docs: '/ai.md#debugging-disconnected-components' },
         'modifyAndTest':   { signature: 'await modifyAndTest(patchFn, assertions?) -- Modify + test without committing -> {modifiedCode, codeDiff, stats, passed?}', docs: '/ai.md#modify-and-test' },
         'query':           { signature: 'query({sliceAt?, decompose?, boundingBox?}) -- Multi-query current geometry', docs: '/ai.md#multi-query-current-geometry' },
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'createSessionWithVersions': { signature: 'await createSessionWithVersions(name, [{code, label?}, ...]) -- New session (active language) with one saved version per entry -> {session: {id, name}, versions: [{version, geometry, error?}], galleryUrl} or {error}', docs: '/ai.md#batch-session-creation' },
-        'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
+        'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call (+ logs?: the model code console output)', docs: '/ai.md#assert--save-in-one-call' },
         'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
         'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2; every detail field is filled) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
         'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },

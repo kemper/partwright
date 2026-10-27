@@ -242,12 +242,12 @@ self.onmessage = async (event: MessageEvent) => {
       containmentSamples?: number;
       modelLog?: { maxLines?: unknown; maxChars?: unknown };
     };
-    // The main thread's caps on captured console output (modelConsole.ts).
-    setModelLogLimits(
-      modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
-        ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
-        : null,
-    );
+    // The main thread's caps on captured console output (modelConsole.ts),
+    // installed next to setActiveImports below — after the lazy-init awaits,
+    // so an execute arriving mid-init can't swap them for this run.
+    const runLogLimits = modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
+      ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
+      : null;
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.
@@ -280,11 +280,13 @@ self.onmessage = async (event: MessageEvent) => {
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
         setActiveImports(runImports);
+        setModelLogLimits(runLogLimits);
         result = voxelEngine.run(code as string, params ?? undefined);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
         setActiveImports(runImports);
+        setModelLogLimits(runLogLimits);
         // Preview callback: post the rough mesh to the main thread so it can
         // update the viewport immediately while Phase 2 (full quality) runs.
         const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
@@ -304,6 +306,7 @@ self.onmessage = async (event: MessageEvent) => {
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
         setActiveImports(runImports);
+        setModelLogLimits(runLogLimits);
         result = await runReplicadAsync(code as string, params ?? undefined);
       } else {
         if (!manifoldReady) {
@@ -329,6 +332,7 @@ self.onmessage = async (event: MessageEvent) => {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
+        setModelLogLimits(runLogLimits);
         // Progressive render for SDF models (figures): a throwaway coarse pass
         // first, posted as `execute_preview` so the viewport shows a rough shape
         // in ~1-2s, then the full-quality pass below. Gated on the source doing

@@ -38,7 +38,16 @@ export interface ModelLog {
  *  locked-down engine Worker (workerLockdown.ts). CodeQL reports it as "Code
  *  injection"; that alert is the known, expected one (release skill). */
 export function compileModel(jsCode: string): (api: unknown, console: Console) => unknown {
-  return new Function('api', 'console', `"use strict";\n${jsCode}`) as (api: unknown, console: Console) => unknown;
+  try {
+    return new Function('api', 'console', `"use strict";\n${jsCode}`) as (api: unknown, console: Console) => unknown;
+  } catch (e) {
+    // `const console = …` at the top of model code now collides with the
+    // parameter; say why instead of a bare redeclaration error.
+    if (e instanceof SyntaxError && /\bconsole\b/.test(e.message) && /already been declared|redeclaration/i.test(e.message)) {
+      throw new SyntaxError(`${e.message}. \`console\` is provided to model code (what it prints comes back as \`logs\`), like \`api\` — rename your variable.`);
+    }
+    throw e;
+  }
 }
 
 export function createModelLog(limits?: ModelLogLimits): ModelLog {
@@ -92,37 +101,43 @@ export function withLogs<T extends object>(result: T, log: ModelLog): T & { logs
 }
 
 /** One console argument as text: strings as-is, solids as a one-line summary,
- *  everything else as compact JSON (cycles and typed arrays made safe). */
+ *  everything else as compact JSON (cycles, typed arrays, errors and WASM
+ *  handles made safe). */
 export function formatValue(v: unknown): string {
   if (typeof v === 'string') return v;
-  if (v === undefined || v === null || typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint' || typeof v === 'symbol') return String(v);
+  const plain = toPlain(v, [], 0);
+  return typeof plain === 'string' && plain !== v ? plain : JSON.stringify(plain) ?? String(v);
+}
+
+const MAX_DEPTH = 6;
+const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** `v` as JSON-safe data. `ancestors` is the path from the root, so an object
+ *  reached twice through different branches prints twice and only a true
+ *  cycle prints as "[Circular]". */
+function toPlain(v: unknown, ancestors: object[], depth: number): unknown {
+  if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : String(v);
+  if (v === undefined || typeof v === 'bigint' || typeof v === 'symbol') return String(v);
   if (typeof v === 'function') return `[Function ${v.name || 'anonymous'}]`;
+  if (typeof v !== 'object') return String(v);
   if (v instanceof Error) return `${v.name}: ${v.message}`;
   const summary = summarize(v);
   if (summary !== null) return summary;
-  const seen = new WeakSet<object>();
-  try {
-    return JSON.stringify(v, (_k, val: unknown) => {
-      if (typeof val === 'bigint') return String(val);
-      if (typeof val === 'function') return `[Function ${(val as { name?: string }).name || 'anonymous'}]`;
-      if (val && typeof val === 'object') {
-        const s = summarize(val);
-        if (s !== null) return s;
-        if (seen.has(val)) return '[Circular]';
-        seen.add(val);
-      }
-      return val;
-    }) ?? String(v);
-  } catch {
-    return Object.prototype.toString.call(v);
+  if (ancestors.includes(v)) return '[Circular]';
+  if (depth >= MAX_DEPTH) return Array.isArray(v) ? `[Array(${v.length})]` : '[Object]';
+  const path = [...ancestors, v];
+  if (Array.isArray(v)) return v.map(e => toPlain(e, path, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (val === undefined || typeof val === 'symbol') continue; // as JSON.stringify drops them
+    out[k] = toPlain(val, path, depth + 1);
   }
+  return out;
 }
 
-const round = (n: number) => Math.round(n * 1000) / 1000;
-
 /** A short description for values JSON can't show usefully, else null. */
-function summarize(v: unknown): string | null {
-  if (!v || typeof v !== 'object') return null;
+function summarize(v: object): string | null {
   if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
     const arr = v as unknown as ArrayLike<number> & { constructor: { name: string } };
     const head = Array.from({ length: Math.min(arr.length, 8) }, (_, i) => arr[i]);
@@ -145,5 +160,9 @@ function summarize(v: unknown): string | null {
       return 'CrossSection{deleted}';
     }
   }
+  // A BREP shape wraps a replicad/OpenCASCADE object that references the
+  // whole Emscripten module; never walk into it.
+  if ('_shape' in o && typeof o.fillet === 'function') return 'BrepShape';
+  if ('HEAP8' in o || 'HEAPU8' in o) return '[WASM module]';
   return null;
 }

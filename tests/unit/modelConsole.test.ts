@@ -74,6 +74,25 @@ describe('formatValue', () => {
     expect(formatValue(function named() {})).toBe('[Function named]');
   });
 
+  it('marks only true cycles circular, and prints nested errors', () => {
+    const shared = { x: 1 };
+    expect(formatValue({ a: shared, b: shared })).toBe('{"a":{"x":1},"b":{"x":1}}');
+    expect(formatValue([shared, [shared]])).toBe('[{"x":1},[{"x":1}]]');
+    expect(formatValue({ err: new TypeError('bad') })).toBe('{"err":"TypeError: bad"}');
+    expect(formatValue({ n: NaN, u: undefined })).toBe('{"n":"NaN"}');
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 10; i++) deep = { d: deep };
+    expect(formatValue(deep)).toContain('"[Object]"');
+  });
+
+  it('never walks into a BREP shape or a WASM module', () => {
+    const oc = { HEAP8: new Int8Array(4), SomeClass: function SomeClass() {} };
+    const brep = { _shape: { oc }, fillet: () => {} };
+    expect(formatValue(brep)).toBe('BrepShape');
+    expect(formatValue({ part: brep })).toBe('{"part":"BrepShape"}');
+    expect(formatValue({ mod: oc })).toBe('{"mod":"[WASM module]"}');
+  });
+
   it('summarises a Manifold-like value instead of dumping it', () => {
     const fake = {
       getMesh: () => ({}),
@@ -91,6 +110,11 @@ describe('compileModel', () => {
     const fn = compileModel('console.log("from model", api.n); return api.n * 2;');
     expect(fn({ n: 21 }, log.console)).toBe(42);
     expect(log.lines()).toEqual(['from model 21']);
+  });
+
+  it('explains a model that declares its own top-level console', () => {
+    expect(() => compileModel('const console = 1; return 0;')).toThrow(/`console` is provided to model code/);
+    expect(() => compileModel('return (')).toThrow(SyntaxError);
   });
 });
 
