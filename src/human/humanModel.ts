@@ -18,6 +18,7 @@
 // Dependency-free (no WASM, no DOM): unit-tested directly, and the sandbox
 // namespace in humanApi.ts turns the result into a Manifold.
 
+import { restyle, isRealistic, type HumanStyle } from './humanStyle';
 export type Vec3 = [number, number, number];
 /** Row-major 3×3 rotation. */
 type Mat3 = number[];
@@ -646,6 +647,8 @@ export interface HumanOptions {
   skinning?: 'dq' | 'linear';
   /** Print height (world units) of the unposed figure, soles to crown. */
   height?: number;
+  /** Proportions (anime / chibi / toy …), applied to the rest pose. */
+  style?: HumanStyle;
 }
 
 type HumanLabel = 'skin' | 'eyes' | 'iris' | 'pupil' | 'lips' | 'brows' | 'mouth';
@@ -801,7 +804,8 @@ export function buildHumanMesh(asset: HumanAsset, opts: HumanOptions = {}): Huma
   const body = { ...DEFAULT_BODY, ...(opts.body ?? {}), ethnicity: { ...DEFAULT_BODY.ethnicity, ...(opts.body?.ethnicity ?? {}) } };
   const face = { ...DEFAULT_FACE, ...(opts.face ?? {}) };
   const torso = { ...DEFAULT_TORSO, ...(opts.torso ?? {}) };
-  const rest = applyMorphs(asset, morphWeights(asset, body, face, torso, opts.morphs));
+  let rest = applyMorphs(asset, morphWeights(asset, body, face, torso, opts.morphs));
+  if (opts.style && !isRealistic(opts.style)) rest = restyle(asset, rest, jointPositions(asset, rest), opts.style);
   const joints = jointPositions(asset, rest);
 
   // Scale from the unposed body (skin only — helpers like the hair cap stick
@@ -839,7 +843,7 @@ export function buildHumanMesh(asset: HumanAsset, opts: HumanOptions = {}): Huma
 
   // Iris / pupil: the eyeball triangles inside a cone around each eye's
   // forward axis (−Y in the rest pose), measured from that eyeball's centroid.
-  const IRIS = Math.cos(28 * DEG), PUPIL = Math.cos(12 * DEG);
+  const IRIS = Math.cos((opts.style?.iris ?? 28) * DEG), PUPIL = Math.cos((opts.style?.pupil ?? 12) * DEG);
   const eyeCentre = [[0, 0, 0, 0], [0, 0, 0, 0]];
   for (let t = 0; t < asset.nT; t++) {
     if (asset.triLabel[t] !== 1) continue;

@@ -1,15 +1,16 @@
 # Parametric human — `api.human` (experimental)
 
-**When to reach for this:** the subject is a **realistic person**, meaning an
-anatomically correct body and face (adult or child) rather than a stylized
-figurine. `api.human` starts from MakeHuman's artist-made base mesh (CC0),
-shapes it with morph targets, poses it with a real skeleton, and returns one
+**When to reach for this:** the subject is a **person**: a realistic
+anatomical body and face (adult or child), or the same body restyled as an
+anime character, a chibi, a Funko-style toy or a comic hero (`style`).
+`api.human` starts from MakeHuman's artist-made base mesh (CC0), shapes it with
+morph targets, poses it with a real skeleton, dresses it, and returns one
 watertight, printable Manifold. You write numbers, not geometry: every result
 is a valid body.
 
 > Status: in progress (kemper/partwright#1151). Hair, beards, clothing, armor,
-> props and hats are built in (below). For a stylized figurine or Funko/chibi
-> toy today, use `api.sdf.figure` / `buildCharacter` (`readDoc("figure")`).
+> props, hats and style presets (anime, chibi, Funko-style toy, heroic) are
+> built in (below).
 
 > Coordinates: same as the figure rig. **Z up, front −Y, figure's left +X.**
 > Soles sit at z = 0 (the base, when on, sits below them).
@@ -123,6 +124,36 @@ elbows; `skinning: 'linear'` is plain linear blending.
 Either way the result should report `isManifold: true` and
 `componentCount: 1`. Check with `runAndSave(code, label, { isManifold: true, maxComponents: 1 })`.
 
+## Style presets (`style`)
+
+`style` restyles the figure — anime, chibi, a Funko-style vinyl toy, heroic
+comic proportions — while every other option (body, face, pose, expression,
+hair, clothes, props) keeps working, because the style reshapes the rest pose
+before the skeleton, clothing and hair are built.
+
+```js
+style: 'chibi'                                     // 'realistic' | 'anime' | 'chibi' | 'funko' | 'heroic'
+style: { preset: 'chibi', head: 2.3, legs: 0.5 }   // a preset with some knobs changed
+```
+
+| key | meaning (1 = MakeHuman's proportions) |
+|---|---|
+| `head` | head size (0.3–3) |
+| `eyes` | eye size |
+| `legs`, `legGirth` / `arms`, `armGirth` | limb length and thickness |
+| `hands`, `feet` | hand / foot size |
+| `torso` | trunk height |
+| `smooth` | 0–100 smoothing passes over the head (drops small anatomy) |
+| `simplify`, `headShape` | 0–1 pull of the head toward a superellipsoid; its exponent 1.5–6 (2 round, 3+ boxy) |
+| `eyeShape` | `'real'` eyeballs, `'anime'` (white, iris, pupil, highlight and lash line — labels `eyes`, `iris`, `pupil`, `highlight`, `lashes`) or `'toy'` (one solid bead, label `eyes`) |
+| `iris`, `pupil` | iris / pupil size on real eyeballs (cone half-angle, degrees) |
+
+Presets also add a few MakeHuman sliders (bigger eye openings, smaller nose
+and mouth, rounder or squarer head) under your own `morphs`, and `funko`
+paints the eyes black and the lips / brows skin-coloured unless you set
+`colors`. Big-headed styles stay one printable piece; expect more triangles
+(the head is bigger at the same print height).
+
 ## Hair and beards (`hair`)
 
 ```js
@@ -207,9 +238,9 @@ Every prop and accessory gets its own label (`sword`, `hilt`, `shield`,
 ## Labels (paint)
 
 `skin`, `lips`, `mouth` (inside the mouth), `brows`, `eyes` (sclera), `iris`,
-`pupil`, `hair`, `beard`, each worn item / accessory by name, and `base`. Each
+`pupil`, `highlight` / `lashes` (anime eyes), `hair`, `beard`, each worn item / accessory by name, and `base`. Each
 is coloured by default; override with `colors: { skin, lips, mouth, brows,
-eyes, iris, pupil, base, hair }`, an item's own `color`, or
+eyes, iris, pupil, highlight, lashes, base, hair }`, an item's own `color`, or
 `api.paint.label('iris', '#3b6ea5')`.
 
 `api.removePart('eyes')` drops the eyeballs (the face is closed behind them).

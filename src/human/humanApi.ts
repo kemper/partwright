@@ -27,6 +27,7 @@ import {
   DEFAULT_BODY, DEFAULT_FACE, DEFAULT_TORSO, EXPRESSION_KEYS, EXPRESSION_PRESETS, HAND_POSES,
 } from './humanModel';
 import { getHumanAsset } from './humanAsset';
+import { resolveStyle, STYLE_PRESETS, STYLE_KEYS, EYE_SHAPES, type StylePreset, type HumanStyle } from './humanStyle';
 import { buildWear, WEAR_ITEMS, ARMOR_ITEMS, type WearOptions } from './humanWear';
 import { buildGear, computeSockets, socketMatrix, ACCESSORY_ITEMS, PROP_ITEMS, type GearOptions } from './humanGear';
 import { buildHairField, HAIR_STYLES, HAIR_FRINGES, BEARD_STYLES, type HairOptions, type HairStyle } from './humanHair';
@@ -35,7 +36,7 @@ const DOC = 'See /ai/human.md';
 const LIMB_KEYS = ['raiseSide', 'raiseFwd', 'bend', 'twist'] as const;
 /** Default paint per label; override with `colors` or `api.paint.label`. */
 const DEFAULT_COLORS: Record<string, string> = {
-  skin: '#c68642', lips: '#a3584a', mouth: '#5a2622', brows: '#3a2a20', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', base: '#4a4a4a', hair: '#3b2a1e',
+  skin: '#c68642', lips: '#a3584a', mouth: '#5a2622', brows: '#3a2a20', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', highlight: '#ffffff', lashes: '#1c1210', base: '#4a4a4a', hair: '#3b2a1e',
 };
 // voxel-weld lattice bounds — API contract limits like meshSdfOps' resolution
 // cap, not tuning knobs: callers pick `voxel` per call. The default (height/300)
@@ -75,7 +76,7 @@ function parsePose(raw: unknown): HumanPose | 'rest' {
 
 function parseOptions(raw: unknown, asset: HumanAsset) {
   const o = raw === undefined ? {} : assertObject(raw, 'human(opts)')!;
-  assertNoUnknownKeys(o, ['height', 'body', 'face', 'torso', 'morphs', 'pose', 'expression', 'skinning', 'wear', 'accessories', 'hold', 'hair', 'weld', 'voxel', 'base', 'colors'], 'human(opts)');
+  assertNoUnknownKeys(o, ['height', 'body', 'face', 'torso', 'morphs', 'pose', 'expression', 'skinning', 'wear', 'accessories', 'hold', 'hair', 'style', 'weld', 'voxel', 'base', 'colors'], 'human(opts)');
   const opts: HumanOptions = {};
   if (o.height !== undefined) opts.height = assertNumber(o.height, 'human.height', { min: 5, max: 2000 })!;
   if (o.body !== undefined) {
@@ -111,6 +112,31 @@ function parseOptions(raw: unknown, asset: HumanAsset) {
       opts.morphs[k] = assertNumber(v, `human.morphs.${k}`, { min: mod.one ? 0 : -1, max: 1 })!;
     }
   }
+  // Style: a preset's proportions and sliders go UNDER the user's own morphs.
+  let styleColors: Record<string, string> = {};
+  if (o.style !== undefined) {
+    let preset: StylePreset = 'realistic';
+    let overrides: Partial<HumanStyle> = {};
+    if (typeof o.style === 'string') preset = assertEnum(o.style, STYLE_PRESETS, 'human.style') as StylePreset;
+    else {
+      const st = assertObject(o.style, 'human.style')!;
+      assertNoUnknownKeys(st, ['preset', 'eyeShape', ...STYLE_KEYS], 'human.style');
+      if (st.preset !== undefined) preset = assertEnum(st.preset, STYLE_PRESETS, 'human.style.preset') as StylePreset;
+      const RATIOS = STYLE_KEYS.filter((k) => !['iris', 'pupil', 'smooth', 'simplify', 'headShape'].includes(k));
+      overrides = numbers(Object.fromEntries(RATIOS.filter((k) => st[k] !== undefined).map((k) => [k, st[k]])), RATIOS, 'human.style', 0.3, 3);
+      for (const k of ['iris', 'pupil'] as const) if (st[k] !== undefined) overrides[k] = assertNumber(st[k], `human.style.${k}`, { min: 0, max: 90 })!;
+      if (st.smooth !== undefined) overrides.smooth = assertNumber(st.smooth, 'human.style.smooth', { min: 0, max: 100 })!;
+      if (st.simplify !== undefined) overrides.simplify = assertNumber(st.simplify, 'human.style.simplify', { min: 0, max: 1 })!;
+      if (st.headShape !== undefined) overrides.headShape = assertNumber(st.headShape, 'human.style.headShape', { min: 1.5, max: 6 })!;
+      if (st.eyeShape !== undefined) overrides.eyeShape = assertEnum(st.eyeShape, EYE_SHAPES, 'human.style.eyeShape');
+    }
+    const resolved = resolveStyle(preset, overrides);
+    opts.style = resolved.style;
+    const extra: Record<string, number> = {};
+    for (const [k, v] of Object.entries(resolved.morphs)) if (asset.targets.has(asset.modifiers.get(k)?.lo ?? asset.modifiers.get(k)?.one ?? '')) extra[k] = v;
+    opts.morphs = { ...extra, ...opts.morphs };
+    styleColors = resolved.colors;
+  }
   if (o.pose !== undefined) opts.pose = parsePose(o.pose);
   if (o.expression !== undefined) {
     if (typeof o.expression === 'string') {
@@ -134,14 +160,18 @@ function parseOptions(raw: unknown, asset: HumanAsset) {
     base = { radius: b.radius, thickness: b.thickness ?? height * 0.04 };
   }
   const colors: Record<string, string> = { ...DEFAULT_COLORS };
+  const userColors: Record<string, string> = {};
   if (o.colors !== undefined) {
     const c = assertObject(o.colors, 'human.colors')!;
     assertNoUnknownKeys(c, Object.keys(DEFAULT_COLORS), 'human.colors');
     for (const [k, v] of Object.entries(c)) {
       if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) throw new ValidationError(`human.colors.${k} must be a "#rrggbb" string. ${DOC}`);
-      colors[k] = v;
+      userColors[k] = v;
     }
   }
+  Object.assign(colors, userColors);
+  // A style's paint (a toy's black eyes; '@skin' = the skin colour) yields to the user's.
+  for (const [k, v] of Object.entries(styleColors)) if (userColors[k] === undefined) colors[k] = v === '@skin' ? colors.skin : v;
   const wear = o.wear === undefined ? [] : parseWear(o.wear);
   const gear = o.accessories === undefined ? [] : parseGear(o.accessories, 'human.accessories');
   if (o.hold !== undefined) {
@@ -384,6 +414,73 @@ export function createHumanNamespace(
     return out;
   }
 
+  /**
+   * Anime / toy eyes. Each eye is an ellipsoid bead centred a little in front
+   * of the eyeball's centre, sized from the eyeball, so it covers the lids and
+   * stands just proud of the face. Anime eyes layer an iris, a pupil and a
+   * highlight on the white; toy eyes are one solid bead.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function sculptedEyes(eyePositions: Float32Array, skinPositions: Float32Array, mesh: ReturnType<typeof buildHumanMesh>, asset: HumanAsset, shape: 'anime' | 'toy', size: number): { label: string; shape: any }[] {
+    const hi = asset.bones.findIndex((b) => b.name === 'head');
+    const R = mesh.bones.R[hi];
+    const out: { label: string; shape: unknown }[] = [];
+    // Split the eyeball vertices by the nearer eye joint; each eyeball's
+    // centre is its centroid and its radius the mean distance from it.
+    const joints = (['L', 'R'] as const).map((sd) => mesh.joints.get(`eye.${sd}____head`)!);
+    const sums = [[0, 0, 0, 0], [0, 0, 0, 0]];
+    const owner = new Uint8Array(eyePositions.length / 3);
+    for (let i = 0, v = 0; i < eyePositions.length; i += 3, v++) {
+      const d = joints.map((j) => Math.hypot(eyePositions[i] - j[0], eyePositions[i + 1] - j[1], eyePositions[i + 2] - j[2]));
+      const e = d[0] <= d[1] ? 0 : 1;
+      owner[v] = e;
+      sums[e][0] += eyePositions[i]; sums[e][1] += eyePositions[i + 1]; sums[e][2] += eyePositions[i + 2]; sums[e][3]++;
+    }
+    const centroid = (e: number) => [sums[e][0] / sums[e][3], sums[e][1] / sums[e][3], sums[e][2] / sums[e][3]];
+    if (!sums[0][3] || !sums[1][3]) return [];
+    const [cL, cR] = [centroid(0), centroid(1)];
+    const spacing = Math.hypot(cL[0] - cR[0], cL[1] - cR[1], cL[2] - cR[2]);
+    for (const [ci, side] of [[0, 1], [1, -1]] as const) {
+      const n = sums[ci][3];
+      if (!n) continue;
+      const c = [sums[ci][0] / n, sums[ci][1] / n, sums[ci][2] / n];
+      let r = 0;
+      for (let i = 0, v = 0; i < eyePositions.length; i += 3, v++) if (owner[v] === ci) r += Math.hypot(eyePositions[i] - c[0], eyePositions[i + 1] - c[1], eyePositions[i + 2] - c[2]) / n;
+      // Head frame: columns of R are the rest axes; forward is −y.
+      const M = [R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[5], R[8], 0, c[0], c[1], c[2], 1];
+      const bead = (w: number, d: number, h: number, fwd: number, up = 0, across = 0) =>
+        Manifold.sphere(1, 40).scale([w, d, h]).translate([across, -fwd, up]).transform(M);
+      // Sized from the distance between the eyes. Seated by the face: its
+      // front stands just proud of the furthest-forward skin (brow, cheek,
+      // lids) within the eye's outline, so the lids never cover it.
+      const w = spacing * (shape === 'toy' ? 0.3 : 0.29) * size;
+      const hgt = shape === 'toy' ? w : spacing * 0.37 * size;
+      let faceFront = r;
+      for (let i = 0; i < skinPositions.length; i += 3) {
+        const q = [skinPositions[i] - c[0], skinPositions[i + 1] - c[1], skinPositions[i + 2] - c[2]];
+        // Local (rest-frame) coordinates: Rᵀ q.
+        const lx = R[0] * q[0] + R[3] * q[1] + R[6] * q[2];
+        const ly = R[1] * q[0] + R[4] * q[1] + R[7] * q[2];
+        const lz = R[2] * q[0] + R[5] * q[1] + R[8] * q[2];
+        if ((lx / (w * 0.8)) ** 2 + (lz / (hgt * 0.8)) ** 2 > 1 || -ly > r * 4) continue;
+        faceFront = Math.max(faceFront, -ly);
+      }
+      const d = spacing * 0.14;
+      const f = faceFront + spacing * 0.025 - d;                // centre; the front is f + d
+      if (shape === 'toy') {
+        out.push({ label: 'eyes', shape: bead(w, d, hgt, f) });
+      } else {
+        out.push({ label: 'eyes', shape: bead(w, d, hgt, f) });
+        out.push({ label: 'iris', shape: bead(w * 0.84, d, hgt * 0.86, f + d * 0.06, -hgt * 0.07) });
+        out.push({ label: 'pupil', shape: bead(w * 0.42, d, hgt * 0.5, f + d * 0.11, -hgt * 0.1) });
+        out.push({ label: 'highlight', shape: Manifold.sphere(spacing * 0.05 * size, 20).translate([side * w * 0.24, -(f + d), hgt * 0.22]).transform(M) });
+        // The upper lash line: a dark arc along the top of the eye.
+        out.push({ label: 'lashes', shape: bead(w * 1.08, d * 0.55, hgt * 0.16, f + d * 0.35, hgt * 0.84, side * w * 0.04) });
+      }
+    }
+    return out as { label: string; shape: any }[];
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function human(rawOpts?: unknown): any {
     const asset = getHumanAsset();
@@ -427,11 +524,20 @@ export function createHumanNamespace(
     }
     // Removing `eyes` drops the eyeballs (the face is closed behind them);
     // iris / pupil fold outward: pupil → iris → sclera.
-    const eyes = isRemoved('eyes') ? null : labelledMesh(
+    const eyeShape = opts.style?.eyeShape ?? 'real';
+    const eyes = isRemoved('eyes') || eyeShape !== 'real' ? null : labelledMesh(
       eyePart.positions, eyePart.triVerts, mesh.eyeLabels as string[], ['eyes', 'iris', 'pupil'],
       function fold(n: string): string { return !isRemoved(n) ? n : n === 'pupil' ? fold('iris') : 'eyes'; }, colors,
     );
     if (eyes) pieces.push(eyes);
+    // Sculpted eyes (anime / toy styles): layered ellipsoids seated on the face
+    // in place of the eyeballs, carried by the head.
+    if (eyeShape !== 'real' && !isRemoved('eyes')) {
+      for (const eye of sculptedEyes(eyePart.positions, skinPart.positions, mesh, asset, eyeShape, opts.style?.eyes ?? 1)) {
+        if (isRemoved(eye.label)) continue;
+        pieces.push(label(lift > 0 ? eye.shape.translate([0, 0, lift]) : eye.shape, eye.label, { color: colors[eye.label] }));
+      }
+    }
     if (gear.length) {
       // Accessories ride the same lift as the clothes.
       for (const g of buildGear(module, asset, mesh, gear, opts.height ?? 60, worn.flatMap((w) => (w.mesh ? [w.mesh.positions] : [])), lift)) {
@@ -442,7 +548,8 @@ export function createHumanNamespace(
     }
     if (hair && (!isRemoved('hair') || !isRemoved('beard'))) {
       const height = opts.height ?? 60;
-      const step = height * HAIR_VOXEL_FRACTION;
+      // A styled big head would otherwise mesh its hair far finer than it needs.
+      const step = height * HAIR_VOXEL_FRACTION * Math.max(1, (opts.style?.head ?? 1) ** 0.75);
       const built = buildHairField(asset, mesh, hair, height, step);
       const { spec } = built;
       const bounds = { min: spec.origin, max: [0, 1, 2].map((c) => spec.origin[c] + ([spec.nx, spec.ny, spec.nz][c] - 1) * step) };

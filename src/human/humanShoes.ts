@@ -21,8 +21,11 @@ const STYLES: Record<typeof FOOTWEAR_ITEMS[number], { top: number; thick: number
   boots:    { top: 0.11, thick: 0.004, sole: 0.007, close: 0.009, heel: 0.006 },
   sabatons: { top: 0.025, thick: 0.006, sole: 0.004, close: 0.013, heel: 0 },
 };
-/** Footwear lattice step as a fraction of the print height. */
-const FOOTWEAR_VOXEL_FRACTION = 1 / 420;
+/** Footwear lattice steps per ankle-to-toe length (sized by the foot, so a
+ *  toy's big feet don't mesh finer than they need). */
+const FOOTWEAR_STEPS_PER_FOOT = 28;
+/** How fast the shoe's top edge rises toward the toes (per unit forward). */
+const TOE_RISE = 0.7;
 
 export interface FootwearField { field: Float32Array; spec: GridSpec; minZ: number }
 
@@ -45,8 +48,9 @@ function segDist(p: Vec3, a: Vec3, b: Vec3): number {
 export function buildFootwear(asset: HumanAsset, mesh: HumanMesh, item: typeof FOOTWEAR_ITEMS[number], height: number, thickness = 1, extraThickness = 0): FootwearField[] {
   const st = STYLES[item];
   const h = height;
-  const voxel = h * FOOTWEAR_VOXEL_FRACTION;
   const J = (n: string) => mesh.joints.get(`${n}____head`)!;
+  const footLen = Math.hypot(...([0, 1, 2].map((c) => J('toe3-1.L')[c] - J('foot.L')[c]) as [number, number, number]));
+  const voxel = footLen / FOOTWEAR_STEPS_PER_FOOT;
   const boneIndex = new Map(asset.bones.map((b, i) => [b.name, i]));
   const skinTris: number[] = [];
   for (let t = 0; t < asset.nT; t++) {
@@ -54,7 +58,8 @@ export function buildFootwear(asset: HumanAsset, mesh: HumanMesh, item: typeof F
     skinTris.push(asset.triVerts[t * 3], asset.triVerts[t * 3 + 1], asset.triVerts[t * 3 + 2]);
   }
   const skinVerts = [...new Set(skinTris)];
-  const thick = st.thick * h * thickness + extraThickness;
+  // At least ~1.3 voxels: a thinner upper can't cover toes thinner than the lattice.
+  const thick = Math.max(st.thick * h * thickness, voxel * 1.3) + extraThickness;
   const sole = st.sole * h;
   const out: FootwearField[] = [];
 
@@ -63,6 +68,7 @@ export function buildFootwear(asset: HumanAsset, mesh: HumanMesh, item: typeof F
     const ankle = J(`foot.${s}`), knee = J(`lowerleg01.${s}`), toe = J(`toe3-1.${s}`);
     const oAnkle = J(`foot.${other}`), oKnee = J(`lowerleg01.${other}`), oToe = J(`toe3-1.${other}`);
     const shinUp = norm(sub(knee, ankle));
+    const footFwd = norm(sub(toe, ankle));
     const R = mesh.bones.R[boneIndex.get(`foot.${s}`)!];
     // The foot's rest "up" (+z) carried into the pose: the sole's normal.
     const soleUp = norm([R[2], R[5], R[8]]);
@@ -72,7 +78,7 @@ export function buildFootwear(asset: HumanAsset, mesh: HumanMesh, item: typeof F
     let lo: Vec3 = [Infinity, Infinity, Infinity], hi: Vec3 = [-Infinity, -Infinity, -Infinity];
     for (const v of skinVerts) {
       const p: Vec3 = [mesh.posed[v * 3], mesh.posed[v * 3 + 1], mesh.posed[v * 3 + 2]];
-      if (dot(sub(p, ankle), shinUp) > top + 0.01 * h || !mine(p)) continue;
+      if (dot(sub(p, ankle), shinUp) - Math.max(0, dot(sub(p, ankle), footFwd)) * TOE_RISE > top + 0.01 * h || !mine(p)) continue;
       if (segDist(p, knee, toe) > 0.2 * h) continue;
       for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], p[c]); hi[c] = Math.max(hi[c], p[c]); }
     }
@@ -114,10 +120,27 @@ export function buildFootwear(asset: HumanAsset, mesh: HumanMesh, item: typeof F
           f = Math.min(f, Math.max(at(p[0] + soleUp[0] * d, p[1] + soleUp[1] * d, p[2] + soleUp[2] * d) - thick * 0.6, -back - 0.02 * h));
         }
       }
-      // End on the shin.
-      f = Math.max(f, dot(sub(p, ankle), shinUp) - top);
+      // End on the shin. The cut rises toward the toes, so a big or
+      // forward-tilted foot never has its toe box trimmed.
+      const ahead = Math.max(0, dot(sub(p, ankle), footFwd));
+      f = Math.max(f, dot(sub(p, ankle), shinUp) - top - ahead * TOE_RISE);
       field[i] = f;
       if (f < 0) minZ = Math.min(minZ, p[2]);
+    }
+    // Toes thinner than the lattice may not rasterize; check this foot's own
+    // skin against the shoe and thicken the shoe enough to cover it.
+    const shoe = makeTrilinearSampler(field, spec);
+    let worst = -Infinity;
+    for (const v of skinVerts) {
+      const p: Vec3 = [mesh.posed[v * 3], mesh.posed[v * 3 + 1], mesh.posed[v * 3 + 2]];
+      if (!mine(p) || dot(sub(p, ankle), shinUp) - Math.max(0, dot(sub(p, ankle), footFwd)) * TOE_RISE > top - thick) continue;
+      const d = shoe(p[0], p[1], p[2]);
+      if (d < 1e5) worst = Math.max(worst, d);
+    }
+    const grow = Math.min(Math.max(0, worst + thick * 0.3), thick * 1.5);
+    if (grow > 0) {
+      for (let i = 0; i < field.length; i++) field[i] -= grow;
+      minZ -= grow;
     }
     out.push({ field, spec, minZ });
   }
