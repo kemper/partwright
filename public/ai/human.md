@@ -7,9 +7,9 @@ shapes it with morph targets, poses it with a real skeleton, and returns one
 watertight, printable Manifold. You write numbers, not geometry: every result
 is a valid body.
 
-> Status: in progress (kemper/partwright#1151). No hair or clothing yet. For a
-> stylized figurine, Funko/chibi toy, hair or clothes today, use
-> `api.sdf.figure` / `buildCharacter` (`readDoc("figure")`).
+> Status: in progress (kemper/partwright#1151). Hair, beards, clothing, armor,
+> props and hats are built in (below). For a stylized figurine or Funko/chibi
+> toy today, use `api.sdf.figure` / `buildCharacter` (`readDoc("figure")`).
 
 > Coordinates: same as the figure rig. **Z up, front −Y, figure's left +X.**
 > Soles sit at z = 0 (the base, when on, sits below them).
@@ -24,6 +24,10 @@ return api.human({
   morphs: { 'nose-hump': 0.5, 'r-ear-lobe': 0.3, 'l-ear-lobe': 0.3 },   // any MakeHuman slider
   expression: 'smile',                              // or { smile: 0.6, browRaise: 0.3, … }
   pose:  { armR: { raiseSide: 140, bend: 40, twist: 60 }, head: { yaw: -10 } },
+  hair:  { style: 'bob', color: '#6b3a1e', beard: 'none' },
+  wear:  ['tshirt', 'jeans', 'sneakers', { item: 'belt', color: '#3b2a1e' }],
+  hold:  { R: 'sword' },                            // closes the hand round the grip
+  accessories: ['cap', 'sunglasses', 'backpack'],
   base:  true,                                      // disc under the feet (or { radius, thickness })
   colors: { skin: '#c68642', iris: '#3b6ea5' },     // optional; defaults paint every label
 });
@@ -98,6 +102,9 @@ label).
 
 `spine: { lean, turn, side }` (lean + = forward) and `head: { yaw, pitch, roll }`.
 
+`handL` / `handR`: `'relaxed' | 'open' | 'fist' | 'grip' | 'point'`, or a
+number 0–1 (0 = open, 1 = fist). `hold` sets `'grip'` for you.
+
 Arms default to relaxed at the sides; legs keep the natural stance unless
 set. `pose: 'rest'` gives MakeHuman's A-pose. Skinning is dual-quaternion by
 default (`skinning: 'dq'`), which keeps volume through bent and twisted
@@ -116,16 +123,100 @@ elbows; `skinning: 'linear'` is plain linear blending.
 Either way the result should report `isManifold: true` and
 `componentCount: 1`. Check with `runAndSave(code, label, { isManifold: true, maxComponents: 1 })`.
 
+## Hair and beards (`hair`)
+
+```js
+hair: 'ponytail'                                   // just a style
+hair: { style: 'long', color: '#c8c8c4', length: 1.2, volume: 1, fringe: 'bangs',
+        beard: 'full', beardColor: '#b0b0aa', beardLength: 1.3 }
+```
+
+| key | values |
+|---|---|
+| `style` | `'bald' \| 'buzz' \| 'short' \| 'bob' \| 'long' \| 'ponytail' \| 'pigtails' \| 'bun' \| 'afro' \| 'mohawk' \| 'spiky'` (`spiky` = anime spikes) |
+| `color` | `'#rrggbb'` (default dark brown) |
+| `length` | 0.3–2.5: bob / long / tails length (1 = natural) |
+| `volume` | 0.3–2.5: thickness off the scalp, curtain fullness, spike size |
+| `fringe` | `'none' \| 'bangs' \| 'side'` |
+| `beard` | `'none' \| 'stubble' \| 'mustache' \| 'goatee' \| 'short' \| 'full'` (own `beard` label) |
+| `beardColor`, `beardLength` | beard colour (defaults to `color`); 0.3–3 length of a full beard |
+
+Hair is a smooth solid (hairline that tapers into the skin, locks, ponytail
+ties) meshed from a signed-distance field, then carried rigidly by the head,
+so it follows `head` / `spine` in any pose. Long hair falls down the back and
+over the shoulders. Hats and helmets sit over it; tall styles (afro, mohawk,
+spiky, bun) poke through a hat by design.
+
+## Clothing (`wear`)
+
+`wear` is a list, innermost first: each entry is an item name or
+`{ item, …options }`. Items are shells over the skin (or over the layer
+beneath), so they fit any body, age and pose and stay printable. Each item is
+its own label (the item name, or `label`), coloured by default.
+
+| item | notes |
+|---|---|
+| `shirt` `top` `tshirt` `sweater` `jacket` `coat` | `sleeve: 'none'\|'cap'\|'short'\|'elbow'\|'three-quarter'\|'long'`, `neckline: 'crew'\|'scoop'\|'v'\|'turtle'\|'boat'`, `length: 'crop'\|'waist'\|'hip'\|'tunic'`; a coat's tails hang free: `length: 'hip'\|'knee'\|'full'` |
+| `pants` `jeans` `shorts` `leggings` `briefs` | `length: 'briefs'\|'shorts'\|'knee'\|'capri'\|'full'`, `rise: 'low'\|'mid'\|'high'` |
+| `skirt` | `length: 'mini'\|'knee'\|'midi'\|'maxi'`, `flare: 0–1` (0 = straight, 0.3 = A-line, 1 = bell); worn over a top, it reads as a dress |
+| `shoes` `sneakers` `boots` | moulded over the foot with the toes closed into one toe box, a sole, and a heel (shoes, boots); `thickness` scales the upper |
+| `socks` `gloves` | thin, follow the skin |
+| `belt` `straps` `scarf` | `width` (fraction of the torso height); `straps` = backpack straps / suspenders |
+
+Common options: `color`, `label`, `thickness` (multiplier, 0.2–5), `fit`
+(0 = tight … 1 = loose). `length` also takes a number, but its meaning is
+item-specific (a fraction up the torso for tops, a position along the leg for
+trousers); prefer the named lengths.
+
+Under a top or a cuirass the nipples are softened automatically (MakeHuman's
+`nipple-size` / `nipple-point` sliders; set them in `morphs` to override).
+
+## Armor (`wear`, too)
+
+`breastplate` (front), `backplate`, `cuirass` (both), `pauldrons`,
+`vambraces`, `gauntlets`, `cuisses`, `greaves`, `sabatons` (armored shoes), `gorget`,
+`tassets`, `helmet` (open face). Plates are stiff: thicker, smoothed so the
+anatomy underneath disappears, with a rim along their edges. They default to
+steel grey; layer them over clothing:
+
+```js
+wear: [{ item: 'sweater', color: '#5a2a2a' }, 'pants', 'boots',
+       'cuirass', 'pauldrons', 'vambraces', 'gauntlets', 'greaves', 'helmet']
+```
+
+## Props, hats and accessories (`hold`, `accessories`)
+
+- `hold: { R: 'sword', L: 'shield' }` puts a prop in a hand and curls the
+  fingers round it. Props: `sword`, `dagger`, `axe`, `spear`, `staff`,
+  `wand`, `torch`, `bow`, `shield` (`style: 'kite'` for a kite shield). Each
+  can be `{ item, color, size, label }`.
+- `accessories: [...]` adds `tophat`, `cap`, `beanie`, `wizardhat`, `crown`,
+  `tiara`, `glasses`, `sunglasses`, `necklace`, `backpack`, `cape`, or a prop
+  (with `hand`). Each is placed from the figure's own measurements and joints,
+  so it fits any head size and follows the pose.
+- **Your own shape:** `{ shape: myManifold, socket: 'hand.R', offset: [x, y, z], rotate: [rx, ry, rz], label, color }`.
+  Sockets: `head`, `face`, `neck`, `chest`, `back`, `waist`, `hip.L/R`,
+  `shoulder.L/R`, `forearm.L/R`, `foot.L/R`, `hand.L/R` (the grip: origin
+  inside the fist, +x along the fingers, +z out of the palm) — or any
+  skeleton bone name (`upperarm01.L`, `spine03`, …). The shape is built in the
+  socket's local frame and rides with that bone.
+
+Every prop and accessory gets its own label (`sword`, `hilt`, `shield`,
+`boss`, `cap`, …).
+
 ## Labels (paint)
 
 `skin`, `lips`, `mouth` (inside the mouth), `brows`, `eyes` (sclera), `iris`,
-`pupil`, and `base`. Each is coloured by default; override with
-`colors: { … }` or `api.paint.label('iris', '#3b6ea5')`.
+`pupil`, `hair`, `beard`, each worn item / accessory by name, and `base`. Each
+is coloured by default; override with `colors: { skin, lips, mouth, brows,
+eyes, iris, pupil, base, hair }`, an item's own `color`, or
+`api.paint.label('iris', '#3b6ea5')`.
 
 `api.removePart('eyes')` drops the eyeballs (the face is closed behind them).
 Removing `iris` or `pupil` can't cut a hole in a closed eyeball, so that region
 merges into the label around it (pupil → iris → sclera); removing `lips`,
-`mouth` or `brows` merges them into `skin`.
+`mouth` or `brows` merges them into `skin`. Removing `hair`, `beard`, or an
+item / accessory label leaves it out.
 
 ## Sliders in the Parameters panel
 
@@ -151,11 +242,11 @@ return api.human({
 
 The data loads on first use, in three packs so a simple figure stays light:
 `core` (~5 MB, always), `morphs` (~2.5 MB, when the code mentions `face`,
-`torso`, `morphs`, `expression` or `style`), `young` (~4 MB, when it mentions
-`age`). If you build options dynamically, keep those words in the source.
+`torso`, `morphs`, `expression`, `style` or `wear`), `young` (~4 MB, when it
+mentions `age`). If you build options dynamically, keep those words in the source.
 
 ## Combining with other geometry
 
-It's a Manifold, so union props, hair or clothing built with `api.sdf` (or
-anything else) onto it. Anything you add must overlap the body by 0.5+ units
-to fuse.
+It's a Manifold, so union anything else onto it. Anything you add must overlap
+the body by 0.5+ units to fuse. To attach a shape to a body part so it follows
+the pose, prefer `accessories: [{ shape, socket }]` over hand-placing it.

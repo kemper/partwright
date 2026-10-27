@@ -66,4 +66,27 @@ test.describe('api.human', () => {
     expect(names).not.toContain('iris');
     expect(names).toContain('pupil');
   });
+
+  test('dresses the figure: hair, beard, clothing, armor, a held prop and a hat, still one piece', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const result = await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code),
+      `return api.human({ height: 60, base: true, body: { gender: 0.9 },
+        hair: { style: 'short', beard: 'full' },
+        wear: ['shirt', 'pants', 'boots', 'cuirass', 'pauldrons', { item: 'belt', color: '#3b2a1e' }],
+        hold: { R: 'sword' }, accessories: ['cape', 'cap'] });`);
+    expect(result.error ?? null).toBeNull();
+    const data = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData());
+    expect(data.isManifold).toBe(true);
+    expect(data.componentCount).toBe(1);
+    const parts = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    const tris = Object.fromEntries((parts.parts ?? []).map((p) => [p.name, p.triangleCount]));
+    for (const name of ['skin', 'hair', 'beard', 'shirt', 'pants', 'boots', 'cuirass', 'pauldrons', 'belt', 'sword', 'cape', 'cap']) {
+      expect(tris[name] ?? 0, name).toBeGreaterThan(0);
+    }
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: 'test-results/human-dressed.png' });
+  });
 });

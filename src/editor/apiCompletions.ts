@@ -189,7 +189,7 @@ const API_MEMBERS: Completion[] = [
   val('CrossSection', 'class', 'The CrossSection (2D) class.', 'class'),
   val('Curves', 'namespace', 'Helpers for parametric curves / paths.', 'variable'),
   val('meshOps', 'namespace', 'Predicates (intersects, pointInside, bbox), alignment (alignTo, placeOn), patterns (linearPattern, circularPattern, mirrorCopy) and robust booleans (expectUnion, heal).', 'variable'),
-  fn('human', '({height?, body?, face?, torso?, pose?, weld?, base?, colors?})', 'Realistic parametric human (MakeHuman CC0 base mesh): morph sliders + skeleton pose → one printable Manifold. See /ai/human.md.'),
+  fn('human', '({height?, body?, face?, torso?, morphs?, expression?, pose?, hair?, wear?, hold?, accessories?, weld?, base?, colors?})', 'Realistic parametric human (MakeHuman CC0 base mesh): morph sliders, expressions, skeleton pose, hair, clothing, armor and props → one printable Manifold. See /ai/human.md.'),
   val('sdf', 'namespace', 'SDF (signed distance field) builder — smooth blends, gyroids, shells, twists. See /ai/sdf.md.', 'variable'),
   val('gears', 'namespace', 'Involute spur gears, meshing pairs, and racks (spur/pair/rack). See /ai/gears.md.', 'variable'),
   val('threads', 'namespace', 'ISO-metric threaded rods, bolts, and nuts (rod/bolt/nut). See /ai/threads.md.', 'variable'),

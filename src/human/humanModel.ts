@@ -215,7 +215,7 @@ export function applyMorphs(asset: HumanAsset, weights: Map<string, number>): Fl
     if (!t) {
       const pack = asset.targetPack.get(name);
       if (!pack) continue;
-      throw new Error(`api.human: this figure needs the "${pack}" data pack, which loads when the code mentions ${pack === 'young' ? '`age`' : '`face`, `torso`, `morphs` or `expression`'}. See /ai/human.md`);
+      throw new Error(`api.human: this figure needs the "${pack}" data pack, which loads when the code mentions ${pack === 'young' ? '`age`' : '`face`, `torso`, `morphs`, `expression` or `wear`'}. See /ai/human.md`);
     }
     const k = wt * t.quantum;
     for (let i = 0; i < t.count; i++) {
@@ -318,11 +318,16 @@ function frame(primary: Vec3, secondary: Vec3): Mat3 {
 
 /** Same vocabulary as `api.sdf.figure`'s rig (degrees). */
 export interface LimbPose { raiseSide: number; raiseFwd: number; bend: number; twist: number }
+/** A hand shape: a named grip or a curl amount 0 (flat) … 1 (fist). */
+export type HandPose = 'relaxed' | 'open' | 'fist' | 'grip' | 'point' | number;
+export const HAND_POSES = ['relaxed', 'open', 'fist', 'grip', 'point'] as const;
+
 export interface HumanPose {
   armL?: Partial<LimbPose>; armR?: Partial<LimbPose>;
   legL?: Partial<LimbPose>; legR?: Partial<LimbPose>;
   spine?: { lean?: number; turn?: number; side?: number };
   head?: { yaw?: number; pitch?: number; roll?: number };
+  handL?: HandPose; handR?: HandPose;
 }
 
 /** Arms relaxed at the sides — MakeHuman's rest is an A-pose. */
@@ -427,6 +432,51 @@ function expressionLocals(asset: HumanAsset, expr: Partial<HumanExpression>): Ma
   return out;
 }
 
+/** Per-finger curl (0…1) for a named hand pose: [thumb, index, middle, ring, pinky]. */
+const HAND_CURL: Record<Exclude<HandPose, number>, number[]> = {
+  relaxed: [0.15, 0.2, 0.25, 0.3, 0.35],
+  open: [0, 0, 0, 0, 0],
+  fist: [0.75, 1, 1, 1, 1],
+  grip: [0.6, 0.78, 0.82, 0.86, 0.9],
+  point: [0.6, 0, 1, 1, 1],
+};
+/** Full-curl angle (degrees) at each knuckle, base → tip. */
+const KNUCKLE_ANGLE = [70, 95, 65];
+
+/**
+ * Finger curl as local rotations: each finger bone turns about the hand's
+ * lateral (index → pinky) axis, toward the palm. The palm side is the side
+ * the thumb sits on, so the curl closes the same way on any hand shape.
+ */
+function handLocals(asset: HumanAsset, joints: Map<string, Vec3>, pose: HumanPose, out: Map<number, { off: Vec3; rot: Mat3 }>) {
+  const byName = new Map(asset.bones.map((b, i) => [b.name, i]));
+  for (const s of ['L', 'R'] as const) {
+    const hp = s === 'L' ? pose.handL : pose.handR;
+    if (hp === undefined) continue;
+    const curl = typeof hp === 'number' ? [clamp(hp, 0, 1) * 0.75, ...[1, 1, 1, 1].map(() => clamp(hp, 0, 1))] : HAND_CURL[hp];
+    const J = (n: string) => joints.get(`${n}.${s}____head`)!;
+    const wrist = J('wrist'), index = J('finger2-1'), pinky = J('finger5-1'), thumb = J('finger1-3');
+    const mid: Vec3 = [(index[0] + pinky[0]) / 2, (index[1] + pinky[1]) / 2, (index[2] + pinky[2]) / 2];
+    const along = norm(sub(mid, wrist));
+    let palm = norm(cross(sub(index, wrist), sub(pinky, wrist)));
+    if (dot(palm, sub(thumb, mid)) < 0) palm = [-palm[0], -palm[1], -palm[2]];
+    // Rotating `along` toward `palm` is a positive turn about along × palm.
+    const axis = norm(cross(along, palm));
+    for (let f = 1; f <= 5; f++) {
+      for (let k = 1; k <= 3; k++) {
+        const i = byName.get(`finger${f}-${k}.${s}`);
+        if (i === undefined) continue;
+        // The thumb curls across the palm about its own axis instead.
+        const ax = f === 1 ? norm(cross(norm(sub(J('finger1-3'), J('finger1-1'))), palm)) : axis;
+        const angle = KNUCKLE_ANGLE[k - 1] * curl[f - 1] * (f === 1 ? 0.6 : 1);
+        const cur = out.get(i) ?? { off: [0, 0, 0] as Vec3, rot: I3 };
+        cur.rot = mul(cur.rot, axisAngle(ax, angle));
+        out.set(i, cur);
+      }
+    }
+  }
+}
+
 /**
  * Per-bone skinning transforms for a pose: world rotation `R[b]` and the
  * translation so that x' = R[b]·(x − head_b) + head'_b. Bones without a pose
@@ -498,6 +548,7 @@ export function solvePose(
 
   // Face bones: expression offsets/rotations, local to the parent's frame.
   const locals = expressionLocals(asset, expression);
+  if (pose !== 'rest') handLocals(asset, joints, pose, locals);
   const R: Mat3[] = new Array(bones.length);
   const T: Vec3[] = new Array(bones.length);
   const headPos = bones.map((b) => joints.get(asset.joints[b.head].name)!);
@@ -615,6 +666,8 @@ export interface HumanMesh {
   rest: Float32Array;
   /** Posed + scaled joint positions by joint name. */
   joints: Map<string, Vec3>;
+  /** Rest-pose (morphed, unscaled dm) joint positions by joint name. */
+  restJoints: Map<string, Vec3>;
   /** Per-bone posed transforms in scaled world units: x' = R·x_rest·scale + T. */
   bones: { R: Mat3[]; T: Vec3[] };
 }
@@ -824,5 +877,5 @@ export function buildHumanMesh(asset: HumanAsset, opts: HumanOptions = {}): Huma
     }
     parts.push({ label, positions: new Float32Array(verts), triVerts: new Uint32Array(tris) });
   }
-  return { parts, eyeLabels, skinLabels, scale: k, posed, rest, joints: posedJoints, bones: bonesWorld };
+  return { parts, eyeLabels, skinLabels, scale: k, posed, rest, joints: posedJoints, restJoints: joints, bones: bonesWorld };
 }

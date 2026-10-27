@@ -30,7 +30,7 @@ export function sourceUsesHuman(code: string): boolean {
 export function humanPacksFor(code: string): HumanPack[] {
   const packs: HumanPack[] = [];
   // Styles and clothing reshape with modelling sliders too.
-  if (/\b(face|torso|morphs|expression|style)\b/.test(code)) packs.push('morphs');
+  if (/\b(face|torso|morphs|expression|style|wear)\b/.test(code)) packs.push('morphs');
   if (/\bage\b/.test(code)) packs.push('young');
   return packs;
 }
