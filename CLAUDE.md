@@ -141,7 +141,7 @@ isolation. Node 22 ships native `fetch`/`Response`/`Blob`/`ReadableStream`/
 provider request builders and SSE parsing with `vi.stubGlobal('fetch', ...)`
 (`localStorage`-backed singletons like `src/ai/settings.ts` also work here —
 they wrap `localStorage` access in try/catch and fall back to defaults when
-it's absent). If a module needs **IndexedDB** or the real DOM, it does
+it's absent). **Never commit key-shaped literals in fixtures** (gitleaks scans full history, so a fake `sk-…` key fails CI and the fix means rewriting the branch) — build them at runtime (`'sk-' + 'x'.repeat(40)`). If a module needs **IndexedDB** or the real DOM, it does
 **not** belong here — keep it in the e2e tier as a
 `page.evaluate(() => import('/src/...'))` test. `tests/ai-autoresume.spec.ts`
 and `tests/ai-transient-retry.spec.ts` are the canonical example: they drive
@@ -711,7 +711,8 @@ Guardrails for automated work, learned the hard way:
 - **Git is single-writer.** The working tree and index are shared mutable state. Don't run git mutations while a subagent is also touching the same checkout. Resolve merges/rebases inline yourself; if you must delegate git work to a subagent, give it an isolated worktree (`isolation: "worktree"`).
 - **Verify state between destructive git steps.** After a merge / rebase / reset, confirm `git status` and HEAD, and that local HEAD matches what you pushed, before moving on.
 - **Validate an external format/integration against its real downstream consumer, not a synthetic proxy.** A headless CLI validator can exercise a completely different code path than the GUI or app it's meant to feed (Bambu's slicer CLI uses a different loader than the desktop app's `load_project`, and OrcaSlicer is not a valid proxy for Bambu-specific behavior) — a "passes my harness" result isn't evidence until the harness is the actual consumer. For any export-format work, an early question is "can I run the real thing that opens this file," not just "can I round-trip it myself."
-- **A delegated subagent's "done and validated" claim can be wrong — re-verify before relying on it.** This applies doubly to `isolation: "worktree"` work: confirm the worktree actually branched from the current feature HEAD (not a stale `origin/main`) before integrating its result.
+- **A delegated subagent's "done and validated" claim can be wrong — re-verify before relying on it.** This applies doubly to `isolation: "worktree"` work: confirm the worktree actually branched from the current feature HEAD (not a stale `origin/main`) before integrating its result. Worktree agents always branch from `origin/main`, so tell them to cherry-pick/merge any prerequisite commit.
+- **Stacked PRs: PR-checks only runs on PRs into `main`, and merge order matters.** Retarget stacked PRs to `main` (note which commits to review), and merge the branch with the biggest overlap with `main` first — merging a sibling first can double the conflict count (16 vs 8 in one series). A merge commit that contains other PRs lands them all at once.
 
 ### After Opening a PR
 
