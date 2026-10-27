@@ -28,15 +28,15 @@ import {
 } from './humanModel';
 import { getHumanAsset } from './humanAsset';
 import { resolveStyle, STYLE_PRESETS, STYLE_KEYS, EYE_SHAPES, type StylePreset, type HumanStyle } from './humanStyle';
-import { buildWear, WEAR_ITEMS, ARMOR_ITEMS, type WearOptions } from './humanWear';
-import { buildGear, computeSockets, socketMatrix, ACCESSORY_ITEMS, PROP_ITEMS, type GearOptions } from './humanGear';
-import { buildHairField, HAIR_STYLES, HAIR_FRINGES, BEARD_STYLES, type HairOptions, type HairStyle } from './humanHair';
+import { buildWear, helmetHairCover, WEAR_ITEMS, ARMOR_ITEMS, type WearOptions } from './humanWear';
+import { buildGear, computeSockets, socketMatrix, ACCESSORY_ITEMS, PROP_ITEMS, COVERING_HATS, type GearOptions } from './humanGear';
+import { buildHairField, HAIR_STYLES, HAIR_FRINGES, BEARD_STYLES, type HairCover, type HairOptions, type HairStyle } from './humanHair';
 
 const DOC = 'See /ai/human.md';
 const LIMB_KEYS = ['raiseSide', 'raiseFwd', 'bend', 'twist'] as const;
 /** Default paint per label; override with `colors` or `api.paint.label`. */
 const DEFAULT_COLORS: Record<string, string> = {
-  skin: '#c68642', lips: '#a3584a', mouth: '#5a2622', brows: '#3a2a20', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', highlight: '#ffffff', lashes: '#1c1210', base: '#4a4a4a', hair: '#3b2a1e',
+  skin: '#c68642', lips: '#a3584a', mouth: '#5a2622', brows: '#3a2a20', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', highlight: '#ffffff', lashes: '#1c1210', rivets: '#5f666e', base: '#4a4a4a', hair: '#3b2a1e',
 };
 // voxel-weld lattice bounds — API contract limits like meshSdfOps' resolution
 // cap, not tuning knobs: callers pick `voxel` per call. The default (height/300)
@@ -197,6 +197,11 @@ function parseOptions(raw: unknown, asset: HumanAsset) {
 
 /** Hair lattice step as a fraction of the print height. */
 const HAIR_VOXEL_FRACTION = 1 / 360;
+/** Segments round a rivet dome. */
+const RIVET_SEGMENTS = 10;
+/** How thick the hair stays under a hat, as a fraction of the print height
+ *  (the hat grows by the same amount). */
+const HAT_HAIR_KEEP = 0.003;
 function parseHair(raw: unknown): HairOptions {
   if (typeof raw === 'string') return { style: assertEnum(raw, HAIR_STYLES, 'human.hair') as HairStyle };
   const o = assertObject(raw, 'human.hair')!;
@@ -251,7 +256,7 @@ function parseGear(raw: unknown, where0: string): GearOptions[] {
   });
 }
 
-const WEAR_KEYS = ['item', 'label', 'color', 'thickness', 'fit', 'sleeve', 'neckline', 'length', 'rise', 'flare', 'width'] as const;
+const WEAR_KEYS = ['item', 'label', 'color', 'thickness', 'fit', 'sleeve', 'neckline', 'length', 'rise', 'flare', 'width', 'rivets'] as const;
 /** Default paint per worn item when it has no `color`. */
 const WEAR_COLORS: Record<string, string> = {
   shirt: '#e8e4da', top: '#e8e4da', tshirt: '#2f6f8f', sweater: '#8a3b3b', jacket: '#3a4a3a', coat: '#4a3b2e',
@@ -260,6 +265,8 @@ const WEAR_COLORS: Record<string, string> = {
   straps: '#4a3a24', scarf: '#b03a2e',
 };
 const METAL = '#9aa3ad';
+/** The breast-point slider under a top: cloth rounds the apex. */
+const COVERED_BREAST_POINT = -0.8;
 /** Worn items that cover the chest. */
 const CHEST_COVER = new Set(['shirt', 'top', 'tshirt', 'sweater', 'jacket', 'coat', 'breastplate', 'cuirass']);
 
@@ -280,6 +287,10 @@ function parseWear(raw: unknown): WearOptions[] {
     if (o.fit !== undefined) out.fit = assertNumber(o.fit, `${where}.fit`, { min: 0, max: 1 })!;
     if (o.flare !== undefined) out.flare = assertNumber(o.flare, `${where}.flare`, { min: 0, max: 1 })!;
     if (o.width !== undefined) out.width = assertNumber(o.width, `${where}.width`, { min: 0.01, max: 0.5 })!;
+    if (o.rivets !== undefined) {
+      if (typeof o.rivets !== 'boolean') throw new ValidationError(`${where}.rivets must be true or false`);
+      out.rivets = o.rivets;
+    }
     if (o.sleeve !== undefined) out.sleeve = assertEnum(o.sleeve, ['none', 'cap', 'short', 'elbow', 'three-quarter', 'long'] as const, `${where}.sleeve`);
     if (o.neckline !== undefined) out.neckline = assertEnum(o.neckline, ['crew', 'scoop', 'v', 'turtle', 'boat'] as const, `${where}.neckline`);
     if (o.rise !== undefined) out.rise = assertEnum(o.rise, ['low', 'mid', 'high'] as const, `${where}.rise`);
@@ -486,10 +497,11 @@ export function createHumanNamespace(
     const asset = getHumanAsset();
     if (!asset) throw new Error(`api.human: the human asset is not loaded (it preloads when the code mentions api.human). ${DOC}`);
     const { opts, weld, voxel, base, colors, wear, gear, hair } = parseOptions(rawOpts, asset);
-    // Under a top or a cuirass, soften the nipples (MakeHuman's own sliders)
-    // so they don't print through the cloth; explicit morphs still win.
+    // Under a top or a cuirass, soften the nipples and round the breasts'
+    // apex (MakeHuman's own sliders) so they don't print through the cloth;
+    // explicit morphs still win.
     if (wear.some((w) => CHEST_COVER.has(w.item)) && asset.targets.has('breast/nipple-size-decr')) {
-      opts.morphs = { 'nipple-size': -1, 'nipple-point': -1, ...opts.morphs };
+      opts.morphs = { 'nipple-size': -1, 'nipple-point': -1, 'breast-point': COVERED_BREAST_POINT, ...opts.morphs };
     }
     const mesh = buildHumanMesh(asset, opts);
     const worn = buildWear(asset, mesh, wear, opts.height ?? 60);
@@ -503,7 +515,10 @@ export function createHumanNamespace(
     const lift = -minZ;
     if (lift > 0) {
       for (const part of mesh.parts) for (let i = 2; i < part.positions.length; i += 3) part.positions[i] += lift;
-      for (const w of worn) if (w.mesh) for (let i = 2; i < w.mesh.positions.length; i += 3) w.mesh.positions[i] += lift;
+      for (const w of worn) {
+        if (w.mesh) for (let i = 2; i < w.mesh.positions.length; i += 3) w.mesh.positions[i] += lift;
+        for (const r of w.rivets ?? []) r.pos = [r.pos[0], r.pos[1], r.pos[2] + lift];
+      }
     }
     const skinPart = mesh.parts.find((p) => p.label === 'skin')!;
     const eyePart = mesh.parts.find((p) => p.label === 'eyes')!;
@@ -538,19 +553,24 @@ export function createHumanNamespace(
         pieces.push(label(lift > 0 ? eye.shape.translate([0, 0, lift]) : eye.shape, eye.label, { color: colors[eye.label] }));
       }
     }
-    if (gear.length) {
-      // Accessories ride the same lift as the clothes.
-      for (const g of buildGear(module, asset, mesh, gear, opts.height ?? 60, worn.flatMap((w) => (w.mesh ? [w.mesh.positions] : [])), lift)) {
-        if (isRemoved(g.label)) continue;
-        const shape = lift > 0 ? (g.manifold as { translate(v: number[]): unknown }).translate([0, 0, lift]) : g.manifold;
-        pieces.push(label(shape, g.label, { color: g.color }));
-      }
-    }
+    // Hair first: headwear sizes itself from it. A hat or helmet presses the
+    // hair flat under it; a crown or tiara sits on it.
+    let hairAt: ((x: number, y: number, z: number) => number) | null = null;
+    let hairPad = 0;
     if (hair && (!isRemoved('hair') || !isRemoved('beard'))) {
       const height = opts.height ?? 60;
+      const helmet = wear.find((w) => w.item === 'helmet' && !isRemoved(w.label ?? w.item));
+      const hat = gear.some((g) => (COVERING_HATS as readonly string[]).includes(g.item) && !isRemoved(g.label ?? g.item));
+      let cover: HairCover | null = null;
+      if (helmet) cover = helmetHairCover(mesh, helmet);
+      else if (hat && hair.style !== 'bald') {
+        hairPad = height * HAT_HAIR_KEEP;
+        const bandZ = computeSockets(asset, mesh, height).measures.bandZ;
+        cover = { edge: () => bandZ, keep: hairPad };
+      }
       // A styled big head would otherwise mesh its hair far finer than it needs.
       const step = height * HAIR_VOXEL_FRACTION * Math.max(1, (opts.style?.head ?? 1) ** 0.75);
-      const built = buildHairField(asset, mesh, hair, height, step);
+      const built = buildHairField(asset, mesh, hair, height, step, cover);
       const { spec } = built;
       const bounds = { min: spec.origin, max: [0, 1, 2].map((c) => spec.origin[c] + ([spec.nx, spec.ny, spec.nz][c] - 1) * step) };
       // Built in the head's rest frame; the head socket carries it into the pose.
@@ -560,14 +580,30 @@ export function createHumanNamespace(
         const shape = Manifold.levelSet((p: [number, number, number]) => -sample(p[0], p[1], p[2]), bounds, step, 0).transform(head);
         return lift > 0 ? shape.translate([0, 0, lift]) : shape;
       };
-      if (built.field && !isRemoved('hair')) pieces.push(label(mesh1(built.field), 'hair', { color: hair.color ?? colors.hair }));
+      if (built.field && !isRemoved('hair')) {
+        pieces.push(label(mesh1(built.field), 'hair', { color: hair.color ?? colors.hair }));
+        hairAt = makeTrilinearSampler(built.field, spec);
+      }
       if (built.beard && !isRemoved('beard')) pieces.push(label(mesh1(built.beard), 'beard', { color: hair.beardColor ?? hair.color ?? colors.hair }));
+    }
+    if (gear.length) {
+      // Accessories ride the same lift as the clothes.
+      for (const g of buildGear(module, asset, mesh, gear, opts.height ?? 60, worn.flatMap((w) => (w.mesh ? [w.mesh.positions] : [])), lift, { pad: hairPad, at: hairAt })) {
+        if (isRemoved(g.label)) continue;
+        const shape = lift > 0 ? (g.manifold as { translate(v: number[]): unknown }).translate([0, 0, lift]) : g.manifold;
+        pieces.push(label(shape, g.label, { color: g.color }));
+      }
     }
     for (const w of worn) {
       if (isRemoved(w.label)) continue;
       const isMetal = (ARMOR_ITEMS as readonly string[]).includes(w.label);
       const color = w.color ?? WEAR_COLORS[w.label] ?? (isMetal ? METAL : '#888888');
       if (w.mesh) pieces.push(label(ofMeshSafe(w.mesh.positions, w.mesh.triVerts, w.label), w.label, { color }));
+      // Rivets: domes sunk a third into the plate.
+      if (w.rivets?.length && !isRemoved('rivets')) {
+        const studs = w.rivets.map((r) => Manifold.sphere(r.r, RIVET_SEGMENTS).translate([r.pos[0] - r.n[0] * r.r * 0.35, r.pos[1] - r.n[1] * r.r * 0.35, r.pos[2] - r.n[2] * r.r * 0.35]));
+        pieces.push(label(Manifold.union(studs), 'rivets', { color: colors.rivets }));
+      }
       // Footwear comes as one signed-distance field per foot.
       for (const f of w.fields ?? []) {
         const sample = makeTrilinearSampler(f.field, f.spec);

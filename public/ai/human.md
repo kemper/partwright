@@ -175,8 +175,10 @@ hair: { style: 'long', color: '#c8c8c4', length: 1.2, volume: 1, fringe: 'bangs'
 Hair is a smooth solid (hairline that tapers into the skin, locks, ponytail
 ties) meshed from a signed-distance field, then carried rigidly by the head,
 so it follows `head` / `spine` in any pose. Long hair falls down the back and
-over the shoulders. Hats and helmets sit over it; tall styles (afro, mohawk,
-spiky, bun) poke through a hat by design.
+over the shoulders. Under a hat (`tophat`, `cap`, `beanie`, `wizardhat`) or a
+`helmet` the hair is pressed flat to a thin layer and shows below the brim (a
+ponytail leaves the head just under the edge); the hat grows to fit over it.
+A `crown` or `tiara` sits on the hair instead: on top of an afro, round a bob.
 
 ## Clothing (`wear`)
 
@@ -199,16 +201,24 @@ Common options: `color`, `label`, `thickness` (multiplier, 0.2–5), `fit`
 item-specific (a fraction up the torso for tops, a position along the leg for
 trousers); prefer the named lengths.
 
-Under a top or a cuirass the nipples are softened automatically (MakeHuman's
-`nipple-size` / `nipple-point` sliders; set them in `morphs` to override).
+Tops and breastplates span the cleavage and the crease under the bust, as
+taut cloth does, instead of shrink-wrapping them. Under a top or a cuirass the
+nipples are softened and the bust's apex rounded automatically (MakeHuman's
+`nipple-size` / `nipple-point` / `breast-point` sliders; set them in `morphs`
+to override).
 
 ## Armor (`wear`, too)
 
 `breastplate` (front), `backplate`, `cuirass` (both), `pauldrons`,
 `vambraces`, `gauntlets`, `cuisses`, `greaves`, `sabatons` (armored shoes), `gorget`,
-`tassets`, `helmet` (open face). Plates are stiff: thicker, smoothed so the
-anatomy underneath disappears, with a rim along their edges. They default to
-steel grey; layer them over clothing:
+`tassets`, `helmet` (open face, clear of the ears, with a nape guard). Plates
+are stiff: thicker, smoothed so the anatomy underneath disappears, with a
+bevelled edge and a rolled rim. Each piece carries its own relief: a keel down
+the cuirass, ridges down the shins (greaves), thighs (cuisses) and forearms
+(vambraces), a crest over the helmet, and overlapping lames on the pauldrons,
+gorget and tassets. Rivets run along the plate edges as their own `rivets`
+label (dark steel); `{ item: 'cuirass', rivets: false }` leaves them off. They
+default to steel grey; layer them over clothing:
 
 ```js
 wear: [{ item: 'sweater', color: '#5a2a2a' }, 'pants', 'boots',
@@ -238,9 +248,9 @@ Every prop and accessory gets its own label (`sword`, `hilt`, `shield`,
 ## Labels (paint)
 
 `skin`, `lips`, `mouth` (inside the mouth), `brows`, `eyes` (sclera), `iris`,
-`pupil`, `highlight` / `lashes` (anime eyes), `hair`, `beard`, each worn item / accessory by name, and `base`. Each
+`pupil`, `highlight` / `lashes` (anime eyes), `hair`, `beard`, `rivets` (armor studs), each worn item / accessory by name, and `base`. Each
 is coloured by default; override with `colors: { skin, lips, mouth, brows,
-eyes, iris, pupil, highlight, lashes, base, hair }`, an item's own `color`, or
+eyes, iris, pupil, highlight, lashes, rivets, base, hair }`, an item's own `color`, or
 `api.paint.label('iris', '#3b6ea5')`.
 
 `api.removePart('eyes')` drops the eyeballs (the face is closed behind them).

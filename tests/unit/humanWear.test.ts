@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { parseHumanAsset, buildHumanMesh, type HumanAssetMeta } from '../../src/human/humanModel';
-import { buildWear, WEAR_ITEMS, ARMOR_ITEMS, type ShellMesh } from '../../src/human/humanWear';
+import { buildWear, BodyContext, WEAR_ITEMS, ARMOR_ITEMS, type ShellMesh } from '../../src/human/humanWear';
 import { buildHairField, HAIR_STYLES } from '../../src/human/humanHair';
 import { computeSockets } from '../../src/human/humanGear';
 import { makeTrilinearSampler } from '../../src/geometry/meshSdf';
@@ -72,6 +72,38 @@ describe('human wear', () => {
     for (const f of shoes.fields!) expect(f.minZ).toBeLessThan(0);
   }, HEAVY);
 
+  it('plates carry rivets along their edges unless turned off', () => {
+    const [studded] = buildWear(asset, mesh, [{ item: 'cuirass' }], H);
+    expect(studded.rivets?.length ?? 0).toBeGreaterThan(10);
+    const [plain] = buildWear(asset, mesh, [{ item: 'cuirass', rivets: false }], H);
+    expect(plain.rivets).toBeUndefined();
+  }, HEAVY);
+
+  it('a top bridges the cleavage instead of following it', () => {
+    const female = buildHumanMesh(asset, { height: H, body: { gender: 0, breast: 1 } });
+    const ctx = new BodyContext(asset, female);
+    // The cleavage: the front-most skin on the mid-line between the breasts' apexes.
+    const zc = (female.joints.get('breast.L____tail')![2] + female.joints.get('breast.R____tail')![2]) / 2;
+    const front = (pos: ArrayLike<number>) => {
+      let y = Infinity;
+      for (let i = 0; i < pos.length; i += 3) if (Math.abs(pos[i]) < H * 0.004 && Math.abs(pos[i + 2] - zc) < H * 0.004) y = Math.min(y, pos[i + 1]);
+      return y;
+    };
+    const skin = front(female.posed);
+    const bridged = front(buildWear(asset, female, [{ item: 'tshirt' }], H)[0].mesh!.positions);
+    const orig = BodyContext.prototype.bustBridge;
+    BodyContext.prototype.bustBridge = function () { return { ...orig.call(this), weight: new Float32Array(asset.nV) }; };
+    try {
+      const hugging = front(buildWear(asset, female, [{ item: 'tshirt' }], H)[0].mesh!.positions);
+      // Without the bridge the shirt dips into the cleavage; with it, it
+      // spans it well in front of the skin.
+      expect(skin - bridged).toBeGreaterThan((skin - hugging) * 2);
+    } finally {
+      BodyContext.prototype.bustBridge = orig;
+    }
+    expect(ctx.bustRegion().some((w) => w > 0.9)).toBe(true);
+  }, HEAVY);
+
   it('flare swings a skirt out', () => {
     const width = (m: ShellMesh) => { let lo = Infinity, hi = -Infinity; for (let i = 0; i < m.positions.length; i += 3) { lo = Math.min(lo, m.positions[i]); hi = Math.max(hi, m.positions[i]); } return hi - lo; };
     const [straight] = buildWear(asset, mesh, [{ item: 'skirt', length: 'midi' }], H);
@@ -106,6 +138,25 @@ describe('human hair', () => {
       expect(hair!(crown[0], crown[1], crown[2]), style).toBeLessThan(0);
       expect(hair!(eye[0], eye[1] - H * 0.004, eye[2]), style).toBeGreaterThan(0);
     }
+  }, HEAVY);
+
+  it('a hat presses the hair flat above its band; below it the hair stays full', () => {
+    const band = crown[2] - H * 0.03;
+    const free = buildHairField(asset, mesh, { style: 'afro' }, H, H / 200);
+    const capped = buildHairField(asset, mesh, { style: 'afro' }, H, H / 200, { edge: () => band, keep: H * 0.003 });
+    const at = (r: typeof free) => makeTrilinearSampler(r.field!, r.spec);
+    // Over the crown, where the afro stands far off the scalp: hair, then none.
+    const above: [number, number, number] = [crown[0], crown[1], crown[2] + H * 0.02];
+    expect(at(free)(...above)).toBeLessThan(0);
+    expect(at(capped)(...above)).toBeGreaterThan(0);
+    // The crown itself stays covered by the thin layer.
+    expect(at(capped)(crown[0], crown[1], crown[2])).toBeLessThan(0);
+    // Well below the band, the hair is untouched.
+    const side: [number, number, number] = [0, 0, band - H * 0.06];
+    let x = 0;
+    while (x < H * 0.2 && at(free)(x, side[1], side[2]) < 0 === false) x += H / 400;
+    while (x < H * 0.2 && at(free)(x, side[1], side[2]) < 0) x += H / 400;
+    expect(at(capped)(x - H / 200, side[1], side[2])).toBeLessThan(0);
   }, HEAVY);
 
   it('a full beard covers the chin, not the lips', () => {
