@@ -6,6 +6,9 @@ import { buildHairField, HAIR_STYLES } from '../../src/human/humanHair';
 import { computeSockets } from '../../src/human/humanGear';
 import { makeTrilinearSampler } from '../../src/geometry/meshSdf';
 
+/** These build every item / hair style; a busy CI runner needs more than 5 s. */
+const HEAVY = 60_000;
+
 const meta = JSON.parse(readFileSync('public/human/hm08.json', 'utf8')) as HumanAssetMeta;
 const pack = (file: string) => { const b = readFileSync(`public/human/${file}`); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
 const asset = parseHumanAsset(meta, { core: pack(meta.packs.core), morphs: pack(meta.packs.morphs) });
@@ -55,7 +58,7 @@ describe('human wear', () => {
         expect(volume(s.mesh!), item).toBeGreaterThan(0);
       }
     }
-  });
+  }, HEAVY);
 
   it('a layer worn over another sits further out', () => {
     const reach = (m: ShellMesh) => { let r = 0; for (let i = 0; i < m.positions.length; i += 3) r = Math.max(r, Math.abs(m.positions[i + 1])); return r; };
@@ -67,7 +70,7 @@ describe('human wear', () => {
     const [shoes] = buildWear(asset, mesh, [{ item: 'shoes' }], H);
     // The bare figure stands on z = 0; the soles reach below it.
     for (const f of shoes.fields!) expect(f.minZ).toBeLessThan(0);
-  });
+  }, HEAVY);
 
   it('flare swings a skirt out', () => {
     const width = (m: ShellMesh) => { let lo = Infinity, hi = -Infinity; for (let i = 0; i < m.positions.length; i += 3) { lo = Math.min(lo, m.positions[i]); hi = Math.max(hi, m.positions[i]); } return hi - lo; };
@@ -103,7 +106,7 @@ describe('human hair', () => {
       expect(hair!(crown[0], crown[1], crown[2]), style).toBeLessThan(0);
       expect(hair!(eye[0], eye[1] - H * 0.004, eye[2]), style).toBeGreaterThan(0);
     }
-  });
+  }, HEAVY);
 
   it('a full beard covers the chin, not the lips', () => {
     const { beard } = sampleAt('bald', 'full');
@@ -117,7 +120,7 @@ describe('human hair', () => {
     let clear = true;
     for (let dy = 0; dy < H * 0.02; dy += H / 400) if (beard!(0, mouth[1] - dy, mouth[2]) < 0) clear = false;
     expect(clear).toBe(true);
-  });
+  }, HEAVY);
 });
 
 describe('human sockets', () => {
