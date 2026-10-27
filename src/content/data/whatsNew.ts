@@ -27,6 +27,39 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'October 27, 2026',
+    headline: 'Partwright 1.11 — model console logs and a safer default sandbox',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.11',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'See your model code’s console output',
+            body: 'console.log, warn and error calls inside model code are now captured and returned as logs from each run, even when the code throws, so you and AI agents can debug without digging through DevTools.',
+          },
+        ],
+      },
+      {
+        label: 'Security',
+        items: [
+          {
+            title: 'Engine sandbox on by default where available',
+            body: 'Model code now runs in the isolated separate-origin sandbox by default on deployments that support it. You can still change this in Settings → Security.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 27, 2026',
     headline: 'Partwright 1.10 — AI plan cards, multi-file import and region clean-up',
     groups: [
       {
