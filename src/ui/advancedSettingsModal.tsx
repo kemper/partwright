@@ -172,9 +172,9 @@ function Section({ title, children }: SectionProps) {
 // ─── engine sandbox (per-browser setting, not part of AppConfig) ─────────────
 
 const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
-  off: 'Off — run model code in a plain Worker (default)',
+  off: 'Off — run model code in a plain Worker',
   opaque: 'Opaque origin — sandboxed iframe on this site',
-  origin: 'Separate origin — iframe on the configured sandbox host',
+  origin: 'Separate origin — iframe on the configured sandbox host (default when configured)',
 };
 
 function SandboxModeField() {
@@ -823,6 +823,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.containmentSamples}
           min={1} max={256} integer
           onChange={v => set('renderer', 'containmentSamples', v)}
+        />
+        <Field cfgKey="renderer.modelLogMaxLines"
+          label="Model log lines"
+          hint="console.log lines from model code kept per run."
+          tooltip="Model code's console.log / warn / error output is captured and returned as `logs` by run and runAndSave (and the AI's runCode tool), so an agent can debug without throwing errors. Lines past this limit are counted, not kept."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.modelLogMaxLines}
+          value={c.renderer.modelLogMaxLines}
+          min={0} max={10_000} integer
+          onChange={v => set('renderer', 'modelLogMaxLines', v)}
+        />
+        <Field cfgKey="renderer.modelLogMaxChars"
+          label="Model log characters"
+          hint="Characters of model-code console output kept per run."
+          tooltip="Caps the total size of the captured console output of one run, so a log in a loop can't flood the result an agent reads."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.modelLogMaxChars}
+          value={c.renderer.modelLogMaxChars}
+          min={0} max={1_000_000} step={1000} integer
+          onChange={v => set('renderer', 'modelLogMaxChars', v)}
         />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"

@@ -724,8 +724,8 @@ reference** — copy that pattern for any one-handed grasping figure.
 > `+X` (NOT `+Y`). A sword whose **flat edge faces the camera** has its flat
 > normal along local `+X`. The mapping is symmetric on the left hand with
 > sign flips. When unsure, probe before bake:
-> `throw new Error(JSON.stringify({ gripAxis: rig.grip.R.gripAxis, palmNormal: rig.grip.R.palmNormal, reach: rig.grip.R.reach }))`
-> and read the world unit vectors to confirm which way each local axis points.
+> `console.log({ gripAxis: rig.grip.R.gripAxis, palmNormal: rig.grip.R.palmNormal, reach: rig.grip.R.reach })`
+> and read the world unit vectors (in the run result's `logs`) to confirm which way each local axis points.
 > `examples/figure_lumberjack.js` uses this exact mapping for the axe blade.
 
 **QC the grip BEFORE bake — `F.graspProbe(rig, 'R'|'L')`.** Catches grip
@@ -1092,8 +1092,8 @@ eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up, latera
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
 of every world joint position, both grip frames, both sole frames, and the key
 directions, plus a `.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
-tuning a pose. `throw new Error(F.poseProbe(rig).text)` (or `console.log` it)
-prints the whole readout so you can read where a hand/grip actually landed
+tuning a pose. `console.log(F.poseProbe(rig).text)` returns the whole readout
+in the run result's `logs` (the model still builds) so you can read where a hand/grip actually landed
 before aiming a prop at it.
 
 ## Face — reads `rig.face` anchors

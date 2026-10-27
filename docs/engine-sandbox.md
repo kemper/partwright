@@ -1,6 +1,6 @@
 # Engine sandbox — running model code on a separate origin
 
-Status: **opt-in, default off** (kemper/partwright#1090, "option 2"). Builds on
+Status: **on by default (separate-origin mode) in builds that configure `VITE_SANDBOX_ORIGIN`** (production); other builds default off (kemper/partwright#1090, "option 2"). Builds on
 the engine-Worker lockdown (#1109, "option 1"), which strips network/storage
 globals from the Worker realm and keeps model code off the main thread; the
 sandbox adds an origin boundary under that.
@@ -46,8 +46,8 @@ work unchanged.
   The value lives in `localStorage['partwright-engine-sandbox']` (AppConfig
   only stores numbers/booleans). It is intentionally **not** an in-app AI tool
   — a prompt-injected session must not be able to switch it off.
-- **Per deployment:** build with `VITE_ENGINE_SANDBOX=opaque` (or `origin`) to
-  change the default for everyone; a per-browser choice still wins.
+- **Per deployment:** the default is `origin` when `VITE_SANDBOX_ORIGIN` is set (else `off`); build with `VITE_ENGINE_SANDBOX=opaque` (or `off`) to
+  change it for everyone; a per-browser choice still wins.
 - **Tunables** (Settings → Security): `renderer.engineSandboxBootTimeoutMs`
   (default 20 s — frame load / Worker spawn deadline),
   `renderer.engineSandboxMaxFrameRestarts` (default 2 — consecutive frame
@@ -208,10 +208,10 @@ and Pages' `_redirects` cannot match on the hostname.)
    document's `frame-ancestors` already lists the production app hosts.
    Changing the sandbox host means updating that `frame-src` and
    `PRODUCTION_SANDBOX_ORIGIN` in `src/sandbox/sandboxHostGuard.ts`.
-5. Optionally set `VITE_ENGINE_SANDBOX=origin` to make it the default. Until
-   then the mode is opt-in per browser (Advanced Settings → Security, or
-   `partwright.setEngineSandboxMode('origin')`), and the `/legal` "Code
-   execution" text should be updated when the default flips.
+5. The separate-origin mode is the built-in default whenever step 2's
+   `VITE_SANDBOX_ORIGIN` is set (no extra flag needed). Users can still pick a mode
+   per browser (Advanced Settings → Security, or
+   `partwright.setEngineSandboxMode('origin')`).
 
 Verify after a release:
 
@@ -374,5 +374,4 @@ How to read it:
   arbitrary messages on its port to the app; they're type-allow-listed here
   and field-validated by #1109 (`checkEngineWorkerMessage`).
 - **Legal copy.** `src/content/data/legal.ts` still says code is "not inside a
-  hardened security sandbox" — accurate while the default is off; revisit it
-  when the default flips.
+  hardened security sandbox" — updated when the default flipped to `origin`.

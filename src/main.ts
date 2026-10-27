@@ -664,6 +664,14 @@ let lastVoxelCount: number | undefined;
  *  trust it over the mesh `componentCount`, which over-reports voxel models
  *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
 let lastVoxelPieceCount: number | undefined;
+/** What the last run's model code printed (console.log / warn / error),
+ *  returned as `logs` by run / runAndSave / setParams so agents can debug
+ *  without throwing. Not part of the geometry data (never saved). */
+let lastRunLogs: string[] | undefined;
+/** `{ logs }` for an API result, or nothing when the last run printed nothing. */
+function lastRunLogsField(): { logs?: string[] } {
+  return lastRunLogs ? { logs: lastRunLogs } : {};
+}
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -12002,6 +12010,7 @@ async function main() {
         },
         meshData: null as MeshData | null,
         manifold: null as unknown,
+        logs: result.logs,
       };
     }
 
@@ -12017,6 +12026,7 @@ async function main() {
       meshData: result.mesh,
       manifold,
       labelMap: result.labelMap ?? null,
+      logs: result.logs,
     };
   }
 
@@ -13639,7 +13649,7 @@ async function main() {
         return { status: 'error', error: runFailedMessage() };
       }
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
-      return { ...geo, printability: computePrintability(geo) };
+      return { ...geo, printability: computePrintability(geo), ...lastRunLogsField() };
     },
 
     /** Get current geometry stats without re-running */
@@ -13702,6 +13712,7 @@ async function main() {
       return {
         geometry,
         params: currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {},
+        ...lastRunLogsField(),
       };
     },
 
@@ -16728,14 +16739,16 @@ async function main() {
         return { passed: false, failures: [runFailedMessage()], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+      // This run's logs, before the saves below give another run a chance to replace them.
+      const logsField = lastRunLogsField();
 
       if (assertions) {
         if (newGeoData.status === 'error') {
-          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...logsField };
         }
         const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...logsField };
         }
       }
 
@@ -16771,6 +16784,7 @@ async function main() {
         ...(lostLabels ? { lostLabels } : {}),
         ...(colorRegions.length > 0 ? { colorRegions } : {}),
         ...(unmatchedPaintReport() ? { unmatchedPaint: unmatchedPaintReport() } : {}),
+        ...logsField,
       };
     },
 
@@ -17219,7 +17233,7 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { geometryData: { status: 'error', error: check.error }, thumbnail: null };
       }
-      const { geometryData, meshData, manifold } = await executeIsolated(code);
+      const { geometryData, meshData, manifold, logs } = await executeIsolated(code);
 
       let thumbnail: string | null = null;
       if (meshData) {
@@ -17237,7 +17251,7 @@ async function main() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
-      return { geometryData, thumbnail };
+      return { geometryData, thumbnail, ...(logs ? { logs } : {}) };
     },
 
     /** Run code and check geometry against assertions. Does not mutate global state. */
@@ -17250,14 +17264,14 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { passed: false, failures: [check.error], stats: null };
       }
-      const { geometryData, manifold } = await executeIsolated(code);
+      const { geometryData, manifold, logs } = await executeIsolated(code);
 
       // Clean up manifold
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { passed: false, failures: [geometryData.error as string], stats: geometryData };
+        return { passed: false, failures: [geometryData.error as string], stats: geometryData, ...(logs ? { logs } : {}) };
       }
 
       const failures = checkAssertions(geometryData, assertions);
@@ -17265,6 +17279,7 @@ async function main() {
         passed: failures.length === 0,
         failures: failures.length > 0 ? failures : undefined,
         stats: geometryData,
+        ...(logs ? { logs } : {}),
       };
     },
 
@@ -17274,10 +17289,10 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { stats: { status: 'error', error: check.error }, components: null };
       }
-      const { geometryData, manifold } = await executeIsolated(code);
+      const { geometryData, manifold, logs } = await executeIsolated(code);
 
       if (geometryData.status === 'error' || !manifold) {
-        return { stats: geometryData, components: null };
+        return { stats: geometryData, components: null, ...(logs ? { logs } : {}) };
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17377,7 +17392,7 @@ async function main() {
         }
       }
 
-      return { stats: geometryData, components, hints: hints.length > 0 ? hints : undefined, containmentWarnings: containmentWarnings.length > 0 ? containmentWarnings : undefined };
+      return { stats: geometryData, components, hints: hints.length > 0 ? hints : undefined, containmentWarnings: containmentWarnings.length > 0 ? containmentWarnings : undefined, ...(logs ? { logs } : {}) };
     },
 
     /** Modify current editor code with a transform function and test the result without committing.
@@ -21721,26 +21736,26 @@ async function main() {
       assertString(method, 'help(method)', { optional: true, allowEmpty: false });
       const methods: Record<string, { signature: string; docs: string }> = {
         // Core
-        'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats', docs: '/ai.md#console-api--windowpartwright' },
+        'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats (+ logs: the model code console output)', docs: '/ai.md#console-api--windowpartwright' },
         'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object', docs: '/ai.md#geometry-data' },
         'validate':        { signature: 'validate(code) -- Check code without rendering -> {valid, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
         'getParams': { signature: 'getParams() -- Customizer schema the current model declared via api.params({...}) plus resolved values -> {schema, values} ({schema: [], values: {}} when none)', docs: '/ai.md#customizer-parameters-apiparams' },
-        'setParams': { signature: "await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params}; {error} when the model declares no params; {status: 'error', error: 'Run was superseded...'} when a concurrent run won (retry)", docs: '/ai.md#customizer-parameters-apiparams' },
+        'setParams': { signature: "await setParams({key: value, ...}) -- Override declared api.params knobs and re-run (camera kept); wrong-type values fall back to the default -> {geometry, params, logs?}; {error} when the model declares no params; {status: 'error', error: 'Run was superseded...'} when a concurrent run won (retry)", docs: '/ai.md#customizer-parameters-apiparams' },
         'getActiveLanguage': { signature: "getActiveLanguage() -- Active engine -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'", docs: '/ai.md#switching-engines' },
         'setActiveLanguage': { signature: "await setActiveLanguage(lang) -- Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the current buffer as a per-language draft and restores the target's draft. Versions keep their own language. Throws on a bad lang", docs: '/ai.md#switching-engines' },
         'isRunning': { signature: 'isRunning() -- Whether geometry code is executing right now -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Isolated execution
-        'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail}', docs: '/ai.md#testing-without-side-effects' },
-        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats}', docs: '/ai.md#assertions----structured-validation' },
-        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[]}', docs: '/ai.md#debugging-disconnected-components' },
+        'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail, logs?}', docs: '/ai.md#testing-without-side-effects' },
+        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats, logs?}', docs: '/ai.md#assertions----structured-validation' },
+        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[], logs?}', docs: '/ai.md#debugging-disconnected-components' },
         'modifyAndTest':   { signature: 'await modifyAndTest(patchFn, assertions?) -- Modify + test without committing -> {modifiedCode, codeDiff, stats, passed?}', docs: '/ai.md#modify-and-test' },
         'query':           { signature: 'query({sliceAt?, decompose?, boundingBox?}) -- Multi-query current geometry', docs: '/ai.md#multi-query-current-geometry' },
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'createSessionWithVersions': { signature: 'await createSessionWithVersions(name, [{code, label?}, ...]) -- New session (active language) with one saved version per entry -> {session: {id, name}, versions: [{version, geometry, error?}], galleryUrl} or {error}', docs: '/ai.md#batch-session-creation' },
-        'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
+        'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call (+ logs?: the model code console output)', docs: '/ai.md#assert--save-in-one-call' },
         'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
         'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2; every detail field is filled) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
         'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
@@ -23283,6 +23298,7 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     lastRunRejection = null;
+    lastRunLogs = undefined;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -23396,6 +23412,7 @@ async function main() {
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
+    lastRunLogs = result.logs;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
