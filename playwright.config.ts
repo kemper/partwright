@@ -61,6 +61,9 @@ const port = Number(process.env.E2E_PORT || 5173);
 const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1000);
 const devCommand = (p: number) => (p === 5173 ? 'npm run dev' : `npm run dev -- --port ${p} --strictPort`);
 const devEnv = {
+  // The app default is the opaque sandbox; the broad suite stays on the plain
+  // Worker so only the sandbox specs (which pick a mode via localStorage) pay for it.
+  VITE_ENGINE_SANDBOX: 'off',
   VITE_SANDBOX_ORIGIN: `http://localhost:${sandboxPort}`,
   // The app origin the 'origin'-mode frame accepts spawn requests from (and
   // its CSP frame-ancestors).

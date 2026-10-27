@@ -17,8 +17,9 @@
 //
 // The value is a per-browser setting (localStorage — AppConfig only stores
 // numbers/booleans) with a build-time default from `VITE_ENGINE_SANDBOX`, so a
-// deployment can turn the sandbox on for everyone while a user can still pick a
-// mode in Advanced Settings. It's read once when a geometry Worker is created
+// deployment can pick the default mode ('origin' when VITE_SANDBOX_ORIGIN is
+// configured, else 'off') while a user can still
+// pick a mode in Advanced Settings. It's read once when a geometry Worker is created
 // (i.e. effectively at page load), so a change applies on reload.
 //
 // Pure apart from the guarded localStorage access, so it runs in the unit tier.
@@ -35,10 +36,14 @@ export function isEngineSandboxMode(v: unknown): v is EngineSandboxMode {
 
 function buildDefault(): EngineSandboxMode {
   const raw = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_ENGINE_SANDBOX : undefined;
-  return isEngineSandboxMode(raw) ? raw : 'off';
+  if (isEngineSandboxMode(raw)) return raw;
+  // Separate-origin sandbox wherever the build configures one (production).
+  // A build without VITE_SANDBOX_ORIGIN (dev, forks, unconfigured previews)
+  // can't select 'origin' — it would fail closed — so it keeps the plain Worker.
+  return configuredSandboxOrigin() ? 'origin' : 'off';
 }
 
-/** The build's default mode (`VITE_ENGINE_SANDBOX`, else 'off'). */
+/** The build's default mode (`VITE_ENGINE_SANDBOX`, else 'origin' when a sandbox origin is configured, else 'off'). */
 export function defaultEngineSandboxMode(): EngineSandboxMode {
   return buildDefault();
 }
