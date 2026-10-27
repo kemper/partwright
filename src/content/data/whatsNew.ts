@@ -26,6 +26,65 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 27, 2026',
+    headline: 'Partwright 1.10 — AI plan cards, multi-file import and region clean-up',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.10',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Big meshes no longer stall',
+            body: 'Saving, opening, simplifying and previewing very large imported meshes is much more responsive, and hollow cavities are counted correctly.',
+          },
+          {
+            title: 'Plan mode stays read-only',
+            body: 'Plan mode no longer changes your model, and the AI’s clarifying questions are handled properly.',
+          },
+          {
+            title: 'Imports ask where they go',
+            body: 'When an empty new object is open, importing a file asks whether to use it or create another.',
+          },
+        ],
+      },
+      {
+        label: 'Import & export',
+        items: [
+          {
+            title: 'Import several files at once',
+            body: 'Select multiple STL or 3MF files in one import.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Region clean-up',
+            body: 'Grow, shrink, despeckle, and union/subtract/intersect painted regions.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Question and plan cards',
+            body: 'The AI chat shows its questions and plans as cards you can answer or approve.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 25, 2026',
     headline: 'Partwright 1.9 — safer model code, 3MF import and part editing',
     groups: [

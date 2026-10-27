@@ -309,3 +309,20 @@ describe('Tool-history repair parity across providers', () => {
     });
   }
 });
+
+describe('Local prompt-engineered history', () => {
+  test('merges a tool-result turn and the typed answer after it into one user turn', () => {
+    const history = [
+      { id: 'u0', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'make a vase' }], createdAt: 0, seq: 0 },
+      { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'tc_1', name: 'askUser', input: { questions: [{ question: 'Lid?' }] } }], createdAt: 0, seq: 1 },
+      { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'tc_1', content: 'shown', isError: false }], createdAt: 0, seq: 2 },
+      { id: 'u2', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'No lid' }], createdAt: 0, seq: 3 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any;
+    const msgs = local.buildLocalApiMessages('sys', '', history, LOCAL_MODELS[0], false);
+    expect(msgs.map(m => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    const last = String(msgs[3].content);
+    expect(last).toContain('<tool_result>');
+    expect(last.endsWith('No lid')).toBe(true);
+  });
+});

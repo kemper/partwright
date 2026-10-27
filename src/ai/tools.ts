@@ -14,6 +14,7 @@
 // Argument validation lives on the API side (src/validation/apiValidation.ts)
 // so the same checks apply to console/MCP callers, not just the model.
 
+import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -28,6 +29,9 @@ import { LOG_LEVELS, LOG_SOURCES } from '../diagnostics/logQuery';
 import { isStarterCode } from '../editor/starters';
 import { codeBearingImportKind, geometryOnlyRefusalMessage } from '../import/urlImport';
 import { listTools as listUiTools, type PrefillSchema } from '../ui/toolRegistry';
+
+/** Tools whose call ends the turn: the next move is the user's. */
+export const TURN_ENDING_TOOLS: ReadonlySet<string> = new Set([ASK_USER_TOOL, PROPOSE_PLAN_TOOL]);
 
 export interface ToolDefinition {
   name: string;
@@ -910,6 +914,32 @@ const ALL_TOOLS: ToolDefinition[] = [
         id: { type: 'integer', description: 'Region id from listRegions().' },
       },
       required: ['id'],
+    },
+  },
+  {
+    name: 'editRegion',
+    description: 'Clean up an existing painted region IN PLACE (same id/name/colour/layer; one undoLastPaint step). op "grow": add `steps` rings of neighbouring triangles (closes hairline gaps; clamp with withinBox/zMin/zMax so it cannot leak). op "shrink": peel `steps` rings off its border (pulls a ragged fill back off a neighbour). op "despeckle": drop islands smaller than minIslandTriangles and fill enclosed unpainted holes of ≤ maxHoleTriangles (both default 10; 0 skips) — use after a bucket fill leaves specks. op "union"/"subtract"/"intersect": combine with the `with` region(s); only `region` changes. Tip: grow 1 then shrink 1 fills notches biting in from the border (despeckle only fills enclosed holes); shrink 1 then grow 1 removes thin spurs. These follow mesh triangles, so they clean specks and gaps but do NOT make a jagged edge smooth — for that use a smooth tool (paintSlab / paintInOrientedBox / paintStroke). Smooth (mesh-refining) and image/pattern regions cannot be edited.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['grow', 'shrink', 'despeckle', 'union', 'subtract', 'intersect'] },
+        region: { description: 'Target region id (integer) or name (string), from listRegions.' },
+        steps: { type: 'integer', description: 'grow/shrink: rings of triangles. Default 1.' },
+        withinBox: {
+          type: 'object',
+          description: 'grow only: {min?: [x,y,z], max?: [x,y,z]} — never add a triangle whose centroid is outside.',
+          properties: {
+            min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+          },
+        },
+        zMin: { type: 'number', description: 'grow only: never add triangles below this Z.' },
+        zMax: { type: 'number', description: 'grow only: never add triangles above this Z.' },
+        minIslandTriangles: { type: 'integer', description: 'despeckle: drop pieces of the region smaller than this (largest piece always kept). Default 10; 0 = skip.' },
+        maxHoleTriangles: { type: 'integer', description: 'despeckle: fill enclosed unpainted patches of at most this many triangles. Default 10; 0 = skip.' },
+        with: { type: 'array', items: { type: 'string' }, description: 'union/subtract/intersect: the other region(s) — names, or ids as strings (e.g. ["eyes", "17"]).' },
+      },
+      required: ['op', 'region'],
     },
   },
   {
@@ -2333,6 +2363,54 @@ Returns { ok, stats, metrics, version } or { error }.`,
       properties: { summary: { type: 'string', description: 'Optional one-line summary of the completed work.' } },
     },
   },
+  {
+    name: ASK_USER_TOOL,
+    description: 'Ask the user questions only they can answer, shown as a card with clickable answers. This ENDS your turn: their answers arrive as the next user message, so do not keep working on a guess. Use it when a decision is genuinely theirs (a size, a style, which of two readings they meant) and a wrong guess would waste real work; when a sensible default exists, pick it and say so instead of asking. Ask at most 4 short questions with 2–4 options each, put the option you would pick first and mark it "(recommended)". The user can always type their own answer.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          minItems: 1,
+          description: 'The questions, in the order to ask them.',
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string', description: 'The question, ending with "?".' },
+              options: {
+                type: 'array',
+                description: '2–4 answer choices. Omit for an open question the user answers by typing.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: 'Short answer text (1–6 words).' },
+                    description: { type: 'string', description: 'Optional one-line note on what this choice means or costs.' },
+                  },
+                  required: ['label'],
+                },
+              },
+              multiSelect: { type: 'boolean', description: 'Let the user pick more than one option. Default false.' },
+            },
+            required: ['question'],
+          },
+        },
+      },
+      required: ['questions'],
+    },
+  },
+  {
+    name: PROPOSE_PLAN_TOOL,
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
+        steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
+        assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+      },
+      required: ['summary', 'steps'],
+    },
+  },
   // ── Tools wrapping existing window.partwright methods (#1085 PR1) ─────────
   // Kept in one contiguous block; gated in the sets below.
   {
@@ -2499,7 +2577,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion',
   'clearColors', 'undoClearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -2548,6 +2626,7 @@ for (const tool of ALL_TOOLS) {
 }
 
 const ALWAYS_AVAILABLE = new Set([
+  ASK_USER_TOOL,
   'listPartDetectors',
   'getPartDraft',
   'getActiveLanguage',
@@ -2714,6 +2793,29 @@ export function declinedToolMessage(name: string): string {
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
+/** Pre-rename tool names `executeTool` still dispatches (a chat whose history
+ *  carries them, or a model that reaches for the old name). The offered-tools
+ *  gate checks the current name they stand for. */
+export const LEGACY_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  listParts: 'listObjects',
+  getCurrentPart: 'getCurrentObject',
+  createPart: 'createObject',
+  changePart: 'changeObject',
+  renamePart: 'renameObject',
+  deletePart: 'deleteObject',
+};
+
+/** The tool result for a call to a tool that wasn't offered this turn. The
+ *  tool list is the gate (plan mode, the Run/Save/Paint/Notes scopes), but a
+ *  model can still emit a name it saw earlier in the conversation — so the
+ *  chat loop refuses it rather than running it. */
+export function unofferedToolMessage(name: string, planning: boolean): string {
+  if (planning) {
+    return `[Not run — ${name} is not available while planning. The user hasn't approved a plan yet, so nothing may be changed or executed. Finish this turn with your plan (or your questions); the build tools unlock when the user approves]`;
+  }
+  return `[Not run — ${name} is not available this turn (it is switched off in the chat's settings or not part of your tool set). Use the tools you were given, or tell the user what you need]`;
+}
+
 /** Result for a confirm-required tool when no confirmation prompt can be shown
  *  (no UI callback wired for this turn). Confirmation fails CLOSED. */
 export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the user\'s confirmation and no confirmation prompt is available. Ask the user to do it from the UI instead]';
@@ -2729,6 +2831,8 @@ export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the use
  *  execution), and they stay gated by the Views vision toggle so the user's
  *  cost preferences still apply. */
 const PLAN_MODE_TOOLS = new Set([
+  // How a planning turn ends: questions, or the plan itself.
+  ASK_USER_TOOL, PROPOSE_PLAN_TOOL,
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
   'getFeatureCentroids', 'getReferenceImages', 'getAttachments', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
@@ -2800,7 +2904,7 @@ const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion',
  *  image-returning ones additionally need the Views vision toggle. */
 const PARTS_GATED = new Set(['detectParts', 'autoDetectParts', 'editParts', 'discardParts', 'setPartsOverlay', 'reopenParts', 'applyPartPreset', 'openPartsPanel', 'setPartSelection', 'setPartsView']);
 const PARTS_VIEW_GATED = new Set(['renderParts', 'comparePartDetectors', 'previewPartPresets']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors', 'editPalette', 'replaceColor', 'paintAirbrush', 'setObjectPartColor', 'reassignPaint']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintAlongBoundary', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion', 'clearColors', 'copyColorsFromVersion', 'undoClearColors', 'editPalette', 'replaceColor', 'paintAirbrush', 'setObjectPartColor', 'reassignPaint']);
 
 /** Tools that change the model (code, versions, textures, transforms, paint).
  *  A turn that called none of these only inspected or answered, so there is
@@ -3113,6 +3217,34 @@ async function focusTargetObject(api: PartwrightAPI, target: string | number): P
  *  them back to the model for self-correction. Tools that return an
  *  image (renderView today) bypass the JSON path and return a structured
  *  ToolExecResult directly. */
+function askUserInputError(input: Record<string, unknown>): string | null {
+  const qs = input.questions;
+  if (!Array.isArray(qs) || qs.length === 0) return 'askUser needs `questions`: a non-empty array of { question, options?, multiSelect? }.';
+  for (const [i, q] of qs.entries()) {
+    const item = q as Record<string, unknown> | null;
+    if (!item || typeof item.question !== 'string' || !item.question.trim()) return `askUser: questions[${i}].question must be a non-empty string.`;
+    if (item.options !== undefined) {
+      if (!Array.isArray(item.options)) return `askUser: questions[${i}].options must be an array of { label, description? }.`;
+      for (const [j, o] of item.options.entries()) {
+        const opt = o as Record<string, unknown> | null;
+        if (!opt || typeof opt.label !== 'string' || !opt.label.trim()) return `askUser: questions[${i}].options[${j}].label must be a non-empty string.`;
+      }
+    }
+  }
+  return null;
+}
+
+function proposePlanInputError(input: Record<string, unknown>): string | null {
+  if (typeof input.summary !== 'string' || !input.summary.trim()) return 'proposePlan needs a non-empty `summary`.';
+  if (!Array.isArray(input.steps) || input.steps.length === 0 || input.steps.some(s => typeof s !== 'string' || !s.trim())) {
+    return 'proposePlan needs `steps`: a non-empty array of non-empty strings.';
+  }
+  if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
+    return 'proposePlan: `assumptions` must be an array of strings.';
+  }
+  return null;
+}
+
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
   // Work on a shallow copy: the object-target handling below deletes keys, and
   // the caller's object is reused verbatim when the chat loop retries a call.
@@ -3123,6 +3255,12 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     if (name === 'finish') {
       const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
       return { content: summary ? `Marked complete: ${summary}` : 'Turn marked complete.', isError: false };
+    }
+    // Card tools: the panel renders the call itself, so there's nothing to run
+    // — just check the input is renderable.
+    if (name === ASK_USER_TOOL || name === PROPOSE_PLAN_TOOL) {
+      const problem = name === ASK_USER_TOOL ? askUserInputError(input) : proposePlanInputError(input);
+      return problem ? { content: problem, isError: true } : { content: CARD_TOOL_ACK, isError: false };
     }
     // Pre-flight: code-writing tools must match the active session
     // language. The agent loop will retry with the corrected language
@@ -3623,6 +3761,14 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'paintConnected':
       return api.paintConnected(input);
+    case 'editRegion': {
+      const { op, ...rest } = input;
+      if (op === 'grow') return api.growRegion(rest);
+      if (op === 'shrink') return api.shrinkRegion(rest);
+      if (op === 'despeckle') return api.despeckleRegion(rest);
+      if (op === 'union' || op === 'subtract' || op === 'intersect') return api.combineRegions({ ...rest, op });
+      return { error: `editRegion.op must be grow | shrink | despeckle | union | subtract | intersect (got ${JSON.stringify(op)})` };
+    }
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

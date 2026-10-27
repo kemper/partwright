@@ -6,7 +6,8 @@
 // rebuilding that Manifold (a multi-second, UI-freezing `Manifold.ofMesh` on a
 // multi-million-triangle import) until something actually needs it.
 
-import { componentsOverlap } from './geometryHeuristics';
+import { componentsOverlap, edgeStats } from './geometryHeuristics';
+import { computeMeshPieces, type MeshPieces } from './meshPieces';
 
 /** Manifold runtime type — the manifold-3d package does not export precise TS
  *  types for the WASM-backed object, so it's an opaque value with method probes. */
@@ -44,7 +45,217 @@ export function manifoldBoundingBox(manifold: Manifold): ManifoldFacts['bbox'] {
   }
 }
 
-export function computeManifoldFacts(manifold: Manifold): ManifoldFacts {
+/** The mesh fields the mesh-based census reads (a subset of `MeshData`). */
+export interface FactsMesh {
+  vertProperties: Float32Array;
+  triVerts: Uint32Array;
+  numVert: number;
+  numTri: number;
+  numProp: number;
+  mergeFromVert?: Uint32Array;
+  mergeToVert?: Uint32Array;
+}
+
+interface Census {
+  componentCount: number;
+  containedComponents: number;
+  componentsInterpenetrate: boolean;
+}
+
+interface PieceInfo { vol: number; bb: ManifoldFacts['bbox'] }
+
+/** For each piece, the larger pieces that could enclose it: bigger volume and
+ *  a bbox that holds its bbox. The cheap pre-filter both censuses share. */
+function containmentCandidates(infos: PieceInfo[]): number[][] {
+  return infos.map((smaller, j) => {
+    const out: number[] = [];
+    if (smaller.vol <= 0 || !smaller.bb) return out;
+    for (let i = 0; i < infos.length; i++) {
+      const larger = infos[i];
+      if (i === j || larger.vol <= smaller.vol || !larger.bb) continue;
+      let inside = true;
+      for (let ax = 0; ax < 3 && inside; ax++) {
+        if (smaller.bb.min[ax] < larger.bb.min[ax] - 0.01 ||
+            smaller.bb.max[ax] > larger.bb.max[ax] + 0.01) inside = false;
+      }
+      if (inside) out.push(i);
+    }
+    return out;
+  });
+}
+
+/** Count enclosed pieces (fully inside another solid, or negative-volume
+ *  artifacts) — they won't detach in print and shouldn't trip floater
+ *  warnings — given a per-pair "does piece i enclose piece j" test. */
+function countContained(infos: PieceInfo[], candidates: number[][], encloses: (i: number, j: number) => boolean): number {
+  let contained = 0;
+  for (let j = 0; j < infos.length; j++) {
+    if (infos[j].vol <= 0 || candidates[j].some(i => encloses(i, j))) contained++;
+  }
+  return contained;
+}
+
+function overlapOf(infos: PieceInfo[]): boolean {
+  return componentsOverlap(infos.filter((i) => i.bb).map((i) => ({ bbox: i.bb! })));
+}
+
+/** The census from `manifold.decompose()`, with an exact (boolean intersect)
+ *  containment test — used for ordinary-sized models. */
+function censusFromManifold(manifold: Manifold): Census {
+  const census: Census = { componentCount: 1, containedComponents: 0, componentsInterpenetrate: false };
+  try {
+    const parts = manifold.decompose();
+    census.componentCount = parts.length;
+    if (parts.length > 1) {
+      const infos: PieceInfo[] = parts.map((p: Manifold) => ({
+        bb: manifoldBoundingBox(p),
+        vol: (() => { try { return p.volume() as number; } catch { return 0; } })(),
+      }));
+      // Cheap AABB-overlap pass over the decomposed parts (bboxes already in hand).
+      census.componentsInterpenetrate = overlapOf(infos);
+      // The volume + bbox pre-filters reject most pairs, so the expensive WASM
+      // intersect() is only reached for plausible containment candidates.
+      census.containedComponents = countContained(infos, containmentCandidates(infos), (i, j) => {
+        try {
+          const ix = parts[i].intersect(parts[j]);
+          const ixVol = ix.volume() as number;
+          ix.delete();
+          // intersection volume ≈ smaller's volume → fully enclosed
+          return Math.abs(ixVol - infos[j].vol) <= infos[j].vol * 0.05;
+        } catch { return false; /* boolean failed, skip this pair */ }
+      });
+    }
+    for (const p of parts) p.delete();
+  } catch {
+    // fallback
+  }
+  return census;
+}
+
+/** The census from the mesh itself — the piece split, per-piece signed volume
+ *  and bbox in one pass — with containment judged by casting rays from
+ *  `samples` points of the smaller piece through the larger (inside = odd
+ *  crossings for every sample). `decompose()` + boolean `intersect()` took
+ *  ~8.5 s on a 3.7M-triangle mesh; this is a couple of linear passes.
+ *  Approximate only in the containment test (a sliver poking out between
+ *  samples), which feeds the floater warning, not geometry. */
+function censusFromMesh(mesh: FactsMesh, pieces: MeshPieces, samples: number): Census {
+  const { vertProperties: vp, triVerts: tv, numTri, numProp: np } = mesh;
+  const n = pieces.count;
+  const census: Census = { componentCount: n, containedComponents: 0, componentsInterpenetrate: false };
+  if (n <= 1) return census;
+  const vol = new Float64Array(n);
+  const lo = new Float64Array(n * 3).fill(Infinity), hi = new Float64Array(n * 3).fill(-Infinity);
+  const grow = (p: number, o: number) => {
+    for (let k = 0; k < 3; k++) {
+      const x = vp[o + k];
+      if (x < lo[p * 3 + k]) lo[p * 3 + k] = x;
+      if (x > hi[p * 3 + k]) hi[p * 3 + k] = x;
+    }
+  };
+  for (let t = 0; t < numTri; t++) {
+    const p = pieces.pieceOfTri[t];
+    if (p < 0) continue;
+    const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
+    vol[p] += (vp[a] * (vp[b + 1] * vp[c + 2] - vp[b + 2] * vp[c + 1])
+      - vp[a + 1] * (vp[b] * vp[c + 2] - vp[b + 2] * vp[c])
+      + vp[a + 2] * (vp[b] * vp[c + 1] - vp[b + 1] * vp[c])) / 6;
+    grow(p, a); grow(p, b); grow(p, c);
+  }
+  const infos: PieceInfo[] = Array.from({ length: n }, (_, p) => ({
+    vol: vol[p],
+    bb: Number.isFinite(lo[p * 3])
+      ? { min: [lo[p * 3], lo[p * 3 + 1], lo[p * 3 + 2]], max: [hi[p * 3], hi[p * 3 + 1], hi[p * 3 + 2]] }
+      : null,
+  }));
+  census.componentsInterpenetrate = overlapOf(infos);
+  const candidates = containmentCandidates(infos);
+
+  // Sample points: centroids of evenly spaced triangles of each candidate
+  // piece, nudged off-axis so the +X rays don't graze edges exactly.
+  const needSamples = new Set<number>();
+  candidates.forEach((c, j) => { if (c.length > 0) needSamples.add(j); });
+  // Tests keyed larger piece → smaller piece → that test's crossing counts.
+  interface Test { pts: Float64Array; crossings: Uint32Array }
+  const testsByLarger = new Map<number, Map<number, Test>>();
+  if (needSamples.size > 0) {
+    const trisOf = new Map<number, number[]>();
+    const count = new Uint32Array(n);
+    for (let t = 0; t < numTri; t++) { const p = pieces.pieceOfTri[t]; if (p >= 0) count[p]++; }
+    const seen = new Uint32Array(n);
+    for (let t = 0; t < numTri; t++) {
+      const p = pieces.pieceOfTri[t];
+      if (p < 0 || !needSamples.has(p)) continue;
+      const stride = Math.max(1, Math.floor(count[p] / samples));
+      if (seen[p]++ % stride !== 0) continue;
+      const list = trisOf.get(p) ?? [];
+      if (list.length < samples) { list.push(t); trisOf.set(p, list); }
+    }
+    let extent = 0;
+    for (let k = 0; k < 3; k++) {
+      let mn = Infinity, mx = -Infinity;
+      for (let p = 0; p < n; p++) { if (lo[p * 3 + k] < mn) mn = lo[p * 3 + k]; if (hi[p * 3 + k] > mx) mx = hi[p * 3 + k]; }
+      if (mx > mn) extent += (mx - mn) * (mx - mn);
+    }
+    const nudge = (extent > 0 ? Math.sqrt(extent) : 1) * 1e-7;
+    for (const j of needSamples) {
+      const tris = trisOf.get(j) ?? [];
+      const pts = new Float64Array(tris.length * 3);
+      tris.forEach((t, s) => {
+        for (let k = 0; k < 3; k++) {
+          pts[s * 3 + k] = (vp[tv[t * 3] * np + k] + vp[tv[t * 3 + 1] * np + k] + vp[tv[t * 3 + 2] * np + k]) / 3;
+        }
+        pts[s * 3 + 1] += nudge * 0.7071;
+        pts[s * 3 + 2] += nudge * 0.3183;
+      });
+      for (const i of candidates[j]) {
+        const byJ = testsByLarger.get(i) ?? new Map<number, Test>();
+        byJ.set(j, { pts, crossings: new Uint32Array(tris.length) });
+        testsByLarger.set(i, byJ);
+      }
+    }
+    // Edge function of (u→v) at (py, pz) in the YZ plane, always evaluated
+    // from the lower vertex index so the two triangles sharing an edge get
+    // exact negations — a ray grazing the edge then counts exactly once.
+    const edge = (iu: number, iv: number, py: number, pz: number): number => {
+      const flip = iu > iv;
+      const u = (flip ? iv : iu) * np, v = (flip ? iu : iv) * np;
+      const d = (vp[v + 1] - vp[u + 1]) * (pz - vp[u + 2]) - (vp[v + 2] - vp[u + 2]) * (py - vp[u + 1]);
+      return flip ? -d : d;
+    };
+    for (let t = 0; t < numTri; t++) {
+      const tests = testsByLarger.get(pieces.pieceOfTri[t]);
+      if (!tests) continue;
+      const ia = tv[t * 3], ib = tv[t * 3 + 1], ic = tv[t * 3 + 2];
+      const a = ia * np, b = ib * np, c = ic * np;
+      for (const { pts, crossings } of tests.values()) {
+        for (let s = 0; s < crossings.length; s++) {
+          const py = pts[s * 3 + 1], pz = pts[s * 3 + 2];
+          // Does the +X ray from the point pass through the triangle's YZ shadow?
+          const d1 = edge(ia, ib, py, pz);
+          const d2 = edge(ib, ic, py, pz);
+          const d3 = edge(ic, ia, py, pz);
+          if (!((d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0))) continue;
+          const x = (d2 * vp[a] + d3 * vp[b] + d1 * vp[c]) / (d1 + d2 + d3);
+          if (x > pts[s * 3]) crossings[s]++;
+        }
+      }
+    }
+  }
+  // Negative-volume pieces (sealed inner cavity shells) count as contained
+  // even when no piece needed a ray test.
+  census.containedComponents = countContained(infos, candidates, (i, j) => {
+    const test = testsByLarger.get(i)?.get(j);
+    return !!test && test.crossings.length > 0 && test.crossings.every(c => c % 2 === 1);
+  });
+  return census;
+}
+
+/** The Manifold-dependent stats. With `mesh` (the engine Worker's big-run
+ *  path — `mesh` is the manifold's own getMesh()), the component census comes
+ *  from the mesh instead of decompose() + booleans, and the mesh-wide extras
+ *  (edge stats, the piece split) ride along. */
+export function computeManifoldFacts(manifold: Manifold, mesh?: FactsMesh, opts: { containmentSamples?: number } = {}): ManifoldFacts {
   let volume = 0;
   let surfaceArea = 0;
   try {
@@ -54,61 +265,17 @@ export function computeManifoldFacts(manifold: Manifold): ManifoldFacts {
     // fallback if methods unavailable
   }
 
-  let componentCount = 1;
-  let containedComponents = 0;
-  // True when two separate solids' bounding boxes overlap (a boolean that
-  // didn't fuse, or an assembly to clearance-check) — a cheap interpenetration
-  // signal the headless preview already surfaces; mirrored here for the in-app AI.
-  let componentsInterpenetrate = false;
-  try {
-    const parts = manifold.decompose();
-    componentCount = parts.length;
-    if (parts.length > 1) {
-      // Identify enclosed components (fully inside another solid, or negative-volume
-      // artifacts). These won't detach in print and shouldn't trip floater warnings.
-      // The two fast pre-filters (volume comparison + bbox containment) reject the
-      // vast majority of pairs cheaply, so the expensive WASM intersect() call is
-      // only reached for plausible containment candidates — safe without a count cap.
-      interface PartInfo { vol: number; bb: ManifoldFacts['bbox']; m: Manifold }
-      const infos: PartInfo[] = parts.map((p: Manifold) => {
-        const bb = manifoldBoundingBox(p);
-        const vol = (() => { try { return p.volume() as number; } catch { return 0; } })();
-        return { vol, bb, m: p };
-      });
-      // Cheap AABB-overlap pass over the decomposed parts (bboxes already in hand).
-      componentsInterpenetrate = componentsOverlap(
-        infos.filter((i) => i.bb).map((i) => ({ bbox: i.bb! })),
-      );
-      for (let j = 0; j < infos.length; j++) {
-        const smaller = infos[j];
-        if (smaller.vol <= 0) { containedComponents++; continue; }
-        for (let i = 0; i < infos.length; i++) {
-          if (i === j) continue;
-          const larger = infos[i];
-          if (larger.vol <= smaller.vol || !larger.bb || !smaller.bb) continue;
-          // Fast bbox filter: smaller must fit inside larger's bbox
-          let inside = true;
-          for (let ax = 0; ax < 3 && inside; ax++) {
-            if (smaller.bb.min[ax] < larger.bb.min[ax] - 0.01 ||
-                smaller.bb.max[ax] > larger.bb.max[ax] + 0.01) inside = false;
-          }
-          if (!inside) continue;
-          // Precise check: intersection volume ≈ smaller's volume → fully enclosed
-          try {
-            const ix = larger.m.intersect(smaller.m);
-            const ixVol = ix.volume() as number;
-            ix.delete();
-            if (Math.abs(ixVol - smaller.vol) <= smaller.vol * 0.05) {
-              containedComponents++;
-              break;
-            }
-          } catch { /* ignore — boolean failed, skip this pair */ }
-        }
-      }
+  const pieces = mesh ? computeMeshPieces(mesh) : null;
+  let census: Census;
+  if (mesh && pieces) {
+    try {
+      census = censusFromMesh(mesh, pieces, Math.max(1, Math.round(opts.containmentSamples ?? 12)));
+    } catch {
+      // Never let the census sink the facts: the piece count alone still holds.
+      census = { componentCount: pieces.count, containedComponents: 0, componentsInterpenetrate: false };
     }
-    for (const p of parts) p.delete();
-  } catch {
-    // fallback
+  } else {
+    census = censusFromManifold(manifold);
   }
 
   let isManifold = true;
@@ -131,8 +298,10 @@ export function computeManifoldFacts(manifold: Manifold): ManifoldFacts {
     genus,
     isManifold,
     manifoldStatus,
-    componentCount,
-    containedComponents,
-    componentsInterpenetrate,
+    ...census,
+    ...(mesh && pieces ? {
+      edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri),
+      pieces: { count: pieces.count, pieceOfTri: pieces.pieceOfTri },
+    } : {}),
   };
 }

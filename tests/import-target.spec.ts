@@ -6,6 +6,7 @@ import { test, expect, type Page } from 'playwright/test';
 
 interface ImportAPI {
   createSession: (name?: string) => Promise<{ id: string }>;
+  createObject: (name?: string) => Promise<{ id: string; name: string }>;
   runAndSave: (code: string, label?: string) => Promise<unknown>;
   getCode: () => string;
   getGeometryData: () => Record<string, number>;
@@ -148,5 +149,34 @@ test.describe('Import target modal', () => {
 
     const code = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getCode());
     expect(code).toContain('Manifold.compose');
+  });
+
+  test('an empty new object in a project still asks, and the import fills it', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    // A project with real work, then a fresh empty object open (the "+" button).
+    await setupHostSession(page, 'const { Manifold } = api; return Manifold.cube([10, 10, 10], true);');
+    await pw(page)(async () => { await (window as unknown as { partwright: ImportAPI }).partwright.createObject(); });
+
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'widget.stl',
+      mimeType: 'application/octet-stream',
+      buffer: buildCubeSTL(),
+    });
+    // Asks instead of silently opening a new session, and recommends filling
+    // the empty object.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    const fill = dialog.locator('[data-target="current-part"]');
+    await expect(fill).toContainText('Use for current object');
+    await expect(fill).toContainText('Default');
+    await fill.click();
+
+    await expect
+      .poll(() => pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.listParts().map(p => p.name)))
+      .toEqual(['Object 1', 'widget']);
+    const code = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getCode());
+    expect(code).toContain('Manifold.ofMesh(api.imports[0])');
+    expect(code).not.toContain('compose');
   });
 });

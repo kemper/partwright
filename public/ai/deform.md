@@ -1,4 +1,4 @@
-# Deform, scatter, round, weld & sculpt — mesh-shaping verbs
+# Deform, scatter, round, shell, weld & sculpt — mesh-shaping verbs
 
 Blender-style shaping ops for **manifold-js** sessions. All of them are plain
 sandbox calls that return a fresh Manifold — chain them like any other helper.
@@ -19,6 +19,8 @@ sessions.)
 | Spikes / studs / rivets / scales all over a surface | `api.scatter(target, instance, { count })` |
 | "Round every sharp edge" on any solid | `api.round(m, { radius })` |
 | Round only SOME edges (the top, one part) and keep the rest exact | `api.round(m, { radius, select })` |
+| Hollow any solid to a uniform wall (mask, helmet, lamp shade, print-in-resin shell) | `api.shell(m, { thickness })` |
+| Grow / shrink a solid uniformly (clearance, fit allowance, thicken a thin sculpt) | `api.offset(m, { distance })` |
 | Blend two plain meshes with a smooth seam | `api.smoothWeld(a, b, { radius })` (`select` to blend one joint only) |
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
 | Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.editPart(m, 'head', { scale: 1.3 })` (rigid, cut at the seam) or `api.sculpt.transform(m, { select, scale \| rotate \| translate, blend })` (soft warp) |
@@ -192,6 +194,65 @@ EXACT shape instead: `Manifold.hull` of corner spheres (flat faces stay
 perfectly flat, edge fillets are perfectly cylindrical — and far fewer
 triangles). Reserve `api.round` for shapes with no exact construction:
 boolean results, imports, organic/non-convex forms.
+
+## Shell & offset — uniform walls and 3D offsets for any solid
+
+```js
+const hollow = api.shell(m, {
+  thickness: 2,          // wall thickness, world units
+  side: 'inside',        // 'inside' (default): hollow it, outer surface unchanged
+                         // 'outside': a skin around it; inner surface = m's surface
+  resolution: 192,       // lattice-size cap (32..320); only matters on big models / thin walls
+});
+const bigger = api.offset(m, { distance: 0.3 });   // grow by 0.3 (fit clearance, small part)
+const thinner = api.offset(m, { distance: -1 });   // shrink by 1
+```
+
+`api.shell` is the tool for **"hollow this sculpt/import to a uniform wall"**:
+masks, helmets, lamp shades, resin-print hollowing. It is exact where it
+matters: **the input's own surface is kept as-is** (every sculpted detail, its
+tessellation and its `api.label` parts); only the new wall surface is built,
+from the exact distance to the input, so the wall is the requested thickness to
+within a fraction of the lattice voxel. Areas thinner than `2·thickness` stay
+solid (nothing to hollow there). The result is a **closed** hollow solid, so cut
+the opening yourself with a boolean:
+
+```js
+// Wearable mask from a head sculpt whose face points toward −Y:
+const head = Manifold.ofMesh(api.imports[0]);
+const shellHead = api.shell(head, { thickness: 2.5 });
+const bb = head.boundingBox();
+const cutY = bb.min[1] + 0.45 * (bb.max[1] - bb.min[1]);   // keep the front 45%
+const back = Manifold.cube([1e3, 1e3, 1e3], true).translate([0, cutY + 500, 0]);
+return shellHead.subtract(back);                               // eye holes etc. next
+```
+
+`api.offset` grows (`distance > 0`) or shrinks (`< 0`) the whole solid along its
+normals — a true 3D offset (Minkowski with a ball): grown convex edges come out
+rounded, and features thinner than `2·|distance|` vanish when shrinking. The
+output is a remeshed surface; pass `keepLabels: true` to carry `api.label` parts
+across (same mechanism as `round`).
+
+**Smallest distance / thickness.** The op runs on a lattice capped at
+`resolution` cells along the model's longest side, and the distance (or
+thickness) must span at least ~1.5 cells: **minimum ≈ 1.5 × model span ÷
+resolution** — ~1.6 units on a 200-unit head at the default 192, ~0.9 at
+`resolution: 320`. A 0.3 fit clearance therefore works on a part up to ~38
+units across (~64 at 320); for a larger assembly, offset just the mating
+feature and union it back. The error message states the limit. Below the cap,
+`resolution` changes nothing (the lattice is already as fine as the distance
+needs).
+
+Cost: one lattice pass, roughly independent of the input's triangle count past
+the nearest-surface queries — about **12 s for a ~1M-triangle head** at the
+default resolution. For a big import, `partwright.simplifyModel(...)` it once
+first so every later run is cheaper.
+
+**Not the same as the other shells.** `api.sdf`'s `node.shell(t)` is CENTRED on
+the surface (`|f| − t/2`: half the wall outside, half inside) — use it when the
+model is already an SDF tree and that's what you want. `BREP.shell(shape, -t,
+{ topZ: true })` (replicad sessions) is negative-inward and needs an open-face
+filter. `api.shell`'s default puts the whole wall INSIDE the input surface.
 
 ## smoothWeld — smoothUnion for plain meshes
 

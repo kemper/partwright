@@ -140,6 +140,54 @@ test.describe('STL import', () => {
     expect(r.slice.area).toBeCloseTo(100, 1);
   });
 
+  test('a saved import stores its mesh arrays as Blobs and reopens after a reload', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    // 0 KB: store every array as a Blob, so this tiny cube takes the path a
+    // multi-million-triangle import would.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.setAppConfig('renderer', 'storedArrayBlobMinKB', 0);
+    });
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'blob-cube.stl',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from(buildCubeSTLBase64(), 'base64'),
+    });
+    const settled = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      if (!((pw?.getCode?.() ?? '') as string).includes('blob-cube.stl')) return false;
+      const geo = pw?.getGeometryData?.();
+      return typeof geo?.volume === 'number' && geo.stale !== true && geo.triangleCount === 12;
+    };
+    await page.waitForFunction(settled, undefined, { timeout: 15000 });
+
+    // The raw IndexedDB record holds Blobs, not the typed arrays.
+    await expect.poll(() => page.evaluate(() => new Promise<string>((resolve, reject) => {
+      const req = indexedDB.open('partwright');
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const all = req.result.transaction('versions', 'readonly').objectStore('versions').getAll();
+        all.onsuccess = () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const v = (all.result as any[]).find(r => r.importedMeshes?.[0]?.filename === 'blob-cube.stl');
+          const stored = v?.importedMeshes[0].vertProperties;
+          resolve(!v ? 'missing' : stored instanceof Float32Array ? 'typed' : stored?.blob instanceof Blob ? 'blob' : 'other');
+        };
+      };
+    })), { timeout: 10000 }).toBe('blob');
+
+    await page.reload();
+    await page.waitForFunction(settled, undefined, { timeout: 30000 });
+    const geo = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.getGeometryData();
+    });
+    expect(geo.volume).toBeCloseTo(1000, 1);
+    expect(geo.isManifold).toBe(true);
+  });
+
   test('imported mesh stays editable — wrapper composes with code-defined primitives', async ({ page }) => {
     const stlBase64 = buildCubeSTLBase64();
 

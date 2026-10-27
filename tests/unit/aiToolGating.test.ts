@@ -23,6 +23,7 @@ import {
   declinedToolMessage,
 } from '../../src/ai/tools';
 import { computeCodeDiff } from '../../src/ai/codeDiff';
+import { CARD_TOOL_ACK } from '../../src/ai/planReply';
 import { loadSettings, setToggles } from '../../src/ai/settings';
 import type { ChatToggles } from '../../src/ai/types';
 
@@ -35,7 +36,11 @@ const names = (t: ChatToggles) => new Set(buildToolList(t).map(d => d.name));
 
 describe('AI tool gating invariants', () => {
   test('every tool in the schema list is offered when every toggle is on', () => {
-    const offered = names(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false }));
+    // Plan-only tools (proposePlan) are offered in plan mode, not with it off.
+    const offered = new Set([
+      ...names(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false })),
+      ...names(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: true })),
+    ]);
     const ungated = ALL_TOOL_NAMES.filter(n => !offered.has(n));
     // A failure here means a tool was added to ALL_TOOLS without being put in
     // a gating set (ALWAYS_AVAILABLE / RUN_GATED / SAVE_GATED / PAINT_GATED /
@@ -165,7 +170,11 @@ describe('AI tool gating invariants', () => {
         if (k === 'items' && v && typeof v === 'object') walk(v as Record<string, unknown>, `${path}[]`);
       }
     };
-    const all = buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false }));
+    // Both lists: plan-only tools (proposePlan) are sent to Gemini too.
+    const all = [
+      ...buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: false })),
+      ...buildToolList(toggles({ scope: ALL_ON, vision: { views: true }, autoResume: true, planFirst: true })),
+    ];
     for (const t of all) walk(t.input_schema as unknown as Record<string, unknown>, t.name);
     expect(bad).toEqual([]);
   });
@@ -192,6 +201,31 @@ function stubApi(overrides: Record<string, (...args: unknown[]) => unknown> = {}
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('card tools (askUser / proposePlan)', () => {
+  test('askUser is offered in every mode, proposePlan only while planning', () => {
+    const off = names(toggles({ scope: ALL_ON, planFirst: false }));
+    const plan = names(toggles({ scope: ALL_ON, planFirst: true }));
+    const none = names(toggles({ scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false }, planFirst: false }));
+    expect(off.has('askUser')).toBe(true);
+    expect(none.has('askUser')).toBe(true);
+    expect(plan.has('askUser')).toBe(true);
+    expect(plan.has('proposePlan')).toBe(true);
+    expect(off.has('proposePlan')).toBe(false);
+  });
+
+  test('they validate their input and acknowledge without touching the API', async () => {
+    const calls = stubApi();
+    const ok = await executeTool('askUser', { questions: [{ question: 'How tall?', options: [{ label: '60 mm' }] }] });
+    expect(ok.isError).toBe(false);
+    expect(ok.content).toBe(CARD_TOOL_ACK);
+    expect((await executeTool('proposePlan', { summary: 'A vase.', steps: ['Revolve.'] })).content).toBe(CARD_TOOL_ACK);
+    expect((await executeTool('askUser', { questions: [] })).isError).toBe(true);
+    expect((await executeTool('askUser', { questions: [{ question: 'x?', options: [{}] }] })).isError).toBe(true);
+    expect((await executeTool('proposePlan', { summary: 'A vase.' })).isError).toBe(true);
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('AI tool dispatch', () => {
