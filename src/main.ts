@@ -6090,9 +6090,13 @@ async function main() {
     // concurrent applyCodeToCurrentPart already saved a version with companions
     // (avoids the "new-part import + navigate away" phantom second version).
     const companionFiles = getActiveLanguage() === 'scad' ? getCompanionFiles() : undefined;
-    if (!currentPartIsDirty(code, geometryData, { companionFiles })) return;
+    // Pass the live Customizer overrides too, as the explicit save path does:
+    // omitting them made a version saved WITH overrides look dirty on every
+    // object switch, saving a duplicate that drops the overrides (#1131).
+    const paramValues = currentParamValues;
+    if (!currentPartIsDirty(code, geometryData, { paramValues, companionFiles })) return;
     const thumbnail = await captureThumbnail();
-    await saveVersion(code, geometryData, thumbnail, undefined, undefined, { companionFiles });
+    await saveVersion(code, geometryData, thumbnail, undefined, undefined, { paramValues, companionFiles, surfaceTexture: currentSurfaceTextureForSave() });
   }
 
   /** Drop an import wrapper for `components` into the current part: set the
