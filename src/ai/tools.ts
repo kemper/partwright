@@ -14,6 +14,7 @@
 // Argument validation lives on the API side (src/validation/apiValidation.ts)
 // so the same checks apply to console/MCP callers, not just the model.
 
+import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -28,6 +29,9 @@ import { LOG_LEVELS, LOG_SOURCES } from '../diagnostics/logQuery';
 import { isStarterCode } from '../editor/starters';
 import { codeBearingImportKind, geometryOnlyRefusalMessage } from '../import/urlImport';
 import { listTools as listUiTools, type PrefillSchema } from '../ui/toolRegistry';
+
+/** Tools whose call ends the turn: the next move is the user's. */
+export const TURN_ENDING_TOOLS: ReadonlySet<string> = new Set([ASK_USER_TOOL, PROPOSE_PLAN_TOOL]);
 
 export interface ToolDefinition {
   name: string;
@@ -2359,6 +2363,54 @@ Returns { ok, stats, metrics, version } or { error }.`,
       properties: { summary: { type: 'string', description: 'Optional one-line summary of the completed work.' } },
     },
   },
+  {
+    name: ASK_USER_TOOL,
+    description: 'Ask the user questions only they can answer, shown as a card with clickable answers. This ENDS your turn: their answers arrive as the next user message, so do not keep working on a guess. Use it when a decision is genuinely theirs (a size, a style, which of two readings they meant) and a wrong guess would waste real work; when a sensible default exists, pick it and say so instead of asking. Ask at most 4 short questions with 2–4 options each, put the option you would pick first and mark it "(recommended)". The user can always type their own answer.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          minItems: 1,
+          description: 'The questions, in the order to ask them.',
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string', description: 'The question, ending with "?".' },
+              options: {
+                type: 'array',
+                description: '2–4 answer choices. Omit for an open question the user answers by typing.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: 'Short answer text (1–6 words).' },
+                    description: { type: 'string', description: 'Optional one-line note on what this choice means or costs.' },
+                  },
+                  required: ['label'],
+                },
+              },
+              multiSelect: { type: 'boolean', description: 'Let the user pick more than one option. Default false.' },
+            },
+            required: ['question'],
+          },
+        },
+      },
+      required: ['questions'],
+    },
+  },
+  {
+    name: PROPOSE_PLAN_TOOL,
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
+        steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
+        assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+      },
+      required: ['summary', 'steps'],
+    },
+  },
   // ── Tools wrapping existing window.partwright methods (#1085 PR1) ─────────
   // Kept in one contiguous block; gated in the sets below.
   {
@@ -2574,6 +2626,7 @@ for (const tool of ALL_TOOLS) {
 }
 
 const ALWAYS_AVAILABLE = new Set([
+  ASK_USER_TOOL,
   'listPartDetectors',
   'getPartDraft',
   'getActiveLanguage',
@@ -2740,6 +2793,29 @@ export function declinedToolMessage(name: string): string {
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
+/** Pre-rename tool names `executeTool` still dispatches (a chat whose history
+ *  carries them, or a model that reaches for the old name). The offered-tools
+ *  gate checks the current name they stand for. */
+export const LEGACY_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  listParts: 'listObjects',
+  getCurrentPart: 'getCurrentObject',
+  createPart: 'createObject',
+  changePart: 'changeObject',
+  renamePart: 'renameObject',
+  deletePart: 'deleteObject',
+};
+
+/** The tool result for a call to a tool that wasn't offered this turn. The
+ *  tool list is the gate (plan mode, the Run/Save/Paint/Notes scopes), but a
+ *  model can still emit a name it saw earlier in the conversation — so the
+ *  chat loop refuses it rather than running it. */
+export function unofferedToolMessage(name: string, planning: boolean): string {
+  if (planning) {
+    return `[Not run — ${name} is not available while planning. The user hasn't approved a plan yet, so nothing may be changed or executed. Finish this turn with your plan (or your questions); the build tools unlock when the user approves]`;
+  }
+  return `[Not run — ${name} is not available this turn (it is switched off in the chat's settings or not part of your tool set). Use the tools you were given, or tell the user what you need]`;
+}
+
 /** Result for a confirm-required tool when no confirmation prompt can be shown
  *  (no UI callback wired for this turn). Confirmation fails CLOSED. */
 export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the user\'s confirmation and no confirmation prompt is available. Ask the user to do it from the UI instead]';
@@ -2755,6 +2831,8 @@ export const CONFIRM_UNAVAILABLE_MESSAGE = '[Not run — this tool needs the use
  *  execution), and they stay gated by the Views vision toggle so the user's
  *  cost preferences still apply. */
 const PLAN_MODE_TOOLS = new Set([
+  // How a planning turn ends: questions, or the plan itself.
+  ASK_USER_TOOL, PROPOSE_PLAN_TOOL,
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
   'getFeatureCentroids', 'getReferenceImages', 'getAttachments', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
@@ -3139,6 +3217,34 @@ async function focusTargetObject(api: PartwrightAPI, target: string | number): P
  *  them back to the model for self-correction. Tools that return an
  *  image (renderView today) bypass the JSON path and return a structured
  *  ToolExecResult directly. */
+function askUserInputError(input: Record<string, unknown>): string | null {
+  const qs = input.questions;
+  if (!Array.isArray(qs) || qs.length === 0) return 'askUser needs `questions`: a non-empty array of { question, options?, multiSelect? }.';
+  for (const [i, q] of qs.entries()) {
+    const item = q as Record<string, unknown> | null;
+    if (!item || typeof item.question !== 'string' || !item.question.trim()) return `askUser: questions[${i}].question must be a non-empty string.`;
+    if (item.options !== undefined) {
+      if (!Array.isArray(item.options)) return `askUser: questions[${i}].options must be an array of { label, description? }.`;
+      for (const [j, o] of item.options.entries()) {
+        const opt = o as Record<string, unknown> | null;
+        if (!opt || typeof opt.label !== 'string' || !opt.label.trim()) return `askUser: questions[${i}].options[${j}].label must be a non-empty string.`;
+      }
+    }
+  }
+  return null;
+}
+
+function proposePlanInputError(input: Record<string, unknown>): string | null {
+  if (typeof input.summary !== 'string' || !input.summary.trim()) return 'proposePlan needs a non-empty `summary`.';
+  if (!Array.isArray(input.steps) || input.steps.length === 0 || input.steps.some(s => typeof s !== 'string' || !s.trim())) {
+    return 'proposePlan needs `steps`: a non-empty array of non-empty strings.';
+  }
+  if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
+    return 'proposePlan: `assumptions` must be an array of strings.';
+  }
+  return null;
+}
+
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
   // Work on a shallow copy: the object-target handling below deletes keys, and
   // the caller's object is reused verbatim when the chat loop retries a call.
@@ -3149,6 +3255,12 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     if (name === 'finish') {
       const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
       return { content: summary ? `Marked complete: ${summary}` : 'Turn marked complete.', isError: false };
+    }
+    // Card tools: the panel renders the call itself, so there's nothing to run
+    // — just check the input is renderable.
+    if (name === ASK_USER_TOOL || name === PROPOSE_PLAN_TOOL) {
+      const problem = name === ASK_USER_TOOL ? askUserInputError(input) : proposePlanInputError(input);
+      return problem ? { content: problem, isError: true } : { content: CARD_TOOL_ACK, isError: false };
     }
     // Pre-flight: code-writing tools must match the active session
     // language. The agent loop will retry with the corrected language

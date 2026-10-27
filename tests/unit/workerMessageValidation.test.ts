@@ -84,6 +84,9 @@ describe('checkEngineWorkerMessage', () => {
     expect(checkEngineWorkerMessage({ type: 'exportSTEP_result', callId: 's', blob: new Blob(['x']), error: null }).ok).toBe(true);
     expect(checkEngineWorkerMessage({ type: 'simplify_progress', callId: 's', fraction: 0.5 }).ok).toBe(true);
     expect(checkEngineWorkerMessage({ type: 'enhance_result', callId: 'e', mesh: null, triangleCount: 9, cancelled: false, exceeded: true, error: null }).ok).toBe(true);
+    expect(checkEngineWorkerMessage({ type: 'simplify_result', callId: 's', mesh: mesh(), triangleCount: 1, tolerance: 0.1, cancelled: false, error: null,
+      manifoldFacts: { bbox: null, volume: 1, surfaceArea: 1, genus: 0, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, pieces: { count: 1, pieceOfTri: new Int32Array(1) } } }).ok).toBe(true);
+    expect(checkEngineWorkerMessage({ type: 'enhance_result', callId: 'e', mesh: mesh(), triangleCount: 1, cancelled: false, error: null, manifoldError: 'Not manifold' }).ok).toBe(true);
   });
 
   it('rejects unknown types and non-objects', () => {
@@ -110,6 +113,8 @@ describe('checkEngineWorkerMessage', () => {
       { type: 'validate_result', callId: 'exec-3', result: { valid: 'yes' } },
       { type: 'exportSTEP_result', callId: 'exec-3', blob: 'not a blob' },
       { type: 'simplify_progress', callId: 'exec-3', fraction: 7 },
+      { type: 'simplify_result', callId: 'exec-3', mesh: mesh(), manifoldFacts: { volume: 'x' } },
+      { type: 'enhance_result', callId: 'exec-3', mesh: null, manifoldError: 42 },
     ];
     for (const m of bad) {
       const r = checkEngineWorkerMessage(m);

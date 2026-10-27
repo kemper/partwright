@@ -10,6 +10,7 @@ import { cloneImportForWorker, getActiveImports, type ImportedMesh } from '../im
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
+import type { ManifoldFacts } from './manifoldFacts';
 import { errorLog } from '../diagnostics/errorLog';
 import {
   registerWorker,
@@ -690,6 +691,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       mesh: msg.mesh as MeshData,
       triangleCount: msg.triangleCount as number,
       tolerance: msg.tolerance as number,
+      ...meshOpFacts(msg),
     });
     return;
   }
@@ -723,6 +725,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     pending.resolve({
       mesh: msg.mesh as MeshData,
       triangleCount: msg.triangleCount as number,
+      ...meshOpFacts(msg),
     });
     return;
   }
@@ -822,7 +825,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -1057,7 +1060,21 @@ export async function clearBrepShape(): Promise<void> {
 
 // ── Simplify Worker client ──────────────────────────────────────────────────
 
-export interface SimplifyWorkerResult {
+/** Worker-side stats for a big simplify / enhance result (see
+ *  `MeshResult.manifoldFacts`), or why the result isn't a valid solid. */
+function meshOpFacts(msg: Record<string, unknown>): MeshOpFacts {
+  return {
+    ...(msg.manifoldFacts ? { manifoldFacts: msg.manifoldFacts as ManifoldFacts } : {}),
+    ...(typeof msg.manifoldError === 'string' ? { manifoldError: msg.manifoldError } : {}),
+  };
+}
+
+export interface MeshOpFacts {
+  manifoldFacts?: ManifoldFacts;
+  manifoldError?: string;
+}
+
+export interface SimplifyWorkerResult extends MeshOpFacts {
   mesh: MeshData;
   triangleCount: number;
   tolerance: number;
@@ -1136,6 +1153,7 @@ export async function simplifyInWorker(
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     worker.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
     );
@@ -1144,7 +1162,7 @@ export async function simplifyInWorker(
 
 // ── Enhance Worker client ───────────────────────────────────────────────────
 
-export interface EnhanceWorkerResult {
+export interface EnhanceWorkerResult extends MeshOpFacts {
   /** The refined mesh, or null when the result was refused for exceeding the
    *  hard triangle cap (see `exceeded`). */
   mesh: MeshData | null;
@@ -1219,6 +1237,7 @@ export async function enhanceInWorker(
     const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
     worker.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );

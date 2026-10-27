@@ -61,6 +61,32 @@ test.describe('deform ops (scatter / round / weld / sculpt in code)', () => {
     expect(out.geo?.componentCount).toBe(2);
   });
 
+  test('api.shell hollows a solid into an open mask; api.offset grows it', async () => {
+    const out = await page.evaluate(async () => {
+      const api = (window as unknown as { partwright: {
+        createSession: (n?: string) => Promise<unknown>;
+        run: (code: string) => Promise<unknown>;
+        getGeometryData: () => Promise<{ isManifold?: boolean; componentCount?: number; volume?: number } | null>;
+      } }).partwright;
+      await api.createSession('shell-offset');
+      const run = async (code: string) => {
+        const r = await api.run(code) as { error?: string } | undefined;
+        return { error: (r && r.error) || null, geo: await api.getGeometryData() };
+      };
+      const head = 'const { Manifold } = api;\nconst head = Manifold.sphere(20, 64).scale([0.8, 0.9, 1.1]);\n';
+      return {
+        mask: await run(head + 'return api.shell(head, { thickness: 2 }).subtract(Manifold.cube([100, 100, 100], true).translate([0, 50, 0]));'),
+        grown: await run(head + 'return api.offset(head, { distance: 1 });'),
+      };
+    });
+
+    expect(out.mask.error).toBeNull();
+    expect(out.mask.geo?.isManifold).toBe(true);
+    expect(out.mask.geo?.componentCount).toBe(1);
+    expect(out.grown.error).toBeNull();
+    expect(out.grown.geo?.isManifold).toBe(true);
+  });
+
   test('wrapAround wraps text-sized geometry and api.material reaches the viewport', async () => {
     const out = await page.evaluate(async () => {
       const api = (window as unknown as { partwright: {

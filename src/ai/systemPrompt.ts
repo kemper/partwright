@@ -155,17 +155,14 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       '**PLAN MODE — inspect the session freely, but do NOT mutate, execute code, or start building.**',
       '',
-      'You have the read-only tool subset this turn (getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
+      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
       '',
       'Inspect only what you need to write a useful plan; do not fan out. Setters, runners, savers, painters, and imports are hidden until the user approves.',
       '',
-      'Your final message this turn is the plan itself:',
-      '- What you will build and the overall shape/structure',
-      '- Key design decisions and any trade-offs',
-      '- The concrete steps you will take to implement it',
-      '',
-      'If you need clarification before you can write a useful plan, ask your questions now.',
-      'The user will approve the plan (triggering a new turn with full tools) or reply to refine it further.',
+      'End this turn with exactly one of:',
+      '- **The plan**: what you will build and its overall shape, the key design decisions and trade-offs, the concrete steps, and any assumptions you made so the user can correct them. Call `proposePlan` with it if you have that tool; otherwise write it as your final message, ending with its assumptions — not a question like "Does this look good?" (the user has a Build button for that).',
+      '- **Questions**, only if you need answers before you can plan well: few of them, each with the option you would pick, so the user can just accept the defaults. Call `askUser` if you have that tool; otherwise end your message with them as a numbered list. Ask instead of planning — not both.',
+      'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
     // When 3D-printing optimization is also on, fold the design rules into the
     // plan so the proposed approach is print-aware from the outset.
@@ -365,7 +362,7 @@ Available tools you'll use most:
   gears (api.gears.* involute spur gears / meshing pairs / racks),
   threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
-  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge (or only selected ones) / smoothWeld plain meshes / editPart: scale, turn, swap or delete one part as a solid / sculpt nudges / api.material viewport shading / turntable & explode video export),
+  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge (or only selected ones) / hollow any solid to a uniform wall (shell) or grow/shrink it (offset) / smoothWeld plain meshes / editPart: scale, turn, swap or delete one part as a solid / sculpt nudges / api.material viewport shading / turntable & explode video export),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),
   annotations (when the user has drawn on the model).

@@ -210,6 +210,11 @@ export interface AppConfig {
      *  detail a thumbnail can't show. Above the ~500k catalog budget so
      *  catalog thumbnails stay exact. renderViews etc. are never proxied. */
     thumbnailMaxTriangles: number;
+    /** Points per enclosed-piece test in the engine Worker's stats for big
+     *  models: a piece counts as enclosed (no floater warning) when all of
+     *  these sample points lie inside the larger piece. More = fewer misses
+     *  on oddly shaped pieces, slower. */
+    containmentSamples: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -271,6 +276,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Typed arrays (mesh vertices, triangles, part ids…) at least this many
+     *  KB in a saved version are stored in IndexedDB as Blobs. Saving or
+     *  reading a plain array copies it on the main thread (~0.5 s for a
+     *  3.7M-triangle import); a Blob is written and read out of line.
+     *  0 = every array. */
+    storedArrayBlobMinKB: number;
     /** Triangle count above which the smooth-paint REFINED mesh (the mesh
      *  subdivided under brush strokes / smooth slabs, boxes, cylinders and
      *  patterns) is NOT kept in the local smooth-paint mesh cache. A cached
@@ -349,6 +360,24 @@ export interface AppConfig {
      *  piece). Each becomes its own object with a version, so this bounds the
      *  run time of a split import. */
     maxSplitObjects: number;
+    /** Max mesh files (STL / 3MF) one import may take at once. Every file is
+     *  read before the import dialog opens, so this bounds that wait and the
+     *  memory it holds. */
+    maxImportFiles: number;
+    /** Gap between models when a multi-file import arranges them in a grid,
+     *  as a fraction of the models' average footprint size. */
+    multiImportGridGap: number;
+    /** Most triangles all the files of a multi-file import may hold together.
+     *  They are merged into one mesh (plus a laid-out copy) before the
+     *  objects are cut out, so this bounds that memory. */
+    maxImportTotalTriangles: number;
+    /** Multi-file layout default: two models count as "piled up" (so the grid
+     *  is suggested) when their footprints overlap by more than this fraction
+     *  of the smaller one… */
+    multiImportOverlapRatio: number;
+    /** …and the smaller footprint is at least this fraction of the bigger (a
+     *  small part nested in a big one reads as an assembly: keep positions). */
+    multiImportSimilarSizeRatio: number;
     /** Default max voxel grid dimension for image → voxel imports. */
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
@@ -716,6 +745,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     creaseEdgeMaxTriangles: 200_000,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
+    containmentSamples: 12,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -735,6 +765,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    storedArrayBlobMinKB: 64,
     paintRefinePersistMaxTriangles: 1_000_000,
     paintRefineCacheMaxMB: 256,
     paintRefineCacheTouchMinutes: 60,
@@ -755,6 +786,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxEntryMB: 1024,
     threeMfMaxColors: 256,
     maxSplitObjects: 100,
+    maxImportFiles: 50,
+    multiImportGridGap: 0.2,
+    maxImportTotalTriangles: 20_000_000,
+    multiImportOverlapRatio: 0.5,
+    multiImportSimilarSizeRatio: 0.25,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     voxelSdfMaxSamples: 8_000_000,
