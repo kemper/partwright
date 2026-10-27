@@ -5,7 +5,6 @@ import { getManifoldModule, manifoldJsEngine, resolveLabelMap } from './manifold
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
 import { assertModelCodeRealm } from '../workerLockdown';
-import { compileModel, createModelLog, withLogs } from '../modelConsole';
 
 // === replicad engine — Phase A of the BREP integration ===
 //
@@ -75,7 +74,7 @@ export const replicadEngine: Engine = {
     // Same parse check as manifold-js: build the Function without executing.
     // Catches syntax errors before paying the WASM round-trip.
     try {
-      compileModel(jsCode);
+      new Function('api', `"use strict";\n${jsCode}`);
       return { valid: true };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -94,12 +93,6 @@ export const replicadEngine: Engine = {
  *  stats, paint persistence) keep working, and stash the live BrepShape in
  *  `lastShape` so STEP export can find it. */
 export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
-  const log = createModelLog();
-  return withLogs(await runReplicadModel(jsCode, paramOverrides, log.console), log);
-}
-
-/** One BREP run with `modelConsole` as the model code's `console`. */
-async function runReplicadModel(jsCode: string, paramOverrides: Record<string, unknown> | undefined, modelConsole: Console): Promise<MeshResult> {
   assertModelCodeRealm('BREP model code');
   if (!manifoldModule || !getBrepNamespace()) {
     const error = 'BREP/replicad engine not initialised.';
@@ -202,7 +195,8 @@ async function runReplicadModel(jsCode: string, paramOverrides: Record<string, u
   let userScriptError: { error: string; diagnostics?: ReturnType<typeof runtimeDiagnostic> } | null = null;
   try {
     setBrepRemovedParts(removedParts);
-    const result = compileModel(jsCode)(api, modelConsole);
+    const fn = new Function('api', `"use strict";\n${jsCode}`);
+    const result = fn(api) as unknown;
     if (!result || typeof result !== 'object' || !('_shape' in result)) {
       const error = 'BREP code must `return` a BREP shape (from api.BREP.box/cylinder/sphere/etc., optionally piped through .fillet/.chamfer/.fuse/.cut/.intersect).';
       userScriptError = {

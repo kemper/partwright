@@ -1,11 +1,16 @@
 // Console output from model code. Model code runs as `new Function(...)` in
 // the engine Worker, so a plain `console.log` only reaches the Worker's
 // DevTools console — an agent driving the app (console API, in-app AI) never
-// sees it, and debugs by throwing JSON in an Error instead. Each run gets its
-// own capturing `console`, passed to the model function as a parameter (so it
-// shadows the global for model code only, never for engine internals or a
-// concurrent async run), and the captured lines ride back on the run result
-// as `MeshResult.logs`. Output still mirrors to the real console.
+// sees it, and debugs by throwing JSON in an Error instead. The Worker runs
+// each engine call inside `log.run(...)`, which points the console's methods at
+// this run's capture for the duration of that SYNCHRONOUS call (model code
+// only ever runs synchronously, so no other run can interleave) and restores
+// them after. The captured lines ride back on the run result as
+// `MeshResult.logs`; output still mirrors to the real console.
+//
+// The engines' own `new Function('api', …)` calls are deliberately left
+// untouched: CodeQL reports each as a known, by-design "Code injection" alert,
+// and changing those lines would mint new alerts (see the release skill).
 
 import { getConfig } from '../config/appConfig';
 
@@ -16,44 +21,22 @@ export interface ModelLogLimits {
   maxChars: number;
 }
 
-/** The main thread's limits, set per execute message (the Worker's own
- *  getConfig() only sees defaults). */
-let workerLimits: ModelLogLimits | null = null;
-
-export function setModelLogLimits(limits: ModelLogLimits | null): void {
-  workerLimits = limits;
-}
-
 export interface ModelLog {
-  /** The `console` handed to model code. */
-  console: Console;
+  /** Run `fn` with console output captured into this log. */
+  run<T>(fn: () => T): T;
   /** Captured lines, or undefined when the run logged nothing. */
   lines(): string[] | undefined;
 }
 
-/** Compile model code the way every JS engine runs it: strict mode, `api`
- *  and the per-run `console` as parameters. Throws a SyntaxError for bad
- *  code, so the engines' validate() paths use it too. This is THE place user
- *  model code becomes a function, by design — it only ever runs inside the
- *  locked-down engine Worker (workerLockdown.ts). CodeQL reports it as "Code
- *  injection"; that alert is the known, expected one (release skill). */
-export function compileModel(jsCode: string): (api: unknown, console: Console) => unknown {
-  try {
-    return new Function('api', 'console', `"use strict";\n${jsCode}`) as (api: unknown, console: Console) => unknown;
-  } catch (e) {
-    // `const console = …` at the top of model code now collides with the
-    // parameter; say why instead of a bare redeclaration error.
-    if (e instanceof SyntaxError && /\bconsole\b/.test(e.message) && /already been declared|redeclaration/i.test(e.message)) {
-      throw new SyntaxError(`${e.message}. \`console\` is provided to model code (what it prints comes back as \`logs\`), like \`api\` — rename your variable.`);
-    }
-    throw e;
-  }
-}
+type Level = 'log' | 'info' | 'debug' | 'dir' | 'table' | 'warn' | 'error' | 'assert';
+const LEVELS: readonly Level[] = ['log', 'info', 'debug', 'dir', 'table', 'warn', 'error', 'assert'];
+const PREFIX: Partial<Record<Level, string>> = { warn: 'warn: ', error: 'error: ' };
 
+/** A capture for one run. `limits` default to the app config (in a Worker
+ *  that is the defaults, so the main thread passes its own on the message). */
 export function createModelLog(limits?: ModelLogLimits): ModelLog {
   const cfg = getConfig().renderer;
-  const { maxLines, maxChars } = limits ?? workerLimits ?? { maxLines: cfg.modelLogMaxLines, maxChars: cfg.modelLogMaxChars };
-  const real = globalThis.console;
+  const { maxLines, maxChars } = limits ?? { maxLines: cfg.modelLogMaxLines, maxChars: cfg.modelLogMaxChars };
   const out: string[] = [];
   let chars = 0;
   let dropped = 0;
@@ -65,28 +48,32 @@ export function createModelLog(limits?: ModelLogLimits): ModelLog {
     chars += line.length;
     out.push(line);
   };
-  const level = (name: 'log' | 'info' | 'debug' | 'warn' | 'error', prefix: string) => (...args: unknown[]) => {
-    push(prefix, args);
-    real[name](...args);
-  };
-
-  // Everything else (time, group, count, …) falls through to the real console.
-  const modelConsole = Object.assign(Object.create(real) as Console, {
-    log: level('log', ''),
-    info: level('info', ''),
-    debug: level('debug', ''),
-    dir: level('log', ''),
-    table: level('log', ''),
-    warn: level('warn', 'warn: '),
-    error: level('error', 'error: '),
-    assert: (cond?: unknown, ...args: unknown[]) => {
-      if (!cond) push('assert: ', args.length > 0 ? args : ['Assertion failed']);
-      real.assert(!!cond, ...args);
-    },
-  });
 
   return {
-    console: modelConsole,
+    run<T>(fn: () => T): T {
+      const c = globalThis.console as unknown as Record<Level, (...args: unknown[]) => void>;
+      const saved = LEVELS.map(k => [k, c[k]] as const);
+      const originalError = c.error;
+      for (const [k, original] of saved) {
+        // A failed assert mirrors as an error itself: the real console.assert
+        // may print through console.warn/error, which would capture it twice.
+        c[k] = k === 'assert'
+          ? (cond?: unknown, ...args: unknown[]) => {
+              if (cond) return;
+              push('assert: ', args.length > 0 ? args : ['Assertion failed']);
+              originalError.call(globalThis.console, 'Assertion failed:', ...args);
+            }
+          : (...args: unknown[]) => {
+              push(PREFIX[k] ?? '', args);
+              original.apply(globalThis.console, args);
+            };
+      }
+      try {
+        return fn();
+      } finally {
+        for (const [k, original] of saved) c[k] = original;
+      }
+    },
     lines: () => {
       if (out.length === 0 && dropped === 0) return undefined;
       return dropped > 0 ? [...out, `… ${dropped} more log line${dropped === 1 ? '' : 's'} dropped (limit ${maxLines} lines / ${maxChars} characters per run)`] : [...out];

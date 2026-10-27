@@ -6,7 +6,6 @@ import { createParamCapture, type ParamCapture } from '../params';
 import { createSdfNamespace } from '../sdf';
 import { ValidationError } from '../../validation/apiValidation';
 import { assertModelCodeRealm } from '../workerLockdown';
-import { compileModel, createModelLog, withLogs } from '../modelConsole';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -89,34 +88,14 @@ export const voxelEngine: Engine = {
   isReady() { return true; },
 
   run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
-    const log = createModelLog();
-    return withLogs(runVoxelModel(jsCode, paramOverrides, log.console), log);
-  },
-
-  validate(jsCode: string): ValidateResult {
-    try {
-      compileModel(jsCode);
-      return { valid: true };
-    } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      return {
-        valid: false,
-        error,
-        diagnostics: e instanceof SyntaxError ? javaScriptSyntaxDiagnostics(jsCode, error, e) : undefined,
-      };
-    }
-  },
-};
-
-/** One voxel run with `modelConsole` as the model code's `console`. */
-function runVoxelModel(jsCode: string, paramOverrides: Record<string, unknown> | undefined, modelConsole: Console): MeshResult {
     assertModelCodeRealm('voxel code');
     const capture = createParamCapture(paramOverrides);
     const removedPieces: [number, number, number][] = [];
     const api = createVoxelApi(capture.params, removedPieces);
     let result: unknown;
     try {
-      result = compileModel(jsCode)(api, modelConsole);
+      const fn = new Function('api', `"use strict";\n${jsCode}`);
+      result = fn(api);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const isSyntaxError = e instanceof SyntaxError;
@@ -176,7 +155,22 @@ function runVoxelModel(jsCode: string, paramOverrides: Record<string, unknown> |
       const msg = e instanceof Error ? e.message : String(e);
       return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'), paramsSchema: capture.collectSchema() };
     }
-}
+  },
+
+  validate(jsCode: string): ValidateResult {
+    try {
+      new Function('api', `"use strict";\n${jsCode}`);
+      return { valid: true };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      return {
+        valid: false,
+        error,
+        diagnostics: e instanceof SyntaxError ? javaScriptSyntaxDiagnostics(jsCode, error, e) : undefined,
+      };
+    }
+  },
+};
 
 /** Result of {@link voxelPaintRunFromGrid}: the grid voxel paint edits plus its
  *  block mesh and per-triangle voxel provenance. */
@@ -193,7 +187,8 @@ export function runVoxelGrid(jsCode: string, paramOverrides?: Record<string, unk
   const api = createVoxelApi(createParamCapture(paramOverrides).params, removedPieces);
   let result: unknown;
   try {
-    result = compileModel(jsCode)(api, console);
+    const fn = new Function('api', `"use strict";\n${jsCode}`);
+    result = fn(api);
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

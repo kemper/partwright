@@ -91,3 +91,33 @@ I also took the nits:
 ## Assistant
 
 Added a 4-Ls retro for this PR (retros/inbox/20261027-033500-model-code-console-logs.md).
+
+## Human
+
+It won't let me dismiss the alert how do I work around it
+
+## Assistant
+
+## Leave the sandbox's `new Function` lines untouched
+
+CodeQL fails a PR only on alerts that are new compared with main. The new
+alert came from changing the sandbox call (moving it into `compileModel` and
+adding a `console` parameter). So the engines' `new Function('api', …)` lines
+are back byte-for-byte as on main: manifoldJs.ts, voxel.ts and replicad.ts are
+identical to origin/main, and so is the release skill.
+
+The per-run console now works without a parameter. `createModelLog().run(fn)`
+points the console's log/info/debug/dir/table/warn/error/assert methods at the
+run's capture for the duration of `fn`, then restores them. The Worker wraps
+each JS engine call in it. Model code only ever runs synchronously; replicad's
+async run evaluates the code before its first await. So no other run can
+interleave, and if someone later adds an await before the model call, the
+logs are just not captured, never misattributed.
+
+Side effects:
+- The per-message caps global and the "`const console` collides" problem are
+  gone.
+- Engine-internal console output during the call is captured too, which is
+  run output anyway.
+- A failed assert mirrors through the original `console.error` (Node's
+  `console.assert` prints via `warn` and would be captured twice).

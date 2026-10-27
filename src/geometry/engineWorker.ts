@@ -56,7 +56,7 @@ import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance,
 import type { MeshData } from './types';
 import { lockdownGlobalScope } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
-import { setModelLogLimits } from './modelConsole';
+import { createModelLog, withLogs } from './modelConsole';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -242,12 +242,15 @@ self.onmessage = async (event: MessageEvent) => {
       containmentSamples?: number;
       modelLog?: { maxLines?: unknown; maxChars?: unknown };
     };
-    // The main thread's caps on captured console output (modelConsole.ts),
-    // installed next to setActiveImports below — after the lazy-init awaits,
-    // so an execute arriving mid-init can't swap them for this run.
-    const runLogLimits = modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
-      ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
-      : null;
+    // This run's console capture (modelConsole.ts), with the main thread's
+    // caps. Each JS engine call below runs inside log.run(...), which only
+    // redirects the console for that synchronous call — model code never
+    // runs across an await, so overlapping async runs can't mix their logs.
+    const log = createModelLog(
+      modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
+        ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
+        : undefined,
+    );
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.
@@ -280,13 +283,11 @@ self.onmessage = async (event: MessageEvent) => {
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
         setActiveImports(runImports);
-        setModelLogLimits(runLogLimits);
-        result = voxelEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => voxelEngine.run(code as string, params ?? undefined)), log);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
         setActiveImports(runImports);
-        setModelLogLimits(runLogLimits);
         // Preview callback: post the rough mesh to the main thread so it can
         // update the viewport immediately while Phase 2 (full quality) runs.
         const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
@@ -306,8 +307,9 @@ self.onmessage = async (event: MessageEvent) => {
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
         setActiveImports(runImports);
-        setModelLogLimits(runLogLimits);
-        result = await runReplicadAsync(code as string, params ?? undefined);
+        // runReplicadAsync evaluates the model code before its first await, so
+        // that part runs inside the capture.
+        result = withLogs(await log.run(() => runReplicadAsync(code as string, params ?? undefined)), log);
       } else {
         if (!manifoldReady) {
           self.postMessage({
@@ -332,7 +334,6 @@ self.onmessage = async (event: MessageEvent) => {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
-        setModelLogLimits(runLogLimits);
         // Progressive render for SDF models (figures): a throwaway coarse pass
         // first, posted as `execute_preview` so the viewport shows a rough shape
         // in ~1-2s, then the full-quality pass below. Gated on the source doing
@@ -373,7 +374,7 @@ self.onmessage = async (event: MessageEvent) => {
           } catch { /* preview is best-effort; fall through to the full render */ }
           finally { setSdfPreviewScale(null); }
         }
-        result = manifoldJsEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => manifoldJsEngine.run(code as string, params ?? undefined)), log);
       }
 
       // labelMap is Map<string, Set<number>> — not directly serialisable.
