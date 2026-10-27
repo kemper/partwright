@@ -162,7 +162,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'runCode',
-    description: 'Run the given code (or the editor contents if `code` is omitted) and return the resulting geometry stats. Does NOT save a version. Use for quick iteration before committing.',
+    description: 'Run the given code (or the editor contents if `code` is omitted) and return the resulting geometry stats. Does NOT save a version. Use for quick iteration before committing. Anything the model code prints with console.log/warn/error comes back as `logs` (also when it throws) — print intermediate values to debug instead of throwing them in an Error.',
     input_schema: {
       type: 'object',
       properties: {
@@ -172,7 +172,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'runAndSave',
-    description: 'Run code and commit the result as a new gallery version in the current session. The preferred way to make progress — leaves a versioned record. Returns geometry stats and the saved version number. Optionally pass `assertions` to validate before saving — the version is NOT saved if assertions fail.',
+    description: 'Run code and commit the result as a new gallery version in the current session. The preferred way to make progress — leaves a versioned record. Returns geometry stats and the saved version number. Optionally pass `assertions` to validate before saving — the version is NOT saved if assertions fail. The model code\'s console.log/warn/error output comes back as `logs`.',
     input_schema: {
       type: 'object',
       properties: {

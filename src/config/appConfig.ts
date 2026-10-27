@@ -215,6 +215,11 @@ export interface AppConfig {
      *  these sample points lie inside the larger piece. More = fewer misses
      *  on oddly shaped pieces, slower. */
     containmentSamples: number;
+    /** Most `console.log` lines kept from one run of model code (returned as
+     *  `logs` by run / runAndSave); later lines are counted, not kept. */
+    modelLogMaxLines: number;
+    /** Most characters of model-code console output kept per run. */
+    modelLogMaxChars: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -739,6 +744,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
     containmentSamples: 12,
+    modelLogMaxLines: 200,
+    modelLogMaxChars: 20_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
