@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, shiftedIoU, fitSilhouetteIoU } from '../../src/human/humanFit';
+import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, shiftedIoU, fitSilhouetteIoU, photoSilhouetteWarnings, fitScoreWarnings } from '../../src/human/humanFit';
 
 describe('human fit', () => {
   it('writes each dimension at its path, mirrors the leg spread, and keeps the base', () => {
@@ -45,4 +45,17 @@ describe('human fit', () => {
     expect(fitSilhouetteIoU({ width: W, height: H, photo: box(40), model: box(45) })).toBe(1);
     expect(fitSilhouetteIoU({ width: W, height: H, photo: box(10), model: box(70) })).toBe(0);
   });
+
+  it('warns when the photo outline is in pieces or the best fit matches it poorly', () => {
+    const W = 20, H = 20;
+    const map = (boxes: number[][]) => { const m = new Int32Array(W * H).fill(-2); for (const [x0, y0, x1, y1] of boxes) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * W + x] = 0; return m; };
+    const whole = { width: W, height: H, photo: map([[8, 1, 12, 19]]) };
+    const broken = { width: W, height: H, photo: map([[8, 1, 12, 5], [8, 9, 12, 13], [8, 15, 12, 19]]) };
+    expect(photoSilhouetteWarnings(whole)).toEqual([]);
+    expect(photoSilhouetteWarnings(broken)[0]).toMatch(/3 pieces/);
+    expect(photoSilhouetteWarnings({ width: W, height: H, photo: map([]) })[0]).toMatch(/no silhouette/);
+    expect(fitScoreWarnings(0.85)).toEqual([]);
+    expect(fitScoreWarnings(0.35)[0]).toMatch(/35%/);
+  });
 });
+

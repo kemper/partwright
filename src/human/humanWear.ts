@@ -652,7 +652,21 @@ function landmarks(ctx: BodyContext) {
 }
 
 /** Distance (dm) above which a top's hem sits, below the neck, etc. */
-function topField(ctx: BodyContext, o: WearOptions): (c: BodyContext, v: number) => number {
+/** Sleeveless armhole, as fractions of the shoulder joint's distance from the
+ *  mid-line: the ellipse's centre (out from the joint, and up), the strap's
+ *  outer edge, and how far below the joint the armhole reaches. */
+const ARMHOLE = { centreX: 1.2, centreZ: 0.16, strap: 0.73, depth: 0.5 };
+/** How high a cuirass reaches above the shoulder joint, as fractions of the
+ *  joint's distance from the mid-line: at the shoulder, plus how much more
+ *  toward the neck. */
+const CUIRASS_TOP = { shoulder: 0.12, neck: 0.4 };
+/** A cuirass's neckline sits this much further from the neck (rest dm). */
+const CUIRASS_NECK_WIDEN_DM = 0.1;
+/** How far out from the neck's surface a neckline runs (rest dm). */
+const NECK_MARGIN_DM = 0.15;
+
+/** `neckWiden` (rest dm) opens the neckline further from the neck all round. */
+function topField(ctx: BodyContext, o: WearOptions, neckWiden = 0): (c: BodyContext, v: number) => number {
   const L = landmarks(ctx);
   const sleeveEnd = SLEEVE_END[o.sleeve ?? 'short'];
   const lengthZ = typeof o.length === 'number' ? L.crotch + o.length * (L.chest - L.crotch)
@@ -664,6 +678,23 @@ function topField(ctx: BodyContext, o: WearOptions): (c: BodyContext, v: number)
   const wTorso = ctx.weight(sleeveless ? ['torso', 'hips', 'leg'] : ['torso', 'hips', 'arm', 'leg']);
   const wOff = ctx.weight(sleeveless ? ['neck', 'hand', 'arm'] : ['neck', 'hand']);
   const armLen = ctx.armLen();
+  // A sleeveless armhole: an ellipse in the body's coronal plane (running
+  // front to back) round the shoulder joint, leaving a strap over the
+  // shoulder. The arm's weight boundary alone leaves a lobe of shoulder skin
+  // on top of the arm, which read as tabs sticking up at the shoulders.
+  const sh = ctx.joint('upperarm01.L'), ux = Math.abs(sh[0]);
+  const hole = { cx: ux * ARMHOLE.centreX, cz: sh[2] + ux * ARMHOLE.centreZ, strap: ux * ARMHOLE.strap, low: sh[2] - ux * ARMHOLE.depth };
+  const ax = hole.cx - hole.strap, az = hole.cz - hole.low;
+  // The neck's radius at its base (mean distance of the neck-weighted skin
+  // round the neck joint): the neckline circles the neck at a margin past it.
+  const wNeck = ctx.weight(['neck']), nj = ctx.joint('neck01');
+  let rSum = 0, rN = 0;
+  for (let v = 0; v < ctx.asset.nV; v++) {
+    const p = ctx.pos(v);
+    if (wNeck[v] < 0.6 || Math.abs(p[2] - nj[2]) > 0.15) continue;
+    rSum += Math.hypot(p[0] - nj[0], p[1] - nj[1]); rN++;
+  }
+  const neckR = (rN ? rSum / rN : 0.5) + NECK_MARGIN_DM;
   return (c, v) => {
     const p = c.pos(v);
     // Neckline: one smooth curve round the neck — a drop below the neck joint
@@ -677,9 +708,20 @@ function topField(ctx: BodyContext, o: WearOptions): (c: BodyContext, v: number)
           : neckline === 'scoop' ? 0.3 + 0.75 * frontness ** 2
             : 0.3 + 1.3 * Math.max(0, 1 - theta / 0.55);           // v
     // Boat necks reach wide toward the shoulders: lift the cut there.
-    const neckCut = (L.neck - drop) - p[2] + (neckline === 'boat' ? 0.35 * Math.sin(theta) ** 2 : 0);
+    const plane = (L.neck - drop) - p[2] + (neckline === 'boat' ? 0.35 * Math.sin(theta) ** 2 : 0);
+    // Only what is also close to the neck is cut, so the neckline runs round
+    // the neck over the shoulders instead of slicing the trapezius level
+    // (which left a sleeveless top's straps, or a cuirass, standing up in
+    // points at the shoulders). Scoop and V necks reach out at the front.
+    const reach = neckline === 'scoop' ? 1.2 * frontness ** 6
+      : neckline === 'v' ? 2 * Math.max(0, 1 - theta / 0.55)
+        : neckline === 'boat' ? 0.6 * Math.sin(theta) ** 2 : 0;
+    const radial = Math.hypot(p[0] - nj[0], p[1] - nj[1]) - (neckR + reach + neckWiden);
+    const neckCut = neckline === 'turtle' ? plane : Math.max(plane, radial);
     const hem = p[2] - lengthZ;
-    const sleeve = sleeveless ? 1 : limbCut((sleeveEnd - c.armParam(p)) * armLen, c.armness(v));
+    const sleeve = sleeveless
+      ? (Math.hypot((Math.abs(p[0]) - hole.cx) / ax, (p[2] - hole.cz) / az) - 1) * Math.min(ax, az)
+      : limbCut((sleeveEnd - c.armParam(p)) * armLen, c.armness(v));
     const region = (wTorso[v] - wOff[v] - 0.5) * WEIGHT_TO_DM;
     return Math.min(region, neckCut, hem, sleeve);
   };
@@ -756,6 +798,8 @@ function itemSpec(ctx: BodyContext, o: WearOptions, u: number): ItemSpec | ItemS
           : o.item === 'jacket' ? { sleeve: 'long', neckline: 'v', length: 'hip' }
             : o.item === 'coat' ? { sleeve: 'long', neckline: 'v', length: 'tunic' } : {};
       const spec = { ...defaults, ...o };
+      // A sleeveless top is a tank top: a scoop neck unless asked otherwise.
+      if (spec.sleeve === 'none' && !o.neckline) spec.neckline = 'scoop';
       const cuffs = cuff(u, 0.12, heavy ? 0.12 : 0.06);
       const top: ItemSpec = {
         label, surface: 'body', field: topField(ctx, o.item === 'coat' ? { ...spec, length: 'hip' } : spec),
@@ -902,15 +946,21 @@ function armorSpec(ctx: BodyContext, o: WearOptions, u: number): ItemSpec {
   const w = (g: Group[]) => ctx.weight(g);
   switch (o.item) {
     case 'breastplate': case 'backplate': case 'cuirass': {
-      const top = topField(ctx, { item: 'cuirass', sleeve: 'none', neckline: 'crew', length: 'waist' });
+      // A plate's neckline stands off the neck (a gorget fills the gap).
+      const top = topField(ctx, { item: 'cuirass', sleeve: 'none', neckline: 'crew', length: 'waist' }, CUIRASS_NECK_WIDEN_DM);
       const ny = L.neckY;
       const half = o.item === 'breastplate' ? 1 : o.item === 'backplate' ? -1 : 0;
+      const sh = ctx.joint('upperarm01.L'), ux = Math.abs(sh[0]);
       return {
         label, surface: 'body',
         // A front (or back) half: cut where the surface crosses the body's
         // coronal plane, through the neck joint.
         field: (c, v) => {
-          const base = Math.min(top(c, v), (c.pos(v)[2] - L.waist + 0.15));
+          const p = c.pos(v);
+          // The plates' top edge falls from the neck toward the shoulder:
+          // a thick plate run up the steep shoulder slope folds into points.
+          const shoulder = sh[2] + ux * (CUIRASS_TOP.shoulder + CUIRASS_TOP.neck * (1 - smooth(0, ux, Math.abs(p[0])))) - p[2];
+          const base = Math.min(top(c, v), (p[2] - L.waist + 0.15), shoulder);
           if (!half) return base;
           return Math.min(base, half * (ny + 0.2 - c.pos(v)[1]));
         },

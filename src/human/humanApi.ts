@@ -197,6 +197,11 @@ function parseOptions(raw: unknown, asset: HumanAsset) {
 
 /** Hair lattice step as a fraction of the print height. */
 const HAIR_VOXEL_FRACTION = 1 / 360;
+/** A sculpted eye at or past this blink is drawn closed (a lid line). */
+const CLOSED_EYE_BLINK = 0.85;
+/** How much of a sculpted eye's height a full blink would squash away. */
+const BLINK_SQUASH = 0.8;
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 /** Segments round a rivet dome. */
 const RIVET_SEGMENTS = 10;
 /** How thick the hair stays under a hat, as a fraction of the print height
@@ -432,7 +437,7 @@ export function createHumanNamespace(
    * highlight on the white; toy eyes are one solid bead.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function sculptedEyes(eyePositions: Float32Array, skinPositions: Float32Array, mesh: ReturnType<typeof buildHumanMesh>, asset: HumanAsset, shape: 'anime' | 'toy', size: number): { label: string; shape: any }[] {
+  function sculptedEyes(eyePositions: Float32Array, skinPositions: Float32Array, mesh: ReturnType<typeof buildHumanMesh>, asset: HumanAsset, shape: 'anime' | 'toy', size: number, blink: { L: number; R: number }): { label: string; shape: any }[] {
     const hi = asset.bones.findIndex((b) => b.name === 'head');
     const R = mesh.bones.R[hi];
     const out: { label: string; shape: unknown }[] = [];
@@ -467,26 +472,52 @@ export function createHumanNamespace(
       const w = spacing * (shape === 'toy' ? 0.3 : 0.29) * size;
       const hgt = shape === 'toy' ? w : spacing * 0.37 * size;
       let faceFront = r;
+      // The skin round the eye in its local frame (x across, y = how far
+      // forward, z up), for seating what goes on the face.
+      const local: number[][] = [];
       for (let i = 0; i < skinPositions.length; i += 3) {
         const q = [skinPositions[i] - c[0], skinPositions[i + 1] - c[1], skinPositions[i + 2] - c[2]];
         // Local (rest-frame) coordinates: Rᵀ q.
         const lx = R[0] * q[0] + R[3] * q[1] + R[6] * q[2];
         const ly = R[1] * q[0] + R[4] * q[1] + R[7] * q[2];
         const lz = R[2] * q[0] + R[5] * q[1] + R[8] * q[2];
-        if ((lx / (w * 0.8)) ** 2 + (lz / (hgt * 0.8)) ** 2 > 1 || -ly > r * 4) continue;
-        faceFront = Math.max(faceFront, -ly);
+        if ((lx / (w * 1.2)) ** 2 + (lz / (hgt * 1.2)) ** 2 > 1 || -ly > r * 4) continue;
+        local.push([lx, -ly, lz]);
+        if ((lx / (w * 0.8)) ** 2 + (lz / (hgt * 0.8)) ** 2 <= 1) faceFront = Math.max(faceFront, -ly);
       }
       const d = spacing * 0.14;
       const f = faceFront + spacing * 0.025 - d;                // centre; the front is f + d
-      if (shape === 'toy') {
-        out.push({ label: 'eyes', shape: bead(w, d, hgt, f) });
-      } else {
-        out.push({ label: 'eyes', shape: bead(w, d, hgt, f) });
-        out.push({ label: 'iris', shape: bead(w * 0.84, d, hgt * 0.86, f + d * 0.06, -hgt * 0.07) });
-        out.push({ label: 'pupil', shape: bead(w * 0.42, d, hgt * 0.5, f + d * 0.11, -hgt * 0.1) });
-        out.push({ label: 'highlight', shape: Manifold.sphere(spacing * 0.05 * size, 20).translate([side * w * 0.24, -(f + d), hgt * 0.22]).transform(M) });
+      const b = clamp01(ci === 0 ? blink.L : blink.R);
+      if (b >= CLOSED_EYE_BLINK) {
+        // Closed: a curved lid line (◡), dark for anime lashes, the eye's own
+        // colour for a toy's bead eyes. Small beads hulled pairwise along a
+        // shallow arc, sunk into the face so the line fuses with it.
+        const t = hgt * (shape === 'toy' ? 0.13 : 0.12), n = 7;
+        const pts: number[][] = [];
+        for (let i = 0; i < n; i++) {
+          const x = -w * 0.95 + (2 * w * 0.95 * i) / (n - 1);
+          const z = -hgt * 0.22 * (1 - (x / w) ** 2);
+          // Seated on the skin under it (a closed lid lies behind the brow and
+          // cheek), so about half of it stands proud and it fuses with the face.
+          let front = -Infinity;
+          for (const q of local) if (Math.abs(q[0] - x) < t * 2 && Math.abs(q[2] - z) < t * 2) front = Math.max(front, q[1]);
+          pts.push([x, -((Number.isFinite(front) ? front : faceFront) + t * 0.3), z]);
+        }
+        const segs = [];
+        for (let i = 0; i + 1 < n; i++) segs.push(Manifold.hull([0, 1].map((j) => Manifold.sphere(t, 12).scale([1, 0.7, 1]).translate(pts[i + j]))));
+        out.push({ label: shape === 'toy' ? 'eyes' : 'lashes', shape: Manifold.union(segs).transform(M) });
+        continue;
+      }
+      // Part-closed: each layer squashes from the top down (its bottom stays
+      // put), the lash line riding down with the top.
+      const open = 1 - b * BLINK_SQUASH, drop = hgt * (1 - open);
+      out.push({ label: 'eyes', shape: bead(w, d, hgt * open, f, -drop) });
+      if (shape === 'anime') {
+        out.push({ label: 'iris', shape: bead(w * 0.84, d, hgt * 0.86 * open, f + d * 0.06, -hgt * 0.07 * open - drop) });
+        out.push({ label: 'pupil', shape: bead(w * 0.42, d, hgt * 0.5 * open, f + d * 0.11, -hgt * 0.1 * open - drop) });
+        if (open > 0.5) out.push({ label: 'highlight', shape: Manifold.sphere(spacing * 0.05 * size, 20).translate([side * w * 0.24, -(f + d), hgt * 0.22 * open - drop]).transform(M) });
         // The upper lash line: a dark arc along the top of the eye.
-        out.push({ label: 'lashes', shape: bead(w * 1.08, d * 0.55, hgt * 0.16, f + d * 0.35, hgt * 0.84, side * w * 0.04) });
+        out.push({ label: 'lashes', shape: bead(w * 1.08, d * 0.55, hgt * 0.16, f + d * 0.35, hgt * 0.84 * open - drop, side * w * 0.04) });
       }
     }
     return out as { label: string; shape: any }[];
@@ -548,7 +579,8 @@ export function createHumanNamespace(
     // Sculpted eyes (anime / toy styles): layered ellipsoids seated on the face
     // in place of the eyeballs, carried by the head.
     if (eyeShape !== 'real' && !isRemoved('eyes')) {
-      for (const eye of sculptedEyes(eyePart.positions, skinPart.positions, mesh, asset, eyeShape, opts.style?.eyes ?? 1)) {
+      const blink = { L: opts.expression?.blinkL ?? 0, R: opts.expression?.blinkR ?? 0 };
+      for (const eye of sculptedEyes(eyePart.positions, skinPart.positions, mesh, asset, eyeShape, opts.style?.eyes ?? 1, blink)) {
         if (isRemoved(eye.label)) continue;
         pieces.push(label(lift > 0 ? eye.shape.translate([0, 0, lift]) : eye.shape, eye.label, { color: colors[eye.label] }));
       }

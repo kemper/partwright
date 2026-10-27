@@ -269,7 +269,7 @@ import { startProgress, updateProgress, endProgress, __setProgressModalDelayForT
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { setEngineTrustDomain, getEngineTrustDomain } from './geometry/trustDomain';
-import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, fitSilhouetteIoU } from './human/humanFit';
+import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, fitSilhouetteIoU, photoSilhouetteWarnings, fitScoreWarnings } from './human/humanFit';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -15285,6 +15285,9 @@ async function main() {
       const size = getConfig().import.photoMatchRenderSize;
       const tuning = photoMatchTuningFromConfig(getConfig().import);
       let buildError: string | null = null;
+      // Warnings about each photo's silhouette, checked on the first build.
+      const warnings = new Set<string>();
+      const checked = new Set<unknown>();
       const evaluate = async (values: number[]): Promise<number> => {
         const code = humanCode(applyDims(parsed.base, parsed.dims, values));
         let r: MeshResult;
@@ -15304,6 +15307,7 @@ async function main() {
             modelLabels: render.labels, regions: [{ name: 'body', color: '#5a5a5a' }],
             fit: 'height', debug: true, tuning,
           });
+          if (res.debug && !checked.has(ph)) { checked.add(ph); for (const w of photoSilhouetteWarnings(res.debug)) warnings.add(w); }
           total += res.debug ? fitSilhouetteIoU(res.debug) : 0;
         }
         return total / photos.length;
@@ -15317,9 +15321,14 @@ async function main() {
         return { error: `fitHuman stopped: ${buildError ?? 'the engine run failed'}` };
       }
       if (result.score < 0) return { error: `fitHuman: the starting body did not build — ${buildError ?? 'unknown error'}. Check base (it must be valid api.human options).` };
+      for (const w of fitScoreWarnings(result.score)) warnings.add(w);
       const fitted = Object.fromEntries(parsed.dims.map((d, i) => [d.key, Math.round(result.values[i] * 1000) / 1000]));
       const code = humanCode(applyDims(parsed.base, parsed.dims, result.values));
-      const summary = { silhouetteIoU: Number(result.score.toFixed(4)), fitted, evaluations: result.evaluations, seconds: Math.round((performance.now() - t0) / 1000) };
+      const summary = {
+        silhouetteIoU: Number(result.score.toFixed(4)), fitted, evaluations: result.evaluations, seconds: Math.round((performance.now() - t0) / 1000),
+        ...(warnings.size ? { warnings: [...warnings] } : {}),
+      };
+      if (warnings.size) showToast([...warnings][0], { variant: 'warn', source: 'character' });
       showToast(`Body fitted to the photo (silhouette match ${(result.score * 100).toFixed(0)}%)`, { variant: 'success', source: 'character' });
       if (!parsed.save) return { code, ...summary };
       const saved = await partwrightAPI.runAndSave(code, parsed.label);

@@ -40,4 +40,28 @@ describe('human style presets', () => {
     expect(s.eyeShape).toBe('real');
     expect(s.legs).toBe(resolveStyle('chibi').style.legs);
   });
+
+  it("funko's toy face has no nose and no mouth: the mouth's pocket is smoothed shut", () => {
+    // Depth of the skin behind the lips' front, across the lips' width, in eye
+    // spacings: the mouth's inside makes it deep on a realistic face.
+    const mouthDepth = (style?: ReturnType<typeof resolveStyle>) => {
+      const mesh = buildHumanMesh(asset, { height: 60, pose: 'rest', style: style?.style, morphs: style?.morphs });
+      const J = (n: string) => mesh.restJoints.get(`${n}____head`)!;
+      const spacing = Math.abs(J('eye.L')[0] - J('eye.R')[0]);
+      const corner = J('oris03.L');
+      let front = Infinity, back = -Infinity;
+      for (let t = 0; t < asset.nT; t++) {
+        if (asset.triLabel[t] !== 0) continue;
+        for (let c = 0; c < 3; c++) {
+          const v = asset.triVerts[t * 3 + c], x = mesh.rest[v * 3], y = mesh.rest[v * 3 + 1], z = mesh.rest[v * 3 + 2];
+          if (Math.abs(x) > Math.abs(corner[0]) * 0.6 || Math.abs(z - corner[2]) > spacing * 0.15 || y > J('head')[1]) continue;
+          front = Math.min(front, y); back = Math.max(back, y);
+        }
+      }
+      return (back - front) / spacing;
+    };
+    const real = mouthDepth(), toy = mouthDepth(resolveStyle('funko'));
+    expect(toy).toBeLessThan(real * 0.35);
+  });
 });
+

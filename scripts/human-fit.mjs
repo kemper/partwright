@@ -4,6 +4,7 @@
 //   npm run human:fit -- --photo person.png [--photo side.png@0,0] \
 //       [--base base.json] [--fit gender,weight,…] [--budget 60] \
 //       [--out fitted.js] [--png fitted.png] [--match-bg #rrggbb] [--match-mask m.png]
+//       [--match-crop x,y,w,h]
 //
 // --base: a JSON file of api.human options to start from and keep (hair, wear,
 //   style, …) — fit only changes the sliders it searches.
@@ -14,10 +15,12 @@
 //
 // Prints JSON: the score, the fitted values, the evaluation count, and the
 // code path; writes the fitted model source to --out and a 4-view PNG to --png.
+// --match-crop frames the first photo on the person (pixels) — for a real
+// photo with other people or clutter around them.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createPreviewSession, composePng } from './cli/preview.mjs';
-import { parsePhotoSpec } from './cli/photoMatch.mjs';
+import { parsePhotoSpec, parseCrop } from './cli/photoMatch.mjs';
 import { renderRegionImage } from './cli/preview.mjs';
 import sharp from 'sharp';
 import { NAMED_VIEWS } from './cli/views.mjs';
@@ -28,7 +31,7 @@ async function loadRgba(path) {
 }
 
 function parseArgs(argv) {
-  const a = { photos: [], base: null, fit: null, budget: 120, out: null, png: null, bg: null, mask: null };
+  const a = { photos: [], base: null, fit: null, budget: 120, out: null, png: null, bg: null, mask: null, crop: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--photo') a.photos.push(argv[++i]);
@@ -39,6 +42,7 @@ function parseArgs(argv) {
     else if (t === '--png') a.png = argv[++i];
     else if (t === '--match-bg') a.bg = argv[++i];
     else if (t === '--match-mask') a.mask = argv[++i];
+    else if (t === '--match-crop') a.crop = argv[++i];
     else { console.error(`unknown argument ${t}`); process.exit(2); }
   }
   return a;
@@ -47,14 +51,16 @@ function parseArgs(argv) {
 async function main() {
   const a = parseArgs(process.argv.slice(2));
   if (!a.photos.length) {
-    console.error('Usage: npm run human:fit -- --photo person.png [--photo side.png@0,0] [--base base.json] [--fit gender,weight,…] [--budget 60] [--out fitted.js] [--png fitted.png] [--match-bg #hex] [--match-mask mask.png]');
+    console.error('Usage: npm run human:fit -- --photo person.png [--photo side.png@0,0] [--base base.json] [--fit gender,weight,…] [--budget 60] [--out fitted.js] [--png fitted.png] [--match-bg #hex] [--match-mask mask.png] [--match-crop x,y,w,h]');
     process.exit(2);
   }
   if (!(a.budget >= 2 && a.budget <= 1000)) { console.error('--budget expects 2–1000 evaluations.'); process.exit(2); }
+  const crop = parseCrop(a.crop);
+  if (crop.error) { console.error(crop.error); process.exit(2); }
   const views = a.photos.map((p, i) => {
     const spec = parsePhotoSpec(p);
     if (spec.error) { console.error(spec.error); process.exit(2); }
-    return { photo: resolve(spec.path), view: spec.view ?? { name: 'front', ...NAMED_VIEWS.front }, crop: null, bg: a.bg, mask: i === 0 && a.mask ? resolve(a.mask) : null, pixelAspect: null, debugPng: null };
+    return { photo: resolve(spec.path), view: spec.view ?? { name: 'front', ...NAMED_VIEWS.front }, crop: i === 0 ? crop.crop : null, bg: a.bg, mask: i === 0 && a.mask ? resolve(a.mask) : null, pixelAspect: null, debugPng: null };
   });
   const base = a.base ? JSON.parse(readFileSync(resolve(a.base), 'utf8')) : {};
 
@@ -66,6 +72,8 @@ async function main() {
     if (unknown.length) { console.error(`unknown --fit dimension(s): ${unknown.join(', ')}. Known: ${Object.keys(fit.FIT_DIMS).join(', ')}`); process.exit(2); }
     const dims = names.map((n) => fit.FIT_DIMS[n]);
     let lastRender = null;
+    // Warnings about each photo's silhouette, checked on the first build.
+    const warnings = new Set();
     // The photo-match scorer segments each photo and normalises both
     // silhouettes; the fit scores them by IoU re-aligned over a small shift.
     const pm = await session.load('/src/tools/photoMatch.ts');
@@ -85,10 +93,11 @@ async function main() {
         const rgba = new Uint8ClampedArray(size * size * 4);
         for (let p = 0; p < size * size; p++) { const c = img.labels[p] >= 0 ? 90 : 255; rgba[p * 4] = c; rgba[p * 4 + 1] = c; rgba[p * 4 + 2] = c; rgba[p * 4 + 3] = 255; }
         const res = pm.photoMatch({
-          reference: v.reference, crop: null, bg: v.bg ?? null, bgTolerance: null, mask: v.maskImg, bgMode: 'auto',
+          reference: v.reference, crop: v.crop, bg: v.bg ?? null, bgTolerance: null, mask: v.maskImg, bgMode: 'auto',
           model: { width: size, height: size, data: rgba }, modelLabels: img.labels,
           regions: [{ name: 'body', color: '#5a5a5a' }], merge: [], ignore: [], fit: 'height', pixelAspect: null, debug: true, tuning,
         });
+        if (!v.checked) { v.checked = true; for (const w of fit.photoSilhouetteWarnings(res.debug)) warnings.add(w); }
         total += fit.fitSilhouetteIoU(res.debug);
       }
       return total / photos.length;
@@ -98,6 +107,7 @@ async function main() {
       budget: a.budget,
       onStep: (s) => console.error(`score ${s.score.toFixed(4)}  ${dims.map((d, i) => `${d.key}=${s.values[i]}`).join(' ')}`),
     });
+    for (const w of fit.fitScoreWarnings(result.score)) warnings.add(w);
     const options = fit.applyDims(base, dims, result.values);
     const code = fit.humanCode(options);
     const outPath = resolve(a.out ?? 'human-fit.js');
@@ -114,6 +124,7 @@ async function main() {
       seconds: Math.round((Date.now() - t0) / 1000),
       fitted: Object.fromEntries(dims.map((d, i) => [d.key, Math.round(result.values[i] * 1000) / 1000])),
       code: outPath, png: pngPath,
+      ...(warnings.size ? { warnings: [...warnings] } : {}),
     }, null, 2));
   } finally {
     await session.close();

@@ -166,3 +166,50 @@ const FIT_MAX_SHIFT = 0.12;
 export function fitSilhouetteIoU(debug: { width: number; height: number; photo: Int32Array; model: Int32Array }): number {
   return shiftedIoU(debug.photo, debug.model, debug.width, debug.height, Math.round(debug.width * FIT_MAX_SHIFT));
 }
+
+/** Below this share of the photo's silhouette in one connected piece, the
+ *  background segmentation has probably lost part of the person. */
+const FIT_MIN_MAIN_SHARE = 0.85;
+
+/**
+ * Checks on the photo's silhouette (the photo side of a photo-match `debug`
+ * result): a person is one connected shape, so a silhouette in pieces means
+ * the segmentation lost part of them against a busy background (dark clothes
+ * against dark furniture) and the fit will chase the wrong outline. Returns
+ * plain-words warnings, empty when it looks whole.
+ */
+export function photoSilhouetteWarnings(debug: { width: number; height: number; photo: Int32Array }): string[] {
+  const { width: w, height: h, photo } = debug;
+  const seen = new Uint8Array(w * h);
+  let total = 0, largest = 0, pieces = 0;
+  const stack: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (photo[i] <= -2 || seen[i]) continue;
+    pieces++;
+    let size = 0;
+    seen[i] = 1; stack.push(i);
+    while (stack.length) {
+      const p = stack.pop()!;
+      size++;
+      const x = p % w, y = (p - x) / w;
+      for (const q of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1]) {
+        if (q >= 0 && !seen[q] && photo[q] > -2) { seen[q] = 1; stack.push(q); }
+      }
+    }
+    total += size;
+    largest = Math.max(largest, size);
+  }
+  if (!total) return ['The photo came out with no silhouette at all: the background segmentation found no person. Pass a mask (white = the person).'];
+  if (largest / total >= FIT_MIN_MAIN_SHARE) return [];
+  return [`The photo's silhouette came out in ${pieces} pieces (the largest is ${Math.round((largest / total) * 100)}% of it): the background segmentation probably lost part of the person against the background, and the fit will match the wrong outline. Pass a mask (white = the person), and crop to the person if others are in the photo.`];
+}
+
+/** A best fit below this silhouette IoU means no body matched the photo's
+ *  outline (fits on clean photos land around 0.8–0.9). */
+const FIT_LOW_SCORE = 0.6;
+
+/** A warning when the best fit still matches the photo's outline poorly. */
+export function fitScoreWarnings(score: number): string[] {
+  if (score >= FIT_LOW_SCORE) return [];
+  return [`The best fit matches only ${Math.round(score * 100)}% of the photo's outline, so the outline is probably not the person: a busy background the segmentation got wrong, other people in the frame, or the person cut off. Pass a mask (white = the person) and crop to them; check the outline with model:preview --match-photo … --match-overlay.`];
+}

@@ -89,9 +89,12 @@ const PRESETS: Record<StylePreset, Preset> = {
   },
   funko: {
     style: { head: 2.6, eyes: 1, legs: 0.5, legGirth: 1.08, arms: 0.62, armGirth: 1.08, hands: 1.1, feet: 1.35, torso: 0.72, smooth: 30, simplify: 0.92, headShape: 3, eyeShape: 'toy' },
+    // A toy's face has no nose and no mouth: shrink both as far as the
+    // sliders go before the head is pulled onto its simple shape.
     morphs: {
-      'nose-scale-horiz': -1, 'nose-scale-vert': -1, 'nose-scale-depth': -1,
-      'mouth-scale-horiz': -1, 'mouth-scale-vert': -1, 'head-square': 1, 'head-fat': 0.6,
+      'nose-scale-horiz': -1, 'nose-scale-vert': -1, 'nose-scale-depth': -1, 'nose-volume': -1, 'nose-nostrils-width': -1, 'nose-flaring': -1,
+      'mouth-scale-horiz': -1, 'mouth-scale-vert': -1, 'mouth-scale-depth': -1, 'mouth-upperlip-volume': -1, 'mouth-lowerlip-volume': -1,
+      'head-square': 1, 'head-fat': 0.6,
     },
     // Solid black eyes and no painted mouth or brows.
     colors: { eyes: '#111111', lips: '@skin', mouth: '@skin', brows: '@skin' },
@@ -186,6 +189,10 @@ export function restyle(asset: SkinnedAsset, rest: Float32Array, joints: Map<str
     if (wsum > 0) { out[v * 3] = x / wsum; out[v * 3 + 1] = y / wsum; out[v * 3 + 2] = z / wsum; } else out.set(p, v * 3);
   }
   if (s.simplify > 0) simplifyHead(asset, out, s.simplify, s.headShape);
+  // After the head's pull onto its simple shape, so the smoothed nose and
+  // mouth span the face as it ends up (the pull skips the mouth's inward-
+  // facing inside, which would otherwise be left sunk below it).
+  if (s.simplify >= TOY_FACE_SIMPLIFY) flattenFace(asset, out);
   if (s.smooth > 0) smoothHead(asset, out, Math.round(s.smooth));
   return out;
 }
@@ -204,6 +211,88 @@ function headWeights(asset: SkinnedAsset): Float32Array {
     }
   }
   return w;
+}
+
+/** A head simplified at least this far is a toy's: no nose, no mouth. */
+const TOY_FACE_SIMPLIFY = 0.9;
+/** Relaxation passes that smooth the nose and lips into the face. */
+const FACE_FLATTEN_PASSES = 1500;
+/** The box round the lips the mouth's pocket is gathered from: half-width
+ *  (in the lips' half-width), and reach below / above them (in lip heights). */
+const MOUTH_BOX = { x: 1.4, below: 1.5, above: 1.0 };
+/** …and the wider box the pocket behind them is gathered from, counting only
+ *  skin at least POCKET_DEPTH eye half-spacings behind the lips' front. */
+const POCKET_BOX = { x: 2.5, below: 4, above: 3 };
+const POCKET_DEPTH = 0.5;
+
+/**
+ * A toy's face: the nose and the mouth become a smooth membrane spanning the
+ * face round them (each vertex relaxed to its neighbours' mean, the face
+ * around held fixed), so neither survives as a bump or a line. The mouth is
+ * the lips plus the whole pocket of the mouth's inside behind them (the skin
+ * is one closed surface, so the pocket hangs off the lips' rim): relaxed
+ * together, the pocket opens out flat and closes the mouth.
+ */
+function flattenFace(asset: SkinnedAsset, pos: Float32Array): void {
+  const lipBones = new Set<number>();
+  asset.bones.forEach((b, i) => { if (b.name === 'oris01' || b.name === 'oris05') lipBones.add(i); });
+  const isSkin = new Uint8Array(asset.nV), isEye = new Uint8Array(asset.nV);
+  const nbr: number[][] = Array.from({ length: asset.nV }, () => []);
+  for (let t = 0; t < asset.nT; t++) {
+    const l = asset.triLabel[t];
+    for (let c = 0; c < 3; c++) {
+      const v = asset.triVerts[t * 3 + c];
+      if (l === 1) { isEye[v] = 1; continue; }
+      if (l !== 0) continue;
+      isSkin[v] = 1;
+      const b = asset.triVerts[t * 3 + (c + 1) % 3];
+      nbr[v].push(b); nbr[b].push(v);
+    }
+  }
+  // Landmarks: the lips' box, and the eyes' height, depth and spacing.
+  const lips: number[] = [];
+  let lx = 0, ly = Infinity, lz0 = Infinity, lz1 = -Infinity, ex = 0, ey = 0, ez = 0, ne = 0;
+  for (let v = 0; v < asset.nV; v++) {
+    if (isEye[v]) { ex += Math.abs(pos[v * 3]); ey += pos[v * 3 + 1]; ez += pos[v * 3 + 2]; ne++; continue; }
+    if (!isSkin[v]) continue;
+    let w = 0;
+    for (let k = 0; k < 4; k++) if (lipBones.has(asset.skinIndex[v * 4 + k])) w += asset.skinWeight[v * 4 + k];
+    if (w < 0.5) continue;
+    lips.push(v);
+    lx = Math.max(lx, Math.abs(pos[v * 3])); ly = Math.min(ly, pos[v * 3 + 1]);
+    lz0 = Math.min(lz0, pos[v * 3 + 2]); lz1 = Math.max(lz1, pos[v * 3 + 2]);
+  }
+  if (!ne || !lips.length) return;
+  ex /= ne; ey /= ne; ez /= ne;
+  const lh = lz1 - lz0;
+  const free = new Uint8Array(asset.nV);
+  // The nose: in front of the eyes, between them and the lips.
+  for (let v = 0; v < asset.nV; v++) {
+    if (!isSkin[v]) continue;
+    const x = Math.abs(pos[v * 3]), y = pos[v * 3 + 1], z = pos[v * 3 + 2];
+    if (y < ey && x < ex * 0.6 && z > lz1 && z < ez - (ez - lz1) * 0.15) free[v] = 1;
+  }
+  // The mouth: everything reachable from the lips inside a box round them,
+  // plus — further out — anything well behind the lips' front: the rest of
+  // the pocket, which is wider and taller than the lips (the chin and cheeks
+  // sit nearly level with the lips, so they stay put).
+  const box = (v: number, k: typeof MOUTH_BOX) => Math.abs(pos[v * 3]) < lx * k.x && pos[v * 3 + 2] > lz0 - lh * k.below && pos[v * 3 + 2] < lz1 + lh * k.above;
+  const inMouth = (v: number) => box(v, MOUTH_BOX) || (box(v, POCKET_BOX) && pos[v * 3 + 1] > ly + ex * POCKET_DEPTH);
+  const stack = lips.filter(inMouth);
+  for (const v of stack) free[v] = 1;
+  while (stack.length) {
+    const v = stack.pop()!;
+    for (const j of nbr[v]) if (!free[j] && inMouth(j)) { free[j] = 1; stack.push(j); }
+  }
+  for (let it = 0; it < FACE_FLATTEN_PASSES; it++) {
+    for (let v = 0; v < asset.nV; v++) {
+      if (!free[v] || !nbr[v].length) continue;
+      let x = 0, y = 0, z = 0;
+      for (const j of nbr[v]) { x += pos[j * 3]; y += pos[j * 3 + 1]; z += pos[j * 3 + 2]; }
+      const n = nbr[v].length;
+      pos[v * 3] = x / n; pos[v * 3 + 1] = y / n; pos[v * 3 + 2] = z / n;
+    }
+  }
 }
 
 /**

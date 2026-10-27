@@ -91,7 +91,10 @@ A preset name — `'neutral' | 'smile' | 'grin' | 'laugh' | 'frown' | 'sad' |
 0–1: `smile`, `frown`, `browRaise`, `browFurrow`, `blinkL`, `blinkR`,
 `squint`, `jawOpen`, `pucker`. Expressions move the face bones, so they work
 on any face shape and age. An open jaw shows the mouth interior (`mouth`
-label).
+label), and a beard rides the jaw with the chin. `blinkL` / `blinkR` close
+sculpted (`anime` / `toy`) eyes too: part-way they squash from the top, and
+from 0.85 they become a curved closed-lid line (`lashes` for anime eyes, the
+eye's own colour for a toy's).
 
 ## Pose (`pose`): the same vocabulary as `api.sdf.figure`
 
@@ -149,9 +152,10 @@ style: { preset: 'chibi', head: 2.3, legs: 0.5 }   // a preset with some knobs c
 | `iris`, `pupil` | iris / pupil size on real eyeballs (cone half-angle, degrees) |
 
 Presets also add a few MakeHuman sliders (bigger eye openings, smaller nose
-and mouth, rounder or squarer head) under your own `morphs`, and `funko`
-paints the eyes black and the lips / brows skin-coloured unless you set
-`colors`. Big-headed styles stay one printable piece; expect more triangles
+and mouth, rounder or squarer head) under your own `morphs`. A toy head
+(`simplify` 0.9 or more, as `funko`) also smooths the nose and the mouth
+into the face: no nose, and at most a small mouth shape. `funko` paints the
+eyes black and the lips / brows skin-coloured unless you set `colors`. Big-headed styles stay one printable piece; expect more triangles
 (the head is bigger at the same print height).
 
 ## Hair and beards (`hair`)
@@ -189,7 +193,7 @@ its own label (the item name, or `label`), coloured by default.
 
 | item | notes |
 |---|---|
-| `shirt` `top` `tshirt` `sweater` `jacket` `coat` | `sleeve: 'none'\|'cap'\|'short'\|'elbow'\|'three-quarter'\|'long'`, `neckline: 'crew'\|'scoop'\|'v'\|'turtle'\|'boat'`, `length: 'crop'\|'waist'\|'hip'\|'tunic'`; a coat's tails hang free: `length: 'hip'\|'knee'\|'full'` |
+| `shirt` `top` `tshirt` `sweater` `jacket` `coat` | `sleeve: 'none'\|'cap'\|'short'\|'elbow'\|'three-quarter'\|'long'`, `neckline: 'crew'\|'scoop'\|'v'\|'turtle'\|'boat'`, `length: 'crop'\|'waist'\|'hip'\|'tunic'`; a coat's tails hang free: `length: 'hip'\|'knee'\|'full'`. `sleeve: 'none'` is a tank top: straps over the shoulders, a scoop neck unless you set one. Necklines run round the neck. |
 | `pants` `jeans` `shorts` `leggings` `briefs` | `length: 'briefs'\|'shorts'\|'knee'\|'capri'\|'full'`, `rise: 'low'\|'mid'\|'high'` |
 | `skirt` | `length: 'mini'\|'knee'\|'midi'\|'maxi'`, `flare: 0–1` (0 = straight, 0.3 = A-line, 1 = bell); worn over a top, it reads as a dress |
 | `shoes` `sneakers` `boots` | moulded over the foot with the toes closed into one toe box, a sole, and a heel (shoes, boots); `thickness` scales the upper |
@@ -211,7 +215,9 @@ to override).
 
 `breastplate` (front), `backplate`, `cuirass` (both), `pauldrons`,
 `vambraces`, `gauntlets`, `cuisses`, `greaves`, `sabatons` (armored shoes), `gorget`,
-`tassets`, `helmet` (open face, clear of the ears, with a nape guard). Plates
+`tassets`, `helmet` (open face, clear of the ears, with a nape guard). A
+cuirass's top edge falls from the neck to the shoulders (pauldrons and a
+gorget cover the rest), front and back plates joined under the arms. Plates
 are stiff: thicker, smoothed so the anatomy underneath disappears, with a
 bevelled edge and a rolled rim. Each piece carries its own relief: a keel down
 the cuirass, ridges down the shins (greaves), thighs (cuisses) and forearms
@@ -284,8 +290,28 @@ code instead).
 
 Dimensions: `gender`, `weight`, `muscle`, `age`, `breast`, `vShape`, `belly`,
 `shoulders`, `hips`, `legs`, `head`, `headWidth`, `armL`, `armR`,
-`legSpread`. A plain backdrop gives the cleanest silhouette. For a busy one,
-pass a `mask` per view (white = subject).
+`legSpread`.
+
+**Real photos.** The fit can only be as good as the outline it matches, so:
+
+- **Busy backgrounds need a mask.** The automatic segmentation handles a plain
+  backdrop well. In a room it can lose dark clothes against dark furniture
+  and match a fragment instead. Pass a `mask` per view (white = the person).
+  A tested living-room photo went from 0.38 to 0.83 IoU with a rough
+  hand-traced mask.
+- **Crop to the person** when others are in the frame (`--match-crop
+  x,y,w,h` on the CLI).
+- **Give the camera's height.** A photo taken from above (most snapshots)
+  shows a bigger head and shorter legs. Set the view's `elevation` (or
+  `@-90,20` on the CLI) and the fit stops inflating the head to match.
+- **Fix what you know.** Put known sliders in `base` and leave them out of
+  `fit` (e.g. `base: { body: { gender: 1 } }`, `fit` without `gender`): loose
+  clothes otherwise trade gender against weight. Dress the base in what the
+  person wears, since the clothes are part of the outline.
+- **Read `warnings`.** The result carries plain-words warnings when the
+  photo's outline came out in pieces, or the best fit still matches it
+  poorly (below about 60%). That almost always means the outline isn't the
+  person: fix the mask or crop rather than trusting the numbers.
 
 From the repo, the same fit runs headlessly:
 
@@ -295,8 +321,8 @@ npm run human:fit -- --photo front.png --photo side.png@0,0   # + a side photo
 npm run human:fit -- --photo p.png --base outfit.json --fit gender,weight,armL,armR --out me.js --png me.png
 ```
 
-`--base` is a JSON file of `api.human` options; `--match-bg` / `--match-mask`
-work as with `model:preview --match-photo`. (The CLI's camera convention is
+`--base` is a JSON file of `api.human` options; `--match-bg` / `--match-mask` /
+`--match-crop` work as with `model:preview --match-photo`. (The CLI's camera convention is
 model:preview's, so a side photo is `@0,0` there and `azimuth: 90` in the app.)
 
 ## Sliders in the Parameters panel

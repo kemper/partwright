@@ -110,14 +110,15 @@ test.describe('api.human', () => {
     }
   });
 
-  test('style presets: an anime figure and a Funko-style toy stay one printable piece', async ({ page }) => {
+  test('style presets: an anime figure and a Funko-style toy stay one printable piece, winking too', async ({ page }) => {
     test.setTimeout(150_000);
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
     await page.goto('/editor');
     await waitForEngine(page);
+    // A wink closes one sculpted eye to a lid line, which must still fuse with the face.
     for (const [style, labels] of [['anime', ['eyes', 'iris', 'pupil', 'highlight', 'lashes', 'hair']], ['funko', ['eyes', 'hair', 'tshirt']]] as const) {
       const result = await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code),
-        `return api.human({ height: 60, base: true, style: '${style}', hair: 'bob', wear: ['tshirt', 'jeans', 'sneakers'] });`);
+        `return api.human({ height: 60, base: true, style: '${style}', expression: { blinkL: 1 }, hair: 'bob', wear: ['tshirt', 'jeans', 'sneakers'] });`);
       expect(result.error ?? null, style).toBeNull();
       const data = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData());
       expect(data.isManifold, style).toBe(true);
