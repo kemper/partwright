@@ -249,6 +249,28 @@ merges into the label around it (pupil → iris → sclera); removing `lips`,
 `mouth` or `brows` merges them into `skin`. Removing `hair`, `beard`, or an
 item / accessory label leaves it out.
 
+## Fit to a photo (CLI: `npm run human:fit`)
+
+For agents working in the repo (the in-app AI can't run it yet): fit the body
+sliders and arm/leg spread to a full-body photo's silhouette.
+
+```bash
+npm run human:fit -- --photo person.png                       # front photo
+npm run human:fit -- --photo front.png --photo side.png@0,0   # + a side photo (separates gender, bust, belly)
+npm run human:fit -- --photo p.png --base outfit.json --fit gender,weight,armL,armR --out me.js --png me.png
+```
+
+It builds candidates headlessly (~0.4 s each), scores each one's silhouette
+against the photo (the photo-match segmentation, re-aligned sideways so one
+raised arm doesn't throw the score), and runs a bounded coordinate descent
+(`--budget`, default 120 builds). `--base` is a JSON file of `api.human`
+options the fit keeps (hair, wear, style); `--fit` picks the dimensions:
+`gender`, `weight`, `muscle`, `age`, `breast`, `vShape`, `belly`, `shoulders`,
+`hips`, `legs`, `head`, `headWidth`, `armL`, `armR`, `legSpread`. The output
+is ordinary `api.human` code. Dress it, style it, and refine the face by eye.
+A plain backdrop gives the cleanest silhouette. Use `--match-bg` or
+`--match-mask` as with `model:preview --match-photo`.
+
 ## Sliders in the Parameters panel
 
 Declare `api.params` and feed the values in — the Customizer panel then shows

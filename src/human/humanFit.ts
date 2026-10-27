@@ -1,0 +1,157 @@
+// Fit the parametric human's body sliders to a photo's silhouette. Pure: the
+// caller supplies the scorer (build the model, render it, compare with the
+// photo — the CLI does this with the photo-match scorer, the same one as
+// `partwright.photoMatch`), so the search runs anywhere.
+//
+// The search is a bounded coordinate descent: try each dimension a step up
+// and down, keep what improves the score, halve the steps when a sweep finds
+// nothing, stop at the evaluation budget. Silhouette scores are noisy and
+// non-smooth (pixels flip), which suits a derivative-free search, and a dozen
+// dimensions converge in a few dozen builds.
+
+/** One fittable slider: where it lives in the api.human options, and its range. */
+export interface FitDim {
+  key: string;
+  /** Path into the options, e.g. ['body', 'weight'] or ['morphs', 'hip-scale-horiz']. */
+  path: string[];
+  min: number;
+  max: number;
+  /** First trial step. */
+  step: number;
+  /** Starting value when the base options don't set one. */
+  start: number;
+}
+
+/** The dimensions a full-body photo can inform, by name. */
+export const FIT_DIMS: Record<string, FitDim> = {
+  gender: { key: 'gender', path: ['body', 'gender'], min: 0, max: 1, step: 0.25, start: 0.5 },
+  weight: { key: 'weight', path: ['body', 'weight'], min: 0, max: 1, step: 0.2, start: 0.5 },
+  muscle: { key: 'muscle', path: ['body', 'muscle'], min: 0, max: 1, step: 0.2, start: 0.5 },
+  age: { key: 'age', path: ['body', 'age'], min: 3, max: 80, step: 12, start: 25 },
+  breast: { key: 'breast', path: ['body', 'breast'], min: 0, max: 1, step: 0.25, start: 0.5 },
+  vShape: { key: 'vShape', path: ['torso', 'vShape'], min: -1, max: 1, step: 0.4, start: 0 },
+  belly: { key: 'belly', path: ['torso', 'belly'], min: -1, max: 1, step: 0.4, start: 0 },
+  shoulders: { key: 'shoulders', path: ['morphs', 'torso-scale-horiz'], min: -1, max: 1, step: 0.4, start: 0 },
+  hips: { key: 'hips', path: ['morphs', 'hip-scale-horiz'], min: -1, max: 1, step: 0.4, start: 0 },
+  legs: { key: 'legs', path: ['morphs', 'upperlegs-height'], min: -1, max: 1, step: 0.4, start: 0 },
+  head: { key: 'head', path: ['morphs', 'head-scale-vert'], min: -1, max: 1, step: 0.4, start: 0 },
+  headWidth: { key: 'headWidth', path: ['morphs', 'head-scale-horiz'], min: -1, max: 1, step: 0.4, start: 0 },
+  armL: { key: 'armL', path: ['pose', 'armL', 'raiseSide'], min: 0, max: 100, step: 20, start: 8 },
+  armR: { key: 'armR', path: ['pose', 'armR', 'raiseSide'], min: 0, max: 100, step: 20, start: 8 },
+  legSpread: { key: 'legSpread', path: ['pose', 'legL', 'raiseSide'], min: 0, max: 25, step: 6, start: 0 },
+};
+
+/** What a front photo of a standing person constrains well. */
+export const DEFAULT_FIT = ['gender', 'weight', 'muscle', 'vShape', 'shoulders', 'hips', 'legs', 'head', 'armL', 'armR', 'legSpread'];
+
+type Options = Record<string, unknown>;
+
+function getPath(o: Options, path: string[]): unknown {
+  let cur: unknown = o;
+  for (const k of path) { if (!cur || typeof cur !== 'object') return undefined; cur = (cur as Record<string, unknown>)[k]; }
+  return cur;
+}
+
+/** A copy of `base` with each dimension's value written at its path. The
+ *  legs' spread is mirrored onto the right leg so the stance stays symmetric. */
+export function applyDims(base: Options, dims: FitDim[], values: number[]): Options {
+  const out = JSON.parse(JSON.stringify(base)) as Options;
+  dims.forEach((d, i) => {
+    const paths = d.key === 'legSpread' ? [d.path, ['pose', 'legR', 'raiseSide']] : [d.path];
+    for (const path of paths) {
+      let cur = out as Record<string, unknown>;
+      for (const k of path.slice(0, -1)) {
+        if (!cur[k] || typeof cur[k] !== 'object') cur[k] = {};
+        cur = cur[k] as Record<string, unknown>;
+      }
+      cur[path[path.length - 1]] = Math.round(values[i] * 1000) / 1000;
+    }
+  });
+  return out;
+}
+
+/** Each dimension's starting value: the base options' own, else its default. */
+export function startValues(base: Options, dims: FitDim[]): number[] {
+  return dims.map((d) => {
+    const v = getPath(base, d.path);
+    return typeof v === 'number' ? Math.min(d.max, Math.max(d.min, v)) : d.start;
+  });
+}
+
+/** The model source for a set of options. */
+export function humanCode(options: Options): string {
+  return `return api.human(${JSON.stringify(options, null, 2)});\n`;
+}
+
+export interface FitStep { values: number[]; score: number }
+export interface FitResult { values: number[]; score: number; evaluations: number; history: FitStep[] }
+
+/** Bounded coordinate descent maximising `score`. */
+export async function fitCoordinateDescent(
+  dims: FitDim[], start: number[], score: (values: number[]) => Promise<number>,
+  opts: { budget?: number; minStepFraction?: number; onStep?: (s: FitStep) => void } = {},
+): Promise<FitResult> {
+  const budget = opts.budget ?? 60;
+  const minFrac = opts.minStepFraction ?? 1 / 16;
+  const clampDim = (i: number, v: number) => Math.min(dims[i].max, Math.max(dims[i].min, v));
+  let best = start.map((v, i) => clampDim(i, v));
+  let bestScore = await score(best);
+  let evaluations = 1;
+  const history: FitStep[] = [{ values: best, score: bestScore }];
+  opts.onStep?.(history[0]);
+  const steps = dims.map((d) => d.step);
+  const seen = new Map<string, number>([[best.join(','), bestScore]]);
+  while (evaluations < budget) {
+    let improved = false;
+    for (let i = 0; i < dims.length && evaluations < budget; i++) {
+      for (const dir of [1, -1]) {
+        if (evaluations >= budget) break;
+        const cand = best.slice();
+        cand[i] = clampDim(i, best[i] + dir * steps[i]);
+        if (cand[i] === best[i]) continue;
+        const key = cand.join(',');
+        let s = seen.get(key);
+        if (s === undefined) { s = await score(cand); evaluations++; seen.set(key, s); }
+        if (s > bestScore) {
+          best = cand; bestScore = s; improved = true;
+          const step = { values: best, score: bestScore };
+          history.push(step);
+          opts.onStep?.(step);
+          break;
+        }
+      }
+    }
+    if (!improved) {
+      if (steps.every((s, i) => s <= dims[i].step * minFrac)) break;
+      for (let i = 0; i < steps.length; i++) steps[i] /= 2;
+    }
+  }
+  return { values: best, score: bestScore, evaluations, history };
+}
+
+
+/**
+ * Silhouette IoU of two normalised label maps (< -1 = background, as the
+ * photo-match debug maps), maximised over a horizontal shift of up to
+ * `maxShift` pixels. The photo-match scorer centres each silhouette on its
+ * bounding box, so raising ONE arm moves the whole body sideways and the
+ * plain IoU collapses; re-aligning makes the score smooth in the pose.
+ */
+export function shiftedIoU(photo: Int32Array, model: Int32Array, width: number, height: number, maxShift: number): number {
+  let best = 0;
+  for (let dx = -maxShift; dx <= maxShift; dx++) {
+    let inter = 0, union = 0;
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const p = photo[row + x] > -2;
+        const mx = x - dx;
+        const m = mx >= 0 && mx < width && model[row + mx] > -2;
+        if (p && m) inter++;
+        if (p || m) union++;
+      }
+    }
+    if (union && inter / union > best) best = inter / union;
+  }
+  return best;
+}

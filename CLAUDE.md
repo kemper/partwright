@@ -15,6 +15,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
+npm run human:fit -- --photo p.png [--photo side.png@0,0]   # fit api.human's body sliders + arm/leg spread to a photo's silhouette → api.human code (see public/ai/human.md)
 npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
 npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
 ```
