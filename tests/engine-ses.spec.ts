@@ -421,17 +421,17 @@ test.describe('SES model-code sandbox — other Workers', () => {
 
   test('the #1110 iframe-sandbox Worker runs model code under SES too', async ({ page }) => {
     test.setTimeout(180_000);
-    const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
-    test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
     await page.addInitScript(() => {
       if (window !== window.top) return;
-      try { localStorage.setItem('partwright-engine-sandbox', 'opaque'); } catch { /* ignore */ }
+      try { localStorage.setItem('partwright-engine-sandbox', 'origin'); } catch { /* ignore */ }
     });
     await boot(page);
+    const sandboxOrigin = await page.evaluate(() => (window as unknown as { partwright: { getEngineSandboxStatus: () => { sandboxOrigin: string | null } } }).partwright.getEngineSandboxStatus().sandboxOrigin);
+    test.skip(!sandboxOrigin, 'dev server has no VITE_SANDBOX_ORIGIN configured');
     const cube = await run(page, 'return api.Manifold.cube([1, 1, 1]);');
     expect(cube.error ?? null).toBeNull();
     const status = await page.evaluate(() => (window as unknown as { partwright: { getEngineSandboxStatus: () => { active: string } } }).partwright.getEngineSandboxStatus());
-    expect(status.active).toBe('opaque');
+    expect(status.active).toBe('origin');
     expectAllBlocked(payload((await run(page, ISOLATION_PROBE)).error, 'PROBE'));
     const phaseC = await run(page, 'const { Manifold, BREP } = api;\nreturn BREP.toManifold(BREP.box([10, 10, 10]).fillet(1), Manifold);');
     expect(phaseC.error ?? null).toBeNull();

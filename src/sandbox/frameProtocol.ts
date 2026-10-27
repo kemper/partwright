@@ -38,13 +38,11 @@ export function parseParentMessage(data: unknown): ParentToFrame | null {
   return null;
 }
 
-/** Origins the frame accepts `spawn`/`terminate` from: its own URL origin
- *  (opaque mode embeds it at the app's URL, so that IS the app) plus the
- *  build-time app origin list (`VITE_APP_ORIGIN`, comma-separated) for 'origin'
- *  mode, where the frame lives on a different host than the app. */
-export function allowedParentOrigins(urlOrigin: string, configured: unknown): Set<string> {
+/** Origins the frame accepts `spawn`/`terminate` from: the build-time app
+ *  origin list (`VITE_APP_ORIGIN`, comma-separated). The frame lives on a
+ *  separate host ('origin' mode), so its own origin is never a valid parent. */
+export function allowedParentOrigins(configured: unknown): Set<string> {
   const out = new Set<string>();
-  if (urlOrigin && urlOrigin !== 'null') out.add(urlOrigin);
   if (typeof configured === 'string') {
     for (const part of configured.split(',')) {
       try {

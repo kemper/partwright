@@ -410,7 +410,7 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
   // realm itself, as before #1127.
   const CONFIGS = [
     { mode: 'off', ses: 'on' },
-    { mode: 'opaque', ses: 'on' },
+    { mode: 'origin', ses: 'on' },
     { mode: 'off', ses: 'off' },
   ] as const;
   for (const { mode, ses } of CONFIGS) {
@@ -424,11 +424,11 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
         if (window !== window.top) return;
         try { localStorage.setItem('partwright-engine-sandbox', m); } catch { /* ignore */ }
       }, mode);
-      if (mode === 'opaque') {
-        const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
-        test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
-      }
       await boot(page, ses);
+      if (mode === 'origin') {
+        const sandboxOrigin = await page.evaluate(() => (window as unknown as { partwright: { getEngineSandboxStatus: () => { sandboxOrigin: string | null } } }).partwright.getEngineSandboxStatus().sandboxOrigin);
+        test.skip(!sandboxOrigin, 'dev server has no VITE_SANDBOX_ORIGIN configured');
+      }
       const out = await page.evaluate(async ({ code, ses }) => {
         const pw = (window as unknown as { partwright: PW & { getEngineSandboxStatus: () => { active: string; unavailableReason: string | null } } }).partwright;
         if (ses === 'on') {
@@ -440,9 +440,9 @@ test.describe('Engine sandbox lockdown — global allowlist', () => {
         const r = await pw.run(code);
         return { error: r.error ?? null, report: null, sandbox: pw.getEngineSandboxStatus() };
       }, { code: ENUMERATE_CODE, ses });
-      if (mode === 'opaque') {
+      if (mode === 'origin') {
         expect(out.sandbox.unavailableReason, 'sandbox unavailable').toBeNull();
-        expect(out.sandbox.active).toBe('opaque');
+        expect(out.sandbox.active).toBe('origin');
       }
       type UrlStatic = { type: string; writable: boolean; configurable: boolean; call: string };
       type Found = { global: ChainEntry[]; navigator: ChainEntry[]; urlStatics: Record<string, UrlStatic> };

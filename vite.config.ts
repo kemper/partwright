@@ -267,8 +267,7 @@ function originsOf(raw: string | undefined): string[] {
 }
 
 /** The sandbox document's CSP. `frame-ancestors` limits who may embed it:
- *  'self' (opaque mode — same URL origin as the app) plus the configured app
- *  origin(s) for 'origin' mode (VITE_APP_ORIGIN). */
+ *  the configured app origin(s) (VITE_APP_ORIGIN), plus 'self'. */
 function sandboxCsp(appOrigins: string[], dev: boolean): string {
   // Dev keeps Vite's HMR websocket reachable from the frame.
   const base = dev ? SANDBOX_CSP_BASE.replace("connect-src 'self'", "connect-src 'self' ws://localhost:*") : SANDBOX_CSP_BASE;
@@ -291,14 +290,9 @@ function isSandboxDocPath(p: string | undefined): boolean {
   return /^(?:\/v\d+)?\/sandbox(?:\.html)?$/.test(p.split(/[?#]/)[0]);
 }
 
-// In 'opaque' mode the frame has an opaque origin, so every module/wasm/font it
-// (or its Worker) loads from this server is a cross-origin request from
-// `Origin: null` and needs `Access-Control-Allow-Origin`. Production sets it
-// statically for /assets + /openscad-libs (public/_headers); `vite preview`
-// mirrors that here. The DEV server only does it when
-// PARTWRIGHT_SANDBOX_DEV_CORS=1 (the Playwright config sets it): Vite restricts
-// dev-server CORS on purpose — a page on any site can send `Origin: null` from
-// a sandboxed iframe — so opaque mode against `npm run dev` is opt-in.
+// Serves sandbox.html with its own CSP + CORP (dev and `vite preview`). The
+// frame and its Worker load everything from their own origin (the sandbox
+// host), so no CORS is needed.
 function engineSandboxHeaders(): Plugin {
   // VITE_* from the environment or .env files (resolved config.env).
   let appOrigins: string[] = [];
@@ -315,10 +309,6 @@ function engineSandboxHeaders(): Plugin {
       };
       res.setHeader('Content-Security-Policy', csp);
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    }
-    const corsAllowed = kind === 'preview' || process.env.PARTWRIGHT_SANDBOX_DEV_CORS === '1';
-    if (corsAllowed && req.headers.origin === 'null') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
     }
     next();
   };

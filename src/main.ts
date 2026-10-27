@@ -375,7 +375,7 @@ import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
-import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
+import { isEngineSandboxMode, isRemovedEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin, engineSandboxOriginAvailable, defaultEngineSandboxMode } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
 /** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
@@ -17735,19 +17735,21 @@ async function main() {
      *  (`pendingAfterReload`), and whether the frame / Worker reported
      *  cross-origin isolation. -> { requested, active, state,
      *  pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated,
-     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes } */
+     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, defaultMode, modes } */
     getEngineSandboxStatus() {
-      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
+      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), defaultMode: defaultEngineSandboxMode(), modes: [...ENGINE_SANDBOX_MODES] };
     },
 
-    /** Choose the engine-sandbox mode for this browser ('off' | 'opaque' |
-     *  'origin'). Persists; takes effect on the next page reload (the
+    /** Choose the engine-sandbox mode for this browser ('origin' | 'off').
+     *  'origin' is the default wherever this site has a sandbox host; 'off' is
+     *  the kill switch. Persists; takes effect on the next page reload (the
      *  geometry Worker is created at boot). Deliberately NOT an in-app AI
      *  tool: a prompt-injected session must not be able to switch it off.
      *  -> { mode, previous, note } or { error } */
     setEngineSandboxMode(mode: string) {
+      if (isRemovedEngineSandboxMode(mode)) return { error: `setEngineSandboxMode('${mode}'): the '${mode}' mode was removed — use 'origin' (the default where this site has a sandbox host) or 'off'` };
       if (!isEngineSandboxMode(mode)) return { error: `setEngineSandboxMode(mode): mode must be one of ${ENGINE_SANDBOX_MODES.join(', ')}` };
-      if (mode === 'origin' && !configuredSandboxOrigin()) return { error: "setEngineSandboxMode('origin'): this build has no VITE_SANDBOX_ORIGIN configured" };
+      if (mode === 'origin' && !engineSandboxOriginAvailable()) return { error: "setEngineSandboxMode('origin'): this site has no sandbox host configured (VITE_SANDBOX_ORIGIN, with this origin in VITE_APP_ORIGIN)" };
       const previous = getEngineSandboxMode();
       setEngineSandboxMode(mode);
       return { mode, previous, note: 'Reload the page to apply.' };
@@ -21372,8 +21374,8 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
-        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
-        'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active/default, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, defaultMode, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEngineSandboxMode': { signature: "setEngineSandboxMode('origin'|'off') -- Run model code in a separate-origin iframe sandbox ('origin', the default where configured) or not ('off', the kill switch); this browser, reload to apply -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
         'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },

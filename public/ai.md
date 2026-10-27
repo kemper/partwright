@@ -369,8 +369,8 @@ partwright.getAppConfig()                // Advanced Settings: {section: {key: {
 partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
 await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
 partwright.getWorkerHealth()             // Worker health panel: per-worker liveness/restarts + recent geometry runs (durationMs main-thread round trip vs workerMs compute) -> {workers, runs}
-partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested (this tab), active, state: idle|loading|ready|unavailable|bypassed, pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes}
-partwright.setEngineSandboxMode('off'|'opaque'|'origin')  // Run model code in a hidden cross-origin iframe (no access to app storage/keys, network blocked). This browser; RELOAD to apply -> {mode, previous, note}
+partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested (this tab), active, state: idle|loading|ready|unavailable|bypassed, pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, defaultMode, modes}
+partwright.setEngineSandboxMode('origin'|'off')  // 'origin' = run model code in a hidden iframe on a separate origin (no access to app storage/keys, network blocked) — the DEFAULT where the site has a sandbox host; 'off' = plain Worker (the kill switch). This browser; RELOAD to apply -> {mode, previous, note}. The old 'opaque' mode was removed -> {error}
 partwright.runWithoutEngineSandbox()     // Only when getEngineSandboxStatus().state === 'unavailable' (fail-closed: model code blocked): run model code WITHOUT the sandbox for this tab -> {ok, note} or {error}
 
 // Isolated execution -- test code without changing editor/viewport state
