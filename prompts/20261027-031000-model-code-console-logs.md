@@ -51,3 +51,14 @@ only sees defaults.
 **Docs**: ai.md now says to debug with console.log and lists `logs` on every
 run API. figure.md and sdfFigure's poseProbe doc no longer recommend
 `throw new Error(JSON.stringify(...))`.
+
+## Assistant
+
+## CodeQL follow-up
+
+CodeQL flagged `compileModel`'s `new Function` as "Code injection". That is
+the same by-design sandbox call that used to sit in the three engine files,
+now in one place, and any change to it (the new `console` parameter) yields a
+fresh alert fingerprint wherever it lives. So I kept the design. The release
+skill's CodeQL row now names `modelConsole.ts` as the known site, the call
+site has a comment saying so, and the PR asks an admin to dismiss the alert.

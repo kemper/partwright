@@ -33,7 +33,10 @@ export interface ModelLog {
 
 /** Compile model code the way every JS engine runs it: strict mode, `api`
  *  and the per-run `console` as parameters. Throws a SyntaxError for bad
- *  code, so the engines' validate() paths use it too. */
+ *  code, so the engines' validate() paths use it too. This is THE place user
+ *  model code becomes a function, by design — it only ever runs inside the
+ *  locked-down engine Worker (workerLockdown.ts). CodeQL reports it as "Code
+ *  injection"; that alert is the known, expected one (release skill). */
 export function compileModel(jsCode: string): (api: unknown, console: Console) => unknown {
   return new Function('api', 'console', `"use strict";\n${jsCode}`) as (api: unknown, console: Console) => unknown;
 }
