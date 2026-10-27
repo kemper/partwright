@@ -79,7 +79,7 @@ export async function labelledMeshFromCode(code: string): Promise<LabelledMesh> 
   await manifoldJsEngine.init();
   if (sourceUsesManifoldText(code)) await preloadTextFonts();
   if (sourceUsesHuman(code)) {
-    try { await preloadHumanAsset(); } catch { /* api.human reports the missing asset itself */ }
+    try { await preloadHumanAsset(code); } catch { /* api.human reports the missing asset itself */ }
   }
   const r = manifoldJsEngine.run(code, {}) as {
     error?: string;

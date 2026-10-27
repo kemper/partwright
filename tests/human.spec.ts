@@ -6,8 +6,9 @@ import { test, expect, type Page } from 'playwright/test';
 
 const HUMAN_MODEL = `return api.human({
   height: 60, base: true,
-  body: { gender: 0.2, breast: 0.4, muscle: 0.55 },
+  body: { gender: 0.2, breast: 0.4, muscle: 0.55, age: 9 },
   face: { cheekbones: 0.4, eyeSize: 0.2 },
+  expression: 'grin',
   pose: { armR: { raiseSide: 140, bend: 40, twist: 60 }, head: { yaw: -10 } },
 });`;
 
@@ -38,7 +39,7 @@ test.describe('api.human', () => {
     expect(data.componentCount).toBe(1);
     const parts = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
     const tris = Object.fromEntries((parts.parts ?? []).map((p) => [p.name, p.triangleCount]));
-    for (const name of ['skin', 'eyes', 'iris', 'pupil', 'base']) expect(tris[name] ?? 0).toBeGreaterThan(0);
+    for (const name of ['skin', 'lips', 'mouth', 'brows', 'eyes', 'iris', 'pupil', 'base']) expect(tris[name] ?? 0).toBeGreaterThan(0);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/human-editor.png' });
   });

@@ -22,14 +22,17 @@ import {
 import {
   rasterizeOccupancy, edt3dSquared, makeTrilinearSampler, blurField, type GridSpec,
 } from '../geometry/meshSdf';
-import { buildHumanMesh, type HumanOptions, type HumanPose, DEFAULT_BODY, DEFAULT_FACE, DEFAULT_TORSO } from './humanModel';
+import {
+  buildHumanMesh, type HumanAsset, type HumanOptions, type HumanPose, type HumanExpression,
+  DEFAULT_BODY, DEFAULT_FACE, DEFAULT_TORSO, EXPRESSION_KEYS, EXPRESSION_PRESETS,
+} from './humanModel';
 import { getHumanAsset } from './humanAsset';
 
 const DOC = 'See /ai/human.md';
 const LIMB_KEYS = ['raiseSide', 'raiseFwd', 'bend', 'twist'] as const;
 /** Default paint per label; override with `colors` or `api.paint.label`. */
 const DEFAULT_COLORS: Record<string, string> = {
-  skin: '#c68642', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', base: '#4a4a4a',
+  skin: '#c68642', lips: '#a3584a', mouth: '#5a2622', brows: '#3a2a20', eyes: '#f4f4f0', iris: '#5b3a21', pupil: '#161616', base: '#4a4a4a',
 };
 // voxel-weld lattice bounds — API contract limits like meshSdfOps' resolution
 // cap, not tuning knobs: callers pick `voxel` per call. The default (height/300)
@@ -61,9 +64,9 @@ function parsePose(raw: unknown): HumanPose | 'rest' {
   return pose;
 }
 
-function parseOptions(raw: unknown) {
+function parseOptions(raw: unknown, asset: HumanAsset) {
   const o = raw === undefined ? {} : assertObject(raw, 'human(opts)')!;
-  assertNoUnknownKeys(o, ['height', 'body', 'face', 'torso', 'pose', 'weld', 'voxel', 'base', 'colors'], 'human(opts)');
+  assertNoUnknownKeys(o, ['height', 'body', 'face', 'torso', 'morphs', 'pose', 'expression', 'skinning', 'weld', 'voxel', 'base', 'colors'], 'human(opts)');
   const opts: HumanOptions = {};
   if (o.height !== undefined) opts.height = assertNumber(o.height, 'human.height', { min: 5, max: 2000 })!;
   if (o.body !== undefined) {
@@ -71,7 +74,7 @@ function parseOptions(raw: unknown) {
     assertNoUnknownKeys(b, [...Object.keys(DEFAULT_BODY)], 'human.body');
     const { ethnicity, ...rest } = b;
     const nums = numbers(rest, ['gender', 'muscle', 'weight', 'stature', 'breast', 'age'], 'human.body', 0, 90);
-    if (nums.age !== undefined && (nums.age < 25 || nums.age > 90)) throw new ValidationError(`human.body.age must be 25–90 years (adult targets only for now). ${DOC}`);
+    if (nums.age !== undefined && nums.age < 1) throw new ValidationError(`human.body.age must be 1–90 years. ${DOC}`);
     for (const k of ['gender', 'muscle', 'weight', 'stature', 'breast']) {
       if (nums[k] !== undefined && nums[k] > 1) throw new ValidationError(`human.body.${k} must be 0–1. ${DOC}`);
     }
@@ -90,7 +93,27 @@ function parseOptions(raw: unknown) {
     if (headSquare !== undefined) opts.face.headSquare = assertNumber(headSquare, 'human.face.headSquare', { min: 0, max: 1 })!;
   }
   if (o.torso !== undefined) opts.torso = numbers(o.torso, Object.keys(DEFAULT_TORSO), 'human.torso', -1, 1);
+  if (o.morphs !== undefined) {
+    const m = assertObject(o.morphs, 'human.morphs')!;
+    opts.morphs = {};
+    for (const [k, v] of Object.entries(m)) {
+      const mod = asset.modifiers.get(k);
+      if (!mod) throw new ValidationError(`human.morphs.${k} is not a MakeHuman slider. Keys are listed in /ai/human.md#morphs (e.g. "nose-hump", "r-ear-lobe", "torso-scale-horiz").`);
+      opts.morphs[k] = assertNumber(v, `human.morphs.${k}`, { min: mod.one ? 0 : -1, max: 1 })!;
+    }
+  }
   if (o.pose !== undefined) opts.pose = parsePose(o.pose);
+  if (o.expression !== undefined) {
+    if (typeof o.expression === 'string') {
+      const preset = EXPRESSION_PRESETS[o.expression];
+      if (!preset) throw new ValidationError(`human.expression must be one of ${Object.keys(EXPRESSION_PRESETS).map((k) => `"${k}"`).join(', ')} or a channel object. ${DOC}`);
+      opts.expression = preset;
+    } else {
+      const e = numbers(o.expression, EXPRESSION_KEYS, 'human.expression', 0, 1);
+      opts.expression = e as Partial<HumanExpression>;
+    }
+  }
+  if (o.skinning !== undefined) opts.skinning = assertEnum(o.skinning, ['dq', 'linear'] as const, 'human.skinning');
   const weld = o.weld === undefined ? 'mesh' : assertEnum(o.weld, ['mesh', 'voxel'] as const, 'human.weld');
   const height = opts.height ?? 60;
   if (o.voxel !== undefined && weld !== 'voxel') throw new ValidationError(`human.voxel only applies with weld: 'voxel'. ${DOC}`);
@@ -123,8 +146,11 @@ export function createHumanNamespace(
   isRemoved: (name: string) => boolean,
 ) {
   const { Manifold, Mesh } = module;
-  const ofParts = (positions: Float32Array, triVerts: Uint32Array) =>
-    Manifold.ofMesh(new Mesh({ numProp: 3, vertProperties: positions, triVerts }));
+  const stripProps = (props: Float32Array, numProp: number) => {
+    const out = new Float32Array((props.length / numProp) * 3);
+    for (let i = 0, j = 0; i < props.length; i += numProp, j += 3) { out[j] = props[i]; out[j + 1] = props[i + 1]; out[j + 2] = props[i + 2]; }
+    return out;
+  };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function voxelWeld(positions: Float32Array, triVerts: Uint32Array, voxel: number): any {
@@ -158,18 +184,16 @@ export function createHumanNamespace(
     return Manifold.levelSet((p: [number, number, number]) => grow - sample(p[0], p[1], p[2]), bounds, voxel, 0);
   }
 
-  // The eyeballs as ONE closed mesh whose triangles are grouped into runs, one
-  // per paint label (sclera / iris / pupil): splitting into separate sub-meshes
-  // would tear the surface. Each run gets its own originalID, registered as a
-  // label exactly like api.importWithParts does. `api.removePart` on `eyes`
-  // drops the eyeballs (the body is closed behind them); on `iris` / `pupil` it
-  // can't cut a hole in a closed ball, so that region folds into the label it
-  // sits in (pupil → iris → sclera) and the removed label disappears.
+  // One closed mesh whose triangles are grouped into runs, one per paint label
+  // (skin / lips / brows on the body; sclera / iris / pupil on the eyes):
+  // splitting into separate sub-meshes would tear the surface. Each run gets
+  // its own originalID, registered as a label exactly like api.importWithParts
+  // does. A label removed with `api.removePart` can't cut a hole in a closed
+  // surface, so its region folds into the label `fold` names and the removed
+  // label disappears.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function labelledEyes(positions: Float32Array, triVerts: Uint32Array, labels: string[], colors: Record<string, string>): any {
-    if (isRemoved('eyes')) return null;
-    const order = ['eyes', 'iris', 'pupil'].filter((n) => !isRemoved(n));
-    const fold = (n: string): string => (order.includes(n) ? n : n === 'pupil' ? fold('iris') : 'eyes');
+  function labelledMesh(positions: Float32Array, triVerts: Uint32Array, labels: string[], names: string[], fold: (n: string) => string, colors: Record<string, string>): any {
+    const order = names.filter((n) => !isRemoved(n));
     const first = Manifold.reserveIDs(order.length);
     const ids = order.map((_, i) => first + i);
     const sorted: number[] = [];
@@ -186,19 +210,76 @@ export function createHumanNamespace(
     return m;
   }
 
+  /** Each output triangle takes the label of the nearest source triangle
+   *  (centroid to centroid, via a uniform hash grid) — carries the body's paint
+   *  labels across the voxel weld, which rebuilds the surface from scratch. */
+  function transferLabels(
+    srcPos: Float32Array, srcTris: Uint32Array, srcLabels: string[],
+    outPos: Float32Array, outTris: Uint32Array, numProp: number, cell: number,
+  ): string[] {
+    const cellOf = (x: number, y: number, z: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+    const grid = new Map<string, number[]>();
+    const cen = new Float64Array(srcLabels.length * 3);
+    for (let t = 0; t < srcLabels.length; t++) {
+      for (let c = 0; c < 3; c++) {
+        const v = srcTris[t * 3 + c];
+        for (let k = 0; k < 3; k++) cen[t * 3 + k] += srcPos[v * 3 + k] / 3;
+      }
+      const key = cellOf(cen[t * 3], cen[t * 3 + 1], cen[t * 3 + 2]);
+      const list = grid.get(key);
+      if (list) list.push(t); else grid.set(key, [t]);
+    }
+    const out: string[] = [];
+    const nT = outTris.length / 3;
+    for (let t = 0; t < nT; t++) {
+      let x = 0, y = 0, z = 0;
+      for (let c = 0; c < 3; c++) { const v = outTris[t * 3 + c]; x += outPos[v * numProp] / 3; y += outPos[v * numProp + 1] / 3; z += outPos[v * numProp + 2] / 3; }
+      const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+      let best = -1, bestD = Infinity;
+      for (let r = 1; r <= 3 && best < 0; r++) {
+        for (let i = -r; i <= r; i++) for (let j = -r; j <= r; j++) for (let k = -r; k <= r; k++) {
+          const list = grid.get(`${cx + i},${cy + j},${cz + k}`);
+          if (!list) continue;
+          for (const s of list) {
+            const d = (cen[s * 3] - x) ** 2 + (cen[s * 3 + 1] - y) ** 2 + (cen[s * 3 + 2] - z) ** 2;
+            if (d < bestD) { bestD = d; best = s; }
+          }
+        }
+      }
+      out.push(best >= 0 ? srcLabels[best] : srcLabels[0]);
+    }
+    return out;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function human(rawOpts?: unknown): any {
     const asset = getHumanAsset();
     if (!asset) throw new Error(`api.human: the human asset is not loaded (it preloads when the code mentions api.human). ${DOC}`);
-    const { opts, weld, voxel, base, colors } = parseOptions(rawOpts);
+    const { opts, weld, voxel, base, colors } = parseOptions(rawOpts, asset);
     const mesh = buildHumanMesh(asset, opts);
     const skinPart = mesh.parts.find((p) => p.label === 'skin')!;
     const eyePart = mesh.parts.find((p) => p.label === 'eyes')!;
-    const bodySolid = weld === 'voxel' ? voxelWeld(skinPart.positions, skinPart.triVerts, voxel) : ofParts(skinPart.positions, skinPart.triVerts);
-    // The eyeballs as one Manifold whose triangle runs carry the sclera / iris
-    // / pupil labels (one originalID per label via Manifold.ofMesh runs).
-    const eyes = labelledEyes(eyePart.positions, eyePart.triVerts, mesh.eyeLabels, colors);
-    const pieces = [label(bodySolid, 'skin', { color: colors.skin })];
+    const pieces = [];
+    if (!isRemoved('skin')) {
+      // Lips / brows are painted regions of the one body surface.
+      const toSkin = (n: string) => (isRemoved(n) ? 'skin' : n);
+      if (weld === 'voxel') {
+        const welded = voxelWeld(skinPart.positions, skinPart.triVerts, voxel).getMesh();
+        const labels = transferLabels(skinPart.positions, skinPart.triVerts, mesh.skinLabels as string[], welded.vertProperties, welded.triVerts, welded.numProp, voxel * 4);
+        pieces.push(labelledMesh(
+          welded.numProp === 3 ? welded.vertProperties : stripProps(welded.vertProperties, welded.numProp),
+          welded.triVerts, labels, ['skin', 'lips', 'mouth', 'brows'], toSkin, colors,
+        ));
+      } else {
+        pieces.push(labelledMesh(skinPart.positions, skinPart.triVerts, mesh.skinLabels as string[], ['skin', 'lips', 'mouth', 'brows'], toSkin, colors));
+      }
+    }
+    // Removing `eyes` drops the eyeballs (the face is closed behind them);
+    // iris / pupil fold outward: pupil → iris → sclera.
+    const eyes = isRemoved('eyes') ? null : labelledMesh(
+      eyePart.positions, eyePart.triVerts, mesh.eyeLabels as string[], ['eyes', 'iris', 'pupil'],
+      function fold(n: string): string { return !isRemoved(n) ? n : n === 'pupil' ? fold('iris') : 'eyes'; }, colors,
+    );
     if (eyes) pieces.push(eyes);
     const eyeBox: { min: number[]; max: number[] } | null = eyes ? eyes.boundingBox() : null;
     if (base) {
@@ -215,6 +296,7 @@ export function createHumanNamespace(
       const sink = height * 0.004;
       pieces.push(label(Manifold.cylinder(base.thickness, r, r).translate([cx, cy, -base.thickness + sink]), 'base', { color: colors.base }));
     }
+    if (pieces.length === 0) return Manifold.union([]);
     const out = Manifold.union(pieces);
     // A human is one connected solid, so any extra piece is debris: a
     // zero-volume sliver where an eyeball meets its lid, or (voxel weld) a

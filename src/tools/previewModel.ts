@@ -152,7 +152,7 @@ export async function previewModel(
     await preloadTextFonts();
   }
   if (engine === 'manifold-js' && sourceUsesHuman(code)) {
-    try { await preloadHumanAsset(); } catch { /* api.human reports the missing asset itself */ }
+    try { await preloadHumanAsset(code); } catch { /* api.human reports the missing asset itself */ }
   }
 
   let raw: MeshResult;
