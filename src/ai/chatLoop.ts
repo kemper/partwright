@@ -16,15 +16,17 @@ import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCal
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
+import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
-import { isTransientError } from './transientError';
-import { elideStaleToolImages, providerCachesHistory } from './historyElision';
+import { isTransientError, isTransientToolFailure } from './transientError';
+import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
+import { REDUCED_TOOLS_NOTE, resolveCustomPromptTier, toolsForCustomTier } from './customContext';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -138,6 +140,10 @@ export interface RunTurnInput {
    *  tool dispatch round-trips back to the main thread where
    *  window.partwright lives, while the loop itself stays in the Worker. */
   executeToolFn?: (name: string, input: Record<string, unknown>) => Promise<import('./tools').ToolExecResult>;
+  /** The UI tool catalogue for openTool's id enum (buildUiToolCatalog). The
+   *  agent Worker has no tool registry, so the Worker client snapshots it on
+   *  the main thread and passes it here; omitted = read the live registry. */
+  uiTools?: import('./tools').UiToolCatalogEntry[];
 }
 
 export interface RunTurnCallbacks {
@@ -195,8 +201,10 @@ export interface RunTurnCallbacks {
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
   /** Called before executing a tool that requires explicit user permission
-   *  (import tools). Return true to allow, false to decline. If absent, all
-   *  tools execute without a prompt. */
+   *  (CONFIRM_REQUIRED_TOOLS: imports, deleteVersion). Return true to allow,
+   *  false to decline. If absent, a confirm-required tool is declined when this
+   *  loop runs the real executeTool; with a custom executeToolFn (the agent
+   *  Worker's main-thread proxy) the confirmation is left to that layer. */
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
@@ -220,13 +228,27 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
     }
   }
   if (toggles.provider === 'local') return buildLocalSystemPrompt();
+  if (toggles.provider === 'custom') {
+    // A small-window endpoint gets the local prompts (docs on demand via
+    // readDoc) instead of all of ai.md — see customContext.ts.
+    const tier = resolveCustomPromptTier(toggles);
+    if (tier === 'medium') return buildMediumLocalSystemPrompt() + REDUCED_TOOLS_NOTE;
+    if (tier === 'slim') return buildLocalSystemPrompt() + REDUCED_TOOLS_NOTE;
+  }
   return buildSystemPrompt(await loadAiMd());
 }
 
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
-  const tools = buildToolList(toggles);
+  const gatedTools = buildToolList(toggles, input.uiTools);
+  const tools = toggles.provider === 'custom' ? toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)) : gatedTools;
+  // Only the tools this turn's gates allow may run. Hiding a tool is how plan
+  // mode and the scope toggles gate it, but a model can still call one it saw
+  // earlier in the history (a second plan after a build is the classic case).
+  // Checked against the gated list, not the custom-tier trim: that trim saves
+  // context, it doesn't withhold permission.
+  const offeredTools = new Set(gatedTools.map(t => t.name));
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -333,9 +355,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Providers that cache the history trim in steps (see imagesToElide) so
     // the cached prefix survives between trims; the rest keep a tight window.
     const aiCfg = getConfig().ai;
-    const sentHistory = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
+    const imageTrimmed = providerCachesHistory(toggles.provider, aiCfg.cacheConversationHistory)
       ? elideStaleToolImages(workingHistory, aiCfg.cachedImageLimit, aiCfg.cachedImageTrimTo)
       : elideStaleToolImages(workingHistory, aiCfg.keepRecentToolImages);
+    // Likewise drop text payloads a later step made dead weight: superseded
+    // code bodies, repeated readDoc results, old failed-call inputs.
+    const sentHistory = aiCfg.pruneStaleToolPayloads ? pruneStaleToolPayloads(imageTrimmed, aiCfg) : imageTrimmed;
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -389,7 +414,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // which makes the provider omit the Authorization header.
         if (!toggles.customBaseUrl.trim()) throw new Error('Custom endpoint URL is required. Open AI Settings → Custom to set it.');
         if (!toggles.customModel.trim()) throw new Error('A model id is required for the custom endpoint. Open AI Settings → Custom to set or fetch one.');
-        const customKey = apiKey ?? (await getApiKey('custom')) ?? '';
+        const customKey = apiKey ?? await resolveCustomApiKey(toggles.customBaseUrl);
         result = await streamTurnCustom({
           apiKey: customKey,
           baseUrl: toggles.customBaseUrl,
@@ -622,6 +647,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // we let any other tools in the batch run (they may be the final actions),
     // then stop cleanly below instead of looping.
     const calledFinish = autoResume && result.toolCalls.some(tc => tc.name === FINISH_TOOL);
+    // askUser / proposePlan hand the next move to the user (in any mode, with
+    // or without auto-continue).
+    const handedToUser = result.toolCalls.find(tc => TURN_ENDING_TOOLS.has(tc.name) && offeredTools.has(tc.name));
 
     // Execute tools, then loop with the results posted back. Tools run
     // synchronously against window.partwright and can't be cancelled mid-
@@ -651,7 +679,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     await putMessages([toolResultMsg]);
 
     const toolResults = await executeAllWithRetry(
-      result.toolCalls, toggles, callbacks, signal,
+      result.toolCalls, toggles, offeredTools, callbacks, signal,
       (eachResult, i) => {
         toolResultMsg.toolResults![i] = eachResult;
         void putMessages([toolResultMsg]);
@@ -696,6 +724,16 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'end_turn', detail: 'finish', iterations: iter + 1 });
       return workingHistory;
     }
+    // A card was shown: wait for the user. Not when the card's own input was
+    // rejected (the model gets to fix it) or the human already queued a reply
+    // (delivered above, so loop on to it).
+    if (handedToUser && queuedBlocks.length === 0) {
+      const cardIdx = result.toolCalls.indexOf(handedToUser);
+      if (toolResults[cardIdx]?.isError !== true) {
+        callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'end_turn', detail: handedToUser.name, iterations: iter + 1 });
+        return workingHistory;
+      }
+    }
   }
 
   // Hit iteration cap — surface to the user so they can intervene.
@@ -710,6 +748,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 async function executeAllWithRetry(
   toolCalls: PersistedToolCall[],
   toggles: ChatToggles,
+  offeredTools: ReadonlySet<string>,
   callbacks: RunTurnCallbacks,
   signal?: AbortSignal,
   onEachResult?: (result: PersistedToolResult, index: number) => void,
@@ -732,14 +771,40 @@ async function executeAllWithRetry(
       onEachResult?.(aborted, i);
       continue;
     }
-    if (CONFIRM_REQUIRED_TOOLS.has(tc.name) && callbacks.confirmTool) {
-      const allowed = await callbacks.confirmTool(tc.name, tc.input);
-      if (!allowed) {
-        const declined: PersistedToolResult = {
-          toolUseId: tc.id,
-          content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
-          isError: true,
-        };
+    // A tool that wasn't offered this turn never runs (`finish` is a no-op
+    // control sentinel, so it's harmless either way; a pre-rename name counts
+    // as the tool it stands for).
+    if (!offeredTools.has(LEGACY_TOOL_ALIASES[tc.name] ?? tc.name) && tc.name !== FINISH_TOOL) {
+      const refused: PersistedToolResult = { toolUseId: tc.id, content: unofferedToolMessage(tc.name, toggles.planFirst), isError: true };
+      results.push(refused);
+      callbacks.onToolResult?.(tc.id, tc.name, refused);
+      onEachResult?.(refused, i);
+      continue;
+    }
+    if (CONFIRM_REQUIRED_TOOLS.has(tc.name)) {
+      // Confirmation is enforced by whichever layer runs the REAL executeTool.
+      // Inside the agent Worker, executeToolFn proxies to the main thread and
+      // agentWorkerClient shows the prompt there, so the Worker's loop (which
+      // can't hold a UI callback) delegates. Running the real executeTool here
+      // with no prompt to show fails CLOSED.
+      let content: string | null = null;
+      // A call that would be refused anyway (e.g. a code-bearing importFromUrl)
+      // returns its refusal without bothering the user with a prompt.
+      const refused = preConfirmToolResult(tc.name, tc.input);
+      if (refused) {
+        content = refused.content;
+      } else if (callbacks.confirmTool) {
+        let allowed = false;
+        try { allowed = await callbacks.confirmTool(tc.name, tc.input); } catch { allowed = false; }
+        // Stop pressed while the prompt was up: an Allow click that raced the
+        // abort must not still run the tool.
+        if (signal?.aborted) content = '[aborted by user]';
+        else if (!allowed) content = declinedToolMessage(tc.name);
+      } else if (!executeToolFn) {
+        content = CONFIRM_UNAVAILABLE_MESSAGE;
+      }
+      if (content !== null) {
+        const declined: PersistedToolResult = { toolUseId: tc.id, content, isError: true };
         results.push(declined);
         callbacks.onToolResult?.(tc.id, tc.name, declined);
         onEachResult?.(declined, i);
@@ -751,9 +816,11 @@ async function executeAllWithRetry(
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
     // succeeded before erroring would double-apply it; the retry budget is for
-    // transient read/render/run failures, not state changes.
+    // transient read/render/run failures, not state changes — and a
+    // deterministic failure (a validation { error }, a bad id) would just fail
+    // again, so only a transient-looking one is re-run.
     const retryable = RETRY_SAFE_TOOLS.has(tc.name);
-    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
+    while (result.isError && retryable && isTransientToolFailure(result.content) && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }

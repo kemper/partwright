@@ -32,6 +32,16 @@ function getCommands(): Command[] {
   return [...registry.values()];
 }
 
+/** Every registered command with its current enabled state — the run-only half
+ *  of `partwright.listUiCommands()`. */
+export function listCommands(): { id: string; title: string; hint?: string; enabled: boolean }[] {
+  return getCommands().map(c => {
+    let enabled = true;
+    try { enabled = !c.enabled || c.enabled(); } catch { enabled = false; }
+    return { id: c.id, title: c.title, hint: c.hint, enabled };
+  });
+}
+
 /**
  * Run a registered command by id, honoring its `enabled` gate. Returns false
  * when the id is unknown or the command is currently disabled (so callers can

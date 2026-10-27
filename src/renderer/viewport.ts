@@ -3,6 +3,7 @@ import { Timer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
+import { meshDataToGeometry, triColoredGeometry } from './meshGeometry';
 import { createWireframeMaterial } from './materials';
 import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
 import { resolveMaterialSpec, type MaterialSpec } from './materialSpec';
@@ -606,11 +607,21 @@ export function initViewport(container: HTMLElement): {
 /** Fired after every mesh update with the displayed mesh, so the host can keep
  *  a live readout (e.g. triangle count) in sync without hooking every call site. */
 let onMeshUpdate: ((mesh: MeshData) => void) | null = null;
+// The MeshData the live solid geometry was built from (null when cleared) —
+// read by layers that edit that geometry in place (hiddenTriangles.ts).
+let displayedMesh: MeshData | null = null;
+
+/** The mesh currently drawn in the viewport, or null when it's empty. */
+export function getDisplayedMesh(): MeshData | null {
+  return displayedMesh;
+}
 export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
   onMeshUpdate = fn;
 }
 
 export function clearMesh(): void {
+  displayedMesh = null;
+  updateDimensionLines(new THREE.Box3());
   while (meshGroup.children.length > 0) {
     const child = meshGroup.children[0];
     meshGroup.remove(child);
@@ -637,6 +648,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   }
 
   const geometry = meshGLToBufferGeometry(meshData);
+  displayedMesh = meshData;
   const hasColors = geometry.hasAttribute('color');
 
   const solidMat = buildSolidMaterial(hasColors);
@@ -718,7 +730,9 @@ function frameModelShadow(): void {
  *  mesh group is empty. */
 function frameModel(): void {
   const box = new THREE.Box3().setFromObject(meshGroup);
-  if (box.isEmpty()) return;
+  // An empty model (e.g. a blank object returning Manifold.union([])) leaves
+  // the camera alone, but must drop the previous model's dimension lines.
+  if (box.isEmpty()) { updateDimensionLines(box); return; }
 
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
@@ -917,66 +931,11 @@ export function recolorMesh(triColors: Uint8Array): boolean {
  *  colours it stays indexed. Exported so the multi-part GLB builder
  *  (`buildGLBProject`) can reuse the exact same conversion the viewport uses. */
 export function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry();
-
-  if (mesh.triColors) {
-    // With per-triangle colors, we must unindex (duplicate vertices per triangle)
-    // so each triangle's 3 vertices can carry that triangle's color.
-    const numTri = mesh.numTri;
-    const positions = new Float32Array(numTri * 3 * 3);
-    const colors = new Float32Array(numTri * 3 * 3);
-    const { vertProperties, triVerts, numProp, triColors } = mesh;
-
-    for (let t = 0; t < numTri; t++) {
-      const v0 = triVerts[t * 3];
-      const v1 = triVerts[t * 3 + 1];
-      const v2 = triVerts[t * 3 + 2];
-
-      // Positions
-      for (let c = 0; c < 3; c++) {
-        positions[t * 9 + c] = vertProperties[v0 * numProp + c];
-        positions[t * 9 + 3 + c] = vertProperties[v1 * numProp + c];
-        positions[t * 9 + 6 + c] = vertProperties[v2 * numProp + c];
-      }
-
-      // Colors (same for all 3 vertices of the triangle)
-      const r = triColors[t * 3] / 255;
-      const g = triColors[t * 3 + 1] / 255;
-      const b = triColors[t * 3 + 2] / 255;
-
-      // Check if this triangle is painted (has a color region)
-      const painted = (triColors as Uint8Array & { _painted?: Uint8Array })._painted;
-      const isPainted = painted ? painted[t] === 1 : (r !== 0 || g !== 0 || b !== 0);
-
-      // Unpainted triangles get the default blue (#4a9eff)
-      const cr = isPainted ? r : 0x4a / 255;
-      const cg = isPainted ? g : 0x9e / 255;
-      const cb = isPainted ? b : 0xff / 255;
-
-      for (let v = 0; v < 3; v++) {
-        colors[t * 9 + v * 3] = cr;
-        colors[t * 9 + v * 3 + 1] = cg;
-        colors[t * 9 + v * 3 + 2] = cb;
-      }
-    }
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
-  } else {
-    // No colors — use indexed geometry (original path)
-    const positions = new Float32Array(mesh.numVert * 3);
-    for (let i = 0; i < mesh.numVert; i++) {
-      positions[i * 3] = mesh.vertProperties[i * mesh.numProp];
-      positions[i * 3 + 1] = mesh.vertProperties[i * mesh.numProp + 1];
-      positions[i * 3 + 2] = mesh.vertProperties[i * mesh.numProp + 2];
-    }
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(mesh.triVerts, 1));
-    geometry.computeVertexNormals();
-  }
-
-  return geometry;
+  // Per-triangle colours need un-indexed vertices (each triangle's corners
+  // carry its colour); unpainted triangles get the default blue (#4a9eff).
+  return mesh.triColors
+    ? triColoredGeometry(mesh as MeshData & { triColors: Uint8Array }, [0x4a / 255, 0x9e / 255, 0xff / 255])
+    : meshDataToGeometry(mesh);
 }
 
 // === Assembly (multi-part grid) rendering ===
@@ -1306,6 +1265,41 @@ export function setCameraPose(pose: { position: [number, number, number]; target
   controls.update();
   if (clippingEnabled) updateClipPlaneVisual();
   needsRender = true;
+}
+
+/** Orbit the live camera to an explicit angle — the inverse of getCameraState,
+ *  in the same convention: azimuth 0 = looking from the front (−Y), 90 = from
+ *  the right (+X); elevation 0 = horizon, +90 = straight down from above.
+ *  `distance` / `target` default to the current ones. Elevation is held just
+ *  off ±90 so OrbitControls (Z-up) keeps a defined azimuth. */
+export function setCameraOrbit(opts: { azimuth: number; elevation: number; distance?: number; target?: [number, number, number] }): void {
+  const cur = camera.position.clone().sub(controls.target);
+  const target = opts.target ?? [controls.target.x, controls.target.y, controls.target.z];
+  const distance = opts.distance ?? cur.length();
+  const el = Math.max(-89.9, Math.min(89.9, opts.elevation)) * Math.PI / 180;
+  const az = opts.azimuth * Math.PI / 180;
+  const dir = [Math.sin(az) * Math.cos(el), -Math.cos(az) * Math.cos(el), Math.sin(el)];
+  setCameraPose({
+    position: [target[0] + dir[0] * distance, target[1] + dir[1] * distance, target[2] + dir[2] * distance],
+    target: [target[0], target[1], target[2]],
+  });
+}
+
+/** Aim the camera at a world-space box (e.g. one labelled part) from the
+ *  current viewing direction, at the same relative distance the default
+ *  framing uses for the whole model (frameFactor·√3·maxDim). */
+export function frameBounds(min: [number, number, number], max: [number, number, number]): void {
+  const center: [number, number, number] = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  const maxDim = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+  if (!Number.isFinite(maxDim) || !center.every(Number.isFinite)) return;
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() === 0) dir.set(1, -1, 1);
+  dir.normalize();
+  const distance = Math.max(maxDim, 1e-3) * getConfig().renderer.defaultFrameFactor * Math.sqrt(3);
+  setCameraPose({
+    position: [center[0] + dir.x * distance, center[1] + dir.y * distance, center[2] + dir.z * distance],
+    target: center,
+  });
 }
 
 export function getCanvas(): HTMLCanvasElement {

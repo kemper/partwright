@@ -11,6 +11,8 @@ import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewport
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { createColorSwatch } from '../ui/colorPickerModal';
+import { createSliderEntry, type SliderEntry } from '../ui/sliderEntry';
+import { registerTool, setToolNote, captureToolApplied, parsePrefillColor, type PrefillSchema, type ToolOpenContext, type ToolOpenResult } from '../ui/toolRegistry';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -43,10 +45,13 @@ let paintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let onActivate: (() => Promise<void> | void) | null = null;
 let onDeactivate: (() => Promise<void> | void) | null = null;
-let onUpdateCode: (() => Promise<void> | void) | null = null;
-let onSaveRaw: (() => Promise<void> | void) | null = null;
+let onUpdateCode: (() => Promise<boolean | void> | boolean | void) | null = null;
+let onSaveRaw: (() => Promise<boolean | void> | boolean | void) | null = null;
 let active = false;
 let currentColor = SWATCHES[0];
+// Panel body (AI note banner host) + the swatch-ring sync a prefill colour uses.
+let contentEl: HTMLElement | null = null;
+let syncColorRing: ((hex: string) => void) | null = null;
 
 // One-of-N viewport panel: opening Paint/Annotate/etc. closes the studio.
 const registryEntry = { close(): void { if (active) void doDeactivate(); } };
@@ -70,14 +75,13 @@ let brushSection: HTMLElement | null = null;
 let blockSection: HTMLElement | null = null;
 let depthSection: HTMLElement | null = null;
 let levelSection: HTMLElement | null = null;
-let sizeSlider: HTMLInputElement | null = null;
+let sizeEntry: SliderEntry | null = null;
 let sizeLabel: HTMLElement | null = null;
 let sprayBtn: HTMLButtonElement | null = null;
 let sprayRow: HTMLElement | null = null;
-const blockSliders: Partial<Record<0 | 1 | 2, HTMLInputElement>> = {};
+const blockEntries: Partial<Record<0 | 1 | 2, SliderEntry>> = {};
 let blockSizeLabel: HTMLElement | null = null;
-let depthSlider: HTMLInputElement | null = null;
-let depthInput: HTMLInputElement | null = null;
+let depthEntry: SliderEntry | null = null;
 let depthLabel: HTMLElement | null = null;
 let roundSlider: HTMLInputElement | null = null;
 let roundValueLabel: HTMLElement | null = null;
@@ -100,10 +104,12 @@ export interface VoxelPaintUICallbacks {
   activate: () => Promise<void> | void;
   /** Called to cancel editing without committing. */
   deactivate: () => Promise<void> | void;
-  /** Called to append the edits to the existing code as v.set/v.remove ops. */
-  updateCode: () => Promise<void> | void;
-  /** Called to replace the code with voxels.decode(...) of the full grid. */
-  saveRaw: () => Promise<void> | void;
+  /** Called to append the edits to the existing code as v.set/v.remove ops.
+   *  Resolves false when nothing was written (error / cancelled). */
+  updateCode: () => Promise<boolean | void> | boolean | void;
+  /** Called to replace the code with voxels.decode(...) of the full grid.
+   *  Resolves false when nothing was written (error / cancelled). */
+  saveRaw: () => Promise<boolean | void> | boolean | void;
 }
 
 /** Mount the Voxel Studio button into the viewport's controls container. */
@@ -134,6 +140,75 @@ export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: Voxe
   // Paint panel).
   const overlayHost = controlsContainer.parentElement ?? controlsContainer;
   overlayHost.appendChild(panel);
+
+  registerTool({
+    id: 'tool-voxel-paint',
+    title: 'Voxel Studio (edit voxels)',
+    hint: 'Tools',
+    prefillSchema: VOXEL_PREFILL_SCHEMA,
+    open: (prefill, ctx) => openVoxelStudioWithPrefill(prefill, ctx),
+    getState: () => (active ? getVoxelStudioState() : null),
+    isOpen: () => active,
+    close: () => { if (active) void doDeactivate(); },
+  });
+}
+
+const AXIS_NAMES = ['x', 'y', 'z'] as const;
+
+/** Prefill keys for `openTool('tool-voxel-paint', …)` — tool, colour and brush
+ *  settings; nothing is edited until the user clicks the model. */
+const VOXEL_PREFILL_SCHEMA: PrefillSchema = {
+  tool: { type: 'enum', values: TOOLS.map(t => t.tool), description: 'Active studio tool.' },
+  color: { type: 'color', description: 'Voxel colour ([r,g,b] 0..1 or "#rrggbb").' },
+  brush: { type: 'object', description: 'Brush (as setVoxelBrush).', fields: {
+    radius: { type: 'number', integer: true, min: 0, max: voxelPaint.MAX_BRUSH_RADIUS, description: 'Brush radius in voxels (0 = one voxel).' },
+    shape: { type: 'enum', values: BRUSH_SHAPES.map(s => s.shape) },
+    spray: { type: 'boolean' },
+    sprayDensity: { type: 'number', min: 0.05, max: 1 },
+    block: { type: 'vec3', description: 'Add-tool block size [x,y,z] in voxels (1..32 each).' },
+    depth: { type: 'number', integer: true, min: 0, description: 'How deep an added block sinks into the face.' },
+  } },
+  levelAxis: { type: 'enum', values: AXIS_NAMES, description: 'Axis the level tool recolours.' },
+};
+
+function getVoxelStudioState(): Record<string, unknown> {
+  return {
+    tool: voxelPaint.getTool(),
+    color: currentColor,
+    brush: {
+      radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(),
+      sprayDensity: voxelPaint.getSprayDensity(), block: voxelPaint.getBlockSize(), depth: voxelPaint.getAddDepth(),
+    },
+    levelAxis: AXIS_NAMES[voxelPaint.getLevelAxis()],
+  };
+}
+
+const toHex = (c: [number, number, number]) => `#${c.map(n => Math.round(n * 255).toString(16).padStart(2, '0')).join('')}`;
+
+async function openVoxelStudioWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): Promise<ToolOpenResult> {
+  const pre = p ?? {};
+  const brush = (pre.brush ?? {}) as Record<string, unknown>;
+  const block = brush.block as [number, number, number] | undefined;
+  if (block && block.some(n => !Number.isInteger(n) || n < 1 || n > voxelPaint.MAX_BLOCK_SIZE)) {
+    return { error: `brush.block values must be integers 1..${voxelPaint.MAX_BLOCK_SIZE}` };
+  }
+  if (!active) await doActivate();
+  if (!active) return { error: 'Voxel Studio could not start (needs a voxel model on screen).' };
+  setToolNote(contentEl, ctx.note, ctx.source);
+  if (pre.tool !== undefined) voxelPaint.setTool(pre.tool as VoxelTool);
+  if (pre.color !== undefined) {
+    const c = parsePrefillColor(pre.color);
+    if (c) { currentColor = toHex(c); voxelPaint.setColor(currentColor); syncColorRing?.(currentColor); }
+  }
+  if (brush.radius !== undefined) voxelPaint.setBrushRadius(brush.radius as number);
+  if (brush.shape !== undefined) voxelPaint.setBrushShape(brush.shape as BrushShape);
+  if (brush.spray !== undefined) voxelPaint.setSpray(brush.spray as boolean);
+  if (brush.sprayDensity !== undefined) voxelPaint.setSprayDensity(brush.sprayDensity as number);
+  if (block) ([0, 1, 2] as const).forEach(a => voxelPaint.setBlockSize(a, block[a]));
+  if (brush.depth !== undefined) voxelPaint.setAddDepth(brush.depth as number);
+  if (pre.levelAxis !== undefined) voxelPaint.setLevelAxis(AXIS_NAMES.indexOf(pre.levelAxis as 'x' | 'y' | 'z') as 0 | 1 | 2);
+  refreshControls();
+  return { applied: pre, ignored: [] };
 }
 
 /** Toggle button visibility based on whether the active language is voxel. */
@@ -172,6 +247,7 @@ export function syncActiveState(): void {
     voxelPaint.setColor(currentColor);
     voxelPaint.setTool('view');
   } else if (exited) {
+    setToolNote(contentEl, null);
     document.removeEventListener('keydown', onStudioEscape);
     closeViewportPanel(registryEntry);
   }
@@ -201,7 +277,7 @@ function refreshControls(): void {
   for (const s of BRUSH_SHAPES) setActive(shapeBtns[s.shape], s.shape === voxelPaint.getBrushShape());
   for (const a of AXES) setActive(axisBtns[a.axis], a.axis === voxelPaint.getLevelAxis());
 
-  if (sizeSlider) sizeSlider.value = String(voxelPaint.getBrushRadius());
+  syncEntry(sizeEntry, voxelPaint.getBrushRadius());
   if (sizeLabel) {
     const r = voxelPaint.getBrushRadius();
     sizeLabel.textContent = r === 0 ? 'Size: 1 voxel' : `Size: ${r * 2 + 1} wide`;
@@ -216,12 +292,10 @@ function refreshControls(): void {
   // Add-block controls.
   const size = voxelPaint.getBlockSize();
   for (const axis of [0, 1, 2] as const) {
-    const s = blockSliders[axis];
-    if (s) s.value = String(size[axis]);
+    syncEntry(blockEntries[axis], size[axis]);
   }
   if (blockSizeLabel) blockSizeLabel.textContent = `${size[0]}×${size[1]}×${size[2]}`;
-  if (depthSlider) depthSlider.value = String(Math.min(16, voxelPaint.getAddDepth()));
-  if (depthInput && document.activeElement !== depthInput) depthInput.value = String(voxelPaint.getAddDepth());
+  syncEntry(depthEntry, voxelPaint.getAddDepth());
   if (depthLabel) {
     const d = voxelPaint.getAddDepth();
     if (d === 0) depthLabel.textContent = isBox ? 'flat' : 'on surface';
@@ -304,6 +378,7 @@ function createPanel(): HTMLElement {
   // Scrollable content.
   const content = document.createElement('div');
   content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5 flex flex-col gap-2';
+  contentEl = content;
   content.appendChild(buildToolRow());
   editWarningEl = document.createElement('p');
   editWarningEl.className = 'hidden text-[10px] leading-tight rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-2 py-1';
@@ -358,8 +433,15 @@ function buildColorRow(): HTMLElement {
     if (voxelPaint.getTool() === 'remove' || voxelPaint.getTool() === 'boxRemove') voxelPaint.setTool('paint');
     refreshControls();
   };
+  const swatchBtns = new Map<string, HTMLButtonElement>();
+  syncColorRing = (hex) => {
+    if (activeSwatch) activeSwatch.classList.remove('ring-2', 'ring-white');
+    activeSwatch = swatchBtns.get(hex.toLowerCase()) ?? null;
+    activeSwatch?.classList.add('ring-2', 'ring-white');
+  };
   for (const hex of SWATCHES) {
     const sw = document.createElement('button');
+    swatchBtns.set(hex.toLowerCase(), sw);
     sw.type = 'button';
     sw.className = 'w-6 h-6 rounded border border-zinc-600/60 hover:border-zinc-300 transition-colors';
     sw.style.backgroundColor = hex;
@@ -403,17 +485,16 @@ function buildBrushSection(): HTMLElement {
   head.appendChild(sizeLabel);
   sec.appendChild(head);
 
-  // Size slider (0 = single voxel … 8 = wide).
-  sizeSlider = document.createElement('input');
-  sizeSlider.type = 'range';
-  sizeSlider.min = '0';
-  sizeSlider.max = '8';
-  sizeSlider.step = '1';
-  sizeSlider.value = '0';
-  sizeSlider.className = 'w-full accent-blue-500';
-  sizeSlider.title = 'Brush radius in voxels (0 = a single voxel)';
-  sizeSlider.addEventListener('input', () => { voxelPaint.setBrushRadius(Number(sizeSlider!.value)); refreshControls(); });
-  sec.appendChild(sizeSlider);
+  // Size slider (0 = single voxel … 8 = wide); the box accepts up to the
+  // engine cap.
+  sizeEntry = voxelEntry(0, 8, voxelPaint.MAX_BRUSH_RADIUS, voxelPaint.getBrushRadius(),
+    v => voxelPaint.setBrushRadius(v));
+  sizeEntry.range.title = 'Brush radius in voxels (0 = a single voxel)';
+  sizeEntry.input.title = `Brush radius in voxels. Type up to ${voxelPaint.MAX_BRUSH_RADIUS} to go past the slider.`;
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'flex items-center gap-2';
+  sizeRow.append(sizeEntry.range, sizeEntry.input);
+  sec.appendChild(sizeRow);
 
   // Shape buttons.
   shapeBtns = {};
@@ -486,21 +567,35 @@ function buildBlockSection(): HTMLElement {
     tag.className = 'w-3 text-zinc-300';
     tag.textContent = label;
     row.appendChild(tag);
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '1';
-    slider.max = '16';
-    slider.step = '1';
-    slider.value = String(voxelPaint.getBlockSize()[axis]);
-    slider.className = 'flex-1 accent-blue-500';
-    slider.title = `Block ${label} size in voxels`;
-    slider.addEventListener('input', () => { voxelPaint.setBlockSize(axis, Number(slider.value)); refreshControls(); });
-    row.appendChild(slider);
-    blockSliders[axis] = slider;
+    // The slider covers 1–16, the box accepts up to the engine cap.
+    const entry = voxelEntry(1, 16, voxelPaint.MAX_BLOCK_SIZE, voxelPaint.getBlockSize()[axis],
+      v => voxelPaint.setBlockSize(axis, v));
+    entry.range.title = `Block ${label} size in voxels`;
+    entry.input.title = `Block ${label} size in voxels. Type up to ${voxelPaint.MAX_BLOCK_SIZE} to go past the slider.`;
+    row.append(entry.range, entry.input);
+    blockEntries[axis] = entry;
     sec.appendChild(row);
   }
 
   return sec;
+}
+
+/** Re-sync a control from paint state. refreshControls also runs on background
+ *  state changes (remesh, undo, API calls), so a box the user is typing in is
+ *  left alone until they commit. */
+function syncEntry(entry: SliderEntry | null | undefined, v: number): void {
+  if (entry && document.activeElement !== entry.input) entry.set(v);
+}
+
+/** Whole-number slider + typed box for a voxel count: the slider covers
+ *  [min, sliderMax], the box accepts up to `hardMax`. Each edit applies the
+ *  value to the paint state, then re-syncs every control from that state. */
+function voxelEntry(min: number, sliderMax: number, hardMax: number, value: number, apply: (v: number) => void): SliderEntry {
+  return createSliderEntry({
+    min, max: sliderMax, step: 1, value, hardMax, integer: true,
+    onChange: v => { apply(v); refreshControls(); },
+    inputClass: 'w-12 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums',
+  });
 }
 
 // Depth control, shared by the add tool (how far the block sinks into the
@@ -524,35 +619,13 @@ function buildDepthSection(): HTMLElement {
   const row = document.createElement('div');
   row.className = 'flex items-center gap-2';
 
-  depthSlider = document.createElement('input');
-  depthSlider.type = 'range';
-  depthSlider.min = '0';
-  depthSlider.max = '16';
-  depthSlider.step = '1';
-  depthSlider.value = String(voxelPaint.getAddDepth());
-  depthSlider.className = 'flex-1 min-w-0 accent-blue-500';
-  depthSlider.title = 'Add: layers the block sinks into the surface. Box: extra layers the fill grows / subtract carves (0 = flush to the clicked face).';
-  depthSlider.addEventListener('input', () => { voxelPaint.setAddDepth(Number(depthSlider!.value)); refreshControls(); });
-  row.appendChild(depthSlider);
-
-  // Typed value: the slider tops out at 16, but the input has no max so you can
+  // Typed value: the slider tops out at 16, but the box has no max so you can
   // sink a block deeper than the slider reaches.
-  depthInput = document.createElement('input');
-  depthInput.type = 'number';
-  depthInput.min = '0';
-  depthInput.step = '1';
-  depthInput.value = String(voxelPaint.getAddDepth());
-  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  depthInput.title = 'Depth in layers. Type a value past the slider’s 16 to go deeper.';
-  const applyDepthInput = (): void => {
-    const raw = parseInt(depthInput!.value, 10);
-    if (!Number.isFinite(raw) || raw < 0) { depthInput!.value = String(voxelPaint.getAddDepth()); return; }
-    voxelPaint.setAddDepth(raw);
-    refreshControls();
-  };
-  depthInput.addEventListener('change', applyDepthInput);
-  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyDepthInput(); });
-  row.appendChild(depthInput);
+  depthEntry = voxelEntry(0, 16, Infinity, voxelPaint.getAddDepth(), v => voxelPaint.setAddDepth(v));
+  depthEntry.range.title = 'Add: layers the block sinks into the surface. Box: extra layers the fill grows / subtract carves (0 = flush to the clicked face).';
+  depthEntry.input.title = 'Depth in layers. Type a value past the slider’s 16 to go deeper.';
+  depthEntry.input.classList.replace('w-12', 'w-14');
+  row.append(depthEntry.range, depthEntry.input);
 
   sec.appendChild(row);
 
@@ -717,7 +790,12 @@ function buildActions(): HTMLElement {
   updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white transition-colors';
   updateBtn.textContent = 'Update code';
   updateBtn.title = 'Keep your code and append these edits as v.set/v.remove statements, then save a version';
-  updateBtn.addEventListener('click', async () => { if (onUpdateCode) await onUpdateCode(); syncActiveState(); });
+  updateBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Update code');
+    const ok = onUpdateCode ? await onUpdateCode() : false;
+    if (ok !== false) note?.(); // only once the edits actually landed in the code
+    syncActiveState();
+  });
   actions.appendChild(updateBtn);
 
   // Secondary: replace the editor with the raw decoded grid (confirms first).
@@ -726,7 +804,12 @@ function buildActions(): HTMLElement {
   saveRawBtn.className = 'w-full px-2 py-1 rounded text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
   saveRawBtn.textContent = 'Save as raw voxel data';
   saveRawBtn.title = 'Replace the code with voxels.decode(...) of the whole grid (warns before overwriting)';
-  saveRawBtn.addEventListener('click', async () => { if (onSaveRaw) await onSaveRaw(); syncActiveState(); });
+  saveRawBtn.addEventListener('click', async () => {
+    const note = captureToolApplied('tool-voxel-paint', 'Save as raw voxel data');
+    const ok = onSaveRaw ? await onSaveRaw() : false;
+    if (ok !== false) note?.();
+    syncActiveState();
+  });
   actions.appendChild(saveRawBtn);
 
   return actions;

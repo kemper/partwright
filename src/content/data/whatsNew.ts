@@ -26,6 +26,211 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 27, 2026',
+    headline: 'Partwright 1.10 — AI plan cards, multi-file import and region clean-up',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.10',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Big meshes no longer stall',
+            body: 'Saving, opening, simplifying and previewing very large imported meshes is much more responsive, and hollow cavities are counted correctly.',
+          },
+          {
+            title: 'Plan mode stays read-only',
+            body: 'Plan mode no longer changes your model, and the AI’s clarifying questions are handled properly.',
+          },
+          {
+            title: 'Imports ask where they go',
+            body: 'When an empty new object is open, importing a file asks whether to use it or create another.',
+          },
+        ],
+      },
+      {
+        label: 'Import & export',
+        items: [
+          {
+            title: 'Import several files at once',
+            body: 'Select multiple STL or 3MF files in one import.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Region clean-up',
+            body: 'Grow, shrink, despeckle, and union/subtract/intersect painted regions.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Question and plan cards',
+            body: 'The AI chat shows its questions and plans as cards you can answer or approve.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 25, 2026',
+    headline: 'Partwright 1.9 — safer model code, 3MF import and part editing',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.9',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Huge meshes stay responsive',
+            body: 'Importing or switching to very large meshes no longer freezes the app, and the first imported object is named after its file.',
+          },
+          {
+            title: 'Memory warnings',
+            body: 'Partwright warns when the geometry engine is using a lot of memory and resets it after heavy runs.',
+          },
+        ],
+      },
+      {
+        label: 'Import & export',
+        items: [
+          {
+            title: '3MF import',
+            body: 'Import 3MF files (Bambu, Orca and Prusa projects or plain 3MF) with colours and palette. Multi-object files can be split into separate objects by object or plate.',
+          },
+          {
+            title: 'Cleaner 3MF palettes',
+            body: 'Near-identical colours are merged in a 3MF export’s filament palette.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Edit parts from the Objects rail',
+            body: 'Select parts in the rail to scope paint, sculpt, deforms and scatter, shift-click to select several, then move, split, isolate, rename or bake them.',
+          },
+          {
+            title: 'Round and smoothWeld keep your parts',
+            body: 'Scoped round/smoothWeld can keep api.label parts, and there is a new api.editPart helper.',
+          },
+          {
+            title: 'Creature kit',
+            body: 'A new api.sdf.creature kit with an example creature, plus a random-character button and scrollable presets in the character creator.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'More for the AI to drive',
+            body: 'The AI can prefill the remaining tool panels, knows what you applied, and has the rest of the Partwright tools. Reviews now see your reference images and your own messages.',
+          },
+          {
+            title: 'Custom endpoints',
+            body: 'Save custom OpenAI-compatible endpoints, with context sizing for local models.',
+          },
+        ],
+      },
+      {
+        label: 'Security',
+        items: [
+          {
+            title: 'Locked-down model code',
+            body: 'Model code runs in a locked-down engine Worker that cannot reach the network or storage, with an opt-in cross-origin iframe sandbox in Settings → Security.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 20, 2026',
+    headline: 'Partwright 1.8.1 — refreshed AI model list',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8.1',
+            body: 'A backward-compatible fix release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Updated model catalog',
+            body: 'The list of available Anthropic, OpenAI and Google models and their pricing has been refreshed, including newer model versions and corrected tiered pricing.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 20, 2026',
+    headline: 'Partwright 1.8 — part detection for imported meshes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.8',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Import',
+        items: [
+          {
+            title: 'Part detection for imported meshes',
+            body: 'Imported STL meshes can now be split into named parts automatically. Pick a detector and preset, refine with pins (select, merge, solo and hover to find a part), lock or focus regions, and accept to turn the parts into labels you can color and edit. Detection is offered right after an STL import and from the Paint panel, and it runs without blocking the editor.',
+          },
+        ],
+      },
+      {
+        label: 'Editor',
+        items: [
+          {
+            title: 'Compact code map by default',
+            body: 'The code pane now shows a compact code map (minimap) by default, making it easier to navigate long models.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'AI chat image drops',
+            body: 'Dropping an image into the AI chat no longer also opens the import chooser.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 13, 2026',
     headline: 'Partwright 1.7.1 — clearer custom-endpoint errors',
     groups: [

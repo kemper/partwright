@@ -33,6 +33,25 @@ When **on**:
 
 Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudges, stop at each `end_turn`.
 
+## Plan mode and question cards (the 📋 pill, `askUser`, `proposePlan`)
+
+`ChatToggles.planFirst` makes each new request a **planning turn**:
+- `buildToolList` returns only `PLAN_MODE_TOOLS`: the read-only inspection tools plus the two card tools.
+- `toggleSuffix` swaps in the plan-mode instructions.
+- The user's text is wrapped in `PLAN_FIRST_PREFIX` (later replies in `PLAN_REFINE_PREFIX`). Both live in `src/ai/userWords.ts`; `planTurn()` strips them for display, export and review.
+
+- **The tool list is enforced, not just offered.** `executeAllWithRetry` (`chatLoop.ts`) refuses any call outside the turn's gated tool list with `unofferedToolMessage`. A model can still emit a tool it saw earlier in the history, which is how follow-up plans used to "just build". Pre-rename names map through `LEGACY_TOOL_ALIASES`.
+- **Card tools end the turn.** `askUser` (questions with option chips; offered in every mode) and `proposePlan` (summary / steps / assumptions; plan mode only) are listed in `TURN_ENDING_TOOLS`.
+  - `executeTool` validates their input and returns `CARD_TOOL_ACK`, which the transcript hides.
+  - The loop then returns, like `finish` but independent of auto-continue.
+  - The panel renders the call as a card (`renderAskUserCard` / `renderPlanCard` in `aiPanel.ts`).
+  - Answers are written into the input and sent through `sendMessage`, so plan-mode wrapping and queueing apply.
+- **Fallback for models without the card tools** (custom/local tiers trim the tool list): `planAwaitsAnswers()` in `src/ai/planReply.ts` decides from the text whether a plan reply is questions or a plan. That only changes the plan bar's wording and which button leads; Build is always offered.
+- **State comes from the transcript.** `derivePendingPlan()` is true when the last typed user message is a plan request or revision. That restores the plan bar after a reload or a take-control.
+  - It's re-derived on history load (not mid-turn) and after each planning turn.
+  - Auto-compaction and `/compact` wait while a plan is pending, because the plan is anchored by history index.
+- **Build** sends `planApprovalText(latestPlanReply(...).text)`, i.e. `[Plan approved — …]` plus the plan Markdown. The build turn runs with `planFirst: false`, so it gets the full tool list. **Discard** deletes the planning messages and restores the request in the input.
+
 ## OpenAI routing (Chat Completions vs Responses API)
 
 `streamTurn` routes per model (gated by `isReasoningModel`):
@@ -41,3 +60,22 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## Context size: Custom endpoints and stale tool payloads
+
+**Custom endpoint context profile** (`src/ai/customContext.ts`). The full hosted payload is about 100k tokens before the conversation starts (PREAMBLE + `ai.md` ≈ 39k, 160+ tool schemas ≈ 60k). That breaks a local model behind llama.cpp / vLLM / LM Studio / Ollama: the request is rejected, or truncated past Ollama's `num_ctx`. Each saved endpoint therefore carries a `context` profile (`SavedEndpoint.context` → `ChatToggles.customContext`):
+
+- **Window**: the user's value, else the value detected on Connect for the selected model. `detectContextWindows` probes llama.cpp `/props` (`n_ctx`), Ollama `/api/ps` (`context_length` of loaded models), LM Studio `/api/v0/models` (`loaded_context_length` only), and `/v1/models` (vLLM `max_model_len`, `context_length`). Advertised maxima are ignored: llama.cpp's `meta.n_ctx_train` and LM Studio's `max_context_length` describe what the model could take, and an on-demand load usually uses much less. The window feeds the context meter and Auto-compact (`contextLimitFor` in `aiPanel.ts`). CLIProxyAPI bridges skip detection. The profile belongs to the endpoint, not the session, so `applySessionAiPreference` never restores it from a session snapshot.
+- **Prompt tier**: Auto / Full / Medium / Slim. Medium and Slim send the local prompts (`buildMediumLocalSystemPrompt` / `buildLocalSystemPrompt`, so docs come on demand through `readDoc`) plus `REDUCED_TOOLS_NOTE`, and a compacted subset of the already-gated tool list (`MEDIUM_CUSTOM_TOOLS` ≈ 9k tokens, `SLIM_CUSTOM_TOOLS` ≈ 2.4k). Descriptions are cut to their first sentence; Slim drops parameter descriptions. Auto maps an unknown window to Full, < `ai.customSlimMaxContext` to Slim, and < `ai.customMediumMaxContext` to Medium.
+
+**Stale tool-payload pruning** (`pruneStaleToolPayloads` in `src/ai/historyElision.ts`, gated by `ai.pruneStaleToolPayloads`). This is the text counterpart of render-image elision, inspired by OpenCode's dynamic-context-pruning plugin. Like elision it rewrites only the request copy. It replaces the following with one-line notes:
+
+- code bodies beyond the newest `ai.keepRecentCodeBodies`. A body is the `code` argument of a tool call, or a `getCode` result.
+  - Editor writes (`setCode` / `runAndSave` / `forkVersion`) and `getCode` results are counted per object. The count resets at every object switch (`changeObject` / `createObject` …).
+  - Side-effect-free runners (`runCode` / `runIsolated` / `runAndAssert` / `runAndExplain`) form a separate list, so a scratch snippet never evicts the real program.
+- a `readDoc` result when the same doc is read again later;
+- large values in a failed call's input once `ai.failedCallInputTurns` newer assistant turns have passed (the error text stays).
+
+Stubbing a body edits an earlier message, which invalidates the cached prefix from there on (provider prompt caching, llama.cpp KV reuse). So bodies pile up to keep + `ai.codeBodyTrimBatch` and are then cut back in one step. This is the same stateless schedule as the stepped image trim (`imagesToElide`).
+
+Tool-call ids repeat across turns (Gemini numbers calls per response, `gemini_call_0`, and WebLLM does the same). A result is therefore paired with its call by position (the assistant message and the user message right after it), and every key includes the message index. Gemini-signed calls (`thoughtSignature`) are never rewritten.

@@ -151,6 +151,19 @@ test.describe('AI slash commands', () => {
     await expect(input).toHaveValue(/renderView/);
   });
 
+  test('/parts prefills the part-detection workflow prompt', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const input = page.locator('#ai-panel').locator('textarea');
+
+    await input.fill('/parts');
+    await input.press('Enter');
+
+    await expect(input).toHaveValue(/Split the mesh I imported into named parts/);
+    await expect(input).toHaveValue(/withinPart/);
+  });
+
   test('an unknown slash command warns and is not sent', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);

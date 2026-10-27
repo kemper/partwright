@@ -1,7 +1,7 @@
 {
   "name": "partwright-cad",
   "private": true,
-  "version": "1.7.1",
+  "version": "1.10.0",
   "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "bin": {
@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "preflight": "npm run typecheck && npm run test:unit && npm run lint:deps && npm run lint:consistency",
     "snap": "node scripts/snap.mjs",
-    "pr:screenshots": "bash scripts/pr-screenshots.sh",
+    "pr:screenshots": "node scripts/pr-screenshots.mjs",
+    "cf:prune-previews": "node scripts/cf-prune-previews.mjs",
     "deploy": "npm audit --audit-level=moderate && tsc && vite build",
     "preview": "vite preview",
     "test": "npm run test:unit && npm run test:e2e",
@@ -28,6 +29,7 @@
     "lint:deps": "madge --circular --extensions ts,tsx src",
     "lint:catalog": "node scripts/lint-catalog.mjs",
     "audit:catalog": "node scripts/catalog-audit.cjs",
+    "bake:character-presets": "node scripts/bake-character-presets.mjs",
     "model:preview": "node scripts/model-preview.mjs",
     "figure:smoke": "node scripts/figure-smoke.mjs",
     "segment:bench": "node scripts/segment-bench.mjs",

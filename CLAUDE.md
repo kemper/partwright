@@ -15,7 +15,8 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
-npm run pr:screenshots -- a.png b.png  # push screenshots to the pr-assets branch + print PR-body links (cloud sessions) — see Visual proof in the PR
+npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
+npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -53,7 +54,7 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. **Any visual change must also carry that screenshot in the PR body** — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change). (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. **Any visual change must also carry that screenshot on the PR** — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change). (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
 3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
 4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 8 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
@@ -171,7 +172,10 @@ count-balanced**: `playwright.config.ts` narrows `testMatch` to the spec files
 seconds in `tests/e2e-timings.json`; unknown/new files get the median weight).
 Playwright's own `--shard` splits by test *count*, which left one shard twice
 as slow as another. Reproduce one CI shard locally with
-`E2E_SHARD=3/8 npx playwright test`. Stale timings only cost balance, never
+`E2E_SHARD=3/8 npx playwright test`. To run specs from several checkouts at once (parallel agent
+worktrees), give each its own dev server with `E2E_PORT=5181 npx playwright test …`;
+the default port 5173 is reused across checkouts, so a second worktree would
+otherwise test the first one's code. Stale timings only cost balance, never
 coverage — refresh them occasionally from a green staging-gate run's
 `e2e-report-*` artifacts: `node scripts/e2e-timings.mjs <reports…>`. Unsharded, `testMatch` is pinned to
 `**/*.spec.ts` so the unit tier's `.test.ts` files stay out of the Playwright run.
@@ -202,6 +206,7 @@ The pattern:
    ```
 
 4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+   **Don't edit files (or let parallel agents/bakes write `public/`, `.claude/worktrees/`) while a spec runs** — Vite full-reloads the shared dev server and the run dies with "Execution context was destroyed". Playwright also wipes `test-results/` each run, so copy screenshots you intend to send elsewhere (e.g. the scratchpad) first.
 5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
 6. **Attach the same proof to the PR** when the change is visual — chat is ephemeral and the reviewer may never see it. See the next section.
 
@@ -209,7 +214,7 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 ### Visual proof in the PR — required for any visual change
 
-**Every PR that changes what a user sees must embed screenshots in its PR body, in addition to posting them in the chat.** "Visual" means anything that alters rendered pixels or visible UI: layout, styling, new/changed panels, modals, buttons, labels or copy, viewport/renderer output, catalog thumbnails or models, theme changes. The PR is the durable record a reviewer (or a later agent) reads; a screenshot that only lived in the chat is lost when the session ends. Pure-logic, test-only, and docs-only changes are exempt.
+**Every PR that changes what a user sees must carry screenshots on the PR, in addition to posting them in the chat.** "Visual" means anything that alters rendered pixels or visible UI: layout, styling, new/changed panels, modals, buttons, labels or copy, viewport/renderer output, catalog thumbnails or models, theme changes. The PR is the durable record a reviewer (or a later agent) reads; a screenshot that only lived in the chat is lost when the session ends. Pure-logic, test-only, and docs-only changes are exempt.
 
 What to capture:
 
@@ -217,23 +222,36 @@ What to capture:
 - **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
 - **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
 
-How to attach — pick the first that works:
+**How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs` + the `Visual proof comment` workflow, `.github/workflows/pr-visual-proof.yml`):
 
-- **`gh --attach` (preferred; gh ≥ 2.99).** `gh pr comment <n> --attach 'shot.png#alt text'` (also on `gh pr create` / `gh pr edit` for the body) uploads the image to GitHub and inlines it. Put the shots in a `## Visual proof` comment or the body. **This does not work in cloud Claude Code sessions** — gh resolves the PR over GraphQL, which the session proxy blocks (HTTP 403) — so there use:
-- **`npm run pr:screenshots -- <png>…` (cloud fallback).** Pushes the images to the shared, never-merged **`pr-assets`** branch (one folder per PR branch) using git plumbing — your checkout, index and branch are untouched, so `main`'s history never gets screenshot commits, squash or not — and prints Markdown links pinned to that commit's SHA. Paste them into the PR body's `## Visual proof` section (`update_pull_request`). Never merge, rebase or delete `pr-assets`; old PR links depend on its commits.
-
-Lay changed-behavior shots out as a before/after table with a one-line caption of what to look at:
-
-```md
-## Visual proof
-| Before (main) | After (this PR) |
-|---|---|
-| ![before](…) | ![after](…) |
+```bash
+npm run pr:screenshots -- test-results/after.png test-results/mobile.png      # images two per row
+npm run pr:screenshots -- --layout proof.md before.png after.png               # your own layout
+npm run pr:screenshots -- --refresh                                            # ask the workflow to post again
 ```
 
-Re-shoot when a later push changes the visuals — the proof must match the current head. "Visual proof is in the PR" is part of the mark-ready gate.
+The script pushes the images to the shared, never-merged **`pr-assets`** branch (`<branch-folder>/<stamp>/…`, URL-safe names, via git plumbing, so your checkout, index and branch are untouched and screenshots never enter `main`'s history). The **workflow** then posts the newest upload as **one "Visual proof" comment** on the PR, authored by `github-actions[bot]` and updated in place on later uploads. It reads the comment back and **fails (red check) unless GitHub renders every image**. The workflow runs when the PR is opened or pushed to, so screenshots uploaded before the PR exists, or before your next push, are picked up automatically. To post right away:
+- **Locally**, the script dispatches the workflow itself.
+- **In a cloud session** nothing can start a workflow: `gh` and the GitHub MCP `actions_run_trigger` tool both get a 403. So **upload before you open the PR or push**; the next push posts the comment. For a re-shoot with no code change to push, or a merged PR, the script prints the Actions → Run workflow inputs for the user to run.
+Use `--pr N` to target a PR explicitly, and `--branch <name>` to act for a branch you don't have checked out.
 
-(kemper/partwright#1021 used an earlier variant that committed screenshots onto the PR branch itself; prefer the helper.)
+- **Never write image links into a PR body or comment yourself.** In cloud sessions the GitHub proxy defangs image links in text a session posts, inconsistently: it wraps some URLs in backticks, so GitHub reads them as relative links back to the PR. That is what broke visual proof in mid-October 2026 PRs (kemper/partwright#1054, #1060, #1062, #1063). Comments the workflow posts don't go through that proxy. If the PR body should mention the screenshots, write a line like "Visual proof: see the comment below."
+- **Before/after layout:** write a small Markdown file that references images by file name (any directory prefix is ignored), and pass it with `--layout`. The workflow pins the links:
+
+  ```md
+  The panel no longer overlaps the toolbar at 375 px.
+
+  | Before (main) | After (this PR) |
+  |---|---|
+  | ![before](before.png) | ![after](after.png) |
+  ```
+
+- **The comment is the bot's, not a review.** When it, or the workflow's check, comes back as a PR activity event, it's an echo of your own upload: no action needed, unless the check is red.
+- **`pr-assets` is append-only.** Never merge, rebase or delete it; PR comments link to its commits.
+- **Two PRs from one branch** share a folder; a push shows the folder's newest upload. To show a specific one, run the workflow by hand with the `upload: "<stamp>"` input, which the script prints.
+- **A branch reused for a new PR** (e.g. a cloud session restarting its branch from `main` after a merge) starts with the earlier PR's screenshots: the workflow posts the branch's newest upload on the new PR too. Upload fresh screenshots for the new PR, or, if it has no visual change, delete the bot's comment after your last push.
+
+Re-shoot when a later push changes the visuals; the proof must match the current head, and a re-upload updates the same comment. "The Visual proof comment shows the current shots and its check is green" is part of the mark-ready gate.
 
 **Scope by change type:**
 
@@ -261,10 +279,14 @@ npm run model:preview -- model.js --png out.png -p turns=6      # override api.p
 npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
 npm run model:preview -- model.js --view "130,35;0,-72;90,7"    # SEVERAL custom angles in one call (';'-separated az,el) — tiled
 npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
+npm run model:preview -- model.js --view 0,0 --match-photo ref.png [--match-crop x,y,w,h] [--match-exclude base]  # TEXT-ONLY likeness score vs a photo (stats.photoMatch)
+npm run model:preview -- model.js --match-photo front.png@0,0 --match-photo back.png@180,0 --match-bands 20  # several views, ONE build (stats.photoMatches[] + mean in stats.photoMatch)
 ```
 
 - **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (every declared label as `{name, color, triangleCount}` — colored AND uncolored; a **0 triangleCount = a buried/aliased label that paints nothing**), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, **0-triangle labels**, tri-count over the ~500k catalog budget, sub-0.4 mm detail, …).
 - **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it — or pass **several `;`-separated pairs** (`--view "az,el;az,el;…"`) to get **multiple custom angles tiled in one call** (e.g. iso + underside + side together). The default PNG path is **stamped unique per run** (old stamps for the same model are cleaned up) so the Read tool's per-path image cache can never serve a stale render — take the path from the JSON's `png` field.
+- **`--view az,el` angle convention.** `el` is degrees above the horizon (negative = from below). `az` places the camera at that azimuth measured from **+X toward +Y** (az 0 = camera on +X looking back at the model, 90 = on +Y). The *named* views are fixed to the builder's **−Y front** (`--views front` = az −90). So for a **figure** (`api.sdf.figure`): an **unplaced** figure (builder frame, facing −Y) shows its face at **az −90**, its back at 90, its left side (+X) at 0; a figure returned through **`F.place(model, rig, { face: '+X' })`** (the usual finish) shows its **face at az 0, back at 180, its LEFT profile at 90 and RIGHT profile at 270 (−90)** — e.g. `--view "0,8;180,8;270,8;-35,20"` = front, back, right profile, right 3/4. On a placed figure the named `--views front` is therefore a *profile*. Same convention as `public/ai/figure.md` → "Previewing a +X-facing figure headlessly".
+- **Photo match — score likeness without looking.** `--match-photo ref.png` renders the model flat from the first `--view` (default front) and adds `stats.photoMatch`: `silhouetteIoU`, `aspect`, a 10-band width profile, per-label `regions[]` (IoU, area/width/height ratio, centroid offset, photo colour) and `worst[]` — plain-words findings like "hair: model 27% narrower across bands 0–1". Same pure scorer as the browser's `partwright.photoMatch` (`src/tools/photoMatch.ts`). Use it for routine passes and look at PNGs only at checkpoints. Extras: `--match-bg #hex --match-bg-tol N` (known backdrop colour), `--match-exclude base` (parts the photo doesn't show), `--match-fit box` (proportions only), `--match-pixel-aspect 0.6` (stretched video frames), `--match-overlay o.png` (photo parts | model parts | diff, for a checkpoint look). **Multi-view:** repeat `--match-photo path@az,el` (or `path@front`/`@back`; a bare path uses the i-th `--view` angle) — one model build scores every view; `stats.photoMatch` becomes the summary (mean `silhouetteIoU`, `minIoU`, interleaved `[label]` `worst[]`) and `stats.photoMatches[]` holds each view; `--match-bg`/`--match-pixel-aspect` take one value for all photos or one per photo; `--match-crop`/`--match-mask` are per photo (one each, in order). **Finer outline:** `--match-bands N` (default 10) + per-band `left`/`right` edge offsets and a capped `outline[]` text diff ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"). **Ambiguous parts:** regions the photo can't separate (same colour + touching, converging photo colours) come back `lowConfidence` with their size findings suppressed — `--match-merge "jersey+ball+socks+shoes"` (repeatable, `;` between groups) or `--match-ignore a,b`. **Busy backdrops:** `--match-bg-mode auto` (default; switches to a GrabCut-lite colour model only when the border is busy or found < 2% subject — a frame-filling tight crop just warns) / `grabcut` / `border`, or a manual silhouette `--match-mask mask.png` (white = subject, same framing as the photo). Precedence: mask > `--match-bg` > `--match-bg-mode`; `--match-bg-tol` alone disables the auto fallback. `lowConfidence` is on by default and suppresses shape findings for touching same-coloured parts — opt out with `photoMatchAmbiguousDeltaE` = 0 (Advanced Settings). Read `warnings` — a silhouette touching the crop edge, a wild aspect mismatch, or a subject < 300 px tall skews the numbers. Parallel runs are safe (the SSR server runs with the file watcher off). Details: `public/ai/reference-images.md#photo-match`; the sculpt loop (feature checklist → keep/revert by score → stop on plateau → `model-critic` at checkpoints) is in `.claude/skills/sculpt/SKILL.md`.
 - **Paint-in-code is verified headlessly.** `api.paint.*` ops (box/slab/cylinder/label) resolve against the mesh with the same pure helpers the browser uses: the PNG shows the colours and `stats.paintOps` lists per-op `{name, kind, triangleCount}` — an op that resolves to **0 triangles warns** (region misses the surface / label doesn't exist). Brush-painted sidecar regions still need the browser.
 - **Voxel `v.sdf` extras:** `voxelRes` (world-units-per-voxel, when all `v.sdf` calls agree), `worldBBox` (bbox × res — the authored world size, no mental ×res), and `sdfLabelCounts` (fills per `colors` label, **including 0** — a zero-fill label warns, surfacing the smoothUnion deepest-region trap instead of silently coloring nothing).
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
@@ -341,7 +363,7 @@ See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format d
 
 #### Cross-provider review
 
-A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes via a single non-tool turn. The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
+A "👁" button in the panel header opens `src/ui/aiReviewModal.tsx`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes — plus (each a checkbox, on by default) the user's attached reference images and the user's **own** chat messages, never the agent's replies — only a compaction summary, labelled as agent-written, stands in for deleted early turns (`userConversation` in `src/ai/autoReview.ts`, budget `ai.reviewConversationMaxChars`) — via a single non-tool turn. The automatic end-of-task review sends the same extras (its "All your messages" setting). The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
 
 #### AI Call Log (per-provider diagnostics)
 
@@ -361,6 +383,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/models` (alias `/settings`) | Open AI settings modal |
 | `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/reconstruct` (alias `/convert`) | Prefill a prompt to reverse-engineer an imported mesh into editable code |
+| `/parts` (alias `/segment`) | Prefill a prompt to split an imported mesh into named parts and paint each one (#1025) |
 | `/help` (alias `/commands`) | List all commands in chat |
 
 The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
@@ -384,11 +407,12 @@ Static site, no backend. Vanilla TypeScript + Vite.
 
 - `src/geometry/engine.ts` — Engine dispatcher + Worker client. Owns the `engines` registry (`manifold-js`, `scad`, `replicad`) and routes `executeCode*` calls to the right engine on the Worker side.
 - `src/geometry/engineWorker.ts` — The Worker. Lazy-inits each non-default engine on first use and dispatches `execute` / `validate` / `exportSTEP` messages.
+- `src/sandbox/` — opt-in **engine sandbox** (default off; Settings → Security): `createEngineWorker()` (`sandboxHost.ts`) is the one seam engine.ts/enginePool.ts get Workers from; when on, the Worker lives in a hidden cross-origin iframe (`sandbox.html` + `sandboxMain.ts`, opaque origin or `VITE_SANDBOX_ORIGIN`) and talks to the app over a direct MessagePort via the `sandboxWorker.ts` shim, so model code can't reach the app's IndexedDB/AI keys or the network. It FAILS CLOSED (never replays work into an app-origin Worker; a status pill offers an explicit per-tab bypass) and captures the mode once per tab. See `docs/engine-sandbox.md`; bench: `node scripts/bench-engine-sandbox.mjs`.
 - `src/geometry/engines/manifoldJs.ts` — manifold-3d sandbox. Exposes `api = { Manifold, CrossSection, Curves, BREP, ... }` to user code. `BREP` is `null` until `ensureBrepLoaded()` runs in the Worker (triggered by `sourceUsesBrep(code)`).
 - `src/geometry/engines/openscad.ts` — OpenSCAD WASM via `openscad-wasm-prebuilt`, lazy-loaded on first SCAD session.
 - `src/geometry/engines/replicad.ts` — BREP/replicad engine for full BREP-language sessions. The returned BREP shape is retained in `lastShape` so `exportSTEP` can grab it. Imported STEP files appear in `api.imports[0]` as `BrepShape` (separate from `api.meshImports` for STL); the pending-imports list lives in `brepRuntime.ts` so it survives across runs.
 - `src/geometry/engines/voxel.ts` — voxel-grid engine (pure JS, no WASM). User code calls `api.voxels()` then `v.set`/`v.fillBox`/`v.sphere`/`v.line` and `return v`. Backs the `voxel` language, VOX export, the image→voxel import, and the `voxelize` surface modifier.
-- `src/geometry/scatter.ts` / `deform.ts` / `sculpt.ts` / `meshSdf.ts` + `meshSdfOps.ts` — the Blender-parity mesh-shaping verbs exposed via `api.meshOps` (+ flat `api.*` aliases): `scatter` (seeded instance-on-surface), `wrapAround`/`bend`/`twist`/`taper`/`alongCurve` (auto-refining `warp` wrappers), `sculpt.grab/inflate/flatten` (falloff nudges), and `round`/`smoothWeld` (voxel-lattice signed-distance morphology + `Manifold.levelSet`, dependency-free — `meshSdf.ts` is the pure grid math: scanline rasterizer, Felzenszwalb EDT, open/close, smin, blur). Docs: `public/ai/deform.md`. Unit tests: `tests/unit/meshSdf.test.ts`, `tests/unit/meshDeform.test.ts`; e2e: `tests/deform-ops.spec.ts`.
+- `src/geometry/scatter.ts` / `deform.ts` / `sculpt.ts` / `meshSdf.ts` + `meshSdfOps.ts` — the Blender-parity mesh-shaping verbs exposed via `api.meshOps` (+ flat `api.*` aliases): `scatter` (seeded instance-on-surface), `wrapAround`/`bend`/`twist`/`taper`/`alongCurve` (auto-refining `warp` wrappers), `sculpt.grab/inflate/flatten` (falloff nudges), and `round`/`offset`/`shell`/`smoothWeld` (voxel-lattice signed-distance morphology + `Manifold.levelSet`, dependency-free — `meshSdf.ts` is the pure grid math: scanline rasterizer, Felzenszwalb EDT, open/close, smin, blur). Docs: `public/ai/deform.md`. Unit tests: `tests/unit/meshSdf.test.ts`, `tests/unit/meshDeform.test.ts`; e2e: `tests/deform-ops.spec.ts`.
 - `src/renderer/materialSpec.ts` — pure-data viewport material presets (`api.material('brass'|…)`); recorded by the manifold-js engine like `api.paint.*`, threaded through the Worker result (`MeshResult.materialSpec`), applied by `viewport.setMaterialOverride` (MeshPhysical for clearcoat/transmission). Shading only — geometry/exports untouched; re-applies on every run since it lives in code.
 - `src/export/animation.ts` — viewport video exports (`partwright.exportTurntable/exportExplode/exportParamSweep`): real-time MediaRecorder capture of the canvas; explode concatenates decomposed component meshes with eased offsets, param sweep precomputes one mesh per step then plays back.
 - `src/geometry/brepRuntime.ts` — Lazy loader + chainable `BrepShape` wrapper. The single source of truth for "is OCCT loaded?" and `getBrepNamespace()` — used by both the manifold-js sandbox (Phase C — `api.BREP.*`) and the replicad engine (Phase A — full BREP session). Also houses `parseStepBlob` and the pending-BREP-imports side-channel used by the STEP import flow.
@@ -451,6 +475,7 @@ Each loader is idempotent and caches the resolved module. Vite splits each one i
 - **Object** — a row in the left-rail **Objects** list: its own code + version history (one 3MF object on export). The UI/API call it an object (`listObjects`, `createObject`, …); the **storage layer still calls it `Part`** (`parts` IndexedDB store, `Version.partId`, the exported `parts` array, `?part=` URL param, `src/ui/partList.ts`, `#btn-add-part`). Those persisted names are deliberately unchanged — don't rename them without a schema migration. The pre-rename `*Part*` console methods / AI tool names survive as deprecated aliases.
 - **Part** — a named region *inside* one object, declared with `api.label(shape, name)` (SCAD `label()`, `BREP.label`). Tracked by manifold-3d provenance, so it survives unions/cuts. Listed under the open object in the rail (`listObjectParts()`); arrange-mode inserts are auto-labelled. Arrange mode's `listArrangeParts`/`selectParts` and `labeledUnion(parts)` already use "part" in this sense — keep them.
 - **Piece** — a connected component (a physically separate solid; `componentCount`). `src/geometry/meshPieces.ts`.
+- **The rail selection is a scope, not a second editor** (#1003). The selected part lives in the leaf `src/ui/partSelection.ts`; existing tools read it rather than the rail growing its own editors. There is ONE paint scope: selecting a part sets the Paint panel's "Paint within" (`src/color/paintScope.ts`), and every interactive tool stamps it on the descriptor as `withinPart` (`withPaintScope`). Script/agent paint passes `withinPart` explicitly per call — a UI selection must never silently narrow an API call. Every add/resolve path clips a scoped region to its part (`clipToPart` in `regions.ts`, `resolveDescriptorTriangles` in `main.ts`). Paint keyed to a part whose label vanishes is kept and surfaced as *unmatched paint*, never dropped. Rail actions (`src/ui/objectPartsPanel.ts`) call the same `window.partwright` methods agents do.
 
 ## Development Guidelines
 
@@ -505,6 +530,8 @@ Always await `txn.oncomplete` before returning from functions that modify Indexe
 
 **Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
 
+**Saved versions store their big typed arrays as Blobs.** `saveVersion`/`putVersion` pack every typed array of at least `renderer.storedArrayBlobMinKB` (import meshes, persisted textures, detected parts) into a Blob marker (`src/storage/storedArrays.ts`), because `put()` structured-clones plain arrays on the main thread (~0.5–1.4 s for a 3.7M-triangle import). The `db.ts` readers (`listVersions`, `getVersionById`, …) unpack them, and records written before this read back unchanged. So read versions through those helpers: a raw `getAll()` on the `versions` store (or a `DeletedObject`'s `versions`) sees the markers.
+
 ### Session Schema Migrations
 
 When adding a field to the persisted session schema, **seven locations must stay in sync** — missing one trips a CI test or silently corrupts imports:
@@ -553,12 +580,9 @@ The only exceptions are values that are truly structural constants (array indice
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
 
-### Editing `src/main.ts` — NUL-byte zones
+### Editing `src/main.ts` — scope traps
 
-`src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
-
-- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
-- **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
+`src/main.ts` is huge and has two scopes: module scope, and a giant init/setup function whose local helpers (`selectPart`, tool-close helpers, …) are invisible outside it. Two sessions lost a rewrite to this: a helper written at module scope couldn't reach setup-local ones, and a `let` declared inside the init function sat in the TDZ when an earlier line called a hoisted function that assigns it. State needed by both sides goes in a module-scope `let` assigned during setup (see `applyAssemblyChrome`). (The old NUL-byte warning is gone: the file has no NUL bytes, so plain `grep`/`Edit` work.)
 
 If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
 
@@ -694,12 +718,12 @@ Guardrails for automated work, learned the hard way:
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
 1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 8 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
-2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works. For a visual change, also confirm the PR body carries the same screenshots — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change).
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works. For a visual change, also post the same screenshots to the PR with `npm run pr:screenshots` — see [Visual proof in the PR](#visual-proof-in-the-pr--required-for-any-visual-change).
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
 5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
 6. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
-7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green, the review pass is clean, and (for a visual change) the PR body's `## Visual proof` matches the current head: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
+7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green, the review pass is clean, and (for a visual change) the PR's Visual proof comment (`npm run pr:screenshots`) matches the current head: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
 
 ## Common Errors
 

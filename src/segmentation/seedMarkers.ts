@@ -18,8 +18,10 @@ import type { SegSeed } from './types';
 export interface SeedMarkers {
   /** Draw pins. Parts in `emphasize` (hovered / selected) get bigger pins
    *  and a name tag; otherwise only parts with a placed (non-auto) pin are
-   *  tagged, so dozens of automatic pins don't bury the model in labels. */
-  update(seeds: SegSeed[], colorFor: (label: string) => string, emphasize?: ReadonlySet<string>): void;
+   *  tagged, so dozens of automatic pins don't bury the model in labels.
+   *  With `showAuto: false`, automatic pins are not drawn at all except on
+   *  emphasised parts (seed indices stay those of `seeds`). */
+  update(seeds: SegSeed[], colorFor: (label: string) => string, emphasize?: ReadonlySet<string>, opts?: { showAuto?: boolean }): void;
   /** Move one marker without rebuilding (live drag feedback). */
   moveMarker(index: number, point: [number, number, number]): void;
   setVisible(visible: boolean): void;
@@ -35,9 +37,10 @@ export function createSeedMarkers(): SeedMarkers {
   group.renderOrder = 10;
   getScene().add(group);
   let visible = true;
-  const dots: THREE.Mesh[] = [];
+  /** Dot per seed index (undefined = that pin is not drawn). */
+  const dots: (THREE.Mesh | undefined)[] = [];
   /** Name tag per seed index (only the first seed of each name has one). */
-  const tags: (THREE.Sprite | null)[] = [];
+  const tags: (THREE.Sprite | null | undefined)[] = [];
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
 
@@ -49,7 +52,7 @@ export function createSeedMarkers(): SeedMarkers {
 
   function clear(): void {
     // Each dot carries a rim child mesh: dispose the whole subtree.
-    for (const d of dots) d.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+    for (const d of dots) d?.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
     for (const t of tags) if (t) { t.material.map?.dispose(); t.material.dispose(); }
     dots.length = 0;
     tags.length = 0;
@@ -79,7 +82,8 @@ export function createSeedMarkers(): SeedMarkers {
   }
 
   const api: SeedMarkers = {
-    update(seeds, colorFor, emphasize = new Set<string>()) {
+    update(seeds, colorFor, emphasize = new Set<string>(), opts = {}) {
+      const showAuto = opts.showAuto ?? true;
       clear();
       const diag = diagonal();
       const { seedDotFraction, seedTagScreenFraction } = getConfig().segmentation;
@@ -90,8 +94,9 @@ export function createSeedMarkers(): SeedMarkers {
       const placed = new Set(seeds.filter((s) => !s.auto).map((s) => s.label));
       const tagged = new Set<string>();
       seeds.forEach((s, i) => {
-        const color = colorFor(s.label);
         const big = emphasize.has(s.label);
+        if (s.auto && !showAuto && !big) return;
+        const color = colorFor(s.label);
         // Automatic pins: smaller and see-through; placed pins: solid.
         const radius = r * (s.auto ? 0.7 : 1) * (big ? 1.5 : 1);
         const dot = new THREE.Mesh(
@@ -106,11 +111,11 @@ export function createSeedMarkers(): SeedMarkers {
           new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide, transparent: !!s.auto, opacity: s.auto ? 0.6 : 1 }),
         );
         dot.add(rim);
-        dots.push(dot);
+        dots[i] = dot;
         group.add(dot);
         const wantsTag = big || placed.has(s.label);
         // One tag per part, on a placed pin when it has one.
-        if (!wantsTag || tagged.has(s.label) || (s.auto && placed.has(s.label))) { tags.push(null); return; }
+        if (!wantsTag || tagged.has(s.label) || (s.auto && placed.has(s.label))) { tags[i] = null; return; }
         tagged.add(s.label);
         const { tex, aspect } = tagTexture(s.label, color);
         const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, sizeAttenuation: false }));
@@ -118,7 +123,7 @@ export function createSeedMarkers(): SeedMarkers {
         tag.center.set(-0.15, -0.3);
         tag.position.set(s.point[0], s.point[1], s.point[2]);
         tag.renderOrder = 11;
-        tags.push(tag);
+        tags[i] = tag;
         group.add(tag);
       });
       group.visible = visible;
@@ -138,12 +143,13 @@ export function createSeedMarkers(): SeedMarkers {
     },
     isVisible() { return visible; },
     hitTest(evt) {
-      if (!visible || dots.length === 0) return -1;
+      const drawn = dots.filter((d): d is THREE.Mesh => !!d);
+      if (!visible || drawn.length === 0) return -1;
       const rect = getCanvas().getBoundingClientRect();
       ndc.set(((evt.clientX - rect.left) / rect.width) * 2 - 1, -((evt.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(ndc, getCamera());
       // Generous pick: test the rim (1.25× the dot) so a fingertip finds it.
-      const hit = raycaster.intersectObjects(dots, true)[0];
+      const hit = raycaster.intersectObjects(drawn, true)[0];
       if (!hit) return -1;
       let o: THREE.Object3D | null = hit.object;
       while (o && o.userData.seedIndex === undefined) o = o.parent;

@@ -23,6 +23,7 @@ Partwright is a browser-based parametric CAD tool with four modeling engines: **
 - [Printability](#printability)
 - [Visual verification](#visual-verification)
 - [Spending mode](#spending-mode)
+- [Handing a tool to the user](#handing-a-tool-to-the-user)
 
 ## Before you start
 
@@ -110,23 +111,26 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Dial in printer fit tolerances | `api.fasteners.clearanceCoupon({size:"M3"})` + `api.fasteners.clearance(fit)` -> `/ai/fasteners.md` | (build manually) | (use manifold-js fasteners) |
 | Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
 | Helical thread / auger / spiral flute | Real ISO threads: `api.threads.rod/bolt/nut(...)` -> `/ai/threads.md`. Custom augers/flutes: `cs.extrude(h, nDiv, 360*turns, scaleTop)` -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
-| Organic figure / creature / body (figurine, character, person, animal, bust) | **`api.sdf` — capsule limbs + ellipsoid masses joined with `smoothUnion`, NOT a union of constant-radius primitives** -> `/ai/sdf.md` | (limited — use manifold-js) | (mesh-only; not in BREP) |
+| Organic figure / creature / body (figurine, character, person, animal, bust) | **`api.sdf` — capsule limbs + ellipsoid masses joined with `smoothUnion`, NOT a union of constant-radius primitives** -> `/ai/sdf.md`; humanoid → `api.sdf.figure` (`/ai/figure.md`); creature / mascot → `api.sdf.creature` (`/ai/creature.md`) | (limited — use manifold-js) | (mesh-only; not in BREP) |
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
 | Organic surface texture (rock / bark / coral / terrain) | `node.displace(amount, api.sdf.noise({...}))` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Fractal plant / coral / branching structure | `api.sdf.lsystem({ axiom, rules, iterations })` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Hollow ANY finished solid (import, sculpt, boolean result) to a uniform wall — mask, helmet, lamp, vase | `api.shell(m, {thickness, side?})` (keeps the outer surface exact; cut an opening with a boolean) -> `/ai/deform.md` | (not available) | `BREP.shell(shape, -t, { topZ: true })` (negative = inward; needs an open face) -> `/ai/replicad.md` |
+| Grow / shrink ANY solid uniformly (3D offset) — clearance, fit allowance, thicken | `api.offset(m, {distance})` (> 0 grows, < 0 shrinks; min distance ≈ 1.5 × model span ÷ `resolution`) -> `/ai/deform.md` | `minkowski()` with a sphere (slow) | (not available) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
-| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius})` -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
-| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
+| Round EVERY edge of a finished solid (boolean result, import) | `api.round(m, {radius, keepLabels?, select?})` (select = round only near those faces, rest stays exact) -> `/ai/deform.md` | BOSL2 `cuboid(rounding=)` at build time | true fillets via BREP |
+| Smooth blend between two PLAIN meshes (not SDF trees) | `api.smoothWeld(a, b, {radius, keepLabels?, select?})` -> `/ai/deform.md` | (not available) | (use BREP fillets) |
 | Text / relief wrapped around a cylinder (mug, ring, vase) | `api.wrapAround(flatShape, {radius})` -> `/ai/deform.md` | (not available) | (mesh-only) |
 | Bend / twist / taper an existing mesh | `api.bend/twist/taper(shape, {…})` -> `/ai/deform.md` | `linear_extrude(twist=, scale=)` at build time | (mesh-only) |
 | Strip / rail following a 3D path | `api.alongCurve(shape, points)` -> `/ai/deform.md` (or `Curves.sweep` to build from a profile) | BOSL2 `path_sweep()` | (use manifold-js) |
 | Spikes / studs / scales / rivets scattered over a surface | `api.scatter(target, instance, {count, seed})` -> `/ai/deform.md` | (build manually) | (mesh-only) |
 | Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
+| Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.editPart(m, 'head', {scale: 1.3})` (rigid, cut at the seam; a function swaps/deletes the part); `api.sculpt.transform(m, {select: {label}, scale, blend})` (soft warp); `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
 | Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
@@ -153,6 +157,8 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
 | `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells, noise displacement (`displace`/`noise` for rock/bark/coral texture), and L-system growth (`lsystem` for fractal plants/corals). **Also the default for any organic figure/creature/body** — figurines, characters, people, animals, busts: capsule limbs blended into ellipsoid masses with `smoothUnion`. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", "gyroid", "organic/bumpy texture", "fractal/branching plant", or "figurine/character/creature/body/sculpt" lives here. |
+| `figure` | Before modeling a **person / humanoid character / hero / bust** — the `api.sdf.figure` posable rig + parts, and the no-code `buildCharacter(spec)` shortcut. |
+| `creature` | Before modeling a **creature, monster, mascot or toy animal** the humanoid rig can't express (big eyes, horns, bat ears, claws, a tail) — the `api.sdf.creature` kit: perfectly round lidded eyes, a puffy cat muzzle that pushes out of the face, lobed veined bat ears, clawed feet, hands, surface-seated creases, one-call `build`, the likeness workflow, and a complete worked example. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
@@ -171,13 +177,14 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
 | `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
-| `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten` (declarative brush nudges), `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
+| `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.shell` (hollow any solid to a uniform wall — masks, helmets) and `api.offset` (grow/shrink any solid uniformly), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten/transform` (declarative brush nudges + soft-selection transforms), `select:` selectors (`{label}` / `{region}` / `{where: {facing}}`) that confine any of these to one part, `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
 | `spending` | To understand the user's compute budget and what each mode enforces or advises. |
 | `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
 | `segmentation` | Before painting an IMPORTED mesh (STL figurine, scan) — split it into named parts first with `detectParts` (seedless auto patches / seeded crease watershed / separate pieces), check with `renderParts` (numbered set-of-marks render), fix with `editParts`, then `acceptParts` so every part becomes a real label (`api.importWithParts`) you can paint by. |
+| `ui-control` | When the user wants to tweak something interactively or says "show me" — open the tool prefilled for them (`openTool`) instead of applying it; per-tool prefill keys, and reading what's on screen (`getUiState`, `getPaintState`, `getUndoState`). |
 | `reconstruction` | Before converting an imported mesh into editable code (`convertToCode` / `evalAgainstImport` / the /reconstruct workflow) — how to read the chamfer/hausdorff metrics, the noise floor, and the measured refinement tactics. |
 
 ## Common agent mistakes
@@ -206,8 +213,11 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 
 **Conventions:**
 
-- **Methods that return a value** (e.g. `runAndSave`, `loadVersion`, `query`, `importSession`, `setReferenceGeometry`, notes/session CRUD) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`.
-- **Void setters** (`setCode`, `setClipZ`, `setImages`, `setView`, `setUnits`, `measureAt`, `measureBetween`, `probeRay`, `measurePoints`, `renameSession`) **throw** a `ValidationError`. Wrap calls in a try/catch if you want to handle failure rather than crash the console.
+- **Methods that return a value** (e.g. `run`, `runAndSave`, `createSession`, `saveVersion`, `loadVersion`, `navigateVersion`, `query`, `renderView` / `renderViews` / `renderSection`, `probePixel`, `pointInside`, `healCurrent`, every `export*` / `export*Data` method (incl. the multi-object `export*Objects` / `export*ObjectsData` and their `*Parts` aliases), `importSession`, `exportSession`, `setReferenceGeometry`, `sliceAtZVisual`, `measureAt`, `measurePoints`, `probeRay`, the arrange-selection ops, image / attachment / annotation adds and removes, notes/session CRUD incl. `renameSession` / `deleteSession`) return `{ error: "..." }` on a validation failure. The error string names the exact parameter and expected type, e.g. `"setImages(images)[0].src must be a non-empty string, got "". See /ai.md#argument-validation"`. Check `result?.error` before using the value. Don't use `'error' in result`: it throws a TypeError when the success value is a number or `null`, as it is for `measurePoints`, `measureAt`, `probeRay`, `analyzeProfile` and `exportSession`.
+- **Number-returning methods** (`measurePoints`, `measureBetween`): check `typeof r === 'number'` before comparing. `{error} < 0.4` is silently `false`, not an exception.
+- **The one value-returning exception is `help(method)`**, which throws a `ValidationError` when `method` isn't a non-empty string (it is a console aid, not an agent workflow).
+- **Exception shapes:** `exportSTEP` reports a bad argument the way it reports every failure, as `{ ok: false, error }`. Boolean- and `null`-returning reads (`pointInside`, `removeImage`) return `{ error }` too, so test `result?.error` before treating the value as a boolean.
+- **Setters** throw a `ValidationError`. That covers void setters (`setCode`, `setImages`, `setView`, `setUnits`, `measureMode`, `setActiveLanguage`) and the state-returning toggles (`setClipZ` / `toggleClip`, `setGridVisible`, `setStudioLighting`, `setDimensionsVisible`, `setOrbitLock`, `setEdgesVisible`, `setSpendingMode`, `setAttachments`, the `setAnnotation*` setters). Wrap calls in a try/catch if you want to handle failure rather than crash the console.
 - **No coercion.** `setClipZ("5")` throws -- strings are not auto-converted to numbers. Pass the right type.
 - **Unknown object keys are rejected.** `runAndAssert(code, { widthToDeep: [1,2] })` errors on the typo; it does not silently ignore it. Allowed keys are listed on each assertion/options interface.
 - **Empty strings are rejected** by default for required string params (names, IDs, note text, code). Optional strings can be omitted but, if provided, must still be non-empty unless noted otherwise.
@@ -215,12 +225,12 @@ Every `window.partwright` method validates its arguments at runtime. If you pass
 **Examples of what gets rejected:**
 
 ```js
-partwright.navigateVersion('backward')            // ValidationError: direction must be one of: "prev" | "next"
+await partwright.navigateVersion('backward')      // returns { error: "... direction must be one of: \"prev\" | \"next\" ..." }
 partwright.setView('sketch')                      // ValidationError: tab must be one of: ...
-partwright.measureAt([5])                         // ValidationError: measureAt(xy) must have exactly 2 elements
-partwright.probeRay([0,0,0], [0, '1', 0])         // ValidationError: probeRay(direction)[1] must be a finite number
+partwright.measureAt([5])                         // returns { error: "measureAt(xy) must have exactly 2 elements ..." }
+partwright.probeRay([0,0,0], [0, '1', 0])         // returns { error: "probeRay(direction)[1] must be a finite number ..." }
 partwright.setImages([{ src: '' }])  // ValidationError: setImages(images)[0].src must be a non-empty string, got ""
-partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
+await partwright.setReferenceGeometry(code, { opacity: 2 })  // returns { success: false, error: "... .opacity must be <= 1 ..." }
 await partwright.runAndAssert(code, { minVolume: '1000' })  // returns { passed: false, failures: ["... .minVolume must be a finite number ..."] }
 await partwright.runAndSave(code, 'v1', { boundsRatio: { widthToDeep: [1,2] } })  // typo caught: not a recognized field
 await partwright.query({ sliceAt: 5 })            // returns { error: "... .sliceAt must be an array ..." }
@@ -235,13 +245,13 @@ When you see a validation error, fix the call -- don't pattern-match around it.
 Call `partwright.help()` for a full method list, or `partwright.help('methodName')` for a specific method.
 
 ```js
-partwright.run(code?)          // Run code, update views, return geometry stats
+partwright.run(code?)          // Run code, update views, return geometry stats (+ `logs`: the model code's console output)
 partwright.getGeometryData()   // Current stats (same as #geometry-data)
 partwright.validate(code)      // Check code without rendering -> {valid, error?}
 partwright.getCode()           // Read editor contents
 partwright.setCode(code)       // Set editor contents (no auto-run)
 partwright.getParams()         // Customizer schema + current values -> {schema, values}
-await partwright.setParams({k:v}) // Tweak declared api.params knobs and re-run -> {geometry, params}
+await partwright.setParams({k:v}) // Tweak declared api.params knobs and re-run -> {geometry, params, logs?}
 partwright.sliceAtZ(z)         // Cross-section -> {polygons, svg, boundingBox, area}
 partwright.getBoundingBox()    // -> {min:[x,y,z], max:[x,y,z]}
 partwright.getModule()         // Raw manifold-3d WASM module
@@ -253,6 +263,9 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
+await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the (sandboxed) engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> Promise<{success, boundingBox?, volume?, error?}>
+partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
+partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 
 // Viewport controls
 partwright.setGridVisible(on?)       // Show/hide grid plane (omit to toggle) -> boolean
@@ -264,10 +277,15 @@ partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
 partwright.isOrbitLocked()           // Whether camera orbit is locked
 partwright.resetView()               // Reset camera to the default framing of the current model
+partwright.setCamera({azimuth?, elevation?, distance?, target?}) // Orbit the LIVE camera (what the user sees) -- same convention as getViewState().camera: az 0=front(-Y) 90=right, el 0=horizon 90=top <0=below; omitted fields keep current -> {camera}. renderView() is for YOUR offscreen checks; setCamera is for showing the user
+partwright.frameObjectPart(name | {piece} | {unlabeled:true}) // Aim the live camera at one part/piece of the current object, keeping the view direction -> {ok, triangles, bbox, camera}
+partwright.setEdgesVisible(on?)      // Show/hide the mesh-edges (wireframe) overlay -- the viewport "Edges" button (omit to toggle) -> boolean
+partwright.areEdgesVisible()         // Whether the mesh-edges overlay is showing
 partwright.setCodeView('mini'|'full'|'hidden') // Code pane: compact code map (default), full editor, or hidden; getViewState().codeView reads it
 partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
+partwright.formatCode()              // Reformat the editor code (no run, no save) -> {changed, code}
 partwright.isAutoRunEnabled()        // Whether auto-run is active
 
 // Assembly view (all objects in a grid) -- see #assembly-view
@@ -303,7 +321,9 @@ await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer ex
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
+partwright.listExportColors({mergeColors?, maxColors?})  // colours (= slicer filaments) a 3MF carries + the merge those options apply. See /ai/file-io.md#3mf-filament-colours
 partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
+await partwright.exportSTEP(filename?) // Download the last BREP shape as STEP (replicad-language sessions only) -> {ok, filename, sizeBytes} or {ok:false, error}. See /ai/replicad.md
 // Animation videos (record the live viewport -> .webm download; tab must stay visible). See /ai/deform.md.
 await partwright.exportTurntable({seconds?, revolutions?})        // camera orbits the model -> {ok, filename}
 await partwright.exportExplode({seconds?, spread?})               // components fly apart + reassemble (multi-component models)
@@ -312,7 +332,7 @@ await partwright.exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
-await partwright.export3MFData()
+await partwright.export3MFData(filename?, {mergeColors?, maxColors?, colorMap?})  // 3MF options also on export3MF / export3MFObjects*
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 // Multi-object: bundle several of the session's objects into one file (default: all objects). See /ai/file-io.md.
 await partwright.export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one object per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
@@ -322,30 +342,67 @@ await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named no
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) // -> the ExportedSession object itself (default: current; thumbnails off by default), null if none, or {error}
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
+await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
-await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
+await partwright.importMeshData(base64, filename, {sessionName?, target?, adoptPalette?, split?, objects?}) // Import STL (binary/ASCII) or 3MF bytes (bare base64 or data: URL) -> {sessionId, target, object?, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing). target: 'new-session' (default) | 'new-object' | 'current-object' (STL only; 3MF is new-session) -- see /ai/file-io.md. 3MF (Bambu/Orca/Prusa/plain) also brings its colours as paint regions + its filament palette (adoptPalette:false keeps yours). split: 'object' | 'plate' (3MF) or 'piece' (STL) makes one object each (adds importedObjects) -- see /ai/file-io.md#multi-object-files--one-object-per-3mf-object-plate-or-stl-piece.
+await partwright.importMeshFiles([{filename, base64}, …], {target?, mode?, layout?, convert?, models?, skipExisting?}) // Import several STL / 3MF files at once: mode 'object' (one object per model, default) | 'file' | 'none' (one object, models as parts); layout 'keep' | 'center' | 'grid'; convert: true rebuilds each as code; models already in the session are skipped -> {importedObjects, models, converted, notes} or {error} -- see /ai/file-io.md#several-files-at-once--importmeshfiles
+await partwright.inspectMeshData(base64, filename)  // Look inside STL/3MF bytes without importing -> 3MF {objects:[{index,name,triangleCount,plate?,parts?}], plates, palette, splitModes} | STL {pieces, splitModes}
+await partwright.splitImportIntoObjects()           // Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]}
+await partwright.importVoxData(base64, filename, {sessionName?, target?})  // MagicaVoxel .vox bytes -> voxel code -> {sessionId, target, object, voxelCount}
+await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', sessionName?, target?})  // STEP bytes: exact BREP object (default) or tessellated mesh
+await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}; geometryOnly:true refuses code-bearing sources
+// Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
+await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
+await partwright.importSvgAsRelief({svgText, options?, quantized?, preprocess?})  // each <path fill> = one crisp colour region -> {sessionId} or {error}
+partwright.getReliefSwapGuide()                         // single-nozzle filament-swap guide for the current relief, or {error}
+partwright.setReliefPreviewMode('flat'|'ams'|'single-nozzle') // relief optical preview (relief sessions only) -> {ok} or {error}
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
 partwright.clearRecentExports()
 
+// Mesh quality, app settings, diagnostics -- see /ai/iteration-workflow.md#mesh-quality--curvature-simplify-enhance
+partwright.getCurvatureQuality()         // Quality panel curvature (default circle segments for this tab) -> {quality, segments, customSegments, language, presets, defaultSegments}
+await partwright.setCurvatureQuality({quality?: 'low'|'medium'|'high'|'highest'|'ultra'|'custom', segments?})  // set + re-run -> {quality, segments, geometry}
+await partwright.simplifyModel({mode?: 'simplify'|'enhance', targetTris? | targetEdge?, amount?, preserveColor?})  // Quality panel Simplify/Enhance on the MESH; saves a version (a baked mesh, not code) -> {ok, mode, before, after, version, message, warnings?}
+partwright.getAppConfig()                // Advanced Settings: {section: {key: {value, default, min?, max?, integer?, modified?}}}
+partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
+await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
+partwright.getWorkerHealth()             // Worker health panel: per-worker liveness/restarts + recent geometry runs (durationMs main-thread round trip vs workerMs compute) -> {workers, runs}
+partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested (this tab), active, state: idle|loading|ready|unavailable|bypassed, pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes}
+partwright.setEngineSandboxMode('off'|'opaque'|'origin')  // Run model code in a hidden cross-origin iframe (no access to app storage/keys, network blocked). This browser; RELOAD to apply -> {mode, previous, note}
+partwright.runWithoutEngineSandbox()     // Only when getEngineSandboxStatus().state === 'unavailable' (fail-closed: model code blocked): run model code WITHOUT the sandbox for this tab -> {ok, note} or {error}
+
 // Isolated execution -- test code without changing editor/viewport state
-await partwright.runIsolated(code, view?)  // -> {geometryData, thumbnail}. Default thumbnail is 4-iso composite; pass `view` ({elevation, azimuth, ortho, size}) for a single-angle preview.
-await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats}
-await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (debug disconnects)
+await partwright.runIsolated(code, view?)  // -> {geometryData, thumbnail, logs?}. Default thumbnail is 4-iso composite; pass `view` ({elevation, azimuth, ortho, size}) for a single-angle preview.
+await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats, logs?}
+await partwright.runAndExplain(code)     // -> {stats, components[], hints[], logs?} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
 partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted)
 await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
-await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 135°, el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
+await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?, bg?, bgTolerance?, bgMode?, mask?, exclude?, merge?, ignore?, bands?, fit?, pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, …}]})  // TEXT-ONLY likeness score vs a reference photo (attachment id/label or data URL) -> {silhouetteIoU, aspect, bands[] (+ left/right edge offsets), outline[], regions[], worst[], warnings[]}; views[] scores several angles at once (mean silhouetteIoU). Use instead of renders for routine likeness passes — see /ai/reference-images.md#photo-match
+await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 45° — the +X/−Y corner — el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
-partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
+partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
 partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
+partwright.checkContainment()            // -> [ContainmentWarning] for components fully inside another (invisible geometry); [] = none, null = no geometry
+partwright.analyzeProfile(sampleCount?)  // Z-profile feature summary of the current model -> ZProfile, null or {error}. See /ai/visual-verification.md#stat-based-verification
+await partwright.analyzeProfileIsolated(code, sampleCount?) // Same for code run in isolation -> {profile, stats} or {error}
+partwright.measureAt([x,y])              // Ray down Z at XY -> {hits, thickness, topZ, bottomZ}, null (no geometry) or {error}
+partwright.probeRay(origin, direction, {allHits?}) // Any ray -> {hits:[...]} nearest first (front faces only unless allHits), null or {error}
+partwright.measurePoints([x,y,z], [x,y,z]) // Distance -> number or {error} (measureBetween is an alias). Check typeof r === 'number' before comparing
+partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-click measure tool for the user (locks orbit) / -> {active, point1, point2, distance}
+// Printing -- see /ai/printing.md
+partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
+partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
+partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -366,7 +423,7 @@ partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
 partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
 partwright.paintNear({point, radius, color, name?})                // sphere selector (curved surfaces)
-partwright.listRegions() / clearColors() / undoLastPaint() / redoLastPaint()
+partwright.listRegions() / clearColors({kind?: 'all'|'image'}?) / undoClearColors() / undoLastPaint() / redoLastPaint()
 
 // Annotations — see readDoc("annotations")
 partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotations()
@@ -377,16 +434,21 @@ partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotati
 // create/open/list/clear console methods below are for the browser console and
 // the external Claude Code agent only.
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
-await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
+await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?, logs?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
-await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
+await partwright.buildCharacter(spec, {save?, label?}) // No-code figure: generate a posed, painted figure from a spec (body {proportions:'realistic'|'chibi'|'funko', headScale, headSink, mittens} / pose {hold:{kind:'ball', cupL, cupR, handScale}} / face {layout, eyeSize, eyeStyle:'bead', browThickness, jaw, cheek, mouth} / hair {style:'anime'|'shag'|'captured'|'mop'|…} / clothing {top {trim:{collar, cuffs}, print:[{text, where:'chest'|'back'}]}, pants {length:'shorts'}, socks {stripes}, feet {style:'toy', cleats}} / colors) -> {code, ...runAndSave result}, or {error} listing every invalid field. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
+partwright.getCharacterSpec()                         // Read the spec from the current code's // @character header (v1 migrates to v2) -> {spec, version} | {error}. Tweak + buildCharacter(spec) again.
+partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
+await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
+await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
+await partwright.navigateVersion('prev'|'next') // Step one version (switches to its language) -> {id, index, label}, null at either end, or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
 await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
-await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
+await partwright.diffVersions({index} | {id}, {index} | {id}, {geometry?, tolerance?, render?}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab. geometry: true re-runs both (with their saved api.surface textures) and adds the edit-locality check {maxDisplacement, meanDisplacement, changedFraction, changedBox, parts[{name, maxDisplacement, changedFraction, changed}], changedParts, unchangedParts}; render: true (or {azimuth, elevation, size}) adds `heatmap`, a PNG of b coloured by how far it moved. The chat tool takes 1-based indices {a, b} and returns a compact `codeDiff` line diff instead of both sources (includeCode: true for both)
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
@@ -394,7 +456,12 @@ partwright.publish(platform?)            // Assisted publish to Printables/Maker
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
+await partwright.listCatalog({query?, tag?, limit?}) // Built-in example catalog (read-only) -> {total, matched, count, entries: [{id, name, description, tags, language, group?, printTested?}]}. Point the user at an entry by name; they open it from the Catalog page (the chat tool of the same name never opens one)
 await partwright.openSession(id)         // Open existing session
+partwright.getSessionState()             // -> {session:{id,name}|null, currentPart, parts:[{id,name,order,isCurrent}], currentVersion:{index,label}|null, versionCount} (lightweight; parts = objects)
+await partwright.renameSession(newName, id?) // Rename the current (or given) session -> {success} or {error}
+await partwright.closeSession()          // Close the current session (an empty one is discarded)
+await partwright.deleteSession(id)       // Permanently delete one session + all its versions (irreversible) -> {success} or {error}
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
 // Objects -- multiple independent objects within one session (the left-rail
@@ -412,22 +479,46 @@ await partwright.createObject(name?)     // New empty object + switch to it -> {
 await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
-await partwright.deleteObject(name|id|index)   // Delete an object + its versions (refuses the last one)
+await partwright.deleteObject(name|id|index)   // Delete an object + its versions -- moved to Recover deleted, not erased (the last one resets to a blank "Object 1")
+await partwright.listDeleted()           // What can be undeleted: {objects:[{id, name, group?, versionCount, deletedAt, expiresAt}], parts:[{object:{id,name}, kind:'part'|'piece', name? | point+label?, call}]} -- see #recover-deleted
+await partwright.restoreObject(id|name)  // Undelete an object with all its versions -> {restored, droppedBlank?}
+await partwright.purgeDeletedObjects(ids|names?)  // Permanently delete binned objects (no arg empties the bin) -> {purged}
+partwright.showRecoverDeleted()          // Open the Recover deleted modal for the user
+await partwright.mergeObjects([a, b, ...], {mode?: 'new'|'replace'})  // Combine 2+ objects into ONE new object (the rail's Merge; becomes current). 'new' (default) keeps the originals, 'replace' moves them to Recover deleted. Render-only objects are skipped -> {merged:{id,name}, mode, replaced, skipped, warnings?}
+await partwright.reorderObjects([nameOrId | {id|name, group?}, ...])  // Reorder the object list (first = top), optionally regrouping; unlisted objects keep their order at the end -> {order}
 // Part detection on imported meshes (STL figurines/scans) -- full workflow in /ai/segmentation.md
-partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops
-await partwright.detectParts({algorithm:'auto-merge'|'crease-watershed'|'pieces', seeds?:[{label, point:[x,y,z]}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
+partwright.listPartDetectors()           // detectors + params/defaults/bestFor + editParts ops + labelPresets (the panel's label chips: names + default colours)
+await partwright.detectParts({algorithm:'pieces'|'crease-watershed'|'random-walker'|'auto-merge'|'thickness'|'planar-groups', seeds?:[{label, point:[x,y,z], color?:'#rrggbb'}], params?, featureOptions?, importIndex?}) // DRAFT parts + overlay -> {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor,locked?}], quality, unassigned, focus?, edgeSmoothing}
 await partwright.autoDetectParts({importIndex?}) // seedless first pass (what an STL import runs): first automatic detector that splits it into 2+ parts REPLACES the draft {proposed:true, proposedBy, parts…} | {proposed:false, reason} (draft untouched; one solid: seed it)
-partwright.renderParts({views?, size?, numbered?})  // numbered colour render of the draft -> {image, legend:[{id,name,visibleIn}], hiddenParts?}
-await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts
-await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched
+partwright.renderParts({views?:[name|{azimuth,elevation}], azimuth?, elevation?, focus?, size?, numbered?})  // numbered colour render of the draft; custom angles; focus zooms onto one part -> {image, views, legend:[{id,name,visibleIn}], hiddenParts?}
+partwright.previewSeeds(seeds?, {importIndex?})  // check seeds before detecting: landing triangle, surface point, distance, miss flag, draft part -> {seeds, misses}
+await partwright.editParts({ops:[{op:'merge'|'rename'|'setColor'|'delete'|'reassign'|'brush'|'split'|'absorbSmall'|'smoothBoundaries'|'addSeed'|'removeSeed'|'moveSeed'|'seedsFromParts'|'lock'|'focus'|'setEdgeSmoothing'|'reorder'|'clear'|'rerun'|'undo', ...}]}) // atomic batch edit; parts own their pins (seeds): pin edits re-grow only nearby parts; a seed's color sets its part's colour; clear {algorithm?} also switches method; brush {to, points+radius | triangles, mode?:'triangles'|'patches'} = one brush stroke ('patches' merges every touched part whole)
+await partwright.comparePartDetectors([{algorithm, seeds?, params?}, ...], {view?, size?}) // side-by-side, draft untouched; tiles captioned with detector + differing params
 await partwright.previewPartPresets({algorithm?, seeds?, view?}) // every preset, ranked, draft untouched -> {presets:[{index,name,partCount,score}], image}; then applyPartPreset(index) / showPartPresetPreview(index|null)
 partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.discardParts()
-partwright.getPartSeeds() / partwright.setPartSeeds([{label, point}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel
+partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?, maxRadius?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel; maxRadius caps a seed's geodesic growth
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
-await partwright.acceptParts({label?, smoothEdges?})   // commit: parts become labels via api.importWithParts(i); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
-partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}]}
-partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tint one part/piece in the viewport (visual only) -> {ok, triangles}
+await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
+partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}
+partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Transient visual tint to show the user which one you mean (doesn't change the selection)
+partwright.setObjectPartHidden(name | {piece} | [..], hidden = true)  // Hide/show a part/piece (or a list) in the viewport only (code, versions, exports keep it) -> {ok, hidden}
+await partwright.deleteObjectPart(name | {piece} | [..])  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}; a list = one run + one version -> {ok, removed: [], calls: []}
+await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo it: removes that line, re-runs, saves -> {ok, restored, object, version?, note?}
+// Editing parts from the Objects list -- see #editing-parts-from-the-objects-list
+partwright.selectObjectPart(name | {piece} | {unlabeled:true} | null)    // Select like clicking it in the rail (tint; scopes the user's paint tools) -> {ok, selected, triangles}
+partwright.selectObjectPart([name, ...] | [{piece}, ...])  // Select several parts (or several pieces) like Shift-click -- no paint scope -> {ok, selected: [keys], triangles}
+partwright.getSelectedObjectPart()       // -> {key, part?, piece?, description, isolated} | {keys, description, isolated} (several) | null
+partwright.isolateObjectPart(name | {piece} | [..] | null)   // Ghost everything else (visual only)
+partwright.getObjectPartInfo(name | {piece})          // -> {size:[x,y,z], area, triangleCount, pieces}
+partwright.setObjectPartColor(name, '#rrggbb')        // Fill a whole part (recolours its fill in place) / resetObjectPartColor(name)
+partwright.goToObjectPart(name)          // Reveal the part's label literal in the code editor -> {ok, line}
+await partwright.renameObjectPart(from, to)   // Rename in every code literal + re-key its paint, then runAndSave
+await partwright.bakeObjectPartColor(name)    // Write its colour into code as api.paint.label (manifold-js), drop the overlay, runAndSave
+await partwright.extractObjectPiece(index)    // Move a piece into a new object (piece filters; manifold-js)
+await partwright.extractObjectParts([name | {piece}, ...], {separate?})  // Move several parts/pieces into ONE new object, or one each with separate: true (manifold-js) -> {ok, objects, original, via}
+partwright.exportObjectPiece(index, filename?)   // Download one piece as STL
+partwright.reassignPaint(regionId, partName)  // Fix UNMATCHED paint (part renamed/removed) / keepUnmatchedPaint(regionId)
 // Deprecated aliases from before the rename still work: listParts, getCurrentPart,
 // createPart, changePart, renamePart, setPartGroup, deletePart, saveAllParts,
 // showPartsOverview (each calls the *Object* method above).
@@ -435,29 +526,40 @@ partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null)  // Tin
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
 partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
-partwright.paintConnected({seed, maxDeviationDeg?, color, name?})         // BFS-flood by seed-normal deviation (organic meshes)
-partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill (edge-bounded)
+partwright.probePixels([[x,y], ...], view)                                // batch: many pixels, one camera -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds on any miss; null = model not in view)
+partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?}) // BFS-flood by seed-normal deviation (organic meshes); withinBox/zMin/zMax clamp the flood so it can't leak
+partwright.paintRegion({point, normal?, color, name?, withinPart?, tolerance?}) // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
-partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, wrapAngleDeg?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance, see note below)
+partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, wrapAngleDeg?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance, see note below)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
-partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
+partwright.paintFaces({triangleIds, color, name?, withinPart?})           // explicit triangle ids
+partwright.getPartTriangles(name, {maxResults?})                          // one part's triangle ids on the paint mesh -> {count, area, bbox, triangleIds}
+partwright.partBoundary(a, b, {maxPointsPerLoop?})                        // seam between two parts -> {loops:[{points, closed, length}]}
+partwright.paintAlongBoundary({between:[a,b], width, color, side?, name?}) // smooth band along a seam: collars, cuffs, hems (no groove needed)
 partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
+partwright.paintPattern({pattern, colors, withinPart?, scope?, scale?, axis?, warp?, coverage?, seed?, anchors?, smooth?, resolution?, maxEdge?, name?})  // algorithmic colourway: soccer|stripes|spots|patches|gradient|checker; smooth (soccer/stripes/checker) clips seams sub-triangle. Soccer ball: {pattern:'soccer', withinPart:'ball', colors:['#ffffff','#111111'], smooth:true} — see /ai/colors.md
 partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?, color, name?, smooth?})  // cylindrical/annular shell (rMin=0 = solid); axis x|y|z (default z)
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
+// paintNear/InBox/InOrientedBox/Slab/InCylinder/Connected/Region/NearestRegion/Stroke/Airbrush/Image/Faces (and paintPreview, findFaces) take withinPart: '<label>' to clip the paint to one part (e.g. a detected part of an import) — see colors.md.
 partwright.paintPreview({...selector, withImage?, view?})                 // dry-run
 partwright.paintExplain({region, withImage?, view?})                      // diagnose committed region
 partwright.assertPaint({region, expectedTriangleCount?, ...})             // verify
-partwright.findFaces({box?, normal?, normalTolerance?, color?, ...})      // query by geometry/color
+partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, withinPart?, ...})  // query by geometry/color; omit a key to skip it (explicit undefined = error)
 partwright.getMesh()                     // raw mesh access for procedural workflows
 partwright.getMeshSummary({tolerance?, ...}?)                             // grouped coplanar faces
 partwright.getFeatureCentroids({maxGroups?, withinBox?}?)                 // lightweight planning
 partwright.listRegions() / listComponents() / listLabels()                // inventory
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
-partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
+partwright.removeRegion(id) / setRegionVisibility(id, visible) / renameRegion(id, name)  // per-region edits
+// Every committing paint call above (paintRegion/NearestRegion/Faces/Slab/InBox/InOrientedBox/Near/
+// InCylinder/Connected/Stroke/Airbrush/Component, paintImage, replaceColor) also takes `withinPart: '<part>'` to confine it to one PART.
+partwright.growRegion({region, steps?, withinBox?, zMin?, zMax?}) / shrinkRegion({region, steps?})  // region clean-up: ±N rings of triangles
+partwright.despeckleRegion({region, minIslandTriangles?, maxHoleTriangles?})  // drop small islands + fill small holes
+partwright.combineRegions({region, op: 'union'|'subtract'|'intersect', with})  // boolean ops on region triangle sets
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
 await partwright.paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) // project a raster image onto the surface as paint (logo/graphic/text/decal) -> {ok, name, triangles, avgColor}; use view (+ optional label) OR explicit at+normal (from probeRay); see /ai/colors.md
@@ -469,12 +571,27 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
+partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab') / setBrushDepth(d) // UI brush surface mode + slab depth (0 = auto)
+partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
+partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
+await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
+// Voxel Studio (voxel sessions): activateVoxelPaint / setVoxelTool / setVoxelBrush / voxelStudioApply /
+// voxelStudioUndo / voxelStudioRedo / bakeVoxelsToCode / updateVoxelCode ... -- see /ai/voxel.md#programmatic--ai-equivalent
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
 await partwright.listSessionNotes()      // -> [{id, text, timestamp}, ...]
 await partwright.updateSessionNote(noteId, text) // Edit a note
 await partwright.deleteSessionNote(noteId)       // Remove a note
+
+// UI control -- open a tool FOR THE USER, prefilled, and hand it over (never applies). Full guide + per-tool keys: /ai/ui-control.md
+partwright.listUiCommands()              // every drivable action: [{id, title, hint, kind:'tool'|'command', enabled, open, prefill}] (prefill = the tool's key schema)
+await partwright.openTool(id, prefill?, {note?}) // e.g. openTool('tool-surface', {tab:'knit', mode:'whole', stitchWidth:3}, {note:'tweak, then Apply'}) -> {ok, applied, ignored} | {error}; unknown keys / out-of-range values rejected
+await partwright.runUiCommand(id)        // run a palette command by id ('export-3mf-bambu', 'place-drop-floor', ...) -> {ok} | {error}
+partwright.closeTool(id?)                // close that tool / whichever is open -> {ok, closed}
+partwright.getUiState()                  // {activeTool, openTools, mode, openModal, toolState (the open tool's CURRENT values), tab, codeView, camera, selection, surfacePending}
+partwright.getPaintState()               // paint settings: {active, tool, color, slot, withinPart, bucket, brush, slab, box, regions, visible}
+partwright.getUndoState()                // {paint:{undo, redo, undoClear}, arrange, annotations, voxel}
 
 // Session context -- get everything in one call (for resuming sessions)
 await partwright.getSessionContext()     // -> {session, versions[], notes[], currentVersion, versionCount, agentHints}
@@ -513,8 +630,9 @@ Always present (cheap mesh-quality signals — read them *instead of* paying for
 Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
 - **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
+- **`engineMemory: "N MB / 4096 MB (P%)"`** — manifold-js runs only: how far this run grew the geometry kernel's WebAssembly heap toward its hard ~4 GB ceiling. See [Memory budget](#memory-budget).
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), **interpenetrating components**, and **high geometry-kernel memory** (see [Memory budget](#memory-budget)). Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
@@ -529,6 +647,8 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 ## Writing model code (manifold-js)
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
+
+**Locked-down environment:** model code runs in a geometry Worker that has no network, storage, DOM or GPU access. Only `api` (below), standard JavaScript built-ins, `WebAssembly`, timers, `console`, `performance`, `crypto` and text/URL helpers are available. If you see `fetch is not a function`, `X is not defined`, `Cannot read properties of undefined (reading 'open')`, or `… is disabled in the geometry sandbox`, the code reached for a blocked browser API. That's deliberate, not a bug to work around. Pass external data in through imports (`api.imports`), `api.params`, or the console API instead.
 
 ```js
 const { Manifold, CrossSection, Curves, setCircularSegments } = api;
@@ -550,7 +670,18 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
+**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
+
+```js
+const head = Manifold.ofMesh(api.imports[0]);
+console.log('head', head);                       // → head Manifold{tris: 946240, bbox: [[-71, -96, -98], [71, 97, 99]]}
+const shell = api.shell(head, { thickness: 2.5 });
+console.log({ volume: shell.volume(), pieces: shell.decompose().length });
+```
+
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
+
+**No network or storage access (enforced).** Model code — manifold-js, voxel, and BREP/replicad JS alike — runs in the geometry Web Worker, whose global scope is locked down before any model code executes: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, `indexedDB`, `caches`, `navigator.storage`/`navigator.locks`, nested `Worker`s, `BroadcastChannel`, and `importScripts` are removed (they read as `undefined`, or throw if called) and cannot be restored. Reading them never helps a model; everything a model needs arrives through `api` (imports via `api.imports`, fonts and BREP/SCAD libraries are loaded by the engine itself). A model that needs outside data must have it passed in — import the file, or inline the values in code.
 
 ### Customizer parameters (`api.params`)
 
@@ -609,7 +740,50 @@ Three words, three different things — keep them straight, especially when a us
 - "Make a matching lid" (printed separately, versioned on its own) → `createObject('Lid')`.
 - **Label every meaningful feature you build** — it makes the parts list useful and lets the user say "make the handle thicker".
 
-`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, and the pieces, each named by the part covering most of it. `highlightObjectPart('handle')` tints a part in the viewport (the same as clicking it in the rail) so you can show the user which one you mean. Labels are surfaces, not volumes: a part fused into a solid can be highlighted or painted, but not hidden on its own.
+`listObjectParts()` returns exactly what the rail shows: the parts (with the colour each is drawn in and `colorSource` — `code` or `painted`), `lostParts` (labels the code declared that ended up with no triangles — fully subtracted, or dropped by an op that rebuilds the surface such as `levelSet`/SDF smoothing), `unlabeledTriangleCount`, the pieces (each named by the part covering most of it), `unmatchedPaint` / `emptyPaint` / `renameSuggestions` (below) and the user's current `selected` key. `highlightObjectPart('handle')` briefly tints a part so you can show the user which one you mean; `selectObjectPart('handle')` selects it as if they clicked it in the rail (which also scopes *their* paint tools — use it sparingly). Labels are surfaces, not volumes: hiding a part fused into a solid (below) hides its surface, leaving an opening into the solid.
+
+**Hiding a part or piece** (the eye on its row in the rail, or `setObjectPartHidden('handle')` / `setObjectPartHidden({ piece: 1 }, false)`) is view-only: the triangles simply aren't drawn, so you can see inside or behind it. The code, saved versions, exports and `renderViews` are unchanged. A fused part leaves an opening where it was, since its surface is just gone from view. Hidden state is per tab and per object, survives re-runs, and resets piece hides when the pieces change. To take a part out of the model itself, delete it instead.
+
+**Deleting a part or piece** (the ✕ on its row in the rail, or `deleteObjectPart('handle')` / `deleteObjectPart({ piece: 1 })`) stays parametric — it writes one line at the top of the code and saves a version:
+
+```js
+api.removePart('handle');       // a later api.label(shape, 'handle') returns an empty Manifold
+api.removePiece([-70, 0, 3]); // piece 2 ("coaster")   <- after the run, drop the separate piece touching this point
+```
+
+`api.removePart` must run **before** the `api.label` it cancels (it throws otherwise), so keep it at the top. Because the labelled shape becomes empty, removing a part that was used as a *cutter* (e.g. `.subtract(api.label(cavity, 'inside'))`) removes the cut too. `api.removePiece` takes a point on (or in) the piece rather than an index, so the right piece stays removed when edits elsewhere reorder the pieces; the trailing comment names the piece for Recover deleted. Delete the line — or call `restoreObjectPart('handle')` — to bring the part back (see [Recover deleted](#recover-deleted)).
+
+Per engine:
+
+| Object | Part delete | Piece delete |
+|---|---|---|
+| manifold-js | `api.removePart('name')` | `api.removePiece([x, y, z])` |
+| Part detected on an import (`api.importWithParts`) | `api.removePart('name')` — the part's triangles are dropped and each opening it leaves is capped flat, so the import stays a closed solid | as manifold-js |
+| OpenSCAD | `remove_part("name");` — drops that `label("name")` top-level object | `remove_piece([x, y, z]);` |
+| BREP (replicad) | `api.removePart('name')` — `BREP.label(shape, 'name')` returns an empty shape (STEP export follows) | not supported yet — label the piece and delete the part |
+| Voxel | (no parts) | `api.removePiece([x, y, z])` — deletes that face-connected piece's voxels |
+
+<a id="recover-deleted"></a>
+**Recover deleted.** Nothing deleted from the Objects rail is gone for good right away, so the rail's ✕ buttons don't ask for confirmation (multi-select delete still does). Each delete shows a toast with **Undo**, and after it fades the rail's **↺ Recover deleted (N)** link (also the command palette's "Recover deleted…") opens one modal for the active session with two sections:
+
+- **Objects** — `deleteObject` (and the rail ✕ / bulk delete / merge-and-replace) moves the object, all its versions and its unsaved draft into a per-session bin. `restoreObject(id|name)` puts it back at its old place in the list, in its group. Entries are purged after `ui.deletedObjectRetentionDays` (default 30, Advanced settings); `purgeDeletedObjects()` deletes them for good. The bin is local to this browser — it is never exported or shared. Restoring the object whose deletion left the untouched blank "Object 1" (deleting a session's last object) replaces that blank.
+- **Parts & pieces** — every removal line from the table above (`api.removePart` / `api.removePiece`, or OpenSCAD `remove_part` / `remove_piece`; written by `deleteObjectPart` or by hand) in the session's objects. `restoreObjectPart` removes the line, re-runs and saves a `restore …` version, opening the owning object first if needed. They never expire: they live in the code. If nothing comes back (you since deleted the label or moved the geometry) the line was already a no-op; it is dropped and the result carries a `note`.
+
+`listDeleted()` returns both lists; a piece is addressed by its `call` (`restoreObjectPart('api.removePiece([-70, 0, 3]);')`).
+
+### Editing parts from the Objects list
+<a id="editing-parts-from-the-objects-list"></a>
+
+The rail is a **selector, not a second editor**: selecting a part makes it the *scope* the existing tools act in.
+
+- **The user's selection is your context.** When a part is selected, their chat message arrives prefixed with `[Selected in the Objects list: part "handle" …]` — "make it red" / "thicken this" means that part. `getSelectedObjectPart()` reads it too.
+- **Paint scope.** Selecting a part also sets the Paint panel's **Paint within** to it, so the user's interactive paint tools (brush, spray, bucket, slab, shape, replace, image stamp) stay inside it. Your paint calls are **not** implicitly scoped — pass `withinPart: 'handle'` to any committing paint call: the selection is computed as usual, then clipped to the part, so `paintSlab({axis:'z', offset:40, thickness:5, color, withinPart:'handle'})` paints only the top of the handle. The scope is stored on the region, so it stays inside the part through code edits.
+- **Whole-part colour.** `setObjectPartColor(name, '#hex')` = the part's rail swatch (a `byLabel` fill, recoloured in place). `resetObjectPartColor(name)` removes it (back to the code colour). To make a colour part of the model rather than an overlay, `bakeObjectPartColor(name)` writes `api.paint.label(name, hex)` into the code (manifold-js).
+- **Rename.** `renameObjectPart(from, to)` rewrites every string literal naming the part (its `api.label` / SCAD `label` / `BREP.label`, `api.paint.label`, surface `label:` scopes) **and re-keys the paint tied to it**, then saves. Prefer it over hand-editing a label name.
+- **Unmatched paint.** Paint keyed to a part (`byLabel`, or any `withinPart`) whose label disappears from the code is never silently dropped: it stays saved but paints nothing, and is flagged — `runAndSave` / `saveVersion` return `unmatchedPaint: [{regionId, name, label, hint?}]`, and the rail shows **Unmatched paint (N)** with *Reassign to… / Keep / Delete*. When one label vanished as another appeared in the same place, `hint` / `renameSuggestions` names the likely successor — fix with `reassignPaint(regionId, newName)`. `emptyPaint` lists geometric regions (slab, box…) that now cover nothing.
+- **Pieces.** `extractObjectPiece(i)` moves a piece into a new object; `exportObjectPiece(i)` downloads it as STL; to drop a stray one use `deleteObjectPart({ piece: i })` (below). Extract wraps the object's code in a *piece filter* (`// Partwright piece filter …` — the original code runs untouched inside, and the piece is matched by bounding box, so small edits keep tracking it). manifold-js only; fixing the geometry that made a stray piece is still better when you can.
+- **Several at once.** The user can Shift/Ctrl/⌘-click rows in the rail (or Shift-double-click in the viewport) to select several parts — or several pieces, never a mix — and then **Move to new** (all into one new object), **Split** (one new object each), Isolate, Hide or Delete them together. Their chat message then arrives prefixed with `[Selected in the Objects list: parts "a", "b" …]`. A multi-selection does *not* set the paint scope. Do the same with `selectObjectPart([...])`, `extractObjectParts([...], { separate })`, `isolateObjectPart([...])`, `setObjectPartHidden([...])` and `deleteObjectPart([...])` (one run, one version). `extractObjectParts` moves whole separate solids with piece filters (as above); parts fused to other geometry move with `api.removePart` lines instead — the original drops them and each new object drops every other part, so a part that only *cuts* (e.g. a labelled cavity) fills its cut where it's removed. It refuses when unlabeled geometry would be copied along, or when nothing would be left in the original.
+- **Look.** `isolateObjectPart(name)` ghosts everything else; `getObjectPartInfo(name)` gives size, area and the pieces it touches; `goToObjectPart(name)` shows the user its label in the code.
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 
@@ -697,6 +871,17 @@ Segments: OMIT the segment argument so curves inherit the user's quality
 ```
 
 **Default segment count:** Partwright seeds `setCircularSegments()` (and `$fn` for OpenSCAD) from the user's Modeling Quality preset (gear icon in the toolbar) before each run. Presets are Low (16) / Medium (32) / High (64) / Very High (128, the default) / Ultra (1024), plus a **Custom** option for an exact count (3–4096). So curves render smooth out of the box without any explicit configuration — and a user who wants ultra-smooth output picks **Ultra** (or a Custom value) once and it persists. **An explicit segments argument always overrides this preset for that primitive**, so leave it off unless you specifically want a different resolution than the user chose. The current preset is reported in the per-turn "Session toggle state" suffix; honor it. You can still call `setCircularSegments(n)` or pass an explicit count to override on a per-script or per-call basis when a design genuinely needs it.
+
+### Memory budget
+
+The manifold-js kernel runs in WebAssembly, whose heap is capped at **~4 GB** and never shrinks. A model that needs more fails with `memory access out of bounds` ("The geometry kernel ran out of memory"); the engine resets itself, but the run is lost. Memory scales with *triangles × copies × booleans*, so the usual culprit is many rounded parts (chain links, beads, rivets, spokes) at the default Very High (128-segment) quality: one sphere is ~8k triangles and a cylinder ~500, so a few hundred rounded parts through unions add up fast.
+
+- **Watch `engineMemory`** in the stats as you scale a design up. When a live run (`run`/`runAndSave`) crosses the high-memory threshold (default 50%), its `warnings[]` says so: that is the signal to lighten the model *before* the next step up faults. Isolated runs (`runIsolated`/`runAndAssert`) report `engineMemory` but don't warn, so read it yourself there. The engine also resets once idle after such a run so the next one starts on a fresh heap (except for runs that use `api.BREP`, which would otherwise reload OpenCASCADE every time).
+- **Prove the pattern small first:** build 3 links / 4 spokes, read `engineMemory` and `triangleCount`, then scale. Memory grows roughly linearly with the count, so a run at 30% will not survive 4× the parts.
+- **Small or hidden round features may take an explicit low segment count** (a 2 mm pin at 16 segments is indistinguishable from 128). This is the one good reason to override the user's preset downward. Leave visible, large curves on the preset.
+- **`Manifold.compose([...])` for parts that don't touch** — it just concatenates, with no boolean. Union only what has to fuse.
+- **Don't query intermediates inside a build loop** (`.volume()`, `.boundingBox()`, `.numTri()`, `.status()`): that meshes every step, and every intermediate stays in memory until the run ends.
+- **On an out-of-memory error**, don't retry the same code. Reduce the count or segments by at least half, or split the model into separate objects.
 
 ### Constructors and instance methods
 
@@ -935,7 +1120,7 @@ Before exporting anything intended for printing, **call `readDoc({name: "print-s
 
 Color regions tag a coplanar set of triangles with an RGB color. Regions are persisted on the saved version, ride through GLB and 3MF exports (vertex colors / `<basematerials>` `pid` attributes), and show as swatch badges in the gallery. They do **not** modify the geometry. STL and OBJ exports drop them — formats don't carry color.
 
-The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `paintNear`, `paintStroke`, `paintInBox`, `paintSlab`, `paintNearestRegion`, `paintComponent`, `paintByLabel`, `paintByLabels`, `paintConnected`, `paintPreview`, `paintExplain`, `findFaces`, `probePixel`, `probeRay`, `getMeshSummary`, `listComponents`, `listLabels`, `undoLastPaint`, `redoLastPaint`, `removeRegion`, `clearColors`) and on `window.partwright`.
+The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `paintNear`, `paintStroke`, `paintInBox`, `paintSlab`, `paintPattern`, `paintNearestRegion`, `paintComponent`, `paintByLabel`, `paintByLabels`, `paintConnected`, `paintAlongBoundary`, `paintPreview`, `paintExplain`, `findFaces`, `getPartTriangles`, `partBoundary`, `probePixel`, `probePixels`, `probeRay`, `getMeshSummary`, `listComponents`, `listLabels`, `undoLastPaint`, `redoLastPaint`, `removeRegion`, `clearColors`) and on `window.partwright`.
 
 Before painting anything substantial, **call `readDoc({name: "colors"})`** for the picker decision tree (which `paint*` for which intent), the labelled-construction workflow, vision-driven painting with `probePixel`/`paintConnected`, undo/redo, and export behavior.
 
@@ -950,6 +1135,8 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 The user can attach reference photos via `partwright.setImages([...])`; they appear in the Attachments tab and Gallery. Photos are one **kind** of session attachment — the same panel also holds reference models, PDFs, and notes (`getAttachments`/`addAttachment`), all of which persist across a chat clear. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
 **Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
+
+**Figure from a photo (a person, a Funko / chibi toy) — fill a spec, don't write code.** Picking parameters costs far fewer tokens than writing and debugging figure code, and every spec build is valid and painted by construction. (1) View the photo once. (2) Fill in a CharacterSpec: `body.proportions` ('realistic' | 'chibi' | 'funko'), `headScale`, hair `style` ('anime' / 'shag' (layered spiky mop) / 'captured' (the Tsubasa Funko hairdo) / 'mop' + knobs), clothing — incl. collar/cuff `trim`, chest/back `print` lettering, knee `shorts`, striped `socks`, `'toy'` shoes with `cleats` — bead eyes, `headSink`, `colors`, `pose.hold` for a ball. (3) Call `buildCharacter(spec)`. (4) Score with `photoMatch` (text only; a built figure faces +X, so azimuth 0 = front). (5) Adjust spec fields from its `worst[]` (`getCharacterSpec()` returns the current spec). (6) Repeat, looking at images only at checkpoints. (7) Hand-write code only for what the spec can't express (logos, accessories, other props). Full recipe: `/ai/figure.md#figure-from-a-photo--fill-a-spec-dont-write-code`.
 
 ## Iteration workflow
 
@@ -1073,6 +1260,8 @@ const r = partwright.query({
 // r.stats      = current geometry-data stats
 ```
 
+> **In-app chat `query` tool** takes four more keys in the same call — `containment` (pieces hidden inside other pieces), `pointsInside: [[x,y,z], …]`, `componentBounds`, `zProfile` (+ `zProfileSamples`) — fanned out to `checkContainment()` / `pointInside()` / `componentBounds()` / `analyzeProfile()`. Console callers use those methods directly.
+
 ### Batch session creation
 
 Create a complete session with multiple versions in one call:
@@ -1159,6 +1348,12 @@ Read `partwright.getSpendingMode()` at session start and honor the user's budget
 Users can mark up the model surface with the **Annotate** tool (✏️ in the viewport overlay): freehand strokes raycast onto the mesh, and text labels pinned to a 3D anchor. Annotations are per-version, persist in session exports, and are distinct from color regions — they do not modify geometry.
 
 **Call `readDoc({name: "annotations"})`** when the user has placed annotations and you want to read them, or when you need to write annotations programmatically — covers the `getAnnotations` / `setAnnotations` shape and the persistence model.
+
+## Handing a tool to the user
+
+When the user wants to **tweak it interactively**, asks you to **show them** a tool, or the result is subjective (texture depth, colours, character proportions), **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values in its fields and leaves it to them — it never applies; they preview, adjust and click Apply. On desktop the chat stays beside the panel. Put what you set and what to try in `note` (shown as "Suggested by AI: …"), then read `getUiState().toolState` later to see what they changed. Everything else — "make it knit", "scale it to 80 mm" — you just do with the API.
+
+**Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-image-paint`, `tool-palette`, `tool-resize`, `tool-place`, `tool-quality`, `tool-customize`, `tool-voxel-paint`, `tool-print`, `tool-cross-section`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`, the `export-objects` / `export-session` / `publish-model` dialogs, the `import-relief` / `import-image-voxel` wizards, and `open-quality` Settings focus). After the user applies from a panel you opened, your next turn starts with an app-generated `[UI · app note] user applied …` line saying what they settled on.
 
 ## Arrange mode
 

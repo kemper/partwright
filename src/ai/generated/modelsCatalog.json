@@ -931,9 +931,140 @@
           "cache_read": 0.02
         }
       },
-      "gpt-5.6-sol": {
-        "id": "gpt-5.6-sol",
-        "name": "GPT-5.6 Sol",
+      "gpt-5.5": {
+        "id": "gpt-5.5",
+        "name": "GPT-5.5",
+        "description": "Default frontier GPT for coding, computer use, research, and knowledge work",
+        "family": "gpt",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "knowledge": "2025-12-01",
+        "release_date": "2026-04-23",
+        "last_updated": "2026-04-23",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 5,
+          "output": 30,
+          "cache_read": 0.5,
+          "tiers": [
+            {
+              "input": 10,
+              "output": 45,
+              "cache_read": 1,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 10,
+            "output": 45,
+            "cache_read": 1
+          }
+        }
+      },
+      "gpt-6-sol": {
+        "id": "gpt-6-sol",
+        "name": "GPT-6 Sol",
+        "description": "OpenAI model for complex coding and agentic workflows",
+        "family": "gpt-sol",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "knowledge": "2026-04-20",
+        "release_date": "2026-09-22",
+        "last_updated": "2026-09-22",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2.5,
+          "tiers": [
+            {
+              "input": 4,
+              "output": 15,
+              "cache_read": 0.4,
+              "cache_write": 5,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.4,
+            "cache_write": 5
+          }
+        },
+        "canonical_model_id": "openai/gpt-6-sol"
+      },
+      "gpt-5.6": {
+        "id": "gpt-5.6",
+        "name": "GPT-5.6",
         "description": "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows",
         "family": "gpt-sol",
         "attachment": true,
@@ -1769,6 +1900,7 @@
           {
             "type": "effort",
             "values": [
+              "none",
               "low",
               "medium",
               "high",
@@ -1780,14 +1912,13 @@
         "tool_call": true,
         "structured_output": true,
         "temperature": false,
-        "knowledge": "2026-04-30",
-        "release_date": "2026-09-04",
-        "last_updated": "2026-09-04",
+        "knowledge": "2026-02-16",
+        "release_date": "2026-08-07",
+        "last_updated": "2026-08-07",
         "modalities": {
           "input": [
             "text",
-            "image",
-            "pdf"
+            "image"
           ],
           "output": [
             "text"
@@ -1795,8 +1926,8 @@
         },
         "open_weights": false,
         "limit": {
-          "context": 1050000,
-          "input": 922000,
+          "context": 400000,
+          "input": 272000,
           "output": 128000
         },
         "cost": {
@@ -1963,8 +2094,8 @@
         "structured_output": true,
         "temperature": true,
         "knowledge": "2025-08-31",
-        "release_date": "2026-03-05",
-        "last_updated": "2026-03-05",
+        "release_date": "2026-02-05",
+        "last_updated": "2026-02-05",
         "modalities": {
           "input": [
             "text",
@@ -1977,30 +2108,14 @@
         },
         "open_weights": false,
         "limit": {
-          "context": 1050000,
-          "input": 922000,
+          "context": 400000,
+          "input": 272000,
           "output": 128000
         },
         "cost": {
-          "input": 2.5,
-          "output": 15,
-          "cache_read": 0.25,
-          "tiers": [
-            {
-              "input": 5,
-              "output": 22.5,
-              "cache_read": 0.5,
-              "tier": {
-                "type": "context",
-                "size": 272000
-              }
-            }
-          ],
-          "context_over_200k": {
-            "input": 5,
-            "output": 22.5,
-            "cache_read": 0.5
-          }
+          "input": 1.75,
+          "output": 14,
+          "cache_read": 0.175
         }
       }
     }

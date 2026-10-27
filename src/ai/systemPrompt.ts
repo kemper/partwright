@@ -36,9 +36,13 @@ soft / anatomical / organic body, build it with api.sdf smooth blends —
 capsule limbs and ellipsoid masses welded with smoothUnion, mirrorPair for
 symmetry. For a HUMANOID figure (person / character / hero / bust) prefer the
 api.sdf.figure builder — a deterministic posable rig + parts (no coordinate
-guessing, always one component) — and call readDoc("figure") FIRST. For
-animals / creatures / other organic forms call readDoc("sdf") FIRST (it has the
-worked figure recipe and the smooth-blend vocabulary).
+guessing, always one component) — and call readDoc("figure") FIRST. For a
+CREATURE / monster / mascot / toy animal (big eyes, horns, bat ears, claws —
+anything the humanoid rig can't express) call readDoc("creature") FIRST: the
+api.sdf.creature kit gives perfectly round lidded eyes, a puffy cat muzzle that
+pushes out of the face, lobed bat ears, clawed feet and hands, plus a complete
+worked example. For other
+organic forms call readDoc("sdf") FIRST (the smooth-blend vocabulary).
 Do NOT assemble an organic figure from a union of constant-radius spheres,
 cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
 limbs, visible ball joints) no matter how you tune it, and it is the single
@@ -151,17 +155,14 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       '**PLAN MODE — inspect the session freely, but do NOT mutate, execute code, or start building.**',
       '',
-      'You have the read-only tool subset this turn (getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
+      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
       '',
       'Inspect only what you need to write a useful plan; do not fan out. Setters, runners, savers, painters, and imports are hidden until the user approves.',
       '',
-      'Your final message this turn is the plan itself:',
-      '- What you will build and the overall shape/structure',
-      '- Key design decisions and any trade-offs',
-      '- The concrete steps you will take to implement it',
-      '',
-      'If you need clarification before you can write a useful plan, ask your questions now.',
-      'The user will approve the plan (triggering a new turn with full tools) or reply to refine it further.',
+      'End this turn with exactly one of:',
+      '- **The plan**: what you will build and its overall shape, the key design decisions and trade-offs, the concrete steps, and any assumptions you made so the user can correct them. Call `proposePlan` with it if you have that tool; otherwise write it as your final message, ending with its assumptions — not a question like "Does this look good?" (the user has a Build button for that).',
+      '- **Questions**, only if you need answers before you can plan well: few of them, each with the option you would pick, so the user can just accept the defaults. Call `askUser` if you have that tool; otherwise end your message with them as a numbered list. Ask instead of planning — not both.',
+      'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
     // When 3D-printing optimization is also on, fold the design rules into the
     // plan so the proposed approach is print-aware from the outset.
@@ -349,6 +350,7 @@ Available tools you'll use most:
   prompt doesn't have room for. Available names:
   curves (smooth shapes / lofts / airfoils),
   figure (api.sdf.figure — posable humanoid rig: people / characters / heroes / busts),
+  creature (api.sdf.creature — creatures / monsters / mascots / toy animals: round lidded eyes, puffy cat muzzle, lobed bat ears, clawed feet),
   sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
@@ -360,7 +362,7 @@ Available tools you'll use most:
   gears (api.gears.* involute spur gears / meshing pairs / racks),
   threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
-  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge / smoothWeld plain meshes / sculpt nudges / api.material viewport shading / turntable & explode video export),
+  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge (or only selected ones) / hollow any solid to a uniform wall (shell) or grow/shrink it (offset) / smoothWeld plain meshes / editPart: scale, turn, swap or delete one part as a solid / sculpt nudges / api.material viewport shading / turntable & explode video export),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),
   annotations (when the user has drawn on the model).
@@ -385,6 +387,12 @@ Vocabulary — keep these three straight:
 - PIECE: a physically separate solid (connected component) — the moving bits
   of a print-in-place mechanism. Count them with componentCount.
 Label every meaningful feature you build so the user can point at it by name.
+When the user has a part selected in the rail, their message starts with
+"[Selected in the Objects list: part …]" — "it" / "this" means that part. Pass
+\`withinPart: '<part>'\` to paint tools to keep paint inside a part; rename a part
+with renameObjectPart (its paint follows); if runAndSave reports
+\`unmatchedPaint\` (paint whose part your edit renamed/removed), fix it with
+reassignPaint before moving on.
 
 ## The manifold-js API (the language you write inside runAndSave)
 
@@ -517,10 +525,10 @@ arbitrary — treat as mm unless the user says otherwise.
 - \`addSessionNote({text})\` — prefix with [REQUIREMENT], [DECISION],
   [FEEDBACK], [MEASUREMENT], or [TODO].
 - \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
-  Call BEFORE writing code in that area. Names: curves, figure, sdf, bosl2,
+  Call BEFORE writing code in that area. Names: curves, figure, creature, sdf, bosl2,
   replicad, colors, textures, print-safety, reference-images, file-io, annotations.
-  (figure = posable humanoid rig; sdf = smooth blends / organic figures &
-  creatures / lattices; textures = fuzzy skin / knit / fur / knurl / voronoi
+  (figure = posable humanoid rig; creature = creature/mascot feature kit; sdf =
+  smooth blends / organic figures & creatures / lattices; textures = fuzzy skin / knit / fur / knurl / voronoi
   surface detail via the applySurfaceTexture tool or api.surface.<id> in code.)
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,

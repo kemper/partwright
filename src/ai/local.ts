@@ -1055,6 +1055,26 @@ export function buildLocalApiMessages(
       }
     }
   }
+  return native ? out : mergeAdjacentUserTurns(out);
+}
+
+/** Prompt-engineered chats: a user turn right after another (a tool-result
+ *  turn, then the typed answer to an askUser card or the next message after
+ *  `finish`) becomes one — many chat templates require user and assistant
+ *  turns to alternate. */
+function mergeAdjacentUserTurns(msgs: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const toParts = (c: unknown): unknown[] => (Array.isArray(c) ? c : [{ type: 'text', text: String(c) }]);
+  const out: Array<Record<string, unknown>> = [];
+  for (const m of msgs) {
+    const prev = out[out.length - 1];
+    if (prev && prev.role === 'user' && m.role === 'user') {
+      prev.content = typeof prev.content === 'string' && typeof m.content === 'string'
+        ? `${prev.content}\n\n${m.content}`
+        : [...toParts(prev.content), ...toParts(m.content)];
+    } else {
+      out.push({ ...m });
+    }
+  }
   return out;
 }
 

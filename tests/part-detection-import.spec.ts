@@ -62,6 +62,43 @@ test.describe('Part detection on import', () => {
     });
   });
 
+  test('a fused figure opens ready to label, with one consistent message', async ({ page }) => {
+    test.setTimeout(90_000);
+    // Count these 12-triangle boxes as a big fused mesh.
+    await page.evaluate(async () => {
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, segmentation: { ...c.segmentation, fusedPieceMinTris: 10 } });
+    });
+    await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByText(/found 2 separate parts, and the largest is one fused solid/)).toBeVisible();
+    // Said once: no second, contradictory note in the part list.
+    await expect(panel.getByText(/one fused solid/)).toHaveCount(1);
+    // The first chip is armed and the Pin tool is on; the proposal stays
+    // until the first click.
+    await expect(panel.locator('[data-chip="hair"]')).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel.getByRole('button', { name: 'Pin (P)' })).toHaveAttribute('aria-pressed', 'true');
+    const draftNow = () => page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getPartDraft()) as Promise<{ detector?: string; parts?: { name: string }[] }>;
+    expect((await draftNow()).detector).toBe('pieces');
+
+    // The first click switches method, clears the pieces and places the pin
+    // as ONE step: a single Undo brings both pieces back.
+    const xy = await page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      const cam = vp.getCamera();
+      const v = cam.position.clone().set(5, 5, 10).project(cam);
+      const r = vp.getCanvas().getBoundingClientRect();
+      return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+    });
+    await page.mouse.click(xy.x, xy.y);
+    await expect.poll(async () => (await draftNow()).parts?.map((p) => p.name), { timeout: 30_000 }).toEqual(['hair']);
+    await expect(panel.getByText(/Started fresh for Crease watershed/)).toBeVisible();
+    await panel.getByRole('button', { name: 'Undo', exact: true }).first().click();
+    await expect.poll(async () => { const d = await draftNow(); return [d.detector, d.parts?.length]; }, { timeout: 30_000 }).toEqual(['pieces', 2]);
+  });
+
   test('dismissing an untouched import proposal discards it', async ({ page }) => {
     test.setTimeout(90_000);
     await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
@@ -74,6 +111,18 @@ test.describe('Part detection on import', () => {
       return d.draft === null;
     });
 
+  });
+
+  test('the import banner goes away once its proposal is replaced', async ({ page }) => {
+    test.setTimeout(90_000);
+    await importStl(page, 'two-blocks.stl', boxesStl([[[0, 0, 0], [10, 10, 10]], [[20, 0, 0], [30, 10, 10]]]));
+    const panel = page.getByRole('dialog', { name: 'Detect parts' });
+    await expect(panel.getByText('found 2 separate parts')).toBeVisible({ timeout: 30_000 });
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.detectParts({
+      algorithm: 'crease-watershed', seeds: [{ label: 'a', point: [5, 5, 10] }, { label: 'b', point: [25, 5, 10] }],
+    }));
+    await expect(panel.getByText('found 2 separate parts')).toBeHidden();
+    await expect(panel).toBeVisible();
   });
 
   test('a single solid gets the convert ask with a Detect parts button', async ({ page }) => {

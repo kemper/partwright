@@ -415,7 +415,7 @@ const plateGridCols = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 
 // Max distinct colours (= AMS filament slots) a Bambu export carries. Bambu's
 // practical multi-AMS ceiling; beyond this, least-used colours snap to a kept slot.
-const MAX_BAMBU_FILAMENTS = 16;
+export const MAX_BAMBU_FILAMENTS = 16;
 
 // Per-filament config keys that are NOT `filament_`-prefixed (the prefixed ones are
 // matched by name). Sourced verbatim from BambuStudio's `s_Preset_filament_options`

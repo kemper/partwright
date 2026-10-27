@@ -19,6 +19,8 @@ partwright.removeRegion(id) // delete one region by id (older mistake)
 partwright.hideRegion(id)   // toggle a region off in the viewport without deleting it; exports still include it
 partwright.showRegion(id)   // re-show a previously hidden region
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
+partwright.clearColors({ kind: 'image' })  // remove only image stamps (the Image Paint panel's Clear)
+partwright.undoClearColors()  // bring back what the last clear removed (until the next paint) -> {restored, regions}
 ```
 
 **Per-region visibility vs. delete.** `setRegionVisibility(id, false)` (or `hideRegion(id)`) toggles a region off in the *viewport* — the painted triangles render unpainted while the region is hidden, but the region itself stays in `listRegions()` and the `visible` flag is persisted across save/load. This is the right tool for "I want to see what the model looks like without this region" or "compare paint vs. no-paint." GLB / 3MF exports always include hidden regions — visibility is a viewer-state flag, not an export filter. Use `removeRegion(id)` when you actually want to delete a region permanently.
@@ -146,7 +148,8 @@ partwright.paintByLabels([
 // -> { results: [...], failed: [] }
 // Reach for paintByLabel({label, color}) only when painting a single
 // feature. listLabels() returns what's available; check it if a paint
-// call reports "no label X".
+// call reports "no label X". getLabelNames() is the cheap form: just the
+// names (string[]), no triangle counts / bboxes.
 ```
 
 `api.labeledUnion([{name, shape}, ...])` is sugar that labels each
@@ -211,6 +214,7 @@ api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });     
 api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] });   // axis-aligned box
 api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) vertical shell
 api.paint.label('body', '#888');   // recolor an existing api.label(...) region by name
+api.paint.slab({ axis: 'z', offset: 0, thickness: 4, color: '#fff', withinPart: 'body' }); // clipped to one part
 return part;
 ```
 
@@ -228,7 +232,7 @@ repeating colour motif — it reads far better than hand-placed `paint.box` band
 
 ```js
 api.paint.pattern({
-  pattern: 'stripes',                 // 'stripes' | 'spots' | 'patches' | 'gradient' | 'checker'
+  pattern: 'stripes',                 // 'stripes' | 'spots' | 'patches' | 'gradient' | 'checker' | 'soccer'
   colors:  ['#D6913E', '#5A3A1F'],    // [base, mark, third?] — hex or [r,g,b]; ≥2
   scope:   'body',                    // an api.label region (so it never touches eyes/nose); omit = whole model
   axis:    'z',                       // stripes: band direction
@@ -252,6 +256,16 @@ api.paint.pattern({
 - **`checker`** — 3D checkerboard by cell-index parity (`scale` = cell size).
   `warp` wobbles the cell boundaries for a hand-painted look; a 3rd colour turns
   it into a 3-cycle rotation. Good for game pieces, picnic ware, test prints.
+- **`soccer`** — a classic football: the truncated icosahedron's **12 pentagons**
+  in `colors[1]` on `colors[0]` (white hexagons), ≈28.2% of the surface dark. The
+  ball is **fitted to the scope** (area-weighted least-squares sphere, so a ball
+  squashed by a hand or cut flat on a base still finds its true centre) — scope
+  it to the ball (`scope: 'ball'` / `withinPart: 'ball'`). Orientation: one
+  pentagon faces **+X** from the ball centre with a neighbour toward **+Z**;
+  `anchors[0]` (a world point) re-aims that pentagon toward it, `anchors[1]`
+  sets the roll. `coverage` is the panel SIZE factor here (1 = standard, up to
+  1.45). Each seam is a planar cut through the ball centre, so on a real sphere
+  the panels are exact spherical pentagons.
 
 **Regional scoping — different patterns on different parts, seam-free.** The
 `scope` accepts geometric predicates that AND with the label and narrow by
@@ -278,7 +292,43 @@ api.paint.pattern({ pattern:'stripes', colors:[...], scope:{ label:'body', below
 
 Like the other `api.paint.*` ops these resolve **by triangle** (refine for
 crisper field edges) and are validated strictly (unknown keys / bad colour /
-axis throw). manifold-js sandbox only.
+axis throw). `withinPart: 'name'` clips to one part like the other ops.
+manifold-js sandbox only. **In-code patterns are whole-triangle** — the model
+underlay never subdivides, so `smooth` / `maxEdge` are rejected here; use
+`partwright.paintPattern(…, smooth: true)` below for crisp seams.
+
+### Pattern paint from the console / AI — `paintPattern`
+
+The same patterns as user paint (it lands in the region list, saves with the
+version, and the Paint panel's **Pattern → ⚽ Soccer ball** button calls it on
+the part chosen in *Paint within*):
+
+```js
+// A soccer ball on a detected part of an imported figurine — one call, crisp seams:
+partwright.paintPattern({ pattern: 'soccer', withinPart: 'ball', colors: ['#ffffff', '#111111'], smooth: true });
+// -> { id, name, pattern, triangles, markTriangles, meshTriangles, smooth, maxEdge, sphere: { center, radius } } or { error }
+```
+
+Options: `pattern`, `colors` (≥2, hex or `[r,g,b]`), `withinPart?`, `scope?`
+(label string or `{label, above, below, box, sphere}` as above), `scale?`,
+`axis?`, `warp?`, `coverage?`, `seed?`, `anchors?`, `smooth?`, `resolution?`,
+`maxEdge?`, `name?`. Unknown keys are rejected.
+
+**`smooth: true` — sub-triangle seams.** Supported by **`soccer`, `stripes`,
+`checker`** (their boundaries are analytic fields); `spots` / `patches` /
+`gradient` stay whole-triangle and reject `smooth`. The boundary triangles *in
+scope* are subdivided where the seam curves and then **clipped exactly along the
+field's zero set**, in one refine pass — the same machinery as a smooth
+`paintSlab`, confined to the part (other parts are never split). Default target
+edge: `radius/100` for soccer (its seams are straight cuts, so only the 60 panel
+corners refine — a few thousand extra triangles), else bbox-diagonal/256;
+override with `resolution` or `maxEdge`. Only the small descriptor is saved; the
+refined mesh is rebuilt from it on load (no stored mesh, no per-triangle data).
+
+> **Never fake pattern edges with dense `paintStroke`s.** Tracing pentagon
+> outlines with brush strokes stores every sample point and replays every stroke
+> on load (a ~90 s session open in one test) and still leaves pinholes. One
+> `paintPattern` call is a ~200-byte descriptor and rebuilds in seconds.
 
 SCAD has the same `label()` pattern, but **without** the `{ color }`
 option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
@@ -295,7 +345,10 @@ label("post") translate([0,20,0]) cylinder(r=2, h=8);
 ```
 
 Then `paintByLabel({label:'body', color:[1,0,0]})` works exactly like
-the manifold-js case. Constraints:
+the manifold-js case. To delete a labelled object or a separate piece
+(what the object list's ✕ writes), add at the top of the file
+`remove_part("wheel");` or `remove_piece([x, y, z]);` — the object, or
+the piece touching that point, is dropped after compiling. Constraints:
 
 - **Top-level only.** Labels inside a SCAD boolean (the `{ ... }` of
   `difference()`, `intersection()`, `union()`, `hull()`, etc.) are
@@ -403,7 +456,7 @@ const r = partwright.paintRegion({ point: [50, 50, 50], normal: [0, 0, 1], color
 // r.nearest = { point, normal, distance, angleDeg, suggestedTolerance }
 ```
 
-**`paintRegion` is strict about seed placement** -- the point must lie on the surface within ~0.01 units. If you'd rather snap to the nearest face within a tolerance and skip the trial-and-error of placing a point exactly, use `paintNearestRegion`:
+**`paintRegion` is strict about seed placement when you pass a `normal`** -- the point must lie on the surface within ~0.01 units. Omit `normal` and it snaps to the nearest face (at any distance) and uses that face's normal. To snap only within a bounded distance, use `paintNearestRegion`:
 
 ```js
 // Snap [8, 0.39, 5] to whatever face is closest within 1.0 units, then paint.
@@ -438,7 +491,7 @@ const largestSideFace = summary.groups.find(g => Math.abs(g.normal[2]) < 0.1);
 partwright.paintFaces({ triangleIds: largestSideFace.triangleIds, color: [0.2, 0.4, 0.9] });
 ```
 
-`findFaces` filters all AND together. Pass `region: <id>` from `listRegions()` to subset by an existing painted region. The default `normalTolerance` is `0.95` (≈18° cone) — looser than `paintRegion`'s `0.9995` because it's intended for catching whole faces of a primitive, not exact-coplanar fills.
+`findFaces` filters all AND together. Pass `region: <id>` from `listRegions()` to subset by an existing painted region, or `withinPart: '<part>'` to subset to one part (label). The default `normalTolerance` is `0.95` (≈18° cone) — looser than `paintRegion`'s `0.9995` because it's intended for catching whole faces of a primitive, not exact-coplanar fills. **Omit a filter to skip it.** A key passed explicitly as `undefined` or `null` (`{ region: maybeId }` with an unset variable) is an error, as is an unknown key: it used to match the whole mesh silently.
 
 **Predictable paint primitives (no flood-fill tolerance to tune).** `paintRegion` is the right tool when you have a flat face with sharp edges around it — pick a point on the face, paint that face. It's the *wrong* tool on smooth surfaces (capsules, hulled spheres, organic shapes) because the flood-fill threshold is bimodal: too tight and you paint 2 triangles, too loose and you paint the whole connected component, with almost no useful middle. Reach for `paintNear` or `paintInBox` instead — both filter triangles by world-space geometry, so the region you paint is described in coordinates rather than tolerances.
 ```js
@@ -471,12 +524,12 @@ partwright.paintInBox({
 const a = await partwright.probePixel({ pixel: [120, 90],  view: { elevation: 30, azimuth: 45 } });
 const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30, azimuth: 45 } });
 partwright.paintStroke({
-  points: [a.point, b.point],   // ordered surface points; a single point stamps a rounded dot
+  points: [a.point, b.point],   // ordered surface points along a PATH (gaps are filled in, so a few corner points make a continuous band); a single point stamps a rounded dot
   radius: 3,                     // mesh units, > 0
-  resolution: 64,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 64, range 2–1024
+  resolution: 16,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 16, range 2–1024
   // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
   shape: 'circle',               // circle | square | diamond
-  // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
+  // surface: 'slab',            // 'slab' (default) | 'geodesic' — see below
   // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
   // wrapAngleDeg: 90,           // wrap tolerance 0–180: max edge bend paint flows across (90 stops at right-angle corners; API default 180 = wrap freely) — see below
   color: [0.9, 0.2, 0.2],
@@ -484,13 +537,15 @@ partwright.paintStroke({
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
 ```
 
-The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **64** (plenty smooth with the clip); raise it for very large curves, or use the absolute `maxEdge` override for explicit sizing.
+The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **16** (plenty smooth with the clip, and light: every stroke adds triangles that a saved session must rebuild on open); raise it only for very large curves, or use the absolute `maxEdge` override for explicit sizing. Prefer one stroke with many points over many short strokes.
 
-**The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
+**The brush is a *surface* tool, not a 3D ball.** `surface: 'slab'` (the `paintStroke` default) keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). `surface: 'geodesic'` instead flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — pass it explicitly when a stroke runs along a thin or hollow wall. Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
 
 **Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
 
-**Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
+**Driving the interactive brush from a script or test.** `paintStroke` / `paintAirbrush` return a populated region synchronously, so they never need to wait. Pointer events on the canvas commit through the async listener path instead, so the mesh updates one worker round-trip later: `await partwright.waitForPaint()` (resolves once no paint subdivision job is in flight) before reading mesh or region state after a synthetic drag.
+
+**Airbrush — soft speckle (`paintAirbrush`).** Sprays a soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. Like `paintStroke` it takes `surface`: `'slab'` (the default) sprays everything within `depth` of the stroke (0 = auto), `'geodesic'` follows surface connectivity so it can't punch through a thin wall. It works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle, which sprays on whichever Surface (Slab / Geodesic) is selected.
 
 ```js
 partwright.paintAirbrush({
@@ -506,6 +561,32 @@ partwright.paintAirbrush({
 ```
 
 **Imported meshes (STL figurines, scans): detect parts first.** A fused import has no labels, so every selector above is guessing at boundaries. Run part detection (`detectParts` → `renderParts` → `editParts` → `acceptParts`, see **[/ai/segmentation.md](/ai/segmentation.md)**): it places each boundary on the sculpted groove between named seeds — including surfaces no camera sees, like an inner arm behind a held ball — and turns every part into a real label, so `paintByLabel` / part colours paint exactly one region with clean edges.
+
+**Paint details *inside* a part with `withinPart`.** Some details have no groove to detect: the sock's stripe, the ball's panels, a logo on the shirt. Paint them with a normal selector and add `withinPart: '<part>'`. The paint is clipped to that part, so a generous radius, slab or box can't bleed onto the neighbouring part:
+
+```js
+partwright.paintSlab({ axis: 'z', offset: 14, thickness: 2, color: [0.1, 0.3, 0.8], withinPart: 'sock' });   // stripe only on the socks
+partwright.paintNear({ point: [150, 128, 44], radius: 3, color: [0, 0, 0], withinPart: 'ball' });         // panel on the ball, never the hands
+partwright.paintStroke({ points, radius: 1.5, color: [1, 1, 1], withinPart: 'shirt' });
+```
+
+Supported on `paintNear`, `paintInBox`, `paintInOrientedBox`, `paintSlab`, `paintInCylinder`, `paintConnected`, `paintRegion`, `paintNearestRegion`, `paintStroke`, `paintAirbrush`, `paintImage` and `paintFaces` (ids outside the part are dropped), on `findFaces` as a filter, and in code on `api.paint.box` / `slab` / `cylinder`. `paintPreview({..., withinPart})` dry-runs the clipped selection. `withinPart` takes any label of the current run (`listLabels()`), so it works on `api.label` regions too. An unknown part name is an error that lists the known parts. A selection with nothing inside the part is an error, not an empty region. The clip is stored on the region, so it survives reloads and re-runs. If the part later disappears (it's renamed or re-detected), the region paints nothing, as `byLabel` does. In the Paint panel, the same scope is the **Paint within** picker under the tool buttons (shown when the model has parts): it applies to every brush, bucket, slab, box and image-stamp tool until it is set back to *Whole model*. Accept parts with smooth edges (the default) so the part edge itself is smooth.
+
+**A part's triangles: `getPartTriangles(name)`.** Returns `{ name, count, area, bbox, triangleIds, truncated? }` for one part (an `api.label` region, including parts accepted from detection) on the current paint mesh (after any smooth-paint refinement). `maxResults` (default 5000) caps the id list; `count` is always the full size. **To paint inside a part, pass `withinPart` instead of shuttling ids.** `paintFaces` (and `paintInBox` / `paintNear`) record triangle ids against the model's *base* mesh, because that is how a saved region is resolved on reload and re-run: on a mesh already subdivided by smooth paint, the ids you pass are widened to the whole base triangles they belong to (live and on reload alike), so a fine selection comes out coarser than it looked.
+
+**Bands along a seam — collars, cuffs, hems: `paintAlongBoundary`.** Many garment details have **no groove of their own**: a collar, a cuff, a sock band, a belt edge. Part detection can't find them and a seed on one floods its neighbour. They do sit on a seam between two parts (shirt | neck, sleeve | hand, leg | shoe), so paint them **along that seam**:
+
+```js
+// The seam itself: ordered loops of surface points, longest first.
+partwright.partBoundary('shirt', 'skin')
+// -> { between, count, loops: [{ closed: true, length, pointCount, points: [[x,y,z], …] }] }
+
+// A 2-unit white collar on the shirt side of the neckline.
+partwright.paintAlongBoundary({ between: ['shirt', 'skin'], width: 2, color: [1, 1, 1], side: 'a', name: 'Collar' });
+// -> { regions: [{ id, name, triangles }], loops }
+```
+
+`side: 'a'` / `'b'` puts the whole `width` on that part with the band's edge exactly on the seam (the stroke is clipped with `withinPart`); `'both'` (default) centres it on the seam. Each seam loop becomes one smooth `paintStroke` densified along the loop, so the band's free edge is a clean curve — pass `resolution` / `maxEdge` / `surface` / `depth` / `wrapAngleDeg` as for `paintStroke`. A closed loop (a neckline right round) paints a closed band; a seam a third part interrupts is an open chain. Loops shorter than `width` (specks where the parts barely touch) are skipped unless they're the only one, and at most the longest 8 loops are painted (Advanced settings → *Boundary paint loop limit*); the rest are reported as `skippedLoops`. All the loops of one call are **one undo step**. Both names must be labels of the current run that touch; accept detected parts with smooth edges first so the seam is smooth too.
 
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 
@@ -538,6 +619,31 @@ if ('point' in hit) {
   });
 }
 ```
+
+**Stop a fill leaking (`withinBox` / `zMin` / `zMax`).** On a scan or a unioned figure the whole surface is one connected mesh, so a flood that should stop at a sleeve cuff or a sock roll can walk on up the arm or leg wherever there's no crease to stop it. `paintConnected` takes a spatial clamp: the flood never enters a triangle whose centroid is outside `withinBox: {min?, max?}`, and `zMin`/`zMax` are shorthands for a Z band (all AND-ed together). The seed itself must lie inside the clamp.
+
+```js
+partwright.paintConnected({
+  seed: { point: hit.point, normal: hit.normal },
+  maxDeviationDeg: 70,       // follow the curve of the leg
+  zMax: 18.5,                // ...but never above the sock roll
+  color: [0.95, 0.95, 0.95],
+  name: 'sock',
+});
+```
+
+**Clean (non-jagged) fill boundaries.** `paintRegion`, `paintConnected`, `paintNear`, `paintInBox` and `paintFaces` select *whole existing triangles*, so on a coarse or scanned mesh their boundary is a sawtooth that follows the triangulation. Recolouring specks afterwards doesn't fix that. The tools that cut the boundary through triangles instead (subdividing only along the edge) are:
+
+| Boundary you want | Tool |
+|---|---|
+| Straight / planar cut — a hem, a sock roll, a belt line, a waterline | `paintSlab({normal, offset, thickness, smooth: true})` or `paintInOrientedBox({box, smooth: true})` (both smooth by default). Tilt the slab `normal` to follow a slanted hem. |
+| Cylindrical band — a cuff, a ring around a limb | `paintInCylinder({..., axis, smooth: true})` |
+| Free-form line with no crease to stop at — a hairline, a collar curve | `paintStroke` along `probePixel` points with `wrapAngleDeg: 90`: the stroke's outline is clipped exactly, so its edge is smooth however coarse the mesh. Sweep the stroke along the boundary to "trim" a jagged fill underneath it. |
+
+A practical recipe for a feature with one jagged edge (a sock whose top should be a clean line at `z = 18.5`):
+
+1. Flood the bulk with `paintConnected`, clamped a triangle-width **short** of the line (`zMax: 18.5 - edgeLen`, where `edgeLen` is roughly the mesh's edge length there) so none of its sawteeth cross the line.
+2. Fill the gap up to the line with a smooth tool in the **same colour** — e.g. `paintSlab({axis: 'z', offset: 17, thickness: 1.5, smooth: true, color})`. Later regions win where they overlap, so do this **after** any neighbouring fill (the skin), and the smooth tool's outline is the visible edge.
 
 The seed point returned by `probePixel` is *exactly* on the mesh surface (raycast result, not a snap), so paint primitives that need precise seed placement (`paintRegion` in particular) work without seed-tolerance issues. The model's pixel-position estimation has built-in error (~±10-20px on a 320 render); `paintConnected` absorbs that fine since the seed normal anchors the flood. For `paintNear`, pick a radius generous enough for the same.
 
@@ -679,6 +785,33 @@ partwright.assertPaint({
 - `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
 
+## Cleaning up a region — grow, shrink, despeckle, combine
+
+Bucket fills on scanned or organic meshes rarely land perfectly: a few stray triangles on the far side of a seam, pin-holes where the fill skipped a triangle, a one-triangle sliver along the border. These ops edit an existing region **in place** — it keeps its id, name, colour, palette slot and layer — and each is **one `undoLastPaint()` step** (undo restores the region as it was). Regions are addressed by id or name from `listRegions()`.
+
+```js
+// Drop pieces smaller than 10 triangles; fill enclosed unpainted holes of ≤ 10.
+partwright.despeckleRegion({ region: 'sock', minIslandTriangles: 10, maxHoleTriangles: 10 });
+// -> { id, name, op: 'despeckle', triangles, before, added, removed, islandsRemoved, holesFilled }
+
+partwright.growRegion({ region: 'sock', steps: 1, zMax: 18.5 });  // +1 ring, never above z=18.5
+partwright.shrinkRegion({ region: 'hair', steps: 2 });            // peel 2 rings off the border
+
+// Boolean ops — only `region` changes; the `with` regions are left as they are.
+partwright.combineRegions({ region: 'skin', op: 'subtract', with: ['eyes', 'mouth'] });
+partwright.combineRegions({ region: 'sock', op: 'union', with: 'sock touch-up' });
+partwright.removeRegion(/* the touch-up's id */);
+```
+
+- **One step = one ring of triangles** (triangles that share a corner). The ops follow the surface, so they don't jump across a gap the way a box would — but a grow will happily follow the surface across a crease-less join, so clamp it with `withinBox` / `zMin` / `zMax` (by triangle centroid).
+- **Close / open.** `growRegion(1)` then `shrinkRegion(1)` is a morphological *close*: it fills notches that bite into the region from its border (which despeckle leaves alone — they're open to the outside, not enclosed holes) while keeping the border where it was. `shrinkRegion(1)` then `growRegion(1)` is an *open*: it removes thin spurs and one-triangle slivers poking out of it.
+- **Despeckle never erases a region outright** — the largest piece is always kept, and a "hole" must touch the region (a separate mesh piece isn't filled). Pass `0` to skip either half.
+- **They clean up specks and gaps; they don't smooth a jagged edge.** Grow/shrink move a sawtooth boundary by one triangle — it's still a sawtooth. For a clean line use a smooth selector (see *Clean (non-jagged) fill boundaries* above).
+- **Edits rebake the region as an id-baked triangle set** (the same kind `paintFaces` makes), so the original selector (seed, box, label) is no longer replayed for it — re-run the edit after a code change. On a mesh that smooth paint has subdivided, the stored ids are the *base* triangles under the edit, so after a later rebuild or reload the region snaps out to whole base triangles (same as the paint brush).
+- **Not editable:** smooth (mesh-refining) regions — smooth slabs/boxes/cylinders and brush strokes — because the edit would discard the refined edge they own, and image-stamp / pattern regions, which carry per-triangle colours.
+
+In-app AI: one tool, `editRegion({op: 'grow'|'shrink'|'despeckle'|'union'|'subtract'|'intersect', region, …})`.
+
 ## Recoloring regions in bulk
 
 `replaceColor({from, to, tolerance?})` recolors **every** region whose color matches `from` (within `tolerance`, default 0.01) to `to`. Colors are `[r,g,b]` in 0..1 — the same range as `paintFaces`/`paintRegion`. Returns `{ replaced: count }`.
@@ -688,7 +821,7 @@ partwright.assertPaint({
 partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3 }
 ```
 
-This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors. It has no undo entry (`undoLastPaint` removes the newest region, not a recolour). The in-app chat has the same **`replaceColor`** tool, plus **`setRegionVisibility({id, visible})`** (view-only, always available) and **`paintAirbrush`**.
 
 **It only rewrites user paint regions.** Colors declared *in code* (`api.paint.*` / `api.label({color})`) are re-derived from the source on every run, so `replaceColor` — like the palette slot/replace/merge operations — deliberately leaves them alone. To change one, edit the `color` argument in the code and re-run. When nothing matched but the model has code-declared colors, the result carries a `hint` saying exactly that.
 
@@ -746,6 +879,8 @@ const slot = partwright.getPalette().slots[0];
 const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice(3,5),16)/255, parseInt(slot.hex.slice(5,7),16)/255];
 partwright.paintByLabel({ label: 'body', color: [r, g, b] });
 ```
+
+In the in-app chat, the read-only **`getPalette`** tool returns `{ active: <getPalette()>, palettes: <listPalettes()> }` in one call, and **`editPalette({op, ...})`** wraps the setters below — `op: 'setActive' | 'addFilament' | 'updateFilament' | 'removeFilament' | 'setCapacity' | 'setConstrained'` with that op's own fields (unknown fields are rejected) — returning the result plus the updated palette. Editing or removing a slot does not recolour regions already painted with it: removed-slot regions keep their colour but lose the slot link, so `replaceColor` them onto a remaining slot.
 
 Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
 

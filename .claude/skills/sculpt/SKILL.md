@@ -36,19 +36,51 @@ ever brings back text + file paths.
 2. **Gather the brief.** The target description, and for `voxel` the color
    palette (hex list). For a refinement pass, the prior model file to start from
    and the specific changes wanted. Ask only if genuinely missing — don't
-   interrogate.
+   interrogate. With reference **photos**, also collect each photo's path and
+   the CLI camera that matches it (`front.png@0,0`, `back.png@180,0`, or
+   `@front` / `@back`) plus the `--match-*` flags it needs (`--match-pixel-aspect`
+   for stretched video frames, `--match-exclude base`, a `--match-mask` for a
+   busy backdrop).
 3. **Pick output paths** under `.plans/` (e.g. `.plans/<slug>.js` +
-   `.plans/<slug>.png`; `.scad` for the scad engine).
-4. **Launch the subagent** with the Agent tool, `subagent_type: model-sculpt`,
+   `.plans/<slug>.png`; `.scad` for the scad engine), plus
+   `.plans/<slug>.checklist.md` for the feature checklist.
+4. **Feature checklist up front.** Before any modelling, the reference is
+   reduced ONCE to a short checklist of 5–10 defining, checkable features —
+   proportions ("head ≈ 45% of height"), silhouette masses ("spiky hair flares
+   past the ears"), placement ("ball held at the right hip"), colours. If the
+   main thread hasn't looked at the photo, let `model-sculpt` write it on its
+   first pass (it saves it to the checklist path and returns it). Every later
+   pass, and every critic call, is scored against this list — it is what stops
+   a sculpt from drifting toward "looks fine" while a defining feature is
+   missing.
+5. **Launch the subagent** with the Agent tool, `subagent_type: model-sculpt`,
    passing: the engine, the target, palette/constraints, the output paths, the
-   gates, and explicitly "return text only — do not paste or send images."
-5. **Relay + surface.** When it returns: relay its `LIKENESS` + `TRADE-OFFS` and
-   the `STATS` line to the user, and `SendUserFile` the `PREVIEW` path **without
-   Reading it**.
-6. **Offer a refinement pass.** Ask whether they want tweaks; if so, re-launch
+   references + cameras + match flags, the checklist path, the gates, and
+   explicitly "return text only — do not paste or send images."
+6. **Checkpoint critic.** `model-sculpt` stops on a **plateau** of the numeric
+   score (or after a batch of ~5 passes) and returns. That is a checkpoint:
+   launch `subagent_type: model-critic` (read-only) with the model file, the
+   references + cameras, and the checklist. It renders at the matching angles
+   and returns a ranked top-3 fix list. Relaunch `model-sculpt` with `START
+   FROM` = the current file and those three fixes. Call the critic **only at
+   checkpoints** — never every pass; it spends image tokens, and the
+   text-only `--match-photo` score covers routine passes. Stop when the critic
+   reports only polish items, or the score and checklist stop improving across
+   two checkpoints.
+7. **Relay + surface.** When done: relay `LIKENESS` + `TRADE-OFFS`, the `STATS`
+   and `SCORE` lines to the user, and `SendUserFile` the `PREVIEW` path
+   **without Reading it**.
+8. **Offer a refinement pass.** Ask whether they want tweaks; if so, re-launch
    `model-sculpt` with the prior file as `START FROM` plus the requested changes.
 
 ## Notes
+
+- **Why numbers + checklist + checkpoints:** a fixed pass count either stops
+  early or burns passes on noise, and an agent judging its own renders drifts.
+  The text-only photo-match score (`model:preview --match-photo`, mean
+  silhouette IoU over every reference view) decides keep/revert per pass for
+  free; the checklist keeps defining features from being traded away for IoU;
+  the critic is a fresh pair of eyes at the moments numbers stop helping.
 
 - `model-sculpt` runs on Sonnet, so the cheap-to-judge geometry loop doesn't burn
   Opus tokens.

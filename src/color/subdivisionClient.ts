@@ -9,7 +9,9 @@
 
 import type { MeshData } from '../geometry/types';
 import type { RegionDescriptor } from './regions';
+import type { PatternContext } from './colorPattern';
 import type { RefineRequest, RefineResponse, RefineDone } from './subdivisionWorker';
+import type { RefineProgress } from './refinePipeline';
 import { registerWorker, markWorkerStarted, markWorkerRestarted, markWorkerStopped } from '../diagnostics/workerStats';
 
 let worker: Worker | null = null;
@@ -21,6 +23,7 @@ interface PendingJob {
   reject: (err: Error) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
+  onProgress?: RefineProgress;
 }
 
 let inFlight: PendingJob | null = null;
@@ -32,9 +35,15 @@ export interface RefineJobInput {
    *  mesh; for a full rebuild it's the same as `base`. */
   input: MeshData;
   descriptors: RegionDescriptor[];
+  /** Contexts for smooth `pattern` descriptors (by descriptor index) — see
+   *  `RefineRequest.patternContexts`. */
+  patternContexts?: Array<{ index: number; ctx: PatternContext }>;
   /** Aborting terminates the Worker, drops the in-flight job, and rejects this
    *  call's promise with an `AbortError`. The next job creates a fresh Worker. */
   signal?: AbortSignal;
+  /** Step progress from the worker: `done` of `total` steps, plus a label for
+   *  the step now running. */
+  onProgress?: RefineProgress;
 }
 
 export interface RefinedResult {
@@ -65,6 +74,10 @@ function ensureWorker(): Worker {
   worker.onmessage = (e: MessageEvent<RefineResponse>) => {
     const msg = e.data;
     if (!inFlight || msg.id !== inFlight.id) return; // stale
+    if (msg.type === 'progress') {
+      inFlight.onProgress?.(msg.done, msg.total, msg.label);
+      return;
+    }
     const job = inFlight;
     inFlight = null;
     if (job.signal && job.onAbort) job.signal.removeEventListener('abort', job.onAbort);
@@ -142,6 +155,7 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
       resolve: (result) => resolve(reattachPaintedMask(result, input.input)),
       reject,
       signal: input.signal,
+      onProgress: input.onProgress,
     };
     if (input.signal) {
       job.onAbort = () => {
@@ -164,6 +178,7 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
       base: input.base,
       input: input.input,
       descriptors: input.descriptors,
+      ...(input.patternContexts && input.patternContexts.length > 0 ? { patternContexts: input.patternContexts } : {}),
     };
     w.postMessage(req);
   });

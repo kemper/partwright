@@ -91,12 +91,24 @@ export interface MeshResult {
    *  and tells callers which knobs (and value ranges) the model exposes. Absent
    *  when the model declared no parameters. */
   paramsSchema?: ParamSpec[];
+  /** What the model code printed with `console.log` / `warn` / `error` this
+   *  run (warn/error lines prefixed), capped per run (modelConsole.ts). Rides
+   *  on error results too, so output before a throw isn't lost. Absent when
+   *  nothing was printed. */
+  logs?: string[];
   /** Size (bytes) of the manifold-3d WASM heap after this run — its grown
    *  high-water mark (WASM memory never shrinks). Surfaced in the diagnostics so
    *  users can see how close a run came to the ~4 GB ceiling, and on an OOM
    *  whether it truly hit it or failed far below. Only set for manifold-js runs;
    *  absent for the other engines (which own separate heaps). */
   engineHeapBytes?: number;
+  /** The Manifold-dependent stats (volume, genus, components, …) the Worker
+   *  computed over its live result Manifold. Only sent for a manifold-js run
+   *  of at least `renderer.lazyManifoldMinTriangles` triangles: the main
+   *  thread then uses these for the stats and defers rebuilding its own
+   *  Manifold (a multi-second `Manifold.ofMesh` on a big mesh) until a slice /
+   *  boolean / decompose actually needs one. */
+  manifoldFacts?: import('./manifoldFacts').ManifoldFacts;
   /** Number of occupied voxels in the grid this run produced. Only set by the
    *  voxel engine; absent for the mesh/CSG/BREP engines. Surfaced in the
    *  geometry-data stats so agents can confirm a voxel model's size without
@@ -122,6 +134,12 @@ export interface MeshResult {
    *  makes that visible). Only set by the voxel engine, when a labelled sdf
    *  fill ran. */
   sdfLabelCounts?: Record<string, number>;
+  /** The voxel engine's grid as transferable data (`VoxelGridTransfer` from
+   *  voxel/grid — kept `unknown` here so this low-level type doesn't depend on
+   *  the voxel layer). The main thread rebuilds it with
+   *  `VoxelGrid.fromTransfer` for VOX/greedy export and Voxel Studio, instead of
+   *  re-running model code itself. Only set by the voxel engine. */
+  voxelGrid?: unknown;
 }
 
 export interface CrossSectionResult {

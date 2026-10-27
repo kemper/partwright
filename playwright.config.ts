@@ -23,8 +23,11 @@ function detectChromiumExecutable(): string | undefined {
     .filter(d => /^chromium-\d+$/.test(d))
     .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
   for (const d of dirs) {
-    const candidate = join(sandboxRoot, d, 'chrome-linux', 'chrome');
-    if (existsSync(candidate)) return candidate;
+    // Older images ship `chrome-linux/`, newer ones `chrome-linux64/`.
+    for (const sub of ['chrome-linux', 'chrome-linux64']) {
+      const candidate = join(sandboxRoot, d, sub, 'chrome');
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return undefined;
 }
@@ -46,6 +49,29 @@ if (shard) {
   // eslint-disable-next-line no-console
   console.info(`[playwright.config] E2E_SHARD ${shard.index}/${shard.total}: ${shardFiles!.length} spec files`);
 }
+
+// E2E_PORT lets several checkouts (e.g. parallel agent worktrees) run specs at
+// once without reusing each other's dev server on the default port.
+const port = Number(process.env.E2E_PORT || 5173);
+// Engine-sandbox 'origin' mode (tests/engine-sandbox.spec.ts) needs the frame
+// served from a DIFFERENT origin: a second dev server of this same checkout on
+// another port. The app server is told about it via VITE_SANDBOX_ORIGIN; with
+// the sandbox off (the default) that variable is inert.
+// port+1000 (not +1): parallel worktrees take neighbouring E2E_PORTs.
+const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1000);
+const devCommand = (p: number) => (p === 5173 ? 'npm run dev' : `npm run dev -- --port ${p} --strictPort`);
+const devEnv = {
+  // The app default is the opaque sandbox; the broad suite stays on the plain
+  // Worker so only the sandbox specs (which pick a mode via localStorage) pay for it.
+  VITE_ENGINE_SANDBOX: 'off',
+  VITE_SANDBOX_ORIGIN: `http://localhost:${sandboxPort}`,
+  // The app origin the 'origin'-mode frame accepts spawn requests from (and
+  // its CSP frame-ancestors).
+  VITE_APP_ORIGIN: `http://localhost:${port}`,
+  // Opaque-mode frames load modules cross-origin (Origin: null); the dev
+  // server only answers those with CORS when this opt-in is set (vite.config.ts).
+  PARTWRIGHT_SANDBOX_DEV_CORS: '1',
+};
 
 export default defineConfig({
   testDir: './tests',
@@ -69,7 +95,7 @@ export default defineConfig({
     : [['list']],
   timeout: 30_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${port}`,
     trace: 'on-first-retry',
     // Default Desktop Chrome (1280x720) clips the bottom of the AI panel
     // (toggle strip + input row land below the fold), making low-pill
@@ -87,10 +113,24 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  webServer: [
+    {
+      command: devCommand(port),
+      url: `http://localhost:${port}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      env: devEnv,
+    },
+    {
+      // Sandbox origin for engine-sandbox 'origin' mode — only that spec's
+      // frames ever load from it.
+      command: `npm run dev -- --port ${sandboxPort} --strictPort`,
+      url: `http://localhost:${sandboxPort}/sandbox.html`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      // Its own dependency pre-bundle cache, so the two dev servers of one
+      // checkout don't race on node_modules/.vite (vite.config.ts cacheDir).
+      env: { ...devEnv, VITE_CACHE_DIR: 'node_modules/.vite-sandbox-origin' },
+    },
+  ],
 });

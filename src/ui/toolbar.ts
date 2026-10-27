@@ -43,6 +43,8 @@ export interface ToolbarCallbacks {
   onPublish: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
+  /** Several files chosen at once (STL / 3MF import together). */
+  onImportFiles: (files: File[]) => void | Promise<void>;
   /** Open the "Import from URL…" modal (share link or remote file URL). */
   onImportFromURL: () => void;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
@@ -115,7 +117,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
  *  sync with `classifyImportSource` (src/import/importInbox.ts) — every type
  *  the classifier recognizes should be selectable here. `.svg` opens the
  *  Relief Studio wizard; `.avif` is treated as a raster image. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.3mf,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -340,7 +342,7 @@ export function createToolbar(
   importWrapper.id = 'import-wrapper';
 
   const btnImport = createButton('btn-import', '\u2191 Import');
-  btnImport.title = 'Import a .partwright.json session, a .js / .scad source file, or an .stl mesh';
+  btnImport.title = 'Import a .partwright.json session, a .js / .scad source file, or an .stl / .3mf mesh';
   importWrapper.appendChild(btnImport);
 
   // Hidden file input — kept inside the wrapper so click-outside-to-close still works.
@@ -348,9 +350,12 @@ export function createToolbar(
   importInput.type = 'file';
   importInput.accept = IMPORT_ACCEPT;
   importInput.className = 'hidden';
+  // Several STL / 3MF files can be chosen at once and import together.
+  importInput.multiple = true;
   importInput.addEventListener('change', async () => {
-    const file = importInput.files?.[0];
-    if (file) await callbacks.onImportFile(file);
+    const files = Array.from(importInput.files ?? []);
+    if (files.length > 1) await callbacks.onImportFiles(files);
+    else if (files[0]) await callbacks.onImportFile(files[0]);
     importInput.value = '';
   });
   importWrapper.appendChild(importInput);
@@ -362,7 +367,7 @@ export function createToolbar(
   importDropdown.appendChild(createMenuSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
     'Choose file\u2026',
-    'Open a .partwright.json session, a .js / .scad source file, or an .stl mesh.',
+    'Open a .partwright.json session, a .js / .scad source file, or .stl / .3mf meshes — pick several to import them together (3MF keeps its colours + filament palette).',
   );
   chooseFileOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');

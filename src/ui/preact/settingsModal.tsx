@@ -15,11 +15,10 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { signal, useSignal, type Signal } from '@preact/signals';
 
-import { deleteKey, getKey, putKey } from '../../ai/db';
+import { deleteKey, getKey } from '../../ai/db';
 import { resetClient, listModels as listAnthropicModels } from '../../ai/anthropic';
 import { resetClient as resetOpenaiClient, listModels as listOpenaiModels } from '../../ai/openai';
 import { resetClient as resetGeminiClient, listModels as listGeminiModels } from '../../ai/gemini';
-import { listModels as listCustomModels, validateConnection as validateCustomConnection } from '../../ai/custom';
 import { formatUsd } from '../../ai/cost';
 import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from '../aiKeyModal';
 import { renderLocalPicker } from '../aiLocalModal';
@@ -38,11 +37,6 @@ import {
   setAnthropicModel,
   setOpenaiModel,
   setGeminiModel,
-  setCustomModel,
-  setCustomReasoningEffort,
-  setCustomModels,
-  setCustomBaseUrl,
-  DEFAULT_CUSTOM_BASE_URL,
   providerLabel,
   AUTO_COMPACT_OPTIONS,
   ANTHROPIC_MODEL_OPTIONS,
@@ -55,7 +49,7 @@ import type { AnthropicModelId, Provider } from '../../ai/types';
 
 import { settingsSignal, setSettings, resyncSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton, TabBar, type TabSpec } from './primitives';
-import { CliBridgeSetup, generateApiKey, isGeneratedApiKey } from './cliBridgeSetup';
+import { CustomEndpointsTab, customEditorUrl } from './customEndpointsTab';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -79,14 +73,15 @@ const keyVersion = signal(0);
 function bumpKeyVersion(): void { keyVersion.value = keyVersion.value + 1; }
 
 /** The currently-mounted tab can register a flush for local, not-yet-persisted
- *  edits — chiefly the Custom tab's typed-but-unsaved API key (whose own "Save
- *  key" button is easy to miss). The footer's Save / Save & activate buttons,
- *  and EnableRow's Enable, await this before acting so closing the modal no
- *  longer silently drops a typed key. Only one tab is mounted at a time;
- *  cleared on tab switch / unmount. */
-let pendingFlush: (() => Promise<void>) | null = null;
-function setPendingFlush(fn: (() => Promise<void>) | null): void { pendingFlush = fn; }
-async function runPendingFlush(): Promise<void> { if (pendingFlush) await pendingFlush(); }
+ *  edits — chiefly the Custom tab's endpoint editor (a typed-but-not-blurred
+ *  key, URL or model). The footer's Save / Save & activate buttons, and
+ *  EnableRow's Enable, await this before acting so closing the modal never
+ *  silently drops a typed key. `activate` = Save & activate / Enable, which
+ *  also make the Custom provider use the endpoint open in the editor. Only
+ *  one tab is mounted at a time; cleared on tab switch / unmount. */
+let pendingFlush: ((activate: boolean) => Promise<void>) | null = null;
+function setPendingFlush(fn: ((activate: boolean) => Promise<void>) | null): void { pendingFlush = fn; }
+async function runPendingFlush(activate: boolean): Promise<void> { if (pendingFlush) await pendingFlush(activate); }
 
 export function SettingsModalBody(props: {
   cb: AiSettingsCallbacks;
@@ -111,7 +106,11 @@ export function SettingsModalBody(props: {
         {tab.value === 'local'
           ? <LocalTab cb={cb} close={close} />
           : tab.value === 'custom'
-            ? <CustomTab cb={cb} close={close} />
+            ? <CustomEndpointsTab
+                onChange={() => { bumpKeyVersion(); cb.onChange(); }}
+                registerFlush={setPendingFlush}
+                systemPrompt={<SystemPromptSection provider="custom" close={close} cb={cb} />}
+              />
             : <HostedTab provider={tab.value} cb={cb} close={close} switchTab={t => { tab.value = t; }} />}
       </div>
       <Divider />
@@ -136,11 +135,10 @@ export function SettingsModalFooter(props: {
   const ready = useProviderReady(viewedTab);
   const label = providerLabel(viewedTab);
 
-  // Commit any pending edits (the Custom tab's typed-but-unsaved API key,
-  // base URL and model), optionally promote this provider to active, and
+  // Commit any pending edits (the Custom tab's endpoint editor), optionally promote this provider to active, and
   // close. Save persists without switching; Save & activate also switches.
   async function commit(activate: boolean): Promise<void> {
-    await runPendingFlush();
+    await runPendingFlush(activate);
     if (activate) setSettings(setProvider(loadSettings(), viewedTab));
     cb.onChange();
     close();
@@ -189,8 +187,10 @@ function useProviderReady(viewedTab: Provider): boolean {
   }, [viewedTab, keyVersion.value]);
 
   const settings = settingsSignal.value;
+  // Custom: activating applies the endpoint open in the editor, so gate on
+  // ITS URL (falling back to the applied one before the tab has loaded).
   return viewedTab === 'custom'
-    ? settings.toggles.customBaseUrl.trim().length > 0
+    ? (customEditorUrl.value ?? settings.toggles.customBaseUrl).trim().length > 0
     : hasKey.value === true;
 }
 
@@ -236,7 +236,7 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
               : `Connect your ${label} key before enabling it.`}
           onClick={() => {
             void (async () => {
-              await runPendingFlush();
+              await runPendingFlush(true);
               setSettings(setProvider(loadSettings(), viewedTab));
               cb.onChange();
             })();
@@ -575,260 +575,7 @@ function LoadModelsRow(props: {
 }
 
 // === Custom (OpenAI-compatible) tab ===
-
-/** A generic OpenAI-compatible endpoint — a self-hosted llama.cpp / vLLM /
- *  LM Studio server, etc. Base URL + model id persist to settings (so they
- *  serialize into the agent Worker); the OPTIONAL API key lives in the aiKeys
- *  store keyed by 'custom'. */
-function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
-  const { cb, close } = props;
-  const settings = settingsSignal.value;
-
-  // Pre-fill with the bridge default for existing users whose stored URL is
-  // still empty (their settings predate the default); new users already get it
-  // from DEFAULT_TOGGLES. The pendingFlush below persists this on close so the
-  // endpoint is configured without the user typing it.
-  const url = useSignal(settings.toggles.customBaseUrl || DEFAULT_CUSTOM_BASE_URL);
-  const model = useSignal(settings.toggles.customModel);
-  const keyVal = useSignal('');
-  // The key the bridge setup's "set an API key" command writes — reusable via
-  // the "Use the bridge key" button below, so the value the proxy is configured
-  // with matches the one Partwright sends. A fresh one per modal open until a
-  // generated key is saved; from then on it's the saved key, so re-running the
-  // command re-syncs a bridge whose config drifted instead of minting another.
-  const genKey = useSignal(generateApiKey());
-  const hasKey = useSignal<boolean | null>(null);
-  const storedKey = useSignal('');
-  const showStoredKey = useSignal(false);
-  // Seed from the last fetched list (persisted) so reopening the modal shows
-  // the endpoint's models without a re-fetch — and so the AI panel dropdown
-  // and these pills stay in sync.
-  const models = useSignal<{ id: string; label: string }[]>(
-    settings.toggles.customModels.map(id => ({ id, label: id })),
-  );
-  const status = useSignal('');
-  const statusErr = useSignal(false);
-  const busy = useSignal(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getKey('custom').then(k => {
-      if (cancelled) return;
-      hasKey.value = !!k;
-      storedKey.value = k?.apiKey ?? '';
-      // Only our own generated keys: they're safe to drop into the shell
-      // one-liner and match its KEY_PATTERN. A pasted key stays out of step 2.
-      if (k?.apiKey && isGeneratedApiKey(k.apiKey)) genKey.value = k.apiKey;
-    });
-    return () => { cancelled = true; };
-  }, [keyVersion.value]);
-
-  // Let the footer's Save / Save & activate (and EnableRow's Enable) commit
-  // the typed-but-unsaved API key + the latest URL/model before closing — the
-  // "Save key" button is easy to miss, which silently dropped the key before.
-  useEffect(() => {
-    setPendingFlush(async () => {
-      let s = setCustomBaseUrl(loadSettings(), url.value);
-      s = setCustomModel(s, model.value.trim());
-      setSettings(s);
-      if (keyVal.value.trim()) await saveKey();
-      cb.onChange();
-    });
-    return () => setPendingFlush(null);
-  }, []);
-
-  // Effective key for test/fetch: the just-typed value wins, else the stored one.
-  async function effectiveKey(): Promise<string> {
-    if (keyVal.value.trim()) return keyVal.value.trim();
-    return (await getKey('custom'))?.apiKey ?? '';
-  }
-
-  function persistUrl(): void { setSettings(setCustomBaseUrl(loadSettings(), url.value)); cb.onChange(); }
-  function persistModel(id: string): void {
-    model.value = id;
-    setSettings(setCustomModel(loadSettings(), id.trim()));
-    cb.onChange();
-  }
-
-  async function testConnection(): Promise<void> {
-    busy.value = true; status.value = 'Testing…'; statusErr.value = false;
-    persistUrl();
-    const err = await validateCustomConnection(url.value, await effectiveKey());
-    busy.value = false;
-    statusErr.value = !!err;
-    status.value = err ?? 'Connected — endpoint reachable.';
-  }
-
-  async function fetchModels(): Promise<void> {
-    busy.value = true; status.value = 'Loading models…'; statusErr.value = false;
-    persistUrl();
-    try {
-      const list = await listCustomModels(url.value, await effectiveKey());
-      models.value = list;
-      // Persist the ids so the AI panel's model picker can offer them as a
-      // dropdown, the way the cloud providers do.
-      setSettings(setCustomModels(loadSettings(), list.map(m => m.id)));
-      cb.onChange();
-      statusErr.value = false;
-      status.value = list.length ? `${list.length} model(s) found.` : 'Endpoint reported no models.';
-      // Auto-select when the server serves exactly one and nothing's chosen.
-      if (!model.value.trim() && list.length === 1) persistModel(list[0].id);
-    } catch (err) {
-      statusErr.value = true;
-      status.value = err instanceof Error ? err.message : String(err);
-    } finally {
-      busy.value = false;
-    }
-  }
-
-  async function saveKey(): Promise<void> {
-    const k = keyVal.value.trim();
-    if (!k) return;
-    const existing = await getKey('custom');
-    await putKey({
-      provider: 'custom',
-      apiKey: k,
-      createdAt: existing?.createdAt ?? Date.now(),
-      lastUsed: Date.now(),
-      totalInputTokens: existing?.totalInputTokens ?? 0,
-      totalOutputTokens: existing?.totalOutputTokens ?? 0,
-      totalCostUsd: existing?.totalCostUsd ?? 0,
-    });
-    keyVal.value = '';
-    bumpKeyVersion();
-    cb.onChange();
-  }
-
-  async function removeKey(): Promise<void> {
-    // genKey keeps the removed key on purpose: the bridge config still holds
-    // it, so "Use the bridge key" can restore it.
-    showStoredKey.value = false;
-    await deleteKey('custom');
-    bumpKeyVersion();
-    cb.onChange();
-  }
-
-  // Quick-setup card's "Use this endpoint" → fill the Base URL and test it.
-  function useEndpoint(u: string): void {
-    url.value = u;
-    void testConnection(); // persists the URL itself
-  }
-
-  return (
-    <>
-      <CliBridgeSetup apiKeyExample={genKey.value} onUseEndpoint={useEndpoint} />
-      <Divider />
-      <Section label="About">
-        {/* eslint-disable-next-line react/no-danger */}
-        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a local subscription bridge (see above), a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt. The optional API key is stored only in this browser.' }} />
-        {/* eslint-disable-next-line react/no-danger */}
-        <div class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug" dangerouslySetInnerHTML={{ __html: '<strong>Connectivity:</strong> the endpoint must allow this site via <strong>CORS</strong>. When Partwright is served over HTTPS, the endpoint must be HTTPS too (browsers block <code>https→http</code>) — except <code>http://localhost</code>, which is exempt. For llama.cpp, run <code>llama-server</code> and pass <code>--api-key</code> only if you want auth.' }} />
-      </Section>
-      <Divider />
-      <Section label="Endpoint">
-        <label class="flex flex-col gap-1">
-          <span class="text-xs text-zinc-400">Base URL</span>
-          <input
-            type="text"
-            placeholder="http://localhost:8080/v1"
-            class="w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-            spellcheck={false}
-            value={url.value}
-            onInput={e => { url.value = (e.currentTarget as HTMLInputElement).value; }}
-            onChange={persistUrl}
-          />
-          <span class="text-[10px] text-zinc-500">Include the version path (most servers serve under <code>/v1</code>). We append <code>/chat/completions</code> and <code>/models</code>.</span>
-        </label>
-        <div class="flex items-center gap-2 flex-wrap">
-          <SecondaryButton label="Test connection" size="sm" disabled={busy.value} onClick={() => { void testConnection(); }} />
-          <SecondaryButton label="Fetch models" size="sm" disabled={busy.value} onClick={() => { void fetchModels(); }} />
-          {status.value && <span class={'text-[10px] ' + (statusErr.value ? 'text-red-400' : 'text-emerald-400')}>{status.value}</span>}
-        </div>
-      </Section>
-      <Divider />
-      <Section label="Model">
-        <label class="flex flex-col gap-1">
-          <span class="text-xs text-zinc-400">Model id</span>
-          <input
-            type="text"
-            placeholder="e.g. llama-3.3-70b-instruct"
-            class="w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-            spellcheck={false}
-            value={model.value}
-            onInput={e => { model.value = (e.currentTarget as HTMLInputElement).value; }}
-            onChange={() => persistModel(model.value)}
-          />
-        </label>
-        {models.value.length > 0 && (
-          <div class="flex flex-wrap gap-1">
-            {models.value.map(m => (
-              <Pill key={m.id} active={model.value === m.id} label={m.label} onClick={() => persistModel(m.id)} />
-            ))}
-          </div>
-        )}
-        <span class="text-[10px] text-zinc-500">Use <strong>Fetch models</strong> above to list what the endpoint serves, or type the id directly.</span>
-      </Section>
-      <Divider />
-      <Section label="Reasoning">
-        <label class="flex items-start gap-2 text-xs text-zinc-300">
-          <input
-            type="checkbox"
-            class="mt-0.5"
-            data-testid="custom-reasoning-effort"
-            checked={settings.toggles.customReasoningEffort}
-            onChange={e => {
-              setSettings(setCustomReasoningEffort(loadSettings(), (e.currentTarget as HTMLInputElement).checked));
-              cb.onChange();
-            }}
-          />
-          <span dangerouslySetInnerHTML={{ __html: '<strong class="text-zinc-200">Send the Thinking level as <code>reasoning_effort</code>.</strong> <span class="text-zinc-400">Lets the 🧠 pill set reasoning depth through the endpoint — Low → Max are sent as-is (Off and Default send nothing). Made for CLIProxyAPI, which maps each level to the model it routes to. Servers that only accept low / medium / high may reject XHigh or Max, and Ollama rejects the field on models that don’t think. Either way, any level above Off asks the endpoint to stream the model’s reasoning.</span>' }} />
-        </label>
-      </Section>
-      <Divider />
-      <Section label="API key (optional)">
-        {hasKey.value === true ? (
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[11px] text-emerald-300 min-w-0">
-              A key is stored for this endpoint
-              {showStoredKey.value
-                ? <>: <code class="font-mono text-zinc-200 break-all">{storedKey.value}</code></>
-                : '.'}
-            </span>
-            <div class="flex items-center gap-3 shrink-0">
-              <button type="button" class="text-[11px] text-zinc-300 hover:text-zinc-100 underline" onClick={() => { showStoredKey.value = !showStoredKey.value; }}>{showStoredKey.value ? 'Hide' : 'Show'}</button>
-              <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
-            </div>
-          </div>
-        ) : (
-          <div class="flex flex-col gap-1.5">
-            <div class="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="leave blank if the endpoint needs no auth"
-                class="flex-1 px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-                spellcheck={false}
-                autocomplete="off"
-                value={keyVal.value}
-                onInput={e => { keyVal.value = (e.currentTarget as HTMLInputElement).value; }}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveKey(); } }}
-              />
-              <SecondaryButton label="Save key" size="sm" disabled={!keyVal.value.trim()} onClick={() => { void saveKey(); }} />
-            </div>
-            <div class="flex items-center gap-2">
-              <SecondaryButton label="Use the bridge key" size="sm" onClick={() => { keyVal.value = genKey.value; }} />
-              <span class="text-[10px] text-zinc-500">Fills the key from the bridge setup’s step 2 — only if you ran that command with it.</span>
-            </div>
-          </div>
-        )}
-        <span class="text-[10px] text-zinc-500">Sent as <code>Authorization: Bearer …</code>. The key is shown in plain text so you can match it against your bridge config. Other endpoints with no auth can leave this blank.</span>
-      </Section>
-      <Divider />
-      <SystemPromptSection provider="custom" close={close} cb={cb} />
-    </>
-  );
-}
-
-// === Local tab ===
+// Saved endpoints + the endpoint editor live in customEndpointsTab.tsx.
 
 function LocalTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   const { cb, close } = props;
@@ -1044,7 +791,7 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
     <Section label="Automatic review">
       <div
         class="text-[11px] text-zinc-400 leading-snug"
-        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your request, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
+        dangerouslySetInnerHTML={{ __html: 'After a task that changed the model finishes, a reviewer with a <strong>fresh context</strong> — your messages, any reference images you attached, the final code, stats and a 4-view render, none of the agent’s own reasoning — grades the result and suggests fixes. It costs one extra request per task (a single call, no tools). On by default in the Standard and Full presets; on/off applies to this window and is also toggled by the 🔍 Review pill; Local models can’t review, so pick a hosted reviewer when chatting locally.' }}
       />
       <div class="flex flex-wrap gap-1">
         <Pill active={!enabled} label="Off" onClick={() => setEnabled(false)} />
@@ -1090,6 +837,14 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
           ))}
         </div>
         <span class="text-[10px] text-zinc-500">With fix rounds, a review that doesn’t pass is handed back to the agent to address; each round is reviewed again until it passes or the rounds run out. The $ cap stops further rounds; the iteration cap applies to each round.</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">What it reads of the chat</span>
+        <div class="flex flex-wrap gap-1">
+          <Pill active={!review.includeConversation} label="Latest request" onClick={() => update({ includeConversation: false })} />
+          <Pill active={review.includeConversation} label="All your messages" onClick={() => update({ includeConversation: true })} />
+        </div>
+        <span class="text-[10px] text-zinc-500">“All your messages” sends everything you wrote in this chat — every requirement and correction — but never the agent’s replies, so the review stays independent. (After a compaction, the agent’s summary of the deleted early turns stands in for them, labelled as the agent’s.) Also the default for the 👁 Review button. Budget: Advanced Settings → “Your messages sent to reviews”.</span>
       </div>
       <div class="flex flex-col gap-1">
         <span class="text-xs text-zinc-400">Review prompt</span>
