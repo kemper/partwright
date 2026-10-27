@@ -1377,6 +1377,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={128} max={2048} integer
           onChange={v => set('import', 'photoMatchRenderSize', v)}
         />
+        <Field cfgKey="import.humanFitBudget"
+          label="Human photo fit: build budget"
+          unit="builds"
+          hint="Candidate bodies the photo fit builds by default."
+          tooltip="fitHuman (and the AI's fitHumanToPhoto) searches api.human's body sliders against a photo's silhouette. Each candidate is a full model build in the engine Worker (roughly 0.5–1 s), so this sets how long a fit takes; more builds refine the result further."
+          defaultValue={APP_CONFIG_DEFAULTS.import.humanFitBudget}
+          value={c.import.humanFitBudget}
+          min={10} max={400} integer
+          onChange={v => set('import', 'humanFitBudget', v)}
+        />
         <Field cfgKey="import.photoMatchMinSubjectPx"
           label="Photo match: minimum subject height"
           unit="px"

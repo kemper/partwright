@@ -70,7 +70,7 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'voxel', 'colors', 'print-safety',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'human', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
@@ -394,6 +394,33 @@ const ALL_TOOLS: ToolDefinition[] = [
             },
           },
         },
+      },
+    },
+  },
+  {
+    name: 'fitHumanToPhoto',
+    description: 'Fit an api.human figure\'s BODY to a full-body reference photo, automatically: searches the body sliders (gender, weight, muscle, torso shape, shoulders, hips, leg length, head size) and the arm/leg spread against the photo\'s silhouette, building each candidate headlessly (~0.5–1 s each, `budget` builds, default from Advanced Settings), then commits the best fit as a version. Use it as the FIRST step of "make a person that looks like this photo" with api.human: fit the body, then dress/style it (hair, wear, expression, face morphs) by editing the code, checking with photoMatch. Pass `base` = api.human options to keep while fitting (e.g. {hair: "bob", wear: ["tshirt","jeans"]}) — clothes change the silhouette, so include them when the photo is clothed. A side photo (views with azimuth 90) separates gender, bust and belly that a front photo can\'t. Returns {silhouetteIoU, fitted (the slider values), evaluations, seconds} plus the saved version (the code is not echoed — getCode if you need it). See /ai/human.md#fit-to-a-photo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Front photo of the whole person: an image attachment id or label, or a data:image/ URL. Omit when exactly one image is attached.' },
+        views: {
+          type: 'array',
+          description: 'Several photos (replaces image), 1–4: each {image, azimuth?, elevation?, mask?}. azimuth 0 = front, 90 = the figure\'s left side, 180 = back.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string', description: 'Attachment id/label or data URL.' },
+              azimuth: { type: 'number', description: 'Camera azimuth of this photo, degrees (0 = front).' },
+              elevation: { type: 'number', description: 'Camera elevation, degrees (0 = level).' },
+              mask: { type: 'string', description: 'Optional manual silhouette (white = subject) for a busy backdrop.' },
+            },
+          },
+        },
+        base: { type: 'object', description: 'api.human options kept while fitting (hair, wear, style, expression, height …). The fit only overwrites the sliders it searches.' },
+        fit: { type: 'array', items: { type: 'string' }, description: 'Dimensions to search (default: gender, weight, muscle, vShape, shoulders, hips, legs, head, armL, armR, legSpread). Others: age, breast, belly, headWidth.' },
+        budget: { type: 'integer', description: 'Candidate builds (2–1000). Default from Advanced Settings (80); more refines further but takes longer.' },
+        label: { type: 'string', description: 'Version label (default "Human fit").' },
       },
     },
   },
@@ -2894,7 +2921,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
+const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3730,6 +3757,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintAlongBoundary(input);
     case 'photoMatch':
       return await api.photoMatch(input);
+    case 'fitHumanToPhoto': {
+      // Always commits (like buildCharacter) and drops the generated code from
+      // the result: the model only needs it to hand-edit, via getCode.
+      const r = await api.fitHuman({ ...input, save: true }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'buildCharacter': {
       // Always commits (the chat AI's work should leave a version), and drops
       // the generated code from the result — it is a few KB the model only

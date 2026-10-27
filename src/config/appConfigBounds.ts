@@ -150,6 +150,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     photoMatchColorShiftWarn: { min: 5, max: 150, integer: true },
     photoMatchMaxRegionDistance: { min: 0.01, max: 1 },
     photoMatchRenderSize: { min: 128, max: 2048, integer: true },
+    humanFitBudget: { min: 10, max: 400, integer: true },
     photoMatchMinSubjectPx: { min: 0, max: 4000, integer: true },
     photoMatchAmbiguousDeltaE: { min: 0, max: 60 },
     photoMatchOutlineMinPct: { min: 0.1, max: 20 },
