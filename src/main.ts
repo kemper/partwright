@@ -269,6 +269,7 @@ import { startProgress, updateProgress, endProgress, __setProgressModalDelayForT
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { setEngineTrustDomain, getEngineTrustDomain } from './geometry/trustDomain';
+import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, fitSilhouetteIoU } from './human/humanFit';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -1081,6 +1082,9 @@ async function decodeImageToRgba(src: string): Promise<{ width: number; height: 
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
   return { width: id.width, height: id.height, data: id.data };
 }
+
+/** Most photos one fitHuman call scores per candidate (structural cap). */
+const HUMAN_FIT_MAX_VIEWS = 4;
 
 /** Most reference views one photoMatch call scores (each is a full render +
  *  score; structural cap, not a tuning knob). */
@@ -15210,6 +15214,118 @@ async function main() {
       return { silhouetteIoU: combined.silhouetteIoU, minIoU: combined.minIoU, worst: combined.worst, warnings: combined.warnings, views: results };
     },
 
+    /** Fit api.human's body sliders (and arm/leg spread) to a full-body
+     *  photo's silhouette — the in-browser twin of `npm run human:fit`. Builds
+     *  each candidate in the engine Worker (never touching the viewport),
+     *  scores its silhouette against the photo(s) with the photo-match
+     *  segmentation (IoU re-aligned sideways so one raised arm doesn't move
+     *  the whole outline), and runs a bounded coordinate descent. The result
+     *  is ordinary api.human code; by default it is committed as a version.
+     *  `base` = api.human options to keep (hair, wear, style …); `fit` = which
+     *  dimensions to search (FIT_DIMS names); `views` = several photos with
+     *  their camera (a side photo separates gender / bust / belly). */
+    async fitHuman(options?: {
+      image?: string; views?: Array<{ image?: string; azimuth?: number; elevation?: number; mask?: string }>;
+      base?: Record<string, unknown>; fit?: string[]; budget?: number; save?: boolean; label?: string;
+    }) {
+      const parsed = guard(() => {
+        const o = (options === undefined ? {} : assertObject(options, 'fitHuman(options)')!) as Record<string, unknown>;
+        assertNoUnknownKeys(o, ['image', 'views', 'base', 'fit', 'budget', 'save', 'label'], 'fitHuman(options)');
+        let views: { image?: string; azimuth: number; elevation: number; mask?: string }[];
+        if (o.views !== undefined) {
+          if (o.image !== undefined) throw new ValidationError('fitHuman(options): pass image OR views, not both.');
+          const arr = assertArray(o.views, 'fitHuman(options).views') as unknown[];
+          if (arr.length < 1 || arr.length > HUMAN_FIT_MAX_VIEWS) throw new ValidationError(`fitHuman(options).views must hold 1–${HUMAN_FIT_MAX_VIEWS} photos.`);
+          views = arr.map((raw, i) => {
+            const v = assertObject(raw, `fitHuman(options).views[${i}]`)!;
+            assertNoUnknownKeys(v, ['image', 'azimuth', 'elevation', 'mask'], `fitHuman(options).views[${i}]`);
+            return {
+              image: assertString(v.image, `fitHuman(options).views[${i}].image`, { optional: true }),
+              azimuth: assertNumber(v.azimuth, `fitHuman(options).views[${i}].azimuth`, { optional: true }) ?? 0,
+              elevation: assertNumber(v.elevation, `fitHuman(options).views[${i}].elevation`, { optional: true, min: -90, max: 90 }) ?? 0,
+              mask: assertString(v.mask, `fitHuman(options).views[${i}].mask`, { optional: true }),
+            };
+          });
+        } else {
+          views = [{ image: assertString(o.image, 'fitHuman(options).image', { optional: true }), azimuth: 0, elevation: 0 }];
+        }
+        const base = (o.base === undefined ? {} : assertObject(o.base, 'fitHuman(options).base')!) as Record<string, unknown>;
+        const names = o.fit === undefined ? DEFAULT_FIT : (assertArray(o.fit, 'fitHuman(options).fit') as unknown[]).map((n, i) => assertString(n, `fitHuman(options).fit[${i}]`)!);
+        const unknown = names.filter(n => !FIT_DIMS[n]);
+        if (unknown.length) throw new ValidationError(`fitHuman(options).fit: unknown dimension(s) ${unknown.join(', ')}. Known: ${Object.keys(FIT_DIMS).join(', ')}.`);
+        if (!names.length) throw new ValidationError('fitHuman(options).fit must name at least one dimension.');
+        const budget = assertNumber(o.budget, 'fitHuman(options).budget', { optional: true, min: 2, max: 1000, integer: true }) ?? getConfig().import.humanFitBudget;
+        return {
+          views, base, dims: names.map(n => FIT_DIMS[n]), budget,
+          save: assertBoolean(o.save, 'fitHuman(options).save', { optional: true }) ?? true,
+          label: assertString(o.label, 'fitHuman(options).label', { optional: true }) ?? 'Human fit',
+        };
+      });
+      if ('error' in parsed) return parsed;
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'fitHuman builds api.human code — switch the session to JS first (setActiveLanguage("manifold-js")).' };
+      const photos: { rgba: { width: number; height: number; data: Uint8ClampedArray }; mask: { width: number; height: number; data: Uint8ClampedArray } | null; azimuth: number; elevation: number }[] = [];
+      for (const v of parsed.views) {
+        const img = resolvePhotoMatchImage(v.image);
+        if ('error' in img) return { error: img.error.replace(/^photoMatch:/, 'fitHuman:') };
+        let mask = null;
+        try {
+          if (v.mask !== undefined) {
+            const m = resolvePhotoMatchImage(v.mask);
+            if ('error' in m) return { error: m.error.replace(/^photoMatch:/, 'fitHuman mask:') };
+            mask = await decodeImageToRgba(m.src);
+          }
+          photos.push({ rgba: await decodeImageToRgba(img.src), mask, azimuth: v.azimuth, elevation: v.elevation });
+        } catch (e) {
+          return { error: `fitHuman: could not decode the photo (${e instanceof Error ? e.message : String(e)}). Attach the photo or pass a data URL.` };
+        }
+      }
+      // Every build belongs to this session: a session switch mid-fit refuses
+      // the remaining builds instead of running in the next session (#1090).
+      const domain = getEngineTrustDomain();
+      const size = getConfig().import.photoMatchRenderSize;
+      const tuning = photoMatchTuningFromConfig(getConfig().import);
+      let buildError: string | null = null;
+      const evaluate = async (values: number[]): Promise<number> => {
+        const code = humanCode(applyDims(parsed.base, parsed.dims, values));
+        let r: MeshResult;
+        try {
+          r = await executeCodeAsync(code, 'manifold-js', undefined, undefined, undefined, undefined, { domain });
+        } catch (e) {
+          buildError = e instanceof Error ? e.message : String(e);
+          throw e;
+        }
+        if (r.error || !r.mesh) { buildError = r.error ?? 'no mesh produced'; return -1; }
+        let total = 0;
+        for (const ph of photos) {
+          const render = renderRegionLabels(r.mesh, new Int32Array(r.mesh.numTri), { azimuth: ph.azimuth, elevation: ph.elevation, ortho: true, size });
+          const res = scorePhotoMatch({
+            reference: ph.rgba, mask: ph.mask, bgMode: 'auto',
+            model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
+            modelLabels: render.labels, regions: [{ name: 'body', color: '#5a5a5a' }],
+            fit: 'height', debug: true, tuning,
+          });
+          total += res.debug ? fitSilhouetteIoU(res.debug) : 0;
+        }
+        return total / photos.length;
+      };
+      const t0 = performance.now();
+      showToast(`Fitting the body to the photo… (up to ${parsed.budget} builds)`, { variant: 'neutral', source: 'character' });
+      let result: Awaited<ReturnType<typeof fitCoordinateDescent>>;
+      try {
+        result = await fitCoordinateDescent(parsed.dims, startValues(parsed.base, parsed.dims), evaluate, { budget: parsed.budget });
+      } catch {
+        return { error: `fitHuman stopped: ${buildError ?? 'the engine run failed'}` };
+      }
+      if (result.score < 0) return { error: `fitHuman: the starting body did not build — ${buildError ?? 'unknown error'}. Check base (it must be valid api.human options).` };
+      const fitted = Object.fromEntries(parsed.dims.map((d, i) => [d.key, Math.round(result.values[i] * 1000) / 1000]));
+      const code = humanCode(applyDims(parsed.base, parsed.dims, result.values));
+      const summary = { silhouetteIoU: Number(result.score.toFixed(4)), fitted, evaluations: result.evaluations, seconds: Math.round((performance.now() - t0) / 1000) };
+      showToast(`Body fitted to the photo (silhouette match ${(result.score * 100).toFixed(0)}%)`, { variant: 'success', source: 'character' });
+      if (!parsed.save) return { code, ...summary };
+      const saved = await partwrightAPI.runAndSave(code, parsed.label);
+      return { code, ...summary, ...(saved as Record<string, unknown>) };
+    },
+
     /** Render multiple angles of the current model laid out in a single
      *  labeled grid, returned as one PNG data URL. The killer use case
      *  is "did this paint operation land where I thought" — a single
@@ -21860,6 +21976,7 @@ async function main() {
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
         'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, bgMode?: "auto"|"border"|"grabcut", mask?, exclude?: [part], merge?: [[part,…]], ignore?: [part], bands?, fit?: "height"|"box", pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, crop?, bg?, mask?, pixelAspect?, label?}]}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, band widths + left/right edge offsets, outline[] diff ("photo-only at bands 2–4 left … → grow"), per-part IoU/area/offset/colour (lowConfidence when the photo cannot separate parts), worst[] findings. views[] scores several photos/angles at once (mean silhouetteIoU + per-view results). mask = manual silhouette (white = subject); bgMode grabcut for busy backdrops; merge/ignore parts the photo cannot tell apart. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
+        'fitHuman':        { signature: 'fitHuman({image?, views?: [{image, azimuth?, elevation?, mask?}], base?: {api.human options}, fit?: [dimension], budget?, save?, label?}) -- Fit api.human\'s body sliders + arm/leg spread to a full-body photo\'s silhouette (builds candidates in the engine Worker, ~0.5–1 s each). Returns {silhouetteIoU, fitted, evaluations, seconds, code} and commits a version unless save:false. base keeps hair/wear/style; a side photo (views, azimuth 90) separates gender/bust/belly', docs: '/ai/human.md#fit-to-a-photo' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'setThumbnailCamera': { signature: "await setThumbnailCamera({azimuth, elevation} | 'current' | null) -- Pin the session thumbnail/catalog-tile camera (degrees; az 0 = front -Y, el -90..90); 'current' pins the live viewport angle; null clears -> {thumbCamera} or {error}", docs: '/ai.md#console-api--windowpartwright' },
         'getThumbnailCamera': { signature: 'getThumbnailCamera() -- Pinned thumbnail camera -> {azimuth, elevation} or null (unpinned = default iso)', docs: '/ai.md#console-api--windowpartwright' },

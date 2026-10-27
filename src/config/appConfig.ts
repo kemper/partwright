@@ -431,6 +431,10 @@ export interface AppConfig {
     /** Photo match: size (px) of the flat model render compared against the
      *  photo. */
     photoMatchRenderSize: number;
+    /** Human photo fit (`fitHuman` / the AI's fitHumanToPhoto): how many
+     *  candidate bodies the search builds by default (each is a full model
+     *  build in the engine Worker, roughly 0.5–1 s). */
+    humanFitBudget: number;
     /** Photo match: warn when the photo's subject is shorter than this
      *  (original photo pixels) — too small to judge fine outline detail. */
     photoMatchMinSubjectPx: number;
@@ -803,6 +807,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     photoMatchColorShiftWarn: 30,
     photoMatchMaxRegionDistance: 0.12,
     photoMatchRenderSize: 512,
+    humanFitBudget: 80,
     photoMatchMinSubjectPx: 300,
     photoMatchAmbiguousDeltaE: 12,
     photoMatchOutlineMinPct: 1.5,

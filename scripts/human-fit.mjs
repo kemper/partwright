@@ -22,9 +22,6 @@ import { renderRegionImage } from './cli/preview.mjs';
 import sharp from 'sharp';
 import { NAMED_VIEWS } from './cli/views.mjs';
 
-/** Largest horizontal re-alignment tried, as a fraction of the canvas width. */
-const FIT_MAX_SHIFT = 0.12;
-
 async function loadRgba(path) {
   const { data, info } = await sharp(path).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return { width: info.width, height: info.height, data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.length) };
@@ -92,8 +89,7 @@ async function main() {
           model: { width: size, height: size, data: rgba }, modelLabels: img.labels,
           regions: [{ name: 'body', color: '#5a5a5a' }], merge: [], ignore: [], fit: 'height', pixelAspect: null, debug: true, tuning,
         });
-        const d = res.debug;
-        total += fit.shiftedIoU(d.photo, d.model, d.width, d.height, Math.round(d.width * FIT_MAX_SHIFT));
+        total += fit.fitSilhouetteIoU(res.debug);
       }
       return total / photos.length;
     };
@@ -116,7 +112,7 @@ async function main() {
     console.log(JSON.stringify({
       ok: true, score: Number(result.score.toFixed(4)), evaluations: result.evaluations,
       seconds: Math.round((Date.now() - t0) / 1000),
-      fitted: Object.fromEntries(dims.map((d, i) => [d.key, result.values[i]])),
+      fitted: Object.fromEntries(dims.map((d, i) => [d.key, Math.round(result.values[i] * 1000) / 1000])),
       code: outPath, png: pngPath,
     }, null, 2));
   } finally {

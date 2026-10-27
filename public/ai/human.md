@@ -249,27 +249,45 @@ merges into the label around it (pupil → iris → sclera); removing `lips`,
 `mouth` or `brows` merges them into `skin`. Removing `hair`, `beard`, or an
 item / accessory label leaves it out.
 
-## Fit to a photo (CLI: `npm run human:fit`)
+## Fit to a photo {#fit-to-a-photo}
 
-For agents working in the repo (the in-app AI can't run it yet): fit the body
-sliders and arm/leg spread to a full-body photo's silhouette.
+Fit the body sliders and arm/leg spread to a full-body photo's silhouette,
+then dress and style the result. In the app (and from the console):
+
+```js
+await partwright.fitHuman({ image: 'att_1' })                       // the attached front photo
+await partwright.fitHuman({
+  views: [{ image: 'front' }, { image: 'side', azimuth: 90 }],      // + a side photo: separates gender, bust, belly
+  base: { hair: 'bob', wear: ['tshirt', 'jeans', 'sneakers'] },     // kept while fitting (clothes change the outline)
+  fit: ['gender', 'weight', 'muscle', 'hips', 'armL', 'armR'],      // dimensions to search (default: the front-photo set)
+  budget: 120,                                                      // candidate builds (default: Advanced Settings, 80)
+})
+// → { silhouetteIoU, fitted: { gender, weight, … }, evaluations, seconds, code, …the saved version }
+```
+
+The chat AI calls it as the `fitHumanToPhoto` tool. Each candidate is built in
+the engine Worker without touching the viewport (~0.5–1 s each). It is scored
+against the photo with the photo-match segmentation, re-aligned sideways so one
+raised arm doesn't throw the score, and a bounded coordinate descent keeps the
+best. The fit commits the best body as a version (`save: false` returns the
+code instead).
+
+Dimensions: `gender`, `weight`, `muscle`, `age`, `breast`, `vShape`, `belly`,
+`shoulders`, `hips`, `legs`, `head`, `headWidth`, `armL`, `armR`,
+`legSpread`. A plain backdrop gives the cleanest silhouette. For a busy one,
+pass a `mask` per view (white = subject).
+
+From the repo, the same fit runs headlessly:
 
 ```bash
 npm run human:fit -- --photo person.png                       # front photo
-npm run human:fit -- --photo front.png --photo side.png@0,0   # + a side photo (separates gender, bust, belly)
+npm run human:fit -- --photo front.png --photo side.png@0,0   # + a side photo
 npm run human:fit -- --photo p.png --base outfit.json --fit gender,weight,armL,armR --out me.js --png me.png
 ```
 
-It builds candidates headlessly (~0.4 s each), scores each one's silhouette
-against the photo (the photo-match segmentation, re-aligned sideways so one
-raised arm doesn't throw the score), and runs a bounded coordinate descent
-(`--budget`, default 120 builds). `--base` is a JSON file of `api.human`
-options the fit keeps (hair, wear, style); `--fit` picks the dimensions:
-`gender`, `weight`, `muscle`, `age`, `breast`, `vShape`, `belly`, `shoulders`,
-`hips`, `legs`, `head`, `headWidth`, `armL`, `armR`, `legSpread`. The output
-is ordinary `api.human` code. Dress it, style it, and refine the face by eye.
-A plain backdrop gives the cleanest silhouette. Use `--match-bg` or
-`--match-mask` as with `model:preview --match-photo`.
+`--base` is a JSON file of `api.human` options; `--match-bg` / `--match-mask`
+work as with `model:preview --match-photo`. (The CLI's camera convention is
+model:preview's, so a side photo is `@0,0` there and `azimuth: 90` in the app.)
 
 ## Sliders in the Parameters panel
 

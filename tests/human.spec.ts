@@ -109,4 +109,55 @@ test.describe('api.human', () => {
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/human-funko.png' });
   });
+
+  test('fitHuman recovers raised arms from a rendered photo, building candidates off-screen', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+    type FitPW = PW & {
+      renderView: (o: Record<string, unknown>) => string | { error: string } | null;
+      fitHuman: (o: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    // The "photo": a known body with its arms out, rendered from the front.
+    const target = await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code),
+      `return api.human({ height: 60, pose: { armL: { raiseSide: 45 }, armR: { raiseSide: 45 } } });`);
+    expect(target.error ?? null).toBeNull();
+    const photo = await page.evaluate(() => (window as unknown as { partwright: FitPW }).partwright.renderView({ azimuth: 0, elevation: 0, ortho: true, size: 512, edges: 'none' }));
+    expect(typeof photo).toBe('string');
+    const fit = await page.evaluate(async (image) => (window as unknown as { partwright: FitPW }).partwright.fitHuman({
+      image, fit: ['armL', 'armR'], budget: 14, save: false,
+    }), photo as string);
+    expect(fit.error ?? null).toBeNull();
+    expect(fit.silhouetteIoU as number).toBeGreaterThan(0.85);
+    const fitted = fit.fitted as { armL: number; armR: number };
+    expect(Math.abs(fitted.armL - 45)).toBeLessThan(15);
+    expect(Math.abs(fitted.armR - 45)).toBeLessThan(15);
+    expect(String(fit.code)).toMatch(/api\.human/);
+
+    // The chat tool: listed only when the user allows commits, and it saves a
+    // version without echoing the code back into the model's context.
+    const tool = await page.evaluate(async (image) => {
+      const tools = await import('/src/ai/tools.ts');
+      const toggles = {
+        vision: { views: true, resolution: 'medium', angles: 'auto' },
+        scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: true },
+        autoRetry: 0, maxIterations: 'medium', maxSpend: 'high', thinking: 'off', provider: 'anthropic',
+        anthropicModel: 'claude-haiku-4-5', localModel: null, openaiModel: 'gpt-5-mini', geminiModel: 'gemini-flash-latest',
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const names = (t: any) => tools.buildToolList(t).map((d) => d.name);
+      const withSave = names(toggles).includes('fitHumanToPhoto');
+      const withoutSave = names({ ...toggles, scope: { ...toggles.scope, saveVersions: false } }).includes('fitHumanToPhoto');
+      const exec = await tools.executeTool('fitHumanToPhoto', { image, fit: ['armL'], budget: 6, label: 'fitted' });
+      return { withSave, withoutSave, exec };
+    }, photo as string);
+    expect(tool.withSave).toBe(true);
+    expect(tool.withoutSave).toBe(false);
+    expect(tool.exec.isError).toBe(false);
+    const out = JSON.parse(tool.exec.content) as Record<string, unknown>;
+    expect(out.code).toBeUndefined();
+    expect(out.silhouetteIoU as number).toBeGreaterThan(0.7);
+    expect((out.version as { label?: string } | null)?.label).toBe('fitted');
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, shiftedIoU } from '../../src/human/humanFit';
+import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, shiftedIoU, fitSilhouetteIoU } from '../../src/human/humanFit';
 
 describe('human fit', () => {
   it('writes each dimension at its path, mirrors the leg spread, and keeps the base', () => {
@@ -37,5 +37,12 @@ describe('human fit', () => {
     const box = (x0: number) => { const m = new Int32Array(W * H).fill(-2); for (let y = 2; y < 8; y++) for (let x = x0; x < x0 + 6; x++) m[y * W + x] = 0; return m; };
     expect(shiftedIoU(box(4), box(8), W, H, 0)).toBeLessThan(0.3);
     expect(shiftedIoU(box(4), box(8), W, H, 5)).toBe(1);
+  });
+
+  it('fitSilhouetteIoU scores a photo-match debug result, forgiving a small sideways offset', () => {
+    const W = 100, H = 50;
+    const box = (x0: number) => { const m = new Int32Array(W * H).fill(-2); for (let y = 10; y < 40; y++) for (let x = x0; x < x0 + 20; x++) m[y * W + x] = 0; return m; };
+    expect(fitSilhouetteIoU({ width: W, height: H, photo: box(40), model: box(45) })).toBe(1);
+    expect(fitSilhouetteIoU({ width: W, height: H, photo: box(10), model: box(70) })).toBe(0);
   });
 });

@@ -155,3 +155,14 @@ export function shiftedIoU(photo: Int32Array, model: Int32Array, width: number, 
   }
   return best;
 }
+
+/** Largest sideways re-alignment `fitSilhouetteIoU` tries, as a fraction of
+ *  the canvas width (an algorithm bound, like the photo-match band count). */
+const FIT_MAX_SHIFT = 0.12;
+
+/** The fit's per-view score from a photo-match `debug` result: the
+ *  silhouettes' IoU, re-aligned over a small sideways shift. Shared by the
+ *  CLI (`npm run human:fit`) and the browser (`partwright.fitHuman`). */
+export function fitSilhouetteIoU(debug: { width: number; height: number; photo: Int32Array; model: Int32Array }): number {
+  return shiftedIoU(debug.photo, debug.model, debug.width, debug.height, Math.round(debug.width * FIT_MAX_SHIFT));
+}
