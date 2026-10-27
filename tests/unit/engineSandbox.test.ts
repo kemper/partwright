@@ -96,7 +96,7 @@ describe('engine sandbox setting', () => {
     expect(parseSandboxOrigin(undefined)).toBeNull();
   });
 
-  it('round-trips the per-browser mode and defaults to off', () => {
+  it('round-trips the per-browser mode and defaults to off without a configured sandbox origin', () => {
     const store = new Map<string, string>();
     vi.stubGlobal('localStorage', {
       getItem: (k: string) => store.get(k) ?? null,
@@ -112,6 +112,18 @@ describe('engine sandbox setting', () => {
     expect(store.size).toBe(0); // the default clears the override
     expect(isEngineSandboxMode('origin')).toBe(true);
     expect(isEngineSandboxMode('none')).toBe(false);
+  });
+
+  it('defaults to the separate origin when the build configures one', () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+    vi.stubEnv('VITE_SANDBOX_ORIGIN', 'https://sandbox.example.com');
+    try {
+      expect(getEngineSandboxMode()).toBe('origin');
+      vi.stubEnv('VITE_ENGINE_SANDBOX', 'opaque');
+      expect(getEngineSandboxMode()).toBe('opaque');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('survives blocked storage', () => {

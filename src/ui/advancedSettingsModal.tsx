@@ -172,9 +172,9 @@ function Section({ title, children }: SectionProps) {
 // ─── engine sandbox (per-browser setting, not part of AppConfig) ─────────────
 
 const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
-  off: 'Off — run model code in a plain Worker (default)',
+  off: 'Off — run model code in a plain Worker',
   opaque: 'Opaque origin — sandboxed iframe on this site',
-  origin: 'Separate origin — iframe on the configured sandbox host',
+  origin: 'Separate origin — iframe on the configured sandbox host (default when configured)',
 };
 
 function SandboxModeField() {

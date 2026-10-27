@@ -410,7 +410,7 @@ test('engine sandbox: mode is captured once per tab', async ({ page }) => {
   expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
 });
 
-test('engine sandbox: off by default', async ({ page }) => {
+test('engine sandbox: follows the build default (e2e builds default to off)', async ({ page }) => {
   await page.goto('/editor');
   await page.waitForFunction(() => !!(window as unknown as { partwright?: PW }).partwright?.run, undefined, { timeout: 60_000 });
   const s = await status(page);
