@@ -664,6 +664,14 @@ let lastVoxelCount: number | undefined;
  *  trust it over the mesh `componentCount`, which over-reports voxel models
  *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
 let lastVoxelPieceCount: number | undefined;
+/** What the last run's model code printed (console.log / warn / error),
+ *  returned as `logs` by run / runAndSave / setParams so agents can debug
+ *  without throwing. Not part of the geometry data (never saved). */
+let lastRunLogs: string[] | undefined;
+/** `{ logs }` for an API result, or nothing when the last run printed nothing. */
+function lastRunLogsField(): { logs?: string[] } {
+  return lastRunLogs ? { logs: lastRunLogs } : {};
+}
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -12002,6 +12010,7 @@ async function main() {
         },
         meshData: null as MeshData | null,
         manifold: null as unknown,
+        logs: result.logs,
       };
     }
 
@@ -12017,6 +12026,7 @@ async function main() {
       meshData: result.mesh,
       manifold,
       labelMap: result.labelMap ?? null,
+      logs: result.logs,
     };
   }
 
@@ -13639,7 +13649,7 @@ async function main() {
         return { status: 'error', error: runFailedMessage() };
       }
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
-      return { ...geo, printability: computePrintability(geo) };
+      return { ...geo, printability: computePrintability(geo), ...lastRunLogsField() };
     },
 
     /** Get current geometry stats without re-running */
@@ -13702,6 +13712,7 @@ async function main() {
       return {
         geometry,
         params: currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {},
+        ...lastRunLogsField(),
       };
     },
 
@@ -16731,11 +16742,11 @@ async function main() {
 
       if (assertions) {
         if (newGeoData.status === 'error') {
-          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...lastRunLogsField() };
         }
         const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl(), ...lastRunLogsField() };
         }
       }
 
@@ -16771,6 +16782,7 @@ async function main() {
         ...(lostLabels ? { lostLabels } : {}),
         ...(colorRegions.length > 0 ? { colorRegions } : {}),
         ...(unmatchedPaintReport() ? { unmatchedPaint: unmatchedPaintReport() } : {}),
+        ...lastRunLogsField(),
       };
     },
 
@@ -17219,7 +17231,7 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { geometryData: { status: 'error', error: check.error }, thumbnail: null };
       }
-      const { geometryData, meshData, manifold } = await executeIsolated(code);
+      const { geometryData, meshData, manifold, logs } = await executeIsolated(code);
 
       let thumbnail: string | null = null;
       if (meshData) {
@@ -17237,7 +17249,7 @@ async function main() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
-      return { geometryData, thumbnail };
+      return { geometryData, thumbnail, ...(logs ? { logs } : {}) };
     },
 
     /** Run code and check geometry against assertions. Does not mutate global state. */
@@ -17250,14 +17262,14 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { passed: false, failures: [check.error], stats: null };
       }
-      const { geometryData, manifold } = await executeIsolated(code);
+      const { geometryData, manifold, logs } = await executeIsolated(code);
 
       // Clean up manifold
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { passed: false, failures: [geometryData.error as string], stats: geometryData };
+        return { passed: false, failures: [geometryData.error as string], stats: geometryData, ...(logs ? { logs } : {}) };
       }
 
       const failures = checkAssertions(geometryData, assertions);
@@ -17265,6 +17277,7 @@ async function main() {
         passed: failures.length === 0,
         failures: failures.length > 0 ? failures : undefined,
         stats: geometryData,
+        ...(logs ? { logs } : {}),
       };
     },
 
@@ -17274,10 +17287,10 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) {
         return { stats: { status: 'error', error: check.error }, components: null };
       }
-      const { geometryData, manifold } = await executeIsolated(code);
+      const { geometryData, manifold, logs } = await executeIsolated(code);
 
       if (geometryData.status === 'error' || !manifold) {
-        return { stats: geometryData, components: null };
+        return { stats: geometryData, components: null, ...(logs ? { logs } : {}) };
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17377,7 +17390,7 @@ async function main() {
         }
       }
 
-      return { stats: geometryData, components, hints: hints.length > 0 ? hints : undefined, containmentWarnings: containmentWarnings.length > 0 ? containmentWarnings : undefined };
+      return { stats: geometryData, components, hints: hints.length > 0 ? hints : undefined, containmentWarnings: containmentWarnings.length > 0 ? containmentWarnings : undefined, ...(logs ? { logs } : {}) };
     },
 
     /** Modify current editor code with a transform function and test the result without committing.
@@ -21721,7 +21734,7 @@ async function main() {
       assertString(method, 'help(method)', { optional: true, allowEmpty: false });
       const methods: Record<string, { signature: string; docs: string }> = {
         // Core
-        'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats', docs: '/ai.md#console-api--windowpartwright' },
+        'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats (+ logs: the model code console output)', docs: '/ai.md#console-api--windowpartwright' },
         'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object', docs: '/ai.md#geometry-data' },
         'validate':        { signature: 'validate(code) -- Check code without rendering -> {valid, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
@@ -23283,6 +23296,7 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     lastRunRejection = null;
+    lastRunLogs = undefined;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -23396,6 +23410,7 @@ async function main() {
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
+    lastRunLogs = result.logs;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

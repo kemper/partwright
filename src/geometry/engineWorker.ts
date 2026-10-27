@@ -22,7 +22,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, logs, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'voxel_grid_result',       callId, grid, error }
@@ -56,6 +56,7 @@ import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance,
 import type { MeshData } from './types';
 import { lockdownGlobalScope } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
+import { setModelLogLimits } from './modelConsole';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -228,7 +229,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -239,7 +240,14 @@ self.onmessage = async (event: MessageEvent) => {
       sdfPreviewScale?: number | null;
       manifoldFactsMinTriangles?: number;
       containmentSamples?: number;
+      modelLog?: { maxLines?: unknown; maxChars?: unknown };
     };
+    // The main thread's caps on captured console output (modelConsole.ts).
+    setModelLogLimits(
+      modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
+        ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
+        : null,
+    );
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.
@@ -381,6 +389,8 @@ self.onmessage = async (event: MessageEvent) => {
       // api.material(...) — plain serialisable MaterialSpec, crosses as-is.
       const materialSpec = result.materialSpec ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // console.log output from the model code (success and error alike).
+      const logs = result.logs ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
@@ -416,7 +426,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
@@ -429,6 +439,7 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          logs,
           workerMs: Math.round(performance.now() - execStart),
           engineHeapBytes,
         });
