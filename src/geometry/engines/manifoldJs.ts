@@ -2,6 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
+import { createHumanNamespace } from '../../human/humanApi';
 import { createParamCapture } from '../params';
 import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
@@ -778,6 +779,13 @@ export const manifoldJsEngine: Engine = {
     // the run's `label` function (so labelled SDF subtrees register with
     // the same labelRegistry as `api.label`-tagged Manifold parts).
     const sdfNamespace = createSdfNamespace(Manifold, label);
+    // Parametric MakeHuman-based character (asset preloaded by the Worker when
+    // the source mentions api.human).
+    const human = createHumanNamespace(manifoldModule, label, (id, name, color) => {
+      labelRegistry.set(id, name);
+      const rgb = color ? parseLabelColor(color) : null;
+      if (rgb) labelColors.set(name, rgb);
+    });
 
     // `BREP` is only present when the engine Worker has lazy-loaded
     // OpenCASCADE.js — otherwise the namespace is undefined and the user
@@ -803,6 +811,7 @@ export const manifoldJsEngine: Engine = {
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
+      human,
       geom: geom2dNamespace,
       fasteners: fastenersNamespace,
       joints: jointsNamespace,

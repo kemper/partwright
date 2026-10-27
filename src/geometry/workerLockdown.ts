@@ -367,12 +367,14 @@ export function verifyLockdown(g: object): string[] {
 // ── Private same-origin asset fetch ─────────────────────────────────────────
 
 /** The only path prefixes fetchAppAsset will request: the build's hashed
- *  assets (OCCT WASM), the bundled OpenSCAD libraries + fonts, and — dev
- *  server only — node_modules (where Vite serves `?url` WASM). Frozen at module
- *  load, before any model code exists. */
+ *  assets (OCCT WASM), the bundled OpenSCAD libraries + fonts, the parametric
+ *  human's mesh/morph data (`api.human`), and — dev server only — node_modules
+ *  (where Vite serves `?url` WASM). Frozen at module load, before any model
+ *  code exists. */
 const ASSET_PREFIXES: readonly string[] = Object.freeze([
   BASE + 'assets/',
   BASE + 'openscad-libs/',
+  BASE + 'human/',
   ...(import.meta.env?.DEV ? [BASE + 'node_modules/'] : []),
 ]);
 
