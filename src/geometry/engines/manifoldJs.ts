@@ -785,7 +785,7 @@ export const manifoldJsEngine: Engine = {
       labelRegistry.set(id, name);
       const rgb = color ? parseLabelColor(color) : null;
       if (rgb) labelColors.set(name, rgb);
-    });
+    }, (name) => removedParts.has(name));
 
     // `BREP` is only present when the engine Worker has lazy-loaded
     // OpenCASCADE.js — otherwise the namespace is undefined and the user

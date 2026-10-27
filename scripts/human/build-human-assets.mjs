@@ -87,8 +87,8 @@ const triLabel = [];
 for (const [label, list] of [[0, faces.body], [1, faces.eye]]) {
   for (const f of list) {
     const r = f.map((v) => remap.get(v));
-    // conv() mirrors handedness (y,z swap + negate), which preserves winding:
-    // (x,y,z)→(x,−z,y) is a proper rotation (det +1), so faces stay outward.
+    // conv() — (x,y,z)→(x,−z,y) — is a proper rotation (det +1), so the face
+    // winding is preserved and faces stay outward.
     for (let k = 1; k + 1 < r.length; k++) { tris.push(r[0], r[k], r[k + 1]); triLabel.push(label); }
   }
 }

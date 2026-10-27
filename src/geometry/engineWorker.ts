@@ -324,7 +324,7 @@ self.onmessage = async (event: MessageEvent) => {
         // The parametric human's mesh/morph/skeleton asset (~4 MB), same lazy
         // pattern: fetched once on first use, cached for later runs.
         if (sourceUsesHuman(code as string)) {
-          await preloadHumanAsset();
+          try { await preloadHumanAsset(); } catch { /* api.human reports the missing asset itself */ }
         }
         setActiveImports(runImports);
         // Progressive render for SDF models (figures): a throwaway coarse pass

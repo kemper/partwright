@@ -2,7 +2,9 @@
 // Same pattern as the text fonts: the engine Worker (and the headless preview)
 // awaits `preloadHumanAsset()` before running code that mentions `api.human`,
 // so the synchronous sandbox call finds the asset already parsed. Models that
-// never touch api.human never download it (~4 MB).
+// never touch api.human never download it (~4 MB). Callers swallow a failed
+// preload: the run goes ahead, and only an actual api.human call fails (with
+// its own "asset not loaded" error).
 import { assetPath } from '../deployment';
 import { fetchAppAsset } from '../geometry/workerLockdown';
 import { parseHumanAsset, type HumanAsset, type HumanAssetMeta } from './humanModel';
@@ -10,9 +12,10 @@ import { parseHumanAsset, type HumanAsset, type HumanAssetMeta } from './humanMo
 let asset: HumanAsset | null = null;
 let loading: Promise<void> | null = null;
 
-/** True when model code calls the parametric human. */
+/** True when model code reaches the parametric human — `api.human` or a
+ *  `{ human } = api` destructure. Deliberately narrow: a match downloads ~4 MB. */
 export function sourceUsesHuman(code: string): boolean {
-  return /\bapi\.human\b/.test(code) || /\bhuman\s*\(/.test(code);
+  return /\bapi\s*\.\s*human\b/.test(code) || /\{[^}]*\bhuman\b[^}]*\}\s*=\s*api\b/.test(code);
 }
 
 export function preloadHumanAsset(): Promise<void> {

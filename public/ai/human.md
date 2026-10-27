@@ -40,12 +40,12 @@ throw with the allowed range.
 | `weight` | 0–1 | 0.5 = average |
 | `stature` | 0–1 | real-world proportions of a tall/short person (print size is `height`) |
 | `breast` | 0–1 | bust (applied on the female side of `gender`) |
-| `ethnicity` | `{ african, asian, caucasian }` | relative mix, normalized (default equal thirds) |
+| `ethnicity` | `{ african, asian, caucasian }` | relative mix, normalized (default equal thirds; at least one must be > 0) |
 
 ## Face and torso (`face`, `torso`): each −1…1, 0 = neutral
 
 `face`: `jawWidth`, `chin` (prominence), `cheekbones`, `noseWidth`,
-`noseLength`, `mouthWidth`, `eyeSize`, `headSquare` (0–1).
+`noseLength`, `mouthWidth`, `eyeSize`; plus `headSquare`, which is 0–1.
 `torso`: `vShape` (shoulder-to-waist taper), `belly`.
 
 ## Pose (`pose`): the same vocabulary as `api.sdf.figure`
@@ -66,9 +66,10 @@ set. `pose: 'rest'` gives MakeHuman's A-pose.
 - `weld: 'mesh'` (default) keeps the exact skinned surface, which gives the
   crispest detail. Good whenever the pose doesn't push skin through skin.
 - `weld: 'voxel'` re-solidifies the body through a signed-distance lattice
-  (`voxel`, default `height/400`). Overlaps from deep bends (a fully folded
-  knee, an arm pressed into the torso) merge into one clean solid. You lose
-  detail at about the voxel size and get more triangles.
+  (`voxel`, default `height/300`; only valid with this weld). Overlaps from
+  deep bends (a fully folded knee, an arm pressed into the torso) merge into
+  one clean solid. You lose detail at about the voxel size and get more
+  triangles (~300k at the default).
 
 Either way the result should report `isManifold: true` and
 `componentCount: 1`. Check with `runAndSave(code, label, { isManifold: true, maxComponents: 1 })`.
@@ -77,6 +78,11 @@ Either way the result should report `isManifold: true` and
 
 `skin`, `eyes` (sclera), `iris`, `pupil`, and `base`. Each is coloured by
 default; override with `colors: { … }` or `api.paint.label('iris', '#3b6ea5')`.
+
+`api.removePart('eyes')` drops the eyeballs (the face is closed behind them).
+Removing `iris` or `pupil` can't cut a hole in a closed eyeball, so that region
+merges into the label around it (pupil → iris → sclera) and the removed label
+disappears.
 
 ## Combining with other geometry
 

@@ -28,7 +28,7 @@ that frame's own CSP.
 | Mode | Frame | Model code sees | Needs |
 |---|---|---|---|
 | `off` (default) | none — Worker created by the app | app origin: IndexedDB, `fetch` per app CSP | nothing |
-| `opaque` | `<iframe sandbox="allow-scripts" allow="cross-origin-isolated" src="/sandbox">` — same URL, **opaque origin** | IndexedDB refused (`SecurityError`), no localStorage, `connect-src 'self'` | CORS (`Access-Control-Allow-Origin: *`) on `/assets/*` and `/openscad-libs/*` (shipped in `public/_headers`) |
+| `opaque` | `<iframe sandbox="allow-scripts" allow="cross-origin-isolated" src="/sandbox">` — same URL, **opaque origin** | IndexedDB refused (`SecurityError`), no localStorage, `connect-src 'self'` | CORS (`Access-Control-Allow-Origin: *`) on `/assets/*`, `/openscad-libs/*` and `/human/*` (shipped in `public/_headers`) |
 | `origin` | `<iframe sandbox="allow-scripts allow-same-origin" allow="cross-origin-isolated" src="$VITE_SANDBOX_ORIGIN/sandbox">` | the sandbox origin's own (empty, partitioned) IndexedDB, no localStorage, `connect-src 'self'` (the sandbox origin) | a second hostname serving ONLY the sandbox (see deployment) + `VITE_SANDBOX_ORIGIN` / `VITE_APP_ORIGIN` at build time + `frame-src` in the app CSP |
 
 Both sandbox modes were verified `crossOriginIsolated === true` in the frame

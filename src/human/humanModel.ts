@@ -233,13 +233,34 @@ const rotX = (deg: number) => axisAngle([1, 0, 0], deg);
 const rotY = (deg: number) => axisAngle([0, 1, 0], deg);
 const rotZ = (deg: number) => axisAngle([0, 0, 1], deg);
 
-/** The fraction `t` of rotation `m` (same axis, t × angle). */
+/** Unit quaternion [w, x, y, z] of a rotation matrix (Shepperd's method —
+ *  branches on the largest component, so it stays well-conditioned near 180°). */
+function toQuat(m: Mat3): [number, number, number, number] {
+  const tr = m[0] + m[4] + m[8];
+  let w: number, x: number, y: number, z: number;
+  if (tr > 0) {
+    const s = Math.sqrt(tr + 1) * 2;
+    w = s / 4; x = (m[7] - m[5]) / s; y = (m[2] - m[6]) / s; z = (m[3] - m[1]) / s;
+  } else if (m[0] > m[4] && m[0] > m[8]) {
+    const s = Math.sqrt(1 + m[0] - m[4] - m[8]) * 2;
+    w = (m[7] - m[5]) / s; x = s / 4; y = (m[1] + m[3]) / s; z = (m[2] + m[6]) / s;
+  } else if (m[4] > m[8]) {
+    const s = Math.sqrt(1 + m[4] - m[0] - m[8]) * 2;
+    w = (m[2] - m[6]) / s; x = (m[1] + m[3]) / s; y = s / 4; z = (m[5] + m[7]) / s;
+  } else {
+    const s = Math.sqrt(1 + m[8] - m[0] - m[4]) * 2;
+    w = (m[3] - m[1]) / s; x = (m[2] + m[6]) / s; y = (m[5] + m[7]) / s; z = s / 4;
+  }
+  return w < 0 ? [-w, -x, -y, -z] : [w, x, y, z];
+}
+
+/** The fraction `t` of rotation `m` (same axis, t × angle), via its quaternion. */
 function partial(m: Mat3, t: number): Mat3 {
-  const cos = clamp((m[0] + m[4] + m[8] - 1) / 2, -1, 1);
-  const ang = Math.acos(cos);
-  if (ang < 1e-9) return I3;
-  const axis = norm([m[7] - m[5], m[2] - m[6], m[3] - m[1]]);
-  return axisAngle(axis, (ang / DEG) * t);
+  const [w, x, y, z] = toQuat(m);
+  const sinHalf = Math.hypot(x, y, z);
+  if (sinHalf < 1e-12) return I3;
+  const ang = 2 * Math.atan2(sinHalf, w);
+  return axisAngle([x / sinHalf, y / sinHalf, z / sinHalf], (ang / DEG) * t);
 }
 
 /** Columns = an orthonormal frame with x along `primary`, y from `secondary`. */
@@ -262,7 +283,7 @@ export interface HumanPose {
 }
 
 /** Arms relaxed at the sides — MakeHuman's rest is an A-pose. */
-export const STANDING_ARM: LimbPose = { raiseSide: 9, raiseFwd: 0, bend: 8, twist: 0 };
+const STANDING_ARM: LimbPose = { raiseSide: 9, raiseFwd: 0, bend: 8, twist: 0 };
 
 const limb = (p: Partial<LimbPose> | undefined, def: LimbPose): LimbPose => ({ ...def, ...(p ?? {}) });
 
@@ -399,17 +420,14 @@ export interface HumanOptions {
   height?: number;
 }
 
-export type HumanLabel = 'skin' | 'eyes' | 'iris' | 'pupil';
+type HumanLabel = 'skin' | 'eyes' | 'iris' | 'pupil';
 
 export interface HumanMesh {
-  /** xyz per vertex (world units, soles at z = 0). */
-  positions: Float32Array;
   /** Body (`skin`) and the two eyeballs (`eyes`), each re-indexed per part. */
   parts: { label: 'skin' | 'eyes'; positions: Float32Array; triVerts: Uint32Array }[];
   /** Per eyeball triangle (in `eyes` part order): its paint label. The iris and
    *  pupil are the front cap of each eyeball, classified in the rest pose. */
   eyeLabels: HumanLabel[];
-  joints: Map<string, Vec3>;
 }
 
 /** The full pipeline: numbers in, posed + scaled + grounded mesh parts out. */
@@ -431,8 +449,6 @@ export function buildHumanMesh(asset: HumanAsset, opts: HumanOptions = {}): Huma
   for (let i = 0; i < posed.length; i += 3) {
     posed[i] *= k; posed[i + 1] *= k; posed[i + 2] = (posed[i + 2] - pMin) * k;
   }
-  const scaledJoints = new Map<string, Vec3>();
-  for (const [n, p] of joints) scaledJoints.set(n, [p[0] * k, p[1] * k, (p[2] - zMin) * k]);
 
   // Iris / pupil: the eyeball triangles inside a cone around each eye's
   // forward axis (−Y in the rest pose), measured from that eyeball's centroid.
@@ -472,5 +488,5 @@ export function buildHumanMesh(asset: HumanAsset, opts: HumanOptions = {}): Huma
     }
     parts.push({ label, positions: new Float32Array(verts), triVerts: new Uint32Array(tris) });
   }
-  return { positions: posed, parts, eyeLabels, joints: scaledJoints };
+  return { parts, eyeLabels };
 }

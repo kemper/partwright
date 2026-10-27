@@ -4,6 +4,7 @@ import {
   parseHumanAsset, morphWeights, applyMorphs, jointPositions, solvePose, skin, buildHumanMesh,
   DEFAULT_BODY, DEFAULT_FACE, DEFAULT_TORSO, type HumanAssetMeta,
 } from '../../src/human/humanModel';
+import { sourceUsesHuman } from '../../src/human/humanAsset';
 
 const meta = JSON.parse(readFileSync('public/human/hm08.json', 'utf8')) as HumanAssetMeta;
 const bin = readFileSync('public/human/hm08.bin');
@@ -75,5 +76,28 @@ describe('human pose', () => {
     expect(hi).toBeCloseTo(60, 1);
     expect(mesh.eyeLabels.filter((l) => l === 'iris').length).toBeGreaterThan(0);
     expect(mesh.eyeLabels.filter((l) => l === 'pupil').length).toBeGreaterThan(0);
+  });
+});
+
+describe('extreme poses', () => {
+  const rest = applyMorphs(asset, morphWeights(DEFAULT_BODY, DEFAULT_FACE, DEFAULT_TORSO));
+  const joints = jointPositions(asset, rest);
+  it('keeps every bone rotation orthonormal, even at a 180° spine split', () => {
+    const xf = solvePose(asset, joints, { spine: { lean: -90, turn: -90, side: -90 }, head: { yaw: 90, pitch: 90, roll: 90 } });
+    for (const m of xf.R) {
+      for (const v of m) expect(Number.isFinite(v)).toBe(true);
+      const det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+      expect(det).toBeCloseTo(1, 6);
+    }
+  });
+});
+
+describe('sourceUsesHuman', () => {
+  it('matches api.human and a destructure from api', () => {
+    expect(sourceUsesHuman('return api.human({})')).toBe(true);
+    expect(sourceUsesHuman('const { human, sdf } = api; return human()')).toBe(true);
+  });
+  it('ignores comments and unrelated functions named human', () => {
+    expect(sourceUsesHuman('// a human (adult)\nfunction human(x) { return x }')).toBe(false);
   });
 });

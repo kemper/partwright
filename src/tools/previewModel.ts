@@ -151,7 +151,9 @@ export async function previewModel(
       && (sourceUsesManifoldText(code) || /\bapi\.(?:fasteners|printFit)\b/.test(code) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code))) {
     await preloadTextFonts();
   }
-  if (engine === 'manifold-js' && sourceUsesHuman(code)) await preloadHumanAsset();
+  if (engine === 'manifold-js' && sourceUsesHuman(code)) {
+    try { await preloadHumanAsset(); } catch { /* api.human reports the missing asset itself */ }
+  }
 
   let raw: MeshResult;
   if (engine === 'voxel') {

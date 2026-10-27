@@ -42,4 +42,27 @@ test.describe('api.human', () => {
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/human-editor.png' });
   });
+
+  test("weld: 'voxel' stays one piece and api.removePart reaches the eye labels", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const voxel = await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code),
+      `return api.human({ height: 60, weld: 'voxel', pose: { legL: { raiseFwd: 80, bend: 15 } } });`);
+    expect(voxel.error ?? null).toBeNull();
+    let data = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData());
+    expect(data.isManifold).toBe(true);
+    expect(data.componentCount).toBe(1);
+
+    const removed = await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code),
+      `api.removePart('iris');\nreturn api.human({ height: 60 });`);
+    expect(removed.error ?? null).toBeNull();
+    data = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData());
+    expect(data.componentCount).toBe(1);
+    const parts = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+    const names = (parts.parts ?? []).map((p) => p.name);
+    expect(names).not.toContain('iris');
+    expect(names).toContain('pupil');
+  });
 });
