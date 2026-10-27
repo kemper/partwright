@@ -23,7 +23,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready', initMs, compiler, sesMs }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, logs, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'voxel_grid_result',       callId, grid, error }
@@ -61,6 +61,7 @@ import { formatLockdownRefusal } from './lockdownRefusal';
 import { enableSesSandbox } from './sesSandbox';
 import { modelCompilerName } from './modelEval';
 import { getConfig } from '../config/appConfig';
+import { createModelLog, withLogs } from './modelConsole';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -326,7 +327,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -337,7 +338,17 @@ self.onmessage = async (event: MessageEvent) => {
       sdfPreviewScale?: number | null;
       manifoldFactsMinTriangles?: number;
       containmentSamples?: number;
+      modelLog?: { maxLines?: unknown; maxChars?: unknown };
     };
+    // This run's console capture (modelConsole.ts), with the main thread's
+    // caps. Each JS engine call below runs inside log.run(...), which only
+    // redirects the console for that synchronous call — model code never
+    // runs across an await, so overlapping async runs can't mix their logs.
+    const log = createModelLog(
+      modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
+        ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
+        : undefined,
+    );
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.
@@ -370,7 +381,7 @@ self.onmessage = async (event: MessageEvent) => {
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
         setActiveImports(runImports);
-        result = voxelEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => voxelEngine.run(code as string, params ?? undefined)), log);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
@@ -394,7 +405,9 @@ self.onmessage = async (event: MessageEvent) => {
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
         setActiveImports(runImports);
-        result = await runReplicadAsync(code as string, params ?? undefined);
+        // runReplicadAsync evaluates the model code before its first await, so
+        // that part runs inside the capture.
+        result = withLogs(await log.run(() => runReplicadAsync(code as string, params ?? undefined)), log);
       } else {
         if (!manifoldReady) {
           self.postMessage({
@@ -459,7 +472,7 @@ self.onmessage = async (event: MessageEvent) => {
           } catch { /* preview is best-effort; fall through to the full render */ }
           finally { setSdfPreviewScale(null); }
         }
-        result = manifoldJsEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => manifoldJsEngine.run(code as string, params ?? undefined)), log);
       }
 
       // labelMap is Map<string, Set<number>> — not directly serialisable.
@@ -479,6 +492,8 @@ self.onmessage = async (event: MessageEvent) => {
       // api.material(...) — plain serialisable MaterialSpec, crosses as-is.
       const materialSpec = result.materialSpec ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // console.log output from the model code (success and error alike).
+      const logs = result.logs ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
@@ -514,7 +529,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
@@ -527,6 +542,7 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          logs,
           workerMs: Math.round(performance.now() - execStart),
           engineHeapBytes,
         });

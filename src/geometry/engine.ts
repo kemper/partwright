@@ -535,6 +535,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       // The validator's normalized schema (re-run through normalizeParamSchema),
       // never the Worker's raw array.
       paramsSchema: check.paramsSchema,
+      logs: (msg.logs as string[] | null) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       manifoldFacts: (msg.manifoldFacts as MeshResult['manifoldFacts']) ?? undefined,
       voxelCount: msg.voxelCount as number | undefined,
@@ -825,7 +826,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 

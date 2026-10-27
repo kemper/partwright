@@ -426,6 +426,8 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   const normalizedSchema = schema ? checkParamsSchema(schema) : undefined;
   const lost = optPlainArray(msg.lostLabels, 'lostLabels');
   if (lost && !lost.every(s => typeof s === 'string')) fail('lostLabels must be strings');
+  const logs = optPlainArray(msg.logs, 'logs');
+  if (logs && !logs.every(s => typeof s === 'string')) fail('logs must be strings');
   optBool(msg.renderOnly, 'renderOnly');
   optFinite(msg.workerMs, 'workerMs');
   optFinite(msg.engineHeapBytes, 'engineHeapBytes');

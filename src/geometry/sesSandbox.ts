@@ -64,13 +64,18 @@ function buildEndowments(g: G, harden: <T>(x: T) => T): G {
     if (g[name] !== undefined) out[name] = harden(g[name]);
   }
   // console: forwarders, so model code can log but can't swap the Worker's
-  // console (or reach it — the methods are fresh functions).
+  // console (or reach it — the methods are fresh functions). Each call looks
+  // the method up on the real console at call time, so the engine's per-run
+  // capture (modelConsole.ts swaps console.log & co. around each run) sees it.
   const realConsole = g.console as Record<string, unknown> | undefined;
   const consoleOut: Record<string, (...a: unknown[]) => void> = {};
   for (const k of CONSOLE_METHODS) {
-    const f = realConsole?.[k];
-    if (typeof f !== 'function') continue;
-    consoleOut[k] = (...a: unknown[]) => { try { Reflect.apply(f, realConsole, a); } catch { /* ignore */ } };
+    if (typeof realConsole?.[k] !== 'function') continue;
+    consoleOut[k] = (...a: unknown[]) => {
+      const f = realConsole[k];
+      if (typeof f !== 'function') return;
+      try { Reflect.apply(f, realConsole, a); } catch { /* ignore */ }
+    };
   }
   out.console = harden(consoleOut);
   // performance.now() only — model code that times itself keeps working.
