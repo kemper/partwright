@@ -18,7 +18,7 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -243,6 +243,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
   const gatedTools = buildToolList(toggles, input.uiTools);
   const tools = toggles.provider === 'custom' ? toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)) : gatedTools;
+  // Only the tools this turn's gates allow may run. Hiding a tool is how plan
+  // mode and the scope toggles gate it, but a model can still call one it saw
+  // earlier in the history (a second plan after a build is the classic case).
+  // Checked against the gated list, not the custom-tier trim: that trim saves
+  // context, it doesn't withhold permission.
+  const offeredTools = new Set(gatedTools.map(t => t.name));
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -670,7 +676,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     await putMessages([toolResultMsg]);
 
     const toolResults = await executeAllWithRetry(
-      result.toolCalls, toggles, callbacks, signal,
+      result.toolCalls, toggles, offeredTools, callbacks, signal,
       (eachResult, i) => {
         toolResultMsg.toolResults![i] = eachResult;
         void putMessages([toolResultMsg]);
@@ -729,6 +735,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 async function executeAllWithRetry(
   toolCalls: PersistedToolCall[],
   toggles: ChatToggles,
+  offeredTools: ReadonlySet<string>,
   callbacks: RunTurnCallbacks,
   signal?: AbortSignal,
   onEachResult?: (result: PersistedToolResult, index: number) => void,
@@ -749,6 +756,16 @@ async function executeAllWithRetry(
       results.push(aborted);
       callbacks.onToolResult?.(tc.id, tc.name, aborted);
       onEachResult?.(aborted, i);
+      continue;
+    }
+    // A tool that wasn't offered this turn never runs (`finish` is a no-op
+    // control sentinel, so it's harmless either way; a pre-rename name counts
+    // as the tool it stands for).
+    if (!offeredTools.has(LEGACY_TOOL_ALIASES[tc.name] ?? tc.name) && tc.name !== FINISH_TOOL) {
+      const refused: PersistedToolResult = { toolUseId: tc.id, content: unofferedToolMessage(tc.name, toggles.planFirst), isError: true };
+      results.push(refused);
+      callbacks.onToolResult?.(tc.id, tc.name, refused);
+      onEachResult?.(refused, i);
       continue;
     }
     if (CONFIRM_REQUIRED_TOOLS.has(tc.name)) {
