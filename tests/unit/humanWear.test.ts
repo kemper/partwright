@@ -104,6 +104,25 @@ describe('human wear', () => {
     expect(ctx.bustRegion().some((w) => w > 0.9)).toBe(true);
   }, HEAVY);
 
+  it('a sleeveless top keeps straps over the shoulders; a cuirass stops below the shoulder slope', () => {
+    const sh = mesh.joints.get('upperarm01.L____head')!, neck = mesh.joints.get('neck01____head')!;
+    const ux = Math.abs(sh[0]);
+    // Highest point of the shell between the neck and the shoulder joint.
+    const peak = (m: ShellMesh, x0: number, x1: number) => {
+      let z = -Infinity;
+      for (let i = 0; i < m.positions.length; i += 3) { const x = Math.abs(m.positions[i]); if (x > x0 && x < x1) z = Math.max(z, m.positions[i + 2]); }
+      return z;
+    };
+    const [tank] = buildWear(asset, mesh, [{ item: 'top', sleeve: 'none' }], H);
+    // The strap runs over the top of the shoulder, above the shoulder joint.
+    expect(peak(tank.mesh!, ux * 0.55, ux * 0.7)).toBeGreaterThan(sh[2] + (neck[2] - sh[2]) * 0.5);
+    // …but the shoulder cap itself is bare.
+    expect(peak(tank.mesh!, ux * 0.95, ux * 1.2)).toBeLessThan(sh[2] + (neck[2] - sh[2]) * 0.3);
+    const [cuirass] = buildWear(asset, mesh, [{ item: 'cuirass', rivets: false }], H);
+    // Near the shoulder it ends low: no points standing up the slope.
+    expect(peak(cuirass.mesh!, ux * 0.8, ux * 1.2)).toBeLessThan(sh[2] + ux * mesh.scale * 0.35);
+  }, HEAVY);
+
   it('flare swings a skirt out', () => {
     const width = (m: ShellMesh) => { let lo = Infinity, hi = -Infinity; for (let i = 0; i < m.positions.length; i += 3) { lo = Math.min(lo, m.positions[i]); hi = Math.max(hi, m.positions[i]); } return hi - lo; };
     const [straight] = buildWear(asset, mesh, [{ item: 'skirt', length: 'midi' }], H);
@@ -157,6 +176,45 @@ describe('human hair', () => {
     while (x < H * 0.2 && at(free)(x, side[1], side[2]) < 0 === false) x += H / 400;
     while (x < H * 0.2 && at(free)(x, side[1], side[2]) < 0) x += H / 400;
     expect(at(capped)(x - H / 200, side[1], side[2])).toBeLessThan(0);
+  }, HEAVY);
+
+  it('an open jaw carries the beard with it: skin on the jaw keeps the same beard over it', () => {
+    const closed = buildHumanMesh(asset, { height: H, body: { gender: 1 } });
+    const open = buildHumanMesh(asset, { height: H, body: { gender: 1 }, expression: { jawOpen: 1 } });
+    const field = (m: typeof open) => {
+      const r = buildHairField(asset, m, { style: 'bald', beard: 'full' }, H, H / 200);
+      return makeTrilinearSampler(r.beard!, r.spec);
+    };
+    const fClosed = field(closed), fOpen = field(open);
+    // A posed point in the head's frame (where the hair field lives).
+    const inHead = (m: typeof open, p: number[]) => {
+      const head = computeSockets(asset, m, H).sockets.get('head')!;
+      const d = [0, 1, 2].map((c) => p[c] - head.origin[c]);
+      return [head.x, head.y, head.z].map((a) => a[0] * d[0] + a[1] * d[1] + a[2] * d[2]) as [number, number, number];
+    };
+    // Skin that rides the jaw (the chin): the beard over it must move with it,
+    // so its field value there is about the same open or closed. (Without the
+    // jaw carrying the beard the gap is about twice the bound.)
+    const jaw = new Set<number>();
+    asset.bones.forEach((b, i) => { if (b.name === 'jaw' || (b.parent >= 0 && jaw.has(b.parent))) jaw.add(i); });
+    const isSkin = new Uint8Array(asset.nV);
+    for (let t = 0; t < asset.nT; t++) if (asset.triLabel[t] === 0) for (let c = 0; c < 3; c++) isSkin[asset.triVerts[t * 3 + c]] = 1;
+    let worst = 0, n = 0;
+    for (let v = 0; v < asset.nV; v++) {
+      if (!isSkin[v]) continue;
+      let w = 0;
+      for (let k = 0; k < 4; k++) if (jaw.has(asset.skinIndex[v * 4 + k])) w += asset.skinWeight[v * 4 + k];
+      if (w < 0.8) continue;
+      const pc = inHead(closed, [0, 1, 2].map((c) => closed.posed[v * 3 + c]));
+      const po = inHead(open, [0, 1, 2].map((c) => open.posed[v * 3 + c]));
+      // A little in front of the skin, inside the beard's thickness.
+      const a = fClosed(pc[0], pc[1] - H * 0.004, pc[2]), b = fOpen(po[0], po[1] - H * 0.004, po[2]);
+      // Only where the closed jaw's beard is (the chin's front, not the mouth).
+      if (!(a < 0)) continue;
+      worst = Math.max(worst, Math.abs(a - b)); n++;
+    }
+    expect(n).toBeGreaterThan(5);
+    expect(worst).toBeLessThan(H * 0.006);
   }, HEAVY);
 
   it('a full beard covers the chin, not the lips', () => {

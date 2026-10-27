@@ -70,6 +70,19 @@ function capsule(p: Vec3, a: Vec3, b: Vec3, ra: number, rb: number): number {
 const THICKNESS: Record<HairStyle, number> = {
   bald: 0, buzz: 0.0035, short: 0.011, bob: 0.012, long: 0.012, ponytail: 0.007, pigtails: 0.008, bun: 0.007, afro: 0.012, mohawk: 0.003, spiky: 0.012,
 };
+/** The jaw-weight field: lattice coarsening, and the light blur that
+ *  smooths its seams once the skin's weights are carried outward. */
+const JAW_FIELD_COARSEN = 2;
+const JAW_FIELD_BLURS = 2;
+/** The bare patch round the lips, in lip half-heights. */
+const LIP_CLEAR = 1.35;
+
+/** Summed skin weight of the bones `pick` accepts, for asset vertex `v`. */
+function boneWeight(asset: HumanAsset, v: number, pick: (name: string, bone: number) => boolean): number {
+  let w = 0;
+  for (let q = 0; q < 4; q++) { const b = asset.skinIndex[v * 4 + q]; if (pick(asset.bones[b].name, b)) w += asset.skinWeight[v * 4 + q]; }
+  return w;
+}
 /** Head-room above the crown the lattice needs, as a fraction of the height. */
 const HEADROOM: Partial<Record<HairStyle, number>> = { afro: 0.08, mohawk: 0.06, spiky: 0.07, bun: 0.06 };
 
@@ -132,6 +145,13 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
   const mouthHalf = Math.abs(cornerL[0] - cornerR[0]) / 2;
   const chin = J('special04');
   const beardLen = o.beardLength ?? 1;
+  // The lips themselves (the lip bones' skin, as the `lips` paint label uses):
+  // the corner joints sit above the lips' centre, so the clear patch round
+  // the mouth is centred on the lips instead.
+  let lipLo = Infinity, lipHi = -Infinity;
+  for (const v of used) if (boneWeight(asset, v, (n) => n.startsWith('oris01') || n.startsWith('oris05')) > 0.5) { const z = toLocal(v)[2]; lipLo = Math.min(lipLo, z); lipHi = Math.max(lipHi, z); }
+  const lipZ = Number.isFinite(lipLo) ? (lipLo + lipHi) / 2 : mouth[2];
+  const lipHalf = Number.isFinite(lipLo) ? (lipHi - lipLo) / 2 : 0.008 * h;
 
   // Curtain length (bob / long).
   const longZ = style === 'bob' ? eye[2] - headH * 1.0 * L : chest[2] - headH * 1.2 * L;
@@ -142,7 +162,8 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
     nape[2] - 0.04 * h,
     isCurtain ? longZ - 0.02 * h : Infinity,
     style === 'ponytail' || style === 'pigtails' ? eye[2] - tailLen - 0.03 * h : Infinity,
-    beardStyle === 'full' ? chin[2] - 0.08 * h * beardLen : beardStyle !== 'none' ? chin[2] - 0.04 * h : Infinity,
+    // (An open jaw drops the chin, so short beards get room below it too.)
+    beardStyle === 'full' ? chin[2] - 0.08 * h * beardLen : beardStyle !== 'none' ? chin[2] - 0.06 * h : Infinity,
   );
   const reach = rx + (style === 'afro' ? 0.075 : style === 'spiky' ? 0.06 : isCurtain ? 0.06 : style === 'pigtails' ? 0.06 : 0.03) * h * vol;
   const pad = 3 * voxel;
@@ -274,7 +295,7 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
   const beardAt = (p: Vec3, d: number, a: number): number => {
     const [x, y, z] = p;
     // Lips (an ellipse round the mouth) stay bare.
-    const lips = 1 - Math.hypot(x / (mouthHalf * 1.25), (z - mouth[2]) / (0.008 * h));
+    const lips = 1 - Math.hypot(x / (mouthHalf * 1.25), (z - lipZ) / (lipHalf * LIP_CLEAR));
     const front = y - (mouth[1] + 0.03 * h);                 // < 0 on the face side
     // Mustache: over the upper lip, drooping at the corners.
     const droop = smooth01((Math.abs(x) - mouthHalf * 0.7) / (mouthHalf * 0.6)) * 0.012 * h;
@@ -303,6 +324,71 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
     }
     return b;
   };
+
+  // The jaw moves on its own bone (expression.jawOpen): carry the beard
+  // below the mouth with it. For a sample at head-frame q, the rest point it
+  // came from is the jaw's motion relative to the head, undone; the sample
+  // blends toward it below the mouth line. (Bone transforms are world =
+  // R·(k·rest) + T; the head frame is the head socket's.)
+  const bi = new Map(asset.bones.map((b, i) => [b.name, i]));
+  const Rh = mesh.bones.R[bi.get('head')!], Rj = mesh.bones.R[bi.get('jaw')!];
+  const Th = mesh.bones.T[bi.get('head')!], Tj = mesh.bones.T[bi.get('jaw')!];
+  // A = Rhᵀ·Rj, c = Rhᵀ·(Tj − Th), so posed head-frame q = A·X + c − k·h.
+  const A = [0, 1, 2].flatMap((r) => [0, 1, 2].map((col) => Rh[r] * Rj[col] + Rh[3 + r] * Rj[3 + col] + Rh[6 + r] * Rj[6 + col]));
+  const dT = [Tj[0] - Th[0], Tj[1] - Th[1], Tj[2] - Th[2]];
+  const cJ = [0, 1, 2].map((r) => Rh[r] * dT[0] + Rh[3 + r] * dT[1] + Rh[6 + r] * dT[2]);
+  const kh = [head[0] * k, head[1] * k, head[2] * k];
+  const jawMoves = A.some((v, i) => Math.abs(v - (i % 4 === 0 ? 1 : 0)) > 1e-6);
+  // How much each point rides the jaw: the skin's own jaw weights (the jaw
+  // and the bones it carries), splatted onto a coarse lattice and carried out
+  // into the space the beard fills, so the beard follows the skin the way
+  // skinning moves it (a height cut tore the mouth corners).
+  let jawW: ((x: number, y: number, z: number) => number) | null = null;
+  if (jawMoves && beardStyle !== 'none') {
+    const jawBones = new Set<number>();
+    asset.bones.forEach((b, i) => { if (b.name === 'jaw' || (b.parent >= 0 && jawBones.has(b.parent))) jawBones.add(i); });
+    const cs: GridSpec = {
+      nx: Math.ceil(spec.nx / JAW_FIELD_COARSEN) + 1, ny: Math.ceil(spec.ny / JAW_FIELD_COARSEN) + 1, nz: Math.ceil(spec.nz / JAW_FIELD_COARSEN) + 1,
+      origin: min, voxel: voxel * JAW_FIELD_COARSEN,
+    };
+    const num = new Float32Array(cs.nx * cs.ny * cs.nz), den = new Float32Array(num.length);
+    // Splatted where the skin IS (posed, in the head's frame), since a sample
+    // asks how much the skin around it now rides the jaw.
+    const Ph = mesh.joints.get('head____head')!;
+    for (const v of used) {
+      const d = [mesh.posed[v * 3] - Ph[0], mesh.posed[v * 3 + 1] - Ph[1], mesh.posed[v * 3 + 2] - Ph[2]];
+      const q = [0, 1, 2].map((r) => Rh[r] * d[0] + Rh[3 + r] * d[1] + Rh[6 + r] * d[2]);
+      const ix = Math.round((q[0] - min[0]) / cs.voxel), iy = Math.round((q[1] - min[1]) / cs.voxel), iz = Math.round((q[2] - min[2]) / cs.voxel);
+      if (ix < 0 || iy < 0 || iz < 0 || ix >= cs.nx || iy >= cs.ny || iz >= cs.nz) continue;
+      const c = ix + iy * cs.nx + iz * cs.nx * cs.ny;
+      num[c] += boneWeight(asset, v, (_n, b) => jawBones.has(b)); den[c] += 1;
+    }
+    // Cells with skin take its mean weight; every other cell takes the weight
+    // of the nearest skin (a breadth-first fill outward), then a light blur.
+    let wgt = new Float32Array(num.length);
+    const queue: number[] = [];
+    const done = new Uint8Array(num.length);
+    for (let c = 0; c < num.length; c++) if (den[c] > 0) { wgt[c] = num[c] / den[c]; done[c] = 1; queue.push(c); }
+    const sx = 1, sy = cs.nx, sz = cs.nx * cs.ny;
+    for (let qi = 0; qi < queue.length; qi++) {
+      const c = queue[qi];
+      const x = c % cs.nx, y = Math.floor(c / sy) % cs.ny, z = Math.floor(c / sz);
+      for (const [d, ok] of [[-sx, x > 0], [sx, x < cs.nx - 1], [-sy, y > 0], [sy, y < cs.ny - 1], [-sz, z > 0], [sz, z < cs.nz - 1]] as [number, boolean][]) {
+        if (!ok || done[c + d]) continue;
+        done[c + d] = 1; wgt[c + d] = wgt[c]; queue.push(c + d);
+      }
+    }
+    for (let it = 0; it < JAW_FIELD_BLURS; it++) wgt = blurField(wgt, cs);
+    const ws = makeTrilinearSampler(wgt, cs);
+    jawW = (x, y, z) => { const w = ws(x, y, z); return w < 1e5 ? clamp(w, 0, 1) : 0; };
+  }
+  const toRest = (p: Vec3, w: number): Vec3 => {
+    const r = [p[0] + kh[0] - cJ[0], p[1] + kh[1] - cJ[1], p[2] + kh[2] - cJ[2]];
+    // X = Aᵀ·r, back in the head-local frame.
+    const q = [0, 1, 2].map((col) => A[col] * r[0] + A[3 + col] * r[1] + A[6 + col] * r[2] - kh[col]);
+    return [p[0] + (q[0] - p[0]) * w, p[1] + (q[1] - p[1]) * w, p[2] + (q[2] - p[2]) * w];
+  };
+  const unJaw = (p: Vec3): Vec3 => toRest(p, jawW!(p[0], p[1], p[2]));
 
   const field = style === 'bald' ? null : new Float32Array(occ.length);
   const beard = beardStyle === 'none' ? null : new Float32Array(occ.length);
@@ -394,7 +480,12 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
     // Pressed flat under headwear, widening back out below its edge.
     if (cover) f = Math.max(f, d - cover.keep - Math.max(0, cover.edge(x, y) - z) * COVER_FLARE);
     if (field) field[i] = f;
-    if (beard) beard[i] = beardAt(p, d, a);
+    if (beard) {
+      if (jawW) {
+        const q = unJaw(p);
+        beard[i] = beardAt(q, bodyAt(q[0], q[1], q[2]), Math.abs(Math.atan2(q[0], -(q[1] - yc))));
+      } else beard[i] = beardAt(p, d, a);
+    }
   }
   return { field, beard, spec };
 }
