@@ -87,3 +87,7 @@ I also took the nits:
 - The Worker installs the log caps next to `setActiveImports`, after the
   lazy-init awaits.
 - help() lists `logs?` on every run API.
+
+## Assistant
+
+Added a 4-Ls retro for this PR (retros/inbox/20261027-033500-model-code-console-logs.md).
