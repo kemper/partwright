@@ -83,11 +83,31 @@ test.describe('api.human', () => {
     expect(data.componentCount).toBe(1);
     const parts = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
     const tris = Object.fromEntries((parts.parts ?? []).map((p) => [p.name, p.triangleCount]));
-    for (const name of ['skin', 'hair', 'beard', 'shirt', 'pants', 'boots', 'cuirass', 'pauldrons', 'belt', 'sword', 'cape', 'cap']) {
+    for (const name of ['skin', 'hair', 'beard', 'shirt', 'pants', 'boots', 'cuirass', 'rivets', 'pauldrons', 'belt', 'sword', 'cape', 'cap']) {
       expect(tris[name] ?? 0, name).toBeGreaterThan(0);
     }
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/human-dressed.png' });
+  });
+
+  test('headwear sits on the hair: a crown on an afro, a helmet over long hair', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+    for (const [code, labels] of [
+      [`return api.human({ height: 60, hair: 'afro', accessories: ['crown'], wear: ['tshirt'] });`, ['hair', 'crown']],
+      [`return api.human({ height: 60, body: { gender: 0.2 }, hair: 'long', wear: ['tshirt', 'helmet', 'gorget'] });`, ['hair', 'helmet', 'gorget', 'rivets']],
+    ] as const) {
+      const result = await page.evaluate((c) => (window as unknown as { partwright: PW }).partwright.run(c), code);
+      expect(result.error ?? null).toBeNull();
+      const data = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getGeometryData());
+      expect(data.isManifold).toBe(true);
+      expect(data.componentCount).toBe(1);
+      const parts = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listObjectParts());
+      const tris = Object.fromEntries((parts.parts ?? []).map((p) => [p.name, p.triangleCount]));
+      for (const name of labels) expect(tris[name] ?? 0, name).toBeGreaterThan(0);
+    }
   });
 
   test('style presets: an anime figure and a Funko-style toy stay one printable piece', async ({ page }) => {

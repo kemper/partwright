@@ -195,12 +195,66 @@ export interface GearPiece { label: string; color: string; manifold: unknown }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type M = any;
 
+/** Rays per ring when fitting a crown to the hair. */
+const RING_FIT_RAYS = 48;
+/** The most a crown widens to sit on the hair; past this it rides higher up
+ *  the hair instead (a crown on an afro sits on top, not round its middle). */
+const RING_MAX_GROW = 1.12;
+/** Which ray's reach a crown fits (a high percentile, not the farthest). */
+const RING_FIT_PERCENTILE = 0.8;
+/** A crown seat needs hair round at least this share of its rays. */
+const RING_MIN_COVER = 0.75;
+
+/**
+ * Seat an oval ring (inner half-axes `ax`, `ay`, centred at `(0, yc)`, `bandH`
+ * tall) on the hair: from `z0` upward, the first height where widening the
+ * ring by at most RING_MAX_GROW brings its inner face onto the hair's outer
+ * surface (3% inside it, so they fuse). The reach it fits is a high
+ * percentile over rays round the ring, so a ponytail leaving the head on one
+ * side runs through the ring instead of blowing it up; and a height counts
+ * only where hair surrounds most of the ring (above the hair, nothing holds
+ * it). Returns that height and widening, else the snuggest seat found, else
+ * the head itself.
+ */
+function ringSeat(at: (x: number, y: number, z: number) => number, ax: number, ay: number, yc: number, z0: number, bandH: number, rise: number): { z: number; grow: number } {
+  const need = (zb: number) => {
+    const reaches: number[] = [];
+    for (let i = 0; i < RING_FIT_RAYS; i++) {
+      const th = (i / RING_FIT_RAYS) * Math.PI * 2;
+      const dx = Math.cos(th) * ax, dy = Math.sin(th) * ay;
+      let reach = 0;
+      for (const f of [0.1, 0.5, 0.9]) {
+        // Outermost hair along the ray, out to three times the oval.
+        for (let t = 0.6; t <= 3; t += 0.02) if (at(dx * t, yc + dy * t, zb + bandH * f) < 0) reach = Math.max(reach, t);
+      }
+      if (reach) reaches.push(reach);
+    }
+    if (reaches.length < RING_FIT_RAYS * RING_MIN_COVER) return Infinity;
+    reaches.sort((p, q) => p - q);
+    return Math.max(1, reaches[Math.floor((reaches.length - 1) * RING_FIT_PERCENTILE)] * 0.97);
+  };
+  let best = { z: z0, grow: need(z0) };
+  for (let i = 1; best.grow > RING_MAX_GROW && i <= 24; i++) {
+    const z = z0 + (rise * i) / 24, grow = need(z);
+    if (grow < best.grow) best = { z, grow };
+  }
+  return Number.isFinite(best.grow) ? best : { z: z0, grow: 1 };
+}
+
+/** The hair, as headwear sees it: `pad` is how thick the hair stays under a
+ *  hat (hats grow by it), `at` its signed field in the head socket's frame
+ *  (negative inside), so a crown or tiara can sit on the hair's surface. */
+export interface GearHair { pad: number; at: ((x: number, y: number, z: number) => number) | null }
+
+/** Hats that press the hair flat (crowns and tiaras sit on it instead). */
+export const COVERING_HATS = ['tophat', 'cap', 'beanie', 'wizardhat'] as const;
+
 /**
  * Build every accessory as labelled world-space Manifolds. `worn` are the
  * worn shells' vertex positions (shifted by `wornZ` back into the body's
  * frame), so draped pieces sit over the clothes.
  */
-export function buildGear(module: M, asset: HumanAsset, mesh: HumanMesh, items: GearOptions[], height: number, worn: Float32Array[] = [], wornZ = 0): GearPiece[] {
+export function buildGear(module: M, asset: HumanAsset, mesh: HumanMesh, items: GearOptions[], height: number, worn: Float32Array[] = [], wornZ = 0, hair: GearHair = { pad: 0, at: null }): GearPiece[] {
   const { Manifold, CrossSection } = module;
   const { sockets, measures: m } = computeSockets(asset, mesh, height);
   const h = m.height;
@@ -317,7 +371,10 @@ export function buildGear(module: M, asset: HumanAsset, mesh: HumanMesh, items: 
         break;
       }
       case 'tophat': case 'cap': case 'beanie': case 'wizardhat': case 'crown': case 'tiara': {
-        const rx = m.headRx * 1.04 * s, ry = m.headRy * 1.04 * s, z0 = m.bandZ, top = m.headTop;
+        // A hat that presses the hair flat grows by the hair it covers.
+        const pad = (COVERING_HATS as readonly string[]).includes(o.item) ? hair.pad : 0;
+        let rx = (m.headRx * 1.04 + pad) * s, ry = (m.headRy * 1.04 + pad) * s;
+        const z0 = m.bandZ, top = m.headTop + pad;
         const oval = (sh: M) => sh.scale([rx, ry, 1]);
         const yc = (m.headFrontY + m.headRy) * 0.5;   // head centre, front to back
         let shape: M, band: M | null = null;
@@ -342,8 +399,14 @@ export function buildGear(module: M, asset: HumanAsset, mesh: HumanMesh, items: 
           shape = Manifold.union([brim, cone.rotate([-12, 0, 0])]);
           band = oval(Manifold.cylinder(0.02 * h, 1.02, 1.0, 64)).translate([0, yc, z0 + 0.006 * h]);
         } else {
-          // Crown / tiara: a band with points round the top edge.
+          // Crown / tiara: a band with points round the top edge, widened so
+          // its inner face sits on the hair instead of inside it.
           const bandH = (o.item === 'crown' ? 0.035 : 0.012) * h * s;
+          let zr = z0 + (o.item === 'tiara' ? 0.02 * h : 0);
+          if (hair.at) {
+            const seat = ringSeat(hair.at, rx * 0.93, ry * 0.93, (m.headFrontY + m.headRy) * 0.5, zr, bandH, 0.12 * h);
+            zr = seat.z; rx *= seat.grow; ry *= seat.grow;
+          }
           const outer = oval(Manifold.cylinder(bandH, 1.0, 1.02, 64));
           const inner = Manifold.cylinder(bandH * 3, 1, 1, 64).scale([rx * 0.93, ry * 0.93, 1]).translate([0, 0, -bandH]);
           const parts: M[] = [outer.subtract(inner)];
@@ -353,7 +416,7 @@ export function buildGear(module: M, asset: HumanAsset, mesh: HumanMesh, items: 
             const ph = (o.item === 'crown' ? 0.03 : i === 2 ? 0.03 : 0.018) * h * s;
             parts.push(Manifold.cylinder(ph, 0.009 * h * s, 0, 4).translate([Math.cos(a) * rx * 1.0, Math.sin(a) * ry * 1.0, bandH * 0.9]));
           }
-          shape = Manifold.union(parts).translate([0, yc, z0 + (o.item === 'tiara' ? 0.02 * h : 0)]);
+          shape = Manifold.union(parts).translate([0, yc, zr]);
         }
         piece(label, o.color, place(shape, 'head'));
         if (band) piece('hatband', GEAR_COLORS.hatband, place(band, 'head'));

@@ -45,6 +45,16 @@ export interface HairOptions {
 
 export interface HairField { field: Float32Array | null; beard: Float32Array | null; spec: GridSpec }
 
+/**
+ * Headwear pressing the hair flat: above its lower edge (head-local height at
+ * head-local `x, y`) the hair keeps only `keep` (print units) off the scalp,
+ * so a hat or helmet sits over it instead of the hair poking through. Below
+ * the edge the hair widens back to its full shape, so it shows under the brim.
+ */
+export interface HairCover { edge: (x: number, y: number) => number; keep: number }
+/** How fast the hair widens back out below a cover (thickness per unit down). */
+const COVER_FLARE = 0.6;
+
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
 const smooth01 = (t: number) => { const c = clamp(t, 0, 1); return c * c * (3 - 2 * c); };
 
@@ -66,7 +76,7 @@ const HEADROOM: Partial<Record<HairStyle, number>> = { afro: 0.08, mohawk: 0.06,
 interface Tail { pts: Vec3[]; r: number[] }
 
 /** The hair field in head-local coordinates. `voxel` is the lattice step (print units). */
-export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOptions, height: number, voxel: number): HairField {
+export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOptions, height: number, voxel: number, cover: HairCover | null = null): HairField {
   const h = height;
   const k = mesh.scale;
   const head = mesh.restJoints.get('head____head')!;
@@ -196,12 +206,14 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
   };
 
   const tails: Tail[] = [];
+  // Under a hat the tails leave the head just below its edge.
+  const tailZ = (z: number) => (cover ? Math.min(z, cover.edge(0, back) - 0.012 * h) : z);
   if (style === 'ponytail') {
-    const zb = eye[2] + headH * 0.5;
+    const zb = tailZ(eye[2] + headH * 0.5);
     tails.push(tail([0, back + 0.006 * h, zb], [0, 0.02 * h, -0.01 * h], tailLen, 0.024 * h * vol));
   } else if (style === 'pigtails') {
     for (const sx of [-1, 1]) {
-      tails.push(tail([sx * rx * 0.8, yc + ry * 0.7, eye[2] + headH * 0.55], [sx * 0.014 * h, 0.01 * h, -0.016 * h], tailLen, 0.017 * h * vol));
+      tails.push(tail([sx * rx * 0.8, yc + ry * 0.7, tailZ(eye[2] + headH * 0.55)], [sx * 0.014 * h, 0.01 * h, -0.016 * h], tailLen, 0.017 * h * vol));
     }
   }
   // Spikes: golden-spiral directions over the top / back of the head.
@@ -379,6 +391,8 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
       for (const b of blades) f = smin(f, capsule(q, b.a, b.b, b.r, 0.001 * h), 0.004 * h);
     }
     for (const s of spikes) f = smin(f, capsule(p, s.a, s.b, s.r, 0.0008 * h), 0.004 * h);
+    // Pressed flat under headwear, widening back out below its edge.
+    if (cover) f = Math.max(f, d - cover.keep - Math.max(0, cover.edge(x, y) - z) * COVER_FLARE);
     if (field) field[i] = f;
     if (beard) beard[i] = beardAt(p, d, a);
   }
