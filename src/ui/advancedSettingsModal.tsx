@@ -877,6 +877,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={16} integer
           onChange={v => set('renderer', 'exportPoolSize', v)}
         />
+        <Field cfgKey="renderer.exportMaxSplitItems"
+          label="Export split limit"
+          hint="Most pieces or parts one object can split into when exporting."
+          tooltip="The export picker can split one object into its separate pieces (connected solids) or its labelled parts, so each lands as its own object in the file. An object with more pieces or parts than this offers only Whole: thousands of loose shells aren't worth spreading over build plates."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.exportMaxSplitItems}
+          value={c.renderer.exportMaxSplitItems}
+          min={2} max={5000} integer
+          onChange={v => set('renderer', 'exportMaxSplitItems', v)}
+        />
         <Field cfgKey="renderer.assemblyGridGutter"
           label="Assembly grid gutter"
           unit="× cell"
