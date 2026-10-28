@@ -298,7 +298,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const groupsActive = toolGroupsActive(toggles);
   if (groupsActive) offeredTools.add(LOAD_TOOLS_TOOL);
 
-  // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
+  // The preamble + in-app ai.md is ~27K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
   // there too, but smaller models do better with the hand-tuned
   // slim/medium prompts (which leave more room for tool docs +

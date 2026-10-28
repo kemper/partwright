@@ -305,7 +305,31 @@ function printableGuidance(): string {
 }
 
 export function buildSystemPrompt(aiMd: string): string {
-  return PREAMBLE + aiMd;
+  return PREAMBLE + inAppAiMd(aiMd);
+}
+
+const EXTERNAL_ONLY_BLOCK = /<!-- external-only:start -->[\s\S]*?<!-- external-only:end -->\r?\n?/g;
+// Whole-line match, so a note body can't be cut short by an inner "-->".
+const IN_APP_NOTE = /^<!-- in-app: (.*) -->\r?$/gm;
+
+/** ai.md as the in-app chat sees it. The file also serves external agents
+ *  (Claude Code, the extension) that drive the `window.partwright` console,
+ *  so console-only material — the method listing, argument-validation
+ *  conventions, Arrange mode — sits between external-only markers and is
+ *  dropped here: the in-app model calls tools, each with its own schema.
+ *  `<!-- in-app: … -->` lines are the reverse: unwrapped for the in-app model.
+ *  Both are HTML comments, so the rendered page hides them; external agents
+ *  read the raw file and do see them, which is why each in-app note says
+ *  "(In-app chat only.)". Unbalanced markers are tolerated at runtime (a
+ *  throw would break chat) and caught by tests/unit/aiMdInApp.test.ts. */
+export function inAppAiMd(aiMd: string): string {
+  return aiMd
+    .replace(EXTERNAL_ONLY_BLOCK, '')
+    .replace(IN_APP_NOTE, '$1')
+    .replace(/<!-- Maintainers:[^\n]*-->\n?/g, '')
+    // Removing a block can leave a run of blank lines; this also collapses
+    // runs inside code fences, which ai.md doesn't rely on.
+    .replace(/(\r?\n){3,}/g, m => (m.includes('\r') ? '\r\n\r\n' : '\n\n'));
 }
 
 /** Slim local prompt (~700 tokens) — the default for smaller local models

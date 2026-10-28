@@ -177,7 +177,7 @@ export interface ChatToggles {
 }
 
 /** How much system prompt + tool schema the Custom provider sends. `full` is
- *  the hosted-provider payload (all of ai.md + every tool, ~100k tokens);
+ *  the hosted-provider payload (the in-app ai.md + core tools, ~45k tokens);
  *  `medium` / `slim` reuse the local prompts with a reduced, compacted tool
  *  set; `auto` picks from the known context window. */
 export type CustomPromptTier = 'auto' | 'full' | 'medium' | 'slim';
