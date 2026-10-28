@@ -798,6 +798,7 @@ function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target
     radius: brushRadius,
     shape: brushShape,
     hitPoint: result.point,
+    adjacency,
   });
   if (!proj) return;
   // Apply the wrap tolerance: the screen-projection footprint is a flat spatial

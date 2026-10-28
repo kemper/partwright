@@ -466,6 +466,11 @@ export interface AppConfig {
     /** How long (ms) to wait for that Worker before building the graph on the
      *  main thread instead (a Worker killed for memory may never answer). */
     paintAdjacencyWorkerTimeoutMs: number;
+    /** Projection paintbrush (smooth edges off): triangles thinner than this
+     *  many screen pixels next to the painted area are painted too, so slivers
+     *  that fall between pixel centres don't leave an unpaintable hairline
+     *  along a seam. 0 = off. */
+    paintBrushSliverPx: number;
     /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
      *  tool; the oldest drop past this). */
     maxPendingAppliedNotes: number;
@@ -820,6 +825,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toolDialogOpenWaitMs: 4000,
     paintAdjacencyWorkerMinTriangles: 300_000,
     paintAdjacencyWorkerTimeoutMs: 60_000,
+    paintBrushSliverPx: 1.5,
     maxPendingAppliedNotes: 6,
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
