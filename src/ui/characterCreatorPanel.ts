@@ -552,6 +552,12 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
   };
 
   function rebuild(): void {
+    // A re-render replaces every row; put keyboard focus back on the same
+    // field's control (arrowing through a <select> fires change per step).
+    const active = document.activeElement;
+    const focusedPath = active instanceof HTMLElement && controls.contains(active)
+      ? active.closest<HTMLElement>('[data-path]')?.dataset.path
+      : undefined;
     controls.replaceChildren();
     for (const sec of panelLayout(spec)) {
       let host: HTMLElement = controls;
@@ -564,11 +570,16 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
       }
       for (const ctl of sec.controls) {
         const made = ctl.ui.custom ? CUSTOM[ctl.ui.custom](ctl) : controlRow(ctl);
+        if (!Array.isArray(made)) made.dataset.path = ctl.path;
         host.append(...(Array.isArray(made) ? made : [made]));
         if (ctl.resetAfter) host.append(resetButton(ctl.resetAfter));
       }
     }
     shownKey = layoutKey(spec);
+    if (focusedPath) {
+      const row = [...controls.querySelectorAll<HTMLElement>('[data-path]')].find(r => r.dataset.path === focusedPath);
+      row?.querySelector<HTMLElement>('select, input, button')?.focus();
+    }
   }
 
   rebuild();

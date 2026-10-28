@@ -140,6 +140,23 @@ describe('panelLayout', () => {
     expect(withReset[0].resetAfter).toEqual({ label: 'Reset eye layout', paths: ['face.layout.eyeSpread', 'face.layout.eyeHeight'] });
   });
 
+  it('changes layoutKey when derived display state moves (resets, null displays, segmented picks)', () => {
+    const s = spec();
+    let k = layoutKey(s);
+    s.colors.sole = '#ff0000';                       // Sole reset enables
+    expect(layoutKey(s)).not.toBe(k);
+    s.colors.sole = null;
+    k = layoutKey(s);
+    s.colors.feet = '#00ff00';                       // a null Sole swatch follows the footwear colour
+    expect(layoutKey(s)).not.toBe(k);
+    k = layoutKey(s);
+    s.face.layout.eyeSpread = 1.3;                   // eye-layout reset enables
+    expect(layoutKey(s)).not.toBe(k);
+    k = layoutKey(s);
+    s.clothing.feet.style = 'toy';                   // segmented pressed state (also reveals toy knobs)
+    expect(layoutKey(s)).not.toBe(k);
+  });
+
   it('changes layoutKey only when the visible controls change', () => {
     const s = spec();
     const k = layoutKey(s);

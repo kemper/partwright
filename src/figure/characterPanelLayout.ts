@@ -110,10 +110,14 @@ export function panelLayout(spec: CharacterSpec): PanelSection[] {
         hardMax: ui.hard?.max ?? leaf.max ?? slider?.[1] ?? Infinity,
       };
     });
-    // One reset button per group, after its last visible member.
+    // One reset button per group, after its last visible member. It resets
+    // every member (shown or not), so a group stays whole if one gets a `when`.
     const groups = new Map<string, PanelControl[]>();
     for (const ctl of controls) if (ctl.ui.reset) groups.set(ctl.ui.reset, [...(groups.get(ctl.ui.reset) ?? []), ctl]);
-    for (const [label, members] of groups) members[members.length - 1].resetAfter = { label, paths: members.map(m => m.path) };
+    for (const [label, visible] of groups) {
+      const paths = shownFields().filter(x => x.ui.reset === label).map(x => x.leaf.path);
+      visible[visible.length - 1].resetAfter = { label, paths };
+    }
     const countPath = 'countPath' in sec ? sec.countPath : undefined;
     const count = countPath ? (getAt(spec, countPath) as unknown[] | undefined)?.length ?? 0 : 0;
     out.push({
@@ -126,10 +130,19 @@ export function panelLayout(spec: CharacterSpec): PanelSection[] {
   return out;
 }
 
-/** A key that changes whenever an edit should re-render the panel: the set of
- *  visible controls (and section titles) differs. Value-only edits keep it. */
+/** A key that changes whenever an edit should re-render the panel: a control
+ *  appears or disappears, a section title changes, a reset button flips
+ *  between enabled and disabled, a null field's displayed value moves (the
+ *  Sole swatch follows the footwear colour), or a segmented value changes (its
+ *  pressed button is drawn at render time). Plain value edits keep it. */
 export function layoutKey(spec: CharacterSpec): string {
-  return panelLayout(spec).map(s => `${s.title}:${s.controls.map(c => c.path).join(',')}`).join('|');
+  return panelLayout(spec).map(s => `${s.title}:${s.controls.map(c => {
+    let k = c.path;
+    if (c.ui.control === 'segmented') k += `=${String(getAt(spec, c.path))}`;
+    if (c.ui.nullShows && getAt(spec, c.path) === null) k += `~${String(controlValue(spec, c))}`;
+    if (c.resetAfter) k += c.resetAfter.paths.every(p => getAt(spec, p) === null) ? '!default' : '!set';
+    return k;
+  }).join(',')}`).join('|');
 }
 
 /** Fields the panel draws with a custom renderer, by renderer id. */

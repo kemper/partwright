@@ -921,7 +921,7 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
   face: o({
     shape: u(e(FACE_SHAPES, 'Face shape.'), { label: 'Shape', section: 'face' }),
     lids: u(e(LID_STYLES, 'Eyelids.'), { label: 'Eyelids', section: 'face' }),
-    gaze: u(e(GAZES, 'Gaze direction.'), { label: 'Gaze', section: 'face' }),
+    gaze: u(e(GAZES, 'Gaze direction.'), { label: 'Gaze', section: 'face', options: { middle: 'Middle (= center)' } }),
     nose: u(e(NOSE_TYPES, 'Nose type.'), { label: 'Nose', section: 'face' }),
     expression: u(e(EXPRESSIONS, 'Mouth expression.'), { label: 'Mouth', section: 'face' }),
     lipShape: u(e(LIP_SHAPES, 'Lip shape.'), { label: 'Lips', section: 'face' }),

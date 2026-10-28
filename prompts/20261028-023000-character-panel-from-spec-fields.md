@@ -60,3 +60,30 @@ pass unchanged. Visible differences:
 I moved Hair back next to Skin in the colours tree so the colour list reads as
 before. Added an e2e test: Leg cut (UI metadata only) edits the spec into
 `leg: 'cargo'`, and a `when` rule reveals Shorts hem without any panel code.
+
+## Assistant
+
+## Review follow-up
+
+The work-reviewer found nothing blocking. Fixes:
+
+**`layoutKey` now covers derived display state, not just which controls are
+visible.** It also changes when:
+- a reset group flips between default and set (the Sole and eye-layout resets
+  stayed disabled after an edit);
+- a null field's displayed value moves (a null Sole swatch kept showing the
+  old footwear colour);
+- a segmented value changes. Segmented buttons draw their pressed state at
+  render time, and they only refreshed because today's three segmented fields
+  happen to show or hide other controls. A new segmented field with no
+  dependants would have gone stale. Putting the value in the key fixes it
+  generically.
+
+**Reset groups** are built from every member, not just the visible ones.
+
+**Keyboard focus** returns to the same field after a re-render. Rows carry
+`data-path`; arrowing through a `<select>` fires `change` on each step.
+
+**Gaze.** `middle` is an alias of `center` in sdfFigure's `GAZE_PRESETS`, so
+the dropdown labels it "Middle (= center)". This also corrects my #1065
+randomizer comment, which wrongly called it cross-eyed.
