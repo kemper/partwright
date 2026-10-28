@@ -351,6 +351,7 @@ Available tools you'll use most:
   curves (smooth shapes / lofts / airfoils),
   figure (api.sdf.figure — posable humanoid rig: people / characters / heroes / busts),
   creature (api.sdf.creature — creatures / monsters / mascots / toy animals: round lidded eyes, puffy cat muzzle, lobed bat ears, clawed feet),
+  human (api.human — parametric person: body/face sliders + skeleton pose, anime/chibi/funko styles, hair, clothing, armor, props; experimental),
   sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),

@@ -56,7 +56,7 @@
   Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://www.partwrightstudio.com https://partwrightstudio.com
 
 # Engine sandbox 'opaque' mode: the frame (and its Worker) has an opaque origin,
-# so every engine module / wasm / font / BOSL2 file it loads from this site is a
+# so every engine module / wasm / font / BOSL2 / api.human file it loads from this site is a
 # cross-origin request from `Origin: null` and needs CORS. These are public,
 # credential-free static assets.
 /assets/*
@@ -65,8 +65,14 @@
 /openscad-libs/*
   Access-Control-Allow-Origin: *
 
+/human/*
+  Access-Control-Allow-Origin: *
+
 /v1/assets/*
   Access-Control-Allow-Origin: *
 
 /v1/openscad-libs/*
+  Access-Control-Allow-Origin: *
+
+/v1/human/*
   Access-Control-Allow-Origin: *

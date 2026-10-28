@@ -11,6 +11,7 @@ import type { MeshResult } from '../geometry/engines/types';
 import { componentsOverlap } from './bboxOverlap';
 import { sourceUsesManifoldText, preloadTextFonts } from '../geometry/textGlyphs';
 import { resolvePaintOps } from '../color/paintOpsResolve';
+import { sourceUsesHuman, preloadHumanAsset } from '../human/humanAsset';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 
 export interface PreviewComponent {
@@ -149,6 +150,9 @@ export async function previewModel(
   if (engine === 'manifold-js'
       && (sourceUsesManifoldText(code) || /\bapi\.(?:fasteners|printFit)\b/.test(code) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code))) {
     await preloadTextFonts();
+  }
+  if (engine === 'manifold-js' && sourceUsesHuman(code)) {
+    try { await preloadHumanAsset(code); } catch { /* api.human reports the missing asset itself */ }
   }
 
   let raw: MeshResult;
