@@ -1139,6 +1139,7 @@ function createBrushControls(): HTMLElement {
     const btn = document.createElement('button');
     btn.textContent = labelText;
     btn.title = tip;
+    btn.dataset.surface = mode;
     btn.className = axisButtonClass(mode === getBrushSurface());
     btn.addEventListener('click', () => {
       setBrushSurface(mode);
