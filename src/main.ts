@@ -263,6 +263,7 @@ import { collectRefineRegions, descriptorRefines } from './color/refinePipeline'
 import { setPaintLabels } from './color/labels';
 import { getPaintScope, setPaintScope, onPaintScopeChange } from './color/paintScope';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { isSmoothFill, smoothFillFor, resolveSmoothFillTriangles, fillSmoothness, primeBaseAdjacency, DEFAULT_FILL_SMOOTHNESS, MAX_FILL_SMOOTHNESS } from './color/smoothFill';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
@@ -304,7 +305,7 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { applyRegionEdit, type RegionEditOptions } from './color/regionEdit';
-import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, resolveConnectedFromSeed, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
 import { findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -376,7 +377,7 @@ import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
-import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
+import { isEngineSandboxMode, isRemovedEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin, engineSandboxOriginAvailable, defaultEngineSandboxMode } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
 /** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
@@ -2026,6 +2027,14 @@ interface ResolveContext {
   colorsBelow?: (numTri: number, selfId?: number) => Uint8Array | null;
 }
 
+/** The pristine base a smooth fill re-floods and blurs on: the live paint base,
+ *  or — when resolving ANOTHER object's mesh for a multi-object export bake
+ *  (`ctx`) — that object's own mesh. (The bake has no refine step, so there the
+ *  fill resolves at that mesh's triangle resolution, unclipped.) */
+function smoothFillBase(mesh: MeshData, ctx?: ResolveContext): MeshData {
+  return ctx ? mesh : (paintBaseMesh ?? mesh);
+}
+
 /** The triangles of label `name` on `mesh` (empty when the label is unknown). */
 function labelTrianglesOnMesh(name: string, mesh: MeshData, ctx?: ResolveContext): Set<number> {
   const labels = ctx ? ctx.labels : currentLabelMap;
@@ -2079,6 +2088,7 @@ function resolveDescriptorTrianglesRaw(
       return { triangles: out };
     }
     case 'coplanar': {
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, smoothFillBase(mesh, ctx), mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
@@ -2129,38 +2139,9 @@ function resolveDescriptorTrianglesRaw(
       return { triangles: ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>() };
     }
     case 'connectedFromSeed': {
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, smoothFillBase(mesh, ctx), mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
-      const { seedPoint, seedNormal, maxDeviationDeg, clampMin, clampMax } = descriptor;
-      // Find the closest triangle to the seed point — robust across re-runs
-      // because triangle indices are unstable but world-space points are not.
-      // Then BFS-flood gated by deviation from the stored seed normal.
-      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
-      if (nearest.triIndex < 0) return { triangles: new Set<number>() };
-      const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
-      // Restore the original clamp predicate so re-resolution after a
-      // geometry edit walks the same bounded region the user painted.
-      const predicate = (clampMin || clampMax)
-        ? (cx: number, cy: number, cz: number) =>
-            cx >= (clampMin?.[0] ?? -Infinity) && cx <= (clampMax?.[0] ?? Infinity) &&
-            cy >= (clampMin?.[1] ?? -Infinity) && cy <= (clampMax?.[1] ?? Infinity) &&
-            cz >= (clampMin?.[2] ?? -Infinity) && cz <= (clampMax?.[2] ?? Infinity)
-        : undefined;
-      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, predicate);
-      const sNorm = adjacency.normals;
-      const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
-                    + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
-                    + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
-      if (dotSeed < cos) {
-        // Surface re-orientation between runs — re-filter conservatively.
-        const filtered = new Set<number>();
-        for (const t of triangles) {
-          const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
-          const d = seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz;
-          if (d >= cos) filtered.add(t);
-        }
-        triangles = filtered;
-      }
-      return { triangles };
+      return { triangles: resolveConnectedFromSeed(descriptor, mesh, adjacency) };
     }
     case 'brushStroke':
       return { triangles: strokeFootprintTriangles(mesh, descriptorToStroke(descriptor)) };
@@ -2902,6 +2883,51 @@ function withSyncReconcile<T>(action: () => T): T {
   } finally {
     suspendReconcile = prev;
   }
+}
+
+/** Validate the `smooth` / `smoothness` options shared by the bucket-fill APIs
+ *  (paintRegion, paintConnected). Returns an error string or null. */
+function validateFillSmoothOpts(opts: { smooth?: unknown; smoothness?: unknown }): string | null {
+  if (opts.smooth !== undefined && typeof opts.smooth !== 'boolean') return 'smooth must be a boolean';
+  if (opts.smoothness !== undefined) {
+    const s = opts.smoothness;
+    if (typeof s !== 'number' || !Number.isInteger(s) || s < 0 || s > MAX_FILL_SMOOTHNESS) {
+      return `smoothness must be an integer 0..${MAX_FILL_SMOOTHNESS} (blur passes; default 4)`;
+    }
+    if (!opts.smooth) return 'smoothness only applies with smooth: true';
+  }
+  return null;
+}
+
+/** Commit a bucket-fill region (coplanar / connectedFromSeed). Plain fills add
+ *  their whole-triangle set directly; smooth fills go through the refine
+ *  pipeline synchronously (it clips the mesh along the blurred boundary and
+ *  re-resolves the region), refusing up front when the blur would leave the
+ *  fill empty. */
+function addBucketFillRegion(
+  name: string,
+  color: [number, number, number],
+  source: ColorRegion['source'],
+  descriptor: Extract<RegionDescriptor, { kind: 'coplanar' | 'connectedFromSeed' }>,
+  triangles: Set<number>,
+  /** Adjacency the caller built for `currentMeshData` (reused when unrefined). */
+  adjacency?: AdjacencyGraph,
+): { region: ColorRegion } | { error: string } {
+  if (!isSmoothFill(descriptor)) {
+    const region = addRegion(name, color, source, descriptor, triangles);
+    updateMesh(applyTriColorsIfVisible(currentMeshData!), { skipAutoFrame: true });
+    syncLockState();
+    return { region };
+  }
+  const base = paintBaseMesh ?? currentMeshData!;
+  if (adjacency && currentMeshData === base) primeBaseAdjacency(base, adjacency);
+  if (smoothFillFor(descriptor, base).empty) {
+    return { error: `smooth: blurring the fill boundary ${fillSmoothness(descriptor)} times left nothing painted — the fill is thinner than the blur. Lower smoothness, or paint it without smooth.` };
+  }
+  const region = withSyncReconcile(() => addRegion(name, color, source, descriptor, new Set<number>()));
+  paintedColorRefresh();
+  syncLockState();
+  return { region };
 }
 
 /** Add a brushStroke region and synchronously refine the mesh under it. */
@@ -17858,10 +17884,18 @@ async function main() {
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
       withinPart?: string;
+      /** Smooth the fill's boundary: re-flood on the base mesh, blur the
+       *  triangle coverage `smoothness` times (default 4) and clip the mesh
+       *  along the blurred edge — a clean line instead of the triangle
+       *  sawtooth. Adds triangles only along the boundary. */
+      smooth?: boolean;
+      smoothness?: number;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
       const scopeErr = validateWithinPart(opts.withinPart, 'paintConnected');
       if (scopeErr) return { error: scopeErr };
+      const smoothErr = validateFillSmoothOpts(opts);
+      if (smoothErr) return { error: `paintConnected: ${smoothErr}` };
       if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
       if (!Array.isArray(opts.seed.point) || opts.seed.point.length !== 3) return { error: 'paintConnected.seed.point must be [x,y,z]' };
       for (const c of opts.seed.point) {
@@ -17940,7 +17974,8 @@ async function main() {
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
-      const region = addRegion(
+      const smoothFields = opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {};
+      const added = addBucketFillRegion(
         regionName,
         opts.color as [number, number, number],
         'paintbrush',
@@ -17956,16 +17991,18 @@ async function main() {
             clampMin: boxMin,
             clampMax: boxMax,
           } : {}),
+          ...smoothFields,
         }, opts.withinPart),
         triangles,
+        adjacency,
       );
+      if ('error' in added) return { error: `paintConnected: ${added.error}` };
+      const { region } = added;
       const emptyErr = emptyScopeError(region, opts.withinPart, 'paintConnected');
       if (emptyErr) return emptyErr;
-      const colored = applyTriColorsIfVisible(mesh);
-      updateMesh(colored, { skipAutoFrame: true });
-      syncLockState();
-      const stats = regionTriangleStats(region.triangles, mesh);
-      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
+      // A smooth fill re-tessellated the working mesh; report against it.
+      const stats = regionTriangleStats(region.triangles, currentMeshData ?? mesh);
+      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex, ...smoothFields };
     },
 
     /** Check if any component is fully contained inside another (invisible geometry) */
@@ -18325,19 +18362,21 @@ async function main() {
      *  (`pendingAfterReload`), and whether the frame / Worker reported
      *  cross-origin isolation. -> { requested, active, state,
      *  pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated,
-     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes } */
+     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, defaultMode, modes } */
     getEngineSandboxStatus() {
-      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
+      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), defaultMode: defaultEngineSandboxMode(), modes: [...ENGINE_SANDBOX_MODES] };
     },
 
-    /** Choose the engine-sandbox mode for this browser ('off' | 'opaque' |
-     *  'origin'). Persists; takes effect on the next page reload (the
+    /** Choose the engine-sandbox mode for this browser ('origin' | 'off').
+     *  'origin' is the default wherever this site has a sandbox host; 'off' is
+     *  the kill switch. Persists; takes effect on the next page reload (the
      *  geometry Worker is created at boot). Deliberately NOT an in-app AI
      *  tool: a prompt-injected session must not be able to switch it off.
      *  -> { mode, previous, note } or { error } */
     setEngineSandboxMode(mode: string) {
+      if (isRemovedEngineSandboxMode(mode)) return { error: `setEngineSandboxMode('${mode}'): the '${mode}' mode was removed — use 'origin' (the default where this site has a sandbox host) or 'off'` };
       if (!isEngineSandboxMode(mode)) return { error: `setEngineSandboxMode(mode): mode must be one of ${ENGINE_SANDBOX_MODES.join(', ')}` };
-      if (mode === 'origin' && !configuredSandboxOrigin()) return { error: "setEngineSandboxMode('origin'): this build has no VITE_SANDBOX_ORIGIN configured" };
+      if (mode === 'origin' && !engineSandboxOriginAvailable()) return { error: "setEngineSandboxMode('origin'): this site has no sandbox host configured (VITE_SANDBOX_ORIGIN, with this origin in VITE_APP_ORIGIN)" };
       const previous = getEngineSandboxMode();
       setEngineSandboxMode(mode);
       return { mode, previous, note: 'Reload the page to apply.' };
@@ -18763,7 +18802,7 @@ async function main() {
      *  includes a diagnostic — the nearest hit point, its normal, the angle
      *  off the requested normal, and a suggested tolerance value that would
      *  include it. Pair with `probeRay` to get a known-on-surface seed. */
-    paintRegion(opts: { point: [number, number, number]; normal?: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number; withinPart?: string }) {
+    paintRegion(opts: { point: [number, number, number]; normal?: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number; withinPart?: string; smooth?: boolean; smoothness?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintRegion requires {point, normal?, color}' };
       const scopeErr = validateWithinPart(opts.withinPart, 'paintRegion');
@@ -18773,6 +18812,8 @@ async function main() {
       if (!Array.isArray(point) || point.length !== 3) return { error: 'point must be [x,y,z]' };
       if (normal !== undefined && (!Array.isArray(normal) || normal.length !== 3)) return { error: 'normal must be [nx,ny,nz] when provided' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const smoothErr = validateFillSmoothOpts(opts);
+      if (smoothErr) return { error: `paintRegion: ${smoothErr}` };
       if (tolerance !== undefined && (typeof tolerance !== 'number' || !Number.isFinite(tolerance) || tolerance < -1 || tolerance > 1)) {
         return { error: `tolerance must be a cosine in [-1, 1] (got ${String(tolerance)}). It is cos(max bend angle between adjacent faces): 0.9995 ≈ 1.8°, 0.98 ≈ 11°, -1 = whole connected mesh. To think in degrees, pass Math.cos(deg * Math.PI / 180).` };
       }
@@ -18794,22 +18835,22 @@ async function main() {
 
       const triangles = findCoplanarRegion(seedTri, adjacency, normalTolerance);
       const regionName = name ?? `Region ${getRegions().length + 1}`;
-      const region = addRegion(
+      const added = addBucketFillRegion(
         regionName,
         color as [number, number, number],
         'face-pick',
-        scopedDescriptor({ kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance }, opts.withinPart),
+        scopedDescriptor({
+          kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance,
+          ...(opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {}),
+        }, opts.withinPart),
         triangles,
+        adjacency,
       );
-
-      // Re-render with colors
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
-      syncLockState();
-
+      if ('error' in added) return { error: `paintRegion: ${added.error}` };
+      const { region } = added;
       const emptyErr = emptyScopeError(region, opts.withinPart, 'paintRegion');
       if (emptyErr) return emptyErr;
-      return { id: region.id, name: region.name, triangles: region.triangles.size };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, ...(opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {}) };
     },
 
     /** Paint a coplanar region by snapping the seed point to the nearest face on
@@ -21962,8 +22003,8 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
-        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
-        'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active/default, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, defaultMode, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEngineSandboxMode': { signature: "setEngineSandboxMode('origin'|'off') -- Run model code in a separate-origin iframe sandbox ('origin', the default where configured) or not ('off', the kill switch); this browser, reload to apply -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
         'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
@@ -22033,7 +22074,7 @@ async function main() {
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Color regions
-        'paintRegion':     { signature: 'paintRegion({point, normal?, color, name?, withinPart?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). tolerance is a COSINE (default 0.9995 ≈ 1.8°). normal omitted = nearest face. Diagnostic error on failure.', docs: '/ai/colors.md' },
+        'paintRegion':     { signature: 'paintRegion({point, normal?, color, name?, withinPart?, tolerance?, smooth?, smoothness?}) -- Paint coplanar face region (flood-fill, edge-bounded). tolerance is a COSINE (default 0.9995 ≈ 1.8°). normal omitted = nearest face. smooth = clean (non-sawtooth) boundary. Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, withinPart?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
@@ -22073,7 +22114,7 @@ async function main() {
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
-        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?, smooth?, smoothness?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
         'growRegion':      { signature: 'growRegion({region, steps?, withinBox?, zMin?, zMax?}) -- Grow a region by N rings of neighbouring triangles (clamp so it cannot leak). Undoable.', docs: '/ai/colors.md' },

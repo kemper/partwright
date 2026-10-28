@@ -17,8 +17,8 @@ import {
 import { showUninstallModal } from './uninstallModal';
 import {
   ENGINE_SANDBOX_MODES,
-  configuredSandboxOrigin,
   defaultEngineSandboxMode,
+  engineSandboxOriginAvailable,
   getEngineSandboxMode,
   isEngineSandboxMode,
   setEngineSandboxMode,
@@ -173,13 +173,12 @@ function Section({ title, children }: SectionProps) {
 
 const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
   off: 'Off — run model code in a plain Worker',
-  opaque: 'Opaque origin — sandboxed iframe on this site',
-  origin: 'Separate origin — iframe on the configured sandbox host (default when configured)',
+  origin: 'Separate origin — iframe on the sandbox host',
 };
 
 function SandboxModeField() {
   const mode = useSignal<EngineSandboxMode>(getEngineSandboxMode());
-  const origin = configuredSandboxOrigin();
+  const originAvailable = engineSandboxOriginAvailable();
   const status = getEngineSandboxStatus();
   const def = defaultEngineSandboxMode();
   return (
@@ -204,14 +203,15 @@ function SandboxModeField() {
         }}
       >
         {ENGINE_SANDBOX_MODES.map(m => (
-          <option value={m} disabled={m === 'origin' && !origin}>
-            {SANDBOX_MODE_LABELS[m]}{m === 'origin' && !origin ? ' (not configured in this build)' : ''}
+          <option value={m} disabled={m === 'origin' && !originAvailable}>
+            {SANDBOX_MODE_LABELS[m]}{m === def ? ' (default)' : ''}{m === 'origin' && !originAvailable ? ' (not configured for this site)' : ''}
           </option>
         ))}
       </select>
       <p class="text-[10px] text-zinc-500 leading-snug">
-        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a different origin, so it
-        can't read this site's saved sessions or AI keys, and its network access is blocked. Reload to apply.
+        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a separate origin, so it
+        can't read this site's saved sessions or AI keys, and its network access is blocked. On by default where this
+        site has a sandbox host; "Off" is the kill switch. Reload to apply.
         This tab: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}
           {status.state === 'unavailable' ? ` — unavailable (${status.unavailableReason})` : ''}
           {status.state === 'bypassed' ? ' — bypassed for this tab' : ''}</span>
@@ -1469,6 +1469,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.geometry.engineHeapHighPct}
           min={10} max={100} integer
           onChange={v => set('geometry', 'engineHeapHighPct', v)}
+        />
+        <Field
+          label="Undeclared-name check limit"
+          unit="characters"
+          hint="Longer model code skips the 'X is not defined' check."
+          tooltip="Model code runs in a hardened sandbox where an undeclared name would read as undefined; before each run the code is scanned so a typo throws 'X is not defined' like normal JavaScript. The scan costs about half a millisecond per KB of code on every run, so code longer than this skips it (undeclared names then read as undefined). Applies to geometry engines started after the change."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.sesUndeclaredCheckMaxChars}
+          value={c.geometry.sesUndeclaredCheckMaxChars}
+          min={0} max={10_000_000} integer
+          onChange={v => set('geometry', 'sesUndeclaredCheckMaxChars', v)}
         />
       </Section>
 
