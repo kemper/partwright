@@ -74,6 +74,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
+  'enclosure', 'knurl', 'headform',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',

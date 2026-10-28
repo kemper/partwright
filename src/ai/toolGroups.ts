@@ -70,7 +70,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group, arrange parts, export split items',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
@@ -153,6 +153,8 @@ export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
   printing: ['printing', 'transforms'],
   'iteration-workflow': ['versions'],
   'ui-control': ['ui'],
+  // headform's fit checks use the reference ghost and sections.
+  headform: ['inspect'],
 };
 
 const GROUP_OF_TOOL: ReadonlyMap<string, string> = new Map(
