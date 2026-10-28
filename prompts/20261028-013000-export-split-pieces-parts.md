@@ -83,3 +83,6 @@ as rows scroll into view and without the open object's annotations; 44 px
 selects on mobile; custom plate numbers close gaps; the API's `objects` keeps
 counting session objects (a split adds `items` + `itemCount`); a read-only
 `listExportItems` AI tool so the chat AI can name items before exporting.
+
+**CodeQL:** the plate chip's `data-plate-for` used `key.replace('\n', '/')`,
+which replaces only the first newline; switched to `split('\n').join('/')`.

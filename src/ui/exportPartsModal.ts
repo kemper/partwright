@@ -799,7 +799,7 @@ export function showExportPartsModal(
         if (!sel) {
           sel = document.createElement('select');
           sel.className = 'bg-zinc-900 border border-zinc-700 rounded text-[11px] text-zinc-200 px-1 py-0.5 min-h-[44px] md:min-h-0 cursor-pointer';
-          sel.dataset.plateFor = key.replace('\n', '/');
+          sel.dataset.plateFor = key.split('\n').join('/');
           const name = items.find(i => i.key === key)?.name ?? 'item';
           sel.setAttribute('aria-label', `Plate for ${name}`);
           const s = sel;
