@@ -795,6 +795,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'creaseEdgeMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.creaseMinStep"
+          label="Ignore steps under"
+          unit="× model size"
+          hint="Crease edges skip tiny ledges this shallow, relative to the model's size."
+          tooltip="Two nearly parallel faces offset by less than this fraction of the model's bounding-box diagonal read as one surface, so the wall between them isn't outlined. This hides the hairline seam a scoped api.round / api.smoothWeld leaves where its remeshed strip meets the untouched model. Real steps and engraved lettering are deeper and still show. 0 = outline every crease."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.creaseMinStep}
+          value={c.renderer.creaseMinStep}
+          min={0} max={0.05} step={0.001}
+          onChange={v => set('renderer', 'creaseMinStep', v)}
+        />
         <Field cfgKey="renderer.lazyManifoldMinTriangles"
           label="Defer solid rebuild from"
           unit="triangles"
