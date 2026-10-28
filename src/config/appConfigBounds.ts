@@ -92,6 +92,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     containmentSamples: { min: 1, max: 256, integer: true },
     modelLogMaxLines: { min: 0, max: 10_000, integer: true },
     modelLogMaxChars: { min: 0, max: 1_000_000, integer: true },
+    thicknessMapMaxTriangles: { min: 1_000, max: 50_000_000, integer: true },
     assemblyPoolSize: { min: 1, max: 16, integer: true },
     engineSandboxBootTimeoutMs: { min: 2_000, max: 120_000, integer: true },
     engineSandboxMaxFrameRestarts: { min: 0, max: 10, integer: true },
