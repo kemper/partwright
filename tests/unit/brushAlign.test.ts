@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from 'vitest';
 import { buildBrushStrokeFromDescriptor } from '../../src/color/refinePipeline';
-import { deriveAreaNormals, deriveSampleNormals, strokeFootprintTriangles, viewDirsForSamples } from '../../src/color/subdivide';
+import { brushRefineRegion, buildRefinedMesh, deriveAreaNormals, deriveSampleNormals, strokeFootprintTriangles, viewDirsForSamples } from '../../src/color/subdivide';
 import type { MeshData } from '../../src/geometry/types';
 import type { RegionDescriptor } from '../../src/color/regions';
 
@@ -79,7 +79,8 @@ describe('brush alignment', () => {
     const s = buildBrushStrokeFromDescriptor(view, plate);
     expect(s.sampleNormals![0][0]).toBeCloseTo(dir[0]);
     expect(s.sampleNormals![0][2]).toBeCloseTo(dir[2]);
-    expect(s.depth).toBe(2); // auto depth along the ray = the radius
+    // Auto depth along the ray = r·tan(70°): the whole circle up to a 70° tilt.
+    expect(s.depth).toBeCloseTo(2 * Math.tan((70 * Math.PI) / 180));
     const reachX = (pts: V3[]) => Math.max(...pts.filter(p => p[2] > 0.4).map(p => Math.abs(p[0])));
     const reachY = (pts: V3[]) => Math.max(...pts.filter(p => p[2] > 0.4).map(p => Math.abs(p[1])));
     const v = paint(plate, view);
@@ -117,6 +118,25 @@ describe('front faces only and the sphere volume', () => {
     const front = paint(plate, stroke({ surface: 'sphere', view: down, frontFaceMaxDeg: 90 }));
     expect(front.some(p => p[2] < -0.4)).toBe(false);
     expect(front.some(p => p[2] > 0.4)).toBe(true);
+  });
+
+  test('front faces only also skips refining the back faces', () => {
+    const count = (d: Stroke): number => {
+      const { mesh } = buildRefinedMesh(plate, [brushRefineRegion(buildBrushStrokeFromDescriptor(d, plate))]);
+      let bottom = 0;
+      for (let t = 0; t < mesh.numTri; t++) if (centroid(mesh, t)[2] < -0.4) bottom++;
+      return bottom;
+    };
+    const baseBottom = (() => { let b = 0; for (let t = 0; t < plate.numTri; t++) if (centroid(plate, t)[2] < -0.4) b++; return b; })();
+    const all = count(stroke({ surface: 'sphere', maxEdge: 0.1 }));
+    const front = count(stroke({ surface: 'sphere', maxEdge: 0.1, view: down, frontFaceMaxDeg: 90 }));
+    expect(all - baseBottom).toBeGreaterThan(10 * (front - baseBottom));
+  });
+
+  test('a malformed stored view degrades to surface alignment without a facing filter', () => {
+    const s = buildBrushStrokeFromDescriptor(stroke({ surface: 'slab', align: 'view', view: {} as never, frontFaceMaxDeg: 90 }), plate);
+    expect(s.frontFacing).toBeUndefined();
+    expect(s.sampleNormals).toEqual(deriveSampleNormals([[0, 0, 0.5]], plate));
   });
 
   test('a sphere ignores the wrap gate and builds no prism', () => {

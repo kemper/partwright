@@ -96,13 +96,34 @@ test.describe('brush alignment', () => {
     expect(zs.some(z => z < -0.25)).toBe(false); // the bottom face never is
   });
 
+  test('paintStroke / paintAirbrush validate the brush-direction options', async ({ page }) => {
+    await openBrush(page);
+    const out = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const base = { points: [[0, 0, 0.3]], radius: 3, color: [0.2, 0.4, 0.9] };
+      return {
+        badAlign: pw.paintStroke({ ...base, align: 'sideways' }).error,
+        strayDir: pw.paintStroke({ ...base, viewDir: [0, 0, -1] }).error,
+        zeroDir: pw.paintStroke({ ...base, align: 'view', viewDir: [0, 0, 0] }).error,
+        airbrush: pw.paintAirbrush({ ...base, surface: 'sphere', viewDir: [0, 0, -1], frontFacesOnly: true, strength: 1 }),
+      };
+    });
+    expect(out.badAlign).toMatch(/align/);
+    expect(out.strayDir).toMatch(/viewDir only applies/);
+    expect(out.zeroDir).toMatch(/viewDir/);
+    expect(out.airbrush.error).toBeUndefined();
+    const zs = await paintedZs(page);
+    expect(zs.some(z => z < -0.25)).toBe(false);
+  });
+
   test('paintStroke: a sphere reaches through a thin plate unless frontFacesOnly', async ({ page }) => {
     await openBrush(page);
     const run = (front: boolean) => page.evaluate(async (front) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       for (const g of pw.listRegions()) pw.removeRegion(g.id);
-      const r = pw.paintStroke({ points: [[0, 0, 0.3]], radius: 3, color: [0.9, 0.2, 0.2], surface: 'sphere', viewDir: [0, 0, -1], frontFacesOnly: front });
+      const r = pw.paintStroke({ points: [[0, 0, 0.3]], radius: 3, color: [0.9, 0.2, 0.2], surface: 'sphere', ...(front ? { viewDir: [0, 0, -1], frontFacesOnly: true } : {}) });
       return r.error ?? null;
     }, front);
     expect(await run(false)).toBeNull();

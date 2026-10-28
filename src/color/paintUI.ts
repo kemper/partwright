@@ -1165,7 +1165,7 @@ function createBrushControls(): HTMLElement {
     for (const [k, b] of Object.entries(alignButtons)) if (b) b.className = axisButtonClass(k === getBrushAlign());
   };
   for (const [mode, labelText, tip] of [
-    ['view', 'View', 'The brush stays a circle on screen and paints whatever is under it, however the surface is tilted. Steadiest on complex models. Default.'],
+    ['view', 'View', 'The brush stays a circle on screen and paints whatever is under it, however the surface is tilted \u2014 across edges too (no wrap-tolerance stop). Steadiest on complex models. Default.'],
     ['surface', 'Surface', 'The brush lies flat on the triangle under the cursor, so it tilts with every facet.'],
     ['area', 'Smoothed', 'The brush lies flat on the surface averaged over the brush area \u2014 follows curves without jittering on bumpy meshes.'],
   ] as const) {

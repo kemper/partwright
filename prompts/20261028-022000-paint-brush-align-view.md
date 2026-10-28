@@ -57,3 +57,21 @@ one place for the main thread and the worker.
 **Not done:** a CPU occlusion test for the smooth brush (paint behind visible
 geometry within `depth` along the ray is still possible; front faces + depth
 cover the common cases).
+
+## Assistant
+
+## Review follow-ups (independent work-reviewer pass)
+
+- **Auto depth in View mode is r·tan 70°**, not r: depth runs along the ray, so
+  at r a surface tilted past 45° painted a much narrower band than the ring.
+- **Sliver catch follows true edges only** and needs the centroid or two corners
+  in the brush: the paint adjacency links triangles sharing only a corner, which
+  let a fan of thin wedges around one hub vertex be pulled in whole.
+- **Front faces only falls back on unreliable winding**: a stroke whose picked
+  (visible) triangles mostly face away from the camera (inverted / mixed-winding
+  render-only imports) omits the facing filter instead of painting nothing.
+- **Back faces aren't refined** under a facing filter (classifier returns
+  'outside'), cutting the extra subdivision on thin parts ~10×.
+- **paintAirbrush parity**: shares `parseBrushViewOpts` with paintStroke
+  (align / viewDir / frontFacesOnly / 'sphere'); a stray `viewDir` is an error.
+- A malformed stored `view` degrades to surface alignment instead of throwing.

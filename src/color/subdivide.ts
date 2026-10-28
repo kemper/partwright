@@ -38,12 +38,31 @@ export interface BrushView {
   origin?: [number, number, number];
 }
 
+/** Front faces only: a triangle counts as facing the camera when its normal is
+ *  within this angle of the direction back to it (90° = anything not facing
+ *  away). Stored per stroke as `frontFaceMaxDeg`. */
+export const FRONT_FACE_MAX_DEG = 90;
+
+/** Steepest surface tilt (degrees away from the camera) a view-aligned stroke
+ *  still covers with its whole circle under the auto depth. A point s off-centre
+ *  on a surface tilted θ sits s·sinθ along the ray but s·cosθ across it, so the
+ *  full radius needs a depth of r·tanθ. Beyond this tilt the paint narrows. */
+const VIEW_AUTO_DEPTH_TILT_DEG = 70;
+
 /** Auto paint depth (the depth knob at 0) for a slab stroke. A view-aligned
- *  prism measures depth along the camera ray, so a surface tilted 45° away
- *  needs ±radius to keep the whole circle; surface-aligned prisms keep the
+ *  prism measures depth along the camera ray, so it reaches r·tan(70°) to keep
+ *  the whole circle on steeply tilted surfaces; surface-aligned prisms keep the
  *  original half-radius shell. */
 export function autoPaintDepth(radius: number, align: BrushAlign | undefined): number {
-  return align === 'view' ? radius : radius * 0.5;
+  return align === 'view' ? radius * Math.tan((VIEW_AUTO_DEPTH_TILT_DEG * Math.PI) / 180) : radius * 0.5;
+}
+
+/** True when `view` is a usable stored camera (a finite, non-zero `dir`, and an
+ *  optional finite `origin`). Guards replay of imported/hand-edited sessions. */
+export function isValidBrushView(view: unknown): view is BrushView {
+  const v = view as BrushView | undefined;
+  const vec = (a: unknown): boolean => Array.isArray(a) && a.length === 3 && a.every(n => typeof n === 'number' && Number.isFinite(n));
+  return !!v && vec(v.dir) && Math.hypot(v.dir[0], v.dir[1], v.dir[2]) > 0 && (v.origin === undefined || vec(v.origin));
 }
 
 /** Unit ray direction (camera → scene) for each sample: per-sample through the
@@ -60,6 +79,22 @@ export function viewDirsForSamples(
     const d = unit3([s[0] - o[0], s[1] - o[1], s[2] - o[2]]);
     return d[0] === 0 && d[1] === 0 && d[2] === 0 ? f : d;
   });
+}
+
+/** Whether triangle (a, b, c) passes a stroke's front-faces-only test: its
+ *  outward normal (manifold winding) is within the cutoff of the direction back
+ *  to the camera. Always true when the stroke has no facing filter. */
+function facesCamera(stroke: BrushStroke, a: number[], b: number[], c: number[]): boolean {
+  const ff = stroke.frontFacing;
+  if (!ff) return true;
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+  const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+  const o = ff.view.origin, d = ff.view.dir;
+  const tx = o ? o[0] - (a[0] + b[0] + c[0]) / 3 : -d[0];
+  const ty = o ? o[1] - (a[1] + b[1] + c[1]) / 3 : -d[1];
+  const tz = o ? o[2] - (a[2] + b[2] + c[2]) / 3 : -d[2];
+  const nl = Math.hypot(nx, ny, nz), tl = Math.hypot(tx, ty, tz);
+  return nl > 0 && tl > 0 && (nx * tx + ny * ty + nz * tz) / (nl * tl) >= ff.cos;
 }
 
 function unit3(v: number[]): [number, number, number] {
@@ -550,6 +585,9 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
   const normals = stroke.sampleNormals;
   const tangents = stroke.sampleTangents;
   return (a, b, c) => {
+    // Front faces only: a back face is never painted, so don't refine it either
+    // (its children share its plane, so the test is exact for them too).
+    if (!facesCamera(stroke, a, b, c)) return 'outside';
     let inside = 0;
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
     if (withinFootprint(b[0], b[1], b[2], stroke)) inside++;
@@ -1189,8 +1227,6 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
   const { triVerts, vertProperties, numProp } = mesh;
   const out = new Set<number>();
   const box = strokeAabb(stroke);
-  const ff = stroke.frontFacing;
-  const fwd = ff ? unit3(ff.view.dir) : null;
   for (const t of triGridFor(mesh).query(box)) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
     const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
@@ -1198,15 +1234,7 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
     const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
     if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
     const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
-    if (ff && fwd) {
-      // Outward normal (manifold winding) against the direction to the camera.
-      const ux = bx - ax, uy = by - ay, uz = bz - az, wx = cx2 - ax, wy = cy2 - ay, wz = cz2 - az;
-      const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-      const o = ff.view.origin;
-      const tx = o ? o[0] - cx : -fwd[0], ty = o ? o[1] - cy : -fwd[1], tz = o ? o[2] - cz : -fwd[2];
-      const nl = Math.hypot(nx, ny, nz), tl = Math.hypot(tx, ty, tz);
-      if (nl === 0 || tl === 0 || (nx * tx + ny * ty + nz * tz) / (nl * tl) < ff.cos) continue;
-    }
+    if (stroke.frontFacing && !facesCamera(stroke, [ax, ay, az], [bx, by, bz], [cx2, cy2, cz2])) continue;
     if (stroke.spray) {
       // Spray: dither coverage at the centroid's footprint depth.
       const sd = strokeSignedDist(cx, cy, cz, stroke);

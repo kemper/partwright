@@ -24,10 +24,26 @@ function minAltitude(mesh: MeshData, t: number): number {
   return longest > 0 ? cross / longest : 0;
 }
 
-/** Add to `footprint` (in place) every triangle reachable from it through
- *  edge-adjacent slivers — triangles thinner than `maxWidth` mesh units with a
- *  vertex or centroid inside the brush (`inBrush`). Chains of slivers are
- *  followed. Returns how many triangles were added. */
+/** True when triangles s and t share an edge: two corners at the same position.
+ *  The paint adjacency graph links triangles that share only a corner, which
+ *  would let a fan of thin wedges around one hub vertex all qualify. */
+function sharesEdge(mesh: MeshData, s: number, t: number): boolean {
+  const { triVerts, vertProperties: p, numProp: n } = mesh;
+  let shared = 0;
+  for (let i = 0; i < 3; i++) {
+    const a = triVerts[s * 3 + i] * n;
+    for (let j = 0; j < 3; j++) {
+      const b = triVerts[t * 3 + j] * n;
+      if (p[a] === p[b] && p[a + 1] === p[b + 1] && p[a + 2] === p[b + 2]) { shared++; break; }
+    }
+  }
+  return shared >= 2;
+}
+
+/** Add to `footprint` (in place) every triangle reachable from it across shared
+ *  edges through slivers — triangles thinner than `maxWidth` mesh units that sit
+ *  in the brush (`inBrush` holds at their centroid or at two of their corners).
+ *  Chains of slivers are followed. Returns how many triangles were added. */
 export function absorbSubPixelSlivers(
   footprint: Set<number>,
   mesh: MeshData,
@@ -41,21 +57,22 @@ export function absorbSubPixelSlivers(
   const rejected = new Set<number>();
   const stack = [...footprint];
   let added = 0;
-  const touchesBrush = (t: number): boolean => {
-    let cx = 0, cy = 0, cz = 0;
+  const inBrushEnough = (t: number): boolean => {
+    let cx = 0, cy = 0, cz = 0, corners = 0;
     for (let k = 0; k < 3; k++) {
       const o = triVerts[t * 3 + k] * n;
-      if (inBrush(p[o], p[o + 1], p[o + 2])) return true;
+      if (inBrush(p[o], p[o + 1], p[o + 2])) corners++;
       cx += p[o]; cy += p[o + 1]; cz += p[o + 2];
     }
-    return inBrush(cx / 3, cy / 3, cz / 3);
+    return corners >= 2 || inBrush(cx / 3, cy / 3, cz / 3);
   };
   while (stack.length > 0) {
     const t = stack.pop()!;
     for (let i = nbStart[t]; i < nbStart[t + 1]; i++) {
       const nb = nbFlat[i];
       if (footprint.has(nb) || rejected.has(nb)) continue;
-      if (minAltitude(mesh, nb) >= maxWidth || !touchesBrush(nb)) {
+      if (!sharesEdge(mesh, t, nb)) continue; // corner-only neighbour: may still join via an edge
+      if (minAltitude(mesh, nb) >= maxWidth || !inBrushEnough(nb)) {
         rejected.add(nb);
         continue;
       }

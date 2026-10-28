@@ -15,6 +15,7 @@ import {
   autoPaintDepth,
   deriveAreaNormals,
   deriveSampleNormals,
+  isValidBrushView,
   strokeFootprintTriangles,
   viewDirsForSamples,
   tangentBasis,
@@ -70,7 +71,10 @@ export function buildBrushStrokeFromDescriptor(
   // falls back to the per-sample surface normal, so strokes saved before the
   // alignment option resolve byte-identically.
   const surface = d.surface ?? 'slab';
-  const align = d.align === 'view' && !d.view ? 'surface' : (d.align ?? 'surface');
+  // A stored camera that doesn't validate (a hand-edited / corrupt import)
+  // degrades to surface alignment without a facing filter instead of throwing.
+  const view = isValidBrushView(d.view) ? d.view : undefined;
+  const align = d.align === 'view' && !view ? 'surface' : (d.align ?? 'surface');
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -90,7 +94,7 @@ export function buildBrushStrokeFromDescriptor(
   if (surface === 'geodesic') {
     stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
   } else if (surface === 'slab') {
-    stroke.sampleNormals = align === 'view' ? viewDirsForSamples(d.samples, d.view!)
+    stroke.sampleNormals = align === 'view' ? viewDirsForSamples(d.samples, view!)
       : align === 'area' ? deriveAreaNormals(d.samples, base, d.radius)
       : deriveSampleNormals(d.samples, base);
     stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
@@ -98,9 +102,9 @@ export function buildBrushStrokeFromDescriptor(
       stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
     }
   }
-  if (d.frontFaceMaxDeg !== undefined && d.view) {
+  if (typeof d.frontFaceMaxDeg === 'number' && Number.isFinite(d.frontFaceMaxDeg) && view) {
     const deg = Math.max(0, Math.min(180, d.frontFaceMaxDeg));
-    stroke.frontFacing = { view: d.view, cos: Math.cos((deg * Math.PI) / 180) };
+    stroke.frontFacing = { view, cos: Math.cos((deg * Math.PI) / 180) };
   }
   return stroke;
 }

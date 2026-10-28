@@ -15,7 +15,7 @@ import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshCha
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors, notifyUserPaint } from './paintAccessors';
 import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
-import { autoPaintDepth, deriveAreaNormals, tangentBasis, wrapAngleGate, type BrushAlign, type BrushShape, type BrushSurface, type BrushView } from './subdivide';
+import { FRONT_FACE_MAX_DEG, autoPaintDepth, deriveAreaNormals, tangentBasis, wrapAngleGate, type BrushAlign, type BrushShape, type BrushSurface, type BrushView } from './subdivide';
 import { getConfig } from '../config/appConfig';
 import { buildAdjacencyInWorker } from './adjacencyClient';
 import { showToast } from '../ui/toast';
@@ -75,12 +75,16 @@ let brushAlign: BrushAlign = 'view';
 /** Front faces only: skip triangles facing away from the camera, so paint
  *  doesn't reach the far side of a thin part or the inside of an undercut. */
 let brushFrontOnly = true;
-/** Facing cutoff for front-faces-only: triangles turned more than this from the
- *  camera are skipped. 90° = anything facing away. */
-const FRONT_FACE_MAX_DEG = 90;
 /** Camera captured at the start of the active stroke (view alignment and the
  *  front-face test are measured against it; the camera can't orbit mid-drag). */
 let strokeView: BrushView | null = null;
+/** Picked (visible) triangles of the active stroke, and how many of them face
+ *  away from the camera. A visible triangle can only face away when the mesh's
+ *  winding is inverted or mixed (e.g. a raw STL drawn double-sided), and then
+ *  the front-face test would drop the very surface being painted — so a stroke
+ *  whose picks mostly face away skips it. */
+let strokePicks = 0;
+let strokeBackPicks = 0;
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
@@ -656,6 +660,7 @@ function processMouseMove(event: MouseEvent): void {
     const result = pickFace(event);
     if (result) {
       const added = recordStrokeSample(result.point);
+      if (added) notePick(result.triangleIndex);
       if (brushWillSubdivide()) {
         // Smooth mode resolves triangles from the stroke samples on commit, so
         // skip the per-move O(mesh) footprint scan. Grow the live fill by one
@@ -754,6 +759,9 @@ function onPointerDown(event: PointerEvent): void {
     brushSession = new Set<number>();
     strokeSamples = [];
     strokeView = captureBrushView();
+    strokePicks = 0;
+    strokeBackPicks = 0;
+    notePick(result.triangleIndex);
     recordStrokeSample(result.point);
     // Capture the pointer so a brush drag keeps tracking (and pointerup still
     // fires here) even if the finger/cursor leaves the canvas mid-stroke.
@@ -825,7 +833,7 @@ function commitBrushStroke(): boolean {
         wrapAngleDeg: wrapGateOff() ? 180 : brushWrapAngle,
         align: brushAlign,
         ...(strokeView && (brushAlign === 'view' || brushFrontOnly) ? { view: strokeView } : {}),
-        ...(brushFrontOnly ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
+        ...(brushFrontOnly && strokeBackPicks * 2 <= strokePicks ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       }),
       new Set<number>(),
@@ -853,18 +861,28 @@ function commitBrushStroke(): boolean {
  *  triangle when projection isn't available (radius 0, or no mesh/GPU). Occluded
  *  back faces are excluded by the projection's depth test, so paint never bleeds
  *  through to the far side of a thin wall. */
+/** Whether triangle `t` faces away from the camera (beyond the front-face
+ *  cutoff), by its winding normal. */
+function triFacesAway(t: number, adj: AdjacencyGraph, cam: THREE.Vector3): boolean {
+  const { normals, centroids } = adj;
+  const tx = cam.x - centroids[t * 3], ty = cam.y - centroids[t * 3 + 1], tz = cam.z - centroids[t * 3 + 2];
+  const tl = Math.hypot(tx, ty, tz) || 1;
+  return (normals[t * 3] * tx + normals[t * 3 + 1] * ty + normals[t * 3 + 2] * tz) / tl < Math.cos((FRONT_FACE_MAX_DEG * Math.PI) / 180);
+}
+
+/** Count a visible pick toward the active stroke's winding check. */
+function notePick(t: number): void {
+  if (!adjacency) return;
+  strokePicks++;
+  if (triFacesAway(t, adjacency, getCamera().getWorldPosition(new THREE.Vector3()))) strokeBackPicks++;
+}
+
 /** Remove triangles facing away from the camera (more than FRONT_FACE_MAX_DEG
  *  off the direction back to it). The projection's depth test already hides
  *  most of them; this catches the grazing ones on a silhouette. */
 function dropBackFaces(tris: Set<number>, adj: AdjacencyGraph): void {
   const cam = getCamera().getWorldPosition(new THREE.Vector3());
-  const minCos = Math.cos((FRONT_FACE_MAX_DEG * Math.PI) / 180);
-  const { normals, centroids } = adj;
-  for (const t of tris) {
-    const tx = cam.x - centroids[t * 3], ty = cam.y - centroids[t * 3 + 1], tz = cam.z - centroids[t * 3 + 2];
-    const tl = Math.hypot(tx, ty, tz) || 1;
-    if ((normals[t * 3] * tx + normals[t * 3 + 1] * ty + normals[t * 3 + 2] * tz) / tl < minCos) tris.delete(t);
-  }
+  for (const t of tris) if (triFacesAway(t, adj, cam)) tris.delete(t);
 }
 
 function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
@@ -880,7 +898,10 @@ function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target
     adjacency,
   });
   if (!proj) return;
-  if (brushFrontOnly && adjacency) dropBackFaces(proj, adjacency);
+  // The picked triangle is visible, so it facing away means the winding is
+  // unreliable here (inverted/mixed): don't drop by facing then.
+  const cam = getCamera().getWorldPosition(new THREE.Vector3());
+  if (brushFrontOnly && adjacency && !triFacesAway(seed, adjacency, cam)) dropBackFaces(proj, adjacency);
   // Apply the wrap tolerance: the screen-projection footprint is a flat spatial
   // set with no surface gate, so on its own it wraps over any edge inside the
   // brush disk. Restrict it to the part connected to the picked triangle without
