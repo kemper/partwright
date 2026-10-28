@@ -12,8 +12,12 @@ import {
   brushRefineRegion,
   buildGeodesicField,
   buildRefinedMesh,
+  autoPaintDepth,
+  deriveAreaNormals,
   deriveSampleNormals,
+  isValidBrushView,
   strokeFootprintTriangles,
+  viewDirsForSamples,
   tangentBasis,
   wrapAngleGate,
   type BrushStroke,
@@ -63,31 +67,44 @@ export function buildBrushStrokeFromDescriptor(
 ): BrushStroke {
   // Surface mode is whatever the stroke was painted with (slab by default);
   // old descriptors — and old geodesic-forced sprays — resolve from their
-  // stored `surface`, falling back to slab for back-compat.
+  // stored `surface`, falling back to slab for back-compat. Likewise `align`
+  // falls back to the per-sample surface normal, so strokes saved before the
+  // alignment option resolve byte-identically.
   const surface = d.surface ?? 'slab';
+  // A stored camera that doesn't validate (a hand-edited / corrupt import)
+  // degrades to surface alignment without a facing filter instead of throwing.
+  const view = isValidBrushView(d.view) ? d.view : undefined;
+  const align = d.align === 'view' && !view ? 'surface' : (d.align ?? 'surface');
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
     shape: d.shape,
     maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256,
     surface,
-    depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
+    depth: d.depth !== undefined && d.depth > 0 ? d.depth : autoPaintDepth(d.radius, align),
     spray: d.spray,
   };
   // Wrap tolerance: gate the surface flood-fill by dihedral angle. Absent ⇒ 180°
   // (no gate) for strokes saved before the slider. A finite gate (< 180°) needs
   // the geodesic reachability field even in slab mode, so it's built alongside
-  // the slab prism's per-sample normals there.
+  // the slab prism's per-sample normals there. A sphere is a plain 3D volume:
+  // no prism normals and no gate.
   const wrapAngleDeg = d.wrapAngleDeg ?? 180;
   const maxBendCos = wrapAngleGate(wrapAngleDeg);
   if (surface === 'geodesic') {
     stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
-  } else {
-    stroke.sampleNormals = deriveSampleNormals(d.samples, base);
+  } else if (surface === 'slab') {
+    stroke.sampleNormals = align === 'view' ? viewDirsForSamples(d.samples, view!)
+      : align === 'area' ? deriveAreaNormals(d.samples, base, d.radius)
+      : deriveSampleNormals(d.samples, base);
     stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
     if (wrapAngleDeg < 180) {
       stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
     }
+  }
+  if (typeof d.frontFaceMaxDeg === 'number' && Number.isFinite(d.frontFaceMaxDeg) && view) {
+    const deg = Math.max(0, Math.min(180, d.frontFaceMaxDeg));
+    stroke.frontFacing = { view, cos: Math.cos((deg * Math.PI) / 180) };
   }
   return stroke;
 }

@@ -222,7 +222,7 @@ import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour
 import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
-import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, onPaintOpenChange, setPatternPaintEntry, getPaintToolState } from './color/paintUI';
+import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, onPaintOpenChange, setPatternPaintEntry, getPaintToolState, syncPaintControls } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
@@ -267,12 +267,12 @@ import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, canRedoRegion, canUndoClear, undoClear, clearRegionsBySource, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
-import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
+import { buildBrushStrokeFromDescriptor, collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { getPaintScope, setPaintScope, onPaintScopeChange } from './color/paintScope';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushAlign as setPaintBrushAlign, getBrushAlign as getPaintBrushAlign, setBrushFrontOnly as setPaintBrushFrontOnly, isBrushFrontOnly as isPaintBrushFrontOnly, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { isSmoothFill, smoothFillFor, resolveSmoothFillTriangles, fillSmoothness, primeBaseAdjacency, DEFAULT_FILL_SMOOTHNESS, MAX_FILL_SMOOTHNESS } from './color/smoothFill';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, FRONT_FACE_MAX_DEG, type BrushStroke, type BrushShape, type BrushAlign, type BrushSurface, type BrushView } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -2236,41 +2236,60 @@ function resolveDescriptorTrianglesRaw(
 // code run). WeakMap so dropped regions are collected automatically.
 const strokeCache = new WeakMap<object, { base: MeshData; stroke: BrushStroke }>();
 
+/** Validate a paint call's brush-direction options (`align`, `viewDir`,
+ *  `frontFacesOnly`) and resolve them to brushStroke descriptor fields. The
+ *  camera is `viewDir` (parallel rays) or, when omitted, the live viewport
+ *  camera. Shared by paintStroke and paintAirbrush. */
+function parseBrushViewOpts(
+  opts: { align?: unknown; viewDir?: unknown; frontFacesOnly?: unknown },
+  fn: string,
+): { error: string } | { fields: { align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number } } {
+  const { align, viewDir, frontFacesOnly } = opts;
+  if (align !== undefined && align !== 'surface' && align !== 'area' && align !== 'view') {
+    return { error: `${fn}: align must be 'surface', 'area' or 'view' when provided` };
+  }
+  if (frontFacesOnly !== undefined && typeof frontFacesOnly !== 'boolean') {
+    return { error: `${fn}: frontFacesOnly must be a boolean when provided` };
+  }
+  const needsView = align === 'view' || frontFacesOnly === true;
+  if (viewDir !== undefined) {
+    if (!Array.isArray(viewDir) || viewDir.length !== 3 || viewDir.some(n => typeof n !== 'number' || !Number.isFinite(n)) || Math.hypot(viewDir[0], viewDir[1], viewDir[2]) === 0) {
+      return { error: `${fn}: viewDir must be a non-zero [x,y,z] direction (camera → model) when provided` };
+    }
+    if (!needsView) return { error: `${fn}: viewDir only applies with align: 'view' or frontFacesOnly: true` };
+  }
+  let view: BrushView | undefined;
+  if (needsView) {
+    if (Array.isArray(viewDir)) {
+      const l = Math.hypot(viewDir[0], viewDir[1], viewDir[2]);
+      view = { dir: [viewDir[0] / l, viewDir[1] / l, viewDir[2] / l] };
+    } else {
+      const { position: o, target: t } = getCameraPose();
+      const d = [t[0] - o[0], t[1] - o[1], t[2] - o[2]];
+      const l = Math.hypot(d[0], d[1], d[2]) || 1;
+      view = { dir: [d[0] / l, d[1] / l, d[2] / l], origin: [o[0], o[1], o[2]] };
+    }
+  }
+  return {
+    fields: {
+      ...(align !== undefined ? { align: align as BrushAlign } : {}),
+      ...(view ? { view } : {}),
+      ...(frontFacesOnly === true ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
+    },
+  };
+}
+
 function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
   const cacheBase = paintBaseMesh ?? currentMeshData;
   const cached = strokeCache.get(d);
   if (cached && cached.base === cacheBase) return cached.stroke;
-  // Surface mode is whatever the stroke was painted with (slab by default);
-  // old descriptors without the field — and old geodesic-forced sprays —
-  // resolve from their stored `surface`, falling back to slab for back-compat.
-  const surface = d.surface ?? 'slab';
-  const stroke: BrushStroke = {
-    samples: d.samples,
-    radius: d.radius,
-    shape: d.shape,
-    maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256,
-    surface,
-    depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
-    spray: d.spray,
-  };
-  // Wrap tolerance: a finite gate (< 180°) needs the geodesic reachability field
-  // even in slab mode (built alongside the prism's normals). Absent ⇒ 180° (no
-  // gate) for strokes saved before the slider — kept byte-identical.
-  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
-  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   const base = paintBaseMesh ?? currentMeshData;
-  if (base) {
-    if (surface === 'geodesic') {
-      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
-    } else {
-      stroke.sampleNormals = deriveSampleNormals(d.samples, base);
-      stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
-      if (wrapAngleDeg < 180) {
-        stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
-      }
-    }
-    strokeCache.set(d, { base, stroke });
+  if (!base) {
+    // No mesh yet: nothing to derive normals from, so a bare 3D footprint.
+    return { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256, surface: d.surface ?? 'slab', spray: d.spray };
   }
+  const stroke = buildBrushStrokeFromDescriptor(d, base);
+  strokeCache.set(d, { base, stroke });
   return stroke;
 }
 
@@ -21416,7 +21435,7 @@ async function main() {
         return { error: 'setBrushSize(radius): radius must be a non-negative finite number (mesh units)' };
       }
       const previous = getPaintBrushRadius();
-      setPaintBrushRadius(radius);
+      setPaintBrushRadius(radius); syncPaintControls();
       return { previous, radius };
     },
 
@@ -21428,17 +21447,38 @@ async function main() {
       return { surface: getPaintBrushSurface(), depth: getPaintBrushDepth() };
     },
     setBrushSurface(mode: string) {
-      if (mode !== 'geodesic' && mode !== 'slab') {
-        return { error: "setBrushSurface(mode): mode must be 'geodesic' or 'slab'" };
+      if (mode !== 'geodesic' && mode !== 'slab' && mode !== 'sphere') {
+        return { error: "setBrushSurface(mode): mode must be 'geodesic', 'slab' or 'sphere'" };
       }
       setPaintBrushSurface(mode);
+      syncPaintControls();
       return { surface: getPaintBrushSurface() };
+    },
+    getBrushAlign() {
+      return { align: getPaintBrushAlign() };
+    },
+    setBrushAlign(mode: string) {
+      if (mode !== 'view' && mode !== 'surface' && mode !== 'area') {
+        return { error: "setBrushAlign(mode): mode must be 'view', 'surface' or 'area'" };
+      }
+      setPaintBrushAlign(mode);
+      syncPaintControls();
+      return { align: getPaintBrushAlign() };
+    },
+    getBrushFrontFacesOnly() {
+      return { frontFacesOnly: isPaintBrushFrontOnly() };
+    },
+    setBrushFrontFacesOnly(on: boolean) {
+      if (typeof on !== 'boolean') return { error: 'setBrushFrontFacesOnly(on): on must be a boolean' };
+      setPaintBrushFrontOnly(on);
+      syncPaintControls();
+      return { frontFacesOnly: isPaintBrushFrontOnly() };
     },
     setBrushDepth(depth: number) {
       if (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0) {
         return { error: 'setBrushDepth(depth): depth must be a non-negative finite number (mesh units; 0 = auto)' };
       }
-      setPaintBrushDepth(depth);
+      setPaintBrushDepth(depth); syncPaintControls();
       return { depth: getPaintBrushDepth() };
     },
 
@@ -21453,7 +21493,7 @@ async function main() {
       if (typeof deg !== 'number' || !Number.isFinite(deg)) {
         return { error: `setBrushWrapAngle(deg): deg must be a finite number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX}` };
       }
-      setPaintBrushWrapAngle(deg);
+      setPaintBrushWrapAngle(deg); syncPaintControls();
       return { wrapAngleDeg: getPaintBrushWrapAngle() };
     },
 
@@ -21475,7 +21515,7 @@ async function main() {
       if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
         return { error: `setBrushSmoothDivisor(divisor): divisor must be a finite number in ${SMOOTH_DIVISOR_MIN}..${SMOOTH_DIVISOR_MAX}` };
       }
-      setPaintBrushSmoothDivisor(divisor);
+      setPaintBrushSmoothDivisor(divisor); syncPaintControls();
       return { divisor: getPaintBrushSmoothDivisor() };
     },
 
@@ -21505,6 +21545,13 @@ async function main() {
       surface?: string;
       depth?: number;
       wrapAngleDeg?: number;
+      /** Slab prism direction: 'surface' (default) | 'area' | 'view'. */
+      align?: string;
+      /** Camera forward vector for align 'view' / frontFacesOnly (parallel
+       *  rays); omitted → the live viewport camera. */
+      viewDir?: number[];
+      /** Skip triangles facing away from the camera. */
+      frontFacesOnly?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -21537,9 +21584,11 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintStroke: maxEdge must be a positive finite number (mesh units) when provided' };
       }
-      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
-        return { error: "paintStroke: surface must be 'geodesic' or 'slab' when provided" };
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab' && surface !== 'sphere') {
+        return { error: "paintStroke: surface must be 'geodesic', 'slab' or 'sphere' when provided" };
       }
+      const viewOpts = parseBrushViewOpts(opts, 'paintStroke');
+      if ('error' in viewOpts) return viewOpts;
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
@@ -21562,10 +21611,11 @@ async function main() {
       // continuous however sparsely the caller sampled it.
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
+        surface: (surface as BrushSurface) ?? 'slab', depth: depth ?? 0,
         // Default to no gate (180°) for the console API so a paintStroke without
         // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
         wrapAngleDeg: wrapAngleDeg ?? 180,
+        ...viewOpts.fields,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -21609,6 +21659,9 @@ async function main() {
       maxEdge?: number;
       surface?: string;
       depth?: number;
+      align?: string;
+      viewDir?: number[];
+      frontFacesOnly?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -21649,9 +21702,11 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
       }
-      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
-        return { error: "paintAirbrush: surface must be 'geodesic' or 'slab' when provided" };
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab' && surface !== 'sphere') {
+        return { error: "paintAirbrush: surface must be 'geodesic', 'slab' or 'sphere' when provided" };
       }
+      const viewOpts = parseBrushViewOpts(opts, 'paintAirbrush');
+      if ('error' in viewOpts) return viewOpts;
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintAirbrush: depth must be a non-negative finite number (mesh units) when provided' };
       }
@@ -21665,7 +21720,8 @@ async function main() {
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
+        surface: (surface as BrushSurface) ?? 'slab', depth: depth ?? 0, spray,
+        ...viewOpts.fields,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -23136,8 +23192,8 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors({kind?: "all"|"image"}?) -- Remove ALL color regions, or only image stamps (undoClearColors restores; undoLastPaint reverses just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?, withinPart?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
-        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
+        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
+        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
         'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
@@ -23175,8 +23231,12 @@ async function main() {
         'setBucketMode': { signature: "setBucketMode(mode) -- Set the bucket flood-fill mode: 'color' (magic-wand by RGB) or 'geometry' (coplanar by bend angle).", docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
-        'getBrushSurface': { signature: "getBrushSurface() -- UI brush surface mode + depth -> {surface: 'geodesic'|'slab', depth} (depth 0 = auto = half the radius)", docs: '/ai/colors.md' },
-        'setBrushSurface': { signature: "setBrushSurface('geodesic'|'slab') -- UI brush surface mode: slab keeps paint a thin shell on the picked surface; geodesic floods the connected surface -> {surface} or {error}", docs: '/ai/colors.md' },
+        'getBrushSurface': { signature: "getBrushSurface() -- UI brush surface mode + depth -> {surface: 'geodesic'|'slab'|'sphere', depth} (depth 0 = auto: half the radius, or radius·tan 70° along the ray when aligned to view)", docs: '/ai/colors.md' },
+        'setBrushSurface': { signature: "setBrushSurface('geodesic'|'slab'|'sphere') -- UI brush volume: slab = prism limited by paint depth; geodesic floods the connected surface; sphere = plain 3D ball -> {surface} or {error}", docs: '/ai/colors.md' },
+        'getBrushAlign':   { signature: 'getBrushAlign() -- UI brush alignment -> {align}', docs: '/ai/colors.md' },
+        'setBrushAlign':   { signature: "setBrushAlign('view'|'surface'|'area') -- Which way a slab brush points: view = camera ray (stays a circle on screen; default), surface = triangle under the cursor, area = normal averaged over the brush -> {align} or {error}", docs: '/ai/colors.md' },
+        'getBrushFrontFacesOnly': { signature: 'getBrushFrontFacesOnly() -- UI brush front-faces-only toggle -> {frontFacesOnly}', docs: '/ai/colors.md' },
+        'setBrushFrontFacesOnly': { signature: 'setBrushFrontFacesOnly(on) -- Only paint triangles facing the camera (UI brush; default on) -> {frontFacesOnly} or {error}', docs: '/ai/colors.md' },
         'setBrushDepth': { signature: 'setBrushDepth(depth) -- How far UI slab paint reaches through a wall (mesh units, >= 0; 0 = auto) -> {depth} or {error}', docs: '/ai/colors.md' },
         'getBrushWrapAngle': { signature: 'getBrushWrapAngle() -- UI brush wrap tolerance (max edge bend paint may cross, degrees) -> {wrapAngleDeg}', docs: '/ai/colors.md' },
         'setBrushWrapAngle': { signature: 'setBrushWrapAngle(deg) -- Set the UI brush wrap tolerance (clamped to 0..180; 90 stops at right-angle corners) -> {wrapAngleDeg} or {error}', docs: '/ai/colors.md' },

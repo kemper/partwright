@@ -1819,6 +1819,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={5_000} max={600_000} step={5_000} integer
           onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
         />
+        <Field cfgKey="ui.paintBrushSliverPx"
+          label="Brush sliver catch"
+          unit="px"
+          hint="Paint thin triangles the brush can't see (0 = off)."
+          tooltip="With smooth edges off, the brush paints the triangles visible under it on screen. Very thin triangles along a seam can be narrower than a pixel and get skipped, leaving a fine line of the old colour. Triangles thinner than this many pixels next to the painted area are painted too."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintBrushSliverPx}
+          value={c.ui.paintBrushSliverPx}
+          min={0} max={10} step={0.5}
+          onChange={v => set('ui', 'paintBrushSliverPx', v)}
+        />
         <Field cfgKey="ui.partBoxSelectSamples"
           label="Box-select samples per part"
           unit="tris"

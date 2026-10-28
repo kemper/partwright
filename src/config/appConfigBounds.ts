@@ -197,6 +197,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     toolDialogOpenWaitMs: { min: 500, max: 60_000, integer: true },
     paintAdjacencyWorkerMinTriangles: { min: 0, max: 50_000_000, integer: true },
     paintAdjacencyWorkerTimeoutMs: { min: 5_000, max: 600_000, integer: true },
+    paintBrushSliverPx: { min: 0, max: 10 },
     partBoxSelectSamples: { min: 50, max: 1_000_000, integer: true },
     partArrangeGapRatio: { min: 0, max: 5 },
     partSnapStep: { min: 0.001, max: 10_000 },
