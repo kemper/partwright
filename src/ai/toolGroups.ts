@@ -76,6 +76,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
       'isolateObjectPart', 'getObjectPartInfo', 'renameObjectPart', 'extractObjectPiece',
       'extractObjectParts', 'mergeObjects', 'reorderObjects', 'saveAllObjects', 'setObjectGroup',
+      'listExportItems', 'partAction', 'undoPartEdit',
     ],
   },
   {
