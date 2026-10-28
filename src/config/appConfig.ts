@@ -600,6 +600,13 @@ export interface AppConfig {
      *  unfragmented heap (WASM memory never shrinks on its own). 100 disables
      *  both the warning and the reset. */
     engineHeapHighPct: number;
+    /** Model code longer than this (characters) skips the SES sandbox's
+     *  undeclared-name analysis (#1127): an undeclared name then reads as
+     *  `undefined` instead of throwing `ReferenceError`. The analysis parses
+     *  the whole source on every run (~0.5 ms per KB — 176 ms for the 363 KB
+     *  benchy-reconstruction entry), which matters on live-typing re-runs of
+     *  huge generated sources. Passed to the engine Workers when they start. */
+    sesUndeclaredCheckMaxChars: number;
   };
   segmentation: {
     /** Part detection: after an interactive STL import, try the automatic
@@ -861,6 +868,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
     engineHeapHighPct: 50,
+    sesUndeclaredCheckMaxChars: 150_000,
   },
   segmentation: {
     autoDetectOnImport: true,

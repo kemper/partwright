@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // bench-engine-sandbox — measure what the engine sandbox (docs/engine-sandbox.md,
-// kemper/partwright#1090) costs, per mode: off / opaque / origin.
+// kemper/partwright#1090) costs, per mode: off / origin. (The former 'opaque'
+// mode was removed; earlier revisions of docs/engine-sandbox.md have its numbers.)
 //
 //   node scripts/bench-engine-sandbox.mjs [--iterations 3] [--runs 6]
 //        [--app-port 5204] [--sandbox-port 5205] [--out <dir>] [--no-build]
-//        [--modes off,opaque,origin]
+//        [--modes off,origin]
 //
 // Uses a PRODUCTION build (`vite build`, with VITE_SANDBOX_ORIGIN pointing at
 // the second port) served by two `vite preview` servers — app + sandbox
@@ -16,7 +17,7 @@
 //   2. lazy engines (cold) — first SCAD run, first BREP (replicad) run;
 //   3. warm start   — reload in the same context → ready mark, and the
 //                     network requests/bytes for .wasm / JS on that reload
-//                     (does opaque mode lose HTTP-cache reuse?);
+//                     (does the sandbox lose HTTP-cache reuse?);
 //   4. run latency  — median of N runs (after a warmup) of a cube, a 204,800-
 //                     triangle sphere and a 500,000-triangle sphere: the
 //                     engine round trip (post → mesh on the main thread,
@@ -46,7 +47,7 @@ function parseArgs(argv) {
   const a = {
     iterations: 3, runs: 6, appPort: 5204, sandboxPort: 5205,
     out: join(root, 'test-results', 'sandbox-bench'), build: true,
-    modes: ['off', 'opaque', 'origin'],
+    modes: ['off', 'origin'],
   };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
@@ -56,7 +57,11 @@ function parseArgs(argv) {
     else if (t === '--sandbox-port') a.sandboxPort = parseInt(argv[++i], 10);
     else if (t === '--out') a.out = resolve(argv[++i]);
     else if (t === '--no-build') a.build = false;
-    else if (t === '--modes') a.modes = argv[++i].split(',');
+    else if (t === '--modes') {
+      a.modes = argv[++i].split(',');
+      const bad = a.modes.filter(m => m !== 'off' && m !== 'origin');
+      if (bad.length) { console.error(`unknown mode(s) ${bad.join(', ')} - modes are off, origin`); process.exit(2); }
+    }
     else { console.error(`unknown flag ${t}`); process.exit(2); }
   }
   return a;

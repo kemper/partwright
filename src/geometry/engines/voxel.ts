@@ -1,9 +1,10 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
-import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { compileModelCode, hardenModelShared, type ModelFn } from '../modelEval';
+import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
 import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
 import { createParamCapture, type ParamCapture } from '../params';
-import { createSdfNamespace } from '../sdf';
+import { createSdfNamespace, SdfNode } from '../sdf';
 import { ValidationError } from '../../validation/apiValidation';
 import { assertModelCodeRealm } from '../workerLockdown';
 
@@ -27,7 +28,9 @@ interface VoxelsHandle {
 // instead. The SDF primitive/combinator methods never touch Manifold (only
 // `.build()` does), so we hand createSdfNamespace a guard that throws a
 // pointed message the moment anyone reaches for build()/levelSet.
-const SDF_BUILD_GUARD = new Proxy({}, {
+// The target is frozen so model code can't hang state on this shared object
+// (it's reachable from every SDF node's context) for a later run to find.
+const SDF_BUILD_GUARD = new Proxy(Object.freeze({}), {
   get() {
     throw new ValidationError("api.sdf.build() isn't available in a voxel session (no Manifold engine). Sample the SDF into the grid instead: `v.sdf(node, { res, color })`. See /ai/voxel.md#sdf");
   },
@@ -44,6 +47,16 @@ const manifoldOnlyNamespaceGuard = (ns: 'paint' | 'surface') => new Proxy({}, {
       : 'api.surface.* is only available in manifold-js (JS) sessions — a voxel grid has no triangle skin to texture. Switch to a manifold-js session (or bake via voxelizeModel from one). See /ai/textures.md');
   },
 });
+
+/** Compile one voxel run. Under SES this first deep-freezes the run's api and
+ *  the shared VoxelGrid / SDF classes its values come from, so model code
+ *  can't patch them for later runs (no-op without SES). */
+function compileVoxelRun(jsCode: string, api: ReturnType<typeof createVoxelApi>): ModelFn {
+  hardenModelShared(api);
+  hardenModelShared(VoxelGrid);
+  hardenModelShared(SdfNode);
+  return compileModelCode(jsCode);
+}
 
 /** `removedPieces` collects `api.removePiece([x, y, z])` calls — what the
  *  object list's ✕ writes; each run path applies them to the returned grid. */
@@ -94,11 +107,10 @@ export const voxelEngine: Engine = {
     const api = createVoxelApi(capture.params, removedPieces);
     let result: unknown;
     try {
-      const fn = new Function('api', `"use strict";\n${jsCode}`);
+      const fn = compileVoxelRun(jsCode, api);
       result = fn(api);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      const isSyntaxError = e instanceof SyntaxError;
       // The schema rides on error returns too (matching manifold-js) so a
       // model that declared params before throwing keeps its Customizer panel
       // live for correction. `collectSchema()` returns whatever was captured
@@ -107,9 +119,7 @@ export const voxelEngine: Engine = {
         mesh: null,
         manifold: null,
         error: msg,
-        diagnostics: isSyntaxError
-          ? javaScriptSyntaxDiagnostics(jsCode, msg, e)
-          : runtimeDiagnostic(msg, undefined, 'JavaScript'),
+        diagnostics: modelCodeDiagnostics(jsCode, msg, e),
         paramsSchema: capture.collectSchema(),
       };
     }
@@ -159,7 +169,7 @@ export const voxelEngine: Engine = {
 
   validate(jsCode: string): ValidateResult {
     try {
-      new Function('api', `"use strict";\n${jsCode}`);
+      compileModelCode(jsCode);
       return { valid: true };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -187,7 +197,7 @@ export function runVoxelGrid(jsCode: string, paramOverrides?: Record<string, unk
   const api = createVoxelApi(createParamCapture(paramOverrides).params, removedPieces);
   let result: unknown;
   try {
-    const fn = new Function('api', `"use strict";\n${jsCode}`);
+    const fn = compileVoxelRun(jsCode, api);
     result = fn(api);
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
