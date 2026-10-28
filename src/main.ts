@@ -2258,26 +2258,29 @@ function resolveDescriptorTrianglesRaw(
 const strokeCache = new WeakMap<object, { base: MeshData; stroke: BrushStroke }>();
 
 /** Validate a paint call's brush-direction options (`align`, `viewDir`,
- *  `frontFacesOnly`) and resolve them to brushStroke descriptor fields. The
+ *  `frontFacesOnly`, `occlude`) and resolve them to brushStroke descriptor fields. The
  *  camera is `viewDir` (parallel rays) or, when omitted, the live viewport
  *  camera. Shared by paintStroke and paintAirbrush. */
 function parseBrushViewOpts(
-  opts: { align?: unknown; viewDir?: unknown; frontFacesOnly?: unknown },
+  opts: { align?: unknown; viewDir?: unknown; frontFacesOnly?: unknown; occlude?: unknown },
   fn: string,
-): { error: string } | { fields: { align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number } } {
-  const { align, viewDir, frontFacesOnly } = opts;
+): { error: string } | { fields: { align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number; occlude?: boolean } } {
+  const { align, viewDir, frontFacesOnly, occlude } = opts;
   if (align !== undefined && align !== 'surface' && align !== 'area' && align !== 'view') {
     return { error: `${fn}: align must be 'surface', 'area' or 'view' when provided` };
   }
   if (frontFacesOnly !== undefined && typeof frontFacesOnly !== 'boolean') {
     return { error: `${fn}: frontFacesOnly must be a boolean when provided` };
   }
-  const needsView = align === 'view' || frontFacesOnly === true;
+  if (occlude !== undefined && typeof occlude !== 'boolean') {
+    return { error: `${fn}: occlude must be a boolean when provided` };
+  }
+  const needsView = align === 'view' || frontFacesOnly === true || occlude === true;
   if (viewDir !== undefined) {
     if (!Array.isArray(viewDir) || viewDir.length !== 3 || viewDir.some(n => typeof n !== 'number' || !Number.isFinite(n)) || Math.hypot(viewDir[0], viewDir[1], viewDir[2]) === 0) {
       return { error: `${fn}: viewDir must be a non-zero [x,y,z] direction (camera → model) when provided` };
     }
-    if (!needsView) return { error: `${fn}: viewDir only applies with align: 'view' or frontFacesOnly: true` };
+    if (!needsView) return { error: `${fn}: viewDir only applies with align: 'view', frontFacesOnly: true or occlude: true` };
   }
   let view: BrushView | undefined;
   if (needsView) {
@@ -2296,6 +2299,7 @@ function parseBrushViewOpts(
       ...(align !== undefined ? { align: align as BrushAlign } : {}),
       ...(view ? { view } : {}),
       ...(frontFacesOnly === true ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
+      ...(occlude === true ? { occlude: true } : {}),
     },
   };
 }
@@ -21650,6 +21654,8 @@ async function main() {
       viewDir?: number[];
       /** Skip triangles facing away from the camera. */
       frontFacesOnly?: boolean;
+      /** Skip triangles hidden from the camera behind other geometry. */
+      occlude?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -21760,6 +21766,7 @@ async function main() {
       align?: string;
       viewDir?: number[];
       frontFacesOnly?: boolean;
+      occlude?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -23290,8 +23297,8 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors({kind?: "all"|"image"}?) -- Remove ALL color regions, or only image stamps (undoClearColors restores; undoLastPaint reverses just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?, withinPart?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
-        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
+        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, occlude?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
+        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, align?, viewDir?, frontFacesOnly?, occlude?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
         'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
@@ -23334,7 +23341,7 @@ async function main() {
         'getBrushAlign':   { signature: 'getBrushAlign() -- UI brush alignment -> {align}', docs: '/ai/colors.md' },
         'setBrushAlign':   { signature: "setBrushAlign('view'|'surface'|'area') -- Which way a slab brush points: view = camera ray (stays a circle on screen; default), surface = triangle under the cursor, area = normal averaged over the brush -> {align} or {error}", docs: '/ai/colors.md' },
         'getBrushFrontFacesOnly': { signature: 'getBrushFrontFacesOnly() -- UI brush front-faces-only toggle -> {frontFacesOnly}', docs: '/ai/colors.md' },
-        'setBrushFrontFacesOnly': { signature: 'setBrushFrontFacesOnly(on) -- Only paint triangles facing the camera (UI brush; default on) -> {frontFacesOnly} or {error}', docs: '/ai/colors.md' },
+        'setBrushFrontFacesOnly': { signature: 'setBrushFrontFacesOnly(on) -- UI brush \"Visible faces only\": only paint triangles facing the camera and not hidden behind other geometry (default on) -> {frontFacesOnly} or {error}', docs: '/ai/colors.md' },
         'setBrushDepth': { signature: 'setBrushDepth(depth) -- How far UI slab paint reaches through a wall (mesh units, >= 0; 0 = auto) -> {depth} or {error}', docs: '/ai/colors.md' },
         'getBrushWrapAngle': { signature: 'getBrushWrapAngle() -- UI brush wrap tolerance (max edge bend paint may cross, degrees) -> {wrapAngleDeg}', docs: '/ai/colors.md' },
         'setBrushWrapAngle': { signature: 'setBrushWrapAngle(deg) -- Set the UI brush wrap tolerance (clamped to 0..180; 90 stops at right-angle corners) -> {wrapAngleDeg} or {error}', docs: '/ai/colors.md' },

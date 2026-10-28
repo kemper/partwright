@@ -151,3 +151,45 @@ describe('front faces only and the sphere volume', () => {
     expect(s.sampleNormals).toEqual(deriveSampleNormals([[0, 0, 0.5]], plate));
   });
 });
+
+describe('occlusion (visible faces only)', () => {
+  /** Concatenate meshes (independent shells). */
+  function merge(...ms: MeshData[]): MeshData {
+    const verts: number[] = [];
+    const tris: number[] = [];
+    for (const m of ms) {
+      const off = verts.length / 3;
+      for (let i = 0; i < m.numVert * 3; i++) verts.push(m.vertProperties[i]);
+      for (let i = 0; i < m.numTri * 3; i++) tris.push(m.triVerts[i] + off);
+    }
+    return { vertProperties: new Float32Array(verts), triVerts: new Uint32Array(tris), numVert: verts.length / 3, numTri: tris.length / 3, numProp: 3 };
+  }
+  // A plate (top at z = 0.5) with a 2×2 roof floating over its middle at z 3–4.
+  const scene = merge(plateBox(6, -0.5, 0.5, 0.25), plateBox(1, 3, 4, 0.25));
+  const fromAbove = { dir: [0, 0, -1] as V3, origin: [0, 0, 50] as V3 };
+  const base = stroke({ samples: [[1.5, 0, 0.5]], radius: 2.5, surface: 'slab', align: 'view', view: fromAbove, frontFaceMaxDeg: 90 });
+  const underRoof = (p: V3) => p[2] > 0.4 && p[2] < 0.6 && Math.abs(p[0]) < 0.85 && Math.abs(p[1]) < 0.85;
+  const plateTop = (p: V3) => p[2] > 0.4 && p[2] < 0.6;
+
+  test('without occlusion the plate under the roof is painted', () => {
+    expect(paint(scene, base).some(underRoof)).toBe(true);
+  });
+
+  test('with occlusion the plate under the roof stays unpainted; the visible plate and roof top are painted', () => {
+    const pts = paint(scene, { ...base, occlude: true });
+    expect(pts.some(underRoof)).toBe(false);
+    expect(pts.some(p => plateTop(p) && p[0] > 1.2)).toBe(true);
+    expect(pts.some(p => p[2] > 3.9)).toBe(true); // the roof's top face
+  });
+
+  test('parallel rays (no camera position) occlude too', () => {
+    const pts = paint(scene, { ...base, view: { dir: [0, 0, -1] }, occlude: true });
+    expect(pts.some(underRoof)).toBe(false);
+    expect(pts.some(p => plateTop(p) && p[0] > 1.2)).toBe(true);
+  });
+
+  test('occlude without a stored view is ignored', () => {
+    const s = buildBrushStrokeFromDescriptor(stroke({ occlude: true }), scene);
+    expect(s.occluded).toBeUndefined();
+  });
+});

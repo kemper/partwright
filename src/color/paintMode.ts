@@ -72,8 +72,9 @@ let brushSurface: BrushSurface = 'slab';
  *  of other paint tools, steadiest on complex models. `surface` follows the
  *  triangle under each sample, `area` the normal averaged over the brush. */
 let brushAlign: BrushAlign = 'view';
-/** Front faces only: skip triangles facing away from the camera, so paint
- *  doesn't reach the far side of a thin part or the inside of an undercut. */
+/** Visible faces only (front faces only + occlusion): skip triangles facing
+ *  away from the camera or hidden behind other geometry, so paint doesn't reach
+ *  the far side of a thin part, an undercut, or a surface behind a nearer one. */
 let brushFrontOnly = true;
 /** Camera captured at the start of the active stroke (view alignment and the
  *  front-face test are measured against it; the camera can't orbit mid-drag). */
@@ -834,6 +835,9 @@ function commitBrushStroke(): boolean {
         align: brushAlign,
         ...(strokeView && (brushAlign === 'view' || brushFrontOnly) ? { view: strokeView } : {}),
         ...(brushFrontOnly && strokeBackPicks * 2 <= strokePicks ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
+        // Occlusion doesn't depend on winding, so it stays on even when the
+        // facing test is skipped for an inverted-winding mesh.
+        ...(brushFrontOnly && strokeView ? { occlude: true } : {}),
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       }),
       new Set<number>(),
