@@ -754,7 +754,71 @@ export function normalizeSpec(partial: unknown, fromVersion?: number): Character
 
 // ---- validation + JSON schema -----------------------------------------------
 
-type FieldSpec =
+// ---- Character Creator panel metadata -------------------------------------
+// The panel (src/ui/characterCreatorPanel.ts) is generated from SPEC_FIELDS:
+// each field's `ui` says how it shows, and src/figure/characterPanelLayout.ts
+// turns the tree into ordered, visibility-filtered sections. So adding a plain
+// enum / number / bool / colour field takes the interface + DEFAULT_SPEC + one
+// SPEC_FIELDS entry with `ui` + codegen — no panel edit. A field the panel
+// doesn't show says why with `{ hidden: '…' }`; a unit test fails on any field
+// with neither (tests/unit/characterPanelLayout.test.ts).
+
+/** Panel sections, in display order. Collapsible ones start closed. */
+export const PANEL_SECTIONS = [
+  { id: 'style', title: 'Style' },
+  { id: 'body', title: 'Body' },
+  { id: 'pose', title: 'Pose' },
+  { id: 'face', title: 'Face' },
+  { id: 'details', title: 'Face & body details', collapsible: true },
+  { id: 'hair', title: 'Hair' },
+  { id: 'clothing', title: 'Clothing' },
+  { id: 'kit', title: 'Kit details', collapsible: true },
+  // `countPath`: the title shows that list's length, e.g. "Print (2)".
+  { id: 'print', title: 'Print', collapsible: true, countPath: 'clothing.top.print' },
+  { id: 'colors', title: 'Colours' },
+] as const satisfies readonly { id: string; title: string; collapsible?: boolean; countPath?: string }[];
+export type PanelSectionId = typeof PANEL_SECTIONS[number]['id'];
+
+/** Controls too bespoke for the generic renderer; the panel supplies one DOM
+ *  renderer per id (a `Record<CustomControlId, …>`, so TypeScript enforces it). */
+export const CUSTOM_CONTROL_IDS = ['proportions', 'headSize', 'posePreset', 'printList'] as const;
+export type CustomControlId = typeof CUSTOM_CONTROL_IDS[number];
+
+/** How one spec field shows in the panel. */
+export interface FieldUi {
+  label: string;
+  section: PanelSectionId;
+  /** Coarse sort bucket within the section (default 0); ties keep tree order. */
+  order?: number;
+  /** num: the slider's soft range + step. Typed values may go past it up to
+   *  the field's own min/max (or `hard`, which overrides them). */
+  slider?: readonly [number, number, number];
+  hard?: { min?: number; max?: number };
+  /** enum: friendly option labels (values without one are humanized). */
+  options?: Readonly<Record<string, string>>;
+  /** enum: buttons instead of a dropdown; a pick previews immediately. */
+  control?: 'segmented';
+  /** Nullable enum: the label of the null option. */
+  nullLabel?: string;
+  /** Nullable num / colour: the value a null field displays (its effective value). */
+  nullShows?: (s: CharacterSpec) => number | string;
+  /** Nullable fields sharing a `reset` label get one button that sets them all
+   *  back to null (disabled while they all are). */
+  reset?: string;
+  /** Show only when this holds. */
+  when?: (s: CharacterSpec) => boolean;
+  /** Other paths set to the same value (one slider drives both arms). */
+  mirror?: readonly string[];
+  /** Extra effect after the value is set (e.g. size a fresh ball). */
+  onSet?: (s: CharacterSpec, v: unknown) => void;
+  /** A panel-supplied renderer instead of the generic control. */
+  custom?: CustomControlId;
+}
+/** A field the panel deliberately doesn't show, and why. */
+export interface HiddenUi { hidden: string }
+export type UiSpec = FieldUi | HiddenUi;
+
+type FieldSpec = (
   | { t: 'enum'; values: readonly string[]; nullable?: boolean; d: string }
   | { t: 'num'; min?: number; max?: number; nullable?: boolean; d: string }
   | { t: 'bool'; d: string }
@@ -762,108 +826,170 @@ type FieldSpec =
   | { t: 'str'; minLen?: number; maxLen?: number; printable?: boolean; d: string }
   | { t: 'headScale'; d: string }
   | { t: 'list'; item: FieldSpec; max: number; d: string }
-  | { t: 'obj'; fields: Record<string, FieldSpec>; d: string };
+  | { t: 'obj'; fields: Record<string, FieldSpec>; d: string }
+) & { ui?: UiSpec };
 
 const e = (values: readonly string[], d: string, nullable?: boolean): FieldSpec => ({ t: 'enum', values, nullable, d });
 const n = (d: string, min?: number, max?: number, nullable?: boolean): FieldSpec => ({ t: 'num', min, max, nullable, d });
 const c = (d: string, nullable?: boolean): FieldSpec => ({ t: 'color', nullable, d });
 const b = (d: string): FieldSpec => ({ t: 'bool', d });
 const o = (fields: Record<string, FieldSpec>, d: string): FieldSpec => ({ t: 'obj', fields, d });
-const joint = (d: string): FieldSpec => o({
-  raiseSide: n('Lift sideways (deg).'), raiseFwd: n('Swing forward(+)/back(−) (deg).'),
-  bend: n('Elbow/knee flexion (deg).'), twist: n('Axial roll (deg).'),
+/** Attach panel metadata to a field. */
+const u = (f: FieldSpec, ui: FieldUi): FieldSpec => ({ ...f, ui });
+/** Mark a field as deliberately not in the panel. */
+const hide = (f: FieldSpec, why: string): FieldSpec => ({ ...f, ui: { hidden: why } });
+
+// Visibility predicates shared by several fields.
+const holding = (s: CharacterSpec) => s.pose.hold.kind === 'ball';
+const notHolding = (s: CharacterSpec) => !holding(s);
+const hairIs = (...styles: HairStyle[]) => (s: CharacterSpec) => styles.includes(s.hair.style);
+const lockHair = (s: CharacterSpec) => LOCK_HAIR_STYLES.includes(s.hair.style);
+const toyShoes = (s: CharacterSpec) => s.clothing.feet.kind === 'shoes' && s.clothing.feet.style === 'toy';
+const BY_PRESET = 'set by the pose presets; per-joint angles via buildCharacter / getCharacterSpec';
+const deg = (lo: number, hi: number) => [lo, hi, 1] as const;
+
+/** One limb. Only `shown` keys get panel controls; the rest come from presets. */
+const joint = (d: string, shown: Partial<Record<'raiseSide' | 'raiseFwd' | 'bend' | 'twist', FieldUi | HiddenUi>> = {}): FieldSpec => o({
+  raiseSide: { ...n('Lift sideways (deg).'), ui: shown.raiseSide ?? { hidden: BY_PRESET } },
+  raiseFwd: { ...n('Swing forward(+)/back(−) (deg).'), ui: shown.raiseFwd ?? { hidden: BY_PRESET } },
+  bend: { ...n('Elbow/knee flexion (deg).'), ui: shown.bend ?? { hidden: BY_PRESET } },
+  twist: { ...n('Axial roll (deg).'), ui: shown.twist ?? { hidden: BY_PRESET } },
 }, d);
 
-/** The whole spec as a field tree — drives `validateSpec` and `specJsonSchema`. */
+/** The whole spec as a field tree — drives `validateSpec`, `specJsonSchema`
+ *  and (through each field's `ui`) the Character Creator panel. */
 const SPEC_FIELDS: Record<string, FieldSpec> = {
   body: o({
-    height: n('Total height, world units (the base adds a little below).', 1),
-    headsTall: n('Heads tall (realistic ≈ 7, chibi/funko 3).', 2, 12),
-    build: e(BUILDS, 'Body build.'),
-    sex: e(SEXES, 'Body sex.'),
-    age: n('Age in years.', 1, 90),
-    weight: n('Body weight 0–1.', 0, 1),
-    muscle: n('Muscle 0–1.', 0, 1),
-    bust: n('Bust 0–2.', 0, 2),
-    belly: n('Belly 0–2.', 0, 2),
-    proportions: e(PROPORTIONS, "Body plan: 'realistic' human canon, 'chibi' big round head, 'funko' vinyl-pop toy (huge wide head, short body)."),
-    headScale: { t: 'headScale', d: 'Head size multiplier {x: width, y: depth, z: height} (0.3–4 each; a number = uniform). null/omit = the style default (funko {2.5,1.8,1.7}, chibi {1.4,1.25,1.25}).' },
-    headSink: n('Lower the head onto the shoulders by this × the neck length, 0–1.5 (Funko "no neck" ≈ 0.4; 0 = a normal neck).', 0, 1.5),
-    mittens: b('Fingerless vinyl-toy mitten hands.'),
+    height: u(n('Total height, world units (the base adds a little below).', 1), { label: 'Height', section: 'body', slider: [24, 90, 1], hard: { max: Infinity } }),
+    headsTall: u(n('Heads tall (realistic ≈ 7, chibi/funko 3).', 2, 12), { label: 'Heads tall', section: 'body', slider: [2.5, 9, 0.5] }),
+    build: u(e(BUILDS, 'Body build.'), { label: 'Build', section: 'body' }),
+    sex: u(e(SEXES, 'Body sex.'), { label: 'Sex', section: 'body' }),
+    age: u(n('Age in years.', 1, 90), { label: 'Age', section: 'body', slider: [1, 90, 1] }),
+    weight: u(n('Body weight 0–1.', 0, 1), { label: 'Weight', section: 'body', slider: [0, 1, 0.05] }),
+    muscle: u(n('Muscle 0–1.', 0, 1), { label: 'Muscle', section: 'body', slider: [0, 1, 0.05] }),
+    bust: u(n('Bust 0–2.', 0, 2), { label: 'Bust', section: 'body', slider: [0, 2, 0.05] }),
+    belly: u(n('Belly 0–2.', 0, 2), { label: 'Belly', section: 'body', slider: [0, 2, 0.05] }),
+    proportions: u(e(PROPORTIONS, "Body plan: 'realistic' human canon, 'chibi' big round head, 'funko' vinyl-pop toy (huge wide head, short body)."),
+      { label: 'Proportions', section: 'style', custom: 'proportions' }),
+    headScale: u({ t: 'headScale', d: 'Head size multiplier {x: width, y: depth, z: height} (0.3–4 each; a number = uniform). null/omit = the style default (funko {2.5,1.8,1.7}, chibi {1.4,1.25,1.25}).' },
+      { label: 'Head size', section: 'style', custom: 'headSize' }),
+    headSink: u(n('Lower the head onto the shoulders by this × the neck length, 0–1.5 (Funko "no neck" ≈ 0.4; 0 = a normal neck).', 0, 1.5),
+      { label: 'Head sink', section: 'details', order: 1, slider: [0, 1.5, 0.02] }),
+    mittens: u(b('Fingerless vinyl-toy mitten hands.'), { label: 'Mitten hands', section: 'details', order: 1 }),
   }, 'Body proportions.'),
   pose: o({
-    preset: { t: 'str', maxLen: 32, d: 'UI label of the last pose preset (ignored by codegen).' },
-    armL: joint('Left arm (ignored while holding a ball).'),
-    armR: joint('Right arm (ignored while holding a ball).'),
-    legL: joint('Left leg.'),
-    legR: joint('Right leg.'),
-    spine: o({ lean: n('Lean forward (deg).'), turn: n('Twist (deg).'), side: n('Side bend (deg).') }, 'Spine.'),
-    head: o({ yaw: n('Turn (deg).'), pitch: n('Nod (deg).'), roll: n('Tilt (deg).') }, 'Head.'),
+    preset: u({ t: 'str', maxLen: 32, d: 'UI label of the last pose preset (ignored by codegen).' }, { label: 'Preset', section: 'pose', custom: 'posePreset' }),
+    armL: joint('Left arm (ignored while holding a ball).', {
+      raiseSide: { label: 'Arms out', section: 'pose', slider: deg(-30, 170), mirror: ['pose.armR.raiseSide'], when: notHolding },
+      bend: { label: 'Arm bend', section: 'pose', slider: deg(0, 150), mirror: ['pose.armR.bend'], when: notHolding },
+    }),
+    armR: joint('Right arm (ignored while holding a ball).', {
+      raiseSide: { hidden: 'mirrors pose.armL.raiseSide ("Arms out")' },
+      bend: { hidden: 'mirrors pose.armL.bend ("Arm bend")' },
+    }),
+    legL: joint('Left leg.', { raiseSide: { label: 'Legs apart', section: 'pose', slider: deg(-10, 60), mirror: ['pose.legR.raiseSide'] } }),
+    legR: joint('Right leg.', { raiseSide: { hidden: 'mirrors pose.legL.raiseSide ("Legs apart")' } }),
+    spine: o({
+      lean: u(n('Lean forward (deg).'), { label: 'Lean', section: 'pose', slider: deg(-25, 25) }),
+      turn: hide(n('Twist (deg).'), BY_PRESET),
+      side: hide(n('Side bend (deg).'), BY_PRESET),
+    }, 'Spine.'),
+    head: o({
+      yaw: u(n('Turn (deg).'), { label: 'Head turn', section: 'pose', slider: deg(-60, 60) }),
+      pitch: hide(n('Nod (deg).'), BY_PRESET),
+      roll: u(n('Tilt (deg).'), { label: 'Head tilt', section: 'pose', slider: deg(-30, 30) }),
+    }, 'Head.'),
     hold: o({
-      kind: e(HOLD_KINDS, "'ball' = both hands hold a soccer ball (arms are solved automatically)."),
-      radius: n('Ball radius, world units (≈ 0.1 × height).', 0.1),
-      cup: e(HOLD_CUPS, "'sides' = palms on the ball's lower sides; 'under' = cradled from below."),
-      color: c('Ball panel (pentagon) colour; the base colour is colors.ball.'),
-      cupL: e(HOLD_CUPS, 'Left-hand cup override (null = cup).', true),
-      cupR: e(HOLD_CUPS, "Right-hand cup override (null = cup) — e.g. cupR 'under' + cupL 'sides'.", true),
-      handScale: n('Hand size the hold assumes, 0.5–2.5 (big vinyl mitten hands ≈ 1.3).', 0.5, 2.5),
+      kind: u(e(HOLD_KINDS, "'ball' = both hands hold a soccer ball (arms are solved automatically)."), {
+        label: 'Holding', section: 'pose', control: 'segmented', options: { none: 'Nothing', ball: 'Ball' },
+        // Size a fresh ball to the figure (≈ a tenth of its height).
+        onSet: (s, v) => {
+          if (v === 'ball' && s.pose.hold.radius === DEFAULT_SPEC.pose.hold.radius) s.pose.hold.radius = Math.max(1, Math.round(s.body.height * 0.1 * 2) / 2);
+        },
+      }),
+      radius: u(n('Ball radius, world units (≈ 0.1 × height).', 0.1), { label: 'Ball size', section: 'pose', slider: [2, 30, 0.5], hard: { max: Infinity }, when: holding }),
+      cup: u(e(HOLD_CUPS, "'sides' = palms on the ball's lower sides; 'under' = cradled from below."),
+        { label: 'Hands', section: 'pose', options: { sides: 'On the sides', under: 'Cradled under' }, when: holding }),
+      color: u(c('Ball panel (pentagon) colour; the base colour is colors.ball.'), { label: 'Ball panels', section: 'pose', order: 1, when: holding }),
+      cupL: u(e(HOLD_CUPS, 'Left-hand cup override (null = cup).', true),
+        { label: 'Left hand', section: 'pose', options: { sides: 'On the side', under: 'Cradled under' }, nullLabel: 'Same as both', when: holding }),
+      cupR: u(e(HOLD_CUPS, "Right-hand cup override (null = cup) — e.g. cupR 'under' + cupL 'sides'.", true),
+        { label: 'Right hand', section: 'pose', options: { sides: 'On the side', under: 'Cradled under' }, nullLabel: 'Same as both', when: holding }),
+      handScale: u(n('Hand size the hold assumes, 0.5–2.5 (big vinyl mitten hands ≈ 1.3).', 0.5, 2.5), { label: 'Hand size', section: 'pose', slider: [0.5, 2.5, 0.05], when: holding }),
     }, 'Two-hand held object.'),
   }, 'Pose (joint angles in degrees, 0 = neutral).'),
   face: o({
-    shape: e(FACE_SHAPES, 'Face shape.'),
-    lids: e(LID_STYLES, 'Eyelids.'),
-    gaze: e(GAZES, 'Gaze direction.'),
-    nose: e(NOSE_TYPES, 'Nose type.'),
-    expression: e(EXPRESSIONS, 'Mouth expression.'),
-    lipShape: e(LIP_SHAPES, 'Lip shape.'),
-    ears: e(EAR_TYPES, 'Ear type.'),
-    brows: e(BROW_SHAPES, 'Brow shape.'),
+    shape: u(e(FACE_SHAPES, 'Face shape.'), { label: 'Shape', section: 'face' }),
+    lids: u(e(LID_STYLES, 'Eyelids.'), { label: 'Eyelids', section: 'face' }),
+    gaze: u(e(GAZES, 'Gaze direction.'), { label: 'Gaze', section: 'face' }),
+    nose: u(e(NOSE_TYPES, 'Nose type.'), { label: 'Nose', section: 'face' }),
+    expression: u(e(EXPRESSIONS, 'Mouth expression.'), { label: 'Mouth', section: 'face' }),
+    lipShape: u(e(LIP_SHAPES, 'Lip shape.'), { label: 'Lips', section: 'face' }),
+    ears: u(e(EAR_TYPES, 'Ear type.'), { label: 'Ears', section: 'face' }),
+    brows: u(e(BROW_SHAPES, 'Brow shape.'), { label: 'Brows', section: 'face' }),
     layout: o({
-      eyeSpread: n('Eye spacing multiplier (0.5–2); null = style default.', 0.5, 2, true),
-      eyeHeight: n('Eye height in head half-heights (−0.6–0.6, negative = lower); null = style default.', -0.6, 0.6, true),
+      eyeSpread: u(n('Eye spacing multiplier (0.5–2); null = style default.', 0.5, 2, true), {
+        label: 'Eye spacing', section: 'face', slider: [0.5, 2, 0.05], reset: 'Reset eye layout',
+        nullShows: s => STYLE_DEFAULTS[s.body.proportions].faceLayout.eyeSpread,
+      }),
+      eyeHeight: u(n('Eye height in head half-heights (−0.6–0.6, negative = lower); null = style default.', -0.6, 0.6, true), {
+        label: 'Eye height', section: 'face', slider: [-0.6, 0.6, 0.01], reset: 'Reset eye layout',
+        nullShows: s => STYLE_DEFAULTS[s.body.proportions].faceLayout.eyeHeight,
+      }),
     }, 'Eye placement on the face.'),
-    eyeSize: n('Eye size multiplier 0.5–3 (1 = default; funko bead eyes ≈ 1.8).', 0.5, 3),
-    mouth: b('Build the lips (false = mouthless vinyl-toy face).'),
-    eyeStyle: e(EYE_STYLES, "'iris' = white eye + iris + pupil; 'bead' = glossy vinyl-toy bead with a white glint (paints colors.eyes + colors.eyeHighlight; ignores lids/gaze/iris/pupil)."),
-    eyeAspect: n('bead only: height ÷ width 0.5–2 (1.06).', 0.5, 2),
-    highlight: n('bead only: glint size, 0 = none, 0.2–3 (1).', 0, 3),
-    browThickness: n('Brow weight 0.1–5 (1; bold toy brows ≈ 3).', 0.1, 5),
-    browWidth: n('Brow span 0.3–2 (1).', 0.3, 2),
-    jaw: n('Jaw width × the face shape 0.5–1.6 (1; a Funko\'s wide lower face ≈ 1.4).', 0.5, 1.6),
-    chin: n('Chin × the face shape 0.5–1.6 (1).', 0.5, 1.6),
-    cheek: n('Cheek fullness × the face shape 0.3–1.8 (1).', 0.3, 1.8),
+    eyeSize: u(n('Eye size multiplier 0.5–3 (1 = default; funko bead eyes ≈ 1.8).', 0.5, 3), { label: 'Eye size', section: 'face', slider: [0.5, 3, 0.05] }),
+    mouth: u(b('Build the lips (false = mouthless vinyl-toy face).'), { label: 'Show mouth', section: 'face' }),
+    eyeStyle: u(e(EYE_STYLES, "'iris' = white eye + iris + pupil; 'bead' = glossy vinyl-toy bead with a white glint (paints colors.eyes + colors.eyeHighlight; ignores lids/gaze/iris/pupil)."),
+      { label: 'Eye style', section: 'details', control: 'segmented' }),
+    eyeAspect: u(n('bead only: height ÷ width 0.5–2 (1.06).', 0.5, 2), { label: 'Bead shape', section: 'details', slider: [0.5, 2, 0.02], when: s => s.face.eyeStyle === 'bead' }),
+    highlight: u(n('bead only: glint size, 0 = none, 0.2–3 (1).', 0, 3), { label: 'Glint', section: 'details', slider: [0, 3, 0.1], when: s => s.face.eyeStyle === 'bead' }),
+    browThickness: u(n('Brow weight 0.1–5 (1; bold toy brows ≈ 3).', 0.1, 5), { label: 'Brow weight', section: 'details', slider: [0.1, 5, 0.1] }),
+    browWidth: u(n('Brow span 0.3–2 (1).', 0.3, 2), { label: 'Brow width', section: 'details', slider: [0.3, 2, 0.05] }),
+    jaw: u(n('Jaw width × the face shape 0.5–1.6 (1; a Funko\'s wide lower face ≈ 1.4).', 0.5, 1.6), { label: 'Jaw', section: 'details', slider: [0.5, 1.6, 0.05] }),
+    chin: u(n('Chin × the face shape 0.5–1.6 (1).', 0.5, 1.6), { label: 'Chin', section: 'details', slider: [0.5, 1.6, 0.05] }),
+    cheek: u(n('Cheek fullness × the face shape 0.3–1.8 (1).', 0.3, 1.8), { label: 'Cheeks', section: 'details', slider: [0.3, 1.8, 0.05] }),
   }, 'Face.'),
   hair: o({
-    style: e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (the Captain Tsubasa Funko)."),
-    length: e(HAIR_LENGTHS, 'Hair length.'),
-    volume: n('Hair volume 0.3–4.', 0.3, 4),
-    lockShape: e(LOCK_SHAPES, "anime only: flat 'ribbon' locks or round 'tube' locks."),
-    chunk: n('anime/shag: lock width 0.4–2.5.', 0.4, 2.5),
-    spike: n('anime/shag: crown-lock (spike) lift 0–3.', 0, 3),
-    swoop: n('anime only: fringe sideways sweep −1–3.', -1, 3),
-    fringe: n('mop/anime/shag: fringe amount 0–1.5.', 0, 1.5),
-    seed: n('mop/anime/shag: lock layout seed (integer).'),
-    crown: e(HAIR_CROWNS, "shag only: 'spiky' = 7 big needle-pointed spikes spread round the back + sides of the crown, arching up past the dome (spike = lift, crownSize = size); 'tousled' = 7 small random crown locks."),
-    layers: n('shag only: overlapping lock layers over the sides + back, integer 1–3.', 1, 3),
-    raggedness: n('shag only: jitter of lock length / lean / hem 0–2.', 0, 2),
-    flare: n('shag only: mop mass above the ears 0–3.', 0, 3),
-    notched: b('shag only: notched (toothed) fringe hairline (default true).'),
-    crownSize: n('shag only: crown-spike size 0.3–2.5 (1).', 0.3, 2.5),
-    backWidth: n('shag only: how far the side/back layers stand off the skull 0.3–1.6 (1; narrower back silhouette < 1).', 0.3, 1.6),
-    tipWidth: n('shag only: side/back lock tip width × root 0–0.8 (0.4).', 0, 0.8),
-    preset: e(HAIR_PRESETS, 'captured only: which captured hairdo.'),
-    spikiness: n('captured only: spike sharpness 0–3 (1).', 0, 3),
-    smooth: n('captured only: smooth the captured relief 0–1 (0).', 0, 1),
-    mirror: b('captured only: mirror the hairdo left↔right.'),
-    tilt: n('captured only: tilt the hairdo forward(+)/back (deg) −40–40.', -40, 40),
-    windowScale: n('captured only: face-window size 0.5–2 (1).', 0.5, 2),
-    capturedFringe: n('captured only: fringe amount 0.3–2 (1). (`fringe` is the lock styles\' knob.)', 0.3, 2),
+    style: u(e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (the Captain Tsubasa Funko)."), {
+      label: 'Style', section: 'hair',
+      options: { boxBraids: 'Box braids', mop: 'Mop (shaggy locks)', anime: 'Anime (ribbon locks)', shag: 'Shag (layered mop)', captured: 'Captured (Tsubasa)' },
+    }),
+    length: u(e(HAIR_LENGTHS, 'Hair length.'), { label: 'Length', section: 'hair' }),
+    volume: u(n('Hair volume 0.3–4.', 0.3, 4), { label: 'Volume', section: 'hair', slider: [0.3, 4, 0.1] }),
+    lockShape: u(e(LOCK_SHAPES, "anime only: flat 'ribbon' locks or round 'tube' locks."),
+      { label: 'Lock shape', section: 'hair', options: { ribbon: 'Flat ribbon', tube: 'Round tube' }, when: hairIs('anime') }),
+    chunk: u(n('anime/shag: lock width 0.4–2.5.', 0.4, 2.5), { label: 'Lock width', section: 'hair', slider: [0.4, 2.5, 0.05], when: hairIs('anime', 'shag') }),
+    spike: u(n('anime/shag: crown-lock (spike) lift 0–3.', 0, 3), { label: 'Spike', section: 'hair', slider: [0, 3, 0.05], when: hairIs('anime', 'shag') }),
+    swoop: u(n('anime only: fringe sideways sweep −1–3.', -1, 3), { label: 'Swoop', section: 'hair', slider: [-1, 3, 0.05], when: hairIs('anime') }),
+    fringe: u(n('mop/anime/shag: fringe amount 0–1.5.', 0, 1.5), { label: 'Fringe', section: 'hair', slider: [0, 1.5, 0.05], when: lockHair }),
+    seed: u(n('mop/anime/shag: lock layout seed (integer).'), { label: 'Seed', section: 'hair', slider: [1, 50, 1], hard: { min: -1e6, max: 1e6 }, when: lockHair }),
+    crown: u(e(HAIR_CROWNS, "shag only: 'spiky' = 7 big needle-pointed spikes spread round the back + sides of the crown, arching up past the dome (spike = lift, crownSize = size); 'tousled' = 7 small random crown locks."),
+      { label: 'Crown', section: 'hair', when: hairIs('shag') }),
+    layers: u(n('shag only: overlapping lock layers over the sides + back, integer 1–3.', 1, 3), { label: 'Layers', section: 'hair', slider: [1, 3, 1], when: hairIs('shag') }),
+    raggedness: u(n('shag only: jitter of lock length / lean / hem 0–2.', 0, 2), { label: 'Raggedness', section: 'hair', slider: [0, 2, 0.05], when: hairIs('shag') }),
+    flare: u(n('shag only: mop mass above the ears 0–3.', 0, 3), { label: 'Flare', section: 'hair', slider: [0, 3, 0.05], when: hairIs('shag') }),
+    notched: u(b('shag only: notched (toothed) fringe hairline (default true).'), { label: 'Notched fringe', section: 'hair', when: hairIs('shag') }),
+    crownSize: u(n('shag only: crown-spike size 0.3–2.5 (1).', 0.3, 2.5), { label: 'Crown size', section: 'hair', slider: [0.3, 2.5, 0.05], when: hairIs('shag') }),
+    backWidth: u(n('shag only: how far the side/back layers stand off the skull 0.3–1.6 (1; narrower back silhouette < 1).', 0.3, 1.6), { label: 'Back width', section: 'hair', slider: [0.3, 1.6, 0.05], when: hairIs('shag') }),
+    tipWidth: u(n('shag only: side/back lock tip width × root 0–0.8 (0.4).', 0, 0.8), { label: 'Tip width', section: 'hair', slider: [0, 0.8, 0.05], when: hairIs('shag') }),
+    preset: u(e(HAIR_PRESETS, 'captured only: which captured hairdo.'), { label: 'Captured hairdo', section: 'hair', when: hairIs('captured') }),
+    spikiness: u(n('captured only: spike sharpness 0–3 (1).', 0, 3), { label: 'Spikiness', section: 'hair', slider: [0, 3, 0.05], when: hairIs('captured') }),
+    smooth: u(n('captured only: smooth the captured relief 0–1 (0).', 0, 1), { label: 'Smooth', section: 'hair', slider: [0, 1, 0.05], when: hairIs('captured') }),
+    mirror: u(b('captured only: mirror the hairdo left↔right.'), { label: 'Mirror', section: 'hair', when: hairIs('captured') }),
+    tilt: u(n('captured only: tilt the hairdo forward(+)/back (deg) −40–40.', -40, 40), { label: 'Tilt', section: 'hair', slider: deg(-40, 40), when: hairIs('captured') }),
+    windowScale: u(n('captured only: face-window size 0.5–2 (1).', 0.5, 2), { label: 'Face window', section: 'hair', slider: [0.5, 2, 0.05], when: hairIs('captured') }),
+    capturedFringe: u(n('captured only: fringe amount 0.3–2 (1). (`fringe` is the lock styles\' knob.)', 0.3, 2), { label: 'Fringe', section: 'hair', slider: [0.3, 2, 0.05], when: hairIs('captured') }),
   }, 'Hair (captured also reads volume and length).'),
   clothing: o({
     top: o({
-      on: b('Wear a top.'), sleeve: e(SLEEVES, 'Sleeves.'), length: e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh."),
-      trim: o({ collar: b('Contrast collar band (colors.trim).'), cuffs: b('Contrast sleeve cuffs (colors.trim; needs sleeves).') }, 'Collar / cuff trim.'),
-      print: { t: 'list', max: 6, d: "Lettering / numbers on the top, e.g. [{ text: 'N', where: 'chest', x: 0.55 }, { text: '10', where: 'back', size: 1 }]. Each paints its own colour.", item: o({
+      on: u(b('Wear a top.'), { label: 'Top', section: 'clothing' }),
+      sleeve: u(e(SLEEVES, 'Sleeves.'), { label: 'Sleeve', section: 'clothing' }),
+      length: u(e(TOP_LENGTHS, "'dress' drops the hem to mid-thigh."), { label: 'Top length', section: 'clothing' }),
+      trim: o({
+        collar: u(b('Contrast collar band (colors.trim).'), { label: 'Collar trim', section: 'kit' }),
+        cuffs: u(b('Contrast sleeve cuffs (colors.trim; needs sleeves).'), { label: 'Cuff trim', section: 'kit' }),
+      }, 'Collar / cuff trim.'),
+      print: u({ t: 'list', max: 6, d: "Lettering / numbers on the top, e.g. [{ text: 'N', where: 'chest', x: 0.55 }, { text: '10', where: 'back', size: 1 }]. Each paints its own colour.", item: o({
         text: { t: 'str', minLen: 1, maxLen: 12, printable: true, d: 'The letters / digits (1–12 characters: letters, numbers, punctuation, symbols and spaces; not blank).' },
         where: e(PRINT_PLACES, "'chest' (front) or 'back'."),
         size: n('Lettering height in chest half-widths 0.1–2.5 (0.6; a big back number ≈ 1).', 0.1, 2.5),
@@ -871,41 +997,70 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
         z: n('Vertical offset from the chest line in chest half-widths, + = up (−2–2).', -2, 2),
         color: c('Print colour.'),
         font: e(PRINT_FONTS, 'Font (bold).'),
-      }, 'One print.') },
+      }, 'One print.') }, { label: 'Print', section: 'print', custom: 'printList' }),
     }, 'Top.'),
     pants: o({
-      on: b('Wear pants.'), leg: e(PANTS_LEGS, 'Leg cut.'), rise: e(PANTS_RISES, 'Waist rise.'),
-      length: e(PANTS_LENGTHS, "'full' trousers, 'shorts' knee-length (cut at hem), 'briefs' no legs."),
-      hem: n("shorts only: leg cut as a fraction of the hip→knee bone 0.2–1.2 (0.9 = just above the knee).", 0.2, 1.2),
+      on: u(b('Wear pants.'), { label: 'Pants', section: 'clothing' }),
+      leg: u(e(PANTS_LEGS, 'Leg cut.'), { label: 'Leg cut', section: 'clothing' }),
+      rise: u(e(PANTS_RISES, 'Waist rise.'), { label: 'Pants rise', section: 'clothing' }),
+      length: u(e(PANTS_LENGTHS, "'full' trousers, 'shorts' knee-length (cut at hem), 'briefs' no legs."),
+        { label: 'Pants length', section: 'clothing', options: { shorts: 'Shorts (knee)' } }),
+      hem: u(n("shorts only: leg cut as a fraction of the hip→knee bone 0.2–1.2 (0.9 = just above the knee).", 0.2, 1.2),
+        { label: 'Shorts hem', section: 'clothing', slider: [0.2, 1.2, 0.02], when: s => s.clothing.pants.length === 'shorts' }),
     }, 'Pants.'),
     socks: o({
-      on: b('Wear socks up the shin (colors.socks).'),
-      height: n('Sock height as a fraction of the shin 0.2–1.4 (1.1 = just over the knee).', 0.2, 1.4),
-      stripes: n('Contrast bands at the sock top, integer 0–12 (0 = plain, 1 = one band, 3+ = hoops; colors.sockStripe).', 0, 12),
-      stripeSpan: n('How much of the shin, from the sock top, the bands cover 0.05–1.4 (0.34).', 0.05, 1.4),
+      on: u(b('Wear socks up the shin (colors.socks).'), { label: 'Socks', section: 'kit' }),
+      height: u(n('Sock height as a fraction of the shin 0.2–1.4 (1.1 = just over the knee).', 0.2, 1.4), { label: 'Sock height', section: 'kit', slider: [0.2, 1.4, 0.02], when: s => s.clothing.socks.on }),
+      stripes: u(n('Contrast bands at the sock top, integer 0–12 (0 = plain, 1 = one band, 3+ = hoops; colors.sockStripe).', 0, 12), { label: 'Sock stripes', section: 'kit', slider: [0, 12, 1], when: s => s.clothing.socks.on }),
+      stripeSpan: u(n('How much of the shin, from the sock top, the bands cover 0.05–1.4 (0.34).', 0.05, 1.4), { label: 'Stripe span', section: 'kit', slider: [0.05, 1.4, 0.01], when: s => s.clothing.socks.on }),
     }, 'Socks.'),
     feet: o({
-      on: b('Wear footwear.'), kind: e(FOOTWEAR_KINDS, 'Footwear.'),
-      style: e(SHOE_STYLES, "shoes only: 'fitted' hugs the foot; 'toy' = chunky vinyl-toy sneaker."),
-      size: n('Footprint scale 0.5–2 (1; toy shoes ≈ 1.3).', 0.5, 2),
-      height: n('toy shoes only: upper height 0.4–2.5 (1).', 0.4, 2.5),
-      cleats: n('toy shoes only: studs under the sole, 0 = none or an integer 2–12.', 0, 12),
+      on: u(b('Wear footwear.'), { label: 'Footwear', section: 'clothing' }),
+      kind: u(e(FOOTWEAR_KINDS, 'Footwear.'), { label: 'Footwear kind', section: 'clothing' }),
+      style: u(e(SHOE_STYLES, "shoes only: 'fitted' hugs the foot; 'toy' = chunky vinyl-toy sneaker."),
+        { label: 'Shoe style', section: 'kit', control: 'segmented', when: s => s.clothing.feet.kind === 'shoes' }),
+      size: u(n('Footprint scale 0.5–2 (1; toy shoes ≈ 1.3).', 0.5, 2), { label: 'Shoe size', section: 'kit', slider: [0.5, 2, 0.05] }),
+      height: u(n('toy shoes only: upper height 0.4–2.5 (1).', 0.4, 2.5), { label: 'Shoe height', section: 'kit', slider: [0.4, 2.5, 0.05], when: toyShoes }),
+      cleats: u(n('toy shoes only: studs under the sole, 0 = none or an integer 2–12.', 0, 12), { label: 'Cleats', section: 'kit', slider: [0, 12, 1], when: toyShoes }),
     }, 'Footwear.'),
   }, 'Clothing.'),
   colors: o({
-    skin: c('Skin.'), eyes: c('Eye whites (the whole bead for bead eyes).'), iris: c('Iris.'), pupil: c('Pupil.'), lips: c('Lips.'),
-    brows: c('Brows.'), hair: c('Hair.'), top: c('Top.'), pants: c('Pants.'), feet: c('Footwear.'),
-    base: c('Stand.'), ball: c('Held ball base colour.'),
-    trim: c('Collar / cuff trim.'), socks: c('Socks.'), sockStripe: c('Sock bands.'),
-    sole: c('Footwear sole (null = same as feet).', true), eyeHighlight: c('Bead-eye glint.'),
+    skin: u(c('Skin.'), { label: 'Skin', section: 'colors' }),
+    hair: u(c('Hair.'), { label: 'Hair', section: 'colors' }),
+    eyes: u(c('Eye whites (the whole bead for bead eyes).'), { label: 'Eye white', section: 'colors' }),
+    iris: u(c('Iris.'), { label: 'Iris', section: 'colors' }),
+    pupil: u(c('Pupil.'), { label: 'Pupil', section: 'colors' }),
+    lips: u(c('Lips.'), { label: 'Lips', section: 'colors' }),
+    brows: u(c('Brows.'), { label: 'Brows', section: 'colors' }),
+    top: u(c('Top.'), { label: 'Top', section: 'colors' }),
+    pants: u(c('Pants.'), { label: 'Pants', section: 'colors' }),
+    feet: u(c('Footwear.'), { label: 'Footwear', section: 'colors' }),
+    base: u(c('Stand.'), { label: 'Base', section: 'colors' }),
+    ball: u(c('Held ball base colour.'), { label: 'Ball', section: 'pose', when: holding }),
+    trim: u(c('Collar / cuff trim.'), { label: 'Trim', section: 'colors' }),
+    socks: u(c('Socks.'), { label: 'Socks', section: 'colors' }),
+    sockStripe: u(c('Sock bands.'), { label: 'Sock stripes', section: 'colors' }),
+    sole: u(c('Footwear sole (null = same as feet).', true), { label: 'Sole', section: 'colors', nullShows: s => s.colors.feet, reset: 'Sole: same as footwear' }),
+    eyeHighlight: u(c('Bead-eye glint.'), { label: 'Eye glint', section: 'colors' }),
   }, "Paint colours, '#rrggbb'."),
-  base: b('Include a round stand.'),
-  place: b("Finish with F.place (bottom at z = 0, facing +X). Default true; v1 specs migrate to false."),
+  base: u(b('Include a round stand.'), { label: 'Stand / base', section: 'clothing' }),
+  place: hide(b("Finish with F.place (bottom at z = 0, facing +X). Default true; v1 specs migrate to false."),
+    'output framing, not appearance — set it with buildCharacter; the panel keeps the spec\'s value'),
 };
 
 /** One leaf of the spec field tree: its dotted path, kind, and (enums) the
  *  allowed values. Lists and head scales count as single leaves. */
-export interface SpecLeaf { path: string; kind: FieldSpec['t']; values?: readonly string[]; nullable?: boolean }
+export interface SpecLeaf {
+  path: string;
+  kind: FieldSpec['t'];
+  values?: readonly string[];
+  nullable?: boolean;
+  /** num: the hard bounds `validateSpec` enforces. */
+  min?: number;
+  max?: number;
+  /** Panel metadata, or `{ hidden }` (undefined = not yet decided — a test fails). */
+  ui?: UiSpec;
+}
 
 /** Every leaf field of the spec, walked from SPEC_FIELDS — the one tree that
  *  also drives `validateSpec` and `specJsonSchema`. Consumers that must cover
@@ -919,6 +1074,9 @@ export function specLeaves(): SpecLeaf[] {
       path, kind: f.t,
       values: f.t === 'enum' ? f.values : undefined,
       nullable: 'nullable' in f ? f.nullable : undefined,
+      min: f.t === 'num' ? f.min : undefined,
+      max: f.t === 'num' ? f.max : undefined,
+      ui: f.ui,
     });
   };
   walk({ t: 'obj', fields: SPEC_FIELDS, d: '' }, '');
