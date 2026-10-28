@@ -6,8 +6,9 @@ whose landmarks sit where adult anthropometry puts them (approximate ANSUR II
 means). Use it to design things a person wears, such as masks, helmets, glasses,
 headphones, hats and visors, and to check they fit.
 
-It's a fit proxy, not a portrait: the measurements are honest to a few mm, and
-the details are deliberately plain. For a stylised character, use the figure rig
+It's a fit proxy, not a portrait: the presets land within a few percent of
+their measurements, and the details are deliberately plain. `api.headform` is
+available in manifold-js (JavaScript) sessions. For a stylised character, use the figure rig
 (`api.sdf.figure`, `/ai/figure.md`) instead. `F.head` / `F.onFace` there are
 unitless.
 
@@ -31,8 +32,9 @@ api.headform({
   size: 'M',            // 'S' ≈ 5th, 'M' ≈ 50th, 'L' ≈ 95th percentile (uniform scale)
   sex: 'neutral',       // 'neutral' | 'female' | 'male'  (the base measurements)
   neck: true,           // false: just the head (cheaper; best for masks)
-  edgeLength: 3,        // mesh edge length, mm (smaller = smoother, slower)
-  // Any measurement below overrides the preset; `circumference` rescales the whole head.
+  edgeLength: 3,        // mesh edge length, mm, 1–20 (smaller = smoother, slower)
+  // Any measurement below overrides the preset. `circumference` instead rescales
+  // the whole head (in place of `size`); the others change one dimension each.
   circumference, length, breadth, bitragionBreadth, faceHeight, pupillaryDistance,
   vertexHeight, bizygomaticBreadth, bigonialBreadth, neckCircumference,
 });
@@ -52,15 +54,23 @@ api.headform({
 | `neckCircumference` | neck girth (the neck is a cylinder of this girth) | 362 |
 
 `female` and `male` presets use the respective means (e.g. 549 / 572 mm
-circumference). Measurements that can't describe a head (pupils wider than the
-cheekbones, …) are rejected.
+circumference). A few impossible combinations are rejected (pupils wider than
+the cheekbones, ears wider than the skull, jaw wider than the cheekbones), and
+so are measurements too far apart to make one surface.
+
+**Requested vs achieved.** The shape is a smooth blend, so the mesh doesn't hit
+every requested number exactly, and overriding one measurement moves others
+(a longer head is also a bigger girth). `landmarks().achieved` reports what the
+built head actually measures. Size a hat band, liner or strap from
+`achieved`, not from `measurements`.
 
 ## Landmarks
 
 ```js
 const lm = api.headform.landmarks({ size: 'L' });   // pure data — no geometry built
-lm.points.pupilL      // [31.5, -81.6, 14.2]  — on the surface, mm
-lm.measurements       // the resolved measurements
+lm.points.pupilL      // [33.1, -86.2, 14.9]  — on the surface, mm
+lm.measurements       // what you asked for (preset + overrides)
+lm.achieved           // what the built head measures: girth above the brow, length, ear to ear, …
 lm.frame              // the frame, in words
 ```
 
@@ -121,6 +131,11 @@ about 1.5 × the model's span ÷ `resolution`. For a head without the neck that'
 about 2.1 mm at the default `resolution: 192` and about 1.3 mm at the maximum,
 320. Pass `resolution: 320` for clearances under ~2 mm, and use `neck: false`
 (the neck makes the span bigger).
+
+**It's slow:** the recipe takes about a minute in the browser, mostly the
+fine-lattice offset and shell. While you iterate on the mask's outline, cut
+and holes, save the shell as a version once (or use the default resolution
+and a 2.5 mm clearance), and do the fine pass at the end.
 
 **Glasses.** Put the lens centres about 12 mm in front of the pupils (the vertex
 distance), the bridge on the `sellion`, and run the temple arms back to just

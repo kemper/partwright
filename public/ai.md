@@ -170,7 +170,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
 | `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
 | `enclosure` | Before modeling a project box / case, a rounded shell, or PCB standoffs — `api.enclosure.box/shell/standoff(...)`, lip vs screw lids, mate clearance, and the `componentCount === 2` fit check. |
-| `headform` | Before designing anything a person WEARS (mask, helmet, glasses, hat): `api.headform()`, a real-size adult head in mm with landmarks, and fit checks. |
+| `headform` | Before designing anything a person WEARS (mask, helmet, glasses, hat): `api.headform()`, a real-size adult head in mm with landmarks. |
 | `knurl` | Before adding a functional grip to a knob, thumbscrew, or handle — `api.knurl.diamond/straight/ribs(...)` knurled cylinders (distinct from decorative surface textures). |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
@@ -392,7 +392,7 @@ await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?,
 await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 45° — the +X/−Y corner — el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
-partwright.renderSection({axis?, offset?, size?, reference?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}. axis default 'z'; offset default bbox midpoint. The image reads like the matching renderView, with axis arrows, a scale bar and extents; `boundingBox` is in its image axes. `reference` outlines the reference ghost (dashed). Engine-agnostic.
+partwright.renderSection({axis?, offset?, size?, reference?})  // Slice on any axis ('z' default, offset default mid-bbox) -> {dataUrl, svg, area, contours, view: {right, up, from}, boundingBox, referenceContours?}. Oriented like the matching renderView, with axes, a scale bar and extents; `reference` outlines the ghost. Any engine.
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
@@ -677,9 +677,10 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `joints` -- part-to-part joinery: pins, dovetails, snap-fits, print-in-place hinges, ball joints, snap rims. See **[/ai/joints.md](/ai/joints.md)**. (`printFit` is a deprecated alias spreading both `fasteners` and `joints` — old sessions keep working; write new code against the split namespaces.)
 - `enclosure` -- two-part project boxes (`box` → `{base, lid}`, lip or screw lid), rounded `shell`s, and PCB `standoff` posts; composes `fasteners` for the screw variant. A correct box reports `componentCount === 2`. See **[/ai/enclosure.md](/ai/enclosure.md)**.
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
+- `headform(opts?)` -- a real-size adult head in mm, plus `headform.landmarks()`, for wearable fit (manifold-js). See **[/ai/headform.md](/ai/headform.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), **including when the code throws**, and `getGeometryData().logs` has the last run's (even the user's) — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 chars by default), so log summaries, not every iteration.:
+**Debug with `console.log` — its output comes back to you.** What model code prints (`log` / `info` / `warn` / `error`) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the chat tools), **even when the code throws**; `getGeometryData().logs` has the last run's. Print intermediate values instead of throwing `JSON.stringify(...)` (a Manifold prints as `Manifold{tris, bbox}`; capped at 200 lines by default).:
 
 ```js
 const head = Manifold.ofMesh(api.imports[0]);

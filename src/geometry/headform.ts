@@ -110,11 +110,12 @@ function resolve(opts: unknown, where: string): Resolved {
   const size = o.size === undefined ? 'M' : assertEnum(o.size, ['S', 'M', 'L'] as const, `${where}.size`);
   const sex = o.sex === undefined ? 'neutral' : assertEnum(o.sex, ['neutral', 'female', 'male'] as const, `${where}.sex`);
   assertBoolean(o.neck, `${where}.neck`, { optional: true });
-  if (o.edgeLength !== undefined) assertNumber(o.edgeLength, `${where}.edgeLength`, { min: 0.5, max: 20 });
+  if (o.edgeLength !== undefined) assertNumber(o.edgeLength, `${where}.edgeLength`, { min: 1, max: 20 });
   const base = BASE[sex];
   let k = SIZE_SCALE[size];
-  // A circumference sets the overall size; the other measurements override
-  // one dimension each.
+  // A circumference sets the overall scale (in place of `size`); the other
+  // measurements then override one dimension each, so the girth the mesh
+  // ends up with is reported separately (`achieved`).
   if (o.circumference !== undefined) {
     assertNumber(o.circumference, `${where}.circumference`, { min: 300, max: 800 });
     k = (o.circumference as number) / base.circumference;
@@ -260,18 +261,21 @@ const OUTWARD: Record<keyof HeadformLandmarks, Vec3> = {
 function surfaceLandmarks(node: SdfNode, m: HeadformMeasurements): HeadformLandmarks {
   const nominal = landmarksOf(m);
   const out = {} as HeadformLandmarks;
-  const reach = 0.2 * m.faceHeight;
+  const reach = 0.4 * m.faceHeight;
   for (const key of Object.keys(nominal) as (keyof HeadformLandmarks)[]) {
     const p = nominal[key], d = OUTWARD[key];
     const at = (t: number): Vec3 => [p[0] + d[0] * t, p[1] + d[1] * t, p[2] + d[2] * t];
     const f = (t: number) => { const q = at(t); return node.evaluate(q[0], q[1], q[2]); };
     // Step out from inside until the sign flips, then bisect.
-    let lo = -reach, hi = lo;
+    let lo = -reach, hi = NaN;
     for (let t = -reach; t <= reach; t += 0.5) {
       if (f(t) > 0) { hi = t; break; }
       lo = t;
     }
-    if (hi === lo) { out[key] = p; continue; }
+    // No crossing, or already outside at the start: no surface to snap to.
+    if (Number.isNaN(hi) || hi === -reach) {
+      throw new ValidationError(`headform: couldn't place the ${key} landmark on the surface — these measurements are too far apart to make one head.`);
+    }
     for (let i = 0; i < 30; i++) {
       const mid = (lo + hi) / 2;
       if (f(mid) > 0) hi = mid; else lo = mid;
@@ -281,12 +285,48 @@ function surfaceLandmarks(node: SdfNode, m: HeadformMeasurements): HeadformLandm
   return out;
 }
 
+/** What the built proxy actually measures, from its snapped landmarks and a
+ *  girth line just above the brow. Overriding single measurements moves the
+ *  blend, so these can differ from the requested ones. */
+function achievedMeasurements(node: SdfNode, m: HeadformMeasurements, p: HeadformLandmarks): Partial<HeadformMeasurements> {
+  // Girth: walk out from the skull's centre at the brow line, ray by ray.
+  const z = p.glabella[2] + 8, cy = -0.01 * m.length;
+  const ring: [number, number][] = [];
+  for (let i = 0; i < 180; i++) {
+    const a = (i / 180) * 2 * Math.PI, dx = Math.cos(a), dy = Math.sin(a);
+    let lo = 0, hi = m.length;
+    for (let j = 0; j < 30; j++) {
+      const mid = (lo + hi) / 2;
+      if (node.evaluate(dx * mid, cy + dy * mid, z) > 0) hi = mid; else lo = mid;
+    }
+    ring.push([dx * lo, cy + dy * lo]);
+  }
+  let circumference = 0, breadth = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [ax, ay] = ring[i], [bx, by] = ring[(i + 1) % ring.length];
+    circumference += Math.hypot(bx - ax, by - ay);
+    breadth = Math.max(breadth, 2 * Math.abs(ax));
+  }
+  const r = (n: number) => Math.round(n * 10) / 10;
+  return {
+    circumference: r(circumference),
+    length: r(p.opisthocranion[1] - p.glabella[1]),
+    breadth: r(breadth),
+    bitragionBreadth: r(p.tragionL[0] - p.tragionR[0]),
+    faceHeight: r(p.sellion[2] - p.menton[2]),
+    pupillaryDistance: r(p.pupilL[0] - p.pupilR[0]),
+    vertexHeight: r(p.vertex[2]),
+    bizygomaticBreadth: r(p.zygionL[0] - p.zygionR[0]),
+    bigonialBreadth: r(p.gonionL[0] - p.gonionR[0]),
+  };
+}
+
 function round1(v: Vec3): Vec3 {
   return v.map(n => Math.round(n * 10) / 10) as Vec3;
 }
 
 /** `api.headform` for one run: a callable that builds the proxy, with
- *  `landmarks` (pure data, no geometry) and the presets beside it. */
+ *  `landmarks` (pure data, no geometry) beside it. */
 export function createHeadform(sdf: any): any {
   const headform = (opts?: HeadformOptions) => {
     const r = resolve(opts, 'headform(opts)');
@@ -294,18 +334,19 @@ export function createHeadform(sdf: any): any {
   };
   headform.landmarks = (opts?: HeadformOptions) => {
     const r = resolve(opts, 'headform.landmarks(opts)');
-    const points = surfaceLandmarks(headformSdf(sdf, r.measurements, r.neck), r.measurements);
+    const node = headformSdf(sdf, r.measurements, r.neck);
+    const points = surfaceLandmarks(node, r.measurements);
     const out = {} as HeadformLandmarks;
     for (const key of Object.keys(points) as (keyof HeadformLandmarks)[]) out[key] = round1(points[key]);
     return {
       units: 'mm',
       frame: 'origin between the tragions; XY = Frankfort plane; face toward −Y; +X = wearer\'s left; +Z up',
       measurements: r.measurements,
+      achieved: achievedMeasurements(node, r.measurements, points),
       points: out,
     };
   };
-  headform.sizes = Object.freeze({ ...SIZE_SCALE });
   return headform;
 }
 
-export const __headformTestables__ = { resolve, landmarksOf, surfaceLandmarks, headformSdf };
+export const __headformTestables__ = { resolve, landmarksOf, surfaceLandmarks, headformSdf, achievedMeasurements };

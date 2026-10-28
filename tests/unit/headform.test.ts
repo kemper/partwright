@@ -58,6 +58,26 @@ describe('headform', () => {
     }
   });
 
+  it('reports what the mesh achieves: close to the presets, honest under overrides', () => {
+    for (const opts of OPTION_SETS) {
+      const { measurements: want, achieved } = headform.landmarks(opts);
+      for (const [key, got] of Object.entries(achieved) as [string, number][]) {
+        expect(Math.abs(got / (want as Record<string, number>)[key] - 1), `${key} ${JSON.stringify(opts)}`).toBeLessThan(0.05);
+      }
+    }
+    // A longer head is a bigger girth, whatever `circumference` says.
+    const long = headform.landmarks({ length: 215 });
+    expect(long.measurements.circumference).toBe(560);
+    expect(long.achieved.circumference).toBeGreaterThan(590);
+    expect(Math.abs(long.achieved.length - 215)).toBeLessThan(4);
+  });
+
+  it('refuses to report a landmark it cannot put on the surface', () => {
+    const { resolve, surfaceLandmarks } = __headformTestables__;
+    // A solid that swallows every landmark's search range has no surface to find.
+    expect(() => surfaceLandmarks(sdf.sphere(2000), resolve({}, 't').measurements)).toThrow(/couldn't place the \w+ landmark/);
+  });
+
   it('sizes, sexes and overrides change the measurements; landmarks follow the frame', () => {
     const m = headform.landmarks().measurements;
     expect(headform.landmarks({ size: 'L' }).measurements.length).toBeCloseTo(m.length * 1.05, 0);
@@ -75,6 +95,6 @@ describe('headform', () => {
     expect(() => headform({ size: 'XL' })).toThrow(/headform\(opts\)\.size/);
     expect(() => headform({ color: 'red' })).toThrow(/color/);
     expect(() => headform.landmarks({ pupillaryDistance: 200 })).toThrow(/don't describe a head/);
-    expect(() => headform({ edgeLength: 0.1 })).toThrow(/edgeLength/);
+    expect(() => headform({ edgeLength: 0.5 })).toThrow(/edgeLength/);
   });
 });
