@@ -70,12 +70,13 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group; arrange/copy/group parts in code (partAction); what each object splits into for export',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
       'isolateObjectPart', 'getObjectPartInfo', 'renameObjectPart', 'extractObjectPiece',
       'extractObjectParts', 'mergeObjects', 'reorderObjects', 'saveAllObjects', 'setObjectGroup',
+      'partAction', 'undoPartEdit', 'listExportItems',
     ],
   },
   {

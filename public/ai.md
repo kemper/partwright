@@ -1,9 +1,12 @@
 # Partwright -- AI Agent Instructions
 
+<!-- Maintainers: the in-app AI chat receives this file as its system prompt with every external-only:start … external-only:end block removed and each "in-app:" comment unwrapped (inAppAiMd in src/ai/systemPrompt.ts). Fence console-only material that way; npm run ai:budget shows the in-app size. -->
+
 Partwright is a browser-based parametric CAD tool with four modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace), **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled), **BREP / replicad** (JavaScript with `api.BREP.*` — OpenCASCADE B-rep for exact fillets/chamfers and STEP export), and **voxel** (JavaScript — blocky colored-cube modeling for pixel-art and image-derived models; see `/ai/voxel.md`). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
 **Coordinate system:** Right-handed, Z-up. XY plane is the ground. **Front = −Y, back = +Y** — the Front view and the interactive viewport both sit on the −Y side looking toward +Y, so a model's intended front face (a character's face, a screen, a door) must have its outward normal pointing toward −Y. (−Y is also the slicer build-plate front, so a −Y-facing model exports facing forward.) Right = +X, left = −X. Units are arbitrary.
 
+<!-- external-only:start -->
 ## Contents
 
 - [Before you start](#before-you-start)
@@ -24,6 +27,8 @@ Partwright is a browser-based parametric CAD tool with four modeling engines: **
 - [Visual verification](#visual-verification)
 - [Spending mode](#spending-mode)
 - [Handing a tool to the user](#handing-a-tool-to-the-user)
+
+<!-- external-only:end -->
 
 ## Before you start
 
@@ -207,6 +212,9 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Querying stale geometry after `setCode`.** `setCode` updates the editor but does NOT re-run. Calling `getGeometryData()` or `query()` after `setCode` (without a subsequent `runAndSave`/`run`) returns the geometry from the previous execution. The result now includes `stale: true` when the editor code hash doesn't match the last-run hash — treat this as a signal to run first.
 - **No "fork from current editor" path.** `forkVersion({index}, ...)` forks a *saved* version. If your best code is unsaved in the editor, first call `await saveVersion("checkpoint")` to commit it as a version, then `forkVersion({index: <that index>}, ...)` from there. `listVersions()` shows the new index.
 
+<!-- in-app: Your tools validate their arguments: a wrong type or an unknown key comes back as an error that names the parameter, so fix the call rather than working around it. The `window.partwright` console listing for external agents is left out here; each tool carries its own schema, and the readDoc topics cover each area in depth. -->
+
+<!-- external-only:start -->
 ## Argument validation
 
 Every `window.partwright` method validates its arguments at runtime. If you pass the wrong type or an object with unexpected keys, the call fails fast with a descriptive error rather than silently accepting bad input.
@@ -602,6 +610,8 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 // agentHints includes `spending` -- the user's budget (see #spending-mode)
 ```
 
+<!-- external-only:end -->
+
 ## Geometry data
 
 **Preferred:** Use `partwright.getGeometryData()` to read current geometry stats programmatically.
@@ -826,6 +836,7 @@ Deleting a copy (`deleteObjectPart('leg 2')`) removes it; deleting a group remov
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 
+<!-- external-only:start -->
 ### Assembly view
 
 A session can hold **multiple objects** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the object list** or the **"⧉ All objects" toggle in the viewport** (both appear only when the session has ≥ 2 objects; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
@@ -843,6 +854,8 @@ The Assembly view is **read-only**: the editing tools and cross-section are hidd
 **Shared parameters.** The panel lists the **union** of every object's `api.params` knobs — one row per name. Each row shows **"affects N objects"** (hover for the names); numeric ranges are the widest across the sharing objects. Changing a value **live-previews** across every object that declares that key; **Save** writes the tweaked values back to each of those objects' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
 
 > Note: the Assembly grid renders each object's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the object itself).
+
+<!-- external-only:end -->
 
 ### Model-declared color (self-coloring models)
 
@@ -1181,6 +1194,7 @@ The user can attach reference photos via `partwright.setImages([...])`; they app
 
 `readDoc({name: "iteration-workflow"})` — `runAndSave`, `runIsolated`, `runAndAssert`, `modifyAndTest`, `forkVersion`, `createSessionWithVersions`, `copyColorsFromVersion`, session notes (with prefix conventions), resuming a session with `getSessionContext()`, and the recommended step-by-step pattern.
 
+<!-- external-only:start -->
 ### Assert + save in one call
 
 `runAndSave` accepts optional assertions. If provided, validates in isolation first -- fails fast
@@ -1366,6 +1380,8 @@ Read the notes and version history before making changes. The notes tell you:
 - What measurements or constraints matter (`[MEASUREMENT]` notes)
 - What still needs to be done (`[TODO]` notes)
 
+<!-- external-only:end -->
+
 ### Recommended iteration pattern
 
 1. Write initial code, assert+save in one call: `runAndSave(code, "v1 - base", {isManifold: true, maxComponents: 1})`
@@ -1394,6 +1410,7 @@ When the user wants to **tweak it interactively**, asks you to **show them** a t
 
 **Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-image-paint`, `tool-palette`, `tool-resize`, `tool-place`, `tool-quality`, `tool-customize`, `tool-voxel-paint`, `tool-print`, `tool-cross-section`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`, the `export-objects` / `export-session` / `publish-model` dialogs, the `import-relief` / `import-image-voxel` wizards, and `open-quality` Settings focus). After the user applies from a panel you opened, your next turn starts with an app-generated `[UI · app note] user applied …` line saying what they settled on.
 
+<!-- external-only:start -->
 ## Arrange mode
 
 <a id="arrange-mode"></a>
@@ -1426,4 +1443,4 @@ A successful action returns `{ ok: true }`; rejected ones return `{ ok: false, r
 **Snap-to-grid.** `setSnapToGrid(true)` rounds every per-engine translate delta (drag commit, align spread, rotate spread) to whole units. Voxel grids already snap; this gives the JS/SCAD/BREP engines an opt-in tidy-lattice mode. Note: with snap on, each part in a group transform rounds independently, so a fractional group-spread (e.g. a 2.5× scale) can drift the layout by up to one unit per part.
 
 **Caveats.** Hand-written parts the regex parser can't decode (chained `.scale()`/`.color()`/computed args/custom expressions) stay out of the registry and are skipped silently — a single trailing `.translate(...)` and a single trailing `.rotate(...)` are recognised. Voxel rotation is rejected (lattice quantization makes arbitrary angles unfaithful). Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
-
+<!-- external-only:end -->

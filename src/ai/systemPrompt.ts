@@ -305,7 +305,25 @@ function printableGuidance(): string {
 }
 
 export function buildSystemPrompt(aiMd: string): string {
-  return PREAMBLE + aiMd;
+  return PREAMBLE + inAppAiMd(aiMd);
+}
+
+const EXTERNAL_ONLY_BLOCK = /<!-- external-only:start -->[\s\S]*?<!-- external-only:end -->\n?/g;
+const IN_APP_NOTE = /<!-- in-app: ([^\n]*?) -->/g;
+
+/** ai.md as the in-app chat sees it. The file also serves external agents
+ *  (Claude Code, the extension) that drive the `window.partwright` console,
+ *  so console-only material — the method listing, argument-validation
+ *  conventions, Arrange mode — sits between external-only markers and is
+ *  dropped here: the in-app model calls tools, each with its own schema.
+ *  `<!-- in-app: … -->` lines are the reverse: shown only to the in-app model
+ *  (HTML comments, so external readers and the rendered page skip them). */
+export function inAppAiMd(aiMd: string): string {
+  return aiMd
+    .replace(EXTERNAL_ONLY_BLOCK, '')
+    .replace(IN_APP_NOTE, '$1')
+    .replace(/<!-- Maintainers:[^\n]*-->\n?/g, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 /** Slim local prompt (~700 tokens) — the default for smaller local models

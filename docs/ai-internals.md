@@ -80,6 +80,12 @@ Both share dangling-tool-call repair, image handling, and review serialization. 
 - Not used in plan mode (it has its own read-only subset), for Local, or for the Custom Medium / Slim tiers (they have their own lists).
 - `tests/unit/toolGroups.test.ts` fails if a tool is in neither core nor exactly one group. A new tool must be placed deliberately.
 
+**In-app ai.md** (`inAppAiMd` in `src/ai/systemPrompt.ts`, #1175 Phase 1). `public/ai.md` serves two audiences. External agents (Claude Code, the extension) fetch the whole file and drive the `window.partwright` console. The in-app chat gets it as its system prompt with every `<!-- external-only:start -->` … `<!-- external-only:end -->` block removed, and each single-line `<!-- in-app: … -->` comment unwrapped into plain text.
+- The fenced blocks hold console-only material: the contents list, argument-validation conventions, the method listing, the Assembly view, Arrange mode, and the iteration-workflow body (`readDoc("iteration-workflow")` has it).
+- This took the hosted system prompt from ~45k to ~27k tokens.
+- Both kinds of marker are HTML comments, so the rendered page and external readers skip them.
+- `tests/unit/aiMdInApp.test.ts` keeps the markers balanced and checks what each audience gets.
+
 **Turn-0 budget.** `tests/unit/aiContextBudget.test.ts` caps the system prompt, the first request's tool schemas, the full tool list, and any single tool schema (with an allowlist for today's oversized ones). `npm run ai:budget` prints the report: each piece, each group, the heaviest tools, and the largest `ai.md` sections. Lower a ceiling when a trim lands; don't raise one to fit a feature. The context meter counts the tool schemas actually sent for every provider except Local (`requestToolChars` in `aiPanel.ts`, #1126).
 
 **Stale tool-payload pruning** (`pruneStaleToolPayloads` in `src/ai/historyElision.ts`, gated by `ai.pruneStaleToolPayloads`). This is the text counterpart of render-image elision, inspired by OpenCode's dynamic-context-pruning plugin. Like elision it rewrites only the request copy. It replaces the following with one-line notes:
