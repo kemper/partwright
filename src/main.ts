@@ -6197,7 +6197,13 @@ async function main() {
     opts: { onStart?: () => void } = {},
   ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
-      return { name, mesh: coloredMeshForExport(currentMeshData), labels: currentLabelMap };
+      // The label map indexes the run's mesh; a texture / paint subdivision /
+      // simplify pass may have swapped the displayed mesh since, so carry the
+      // labels over to the triangles actually exported.
+      const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
+        ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
+        : currentLabelMap;
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6320,6 +6326,7 @@ async function main() {
     await prior.catch(() => { /* a prior bake's failure must not block this one */ });
 
     try {
+      if (opts.cancel?.cancelled) return { baked: [] };
       const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
       setEnginePoolSize(desired);
       const slots: (BakedExportObject | null)[] = new Array(parts.length).fill(null);
@@ -6362,17 +6369,36 @@ async function main() {
     const analyses = new Map<string, ObjectSplitAnalysis>();
     let queue: { part: ExportBakePart; resolve: (b: BakedExportObject | null) => void }[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // One batch at a time: requests that arrive while a batch bakes join the
+    // next one, so ticking objects one by one doesn't cold-start a pool each.
+    let running = false;
+    const cancelState = { cancelled: false };
     const flush = async () => {
+      timer = null;
+      if (running || queue.length === 0) return;
+      running = true;
       const batch = queue;
       queue = [];
-      timer = null;
       try {
-        const { baked } = await bakePartsParallel(batch.map(b => b.part));
+        const { baked } = await bakePartsParallel(batch.map(b => b.part), { cancel: cancelState });
         const byId = new Map(baked.map(b => [b.id, b]));
         for (const b of batch) b.resolve(byId.get(b.part.id) ?? null);
       } catch {
         for (const b of batch) b.resolve(null);
+      } finally {
+        running = false;
+        if (queue.length > 0 && !cancelState.cancelled) void flush();
       }
+    };
+    /** Stop: drop queued bakes (they resolve null) and skip unstarted parts of
+     *  the batch in flight, so a dismissed picker or a cancelled export stops
+     *  holding the export pool. */
+    const cancel = () => {
+      cancelState.cancelled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const dropped = queue;
+      queue = [];
+      for (const b of dropped) b.resolve(null);
     };
     const bake = (id: string): Promise<BakedExportObject | null> => {
       let p = pending.get(id);
@@ -6384,8 +6410,9 @@ async function main() {
         // The open object is already on screen — no pool round-trip.
         ? bakeColoredMeshForPart(id, part.name).then(r => (r ? { ...r, id, ...(part.group ? { group: part.group } : {}) } : null))
         : new Promise<BakedExportObject | null>(resolve => {
+          if (cancelState.cancelled) { resolve(null); return; }
           queue.push({ part: bakePart, resolve });
-          timer ??= setTimeout(() => { void flush(); }, 30);
+          if (!running) timer ??= setTimeout(() => { void flush(); }, 30);
         });
       p = p.then(b => { if (b) ready.set(id, b); return b; }, () => null);
       pending.set(id, p);
@@ -6413,10 +6440,10 @@ async function main() {
       if (!it) return null;
       return renderSingleViewCanvas(extractItemMesh(b.mesh, it.triangles), {
         elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
-        ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true,
+        ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
       });
     };
-    return { bake, analyze, thumbnail, analysisOf, isReady: (id: string) => ready.has(id) };
+    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
   }
   type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
 
@@ -6487,7 +6514,8 @@ async function main() {
     if (!st.session || st.parts.length !== 1 || !st.currentPart || !currentMeshData) return false;
     if (getActiveLanguage() === 'voxel') return false;
     const gd = getGeometryDataObj();
-    return typeof gd?.componentCount === 'number' && gd.componentCount >= 2;
+    return typeof gd?.componentCount === 'number' && gd.componentCount >= 2
+      && gd.componentCount <= getConfig().renderer.exportMaxSplitItems;
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -7359,15 +7387,18 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
-    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
-    try {
-      assertFiniteMesh(currentMeshData);
-      notifyMultiPartExport();
-      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
-      showToast(`Exported ${filename}`, { variant: 'success' });
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-    }
+    const direct = async () => {
+      try {
+        assertFiniteMesh(currentMeshData!);
+        notifyMultiPartExport();
+        const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData!));
+        showToast(`Exported ${filename}`, { variant: 'success' });
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+      }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob, direct); return; }
+    await direct();
   };
   // Animation exports: record the live viewport into a downloadable video.
   const actionExportTurntable = async () => {
@@ -7387,25 +7418,31 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
-    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob, direct); return; }
+    direct();
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
     // Multi-part session → pick parts and emit named objects in one .obj.
-    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob, direct); return; }
+    direct();
   };
   /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
    *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
    *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
-  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+  async function export3MFMultiPartFlow(bambu: boolean, direct?: () => void | Promise<void>): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
     // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
@@ -7434,7 +7471,10 @@ async function main() {
       ...(bambu ? {} : { packing: true }),
       split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7450,7 +7490,7 @@ async function main() {
     const progress = startExportProgress({
       title: 'Preparing 3MF…',
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
       const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
@@ -7472,7 +7512,7 @@ async function main() {
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items.length)}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
@@ -7482,9 +7522,10 @@ async function main() {
 
   /** "3 objects", or "12 items from 2 objects" when objects were split, plus
    *  a note for objects that produced no geometry. */
-  function exportedSummary(asked: number, baked: number, items: number): string {
+  function exportedSummary(asked: number, baked: number, items: PartExport[]): string {
     const objs = `${baked} object${baked === 1 ? '' : 's'}`;
-    const main = items === baked ? objs : `${items} item${items === 1 ? '' : 's'} from ${objs}`;
+    const n = items.length;
+    const main = items.some(i => i.splitOf) ? `${n} item${n === 1 ? '' : 's'} from ${objs}` : objs;
     const skipped = asked - baked;
     return skipped > 0 ? `${main} (${skipped} skipped — no geometry)` : main;
   }
@@ -7497,6 +7538,7 @@ async function main() {
     formatTag: string,
     description: string,
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    direct?: () => void | Promise<void>,
   ): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
@@ -7512,7 +7554,10 @@ async function main() {
       description,
       split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7528,7 +7573,7 @@ async function main() {
     const progress = startExportProgress({
       title: `Preparing ${formatTag}…`,
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
       const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
@@ -7540,7 +7585,7 @@ async function main() {
 
       const built = await build(items);
       downloadBlob(built.blob, built.filename, formatTag);
-      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items.length)}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
@@ -7664,11 +7709,13 @@ async function main() {
     return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0 };
   }
 
-  /** The result fields every multi-object export reports. */
-  const exportCounts = (r: { items: PartExport[]; split: boolean }) => ({
-    objects: r.items.length,
-    parts: r.items.length,
-    ...(r.split ? { items: r.items.map(i => i.name) } : {}),
+  /** The result fields every multi-object export reports: `objects` counts
+   *  the session objects exported (as before splitting existed); a split adds
+   *  `items` (the names written, one per file object) and `itemCount`. */
+  const exportCounts = (r: { items: PartExport[]; baked: BakedExportObject[]; split: boolean }) => ({
+    objects: r.baked.length,
+    parts: r.baked.length,
+    ...(r.split ? { items: r.items.map(i => i.name), itemCount: r.items.length } : {}),
   });
 
   /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
@@ -7765,7 +7812,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; split: boolean } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -7805,7 +7852,7 @@ async function main() {
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
-      return { built, items: r.items, split: r.split };
+      return { built, items: r.items, baked: r.baked, split: r.split };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -7848,14 +7895,17 @@ async function main() {
     // picker can split) → offer the part picker and emit a GENERIC multi-object
     // 3MF (grid-arranged, no Bambu metadata). Otherwise the original
     // single-object export.
-    if (getState().parts.length > 1 || singleObjectCanSplit()) { await export3MFMultiPartFlow(false); return; }
-    try {
-      const mesh = fileExportMesh(true)!;
-      const remap = await chooseExportColors([mesh]);
-      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
-    }
-    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    const direct = async () => {
+      try {
+        const mesh = fileExportMesh(true)!;
+        const remap = await chooseExportColors([mesh]);
+        if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+        showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
+      }
+      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await export3MFMultiPartFlow(false, direct); return; }
+    await direct();
   };
   // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
   // Opens the part picker and bundles the chosen parts into one Bambu project

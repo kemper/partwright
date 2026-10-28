@@ -79,6 +79,13 @@ describe('analyzeObjectSplit', () => {
     expect(splitItems(a, 'pieces')).toBeNull();
   });
 
+  test('a label whose ids fall outside the mesh makes no (empty) item', () => {
+    const labels = new Map([['body', range(0, 12)], ['ghost', new Set([9999])], ['lid', range(12, 24)]]);
+    const a = analyzeObjectSplit(mesh, labels);
+    expect(a.parts!.map(p => p.name)).toEqual(['body', 'lid', 'Unlabeled']);
+    expect(a.parts!.every(p => p.triangles.length > 0)).toBe(true);
+  });
+
   test('maxItems caps a mode', () => {
     const a = analyzeObjectSplit(mesh, null, { maxItems: 2 });
     expect(a.pieceCount).toBe(3);

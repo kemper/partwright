@@ -57,5 +57,29 @@ an object of thousands of loose shells on Whole.
 **Parity:** `split` / `exclude` / `plates` options on the export*Objects
 API twins (strict: an impossible split or unknown name errors with the valid
 names), `listExportItems()`, the `exportModel` AI tool's split / exclude,
-and `split` in the `export-objects` openTool prefill. No separate AI tool
-for listExportItems: the exportModel error lists the valid item names.
+and `split` in the `export-objects` openTool prefill.
+
+## Assistant
+
+## Review follow-ups (work-reviewer findings)
+
+**Open object labels remapped onto the exported mesh.** The label map indexes
+the run's mesh; a texture or paint-subdivision pass swaps the displayed mesh,
+so the split now remaps through `remapTriangleSets` before analysing.
+
+**Whole stays byte-identical.** A single-object export that opened the picker
+only for the split falls back to the original direct export when nothing is
+split (an `.stl`, not a one-file `.zip`; no grid recentering). Objects over
+the split limit skip the picker entirely.
+
+**Cancel really cancels.** The bake session coalesces queued requests into one
+batch at a time (no pool cold start per ticked object) and has a `cancel()`
+the picker dismiss and the progress Cancel call: queued bakes resolve null and
+unstarted parts are skipped.
+
+**Smaller fixes:** Export waits ("Measuring…") instead of silently writing a
+requested split whole; empty part items are dropped; thumbnails render lazily
+as rows scroll into view and without the open object's annotations; 44 px
+selects on mobile; custom plate numbers close gaps; the API's `objects` keeps
+counting session objects (a split adds `items` + `itemCount`); a read-only
+`listExportItems` AI tool so the chat AI can name items before exporting.

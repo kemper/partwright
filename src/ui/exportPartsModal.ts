@@ -244,6 +244,7 @@ export function showExportPartsModal(
       ...(twoPane ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
       onClose: () => {
         closed = true;
+        thumbObserver?.disconnect();
         disarmConfirm();
         for (const url of objectUrls) URL.revokeObjectURL(url);
         openPicker = null;
@@ -388,14 +389,38 @@ export function showExportPartsModal(
         if (c) { c.className = 'w-full h-full'; box.appendChild(c); } else box.textContent = '◆';
       };
       if (thumbCache.has(cacheKey)) { put(thumbCache.get(cacheKey)!); return; }
-      setTimeout(() => {
+      // Render only once the row scrolls into view, one per task, so a
+      // 200-piece split doesn't stall the page.
+      thumbJobs.set(box, () => {
         if (closed || !box.isConnected) return;
         let c: HTMLCanvasElement | null = null;
         try { c = split.thumbnail!(objId, mode, itemKey); } catch { c = null; }
         thumbCache.set(cacheKey, c);
         put(c);
-      }, 0);
+      });
+      if (thumbObserver) thumbObserver.observe(box);
+      else { thumbQueue.push(thumbJobs.get(box)!); thumbJobs.delete(box); thumbTimer ??= setTimeout(pumpThumbs, 0); }
     }
+    const thumbJobs = new Map<Element, () => void>();
+    const thumbQueue: (() => void)[] = [];
+    let thumbTimer: ReturnType<typeof setTimeout> | null = null;
+    const pumpThumbs = () => {
+      thumbTimer = null;
+      const job = thumbQueue.shift();
+      if (!job || closed) return;
+      job();
+      if (thumbQueue.length) thumbTimer = setTimeout(pumpThumbs, 0);
+    };
+    const thumbObserver = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        thumbObserver!.unobserve(e.target);
+        const job = thumbJobs.get(e.target);
+        thumbJobs.delete(e.target);
+        if (job) thumbQueue.push(job);
+      }
+      if (thumbQueue.length && !thumbTimer) thumbTimer = setTimeout(pumpThumbs, 0);
+    });
 
     /** (Re)draw one object's Split menu and its item rows. */
     function renderObject(id: string): void {
@@ -423,7 +448,7 @@ export function showExportPartsModal(
       }
       if (!a || (!a.pieces && !a.parts)) return;
       const sel = document.createElement('select');
-      sel.className = 'bg-zinc-900 border border-zinc-700 rounded text-[11px] text-zinc-200 px-1.5 py-0.5 cursor-pointer';
+      sel.className = 'bg-zinc-900 border border-zinc-700 rounded text-[11px] text-zinc-200 px-1.5 py-0.5 min-h-[44px] md:min-h-0 cursor-pointer';
       sel.dataset.splitFor = id;
       sel.setAttribute('aria-label', `Split ${partById.get(id)?.name ?? 'object'}`);
       sel.title = 'Export this object whole, one object per separate piece, or one object per labelled part';
@@ -750,11 +775,16 @@ export function showExportPartsModal(
       lastPlates.forEach((keys, i) => { for (const k of keys) if (!plateOf.has(k)) plateOf.set(k, i + 1); });
     }
 
-    /** Give every current item without a custom plate a new plate of its own. */
+    /** Give every current item without a custom plate a new plate of its own,
+     *  then close gaps (an emptied plate 2 makes plate 3 the new 2), so the
+     *  row menus and the preview captions number plates alike. */
     function fillCustomPlates(items: PickedItem[]): void {
       let max = 0;
       for (const i of items) max = Math.max(max, plateOf.get(i.key) ?? 0);
       for (const i of items) if (!plateOf.has(i.key)) plateOf.set(i.key, ++max);
+      const used = [...new Set(items.map(i => plateOf.get(i.key)!))].sort((a, b) => a - b);
+      const renumber = new Map(used.map((n, idx) => [n, idx + 1]));
+      for (const i of items) plateOf.set(i.key, renumber.get(plateOf.get(i.key)!)!);
     }
 
     /** Show / update each row's Plate chip (Custom layout only). */
@@ -768,7 +798,7 @@ export function showExportPartsModal(
         let sel = chipSelects.get(key);
         if (!sel) {
           sel = document.createElement('select');
-          sel.className = 'bg-zinc-900 border border-zinc-700 rounded text-[11px] text-zinc-200 px-1 py-0.5 cursor-pointer';
+          sel.className = 'bg-zinc-900 border border-zinc-700 rounded text-[11px] text-zinc-200 px-1 py-0.5 min-h-[44px] md:min-h-0 cursor-pointer';
           sel.dataset.plateFor = key.replace('\n', '/');
           const name = items.find(i => i.key === key)?.name ?? 'item';
           sel.setAttribute('aria-label', `Plate for ${name}`);
@@ -913,13 +943,17 @@ export function showExportPartsModal(
       syncChips(items);
       const plates = renderPreview(items);
       const n = items.length;
+      // A split asked for (remembered, or staged by an agent) on an object still
+      // being measured: wait, rather than export it whole without saying so.
+      const waiting = ids.some(id => (modeOf.get(id) ?? 'whole') !== 'whole' && analysis.get(id) === 'pending');
       const what = anySplit ? `${n} item${n === 1 ? '' : 's'}` : `${n} objects`;
-      exportBtn.textContent = anySplit || n > 1
-        ? `Export ${what}${bambu && plates > 1 ? ` on ${plates} plates` : ''}`
-        : 'Export';
-      exportBtn.disabled = n === 0;
-      exportBtn.classList.toggle('opacity-40', n === 0);
-      exportBtn.classList.toggle('cursor-default', n === 0);
+      exportBtn.textContent = waiting ? 'Measuring…'
+        : anySplit || n > 1 ? `Export ${what}${bambu && plates > 1 ? ` on ${plates} plates` : ''}`
+          : 'Export';
+      const off = n === 0 || waiting;
+      exportBtn.disabled = off;
+      exportBtn.classList.toggle('opacity-40', off);
+      exportBtn.classList.toggle('cursor-default', off);
       toggleAll.textContent = checks.every(c => c.checked) ? 'Select none' : 'Select all';
       for (const s of groupSyncers) s();
     }
@@ -936,7 +970,7 @@ export function showExportPartsModal(
 
     function confirm() {
       const items = currentItems();
-      if (items.length === 0) return;
+      if (items.length === 0 || exportBtn.disabled) return;
       const ids = selectedIds().filter(id => items.some(i => i.objId === id));
       const { splits, excluded: excludedOut } = splitState(false);
       let plates: Record<string, Record<string, number>> | undefined;

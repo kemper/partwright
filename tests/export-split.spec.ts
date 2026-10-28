@@ -91,6 +91,21 @@ test.describe('export split (pieces / parts)', () => {
     expect(text).not.toContain('Piece 4');
   });
 
+  test('kept whole, a single object of separate pieces still exports the plain file', async ({ page }) => {
+    test.setTimeout(90_000);
+    await setUp(page);
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
+    const confirm = page.getByRole('dialog', { name: 'Export STL?' });
+    const modal = page.getByRole('dialog', { name: 'Export to STL' });
+    await expect(modal.or(confirm)).toBeVisible({ timeout: 10_000 });
+    if (await confirm.isVisible()) await confirm.getByRole('button', { name: 'Export anyway' }).click();
+    await expect(modal.locator('select[data-split-for]')).toBeVisible({ timeout: 15_000 });
+    const download = page.waitForEvent('download', { timeout: 30_000 });
+    await modal.getByRole('button', { name: /^Export$/ }).click();
+    expect((await download).suggestedFilename()).toMatch(/\.stl$/);
+  });
+
   test('console API: listExportItems, split / exclude / custom plates, and strict errors', async ({ page }) => {
     test.setTimeout(90_000);
     await setUp(page);
@@ -109,8 +124,8 @@ test.describe('export split (pieces / parts)', () => {
       return {
         listing,
         bambu: { objects: bambu.objects, items: bambu.items, text: decode(bambu.base64) },
-        parts: { objects: parts.objects, items: parts.items },
-        stl: { objects: stl.objects, error: stl.error },
+        parts: { objects: parts.objects, itemCount: parts.itemCount },
+        stl: { objects: stl.objects, itemCount: stl.itemCount, error: stl.error },
         whole: { objects: whole.objects, items: whole.items },
         errors: {
           badMode: (await pw.export3MFObjectsData(undefined, 'x', { split: { 'Chess bits': 'halves' } })).error,
@@ -127,14 +142,14 @@ test.describe('export split (pieces / parts)', () => {
     expect(obj.pieces.map((p: { name: string }) => p.name)).toEqual(['Chess bits · board', 'Chess bits · King', 'Chess bits · Queen', 'Chess bits · Piece 4']);
     expect(obj.parts.map((p: { name: string }) => p.name)).toEqual(['Chess bits · board', 'Chess bits · King', 'Chess bits · Queen', 'Chess bits · Unlabeled']);
 
-    expect(out.bambu.objects).toBe(3);
+    expect(out.bambu.objects).toBe(1);
     expect(out.bambu.items).toEqual(['Chess bits · board', 'Chess bits · King', 'Chess bits · Queen']);
     expect(bambuObjectFiles(out.bambu.text)).toHaveLength(3);
     // Two plates: King + Queen share one, the board has its own.
     expect([...out.bambu.text.matchAll(/<metadata key="plater_id" value="(\d+)"/g)].length).toBe(2);
 
-    expect(out.parts.objects).toBe(4);
-    expect(out.stl).toEqual({ objects: 4 });
+    expect(out.parts).toEqual({ objects: 1, itemCount: 4 });
+    expect(out.stl).toEqual({ objects: 1, itemCount: 4 });
     expect(out.whole).toEqual({ objects: 1 });
 
     expect(out.errors.badMode).toMatch(/split\["Chess bits"\] must be one of/);

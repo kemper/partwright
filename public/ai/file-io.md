@@ -104,7 +104,7 @@ await partwright.export3MFObjects(undefined, "chess", { split: { "Chess set": "p
 // Pieces packed together, kings and queens on a plate of their own:
 await partwright.export3MFObjects(undefined, "chess", {
   split: { "Chess set": "pieces" }, plateLayout: "custom",
-  plates: { "Chess set · King": 1, "Chess set · Queen": 1, "Board": 2 },
+  plates: { "Chess set · King": 1, "Chess set · Queen": 1, "Chess set · Board": 2 },
 })
 ```
 
@@ -112,7 +112,7 @@ In the app, every export's object picker has a **Split** menu on each object mad
 
 Each object's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places objects on plates using your configured **bed size** (printer settings) for the plate stride, and arranges multiple objects sharing a plate (`"grid"` / `"group"`) in a sub-grid within the bed. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
 
-`export3MFObjects` triggers a browser download; **`export3MFObjectsData(objectIds?, filename?, { bambu?, … })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, objects }` (plus `items`, the written item names, when something was split) so an agent can read the exported 3MF back (unzip the base64) without the download path.
+`export3MFObjects` triggers a browser download; **`export3MFObjectsData(objectIds?, filename?, { bambu?, … })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, objects }` (plus `items` — the written item names — and `itemCount` when something was split; `objects` still counts session objects) so an agent can read the exported 3MF back (unzip the base64) without the download path.
 
 ```js
 const r = await partwright.export3MFObjectsData(undefined, 'assembly', { bambu: true })

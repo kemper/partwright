@@ -1428,6 +1428,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'listExportItems',
+    description: "What each object can be SPLIT into for an export — the export picker's Split menu as data. Per object: {id, name, size, pieceCount, splits, pieces, parts}; `splits` lists the modes that apply ('whole', 'pieces' = one file object per separate solid, 'parts' = one per api.label part, fused parts kept together), and `pieces` / `parts` list the items by export name (\"<object> · <item>\") or are null when that split doesn't apply. Use the names with exportModel's `exclude`. Builds objects that aren't open, so it can take a few seconds.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids (from listObjects). Default: every object.' },
+      },
+    },
+  },
+  {
     name: 'listObjectParts',
     description: "List the current object's PARTS and PIECES, exactly as the object list in the left rail shows them. Parts are the api.label(shape, name) regions (SCAD label(), BREP.label) — tracked through every union/cut, so they survive several shapes fusing into one solid; each has {name, triangleCount, color?}. lostParts are labels that ended with no triangles. unlabeledTriangleCount is geometry no part covers. Pieces are the physically separate solids (connected components), each named by the part covering most of it — use them to check a print-in-place mechanism really splits into N moving pieces. When the user says \"the handle\" or \"the lid part\", this is where those names live.",
     input_schema: { type: 'object', properties: {} },
@@ -2690,6 +2700,7 @@ const ALWAYS_AVAILABLE = new Set([
   'listDeleted',
   'restoreObject',
   'listObjectParts',
+  'listExportItems',
   'highlightObjectPart',
   // Text-only likeness score: renders offscreen but returns no image, so it is
   // NOT views-gated — it exists precisely so likeness checks skip images.
@@ -2876,7 +2887,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listExportItems', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -3949,6 +3960,15 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.discardParts();
     case 'listObjectParts':
       return api.listObjectParts();
+    case 'listExportItems': {
+      const unknown = Object.keys(input).filter(k => k !== 'objects');
+      if (unknown.length) return { error: `listExportItems: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: objects.` };
+      if (input.objects == null) return api.listExportItems();
+      if (!Array.isArray(input.objects) || input.objects.some(o => typeof o !== 'string')) return { error: 'listExportItems: objects must be an array of object names or ids.' };
+      const r = resolveObjectIds(api, input.objects as string[]);
+      if ('error' in r) return { error: `listExportItems: ${r.error}` };
+      return api.listExportItems(r.ids);
+    }
     case 'highlightObjectPart': {
       if (input.clear === true) return api.highlightObjectPart(null);
       if (typeof input.part === 'string') return api.highlightObjectPart(input.part);

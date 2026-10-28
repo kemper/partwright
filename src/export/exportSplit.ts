@@ -165,7 +165,7 @@ export function analyzeObjectSplit(
       const labels = compLabels.get(r)!;
       const triangles = concat(compPieces.get(r) ?? []);
       return {
-        key: `part:${labels.join('+')}`,
+        key: `part:${JSON.stringify(labels)}`,
         name: uniqueName(labels.join(' + '), used),
         triangles,
         labels,
@@ -177,7 +177,9 @@ export function analyzeObjectSplit(
       const triangles = concat(loose);
       items.push({ key: 'unlabeled', name: uniqueName('Unlabeled', used), triangles, labels: [], fused: false, size: bboxSize(mesh, triangles) });
     }
-    if (items.length >= 2 && items.length <= maxItems) parts = items;
+    // A label whose ids all fall outside this mesh touches no piece: no item.
+    const real = items.filter(it => it.triangles.length > 0);
+    if (real.length >= 2 && real.length <= maxItems) parts = real;
   }
 
   return { size, numTri: mesh.numTri, pieceCount: pieceInfo.count, pieces, parts };
