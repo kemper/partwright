@@ -1,8 +1,10 @@
 // Multi-object mesh import chooser. Shown when an imported file holds several
 // objects — a 3MF with more than one object (often across several Bambu/Orca
-// build plates). The user picks which objects to bring in, how to divide them
-// into Partwright objects (one per 3MF object, one per plate, or everything as
-// one), and — when the open session holds real work — where they go.
+// build plates) — or when several mesh files (STL / 3MF) are imported at once.
+// The user picks which objects to bring in, how to divide them into Partwright
+// objects (one per object, per plate or per file, or everything as one), and —
+// when the open session holds real work — where they go. A multi-file import
+// also asks how to lay the models out and whether to convert them to code.
 //
 // Pure UI over the plan in `src/import/meshImportSplit.ts`: it previews the
 // object count with `planImportSplit` and resolves with the user's choice; the
@@ -12,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL, BUTTON_PRIMARY } from './styleConstants';
 import { planImportSplit, type ImportSplitMode } from '../import/meshImportSplit';
+import type { MultiFileLayout } from '../import/multiFileImport';
 
 export type MeshImportDestination = 'new-session' | 'this-session' | 'current-object';
 
@@ -19,6 +22,10 @@ interface MeshImportModalItem {
   name: string;
   triangleCount: number;
   plate?: number;
+  /** Source file (multi-file imports): index into `files`. */
+  file?: number;
+  /** Starts unticked, with this note beside it (e.g. "Already in this session"). */
+  skipNote?: string;
 }
 
 interface MeshImportModalPlate {
@@ -36,6 +43,13 @@ interface MeshImportModalOptions {
   summary?: string;
   items: MeshImportModalItem[];
   plates: MeshImportModalPlate[];
+  /** Multi-file imports: the files, listed as sections in place of plates. */
+  files?: string[];
+  /** Multi-file imports: the layout choices, and the one picked at first. */
+  layouts?: MultiFileLayout[];
+  initialLayout?: MultiFileLayout;
+  /** Multi-file imports: offer "convert to code" next to "mesh only". */
+  offerConvert?: boolean;
   /** Split modes on offer, in display order. The first is the default. */
   modes: ImportSplitMode[];
   /** Name of the single object in `none` mode (the file's base name). */
@@ -48,6 +62,10 @@ interface MeshImportModalOptions {
     currentObjectName: string | null;
     /** Whether "Add to current object" is possible at all (single-object mode only). */
     canAddToCurrent: boolean;
+    /** The current object is still empty (a new one): the import fills it — the
+     *  first object, when it makes several — in any mode, and that's the
+     *  default destination. */
+    currentIsEmpty?: boolean;
   };
 }
 
@@ -56,12 +74,21 @@ interface MeshImportModalResult {
   /** Indices into `items`, in list order. */
   selected: number[];
   destination: MeshImportDestination;
+  /** Multi-file imports only. */
+  layout?: MultiFileLayout;
+  convert?: boolean;
 }
 
-const MODE_TEXT: Record<ImportSplitMode, { title: string; desc: (n: number, grouped: boolean) => string }> = {
+type ModeText = { title: string; desc: (n: number, grouped: boolean) => string };
+
+const MODE_TEXT: Record<ImportSplitMode, ModeText> = {
   object: {
     title: 'One object per 3MF object',
     desc: (n, grouped) => `${n} object${n === 1 ? '' : 's'}${grouped ? ', grouped by plate in the object list' : ''}.`,
+  },
+  file: {
+    title: 'One object per file',
+    desc: n => `${n} object${n === 1 ? '' : 's'}; a file's objects become named parts.`,
   },
   plate: {
     title: 'One object per plate',
@@ -77,9 +104,31 @@ const MODE_TEXT: Record<ImportSplitMode, { title: string; desc: (n: number, grou
   },
 };
 
+/** The wording for a multi-file import, where items are models, not 3MF objects. */
+const FILE_MODE_TEXT: Partial<Record<ImportSplitMode, ModeText>> = {
+  object: {
+    title: 'One object per model',
+    desc: (n, grouped) => `${n} object${n === 1 ? '' : 's'}${grouped ? ', a 3MF’s objects grouped under its file' : ''}.`,
+  },
+  none: {
+    title: 'Everything as one object',
+    desc: () => 'One object; each model becomes a named part.',
+  },
+};
+
+const LAYOUT_TEXT: Record<MultiFileLayout, { title: string; desc: string }> = {
+  keep: { title: 'Keep file positions', desc: 'Where each file puts them, e.g. parts of one assembly.' },
+  center: { title: 'Centre each on the plate', desc: 'All in the same spot, centred and sitting on the plate.' },
+  grid: { title: 'Arrange in a grid', desc: 'Side by side on the plate, so nothing overlaps.' },
+};
+
+function modeText(opts: MeshImportModalOptions, mode: ImportSplitMode): ModeText {
+  return (opts.files ? FILE_MODE_TEXT[mode] : undefined) ?? MODE_TEXT[mode];
+}
+
 // Body and footer are separate Preact trees (modalShell owns both slots), so
 // they share the choice through this tiny store.
-interface State { mode: ImportSplitMode; selected: boolean[]; destination: MeshImportDestination }
+interface State { mode: ImportSplitMode; selected: boolean[]; destination: MeshImportDestination; layout: MultiFileLayout; convert: boolean }
 function createStore(initial: State) {
   let state = initial;
   const listeners = new Set<() => void>();
@@ -105,11 +154,14 @@ function selectedIndices(selected: boolean[]): number[] {
 
 function objectCount(opts: MeshImportModalOptions, mode: ImportSplitMode, selected: number[]): number {
   return planImportSplit(
-    opts.items.map(it => ({ name: it.name, triangles: [], plate: it.plate })),
+    opts.items.map(it => ({ name: it.name, triangles: [], plate: it.plate, file: it.file })),
     mode,
-    { selected, plates: opts.plates, baseName: opts.baseName },
+    { selected, plates: opts.plates, files: opts.files, baseName: opts.baseName },
   ).length;
 }
+
+/** The section an item is listed under: its file, or its plate. */
+const sectionOf = (opts: MeshImportModalOptions, it: MeshImportModalItem) => (opts.files ? it.file : it.plate);
 
 function TriCount(props: { n: number }) {
   return <span class="text-[10px] text-zinc-500 tabular-nums shrink-0">{props.n.toLocaleString()} tris</span>;
@@ -131,12 +183,13 @@ function Check(props: { checked: boolean; indeterminate?: boolean; label: string
   );
 }
 
-function ItemRow(props: { item: MeshImportModalItem; checked: boolean; indent: boolean; onToggle: (v: boolean) => void }) {
+function ItemRow(props: { item: MeshImportModalItem; checked: boolean; indent: boolean; showNote: boolean; onToggle: (v: boolean) => void }) {
   const { item, checked, indent } = props;
   return (
     <label class={`flex items-center gap-2 min-h-11 md:min-h-0 py-1 px-1.5 rounded hover:bg-zinc-800 cursor-pointer ${indent ? 'pl-6' : ''}`}>
       <Check checked={checked} label={`Import ${item.name}`} onChange={props.onToggle} />
       <span class="text-[12px] text-zinc-200 truncate flex-1 min-w-0" title={item.name}>{item.name}</span>
+      {item.skipNote && props.showNote && <span class="text-[10px] text-amber-400 shrink-0" data-skip-note>{item.skipNote}</span>}
       <TriCount n={item.triangleCount} />
     </label>
   );
@@ -154,6 +207,40 @@ function PlateThumb(props: { png?: Uint8Array }) {
   return <img src={url} alt="" class="w-10 h-10 rounded bg-zinc-800 border border-zinc-700 object-contain shrink-0" />;
 }
 
+function RadioList<T extends string>(props: {
+  label: string;
+  name: string;
+  value: T;
+  options: { value: T; title: string; desc: string; enabled: boolean }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div class="flex flex-col gap-1" role="radiogroup" aria-label={props.label}>
+      <div class="text-xs text-zinc-400">{props.label}</div>
+      {props.options.map(o => (
+        <label
+          key={o.value}
+          class={`flex items-start gap-2 rounded px-1.5 py-1 min-h-11 md:min-h-0 ${o.enabled ? 'cursor-pointer hover:bg-zinc-800' : 'opacity-50 cursor-not-allowed'}`}
+        >
+          <input
+            type="radio"
+            name={props.name}
+            class="accent-blue-500 mt-0.5 shrink-0"
+            value={o.value}
+            disabled={!o.enabled}
+            checked={props.value === o.value}
+            onChange={() => props.onChange(o.value)}
+          />
+          <span class="flex flex-col min-w-0">
+            <span class="text-[12px] text-zinc-100">{o.title}</span>
+            <span class="text-[11px] text-zinc-500 leading-snug">{o.desc}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function Body(props: { opts: MeshImportModalOptions; store: Store }) {
   const { opts, store } = props;
   const st = useStore(store);
@@ -164,9 +251,19 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
     store.set({ selected: next });
   };
 
-  // Plate sections, in the file's plate order; objects with no plate last.
+  // Sections: a multi-file import's files (a file with one model lists it
+  // without a header), else the plates in the file's order, objects with no
+  // plate last.
   const sections = useMemo(() => {
     const out: { plate: MeshImportModalPlate | null; items: number[] }[] = [];
+    if (opts.files) {
+      opts.files.forEach((name, f) => {
+        const items = opts.items.map((it, i) => (it.file === f ? i : -1)).filter(i => i >= 0);
+        if (items.length === 1) out.push({ plate: null, items });
+        else if (items.length > 1) out.push({ plate: { id: f, name }, items });
+      });
+      return out;
+    }
     if (opts.plates.length === 0 || opts.items.every(it => it.plate === undefined)) {
       return [{ plate: null, items: opts.items.map((_, i) => i) }];
     }
@@ -180,7 +277,21 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
   }, [opts]);
 
   const allSelected = sel.length === opts.items.length;
-  const grouped = new Set(sel.map(i => opts.items[i].plate).filter(p => p !== undefined)).size > 1;
+  const perSection = new Map<number, number>();
+  for (const i of sel) {
+    const s = sectionOf(opts, opts.items[i]);
+    if (s !== undefined) perSection.set(s, (perSection.get(s) ?? 0) + 1);
+  }
+  const grouped = opts.files ? perSection.size > 1 && [...perSection.values()].some(n => n > 1) : perSection.size > 1;
+  // "Already in this session" means nothing for a new session: there the
+  // flagged models start ticked like the rest.
+  const toNew = st.destination === 'new-session';
+  const skipped = toNew ? 0 : opts.items.filter(it => it.skipNote).length;
+  const setDestination = (destination: MeshImportDestination) => {
+    const wasNew = st.destination === 'new-session', isNew = destination === 'new-session';
+    if (wasNew === isNew) { store.set({ destination }); return; }
+    store.set({ destination, selected: st.selected.map((on, i) => (opts.items[i].skipNote ? isNew : on)) });
+  };
 
   return (
     <>
@@ -202,10 +313,10 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
               aria-checked={active}
               data-mode={m}
               class={`w-full text-left rounded-lg border px-3 py-2 transition-colors ${active ? 'border-blue-500 bg-blue-500/10' : 'border-zinc-700 hover:border-zinc-500'}`}
-              onClick={() => store.set({ mode: m, ...(m !== 'none' && st.destination === 'current-object' ? { destination: 'this-session' as const } : {}) })}
+              onClick={() => store.set({ mode: m, ...(m !== 'none' && st.destination === 'current-object' && !opts.destinations?.currentIsEmpty ? { destination: 'this-session' as const } : {}) })}
             >
-              <div class="text-sm text-zinc-100 font-medium">{MODE_TEXT[m].title}</div>
-              <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">{MODE_TEXT[m].desc(n, grouped)}</div>
+              <div class="text-sm text-zinc-100 font-medium">{modeText(opts, m).title}</div>
+              <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">{modeText(opts, m).desc(n, grouped)}</div>
             </button>
           );
         })}
@@ -213,7 +324,7 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
 
       <div class="flex flex-col gap-1">
         <div class="flex items-center justify-between">
-          <div class="text-xs text-zinc-400">Objects ({sel.length} of {opts.items.length})</div>
+          <div class="text-xs text-zinc-400">{opts.files ? 'Models' : 'Objects'} ({sel.length} of {opts.items.length})</div>
           <button
             type="button"
             class="text-[11px] text-blue-400 hover:text-blue-300 min-h-11 md:min-h-0"
@@ -224,7 +335,7 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
           {sections.map(sec => {
             if (!sec.plate) {
               return sec.items.map(i => (
-                <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={false} onToggle={v => setItem(i, v)} />
+                <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={false} showNote={!toNew} onToggle={v => setItem(i, v)} />
               ));
             }
             const on = sec.items.filter(i => st.selected[i]).length;
@@ -236,19 +347,19 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
                   <Check
                     checked={on === sec.items.length}
                     indeterminate={on > 0 && on < sec.items.length}
-                    label={`Import everything on ${plate.name}`}
+                    label={opts.files ? `Import everything in ${plate.name}` : `Import everything on ${plate.name}`}
                     onChange={v => {
                       const next = st.selected.slice();
                       for (const i of sec.items) next[i] = v;
                       store.set({ selected: next });
                     }}
                   />
-                  {plate.id >= 0 && <PlateThumb png={(plate as MeshImportModalPlate).thumbnail} />}
+                  {plate.id >= 0 && !opts.files && <PlateThumb png={(plate as MeshImportModalPlate).thumbnail} />}
                   <span class="text-[12px] text-zinc-100 font-medium truncate flex-1 min-w-0">{plate.name}</span>
-                  <span class="text-[10px] text-zinc-500 shrink-0">{sec.items.length} object{sec.items.length === 1 ? '' : 's'} · {tris.toLocaleString()} tris</span>
+                  <span class="text-[10px] text-zinc-500 shrink-0">{sec.items.length} {opts.files ? 'model' : 'object'}{sec.items.length === 1 ? '' : 's'} · {tris.toLocaleString()} tris</span>
                 </label>
                 {sec.items.map(i => (
-                  <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={true} onToggle={v => setItem(i, v)} />
+                  <ItemRow key={i} item={opts.items[i]} checked={st.selected[i]} indent={true} showNote={!toNew} onToggle={v => setItem(i, v)} />
                 ))}
               </div>
             );
@@ -256,38 +367,69 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
         </div>
       </div>
 
+      {skipped > 0 && (
+        <p class="text-[11px] text-zinc-500 leading-snug -mt-1">
+          {skipped} {skipped === 1 ? 'model is' : 'models are'} already in this session (same file, same triangle count), so {skipped === 1 ? 'it starts' : 'they start'} unticked. Tick {skipped === 1 ? 'it' : 'them'} to import again.
+        </p>
+      )}
+
+      {opts.layouts && opts.layouts.length > 1 && (
+        <RadioList
+          label="Lay out"
+          name="mesh-import-layout"
+          value={st.layout}
+          options={opts.layouts.map(l => ({ value: l, title: LAYOUT_TEXT[l].title, desc: LAYOUT_TEXT[l].desc, enabled: true }))}
+          onChange={v => store.set({ layout: v })}
+        />
+      )}
+
+      {opts.offerConvert && (
+        <RadioList
+          label="Bring in as"
+          name="mesh-import-convert"
+          value={st.convert ? 'code' : 'mesh'}
+          options={[
+            { value: 'mesh', title: 'Mesh only', desc: 'Fast. You can convert any object to code later (Tools → Convert model to code).', enabled: true },
+            {
+              value: 'code',
+              title: 'Convert to editable code',
+              desc: st.destination === 'current-object' && !opts.destinations?.currentIsEmpty
+                ? 'Not when adding to the current object — it would rebuild that object’s own code too.'
+                : st.mode === 'object' || st.mode === 'piece'
+                  ? 'Rebuilds each object as smooth, editable code. Takes a few seconds per object; models that aren’t clean solids stay meshes.'
+                  : 'Rebuilds each object as smooth, editable code. Its named parts aren’t kept. Takes a few seconds per object.',
+              enabled: st.destination !== 'current-object' || !!opts.destinations?.currentIsEmpty,
+            },
+          ]}
+          onChange={v => store.set({ convert: v === 'code' })}
+        />
+      )}
+
       {opts.destinations && (
-        <div class="flex flex-col gap-1" role="radiogroup" aria-label="Destination">
-          <div class="text-xs text-zinc-400">Put it in</div>
-          {([
-            ['this-session', 'This session', 'Add as new objects, each with its own version history.', true],
-            ['new-session', 'A new session', 'Leave the current session untouched.', true],
-            ['current-object', `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
-              st.mode !== 'none'
+        <RadioList
+          label="Put it in"
+          name="mesh-import-destination"
+          value={st.destination}
+          options={[
+            { value: 'this-session', title: 'This session', desc: 'Add as new objects, each with its own version history.', enabled: true },
+            { value: 'new-session', title: 'A new session', desc: 'Leave the current session untouched.', enabled: true },
+            opts.destinations.currentIsEmpty ? {
+              value: 'current-object',
+              title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''} (empty)`,
+              desc: st.mode === 'none' ? 'Make the import its contents.' : 'The first object fills it; any others become new objects.',
+              enabled: true,
+            } : {
+              value: 'current-object',
+              title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
+              desc: st.mode !== 'none'
                 ? 'Only when importing everything as one object.'
+                : st.convert ? 'Not with Convert to editable code — it would rebuild this object’s own code too.'
                 : opts.destinations.canAddToCurrent ? 'Combine it with the geometry already in this object.' : 'This mesh can’t be combined into an existing object.',
-              st.mode === 'none' && opts.destinations.canAddToCurrent],
-          ] as [MeshImportDestination, string, string, boolean][]).map(([d, title, desc, enabled]) => (
-            <label
-              key={d}
-              class={`flex items-start gap-2 rounded px-1.5 py-1 min-h-11 md:min-h-0 ${enabled ? 'cursor-pointer hover:bg-zinc-800' : 'opacity-50 cursor-not-allowed'}`}
-            >
-              <input
-                type="radio"
-                name="mesh-import-destination"
-                class="accent-blue-500 mt-0.5 shrink-0"
-                value={d}
-                disabled={!enabled}
-                checked={st.destination === d}
-                onChange={() => store.set({ destination: d })}
-              />
-              <span class="flex flex-col min-w-0">
-                <span class="text-[12px] text-zinc-100">{title}</span>
-                <span class="text-[11px] text-zinc-500 leading-snug">{desc}</span>
-              </span>
-            </label>
-          ))}
-        </div>
+              enabled: st.mode === 'none' && !st.convert && opts.destinations.canAddToCurrent,
+            },
+          ]}
+          onChange={setDestination}
+        />
       )}
     </>
   );
@@ -331,8 +473,10 @@ export function showMeshImportModal(opts: MeshImportModalOptions): Promise<MeshI
     let result: MeshImportModalResult | null = null;
     const store = createStore({
       mode: opts.modes[0] ?? 'none',
-      selected: opts.items.map(() => true),
-      destination: opts.destinations ? 'this-session' : 'new-session',
+      selected: opts.items.map(it => !it.skipNote),
+      destination: opts.destinations ? (opts.destinations.currentIsEmpty ? 'current-object' : 'this-session') : 'new-session',
+      layout: opts.initialLayout ?? opts.layouts?.[0] ?? 'keep',
+      convert: false,
     });
     mountPreactModal(
       {
@@ -350,7 +494,13 @@ export function showMeshImportModal(opts: MeshImportModalOptions): Promise<MeshI
             onCancel={() => { result = null; close(); }}
             onImport={() => {
               const st = store.get();
-              result = { mode: st.mode, selected: selectedIndices(st.selected), destination: st.destination };
+              result = {
+                mode: st.mode,
+                selected: selectedIndices(st.selected),
+                destination: st.destination,
+                ...(opts.layouts ? { layout: st.layout } : {}),
+                ...(opts.offerConvert ? { convert: st.convert } : {}),
+              };
               close();
             }}
           />

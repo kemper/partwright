@@ -6,7 +6,8 @@
 // would otherwise sit on hundreds of MB. (Spawning + loading manifold-3d is
 // ~0.2 s, small next to the probe of any mesh big enough to matter.)
 
-import type { STLProbeResult } from './stlProbe';
+import type { IndexedProbeResult, STLProbeResult } from './stlProbe';
+import type { MeshData } from '../geometry/types';
 
 export class STLProbeAbortError extends Error {
   constructor() {
@@ -27,6 +28,21 @@ export interface STLProbeControl {
  *  loaded manifold-3d, so a Worker that fails to start leaves `bytes` intact
  *  for a main-thread fallback; after the hand-off they are detached. */
 export function probeSTLInWorker(bytes: Uint8Array, configuredTolerance: number, ctl?: STLProbeControl): Promise<STLProbeResult | null> {
+  // Transfer only a buffer the view owns outright; a view into a larger
+  // buffer is copied rather than detaching the caller's other data.
+  const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
+  return runProbe({ type: 'probe', bytes, configuredTolerance }, whole ? [bytes.buffer as ArrayBuffer] : [], ctl) as Promise<STLProbeResult | null>;
+}
+
+/** Run the exact weld-ladder probe for an already-indexed mesh (a 3MF that
+ *  failed the quick check) in the Worker. The mesh is copied, so the caller
+ *  keeps it. */
+export function probeIndexedInWorker(mesh: MeshData, configuredTolerance: number, ctl?: STLProbeControl): Promise<IndexedProbeResult> {
+  const copy = { vertProperties: mesh.vertProperties.slice(), triVerts: mesh.triVerts.slice(), numVert: mesh.numVert, numTri: mesh.numTri, numProp: mesh.numProp };
+  return runProbe({ type: 'probeIndexed', mesh: copy, configuredTolerance }, [copy.vertProperties.buffer, copy.triVerts.buffer], ctl) as Promise<IndexedProbeResult>;
+}
+
+function runProbe(payload: object, transfer: Transferable[], ctl?: STLProbeControl): Promise<STLProbeResult | IndexedProbeResult | null> {
   return new Promise((resolve, reject) => {
     if (ctl?.signal?.aborted) { reject(new STLProbeAbortError()); return; }
     let w: Worker;
@@ -45,15 +61,13 @@ export function probeSTLInWorker(bytes: Uint8Array, configuredTolerance: number,
       reject(err);
     };
     const onAbort = () => fail(new STLProbeAbortError());
-    w.onmessage = (e: MessageEvent<{ type: string; fraction?: number; message?: string; result?: STLProbeResult | null }>) => {
+    w.onmessage = (e: MessageEvent<{ type: string; fraction?: number; message?: string; result?: STLProbeResult | IndexedProbeResult | null }>) => {
       const m = e.data;
       if (settled) return;
       if (m.type === 'ready') {
-        // Transfer only a buffer the view owns outright; a view into a larger
-        // buffer is copied rather than detaching the caller's other data.
-        const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
+        // Hand the payload over only now the Worker is up (see above).
         try {
-          w.postMessage({ type: 'probe', bytes, configuredTolerance }, whole ? [bytes.buffer as ArrayBuffer] : []);
+          w.postMessage(payload, transfer);
         } catch (err) {
           fail(err instanceof Error ? err : new Error(String(err)));
         }

@@ -488,7 +488,13 @@ function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
         else if (b.type === 'image') parts.push({ inlineData: { mimeType: b.source.mediaType, data: b.source.data } });
         else if (b.type === 'review') parts.push({ text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
       }
-      if (parts.length > 0) out.push({ role: 'user', parts });
+      if (parts.length === 0) continue;
+      // A tool-result turn followed by a typed one (the answer to an askUser
+      // card, the next message after \`finish\`) goes out as ONE user content:
+      // keep user/model turns alternating, results first.
+      const prev = out[out.length - 1];
+      if (prev && prev.role === 'user') prev.parts.push(...parts);
+      else out.push({ role: 'user', parts });
     }
   }
   return out;

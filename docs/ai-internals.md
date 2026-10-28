@@ -33,6 +33,25 @@ When **on**:
 
 Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudges, stop at each `end_turn`.
 
+## Plan mode and question cards (the 📋 pill, `askUser`, `proposePlan`)
+
+`ChatToggles.planFirst` makes each new request a **planning turn**:
+- `buildToolList` returns only `PLAN_MODE_TOOLS`: the read-only inspection tools plus the two card tools.
+- `toggleSuffix` swaps in the plan-mode instructions.
+- The user's text is wrapped in `PLAN_FIRST_PREFIX` (later replies in `PLAN_REFINE_PREFIX`). Both live in `src/ai/userWords.ts`; `planTurn()` strips them for display, export and review.
+
+- **The tool list is enforced, not just offered.** `executeAllWithRetry` (`chatLoop.ts`) refuses any call outside the turn's gated tool list with `unofferedToolMessage`. A model can still emit a tool it saw earlier in the history, which is how follow-up plans used to "just build". Pre-rename names map through `LEGACY_TOOL_ALIASES`.
+- **Card tools end the turn.** `askUser` (questions with option chips; offered in every mode) and `proposePlan` (summary / steps / assumptions; plan mode only) are listed in `TURN_ENDING_TOOLS`.
+  - `executeTool` validates their input and returns `CARD_TOOL_ACK`, which the transcript hides.
+  - The loop then returns, like `finish` but independent of auto-continue.
+  - The panel renders the call as a card (`renderAskUserCard` / `renderPlanCard` in `aiPanel.ts`).
+  - Answers are written into the input and sent through `sendMessage`, so plan-mode wrapping and queueing apply.
+- **Fallback for models without the card tools** (custom/local tiers trim the tool list): `planAwaitsAnswers()` in `src/ai/planReply.ts` decides from the text whether a plan reply is questions or a plan. That only changes the plan bar's wording and which button leads; Build is always offered.
+- **State comes from the transcript.** `derivePendingPlan()` is true when the last typed user message is a plan request or revision. That restores the plan bar after a reload or a take-control.
+  - It's re-derived on history load (not mid-turn) and after each planning turn.
+  - Auto-compaction and `/compact` wait while a plan is pending, because the plan is anchored by history index.
+- **Build** sends `planApprovalText(latestPlanReply(...).text)`, i.e. `[Plan approved — …]` plus the plan Markdown. The build turn runs with `planFirst: false`, so it gets the full tool list. **Discard** deletes the planning messages and restores the request in the input.
+
 ## OpenAI routing (Chat Completions vs Responses API)
 
 `streamTurn` routes per model (gated by `isReasoningModel`):

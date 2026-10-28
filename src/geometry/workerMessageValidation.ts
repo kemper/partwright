@@ -36,6 +36,9 @@ export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'simplify_result',
   'enhance_progress',
   'enhance_result',
+  // Dev builds only: the engine-realm report the e2e tier asks for
+  // (engineWorker.ts `inspect_realm`, engine.ts `inspectEngineRealm`).
+  ...(import.meta.env?.DEV ? ['inspect_realm_result'] : []),
 ]);
 
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
@@ -423,6 +426,8 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   const normalizedSchema = schema ? checkParamsSchema(schema) : undefined;
   const lost = optPlainArray(msg.lostLabels, 'lostLabels');
   if (lost && !lost.every(s => typeof s === 'string')) fail('lostLabels must be strings');
+  const logs = optPlainArray(msg.logs, 'logs');
+  if (logs && !logs.every(s => typeof s === 'string')) fail('logs must be strings');
   optBool(msg.renderOnly, 'renderOnly');
   optFinite(msg.workerMs, 'workerMs');
   optFinite(msg.engineHeapBytes, 'engineHeapBytes');
@@ -516,6 +521,9 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
       case 'enhance_progress':
         checkFraction(data.fraction);
         break;
+      case 'inspect_realm_result':
+        if (!isPlainObject(data.report)) fail('report must be a plain object');
+        break;
       case 'simplify_result':
       case 'enhance_result':
         optString(data.error, 'error');
@@ -523,7 +531,8 @@ export function checkEngineWorkerMessage(data: unknown): WorkerMessageCheck {
         optBool(data.exceeded, 'exceeded');
         optFinite(data.triangleCount, 'triangleCount');
         optFinite(data.tolerance, 'tolerance');
-        checkMeshField(data.mesh, 'mesh', true);
+        checkManifoldFacts(data.manifoldFacts, checkMeshField(data.mesh, 'mesh', true));
+        optString(data.manifoldError, 'manifoldError');
         break;
     }
   } catch (e) {

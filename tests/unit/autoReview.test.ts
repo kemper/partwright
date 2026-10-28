@@ -11,7 +11,7 @@ import {
   shouldAutoReview,
   userConversation,
 } from '../../src/ai/autoReview';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, UI_APPLIED_NOTE_PREFIX } from '../../src/ai/userWords';
+import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, UI_APPLIED_NOTE_PREFIX, planApprovalText } from '../../src/ai/userWords';
 import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 import type { ChatMessage, ChatToggles } from '../../src/ai/types';
 
@@ -36,9 +36,10 @@ describe('parseReviewVerdict', () => {
 describe('shouldAutoReview', () => {
   const base = { enabled: true, reason: 'end_turn' as const, modelChangingToolCalls: 2, planning: false, hadError: false, spentUsd: 0.2, spendCapUsd: 2 };
   it('reviews a clean turn that changed the model', () => expect(shouldAutoReview(base)).toBe(true));
-  it('skips when off, planning, errored, capped, inspect-only, or over the spend cap', () => {
+  it('skips when off, planning, waiting on answers, errored, capped, inspect-only, or over the spend cap', () => {
     expect(shouldAutoReview({ ...base, enabled: false })).toBe(false);
     expect(shouldAutoReview({ ...base, planning: true })).toBe(false);
+    expect(shouldAutoReview({ ...base, awaitingAnswers: true })).toBe(false);
     expect(shouldAutoReview({ ...base, hadError: true })).toBe(false);
     expect(shouldAutoReview({ ...base, reason: 'iteration_cap' })).toBe(false);
     expect(shouldAutoReview({ ...base, modelChangingToolCalls: 0 })).toBe(false);
@@ -143,6 +144,16 @@ describe('userConversation', () => {
     ];
     expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket', 'Use M4 holes']);
     expect(latestUserRequest(history)).toBe('Use M4 holes');
+  });
+
+  it('skips an approval turn that carries the plan text', () => {
+    const history = [
+      msg('user', `${PLAN_FIRST_PREFIX}Make a bracket`, 1),
+      msg('assistant', 'Plan: two holes', 2),
+      msg('user', planApprovalText('Plan: two holes'), 3),
+    ];
+    expect(userConversation(history, 10_000).messages).toEqual(['Make a bracket']);
+    expect(latestUserRequest(history)).toBe('Make a bracket');
   });
 
   it('drops "[UI · app note]" blocks, also ahead of a plan-first turn', () => {

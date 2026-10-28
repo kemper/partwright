@@ -5,7 +5,7 @@
 // exports; this Worker owns the expensive execution path.
 //
 // Protocol — Main → Worker:
-//   { type: 'init' }
+//   { type: 'init', ses?, sesTestFail?, sesUndeclaredCheckMaxChars? }   (ses: false = SES kill switch, #1127)
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'detect_includes',   callId, code }
@@ -19,10 +19,11 @@
 //   { type: 'simplify_cancel',   callId }
 //   { type: 'enhance',           callId, mesh, targetTriangles, maxEdgeLength }
 //   { type: 'enhance_cancel',    callId }
+//   { type: 'inspect_realm',     callId }   (dev builds only)
 //
 // Protocol — Worker → Main:
-//   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
+//   { type: 'ready', initMs, compiler, sesMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, logs, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'voxel_grid_result',       callId, grid, error }
@@ -35,6 +36,7 @@
 //   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
 //   { type: 'enhance_progress',        callId, fraction }
 //   { type: 'enhance_result',          callId, mesh, triangleCount, cancelled, error }
+//   { type: 'inspect_realm_result',    callId, report }   (dev builds only)
 //   { type: 'error',                   callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
@@ -42,8 +44,6 @@
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { computeManifoldFacts } from './manifoldFacts';
-import { edgeStats } from './geometryHeuristics';
-import { computeMeshPieces } from './meshPieces';
 import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine, runVoxelGrid } from './engines/voxel';
@@ -56,8 +56,12 @@ import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
-import { lockdownGlobalScope } from './workerLockdown';
+import { lockdownGlobalScope, enumerateChain } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
+import { enableSesSandbox } from './sesSandbox';
+import { modelCompilerName } from './modelEval';
+import { getConfig } from '../config/appConfig';
+import { createModelLog, withLogs } from './modelConsole';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -67,6 +71,52 @@ const simplifyCancelFlags = new Map<string, boolean>();
 const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
+
+/** `manifoldFacts` for a simplify / enhance result of at least `minTriangles`
+ *  (the same Worker-side stats a big run sends): built from a Manifold of the
+ *  result here, so the main thread can defer its own multi-second rebuild.
+ *  `manifoldError` when the result isn't a valid solid (main shows it as
+ *  render-only). Empty for small results — main builds those itself. */
+function resultFacts(mesh: MeshData, minTriangles: unknown, containmentSamples: unknown): { manifoldFacts?: ReturnType<typeof computeManifoldFacts>; manifoldError?: string } {
+  if (typeof minTriangles !== 'number' || mesh.numTri < minTriangles) return {};
+  let m: { delete?: () => void } | null = null;
+  try {
+    m = getManifoldModule().Manifold.ofMesh(mesh);
+  } catch (err) {
+    return { manifoldError: err instanceof Error ? err.message : String(err) };
+  }
+  // A failure computing the stats is NOT "not a solid": send nothing and let
+  // the main thread build the Manifold itself, as for a small result.
+  try {
+    return { manifoldFacts: computeManifoldFacts(m, mesh, { containmentSamples: typeof containmentSamples === 'number' ? containmentSamples : undefined }) };
+  } catch {
+    return {};
+  } finally {
+    try { m?.delete?.(); } catch { /* already freed */ }
+  }
+}
+
+/** `computeManifoldFacts` for a run result, or undefined if it throws — the
+ *  main thread then builds its own Manifold (a stats failure must not fail
+ *  the run). */
+function computeFactsSafely(live: unknown, mesh: MeshData, containmentSamples: unknown): ReturnType<typeof computeManifoldFacts> | undefined {
+  try {
+    return computeManifoldFacts(live, mesh, { containmentSamples: typeof containmentSamples === 'number' ? containmentSamples : undefined });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Transfer list for a result mesh (+ its facts' piece split). */
+function meshTransfer(mesh: MeshData, facts?: { pieces?: { pieceOfTri: Int32Array } }): Transferable[] {
+  const t: Transferable[] = [mesh.vertProperties.buffer, mesh.triVerts.buffer];
+  if (mesh.mergeFromVert) t.push(mesh.mergeFromVert.buffer);
+  if (mesh.mergeToVert)   t.push(mesh.mergeToVert.buffer);
+  if (mesh.runIndex)      t.push(mesh.runIndex.buffer);
+  if (mesh.runOriginalID) t.push(mesh.runOriginalID.buffer);
+  if (facts?.pieces) t.push(facts.pieces.pieceOfTri.buffer);
+  return t;
+}
 
 /** Current size (bytes) of the manifold-3d WASM linear heap — its grown
  *  high-water mark, since WASM memory never shrinks. Reported back to the main
@@ -106,8 +156,49 @@ let initPromise: Promise<void> | null = null;
 let lockdownState: 'pending' | 'ok' | 'failed' = 'pending';
 let lockdownFailure = '';
 
+// ── SES lockdown + Compartment evaluation (#1127) ────────────────────────
+// ON unless the init message says `ses: false` (the kill switch in
+// sesSandboxFlag.ts) — a Worker that never got an init message still runs
+// SES before its first model code. Ordering, enforced below:
+//   1. SES `lockdown()` — before ANY engine glue initialises, so no engine
+//      code ever sees unfrozen intrinsics (sesSandbox.ts);
+//   2. engine init (manifold-3d; the lazy engines load later, on frozen
+//      intrinsics — sesGlueFix.ts rewrites the glue that needs it);
+//   3. workerLockdown (#1090/#1119): the network/storage denylist and the
+//      default-deny allowlist audit of the Worker global, which also sees the
+//      globals SES installs (allowlisted in workerGlobalAllowlist.ts).
+// Fail closed: if SES can't lock down, model code never runs and the app
+// shows the lockdown refusal (lockdownRefusal.ts).
+let sesWanted = true;
+let sesPromise: Promise<void> | null = null;
+let sesFailure = '';
+let sesInitMs: number | null = null;
+/** AppConfig `geometry.sesUndeclaredCheckMaxChars`, from the init message (a
+ *  Worker's getConfig() only sees the defaults). */
+let sesUndeclaredCheckMaxChars = getConfig().geometry.sesUndeclaredCheckMaxChars;
+
+function startSes(testFail: boolean): Promise<void> {
+  if (!sesPromise) {
+    sesPromise = (testFail
+      ? Promise.reject(new Error('lockdown() failed (simulated: partwright.sesSandbox = test-fail)'))
+      : enableSesSandbox({ undeclaredCheckMaxChars: sesUndeclaredCheckMaxChars }).then((r) => { sesInitMs = r.ms; })
+    ).catch((err: unknown) => {
+      sesFailure = err instanceof Error ? err.message : String(err);
+    });
+  }
+  return sesPromise;
+}
+
 function lockdownNow(): void {
   if (lockdownState !== 'pending') return;
+  if (sesWanted && (sesPromise === null || sesFailure)) {
+    // SES was requested but isn't in place: refuse, never fall back to the
+    // unsandboxed compiler.
+    lockdownState = 'failed';
+    lockdownFailure = `SES lockdown failed: ${sesFailure || 'not started'}`;
+    console.error(`[lockdown] ${formatLockdownRefusal(lockdownFailure)}`);
+    return;
+  }
   try {
     const report = lockdownGlobalScope(self);
     // Names the allowlist audit removed that the explicit denylist didn't —
@@ -134,6 +225,8 @@ function lockdownNow(): void {
  *  lockdown failed (the caller must refuse the request), else null. */
 async function ensureSandboxLocked(): Promise<string | null> {
   if (lockdownState === 'pending') {
+    // A request that raced ahead of `init` still gets SES first.
+    if (sesWanted) await startSes(false);
     // Let an in-flight manifold-3d init finish its WASM fetch first; it runs
     // before any model code, so the global fetch is still the pristine one.
     if (initPromise) { try { await initPromise; } catch { /* reported by init */ } }
@@ -144,11 +237,51 @@ async function ensureSandboxLocked(): Promise<string | null> {
     : formatLockdownRefusal(lockdownFailure);
 }
 
+/** Dev-only engine-realm report (see the `inspect_realm` message). */
+function inspectRealm(): Record<string, unknown> {
+  const g = self as unknown as Record<string, unknown>;
+  const urlStatics: Record<string, unknown> = {};
+  const URLCtor = g.URL as Record<string, unknown> | undefined;
+  for (const n of ['createObjectURL', 'revokeObjectURL']) {
+    const d = URLCtor ? Object.getOwnPropertyDescriptor(URLCtor, n) : undefined;
+    let call: string;
+    try {
+      call = 'returned:' + String((URLCtor?.[n] as (x: unknown) => unknown)(n === 'createObjectURL' ? new Blob(['x']) : 'blob:x'));
+    } catch (e) { call = 'threw:' + String(e instanceof Error ? e.message : e); }
+    urlStatics[n] = { type: typeof d?.value, writable: !!d?.writable, configurable: !!d?.configurable, call };
+  }
+  const nav = g.navigator;
+  return {
+    compiler: modelCompilerName(),
+    sesWanted,
+    global: enumerateChain(self, 'self').entries,
+    navigator: nav !== null && typeof nav === 'object' ? enumerateChain(nav, 'navigator').entries : [],
+    urlStatics,
+    frozen: {
+      objectPrototype: Object.isFrozen(Object.prototype),
+      arrayPrototype: Object.isFrozen(Array.prototype),
+      functionPrototype: Object.isFrozen(Function.prototype),
+    },
+  };
+}
+
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
   // ── init ───────────────────────────────────────────────────────────────
   if (msg.type === 'init') {
+    const initStart = performance.now();
+    // Decided synchronously, before the first await, so a request racing the
+    // init sees the same choice. Only an explicit `false` turns SES off.
+    if (!initPromise && sesPromise === null) {
+      sesWanted = msg.ses !== false;
+      if (typeof msg.sesUndeclaredCheckMaxChars === 'number' && Number.isFinite(msg.sesUndeclaredCheckMaxChars) && msg.sesUndeclaredCheckMaxChars >= 0) {
+        sesUndeclaredCheckMaxChars = msg.sesUndeclaredCheckMaxChars;
+      }
+    }
+    // 1. SES lockdown before any engine glue initialises.
+    if (sesWanted) await startSes(import.meta.env.DEV && msg.sesTestFail === true);
+    // 2. Engine init. 3. workerLockdown (lockdownNow) below.
     if (!initPromise) initPromise = manifoldJsEngine.init();
     try {
       await initPromise;
@@ -165,7 +298,7 @@ self.onmessage = async (event: MessageEvent) => {
     }
     lockdownNow();
     if (lockdownState === 'ok') {
-      self.postMessage({ type: 'ready' });
+      self.postMessage({ type: 'ready', initMs: Math.round(performance.now() - initStart), compiler: modelCompilerName(), sesMs: sesInitMs });
     } else {
       self.postMessage({ type: 'error', callId: null, message: formatLockdownRefusal(lockdownFailure) });
     }
@@ -182,9 +315,19 @@ self.onmessage = async (event: MessageEvent) => {
     }
   }
 
+  // ── inspect_realm (dev builds only) ──────────────────────────────────────
+  // Report on the ENGINE realm after lockdown — the Worker global's remaining
+  // names (for the #1119 allowlist audit e2e test) and the SES state. Model
+  // code can't do this itself under SES (it can't name the Worker global), and
+  // only the app can send this message. Production builds drop the branch.
+  if (import.meta.env.DEV && msg.type === 'inspect_realm') {
+    self.postMessage({ type: 'inspect_realm_result', callId: msg.callId, report: inspectRealm() });
+    return;
+  }
+
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -194,7 +337,18 @@ self.onmessage = async (event: MessageEvent) => {
       companionFiles?: Record<string, string>;
       sdfPreviewScale?: number | null;
       manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
+      modelLog?: { maxLines?: unknown; maxChars?: unknown };
     };
+    // This run's console capture (modelConsole.ts), with the main thread's
+    // caps. Each JS engine call below runs inside log.run(...), which only
+    // redirects the console for that synchronous call — model code never
+    // runs across an await, so overlapping async runs can't mix their logs.
+    const log = createModelLog(
+      modelLog && Number.isInteger(modelLog.maxLines) && Number.isInteger(modelLog.maxChars)
+        ? { maxLines: modelLog.maxLines as number, maxChars: modelLog.maxChars as number }
+        : undefined,
+    );
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
     // queue + structured-clone transfer overhead the main thread also sees.
@@ -227,7 +381,7 @@ self.onmessage = async (event: MessageEvent) => {
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
         setActiveImports(runImports);
-        result = voxelEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => voxelEngine.run(code as string, params ?? undefined)), log);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
@@ -251,7 +405,9 @@ self.onmessage = async (event: MessageEvent) => {
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
         setActiveImports(runImports);
-        result = await runReplicadAsync(code as string, params ?? undefined);
+        // runReplicadAsync evaluates the model code before its first await, so
+        // that part runs inside the capture.
+        result = withLogs(await log.run(() => runReplicadAsync(code as string, params ?? undefined)), log);
       } else {
         if (!manifoldReady) {
           self.postMessage({
@@ -316,7 +472,7 @@ self.onmessage = async (event: MessageEvent) => {
           } catch { /* preview is best-effort; fall through to the full render */ }
           finally { setSdfPreviewScale(null); }
         }
-        result = manifoldJsEngine.run(code as string, params ?? undefined);
+        result = withLogs(log.run(() => manifoldJsEngine.run(code as string, params ?? undefined)), log);
       }
 
       // labelMap is Map<string, Set<number>> — not directly serialisable.
@@ -336,18 +492,22 @@ self.onmessage = async (event: MessageEvent) => {
       // api.material(...) — plain serialisable MaterialSpec, crosses as-is.
       const materialSpec = result.materialSpec ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // console.log output from the model code (success and error alike).
+      const logs = result.logs ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
-      // A big manifold-js result: compute the Manifold-dependent stats here,
-      // over the live result, so the main thread can skip rebuilding its own
-      // Manifold from the mesh (seconds of frozen UI at a few million
-      // triangles) until something needs it. See MeshResult.manifoldFacts.
+      // A big result: compute the Manifold-dependent stats here, over the live
+      // result, so the main thread can skip rebuilding its own Manifold from
+      // the mesh (seconds of frozen UI at a few million triangles) until
+      // something needs it. See MeshResult.manifoldFacts. Every engine that
+      // returns a live Manifold returns that Manifold's own mesh (manifold-js,
+      // SCAD's canonical mesh, replicad's getMesh()), so the facts describe it.
       const liveResult = (result as { manifold?: unknown }).manifold;
-      const manifoldFacts = effectiveLang === 'manifold-js' && mesh && liveResult && !result.renderOnly &&
+      const manifoldFacts = mesh && liveResult && !result.renderOnly &&
         typeof manifoldFactsMinTriangles === 'number' && mesh.numTri >= manifoldFactsMinTriangles
-        ? { ...computeManifoldFacts(liveResult), edges: edgeStats(mesh.vertProperties, mesh.numProp, mesh.triVerts, mesh.numTri), pieces: computeMeshPieces(mesh) }
+        ? computeFactsSafely(liveResult, mesh, containmentSamples)
         : undefined;
       if (mesh) {
         // Transfer typed array buffers zero-copy to the main thread.
@@ -369,7 +529,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
@@ -382,6 +542,7 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          logs,
           workerMs: Math.round(performance.now() - execStart),
           engineHeapBytes,
         });
@@ -417,9 +578,11 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance, tolerance } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
       callId: string;
       mesh: MeshData;
+      manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
       targetTriangles: number;
       maxTolerance: number;
       // When set (> 0), run a single direct simplify(tolerance) pass instead of
@@ -472,20 +635,13 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: true, error: null,
         });
       } else if (result) {
-        const transfer: Transferable[] = [
-          result.mesh.vertProperties.buffer,
-          result.mesh.triVerts.buffer,
-        ];
-        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
-        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
-        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
-        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles, containmentSamples);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'simplify_result', callId,
           mesh: result.mesh, triangleCount: result.triangleCount, tolerance: result.tolerance,
-          cancelled: false, error: null,
-        }, transfer);
+          cancelled: false, error: null, ...facts,
+        }, meshTransfer(result.mesh, facts.manifoldFacts));
       } else {
         // null result: target ≥ current triangle count, or no reduction possible.
         self.postMessage({
@@ -516,9 +672,11 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles, manifoldFactsMinTriangles, containmentSamples } = msg as unknown as {
       callId: string;
       mesh: MeshData;
+      manifoldFactsMinTriangles?: number;
+      containmentSamples?: number;
       targetTriangles: number;
       maxEdgeLength: number;
       // When set (> 0), run a single direct refineToLength(edgeLength) pass
@@ -581,20 +739,13 @@ self.onmessage = async (event: MessageEvent) => {
           cancelled: false, exceeded: true, error: null,
         });
       } else if (result) {
-        const transfer: Transferable[] = [
-          result.mesh.vertProperties.buffer,
-          result.mesh.triVerts.buffer,
-        ];
-        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
-        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
-        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
-        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        const facts = resultFacts(result.mesh, manifoldFactsMinTriangles, containmentSamples);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage({
           type: 'enhance_result', callId,
           mesh: result.mesh, triangleCount: result.triangleCount,
-          cancelled: false, error: null,
-        }, transfer);
+          cancelled: false, error: null, ...facts,
+        }, meshTransfer(result.mesh, facts.manifoldFacts));
       } else {
         self.postMessage({
           type: 'enhance_result', callId,

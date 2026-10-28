@@ -1,6 +1,7 @@
 // Splitting one imported mesh into several objects — the pure half of the
 // multi-object import flow shared by 3MF (one object per 3MF object, or per
-// slicer build plate) and STL (one object per connected piece).
+// slicer build plate), STL (one object per connected piece) and multi-file
+// imports (one object per model, or per file — see `multiFileImport.ts`).
 //
 // An import is described as a list of ITEMS (a 3MF build item, an STL piece),
 // each a set of triangles of the parsed source mesh. `planImportSplit` turns
@@ -16,8 +17,9 @@ import type { MeshData } from '../geometry/types';
  *  - `none`   — everything selected lands as ONE object (the classic import).
  *  - `object` — one object per item (3MF object / build item).
  *  - `plate`  — one object per slicer build plate (3MF projects with plates).
- *  - `piece`  — one object per connected piece (STL). */
-export type ImportSplitMode = 'none' | 'object' | 'plate' | 'piece';
+ *  - `piece`  — one object per connected piece (STL).
+ *  - `file`   — one object per source file (a multi-file import). */
+export type ImportSplitMode = 'none' | 'object' | 'plate' | 'piece' | 'file';
 
 export interface ImportSplitItem {
   name: string;
@@ -25,6 +27,8 @@ export interface ImportSplitItem {
   triangles: ArrayLike<number>;
   /** Build plate id (3MF projects with a plate layout). */
   plate?: number;
+  /** Source file index (multi-file imports): into `PlanImportSplitOptions.files`. */
+  file?: number;
   /** Named parts inside the item (a 3MF object's parts): runs of SOURCE
    *  triangle ids; a name may span several runs. */
   parts?: { name: string; firstTriangle: number; triangleCount: number }[];
@@ -47,6 +51,10 @@ interface PlanImportSplitOptions {
   selected?: number[];
   /** The file's build plates, for plate names and order. */
   plates?: ImportSplitPlate[];
+  /** Source file names (multi-file imports), indexed by `ImportSplitItem.file`:
+   *  the object names in `file` mode, and the object-list group of a file's
+   *  objects in `object` mode when that file holds several. */
+  files?: string[];
   /** Name of the single object in `none` mode (usually the file's base name). */
   baseName: string;
 }
@@ -92,15 +100,41 @@ export function planImportSplit(items: ImportSplitItem[], mode: ImportSplitMode,
     return groups;
   }
 
+  const nameOfFile = (f: number) => opts.files?.[f] ?? `File ${f + 1}`;
+  if (mode === 'file') {
+    const byFile = new Map<number, number[]>();
+    const loose: number[] = [];
+    for (const i of selected) {
+      const f = items[i].file;
+      if (f === undefined) { loose.push(i); continue; }
+      if (!byFile.has(f)) byFile.set(f, []);
+      byFile.get(f)!.push(i);
+    }
+    const groups: ImportSplitGroup[] = [...byFile].map(([f, members]) => ({ name: uniqueName(nameOfFile(f), used), items: members }));
+    for (const i of loose) groups.push({ name: uniqueName(items[i].name, used), items: [i] });
+    return groups;
+  }
+
   // object / piece: one object each. Thread them under their plate in the
-  // object list when the selection spans more than one plate.
+  // object list when the selection spans more than one plate — or, in a
+  // multi-file import, under their file when it contributes several.
   const platesUsed = new Set(selected.map(i => items[i].plate).filter(p => p !== undefined));
   const grouped = platesUsed.size > 1;
+  const perFile = new Map<number, number>();
+  for (const i of selected) {
+    const f = items[i].file;
+    if (f !== undefined) perFile.set(f, (perFile.get(f) ?? 0) + 1);
+  }
+  const fileGrouped = perFile.size > 1;
   return selected.map(i => {
     const p = items[i].plate;
+    const f = items[i].file;
+    const group = grouped && p !== undefined ? nameOfPlate(p)
+      : fileGrouped && f !== undefined && perFile.get(f)! > 1 ? nameOfFile(f)
+      : undefined;
     return {
       name: uniqueName(items[i].name, used),
-      ...(grouped && p !== undefined ? { group: nameOfPlate(p) } : {}),
+      ...(group !== undefined ? { group } : {}),
       items: [i],
     };
   });
@@ -131,15 +165,19 @@ export function pieceItems(pieceOfTri: Int32Array, count: number): ImportSplitIt
 /** Cut `tris` (source triangle ids, in the order given) out of `mesh` as a
  *  compact mesh of its own, with the matching `triColor` entries. With
  *  `recenter`, the result's XY bounding-box centre moves to the origin (Z is
- *  kept: z = 0 is the build plate). */
+ *  kept: z = 0 is the build plate). `remap` is an optional scratch vertex map
+ *  (length `mesh.numVert`, all -1, and all -1 again on return) for callers
+ *  cutting many pieces from one big mesh, so each cut costs its own size
+ *  rather than the whole mesh's. */
 export function extractTriangles(
   mesh: MeshData,
   triColor: Int32Array | null,
   tris: ArrayLike<number>,
-  opts: { recenter?: boolean } = {},
+  opts: { recenter?: boolean; remap?: Int32Array } = {},
 ): { mesh: MeshData; triColor: Int32Array | null } {
   const np = mesh.numProp;
-  const remap = new Int32Array(mesh.numVert).fill(-1);
+  const remap = opts.remap ?? new Int32Array(mesh.numVert).fill(-1);
+  const used: number[] = [];
   const triVerts = new Uint32Array(tris.length * 3);
   const outColor = triColor ? new Int32Array(tris.length) : null;
   let numVert = 0;
@@ -147,16 +185,16 @@ export function extractTriangles(
     const t = tris[i];
     for (let k = 0; k < 3; k++) {
       const v = mesh.triVerts[t * 3 + k];
-      if (remap[v] < 0) remap[v] = numVert++;
+      if (remap[v] < 0) { remap[v] = numVert++; used.push(v); }
       triVerts[i * 3 + k] = remap[v];
     }
     if (outColor) outColor[i] = triColor![t];
   }
   const vertProperties = new Float32Array(numVert * 3);
-  for (let v = 0; v < remap.length; v++) {
+  for (const v of used) {
     const r = remap[v];
-    if (r < 0) continue;
     for (let k = 0; k < 3; k++) vertProperties[r * 3 + k] = mesh.vertProperties[v * np + k];
+    remap[v] = -1;
   }
   if (opts.recenter && numVert > 0) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

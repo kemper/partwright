@@ -30,18 +30,20 @@ export function parseReviewVerdict(text: string): ReviewVerdict | null {
 
 /** Whether a finished turn should be reviewed: the switch is on, the turn
  *  ended cleanly (not capped, aborted or errored), it wasn't a planning turn
- *  (nothing is built yet), the agent actually changed the model (inspecting
+ *  (nothing is built yet) or a pause for the user's answers, the agent actually changed the model (inspecting
  *  or answering has nothing to grade), and the session is under its cap. */
 export function shouldAutoReview(opts: {
   enabled: boolean;
   reason: TurnOutcomeReason;
   modelChangingToolCalls: number;
   planning: boolean;
+  /** The turn ended on an askUser card: the work is paused, not finished. */
+  awaitingAnswers?: boolean;
   hadError: boolean;
   spentUsd: number;
   spendCapUsd: number;
 }): boolean {
-  if (!opts.enabled || opts.planning) return false;
+  if (!opts.enabled || opts.planning || opts.awaitingAnswers) return false;
   if (opts.reason !== 'end_turn' || opts.hadError) return false;
   if (opts.modelChangingToolCalls <= 0) return false;
   return !overSpendCap(opts.spentUsd, opts.spendCapUsd);

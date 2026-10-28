@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseSTL, parseSTLSoup, weldSoup } from '../../src/import/parsers/stl';
 import { weldPositions } from '../../src/geometry/weldPositions';
-import { isOrientedEdgeManifold, probeSTL, weldToleranceLadder } from '../../src/import/stlProbe';
+import { isOrientedEdgeManifold, probeIndexed, probeSTL, weldToleranceLadder } from '../../src/import/stlProbe';
 import type { MeshData } from '../../src/geometry/types';
 
 type V = [number, number, number];
@@ -220,5 +220,47 @@ describe('isOrientedEdgeManifold', () => {
   it('accepts two disjoint closed solids', () => {
     const shifted = CUBE.map(t => t.map(([x, y, z]) => [x + 30, y, z] as V));
     expect(isOrientedEdgeManifold(parseSTL(binarySTL([...CUBE, ...shifted]))!)).toBe(true);
+  });
+});
+
+describe('probeIndexed', () => {
+  /** The cube as an indexed mesh whose triangles DON'T share vertices (every
+   *  corner duplicated) — like a 3MF exporter that splits seams. */
+  function unweldedCube(): MeshData {
+    const verts = CUBE.flat(2);
+    return { vertProperties: Float32Array.from(verts), triVerts: Uint32Array.from({ length: verts.length / 3 }, (_, i) => i), numVert: verts.length / 3, numTri: CUBE.length, numProp: 3 };
+  }
+
+  it('settles a clean mesh on the quick check without an ofMesh trial', () => {
+    let trials = 0;
+    const m = parseSTL(binarySTL(CUBE))!;
+    const r = probeIndexed(m, { configuredTolerance: 1e-5, tryManifold: () => { trials++; return { ok: false, error: 'x' }; } });
+    expect(r.isManifold).toBe(true);
+    expect(r.mesh).toBe(m);
+    expect(r.isManifold && r.welded).toBe(false);
+    expect(trials).toBe(0);
+  });
+
+  it('welds split seams on the first ladder rung, keeping triangle order', () => {
+    const raw = unweldedCube();
+    const r = probeIndexed(raw, { configuredTolerance: 1e-5, tryManifold: () => ({ ok: false, error: 'Not manifold' }) });
+    expect(r.isManifold && r.welded).toBe(true);
+    expect(r.mesh.numVert).toBe(8);
+    expect(r.mesh.numTri).toBe(12);
+    // Triangle 0 still has the same corner positions, in order.
+    for (let k = 0; k < 3; k++) {
+      const v = r.mesh.triVerts[k];
+      expect(Array.from(r.mesh.vertProperties.slice(v * 3, v * 3 + 3))).toEqual(CUBE[0][k]);
+    }
+  });
+
+  it('reports the raw mesh and the ladder when nothing passes', () => {
+    const raw = parseSTL(binarySTL(CUBE.slice(1)))!;
+    const r = probeIndexed(raw, { configuredTolerance: 1e-5, tryManifold: () => ({ ok: false, error: 'Not manifold' }) });
+    expect(r.isManifold).toBe(false);
+    if (r.isManifold) return;
+    expect(r.mesh).toBe(raw);
+    expect(r.maxTried).toBe(1e-3);
+    expect(r.manifoldError).toBe('Not manifold');
   });
 });
