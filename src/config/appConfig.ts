@@ -295,6 +295,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Each object's newest saved version keeps the mesh it displayed, so the
+     *  saved model can be restored if a later release builds its code
+     *  differently. Above this triangle count no mesh is kept (the version
+     *  still saves with its fingerprint). About 18 bytes per triangle; 0 never
+     *  keeps one. */
+    versionMeshMaxTriangles: number;
     /** Typed arrays (mesh vertices, triangles, part ids…) at least this many
      *  KB in a saved version are stored in IndexedDB as Blobs. Saving or
      *  reading a plain array copies it on the main thread (~0.5 s for a
@@ -816,6 +822,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    versionMeshMaxTriangles: 1_500_000,
     storedArrayBlobMinKB: 64,
     paintRefinePersistMaxTriangles: 1_000_000,
     paintRefineCacheMaxMB: 256,
@@ -1025,6 +1032,16 @@ export function applyWorkerAiConfig(ai: AppConfig['ai']): void {
   if (!isWorkerContext()) return;
   const base = loadAppConfig();
   cachedConfig = { ...base, ai: { ...base.ai, ...ai } };
+}
+
+/** Seed the engine Worker's config with the main thread's `import` overrides
+ *  that model code reads inside the Worker (e.g. `voxelSdfMaxSamples`, the
+ *  `v.sdf` sampling budget) — the same gap as applyWorkerAiConfig, closed by
+ *  the execute message. No-op outside a Worker. */
+export function applyWorkerImportConfig(overrides: Partial<AppConfig['import']>): void {
+  if (!isWorkerContext()) return;
+  const base = loadAppConfig();
+  cachedConfig = { ...base, import: { ...base.import, ...overrides } };
 }
 
 /** Subscribe to config changes (saved overrides or a reset). Returns an

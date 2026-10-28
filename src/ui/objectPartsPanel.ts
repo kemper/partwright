@@ -49,7 +49,8 @@ export interface PartInfo {
   size: [number, number, number];
   area: number;
   triangleCount: number;
-  /** 1-based piece numbers the selection touches (empty when it's one piece). */
+  /** 0-based piece indices the selection touches — the same index every
+   *  piece-taking call uses (shown 1-based, like the rail's "Piece N"). */
   pieces: number[];
 }
 

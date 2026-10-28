@@ -119,8 +119,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'versions',
-    summary: 'compare, rename and delete saved versions',
-    tools: ['diffVersions', 'renameVersion', 'deleteVersion'],
+    summary: 'compare, rename and delete saved versions; a version that now builds differently than saved (getModelDrift / resolveModelDrift)',
+    tools: ['diffVersions', 'renameVersion', 'deleteVersion', 'getModelDrift', 'resolveModelDrift'],
   },
   {
     id: 'ui',

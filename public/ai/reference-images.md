@@ -149,7 +149,7 @@ m.warnings       // e.g. photo silhouette touches the crop edge, aspect differs 
 ```js
 const m = await partwright.photoMatch({
   views: [{ image: 'front', azimuth: 0, elevation: 0 }, { image: 'back', azimuth: 180, elevation: 0 }],
-  exclude: ['base'], pixelAspect: 0.6, bands: 20,     // top-level crop/bg/bgTolerance/pixelAspect are defaults for every view
+  exclude: ['base'], pixelAspect: 0.6, bands: 20,     // top-level bg/bgTolerance/pixelAspect are defaults for every view (crop is per view — a top-level crop with several views is an error)
 });
 m.silhouetteIoU  // mean over the views; m.minIoU = the worst view
 m.worst          // the views' findings interleaved, each prefixed "[label]"

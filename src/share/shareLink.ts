@@ -117,9 +117,10 @@ export function isSafeImageDataUrl(s: unknown): s is string {
 // === trim ===
 
 /** Drop the heavy, share-irrelevant parts of an exported session: the
- *  base64-encoded imported-mesh buffers (STL geometry) and persisted surface
+ *  base64-encoded imported-mesh buffers (STL geometry), persisted surface
  *  textures (`api.surface.*` results — the recipient recomputes them on first
- *  run) on each version, and any bulky mesh array smuggled inside
+ *  run) and stored newest meshes (`latestMesh`) on each version (the small
+ *  `fingerprint` stays), and any bulky mesh array smuggled inside
  *  `geometryData` (e.g. raw vertex/triangle arrays) — while KEEPING the stats
  *  (volume/surfaceArea/boundingBox/componentCount/isManifold) and
  *  `colorRegions` that the preview needs. Does not mutate the input. */
@@ -129,7 +130,7 @@ export function trimForShare(exported: ExportedSession): ExportedSession {
     ...exported,
     session: trimAttachmentsForShare(exported.session),
     versions: versions.map(v => {
-      const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, geometryData, ...rest } = v;
+      const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, latestMesh: _dropLatest, geometryData, ...rest } = v;
       return { ...rest, geometryData: trimGeometryData(geometryData) };
     }),
   };
@@ -329,6 +330,9 @@ export function validateSharePayloadShape(raw: unknown): ExportedSession {
     assertStringCap(v.code, MAX_CODE_CHARS, 'version code');
     assertStringCap(v.label, MAX_LABEL_CHARS, 'version label');
     capVersionAnnotations(v);
+    // A share link never carries a stored mesh (trimForShare drops it on the
+    // sending side); drop one a hand-built payload smuggles in.
+    delete v.latestMesh;
   }
 
   // Drop an unsafe leading thumbnail rather than rejecting the whole payload —
