@@ -65,3 +65,52 @@ test.describe('reference geometry in renders', () => {
     expect(out.bad.error).toMatch(/reference/);
   });
 });
+
+test.describe('annotated sections', () => {
+  test('each cut reads like its view, is captioned, and outlines the reference', async () => {
+    const out = await page.evaluate(async ([head]) => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      await pw.createSession('annotated-sections');
+      // An L: a 10×6×20 post (x 0..10, y 0..6, z 0..20) with an arm reaching
+      // to x = 30 at the top — asymmetric on every axis.
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube([10, 6, 20]).add(Manifold.cube([30, 6, 4]).translate([0, 0, 16]));');
+      const y = pw.renderSection({ axis: 'y', offset: 3 });
+      const x = pw.renderSection({ axis: 'x', offset: 5 });
+      const z = pw.renderSection({ axis: 'z', offset: 18 });
+      await pw.setReferenceGeometry(head);
+      const withRef = pw.renderSection({ axis: 'y', offset: 3 });
+      const noRef = pw.renderSection({ axis: 'y', offset: 3, reference: false });
+      pw.clearReferenceGeometry();
+      return { y, x, z, withRef, noRef };
+    }, ['return api.Manifold.cube([40, 2, 30]).translate([-5, 2, -5]);']);
+    type S = { view: { right: string; up: string }; boundingBox: { min: number[]; max: number[] }; svg: string; area: number; referenceContours?: number };
+    const y = out.y as S, x = out.x as S, z = out.z as S;
+
+    // y cut, seen from the front: +X right, +Z up — the arm points right and sits at the top.
+    expect(y.view).toMatchObject({ right: '+X', up: '+Z' });
+    expect(y.boundingBox.min[0]).toBeCloseTo(0, 3);
+    expect(y.boundingBox.max[0]).toBeCloseTo(30, 3);
+    expect(y.boundingBox.min[1]).toBeCloseTo(0, 3);
+    expect(y.boundingBox.max[1]).toBeCloseTo(20, 3);
+    // x cut, seen from the right: +Y right, +Z up.
+    expect(x.view).toMatchObject({ right: '+Y', up: '+Z' });
+    expect(x.boundingBox.min).toEqual([expect.closeTo(0, 3), expect.closeTo(0, 3)]);
+    expect(x.boundingBox.max).toEqual([expect.closeTo(6, 3), expect.closeTo(20, 3)]);
+    // z cut, from above: +X right, +Y up.
+    expect(z.view).toMatchObject({ right: '+X', up: '+Y' });
+    expect(z.boundingBox.max).toEqual([expect.closeTo(30, 3), expect.closeTo(6, 3)]);
+    expect(z.area).toBeCloseTo(180, 1);
+
+    // Caption, axis labels and a scale bar are in the image.
+    expect(y.svg).toContain('y = 3 · seen from −Y (front)');
+    expect(y.svg).toContain('>+X<');
+    expect(y.svg).toContain('>+Z<');
+    expect(y.svg).toContain('30 × 20');
+
+    const withRef = out.withRef as S, noRef = out.noRef as S;
+    expect(withRef.referenceContours).toBeGreaterThan(0);
+    expect(withRef.svg).toContain('stroke-dasharray');
+    expect(noRef.referenceContours).toBeUndefined();
+    expect(noRef.svg).not.toContain('stroke-dasharray');
+  });
+});

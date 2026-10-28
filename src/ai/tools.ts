@@ -2258,13 +2258,14 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). Returns the section as an image plus { axis, offset, area, contours } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
     input_schema: {
       type: 'object',
       properties: {
         axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Cut axis. Default 'z'." },
         offset: { type: 'number', description: 'Cut position along the axis, in model units. Default: bounding-box midpoint.' },
-        size: { type: 'integer', minimum: 16, maximum: 1024, description: 'Image size in pixels. Default 320.' },
+        size: { type: 'integer', minimum: 16, maximum: 1024, description: 'Image width in pixels. Default 320.' },
+        reference: { type: 'boolean', description: 'Outline the setReferenceGeometry ghost\'s section (dashed). Default true when one is set.' },
       },
     },
   },
@@ -3562,11 +3563,11 @@ async function executeSliceAtZVisual(api: PartwrightAPI, input: Record<string, u
   }
 }
 
+/** Rasterize an SVG to a PNG `size` px wide, keeping its aspect ratio (an
+ *  annotated section is taller than wide). */
 function rasterizeSvg(svg: string, size: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
     const ctx = canvas.getContext('2d');
     if (!ctx) { reject(new Error('no canvas context')); return; }
     const blob = new Blob([svg], { type: 'image/svg+xml' });
@@ -3574,9 +3575,12 @@ function rasterizeSvg(svg: string, size: number): Promise<string> {
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
+      const aspect = img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalHeight / img.naturalWidth : 1;
+      canvas.width = size;
+      canvas.height = Math.round(size * aspect);
       ctx.fillStyle = '#1c1c1c';
-      ctx.fillRect(0, 0, size, size);
-      ctx.drawImage(img, 0, 0, size, size);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL('image/png');
       resolve(dataUrl.replace(/^data:image\/png;base64,/, ''));
     };
@@ -4415,16 +4419,16 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
 }
 
 async function executeRenderSection(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
-  const unknown = Object.keys(input).filter(k => k !== 'axis' && k !== 'offset' && k !== 'size');
-  if (unknown.length > 0) return { content: `renderSection: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: axis, offset, size.`, isError: true };
+  const unknown = Object.keys(input).filter(k => k !== 'axis' && k !== 'offset' && k !== 'size' && k !== 'reference');
+  if (unknown.length > 0) return { content: `renderSection: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: axis, offset, size, reference.`, isError: true };
   const size = typeof input.size === 'number' && Number.isFinite(input.size) ? Math.min(1024, Math.max(16, Math.round(input.size))) : 320;
-  const result = api.renderSection({ ...input, size }) as { svg: string; axis: string; offset: number; area: number; contours: number; error?: string } | null;
+  const result = api.renderSection({ ...input, size }) as { svg: string; axis: string; offset: number; area: number; contours: number; view?: unknown; boundingBox?: unknown; referenceContours?: number; error?: string } | null;
   if (!result) return { content: 'renderSection: no geometry loaded — run the code first.', isError: true };
   if (result.error) return { content: result.error, isError: true };
   if (typeof result.svg !== 'string' || typeof result.area !== 'number') return { content: 'renderSection returned an unexpected value', isError: true };
   const kind = result.contours === 1 ? 'solid' : result.contours > 1 ? 'hollow/multi-piece' : 'empty';
   const summary = `Cross-section ${result.axis}=${Number(result.offset.toFixed(4))}: area=${result.area.toFixed(3)}, contours=${result.contours} (${kind})`;
-  const data = { axis: result.axis, offset: result.offset, area: result.area, contours: result.contours };
+  const data = { axis: result.axis, offset: result.offset, area: result.area, contours: result.contours, view: result.view, boundingBox: result.boundingBox, ...(result.referenceContours !== undefined ? { referenceContours: result.referenceContours } : {}) };
   try {
     const pngBase64 = await rasterizeSvg(result.svg, size);
     return {

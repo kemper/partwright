@@ -43,6 +43,7 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession, listSessionImportSignatures } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
+import { getReferenceMesh } from './renderer/referenceMesh';
 import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
@@ -670,6 +671,19 @@ let lastVoxelPieceCount: number | undefined;
  *  returned as `logs` by run / runAndSave / setParams so agents can debug
  *  without throwing. Not part of the geometry data (never saved). */
 let lastRunLogs: string[] | undefined;
+/** How a section through each axis is shown: manifold-3d slices only along
+ *  Z, so x/y cuts rotate that axis onto Z first; `map` turns the rotated
+ *  slice's 2D point into image (right, up) so each cut reads like the
+ *  matching renderView — y from the front (+X right, +Z up), x from the right
+ *  (+Y right, +Z up), z from above (+X right, +Y up). */
+const SECTION_FRAMES: Record<'x' | 'y' | 'z', { rotate: [number, number, number] | null; map: (p: [number, number]) => [number, number]; right: string; up: string; from: string }> = {
+  // rotate([0,-90,0]) sends (x, y, z) → (−z, y, x): slice point (−z, y).
+  x: { rotate: [0, -90, 0], map: ([a, b]) => [b, -a], right: '+Y', up: '+Z', from: '+X (right)' },
+  // rotate([90,0,0]) sends (x, y, z) → (x, −z, y): slice point (x, −z).
+  y: { rotate: [90, 0, 0], map: ([a, b]) => [a, -b], right: '+X', up: '+Z', from: '−Y (front)' },
+  z: { rotate: null, map: (p) => p, right: '+X', up: '+Y', from: '+Z (above)' },
+};
+
 /** `{ logs }` for an API result, or nothing when the last run printed nothing. */
 function lastRunLogsField(): { logs?: string[] } {
   return lastRunLogs ? { logs: lastRunLogs } : {};
@@ -15402,7 +15416,11 @@ async function main() {
       if (!liveManifold()) return null;
       const s = sliceAtZ(liveManifold(), z);
       if (!s) return null;
-      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox);
+      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox, 400, {
+        title: `z = ${Number(z.toFixed(4))} · seen from ${SECTION_FRAMES.z.from}`,
+        right: SECTION_FRAMES.z.right,
+        up: SECTION_FRAMES.z.up,
+      });
       return { svg, area: s.area, contours: s.polygons.length };
     },
 
@@ -15413,22 +15431,33 @@ async function main() {
      *  - `axis`: 'x' | 'y' | 'z' (default 'z')
      *  - `offset`: where along the axis to cut. If omitted, defaults to the
      *    midpoint of the model's bounding box along that axis.
-     *  - `size`: pixel size of the rendered SVG (default 400). The result is
+     *  - `size`: pixel width of the rendered SVG (default 400). The result is
      *    a data URL the agent can drop straight into setImages or display.
+     *  - `reference`: outline the setReferenceGeometry ghost's section (dashed);
+     *    default true when one is set.
+     *
+     *  The image reads like the matching renderView: a y cut is seen from the
+     *  front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z
+     *  cut from above (+X right, +Y up). It carries a caption, labelled axis
+     *  arrows, a scale bar and the section's extents; `view` and `boundingBox`
+     *  (in those image axes) say the same in data.
      *
      *  Works for any engine (manifold-js or SCAD) — it operates on the rendered
      *  manifold, not the source code. */
-    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number }):
-      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null | { error: string } {
+    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number; reference?: boolean }):
+      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number; view: { right: string; up: string; from: string }; boundingBox: { min: [number, number]; max: [number, number] } | null; referenceContours?: number } | null | { error: string } {
       // Widened explicitly: the closure below assigns these, which TS's
       // control-flow narrowing doesn't see.
       let axis = 'z' as 'x' | 'y' | 'z';
       let offset: number | undefined;
       let size = 400;
+      let reference: boolean | undefined;
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderSection(options)')!;
-          assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
+          assertNoUnknownKeys(o, ['axis', 'offset', 'size', 'reference'], 'renderSection(options)');
+          assertBoolean(o.reference, 'renderSection(options).reference', { optional: true });
+          reference = o.reference as boolean | undefined;
           if (o.axis !== undefined) {
             assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
             axis = o.axis as 'x' | 'y' | 'z';
@@ -15442,37 +15471,57 @@ async function main() {
       if (bad) return bad;
       if (!liveManifold()) return null;
 
-      // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
-      // the manifold so that axis points along Z, slice, then label the result
-      // with the original axis and the un-rotated offset.
       const bb = liveManifold().boundingBox();
       const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
       const lo = bb.min[axisIdx];
       const hi = bb.max[axisIdx];
       const actualOffset = offset ?? (lo + hi) / 2;
+      const frame = SECTION_FRAMES[axis];
 
-      let sliceTarget = liveManifold();
-      let zHeight = actualOffset;
-      let unrotate = false;
-      if (axis === 'x') {
-        // Rotate +X to +Z (rotation around Y by -90°).
-        sliceTarget = liveManifold().rotate([0, -90, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      } else if (axis === 'y') {
-        // Rotate +Y to +Z (rotation around X by 90°).
-        sliceTarget = liveManifold().rotate([90, 0, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      }
-
-      const result = sliceAtZ(sliceTarget, zHeight);
-      if (unrotate && typeof sliceTarget.delete === 'function') {
-        try { sliceTarget.delete(); } catch { /* already gone */ }
-      }
+      // Slice `m` through the cut plane, in image (right, up) coordinates.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sectionOf = (m: any) => {
+        const target = frame.rotate ? m.rotate(frame.rotate) : m;
+        const s = sliceAtZ(target, actualOffset);
+        if (frame.rotate) { try { target.delete(); } catch { /* already gone */ } }
+        if (!s) return null;
+        return { polygons: (s.polygons as [number, number][][]).map(c => c.map(frame.map)), area: s.area };
+      };
+      const result = sectionOf(liveManifold());
       if (!result) return null;
 
-      const svg = renderSliceSVG(result.polygons as [number, number][][], result.boundingBox, size);
+      let minR = Infinity, minU = Infinity, maxR = -Infinity, maxU = -Infinity;
+      for (const c of result.polygons) for (const [r, u] of c) {
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (u < minU) minU = u; if (u > maxU) maxU = u;
+      }
+      const hasSection = result.polygons.length > 0;
+      // An empty cut still gets a frame (the model's extent) for the caption.
+      const box2d = hasSection
+        ? { minX: minR, maxX: maxR, minY: minU, maxY: maxU }
+        : { minX: -1, maxX: 1, minY: -1, maxY: 1 };
+
+      // The reference ghost through the same plane, rebuilt from its mesh
+      // (pure data — no model code runs here).
+      let referencePolys: [number, number][][] | undefined;
+      const ref = (reference ?? hasPhantom()) ? getReferenceMesh() : null;
+      if (ref) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let rm: any = null;
+        try {
+          rm = getModule().Manifold.ofMesh(ref.mesh);
+          referencePolys = sectionOf(rm)?.polygons;
+        } catch { /* a non-manifold reference can't be sliced */ }
+        try { rm?.delete?.(); } catch { /* ignore */ }
+      }
+
+      const offsetText = Number(actualOffset.toFixed(4));
+      const svg = renderSliceSVG(result.polygons, box2d, size, {
+        title: `${axis} = ${offsetText} · seen from ${frame.from}${hasSection ? '' : ' · no section here'}`,
+        right: frame.right,
+        up: frame.up,
+        reference: referencePolys,
+      });
       const dataUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
       return {
         dataUrl,
@@ -15481,6 +15530,9 @@ async function main() {
         offset: actualOffset,
         area: result.area,
         contours: result.polygons.length,
+        view: { right: frame.right, up: frame.up, from: frame.from },
+        boundingBox: hasSection ? { min: [minR, minU], max: [maxR, maxU] } : null,
+        ...(referencePolys ? { referenceContours: referencePolys.length } : {}),
       };
     },
 
@@ -21927,7 +21979,7 @@ async function main() {
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'sliceAtZVisual': { signature: 'sliceAtZVisual(z) -- Cross-section at height z as an SVG string -> {svg, area, contours}, null when no geometry, or {error} (contours > 1 = hollow / multi-piece)', docs: '/ai/visual-verification.md' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderSection':   { signature: 'renderSection({axis?, offset?, size?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'renderSection':   { signature: 'renderSection({axis?, offset?, size?, reference?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}; captioned image with axis arrows + scale bar, reference ghost outlined. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'componentBounds': { signature: 'componentBounds() -- Per-connected-component info: [{index, volume, triangleCount, bbox}], largest first. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'checkContainment': { signature: 'checkContainment() -- Components fully inside another (invisible, wasted geometry) -> ContainmentWarning[] (empty = none) or null when no geometry', docs: '/ai/visual-verification.md#stat-based-verification' },
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },

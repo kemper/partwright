@@ -55,3 +55,25 @@ The collapsed state is a per-viewer localStorage convenience.
 - **Camera still frames the model**: `buildViewCamera` must stay identical
   for `probePixel`, so the reference may be cropped where it extends past
   the model's frame.
+
+## Assistant
+
+## Annotated sections
+
+- **Fix the orientation, not just label it**: x/y cuts rotate onto Z before
+  slicing, so the old y cut came out upside down (−Z up) and the x cut had
+  −Z rightward. A per-axis frame table (`SECTION_FRAMES` in main.ts) maps
+  each slice point into image (right, up), so each cut reads like its
+  renderView: y from the front (+X, +Z), x from the right (+Y, +Z), z from
+  above (+X, +Y). An asymmetric L-shape e2e test pins all three mappings.
+- **Annotations**: a caption, labelled axis arrows, a round-number scale bar
+  and the section's extents are drawn in the SVG. `view` and `boundingBox`
+  (in image axes) say the same in data, so agents need no rotation maths.
+- **Reference outline**: the ghost's mesh is rebuilt as a Manifold (pure
+  data) and sliced through the same plane, then drawn dashed green. This
+  covers the "and sections" half of the ghost-in-renders item.
+- **Even-odd fill**: all contours go into one path, so a hollow wall's
+  inside stays empty. Before, each contour was filled separately and holes
+  were painted over.
+- `rasterizeSvg` (the chat-tool path) now keeps the SVG's aspect ratio,
+  since annotated sections are taller than wide.
