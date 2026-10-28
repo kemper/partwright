@@ -344,8 +344,8 @@ await partwright.exportGLBObjects(objectIds?, filename?, {split?, exclude?})  //
 // exclude: ["<object> · <item>"] leaves items out. listExportItems(objectIds?) lists what each object splits into.
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
-await partwright.exportSessionData(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeLatestMeshes?})    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
-await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object itself (default: current; thumbnails and latest meshes off by default), null if none, or {error}. includeLatestMeshes embeds each object's newest mesh as saved -- see /ai/file-io.md#built-differently-than-saved
+await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object (default: current), null if none, or {error}
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
@@ -445,10 +445,7 @@ partwright.getCharacterSpec()                         // Read the spec from the 
 partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
 await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
-partwright.getModelDrift()              // Does the open version's code now build a different model than saved (an app update, or random code)? -> {changed:false} | {changed:true, version, savedWith, running, differences[], canRestore, …}. loadVersion reports it as builtDifferently. See /ai/file-io.md#built-differently-than-saved
-await partwright.restoreSavedModel()    // Commit the drifted version's saved mesh as a new version (newest versions keep one: canRestore) -> {ok, label, geometry} | {error}. Ask the user first
-await partwright.keepRebuiltModel()     // Save the drifted version's newly built model as a new version -> {ok, id, index, label} | {error}. Ask the user first
-partwright.dismissModelDrift()          // Stop the drift notice for the open version on this device (the dialog's Ignore) -> {ok, version} | {error}
+partwright.getModelDrift() / restoreSavedModel() / keepRebuiltModel() / dismissModelDrift() // a version whose code now builds a different model than saved -- /ai/file-io.md#built-differently-than-saved
 await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -581,9 +578,7 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
-partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
-partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
+partwright.get/setBrushSurface, setBrushDepth, get/setBrushAlign, get/setBrushFrontFacesOnly // UI brush settings -- /ai/colors.md#ui-brush-settings
 partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
 partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
 await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
@@ -682,14 +677,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
-
-```js
-const head = Manifold.ofMesh(api.imports[0]);
-console.log('head', head);                       // → head Manifold{tris: 946240, bbox: [[-71, -96, -98], [71, 97, 99]]}
-const shell = api.shell(head, { thickness: 2.5 });
-console.log({ volume: shell.volume(), pieces: shell.decompose().length });
-```
+**Debug with `console.log` — its output comes back to you** as `logs` on `run`/`runAndSave`/`runIsolated` and in `getGeometryData()`, even when the code throws. Details: [/ai/iteration-workflow.md#debugging-model-code-with-consolelog](/ai/iteration-workflow.md#debugging-model-code-with-consolelog).
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
 

@@ -114,8 +114,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'printing',
-    summary: 'printer settings and model units',
-    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits'],
+    summary: 'printer settings, model units and wall thickness (thicknessMap)',
+    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits', 'thicknessMap'],
   },
   {
     id: 'versions',

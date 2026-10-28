@@ -100,3 +100,17 @@ in exactly one group. Main itself was red on that check: `listExportItems`,
 fix: those go in `objects`, and the drift tools go in `versions`. The drift
 tools stay out of core, so the turn-0 tool budget holds; `loadVersion` (core)
 still reports drift.
+
+## Second merge with main: context budget
+
+The newest main was itself red on two AI context checks. `thicknessMap` had no
+tool group, and `ai.md` was about 700 characters over its system-prompt budget.
+This PR then added about 1,100 characters more. The fix:
+
+- `thicknessMap` goes in the `printing` group.
+- The drift and export lines in `ai.md` shrink to one-line pointers to
+  `file-io.md`.
+- Two of main's detailed passages move to their subdocs, each leaving a one-line
+  pointer: the console.log debugging section moves to `iteration-workflow.md`,
+  and the brush-setting getters and setters move to `colors.md`. Nothing is
+  removed.
