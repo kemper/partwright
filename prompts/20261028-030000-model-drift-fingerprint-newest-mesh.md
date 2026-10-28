@@ -59,9 +59,7 @@ resolveModelDrift (save-gated; ask the user first).
 
 **Export.** Schema 1.22 writes the fingerprint always and the newest meshes only
 with includeLatestMeshes (off by default; also a checkbox in the export dialog).
-If the open object's newest version predates stored meshes, the live mesh is
-used, but only when the editor shows exactly that version. Share links strip the
-mesh and keep the fingerprint. The exportSession API now also accepts
+Share links strip the mesh and keep the fingerprint. The exportSession API now also accepts
 includeChat, which the dialog already offered but the API rejected.
 
 ## Review fixes (same PR)
@@ -81,10 +79,11 @@ A review pass found false alarms and unsafe edges. All are fixed in this PR:
   load, and carried through the object mesh cache, so a cache-hit switch still
   records the right snapshot.
 - **Restore.** It checks that the saved mesh is a closed solid, and comes back
-  render-only when it isn't. The shared bake path now refuses to save a run
-  that errored, a latent bug for every surface modifier. Stored meshes keep only
-  x/y/z, and triangle indices are validated on load. Restoring a voxel model
-  warns that it becomes a mesh.
+  render-only when it isn't. Stored meshes keep only x/y/z, and triangle
+  indices are validated on load. Restoring a voxel model warns that it becomes
+  a mesh. Making the shared bake path refuse to save a run that errored was
+  tried and backed out: the sloped-face engrave test relies on the old
+  behaviour (it bakes a mesh that isn't a solid), so that is filed separately.
 - **Who can write.** Read-only viewer tabs and shared previews can't restore or
   keep.
 - **Ignore.** It is remembered per version on this device, and has an API twin

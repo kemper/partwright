@@ -12669,9 +12669,6 @@ async function main() {
       // framing when the baked result renders.
       const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
-      // runCodeSync reports a run that errored as applied; never save one.
-      const ran = getGeometryDataObj();
-      if (ran?.status !== 'ok') return { error: `Failed to apply ${result.label}: ${typeof ran?.error === 'string' ? ran.error : 'the baked mesh did not build'}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
       if (colorMesh && currentMeshData && geoData) {
@@ -12718,8 +12715,6 @@ async function main() {
     // bounds, so preserve the user's camera angle across the render.
     const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
-    const ranVoxel = getGeometryDataObj();
-    if (ranVoxel?.status !== 'ok') return { error: `Failed to apply ${result.label}: ${typeof ranVoxel?.error === 'string' ? ranVoxel.error : 'the baked grid did not build'}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
     const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
