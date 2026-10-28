@@ -107,8 +107,9 @@ import { export3MF, build3MF } from './export/threemf';
 import { collectExportColors, suggestColorMerges, applyColorRemap, normalizeColorRemap, composeColorRemaps, countRemappedColors, type ColorRemap } from './export/exportColors';
 import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
-import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy, type PartExport } from './export/threemfProject';
+import { showExportPartsModal, WHOLE_ITEM_KEY, type ExportPartChoice, type ExportObjectSplitInfo } from './ui/exportPartsModal';
+import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplitMode, splitItemName, splitItems, EXPORT_SPLIT_MODES, type ExportSplitMode, type ObjectSplitAnalysis } from './export/exportSplit';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
@@ -6194,9 +6195,15 @@ async function main() {
     partId: string,
     name: string,
     opts: { onStart?: () => void } = {},
-  ): Promise<{ name: string; mesh: MeshData } | null> {
+  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
-      return { name, mesh: coloredMeshForExport(currentMeshData) };
+      // The label map indexes the run's mesh; a texture / paint subdivision /
+      // simplify pass may have swapped the displayed mesh since, so carry the
+      // labels over to the triangles actually exported.
+      const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
+        ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
+        : currentLabelMap;
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6274,11 +6281,13 @@ async function main() {
     }
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
-    return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null };
   }
 
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
+  /** One object's baked, coloured mesh (plus its part labels, for splitting). */
+  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string }
 
   // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
   // process-wide singleton and each batch sizes + disposes it, so two concurrent
@@ -6309,7 +6318,7 @@ async function main() {
       onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
       cancel?: { cancelled: boolean };
     } = {},
-  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+  ): Promise<{ baked: BakedExportObject[] }> {
     // Wait for any in-flight export bake, then claim the pool for this one.
     const prior = exportBakeMutex;
     let release!: () => void;
@@ -6317,9 +6326,10 @@ async function main() {
     await prior.catch(() => { /* a prior bake's failure must not block this one */ });
 
     try {
+      if (opts.cancel?.cancelled) return { baked: [] };
       const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
       setEnginePoolSize(desired);
-      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      const slots: (BakedExportObject | null)[] = new Array(parts.length).fill(null);
       try {
         await Promise.all(parts.map(async (part, i) => {
           if (opts.cancel?.cancelled) return;
@@ -6329,7 +6339,7 @@ async function main() {
             });
             if (opts.cancel?.cancelled) return;
             if (result) {
-              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              slots[i] = { ...result, id: part.id, ...(part.group ? { group: part.group } : {}) };
               opts.onStatus?.(part.id, 'done');
             } else {
               opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
@@ -6343,10 +6353,169 @@ async function main() {
       } finally {
         disposeEnginePool('Export bake finished');
       }
-      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
+      return { baked: slots.filter((s): s is BakedExportObject => s !== null) };
     } finally {
       release();
     }
+  }
+
+  /** Bake + split-analysis cache for one export: the picker measures each
+   *  ticked object through it (to offer Split → Pieces / Parts), and the
+   *  export that follows reuses those bakes instead of building again.
+   *  Requests made close together bake as one pool batch. */
+  function createExportSplitSession() {
+    const pending = new Map<string, Promise<BakedExportObject | null>>();
+    const ready = new Map<string, BakedExportObject>();
+    const analyses = new Map<string, ObjectSplitAnalysis>();
+    let queue: { part: ExportBakePart; resolve: (b: BakedExportObject | null) => void }[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // One batch at a time: requests that arrive while a batch bakes join the
+    // next one, so ticking objects one by one doesn't cold-start a pool each.
+    let running = false;
+    const cancelState = { cancelled: false };
+    const flush = async () => {
+      timer = null;
+      if (running || queue.length === 0) return;
+      running = true;
+      const batch = queue;
+      queue = [];
+      try {
+        const { baked } = await bakePartsParallel(batch.map(b => b.part), { cancel: cancelState });
+        const byId = new Map(baked.map(b => [b.id, b]));
+        for (const b of batch) b.resolve(byId.get(b.part.id) ?? null);
+      } catch {
+        for (const b of batch) b.resolve(null);
+      } finally {
+        running = false;
+        if (queue.length > 0 && !cancelState.cancelled) void flush();
+      }
+    };
+    /** Stop: drop queued bakes (they resolve null) and skip unstarted parts of
+     *  the batch in flight, so a dismissed picker or a cancelled export stops
+     *  holding the export pool. */
+    const cancel = () => {
+      cancelState.cancelled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const dropped = queue;
+      queue = [];
+      for (const b of dropped) b.resolve(null);
+    };
+    const bake = (id: string): Promise<BakedExportObject | null> => {
+      let p = pending.get(id);
+      if (p) return p;
+      const part = getState().parts.find(x => x.id === id);
+      if (!part) return Promise.resolve(null);
+      const bakePart: ExportBakePart = { id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) };
+      p = id === getState().currentPart?.id && currentMeshData
+        // The open object is already on screen — no pool round-trip.
+        ? bakeColoredMeshForPart(id, part.name).then(r => (r ? { ...r, id, ...(part.group ? { group: part.group } : {}) } : null))
+        : new Promise<BakedExportObject | null>(resolve => {
+          if (cancelState.cancelled) { resolve(null); return; }
+          queue.push({ part: bakePart, resolve });
+          if (!running) timer ??= setTimeout(() => { void flush(); }, 30);
+        });
+      p = p.then(b => { if (b) ready.set(id, b); return b; }, () => null);
+      pending.set(id, p);
+      return p;
+    };
+    const analysisOf = (b: BakedExportObject): ObjectSplitAnalysis => {
+      let a = analyses.get(b.id);
+      if (!a) {
+        a = analyzeObjectSplit(b.mesh, b.labels ?? null, { maxItems: getConfig().renderer.exportMaxSplitItems });
+        analyses.set(b.id, a);
+      }
+      return a;
+    };
+    const analyze = async (id: string): Promise<ExportObjectSplitInfo | null> => {
+      const b = await bake(id);
+      if (!b) return null;
+      const a = analysisOf(b);
+      const info = (items: ReturnType<typeof splitItems>) => items?.map(it => ({ key: it.key, name: it.name, size: it.size, fused: it.fused, labels: it.labels })) ?? null;
+      return { size: a.size, pieceCount: a.pieceCount, pieces: info(a.pieces), parts: info(a.parts) };
+    };
+    const thumbnail = (id: string, mode: ExportSplitMode, key: string): HTMLCanvasElement | null => {
+      const b = ready.get(id);
+      if (!b) return null;
+      const it = splitItems(analysisOf(b), mode)?.find(x => x.key === key);
+      if (!it) return null;
+      return renderSingleViewCanvas(extractItemMesh(b.mesh, it.triangles), {
+        elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
+        ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
+      });
+    };
+    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
+  }
+  type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
+
+  /** The picker's split choice (by object id → item key) for buildExportItems. */
+  interface ExportItemChoice {
+    splits?: Record<string, ExportSplitMode>;
+    excluded?: Record<string, string[]>;
+    plates?: Record<string, Record<string, number>>;
+  }
+
+  /** Turn baked objects + a split choice into the items one file holds: a
+   *  whole object stays one item; a split object becomes one item per piece
+   *  or part (named "<object> · <item>"), minus the excluded ones. */
+  function buildExportItems(baked: BakedExportObject[], session: ExportSplitSession, choice: ExportItemChoice): PartExport[] {
+    const out: PartExport[] = [];
+    for (const b of baked) {
+      const mode = choice.splits?.[b.id] ?? 'whole';
+      const items = mode === 'whole' ? null : splitItems(session.analysisOf(b), mode);
+      const plates = choice.plates?.[b.id];
+      if (!items) {
+        const plate = plates?.[WHOLE_ITEM_KEY];
+        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}) });
+        continue;
+      }
+      const skip = new Set(choice.excluded?.[b.id] ?? []);
+      for (const it of items) {
+        if (skip.has(it.key)) continue;
+        const plate = plates?.[it.key];
+        out.push({
+          name: splitItemName(b.name, it.name),
+          mesh: extractItemMesh(b.mesh, it.triangles),
+          ...(b.group ? { group: b.group } : {}),
+          splitOf: b.id,
+          ...(plate !== undefined ? { plate } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Bake the picker's selection through its session (already-measured objects
+   *  are instant), reporting each object's state to the export progress modal. */
+  async function bakeSelectionForExport(
+    bakeParts: ExportBakePart[],
+    session: ExportSplitSession,
+    progress: { setStatus: (id: string, status: 'rendering' | 'done' | 'failed') => void },
+    cancel: { cancelled: boolean },
+  ): Promise<BakedExportObject[]> {
+    const out = await Promise.all(bakeParts.map(async p => {
+      if (!session.isReady(p.id)) progress.setStatus(p.id, 'rendering');
+      const b = await session.bake(p.id);
+      if (cancel.cancelled) return null;
+      progress.setStatus(p.id, b ? 'done' : 'failed');
+      return b;
+    }));
+    return out.filter((b): b is BakedExportObject => b !== null);
+  }
+
+  /** The export picker's Split hooks for one session. */
+  const splitPickerOptions = (session: ExportSplitSession) => ({ analyze: session.analyze, thumbnail: session.thumbnail });
+
+  /** True when the open object is the session's only object and is made of
+   *  several separate pieces — then a single-object export still opens the
+   *  picker so the pieces can be split. Voxel objects keep the direct export
+   *  (their greedy-meshed file mesh doesn't come from the picker's bake). */
+  function singleObjectCanSplit(): boolean {
+    const st = getState();
+    if (!st.session || st.parts.length !== 1 || !st.currentPart || !currentMeshData) return false;
+    if (getActiveLanguage() === 'voxel') return false;
+    const gd = getGeometryDataObj();
+    return typeof gd?.componentCount === 'number' && gd.componentCount >= 2
+      && gd.componentCount <= getConfig().renderer.exportMaxSplitItems;
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -7218,15 +7387,18 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
-    try {
-      assertFiniteMesh(currentMeshData);
-      notifyMultiPartExport();
-      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
-      showToast(`Exported ${filename}`, { variant: 'success' });
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-    }
+    const direct = async () => {
+      try {
+        assertFiniteMesh(currentMeshData!);
+        notifyMultiPartExport();
+        const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData!));
+        showToast(`Exported ${filename}`, { variant: 'success' });
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+      }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob, direct); return; }
+    await direct();
   };
   // Animation exports: record the live viewport into a downloadable video.
   const actionExportTurntable = async () => {
@@ -7246,25 +7418,31 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob, direct); return; }
+    direct();
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
     // Multi-part session → pick parts and emit named objects in one .obj.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob, direct); return; }
+    direct();
   };
   /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
    *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
    *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
-  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+  async function export3MFMultiPartFlow(bambu: boolean, direct?: () => void | Promise<void>): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
     // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
@@ -7273,14 +7451,15 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : 'Export objects to 3MF',
+      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : `Export ${parts.length > 1 ? 'objects ' : ''}to 3MF`,
       description: bambu
         ? 'Choose which objects to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which objects to include. Each selected object is added as a separate 3MF object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
       bambu: bambu ? {
-        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label, bed: p.bed })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
         nozzles: [...BAMBU_NOZZLES],
         defaultNozzle: DEFAULT_BAMBU_NOZZLE,
@@ -7290,8 +7469,12 @@ async function main() {
       // Generic 3MF gets the packing-strategy pane too (Bambu implies it). Both use
       // the two-pane layout so the arrangement control is always visible.
       ...(bambu ? {} : { packing: true }),
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7299,28 +7482,28 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: 'Preparing 3MF…',
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       // Filament colours: merge near-identical shades before writing (export-only).
       progress.end();
       const onlyActive = baked.length === 1 && selectedIds.length === 1 && selectedIds[0] === activeId;
-      const remap = await chooseExportColors(baked.map(b => b.mesh), onlyActive);
+      const remap = await chooseExportColors(items.map(b => b.mesh), onlyActive);
       if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      const toWrite = baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
+      const toWrite = items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(toWrite, {
@@ -7329,14 +7512,22 @@ async function main() {
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
       progress.end();
     }
+  }
+
+  /** "3 objects", or "12 items from 2 objects" when objects were split, plus
+   *  a note for objects that produced no geometry. */
+  function exportedSummary(asked: number, baked: number, items: PartExport[]): string {
+    const objs = `${baked} object${baked === 1 ? '' : 's'}`;
+    const n = items.length;
+    const main = items.some(i => i.splitOf) ? `${n} item${n === 1 ? '' : 's'} from ${objs}` : objs;
+    const skipped = asked - baked;
+    return skipped > 0 ? `${main} (${skipped} skipped — no geometry)` : main;
   }
 
   /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
@@ -7347,6 +7538,7 @@ async function main() {
     formatTag: string,
     description: string,
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    direct?: () => void | Promise<void>,
   ): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
@@ -7355,12 +7547,17 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: `Export objects to ${formatTag}`,
+      title: `Export ${parts.length > 1 ? 'objects ' : ''}to ${formatTag}`,
       description,
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7368,29 +7565,27 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: `Preparing ${formatTag}…`,
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       progress.setTitle(`Writing ${formatTag}…`);
 
-      const built = await build(baked);
+      const built = await build(items);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
@@ -7398,33 +7593,130 @@ async function main() {
     }
   }
 
-  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
-   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
-   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
-   *  builder, so the per-format API twins just supply the builder. */
-  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+  /** Split options shared by the console/AI multi-object exports. */
+  interface ApiExportSplitOpts {
+    /** Object name or id → 'whole' | 'pieces' | 'parts'. */
+    split?: Record<string, string>;
+    /** Items to leave out, by export name ("<object> · <item>"). */
+    exclude?: string[];
+    /** Bambu `plateLayout: 'custom'`: export name (an item, or a whole object's
+     *  name) → 1-based plate number. */
+    plates?: Record<string, number>;
+  }
+  type ApiExportOpts = { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> } & ApiExportSplitOpts;
+
+  /** Shape-check the split options before anything bakes. */
+  function checkApiSplitShape(fn: string, opts: ApiExportSplitOpts | undefined, customPlates: boolean): string | null {
+    if (!opts) return null;
+    const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+    if (opts.split !== undefined) {
+      if (!isObj(opts.split)) return `${fn}: split must be an object of object name or id → ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(' | ')}.`;
+      for (const [k, v] of Object.entries(opts.split)) {
+        if (!isExportSplitMode(v)) return `${fn}: split["${k}"] must be one of ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(', ')} (got ${JSON.stringify(v)}).`;
+      }
+    }
+    if (opts.exclude !== undefined && (!Array.isArray(opts.exclude) || opts.exclude.some(x => typeof x !== 'string' || !x))) {
+      return `${fn}: exclude must be an array of item names ("<object> · <item>", see listExportItems()).`;
+    }
+    if (opts.plates !== undefined) {
+      if (!customPlates) return `${fn}: plates needs { bambu: true, plateLayout: "custom" }.`;
+      if (!isObj(opts.plates)) return `${fn}: plates must be an object of item or object name → plate number.`;
+      for (const [k, v] of Object.entries(opts.plates)) {
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return `${fn}: plates["${k}"] must be a whole number ≥ 1 (got ${JSON.stringify(v)}).`;
+      }
+    }
+    return null;
+  }
+
+  /** Resolve the split options against the baked objects into the choice
+   *  buildExportItems reads. Strict: a mode an object can't use, or a name
+   *  that matches nothing, is an error (with the valid names). */
+  function resolveApiSplit(fn: string, baked: BakedExportObject[], session: ExportSplitSession, opts: ApiExportSplitOpts | undefined): { choice: ExportItemChoice } | { error: string } {
+    const choice: ExportItemChoice = {};
+    const lower = (x: string) => x.trim().toLowerCase();
+    if (opts?.split) {
+      const splits: Record<string, ExportSplitMode> = {};
+      for (const [want, mode] of Object.entries(opts.split)) {
+        const b = baked.find(x => x.id === want) ?? baked.find(x => lower(x.name) === lower(want));
+        if (!b) return { error: `${fn}: split names "${want}", which isn't one of the exported objects (${baked.map(x => `"${x.name}"`).join(', ')}).` };
+        const m = mode as ExportSplitMode;
+        if (m === 'whole') continue;
+        const a = session.analysisOf(b);
+        if (!splitItems(a, m)) {
+          const why = m === 'pieces'
+            ? (a.pieceCount < 2 ? `it is one solid piece` : `it has ${a.pieceCount} pieces, over the ${getConfig().renderer.exportMaxSplitItems}-item split limit`)
+            : 'its labelled parts don’t make two or more separable items';
+          return { error: `${fn}: object "${b.name}" can't split by ${m} — ${why}. Splits it supports: ${availableSplitModes(a).join(', ')}.` };
+        }
+        splits[b.id] = m;
+      }
+      choice.splits = splits;
+    }
+    // Every exported name → [object id, item key] (whole objects use their own name).
+    const names = new Map<string, [string, string]>();
+    for (const b of baked) {
+      const m = choice.splits?.[b.id];
+      const items = m ? splitItems(session.analysisOf(b), m) : null;
+      if (!items) { names.set(lower(b.name), [b.id, WHOLE_ITEM_KEY]); continue; }
+      for (const it of items) names.set(lower(splitItemName(b.name, it.name)), [b.id, it.key]);
+    }
+    const listed = () => [...names.keys()].slice(0, 20).map(n => `"${n}"`).join(', ') + (names.size > 20 ? ', …' : '');
+    if (opts?.exclude) {
+      const excluded: Record<string, string[]> = {};
+      for (const want of opts.exclude) {
+        const hit = names.get(lower(want));
+        if (!hit || hit[1] === WHOLE_ITEM_KEY) return { error: `${fn}: exclude names "${want}", which isn't an item of a split object. Items: ${listed()}.` };
+        (excluded[hit[0]] ??= []).push(hit[1]);
+      }
+      choice.excluded = excluded;
+    }
+    if (opts?.plates) {
+      const plates: Record<string, Record<string, number>> = {};
+      for (const [want, n] of Object.entries(opts.plates)) {
+        const hit = names.get(lower(want));
+        if (!hit) return { error: `${fn}: plates names "${want}", which isn't an exported item. Items: ${listed()}.` };
+        (plates[hit[0]] ??= {})[hit[1]] = n;
+      }
+      choice.plates = plates;
+    }
+    return { choice };
+  }
+
+  /** Console/AI core for the multi-object exports: validate the object ids
+   *  (default: all), bake each object's coloured mesh off-editor, and turn
+   *  them into the file's items per the split options. */
+  async function bakeItemsForExport(fn: string, partIds: string[] | undefined, opts: ApiExportSplitOpts | undefined): Promise<{ items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
     if (ids !== undefined) {
       if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'objectIds must be an array of object-id strings.' };
+        return { error: `${fn}(objectIds): objectIds must be an array of object-id strings.` };
       }
     } else {
       ids = allParts.map(p => p.id);
     }
-    const byId = new Map(allParts.map(p => [p.id, p]));
+    const known = new Set(allParts.map(p => p.id));
     // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `Unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name });
-    }
-    const { baked } = await bakePartsParallel(bakeParts);
+    for (const id of ids) if (!known.has(id)) return { error: `${fn}: unknown object id "${id}".` };
+    const session = createExportSplitSession();
+    const baked = (await Promise.all(ids.map(id => session.bake(id)))).filter((b): b is BakedExportObject => b !== null);
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    return { baked };
+    const r = resolveApiSplit(fn, baked, session, opts);
+    if ('error' in r) return r;
+    const items = buildExportItems(baked, session, r.choice);
+    if (items.length === 0) return { error: `${fn}: nothing left to export — every item was excluded.` };
+    return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0 };
   }
+
+  /** The result fields every multi-object export reports: `objects` counts
+   *  the session objects exported (as before splitting existed); a split adds
+   *  `items` (the names written, one per file object) and `itemCount`. */
+  const exportCounts = (r: { items: PartExport[]; baked: BakedExportObject[]; split: boolean }) => ({
+    objects: r.baked.length,
+    parts: r.baked.length,
+    ...(r.split ? { items: r.items.map(i => i.name), itemCount: r.items.length } : {}),
+  });
 
   /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
    *  (default: all) and DOWNLOADS the bundled file. */
@@ -7433,15 +7725,19 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}Objects`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     downloadBlob(built.blob, built.filename, formatTag);
-    return { ok: true as const, filename: built.filename, objects: r.baked.length, parts: r.baked.length };
+    return { ok: true as const, filename: built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
@@ -7451,21 +7747,55 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}ObjectsData`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     return {
       filename: built.filename,
       mimeType: built.mimeType,
       sizeBytes: built.blob.size,
       base64: await blobToBase64(built.blob),
-      objects: r.baked.length,
-      parts: r.baked.length,
+      ...exportCounts(r),
     };
+  }
+
+  /** What each object can split into for an export — the picker's Split
+   *  menu as data, so an agent can name items for `exclude` / `plates`. */
+  async function listExportItemsApi(partIds?: string[]): Promise<{ objects: Record<string, unknown>[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'listExportItems: no objects in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) return { error: 'listExportItems(objectIds): objectIds must be an array of object-id strings.' };
+      for (const id of ids) if (!allParts.some(p => p.id === id)) return { error: `listExportItems: unknown object id "${id}".` };
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const session = createExportSplitSession();
+    const baked = await Promise.all(ids.map(id => session.bake(id)));
+    const round = (v: [number, number, number]) => v.map(x => Math.round(x * 100) / 100);
+    const objects = ids.map((id, i) => {
+      const part = allParts.find(p => p.id === id)!;
+      const b = baked[i];
+      if (!b) return { id, name: part.name, error: 'no geometry' };
+      const a = session.analysisOf(b);
+      const list = (items: ReturnType<typeof splitItems>) => items?.map(it => ({
+        name: splitItemName(part.name, it.name), size: round(it.size), labels: it.labels, ...(it.fused ? { fused: true } : {}),
+      })) ?? null;
+      return {
+        id, name: part.name, size: round(a.size), pieceCount: a.pieceCount,
+        splits: availableSplitModes(a), pieces: list(a.pieces), parts: list(a.parts),
+      };
+    });
+    return { objects };
   }
 
   // Per-format builder bound to a custom filename, shared by the menu flow + API.
@@ -7482,7 +7812,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -7504,41 +7834,25 @@ async function main() {
     // validate it regardless of `bambu`.
     if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
       return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
-    const allParts = getState().parts;
-    if (allParts.length === 0) return { error: 'No objects in this session.' };
-    let ids = partIds;
-    if (ids !== undefined) {
-      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'export3MFObjects(objectIds): objectIds must be an array of object-id strings.' };
-      }
-    } else {
-      ids = allParts.map(p => p.id);
-    }
-    const byId = new Map(allParts.map(p => [p.id, p]));
-    // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
-    }
+    const shape = checkApiSplitShape('export3MFObjects', opts, bambu && opts?.plateLayout === 'custom');
+    if (shape) return { error: shape };
     // Validate the colour options before baking (no meshes → no merge computed).
     const colorOptsCheck = resolveApiColorRemap([], opts, 'export3MFObjects');
     if ('error' in colorOptsCheck) return colorOptsCheck;
-    const { baked } = await bakePartsParallel(bakeParts);
-    if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    const merge = resolveApiColorRemap(baked.map(b => b.mesh), opts, 'export3MFObjects');
+    const r = await bakeItemsForExport('export3MFObjects', partIds, opts);
+    if ('error' in r) return r;
+    const merge = resolveApiColorRemap(r.items.map(b => b.mesh), opts, 'export3MFObjects');
     if ('error' in merge) return merge;
     const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
+      const built = build3MFProject(r.items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
-      return { built, parts: baked.length };
+      return { built, items: r.items, baked: r.baked, split: r.split };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -7547,19 +7861,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, objects: r.parts, parts: r.parts };
+    return { ok: true as const, filename: r.built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -7569,8 +7883,7 @@ async function main() {
       mimeType: r.built.mimeType,
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
-      objects: r.parts,
-      parts: r.parts,
+      ...exportCounts(r),
     };
   }
 
@@ -7578,17 +7891,21 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    // Multi-part session → offer the part picker and emit a GENERIC multi-object
-    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // Multi-part session (or one object of several separate pieces, which the
+    // picker can split) → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Otherwise the original
     // single-object export.
-    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
-    try {
-      const mesh = fileExportMesh(true)!;
-      const remap = await chooseExportColors([mesh]);
-      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
-    }
-    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    const direct = async () => {
+      try {
+        const mesh = fileExportMesh(true)!;
+        const remap = await chooseExportColors([mesh]);
+        if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+        showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
+      }
+      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await export3MFMultiPartFlow(false, direct); return; }
+    await direct();
   };
   // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
   // Opens the part picker and bundles the chosen parts into one Bambu project
@@ -11571,6 +11888,7 @@ async function main() {
     exports: {
       canExport: () => currentMeshData !== null && !isSharedPreview(),
       objectCount: () => getState().parts.length,
+      singleObjectCanSplit: () => singleObjectCanSplit(),
       objects: () => getState().parts.map(o => ({ id: o.id, name: o.name, ...(o.group ? { group: o.group } : {}) })),
       bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: [...BAMBU_NOZZLES], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
       versionIndices: async () => (await listCurrentVersions()).map(v => v.index),
@@ -13994,10 +14312,15 @@ async function main() {
      *  part's latest version is baked WITH its colours. `{ plateLayout }` (Bambu
      *  only) controls plate distribution: `'separate'` (default, one part per
      *  plate), `'grid'` (all parts on one plate), or `'group'` (each part group on
-     *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
-     *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
-     *  `{ ok, filename, parts }` or `{ error }`. */
-    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+     *  its own plate — and each split object on its own), or `'custom'` (with
+     *  `{ plates: { '<item or object name>': n } }`). `{ packStrategy }` (both
+     *  modes) shapes the arrangement: `'grid'` (default, compact centred
+     *  cluster), `'horizontal'`, or `'vertical'`. `{ split: { '<object>':
+     *  'pieces' | 'parts' } }` writes one 3MF object per separate piece or per
+     *  labelled part (modelled orientation kept); `{ exclude: ['<object> ·
+     *  <item>'] }` leaves items out — see listExportItems() for the names.
+     *  `{ ok, filename, objects, items? }` or `{ error }`. */
+    export3MFObjects(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -14007,7 +14330,7 @@ async function main() {
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
      *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
-    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFObjectsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -14017,13 +14340,13 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportOBJObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
      *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
-    exportOBJObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
@@ -14031,33 +14354,42 @@ async function main() {
      *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
      *  an array of part ids (default: every part). `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportSTLObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportSTLParts}. */
-    exportSTLObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
      *  scene, grid-arranged; painted parts export as vertex colours. The UI
      *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
      *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
-    exportGLBObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportGLBParts}. */
-    exportGLBObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
+    },
+
+    /** What each object can split into for an export (the export picker's
+     *  Split menu as data): per object `{ id, name, size, pieceCount, splits,
+     *  pieces, parts }`, where `pieces` / `parts` list the items (by export
+     *  name, "<object> · <item>") or are null when that split doesn't apply.
+     *  Use the names with the multi-object exports' `exclude` / `plates`. */
+    listExportItems(objectIds?: string[]) {
+      return listExportItemsApi(objectIds);
     },
 
     // Deprecated pre-rename aliases — "parts" were renamed to "objects" (a part
     // is now a labelled piece inside one object). Kept so older prompts, agents,
     // and scripts keep working; prefer the *Objects* names.
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjects(partIds, filename, opts);
     },
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjectsData(partIds, filename, opts);
     },
     exportOBJParts(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjects(partIds, filename); },
@@ -22030,14 +22362,15 @@ async function main() {
         'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?) -- Bundle objects into a .zip of one .stl per object -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. split: {"<object>": "pieces"|"parts"} writes one 3MF object per separate piece / labelled part (orientation kept); exclude: ["<object> · <item>"] leaves items out (names from listExportItems). plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group, and each split object, on its own plate) | "custom" (plates: {"<item or object name>": n}). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'listExportItems': { signature: 'await listExportItems(objectIds?) -- What each object can split into for an export: [{id, name, size, pieceCount, splits, pieces, parts}] where pieces/parts list item names ("<object> · <item>", fused parts flagged) for the export split/exclude/plates options -> {objects}', docs: '/ai/file-io.md' },
+        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into a .zip of one .stl per object. split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(...) -- DEPRECATED alias of export3MFObjects()', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(...) -- DEPRECATED alias of export3MFObjectsData()', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(...) -- DEPRECATED alias of exportOBJObjects()', docs: '/ai/file-io.md' },

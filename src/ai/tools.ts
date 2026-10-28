@@ -1429,6 +1429,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'listExportItems',
+    description: "What each object can be SPLIT into for an export — the export picker's Split menu as data. Per object: {id, name, size, pieceCount, splits, pieces, parts}; `splits` lists the modes that apply ('whole', 'pieces' = one file object per separate solid, 'parts' = one per api.label part, fused parts kept together), and `pieces` / `parts` list the items by export name (\"<object> · <item>\") or are null when that split doesn't apply. Use the names with exportModel's `exclude`. Builds objects that aren't open, so it can take a few seconds.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids (from listObjects). Default: every object.' },
+      },
+    },
+  },
+  {
     name: 'listObjectParts',
     description: "List the current object's PARTS and PIECES, exactly as the object list in the left rail shows them. Parts are the api.label(shape, name) regions (SCAD label(), BREP.label) — tracked through every union/cut, so they survive several shapes fusing into one solid; each has {name, triangleCount, color?}. lostParts are labels that ended with no triangles. unlabeledTriangleCount is geometry no part covers. Pieces are the physically separate solids (connected components), each named by the part covering most of it — use them to check a print-in-place mechanism really splits into N moving pieces. When the user says \"the handle\" or \"the lid part\", this is where those names live.",
     input_schema: { type: 'object', properties: {} },
@@ -2244,13 +2254,15 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportModel',
-    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, parts? } or { error }.",
+    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
     input_schema: {
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['stl', 'obj', 'glb', '3mf', '3mf-objects', 'step', 'vox'] },
         objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids to bundle into one file. Default: the current object (\'3mf-objects\': every object).' },
         filename: { type: 'string', description: 'Optional download filename (the extension is added if missing).' },
+        split: { type: 'object', description: 'Optional: object name or id → "pieces" | "parts" | "whole". Not for step / vox.' },
+        exclude: { type: 'array', items: { type: 'string' }, description: 'Optional: split items to leave out, by name ("<object> · <item>", e.g. "Chess set · Brim tab").' },
       },
       required: ['format'],
     },
@@ -2678,6 +2690,7 @@ const ALWAYS_AVAILABLE = new Set([
   'listDeleted',
   'restoreObject',
   'listObjectParts',
+  'listExportItems',
   'highlightObjectPart',
   // Text-only likeness score: renders offscreen but returns no image, so it is
   // NOT views-gated — it exists precisely so likeness checks skip images.
@@ -2864,7 +2877,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listExportItems', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -3948,6 +3961,15 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.discardParts();
     case 'listObjectParts':
       return api.listObjectParts();
+    case 'listExportItems': {
+      const unknown = Object.keys(input).filter(k => k !== 'objects');
+      if (unknown.length) return { error: `listExportItems: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: objects.` };
+      if (input.objects == null) return api.listExportItems();
+      if (!Array.isArray(input.objects) || input.objects.some(o => typeof o !== 'string')) return { error: 'listExportItems: objects must be an array of object names or ids.' };
+      const r = resolveObjectIds(api, input.objects as string[]);
+      if ('error' in r) return { error: `listExportItems: ${r.error}` };
+      return api.listExportItems(r.ids);
+    }
     case 'highlightObjectPart': {
       if (input.clear === true) return api.highlightObjectPart(null);
       if (typeof input.part === 'string') return api.highlightObjectPart(input.part);
@@ -4313,8 +4335,8 @@ const EXPORT_FORMAT_LABEL: Record<ExportFormat, string> = {
 /** Shape errors in an exportModel call, checked before the confirm prompt and
  *  again at dispatch. Null when the input is well-formed. */
 function exportInputError(input: Record<string, unknown>): string | null {
-  const unknown = Object.keys(input).filter(k => k !== 'format' && k !== 'objects' && k !== 'filename');
-  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename.`;
+  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'exclude'].includes(k));
+  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, exclude.`;
   if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
     return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
   }
@@ -4328,6 +4350,18 @@ function exportInputError(input: Record<string, unknown>): string | null {
     if (input.format === 'step' || input.format === 'vox') {
       return `exportModel: ${input.format.toUpperCase()} exports only the current object — omit objects (switch objects with changeObject first).`;
     }
+  }
+  if (input.split != null) {
+    if (typeof input.split !== 'object' || Array.isArray(input.split)) return 'exportModel: split must be an object of object name or id → "pieces" | "parts" | "whole".';
+    for (const [k, v] of Object.entries(input.split as Record<string, unknown>)) {
+      if (v !== 'pieces' && v !== 'parts' && v !== 'whole') return `exportModel: split["${k}"] must be "pieces", "parts" or "whole".`;
+    }
+  }
+  if (input.exclude != null && (!Array.isArray(input.exclude) || input.exclude.some(x => typeof x !== 'string' || x === ''))) {
+    return 'exportModel: exclude must be an array of item names ("<object> · <item>").';
+  }
+  if ((input.split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
+    return `exportModel: ${input.format.toUpperCase()} can't split objects — omit split / exclude.`;
   }
   return null;
 }
@@ -4393,15 +4427,25 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
     if ('error' in r) return { error: `exportModel: ${r.error}` };
     ids = r.ids;
   }
+  // Splitting goes through the multi-object exports; with no `objects` it
+  // applies to the current object.
+  const split = input.split as Record<string, string> | undefined;
+  const exclude = input.exclude as string[] | undefined;
+  const splitOpts = split || exclude ? { ...(split ? { split } : {}), ...(exclude ? { exclude } : {}) } : undefined;
+  if (splitOpts && !ids && format !== '3mf-objects') {
+    const cur = (api.listObjects() as ObjectRow[] | undefined)?.find(o => o.isCurrent);
+    if (!cur) return { error: 'exportModel: split / exclude need a session object — open a session first.' };
+    ids = [cur.id];
+  }
   let r: unknown;
   switch (format) {
-    case 'stl': r = ids ? await api.exportSTLObjects(ids, filename) : await api.exportSTL(filename); break;
-    case 'obj': r = ids ? await api.exportOBJObjects(ids, filename) : await api.exportOBJ(filename); break;
-    case 'glb': r = ids ? await api.exportGLBObjects(ids, filename) : await api.exportGLB(filename); break;
+    case 'stl': r = ids ? await (splitOpts ? api.exportSTLObjects(ids, filename, splitOpts) : api.exportSTLObjects(ids, filename)) : await api.exportSTL(filename); break;
+    case 'obj': r = ids ? await (splitOpts ? api.exportOBJObjects(ids, filename, splitOpts) : api.exportOBJObjects(ids, filename)) : await api.exportOBJ(filename); break;
+    case 'glb': r = ids ? await (splitOpts ? api.exportGLBObjects(ids, filename, splitOpts) : api.exportGLBObjects(ids, filename)) : await api.exportGLB(filename); break;
     // A plain 3MF with several objects is the generic multi-object 3MF (any
     // slicer); '3mf-objects' is the Bambu/Orca plate project.
-    case '3mf': r = ids ? await api.export3MFObjects(ids, filename, { bambu: false }) : await api.export3MF(filename); break;
-    case '3mf-objects': r = await api.export3MFObjects(ids, filename); break;
+    case '3mf': r = ids ? await api.export3MFObjects(ids, filename, { bambu: false, ...splitOpts }) : await api.export3MF(filename); break;
+    case '3mf-objects': r = await (splitOpts ? api.export3MFObjects(ids, filename, splitOpts) : api.export3MFObjects(ids, filename)); break;
     case 'step': r = await api.exportSTEP(filename); break;
     case 'vox': r = await api.exportVOX(filename); break;
   }
