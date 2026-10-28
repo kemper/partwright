@@ -154,7 +154,10 @@ let toolCharsMemo: { key: string; chars: number } | null = null;
 function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[]): number {
   if (toggles.provider === 'local') return 0;
   const { tools } = toolsForRequest(toggles, buildToolList(toggles), history, sessionToolGroups());
-  const key = `${toggles.provider}|${tools.map(t => t.name).join(',')}`;
+  // Description lengths change with the Custom tier's compaction settings,
+  // not just the tool names.
+  const cfg = getConfig().ai;
+  const key = `${toggles.provider}|${cfg.customToolDescriptionChars}|${cfg.customParamDescriptionChars}|${tools.map(t => t.name).join(',')}`;
   if (toolCharsMemo?.key !== key) toolCharsMemo = { key, chars: JSON.stringify(tools).length };
   return toolCharsMemo.chars;
 }

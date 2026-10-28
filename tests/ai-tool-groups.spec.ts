@@ -3,12 +3,14 @@ import { waitForChatSessionId, waitForEditorReady } from './helpers/aiPanel';
 
 // On-demand tool groups (#1175) through the real chat loop: the first request
 // sends only the core tools + loadTools, a loadTools call widens the NEXT
-// request, and a grouped tool called without loading still runs and loads its
-// group. Driven in-page against a stubbed Gemini endpoint, like the plan-mode
-// enforcement test.
+// request, a grouped tool called without loading still runs where the provider
+// lets the call through (safety net), and a malformed_function_call — what
+// real Gemini returns for an undeclared tool — gets a load-the-group nudge
+// instead of ending the turn. Driven in-page against a stubbed Gemini
+// endpoint, like the plan-mode enforcement test.
 
 test.describe('AI tool groups', () => {
-  test('core first, loadTools widens the next request, an unloaded tool still runs', async ({ page }) => {
+  test('core first, loadTools widens the next request, unloaded calls recover', async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto('/editor');
     await waitForEditorReady(page);
@@ -22,23 +24,31 @@ test.describe('AI tool groups', () => {
         maxIterations: 'medium', vision: { views: false }, planFirst: false,
         scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: false },
       }).toggles;
-      const frames = [
-        '{"functionCall":{"name":"loadTools","args":{"groups":["transforms"]}}}',
-        '{"functionCall":{"name":"getUnits","args":{}}}',
-        '{"text":"Done."}',
+      // [parts JSON, finishReason]
+      const frames: Array<[string, string]> = [
+        ['{"functionCall":{"name":"loadTools","args":{"groups":["transforms"]}}}', 'STOP'],
+        ['{"functionCall":{"name":"getUnits","args":{}}}', 'STOP'],
+        ['', 'MALFORMED_FUNCTION_CALL'],
+        ['{"text":"Done."}', 'STOP'],
       ];
-      const requests: Array<{ tools: string[]; system: string }> = [];
+      const requests: Array<{ tools: string[]; system: string; lastUser: string }> = [];
       const origFetch = window.fetch;
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
         if (new URL(String(input), location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
-        const body = JSON.parse(String(init?.body)) as { tools?: Array<{ functionDeclarations: Array<{ name: string }> }>; systemInstruction: { parts: Array<{ text: string }> } };
+        const body = JSON.parse(String(init?.body)) as {
+          tools?: Array<{ functionDeclarations: Array<{ name: string }> }>;
+          systemInstruction: { parts: Array<{ text: string }> };
+          contents: Array<{ role: string; parts: Array<{ text?: string }> }>;
+        };
+        const last = body.contents[body.contents.length - 1];
         requests.push({
           tools: (body.tools?.[0]?.functionDeclarations ?? []).map(d => d.name),
           system: body.systemInstruction.parts.map(p => p.text).join('\n'),
+          lastUser: last.parts.map(p => p.text ?? '').join('\n'),
         });
-        const part = frames[Math.min(requests.length - 1, frames.length - 1)];
-        const frame = `data: {"candidates":[{"content":{"parts":[${part}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`;
+        const [part, finish] = frames[Math.min(requests.length - 1, frames.length - 1)];
+        const frame = `data: {"candidates":[{"content":{"role":"model","parts":[${part}]},"finishReason":"${finish}"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`;
         return new Response(new Blob([frame + '\r\n\r\n']), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       };
       const results: Array<{ name: string; content: string; isError: boolean }> = [];
@@ -53,8 +63,8 @@ test.describe('AI tool groups', () => {
       return { requests, results };
     });
 
-    expect(out.requests).toHaveLength(3);
-    const [first, second, third] = out.requests;
+    expect(out.requests).toHaveLength(4);
+    const [first, second, third, fourth] = out.requests;
     // Turn 0: core + loadTools, nothing grouped.
     expect(first.tools).toContain('runAndSave');
     expect(first.tools).toContain('loadTools');
@@ -72,5 +82,7 @@ test.describe('AI tool groups', () => {
     expect(out.results[1].name).toBe('getUnits');
     expect(out.results[1].isError).toBe(false);
     expect(third.tools).toContain('setUnits');
+    // A malformed call (undeclared tool on real Gemini) is nudged, not fatal.
+    expect(fourth.lastUser).toContain('loadTools');
   });
 });

@@ -1,10 +1,13 @@
 // On-demand tool groups (#1175). The full tool list is ~66K tokens of JSON
 // schema, more than ai.md itself, and every hosted request carried all of it
 // from turn 0. Instead the model starts with CORE_TOOLS and loads the rest in
-// named groups: by calling `loadTools`, by reading a topic doc (readDoc
-// "colors" loads `paint`), or by simply calling a tool it read about (it still
-// runs — `buildToolList` gating is the permission check, this module only
-// decides which schemas are SENT). Loaded groups are derived from the chat
+// named groups: by calling `loadTools`, or by reading a topic doc (readDoc
+// "colors" loads `paint`). `buildToolList` gating stays the permission check —
+// this module only decides which schemas are SENT — so a grouped tool the
+// model calls without loading still runs where the provider lets the call
+// through. That is only a safety net: Gemini and constrained local backends
+// reject a call to an undeclared tool (malformed_function_call; chatLoop
+// nudges the model to loadTools), so the prompt says load first. Loaded groups are derived from the chat
 // history, so they are sticky for the conversation with no stored state, and
 // survive reloads, Worker hand-offs and other tabs.
 //
@@ -12,6 +15,7 @@
 // and the unit tier.
 
 import type { ChatMessage } from './types';
+import { LEGACY_TOOL_ALIASES } from './tools';
 
 export const LOAD_TOOLS_TOOL = 'loadTools';
 
@@ -134,18 +138,18 @@ export const TOOL_GROUP_IDS: readonly string[] = TOOL_GROUPS.map(g => g.id);
 /** readDoc topics that load a group: the doc teaches the tools, so they
  *  arrive together. */
 export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  colors: ['paint'],
+  // colors' vision loop finds paint targets with findFaces / probeRay / getMeshSummary.
+  colors: ['paint', 'inspect'],
   'reference-images': ['inspect'],
   'visual-verification': ['inspect'],
-  deform: ['transforms'],
   textures: ['textures'],
   figure: ['character'],
   segmentation: ['parts'],
   relief: ['import'],
   reconstruction: ['import'],
   'file-io': ['import'],
-  printing: ['printing'],
-  'print-safety': ['printing'],
+  // printing teaches orienting the part: layFlat / rotate / place / scale / mirror.
+  printing: ['printing', 'transforms'],
   'iteration-workflow': ['versions'],
   'ui-control': ['ui'],
 };
@@ -160,14 +164,23 @@ export function toolGroupOf(name: string): string | undefined {
 
 /** Groups the conversation has already pulled in: explicit loadTools calls,
  *  readDoc topics, and any grouped tool the model called. `preload` adds
- *  groups implied by the session state (see sessionToolGroups in aiPanel). */
+ *  groups implied by the session state (see sessionToolGroups in aiPanel).
+ *  A call that was refused (not offered — e.g. made while planning) or a
+ *  loadTools call that errored loads nothing. */
 export function loadedToolGroups(history: readonly ChatMessage[], preload: readonly string[] = []): Set<string> {
   const loaded = new Set<string>();
   const add = (id: unknown) => { if (typeof id === 'string' && TOOL_GROUP_IDS.includes(id)) loaded.add(id); };
   for (const id of preload) add(id);
-  for (const m of history) {
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i];
     if (!m.toolCalls) continue;
-    for (const tc of m.toolCalls) {
+    // Results answer the calls in the next message. Pair by position, falling
+    // back to id: some providers reuse call ids across turns.
+    const results = history[i + 1]?.toolResults;
+    for (let j = 0; j < m.toolCalls.length; j++) {
+      const tc = m.toolCalls[j];
+      const r = results?.[j]?.toolUseId === tc.id ? results[j] : results?.find(x => x.toolUseId === tc.id);
+      if (r?.isError && (tc.name === LOAD_TOOLS_TOOL || r.content.startsWith('[Not run'))) continue;
       if (tc.name === LOAD_TOOLS_TOOL) {
         const groups = (tc.input as { groups?: unknown }).groups;
         if (Array.isArray(groups)) groups.forEach(add);
@@ -175,7 +188,7 @@ export function loadedToolGroups(history: readonly ChatMessage[], preload: reado
         const name = (tc.input as { name?: unknown }).name;
         if (typeof name === 'string') (DOC_TOOL_GROUPS[name] ?? []).forEach(add);
       } else {
-        add(GROUP_OF_TOOL.get(tc.name));
+        add(GROUP_OF_TOOL.get(LEGACY_TOOL_ALIASES[tc.name] ?? tc.name));
       }
     }
   }
@@ -217,8 +230,8 @@ export function loadToolsDefinition(): { name: string; description: string; inpu
     name: LOAD_TOOLS_TOOL,
     description:
       'Load more tools. You start with the core set; the rest come in the groups below. A loaded group\'s full schemas are attached from your next step on, for the rest of this chat. '
-      + 'readDoc of a topic loads its group too (colors → paint, segmentation → parts, textures → textures, figure → character, deform → transforms, relief/reconstruction/file-io → import, reference-images → inspect, ui-control → ui). '
-      + 'If you call a grouped tool you have not loaded, it still runs and its group loads. Load only what the task needs.\n'
+      + `readDoc of a topic loads its group too (${docGroupSummary()}). `
+      + 'Load a tool\'s group BEFORE calling it — a call to a tool not in your list can fail outright. Load only what the task needs.\n'
       + lines.join('\n'),
     input_schema: {
       type: 'object',
@@ -234,6 +247,12 @@ export function loadToolsDefinition(): { name: string; description: string; inpu
   };
 }
 
+/** "colors → paint + inspect, …", derived from DOC_TOOL_GROUPS so the
+ *  loadTools description can't drift from the map. */
+function docGroupSummary(): string {
+  return Object.entries(DOC_TOOL_GROUPS).map(([doc, gs]) => `${doc} → ${gs.join(' + ')}`).join(', ');
+}
+
 /** Result text for a loadTools call. `gatedNames` is this turn's permitted
  *  tool set, so the reply names only tools the model can actually use. */
 export function loadToolsResult(input: Record<string, unknown>, gatedNames: ReadonlySet<string>): { content: string; isError: boolean } {
@@ -241,13 +260,19 @@ export function loadToolsResult(input: Record<string, unknown>, gatedNames: Read
   if (!Array.isArray(groups) || groups.length === 0) {
     return { content: JSON.stringify({ error: `loadTools: pass groups, an array of group ids (${TOOL_GROUP_IDS.join(', ')}).` }), isError: true };
   }
-  const unknown = groups.filter(g => typeof g !== 'string' || !TOOL_GROUP_IDS.includes(g));
-  if (unknown.length > 0) {
-    return { content: JSON.stringify({ error: `loadTools: unknown group(s) ${unknown.map(g => JSON.stringify(g)).join(', ')}. Groups: ${TOOL_GROUP_IDS.join(', ')}.` }), isError: true };
+  // Unknown ids are reported but don't sink the valid ones: loadedToolGroups
+  // reads the call back from the history and loads every valid id it names,
+  // so an error result here would contradict what actually gets attached.
+  const isGroup = (g: unknown): g is string => typeof g === 'string' && TOOL_GROUP_IDS.includes(g);
+  const unknown = groups.filter(g => !isGroup(g));
+  const valid = groups.filter(isGroup);
+  const unknownNote = unknown.length > 0 ? `unknown group(s) ${unknown.map(g => JSON.stringify(g)).join(', ')}. Groups: ${TOOL_GROUP_IDS.join(', ')}.` : '';
+  if (valid.length === 0) {
+    return { content: JSON.stringify({ error: `loadTools: ${unknownNote}` }), isError: true };
   }
   const loaded: Record<string, string[]> = {};
   const unavailable: string[] = [];
-  for (const id of groups as string[]) {
+  for (const id of valid) {
     const g = TOOL_GROUPS.find(x => x.id === id)!;
     const names = g.tools.filter(t => gatedNames.has(t));
     if (names.length > 0) loaded[id] = names;
@@ -257,6 +282,7 @@ export function loadToolsResult(input: Record<string, unknown>, gatedNames: Read
     content: JSON.stringify({
       loaded,
       ...(unavailable.length > 0 ? { unavailable: `${unavailable.join(', ')}: switched off in this chat's settings` } : {}),
+      ...(unknownNote ? { ignored: unknownNote } : {}),
       note: 'Their schemas are attached from your next step on.',
     }),
     isError: false,
@@ -270,5 +296,5 @@ export function toolGroupsSuffix(loaded: ReadonlySet<string>, gatedNames: Readon
   const pending = avail.filter(g => !loaded.has(g.id)).map(g => g.id);
   if (pending.length === 0) return '';
   const have = avail.filter(g => loaded.has(g.id)).map(g => g.id);
-  return `Tool groups — loaded: core${have.length ? ', ' + have.join(', ') : ''}. Not loaded yet: ${pending.join(', ')} (see loadTools). If ai.md or a doc names a tool you don't have, load its group.`;
+  return `Tool groups — loaded: core${have.length ? ', ' + have.join(', ') : ''}. Not loaded yet: ${pending.join(', ')} (see loadTools). If ai.md or a doc names a tool you don't have, load its group with loadTools before calling it.`;
 }

@@ -88,6 +88,13 @@ const AUTO_RESUME_PROMPT =
   + 'call the `finish` tool now (optionally pass a one-line `summary`). That is the only way to end the turn. '
   + 'Otherwise, keep working: take the next concrete step toward completing the request.';
 
+/** Synthetic user prompt after a malformed tool call while tool groups are
+ *  active: the usual cause is calling a tool whose group isn't loaded. */
+const TOOL_GROUP_NUDGE =
+  'Your last tool call could not be made. Most likely that tool is not in your current tool list because its group is not loaded: '
+  + 'call `loadTools` with the group (the loadTools description lists which group holds each tool), then retry the call. '
+  + 'If the tool is already loaded, check that its arguments are valid JSON and retry.';
+
 /** Hard ceiling on CONSECUTIVE auto-resume nudges that make no progress (no
  *  tool call, no `finish`). Resets to 0 whenever the model calls a tool. This
  *  bounds the degenerate "model keeps ending its turn but never calls finish or
@@ -288,7 +295,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   // Checked against the gated list, not the custom-tier trim: that trim saves
   // context, it doesn't withhold permission.
   const offeredTools = new Set(gatedTools.map(t => t.name));
-  if (toolGroupsActive(toggles)) offeredTools.add(LOAD_TOOLS_TOOL);
+  const groupsActive = toolGroupsActive(toggles);
+  if (groupsActive) offeredTools.add(LOAD_TOOLS_TOOL);
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -627,7 +635,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // (checked above), and the no-progress ceiling, so it can't run away.
       // Only end_turn is auto-resumed; max_tokens / refusal keep their own
       // handling + Keep-going notice.
-      if (autoResume && result.stopReason === 'end_turn' && consecutiveNudges < getMaxConsecutiveAutoResumes()) {
+      // A call to a tool that isn't in this request's list (its group isn't
+      // loaded) comes back as malformed_function_call on Gemini and similar
+      // backends, with no call to run. Nudge the model to load the group and
+      // retry, under the same no-progress ceiling.
+      const groupNudge = groupsActive && result.stopReason === 'malformed_function_call';
+      if (((autoResume && result.stopReason === 'end_turn') || groupNudge) && consecutiveNudges < getMaxConsecutiveAutoResumes()) {
         // Preserve user/assistant alternation: an empty assistant turn
         // (empty_final — the model said nothing) is dropped by every provider's
         // request builder, which would leave the prior tool-result user turn
@@ -646,7 +659,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           id: generateId(),
           sessionId,
           role: 'user',
-          blocks: useHuman ? queued : [{ type: 'text', text: AUTO_RESUME_PROMPT }],
+          blocks: useHuman ? queued : [{ type: 'text', text: groupNudge ? TOOL_GROUP_NUDGE : AUTO_RESUME_PROMPT }],
           createdAt: Date.now(),
           seq: seqStart + 2 + iter * 2,
           ...(useHuman ? {} : { autoResumeNudge: true }),

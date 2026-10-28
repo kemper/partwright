@@ -84,7 +84,29 @@ describe('loadedToolGroups', () => {
       call('detectParts', {}),
       call('runAndSave', { code: 'return x' }),
     ];
-    expect([...loadedToolGroups(history)].sort()).toEqual(['paint', 'parts', 'transforms']);
+    expect([...loadedToolGroups(history)].sort()).toEqual(['inspect', 'paint', 'parts', 'transforms']);
+  });
+
+  test('a refused call or an errored loadTools loads nothing', () => {
+    const answered = (m: ChatMessage, content: string, isError: boolean): ChatMessage[] => [
+      m,
+      { id: `r${m.seq}`, sessionId: 's', role: 'user', blocks: [], createdAt: 0, seq: m.seq + 1, toolResults: [{ toolUseId: m.toolCalls![0].id, content, isError }] },
+    ];
+    const history = [
+      ...answered(call('paintInBox', {}), '[Not run — paintInBox is not available while planning.]', true),
+      ...answered(call(LOAD_TOOLS_TOOL, { groups: ['parts'] }), '{"error":"x"}', true),
+      // A real failure of a grouped tool still shows the model wants it.
+      ...answered(call('scaleModel', {}), '{"error":"factor must be positive"}', true),
+    ];
+    expect([...loadedToolGroups(history)]).toEqual(['transforms']);
+  });
+
+  test('legacy alias names load the group of the tool they stand for', () => {
+    expect([...loadedToolGroups([call('renamePart', { name: 'x' })])]).toEqual(['objects']);
+  });
+
+  test('printing doc loads the transforms it teaches', () => {
+    expect([...loadedToolGroups([call('readDoc', { name: 'printing' })])].sort()).toEqual(['printing', 'transforms']);
   });
 
   test('preload adds groups and ignores unknown ids', () => {
@@ -137,9 +159,21 @@ describe('loadToolsResult', () => {
     expect(r.unavailable).toMatch(/transforms/);
   });
 
-  test('rejects missing or unknown groups', () => {
+  test('rejects missing or all-unknown groups', () => {
     expect(loadToolsResult({}, gated).isError).toBe(true);
     expect(loadToolsResult({ groups: ['nope'] }, gated).content).toMatch(/unknown group/);
+  });
+
+  test('unknown ids beside valid ones are reported, not fatal', () => {
+    const r = loadToolsResult({ groups: ['transforms', 'nope'] }, gated);
+    expect(r.isError).toBe(false);
+    const body = JSON.parse(r.content);
+    expect(body.loaded.transforms).toContain('scaleModel');
+    expect(body.ignored).toMatch(/nope/);
+  });
+
+  test('the doc → group list in the description comes from the map', () => {
+    for (const doc of Object.keys(DOC_TOOL_GROUPS)) expect(loadToolsDefinition().description).toContain(`${doc} →`);
   });
 });
 

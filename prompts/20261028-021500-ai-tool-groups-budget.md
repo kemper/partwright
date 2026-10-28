@@ -60,3 +60,35 @@ the tool schemas actually sent for every non-Local provider (#1126).
 
 Result: default turn-0 ≈ 62.5K tokens (from ~111K). Tools are 17.3K (from
 66K). The rest is ai.md, which is Phase 1.
+
+## Assistant
+
+## Review follow-ups (work-reviewer pass)
+
+**"Just call it, it still runs" was wrong for Gemini.** Gemini (and
+grammar-constrained local backends) answer a call to an undeclared tool
+with MALFORMED_FUNCTION_CALL and no call to run, so the turn ended silently.
+The prompt and the loadTools description now say to load the group first.
+While groups are active, a malformed_function_call stop appends a
+load-the-group nudge and continues, under the existing auto-resume
+no-progress ceiling. Running an unloaded tool anyway stays only as a safety
+net for providers that let the call through.
+
+**A refused or errored call loads nothing.** `loadedToolGroups` pairs each
+call with its result and skips `[Not run …` refusals (e.g. made while
+planning) and errored loadTools calls. A loadTools call with some unknown ids
+now loads the valid ones and reports the rest as `ignored`, so the result
+matches what gets attached. Legacy alias names (renamePart) load their
+tool's group.
+
+**Doc → group map.** `printing` also loads `transforms` (it teaches
+layFlat/rotate/place), and `colors` also loads `inspect` (its vision loop
+uses findFaces/probeRay). Dropped `deform` (the doc is about in-code meshOps,
+not the bake transforms) and `print-safety` (names no tools). The readDoc
+list in the loadTools description is now generated from the map.
+
+**Smaller fixes.** The Custom tier picker's Full estimate and hint reflect
+core + loadTools. The context-meter memo key includes the Custom
+description-length settings. docs/ai-internals.md states the cache cost
+precisely: on Anthropic a group load re-writes the whole prefix, so the
+stable core prefix only helps OpenAI/Gemini prefix caching.
