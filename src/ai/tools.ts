@@ -18,7 +18,7 @@ import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
-import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
+import { RENDER_VIEW_MODES, EDGE_MODES, DEFAULT_VIEW_AZIMUTH, DEFAULT_VIEW_ELEVATION } from '../renderer/multiview';
 import { getRenderBudget, loadSettings } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
@@ -243,6 +243,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name. Defaults to "Component <index>".' },
         topOnly: { type: 'boolean', description: 'If true, only paint upward-facing triangles (skip side walls + bottom). Same shortcut as paintInBox.topOnly.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['index', 'color'],
     },
@@ -411,7 +412,7 @@ const ALL_TOOLS: ToolDefinition[] = [
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
-            size: { type: 'integer' },
+            size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
           },
         },
       },
@@ -432,7 +433,7 @@ const ALL_TOOLS: ToolDefinition[] = [
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
-            size: { type: 'integer' },
+            size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
           },
         },
       },
@@ -502,9 +503,9 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         elevation: { type: 'number', description: 'Camera elevation in degrees. 0 = side view, 90 = top. Default 30.' },
-        azimuth: { type: 'number', description: 'Camera azimuth in degrees. 0 = front, 90 = right, 180 = back, 270 = left. Default 0.' },
+        azimuth: { type: 'number', description: 'Camera azimuth in degrees. 0 = front, 90 = right, 180 = back, 270 = left. Default 315 (a front-left three-quarter view).' },
         ortho: { type: 'boolean', description: 'true = orthographic (technical drawing), false = perspective. Default false.' },
-        size: { type: 'integer', description: 'Pixel size of the rendered square. Default 320. Larger costs more tokens.' },
+        size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
       },
     },
@@ -517,7 +518,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells). "box" = all 6 orthographic faces front/back/left/right/top/bottom (guaranteed all-faces check). Ignored when `angles` is given.' },
         angles: { type: 'array', description: 'Explicit list of camera angles; overrides `views`. Same angle semantics as renderView. Use to put specific suspect angles side-by-side in one composite.', items: { type: 'object', properties: { elevation: { type: 'number', description: '0 = side, 90 = top, -90 = bottom.' }, azimuth: { type: 'number', description: '0 = front, 90 = right, 180 = back, 270 = left.' }, ortho: { type: 'boolean', description: 'true = orthographic. Default false.' }, label: { type: 'string', description: 'Optional caption for the cell.' } }, required: ['elevation', 'azimuth'] } },
-        size: { type: 'integer', description: 'Pixel size per cell. Default 320. Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
+        size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
       },
     },
@@ -1428,6 +1429,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'listExportItems',
+    description: "What each object can be SPLIT into for an export — the export picker's Split menu as data. Per object: {id, name, size, pieceCount, splits, pieces, parts}; `splits` lists the modes that apply ('whole', 'pieces' = one file object per separate solid, 'parts' = one per api.label part, fused parts kept together), and `pieces` / `parts` list the items by export name (\"<object> · <item>\") or are null when that split doesn't apply. Use the names with exportModel's `exclude`. Builds objects that aren't open, so it can take a few seconds.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids (from listObjects). Default: every object.' },
+      },
+    },
+  },
+  {
     name: 'listObjectParts',
     description: "List the current object's PARTS and PIECES, exactly as the object list in the left rail shows them. Parts are the api.label(shape, name) regions (SCAD label(), BREP.label) — tracked through every union/cut, so they survive several shapes fusing into one solid; each has {name, triangleCount, color?}. lostParts are labels that ended with no triangles. unlabeledTriangleCount is geometry no part covers. Pieces are the physically separate solids (connected components), each named by the part covering most of it — use them to check a print-in-place mechanism really splits into N moving pieces. When the user says \"the handle\" or \"the lid part\", this is where those names live.",
     input_schema: { type: 'object', properties: {} },
@@ -1656,6 +1667,35 @@ const ALL_TOOLS: ToolDefinition[] = [
       },
       required: ['from', 'to'],
     },
+  },
+  {
+    name: 'partAction',
+    description: "Arrange, copy, group or re-orient the open object's named parts (JavaScript objects). Each action writes api.movePart / rotatePart / scalePart / mirrorPart / copyPart / groupParts / cutWithPart lines into the code (applied after the code runs, by moving the part's own triangles), then runs and saves. Only parts that are separate solids can move. Acts on `parts` when given, else EVERY part — pass the user's selection (from the [Selected in the Objects list …] context) when they mean it. Actions: grid / pack (lay out on the plate, `gap`), bed (pack onto the printer bed, overflow onto more plates), align (`axis`, `mode` min|center|max; 2+ parts), distribute (`axis`; 3+ parts), drop (onto z=0), center (on the origin), snap (`step`), move (`offset`), rotate (`degrees` [x,y,z] about the part's centre), layFlat (largest face down), mirror (`axis`), scale (`factor`), duplicate (`offset`), array (`count` in total, `step` [x,y,z]), gridArray (`cols`, `rows`, `step` [x,y]), group (`name`; 2+ parts → one part), ungroup, rename (`pattern`, {n} = 1,2,3…), cut (exactly one part, subtracted from the rest). Undo with undoPartEdit.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['grid', 'pack', 'bed', 'align', 'distribute', 'drop', 'center', 'snap', 'move', 'rotate', 'layFlat', 'mirror', 'scale', 'duplicate', 'array', 'gridArray', 'group', 'ungroup', 'rename', 'cut'] },
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part names (listObjectParts). Omit for every part.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'] },
+        mode: { type: 'string', enum: ['min', 'center', 'max'] },
+        gap: { type: 'number', description: 'Space between parts (default: a fifth of their mean width).' },
+        step: { type: 'array', items: { type: 'number' }, description: 'array: [x,y,z] between copies; gridArray: [x,y]. For snap pass a single-element array [step].' },
+        offset: { type: 'array', items: { type: 'number' }, description: '[x,y,z] for move / duplicate.' },
+        degrees: { type: 'array', items: { type: 'number' }, description: '[x,y,z] Euler degrees for rotate (x applied first).' },
+        factor: { type: 'number', description: 'Uniform scale factor (> 0).' },
+        count: { type: 'integer', description: 'array: how many in the row, the original included.' },
+        cols: { type: 'integer' },
+        rows: { type: 'integer' },
+        name: { type: 'string', description: 'group: the new part name.' },
+        pattern: { type: 'string', description: "rename: e.g. 'leg {n}'." },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'undoPartEdit',
+    description: 'Undo the open object\'s last partAction (puts the code back as it was before it, runs and saves).',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'bakeObjectPartColor',
@@ -2243,13 +2283,15 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportModel',
-    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, parts? } or { error }.",
+    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
     input_schema: {
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['stl', 'obj', 'glb', '3mf', '3mf-objects', 'step', 'vox'] },
         objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids to bundle into one file. Default: the current object (\'3mf-objects\': every object).' },
         filename: { type: 'string', description: 'Optional download filename (the extension is added if missing).' },
+        split: { type: 'object', description: 'Optional: object name or id → "pieces" | "parts" | "whole". Not for step / vox.' },
+        exclude: { type: 'array', items: { type: 'string' }, description: 'Optional: split items to leave out, by name ("<object> · <item>", e.g. "Chess set · Brim tab").' },
       },
       required: ['format'],
     },
@@ -2593,7 +2635,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   // #1085 PR5: per-object repair, paint and section tools.
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
-  'extractObjectPiece', 'extractObjectParts', 'reassignPaint',
+  'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -2608,26 +2650,15 @@ for (const tool of ALL_TOOLS) {
   }
 }
 
-/** Committing paint tools that take a PART scope (#1003): the region is
- *  selected as usual, then clipped to one api.label part, and keeps that scope
- *  across code edits (main.ts wraps the matching window.partwright methods). */
-export const PART_SCOPE_TOOLS = new Set<string>([
+/** Committing paint tools whose part scope is `withinPart`. Earlier builds
+ *  advertised a separate `scope: { label }` param on them; chats from then can
+ *  still replay it, so executeTool maps it onto `withinPart` (nothing in the
+ *  API reads `scope`, and the per-tool APIs would otherwise drop it and paint
+ *  unscoped). */
+const LEGACY_SCOPE_TOOLS = new Set<string>([
   'paintRegion', 'paintNearestRegion', 'paintFaces', 'paintSlab', 'paintInBox', 'paintInOrientedBox',
   'paintNear', 'paintInCylinder', 'paintConnected', 'paintStroke', 'paintComponent', 'paintImage',
 ]);
-// (main.ts's PART_SCOPED_PAINT_METHODS is the window.partwright side — it also
-// covers API-only verbs like paintAirbrush; paintImage handles scope itself.)
-const PART_SCOPE_PROP = {
-  type: 'object',
-  description: 'Optional. Confine this paint to one PART of the object: { label: "<part name>" } (an api.label region from listObjectParts). The selection is computed as usual, then clipped to that part — e.g. paintSlab on the top 5 mm with scope {label:"handle"} paints only the handle\'s top. The scope persists, so the paint stays inside the part when the code changes. When the user has a part selected (their message starts with "[Selected in the Objects list: part …]"), scope your paint to it.',
-  properties: { label: { type: 'string', description: 'Part (api.label) name.' } },
-  required: ['label'],
-};
-for (const tool of ALL_TOOLS) {
-  if (PART_SCOPE_TOOLS.has(tool.name) && !('scope' in tool.input_schema.properties)) {
-    tool.input_schema.properties.scope = PART_SCOPE_PROP;
-  }
-}
 
 const ALWAYS_AVAILABLE = new Set([
   ASK_USER_TOOL,
@@ -2688,6 +2719,7 @@ const ALWAYS_AVAILABLE = new Set([
   'listDeleted',
   'restoreObject',
   'listObjectParts',
+  'listExportItems',
   'highlightObjectPart',
   // Text-only likeness score: renders offscreen but returns no image, so it is
   // NOT views-gated — it exists precisely so likeness checks skip images.
@@ -2874,7 +2906,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listExportItems', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -2898,7 +2930,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3277,6 +3309,17 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
         if (mismatch) return { content: mismatch, isError: true };
       }
     }
+    if (LEGACY_SCOPE_TOOLS.has(name) && input.scope !== undefined) {
+      const label = (input.scope as { label?: unknown } | null)?.label;
+      if (typeof label !== 'string' || !label) {
+        return { content: 'scope must be { label: "<part name>" } — prefer withinPart: "<part name>"', isError: true };
+      }
+      if (input.withinPart !== undefined && input.withinPart !== label) {
+        return { content: `scope.label "${label}" and withinPart "${String(input.withinPart)}" disagree — pass only withinPart`, isError: true };
+      }
+      input.withinPart = label;
+      delete input.scope;
+    }
     const api = getApi();
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
@@ -3499,8 +3542,8 @@ function executeGetAttachments(api: PartwrightAPI): ToolExecResult {
 
 function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): ToolExecResult {
   const result = api.renderView(input) as string | { error: string } | null | undefined;
-  const elevation = (input.elevation as number | undefined) ?? 30;
-  const azimuth = (input.azimuth as number | undefined) ?? 0;
+  const elevation = (input.elevation as number | undefined) ?? DEFAULT_VIEW_ELEVATION;
+  const azimuth = (input.azimuth as number | undefined) ?? DEFAULT_VIEW_AZIMUTH;
   const ortho = (input.ortho as boolean | undefined) ?? false;
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.
@@ -3947,6 +3990,15 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.discardParts();
     case 'listObjectParts':
       return api.listObjectParts();
+    case 'listExportItems': {
+      const unknown = Object.keys(input).filter(k => k !== 'objects');
+      if (unknown.length) return { error: `listExportItems: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: objects.` };
+      if (input.objects == null) return api.listExportItems();
+      if (!Array.isArray(input.objects) || input.objects.some(o => typeof o !== 'string')) return { error: 'listExportItems: objects must be an array of object names or ids.' };
+      const r = resolveObjectIds(api, input.objects as string[]);
+      if ('error' in r) return { error: `listExportItems: ${r.error}` };
+      return api.listExportItems(r.ids);
+    }
     case 'highlightObjectPart': {
       if (input.clear === true) return api.highlightObjectPart(null);
       if (typeof input.part === 'string') return api.highlightObjectPart(input.part);
@@ -4010,6 +4062,14 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setObjectPartColor(input.part, input.color);
     case 'renameObjectPart':
       return api.renameObjectPart(input.from, input.to);
+    case 'partAction': {
+      const { action, ...opts } = input as Record<string, unknown>;
+      // snap takes one number; the schema's `step` is an array.
+      if (action === 'snap' && Array.isArray(opts.step)) opts.step = opts.step[0];
+      return api.partAction(action, opts);
+    }
+    case 'undoPartEdit':
+      return api.undoPartEdit();
     case 'bakeObjectPartColor':
       return api.bakeObjectPartColor(input.part);
     case 'extractObjectPiece':
@@ -4312,8 +4372,8 @@ const EXPORT_FORMAT_LABEL: Record<ExportFormat, string> = {
 /** Shape errors in an exportModel call, checked before the confirm prompt and
  *  again at dispatch. Null when the input is well-formed. */
 function exportInputError(input: Record<string, unknown>): string | null {
-  const unknown = Object.keys(input).filter(k => k !== 'format' && k !== 'objects' && k !== 'filename');
-  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename.`;
+  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'exclude'].includes(k));
+  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, exclude.`;
   if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
     return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
   }
@@ -4327,6 +4387,18 @@ function exportInputError(input: Record<string, unknown>): string | null {
     if (input.format === 'step' || input.format === 'vox') {
       return `exportModel: ${input.format.toUpperCase()} exports only the current object — omit objects (switch objects with changeObject first).`;
     }
+  }
+  if (input.split != null) {
+    if (typeof input.split !== 'object' || Array.isArray(input.split)) return 'exportModel: split must be an object of object name or id → "pieces" | "parts" | "whole".';
+    for (const [k, v] of Object.entries(input.split as Record<string, unknown>)) {
+      if (v !== 'pieces' && v !== 'parts' && v !== 'whole') return `exportModel: split["${k}"] must be "pieces", "parts" or "whole".`;
+    }
+  }
+  if (input.exclude != null && (!Array.isArray(input.exclude) || input.exclude.some(x => typeof x !== 'string' || x === ''))) {
+    return 'exportModel: exclude must be an array of item names ("<object> · <item>").';
+  }
+  if ((input.split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
+    return `exportModel: ${input.format.toUpperCase()} can't split objects — omit split / exclude.`;
   }
   return null;
 }
@@ -4392,15 +4464,25 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
     if ('error' in r) return { error: `exportModel: ${r.error}` };
     ids = r.ids;
   }
+  // Splitting goes through the multi-object exports; with no `objects` it
+  // applies to the current object.
+  const split = input.split as Record<string, string> | undefined;
+  const exclude = input.exclude as string[] | undefined;
+  const splitOpts = split || exclude ? { ...(split ? { split } : {}), ...(exclude ? { exclude } : {}) } : undefined;
+  if (splitOpts && !ids && format !== '3mf-objects') {
+    const cur = (api.listObjects() as ObjectRow[] | undefined)?.find(o => o.isCurrent);
+    if (!cur) return { error: 'exportModel: split / exclude need a session object — open a session first.' };
+    ids = [cur.id];
+  }
   let r: unknown;
   switch (format) {
-    case 'stl': r = ids ? await api.exportSTLObjects(ids, filename) : await api.exportSTL(filename); break;
-    case 'obj': r = ids ? await api.exportOBJObjects(ids, filename) : await api.exportOBJ(filename); break;
-    case 'glb': r = ids ? await api.exportGLBObjects(ids, filename) : await api.exportGLB(filename); break;
+    case 'stl': r = ids ? await (splitOpts ? api.exportSTLObjects(ids, filename, splitOpts) : api.exportSTLObjects(ids, filename)) : await api.exportSTL(filename); break;
+    case 'obj': r = ids ? await (splitOpts ? api.exportOBJObjects(ids, filename, splitOpts) : api.exportOBJObjects(ids, filename)) : await api.exportOBJ(filename); break;
+    case 'glb': r = ids ? await (splitOpts ? api.exportGLBObjects(ids, filename, splitOpts) : api.exportGLBObjects(ids, filename)) : await api.exportGLB(filename); break;
     // A plain 3MF with several objects is the generic multi-object 3MF (any
     // slicer); '3mf-objects' is the Bambu/Orca plate project.
-    case '3mf': r = ids ? await api.export3MFObjects(ids, filename, { bambu: false }) : await api.export3MF(filename); break;
-    case '3mf-objects': r = await api.export3MFObjects(ids, filename); break;
+    case '3mf': r = ids ? await api.export3MFObjects(ids, filename, { bambu: false, ...splitOpts }) : await api.export3MF(filename); break;
+    case '3mf-objects': r = await (splitOpts ? api.export3MFObjects(ids, filename, splitOpts) : api.export3MFObjects(ids, filename)); break;
     case 'step': r = await api.exportSTEP(filename); break;
     case 'vox': r = await api.exportVOX(filename); break;
   }

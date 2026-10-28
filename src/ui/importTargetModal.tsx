@@ -3,7 +3,7 @@
 // land: a new part in the current session (default), merged into the current
 // part, or a brand-new session.
 
-import { useEffect, useRef } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL } from './styleConstants';
 
@@ -31,6 +31,16 @@ export interface ImportTargetOptions {
   /** Modal heading. Defaults to "Import mesh"; image/voxel/BREP imports pass a
    *  noun-appropriate title (e.g. "Import voxels", "Import STEP"). */
   title?: string;
+  /** The session's objects: "Add to object" then offers a picker (default:
+   *  the current one) and adds the import as named parts of the one picked. */
+  objects?: { id: string; name: string }[];
+  currentObjectId?: string;
+}
+
+/** The choice, plus the object picked for "Add to object". */
+export interface ImportTargetPick {
+  target: ImportTarget;
+  objectId?: string;
 }
 
 interface Choice {
@@ -82,9 +92,14 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
 function ImportTargetBody(props: {
   filename: string;
   choices: Choice[];
-  onPick: (target: ImportTarget) => void;
+  objects?: { id: string; name: string }[];
+  currentObjectId?: string;
+  onPick: (pick: ImportTargetPick) => void;
 }) {
-  const { filename, choices, onPick } = props;
+  const { filename, choices, objects } = props;
+  const [objectId, setObjectId] = useState(props.currentObjectId ?? objects?.[0]?.id ?? '');
+  const picked = objects?.find(o => o.id === objectId);
+  const onPick = (target: ImportTarget) => props.onPick(target === 'current-part' && objects ? { target, objectId } : { target });
   // Focus the recommended option (falling back to first enabled) so
   // Enter/Space confirms it immediately.
   const recommendedRef = useRef<HTMLButtonElement>(null);
@@ -125,7 +140,7 @@ function ImportTargetBody(props: {
             onClick={() => { if (!c.disabled) onPick(c.target); }}
           >
             <div class="flex items-center gap-2">
-              <span class="text-sm text-zinc-100 font-medium">{c.title}</span>
+              <span class="text-sm text-zinc-100 font-medium">{c.target === 'current-part' && picked ? `Add to object — "${picked.name}"` : c.title}</span>
               {c.recommended && (
                 <span class="text-[9px] uppercase tracking-wide font-semibold text-blue-300 bg-blue-500/20 rounded px-1.5 py-0.5">
                   Default
@@ -133,18 +148,39 @@ function ImportTargetBody(props: {
               )}
             </div>
             <div class="text-[11px] text-zinc-400 leading-snug mt-0.5">
-              {c.disabled && c.disabledReason ? c.disabledReason : c.desc}
+              {c.disabled && c.disabledReason ? c.disabledReason : c.target === 'current-part' && picked
+                ? 'Becomes a named part of that object, placed beside its geometry. A JavaScript object keeps its code; arrange the parts with the Parts panel.'
+                : c.desc}
             </div>
           </button>
         );
       })}
+      {objects && objects.length > 1 && !choices.find(c => c.target === 'current-part')?.disabled && (
+        <label class="flex items-center gap-2 text-[11px] text-zinc-400 -mt-1 pl-1">
+          Add to object
+          <select
+            data-import-object
+            class="flex-1 min-w-0 min-h-[44px] md:min-h-0 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px]"
+            value={objectId}
+            onChange={e => setObjectId((e.target as HTMLSelectElement).value)}
+          >
+            {objects.map(o => <option key={o.id} value={o.id}>{o.name}{o.id === props.currentObjectId ? ' (open)' : ''}</option>)}
+          </select>
+        </label>
+      )}
     </>
   );
 }
 
-export function showImportTargetModal(opts: ImportTargetOptions): Promise<ImportTarget | null> {
+export async function showImportTargetModal(opts: ImportTargetOptions): Promise<ImportTarget | null> {
+  return (await pickImportTarget(opts))?.target ?? null;
+}
+
+/** showImportTargetModal, with the object picked for "Add to object" (when
+ *  `opts.objects` is given). */
+export function pickImportTarget(opts: ImportTargetOptions): Promise<ImportTargetPick | null> {
   return new Promise(resolve => {
-    let result: ImportTarget | null = null;
+    let result: ImportTargetPick | null = null;
     const choices = buildChoices(opts);
 
     mountPreactModal(
@@ -156,7 +192,9 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
         body: <ImportTargetBody
           filename={opts.filename}
           choices={choices}
-          onPick={target => { result = target; close(); }}
+          objects={opts.addReplacesStarter ? undefined : opts.objects}
+          currentObjectId={opts.currentObjectId}
+          onPick={pick => { result = pick; close(); }}
         />,
         footer: (
           <button
