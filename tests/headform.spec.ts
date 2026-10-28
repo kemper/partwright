@@ -35,7 +35,7 @@ test.describe('headform', () => {
     expect(data.componentCount).toBe(1);
     const lm = JSON.parse(big.result.logs![0]) as { units: string; measurements: Record<string, number>; points: Record<string, number[]> };
     expect(lm.units).toBe('mm');
-    expect(lm.measurements.vertexHeight).toBeCloseTo(129 * 1.05, 0);
+    expect(lm.measurements.vertexHeight).toBeCloseTo(128.8 * 1.05, 0);
     // Top of the head at the vertex, front at the nose tip.
     expect(data.boundingBox.z[1]).toBeCloseTo(lm.points.vertex[2], -0.5);
     expect(data.boundingBox.y[0]).toBeCloseTo(lm.points.pronasale[1], -0.5);

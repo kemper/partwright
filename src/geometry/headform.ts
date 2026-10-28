@@ -4,8 +4,8 @@
  * `api.headform(opts?)` with `api.headform.landmarks(opts?)` beside it.
  *
  * The figure rig's `F.head` / `F.onFace` are stylised and unitless; this is the
- * opposite: real millimetres from adult anthropometry (approximate ANSUR II
- * means), in the frame headform standards use, so a part modelled against it
+ * opposite: real millimetres from adult anthropometric surveys (sources at
+ * BASE), in the frame headform standards use, so a part modelled against it
  * fits a person. It is a smooth SDF blend of ellipsoids and capsules placed so
  * the surface passes through the named landmarks — a fit proxy, not a portrait.
  *
@@ -32,7 +32,8 @@ export interface HeadformMeasurements {
   length: number;
   /** Widest side-to-side breadth of the skull, above the ears. */
   breadth: number;
-  /** Tragion to tragion (ear notch to ear notch). */
+  /** Tragion to tragion (ear notch to ear notch). No survey source: defaults to
+   *  0.97 × breadth, where the skull's side is at ear level. */
   bitragionBreadth: number;
   /** Sellion (deepest point of the nose bridge) to menton (bottom of the chin). */
   faceHeight: number;
@@ -46,33 +47,52 @@ export interface HeadformMeasurements {
   bigonialBreadth: number;
   /** Neck circumference (the proxy's neck is a cylinder of this girth). */
   neckCircumference: number;
+  /** Nose width across the wings (alare to alare). */
+  noseBreadth: number;
+  /** Nose tip to where the nose meets the upper lip (pronasale to subnasale). */
+  noseProtrusion: number;
+  /** Nose bridge to where the nose meets the upper lip (sellion to subnasale). */
+  noseLength: number;
 }
 
 const MEASUREMENT_KEYS = [
   'circumference', 'length', 'breadth', 'bitragionBreadth', 'faceHeight', 'pupillaryDistance',
   'vertexHeight', 'bizygomaticBreadth', 'bigonialBreadth', 'neckCircumference',
+  'noseBreadth', 'noseProtrusion', 'noseLength',
 ] as const;
 
-/** Adult 50th-percentile-ish measurements by sex (approximate ANSUR II means). */
-const BASE: Record<'male' | 'female' | 'neutral', HeadformMeasurements> = {
-  male: {
-    circumference: 572, length: 197, breadth: 152, bitragionBreadth: 145, faceHeight: 123,
-    pupillaryDistance: 64, vertexHeight: 132, bizygomaticBreadth: 142, bigonialBreadth: 112,
-    neckCircumference: 398,
-  },
-  female: {
-    circumference: 549, length: 187, breadth: 145, bitragionBreadth: 138, faceHeight: 113,
-    pupillaryDistance: 62, vertexHeight: 126, bizygomaticBreadth: 133, bigonialBreadth: 100,
-    neckCircumference: 326,
-  },
-  neutral: {
-    circumference: 560, length: 192, breadth: 148, bitragionBreadth: 141, faceHeight: 118,
-    pupillaryDistance: 63, vertexHeight: 129, bizygomaticBreadth: 137, bigonialBreadth: 106,
-    neckCircumference: 362,
-  },
+/** Survey means by sex, in mm, from two US surveys:
+ *  - ANSUR II (2012 US Army survey; public data, 4,082 men and 1,986 women):
+ *    circumference, length, breadth, faceHeight (menton–sellion),
+ *    pupillaryDistance, vertexHeight (tragion–top of head), bizygomaticBreadth
+ *    and neckCircumference.
+ *  - NIOSH 2003 head-and-face survey of US respirator users (Zhuang &
+ *    Bradtmiller, J. Occup. Environ. Hyg. 2:567–576, 2005, Table VI; 2,543
+ *    men and 1,454 women): bigonialBreadth, noseBreadth, noseProtrusion and
+ *    noseLength (subnasale–sellion), which ANSUR II doesn't measure.
+ *  Neutral is the mean of the two. bitragionBreadth has no survey source; see
+ *  HeadformMeasurements. */
+type BaseMeasurements = Omit<HeadformMeasurements, 'bitragionBreadth'>;
+const MALE: BaseMeasurements = {
+  circumference: 574.4, length: 199.5, breadth: 154.3, faceHeight: 122.6,
+  pupillaryDistance: 64.0, vertexHeight: 131.1, bizygomaticBreadth: 142.6, neckCircumference: 397.6,
+  bigonialBreadth: 120.4, noseBreadth: 36.6, noseProtrusion: 21.1, noseLength: 52.0,
+};
+const FEMALE: BaseMeasurements = {
+  circumference: 561.1, length: 189.8, breadth: 147.8, faceHeight: 113.1,
+  pupillaryDistance: 61.7, vertexHeight: 126.5, bizygomaticBreadth: 133.8, neckCircumference: 329.8,
+  bigonialBreadth: 110.1, noseBreadth: 33.2, noseProtrusion: 19.8, noseLength: 48.2,
+};
+const BASE: Record<'male' | 'female' | 'neutral', BaseMeasurements> = {
+  male: MALE,
+  female: FEMALE,
+  neutral: Object.fromEntries(
+    (Object.keys(MALE) as (keyof BaseMeasurements)[]).map(key => [key, Math.round((MALE[key] + FEMALE[key]) * 5) / 10]),
+  ) as unknown as BaseMeasurements,
 };
 
-/** Size presets: a uniform scale of the base head (S ≈ 5th, L ≈ 95th percentile). */
+/** Size presets: a uniform scale of the base head. ±5% spans roughly the 5th
+ *  to 95th percentile of head circumference in both surveys. */
 const SIZE_SCALE = { S: 0.95, M: 1, L: 1.05 } as const;
 
 export type HeadformSize = keyof typeof SIZE_SCALE;
@@ -96,6 +116,7 @@ export interface HeadformLandmarks {
   sellion: Vec3; pupilL: Vec3; pupilR: Vec3;
   pronasale: Vec3; subnasale: Vec3; stomion: Vec3; menton: Vec3;
   zygionL: Vec3; zygionR: Vec3; gonionL: Vec3; gonionR: Vec3;
+  alareL: Vec3; alareR: Vec3;
 }
 
 interface Resolved {
@@ -124,14 +145,19 @@ function resolve(opts: unknown, where: string): Resolved {
   for (const key of MEASUREMENT_KEYS) {
     const v = o[key];
     if (v !== undefined) {
-      assertNumber(v, `${where}.${key}`, { min: 10, max: 800 });
+      assertNumber(v, `${where}.${key}`, { min: 5, max: 800 });
       m[key] = v as number;
+    } else if (key === 'bitragionBreadth') {
+      m[key] = NaN; // derived below, from the (possibly overridden) breadth
     } else {
       m[key] = Math.round(base[key] * k * 10) / 10;
     }
   }
-  if (m.pupillaryDistance >= m.bizygomaticBreadth || m.bitragionBreadth > m.breadth * 1.1 || m.bigonialBreadth >= m.bizygomaticBreadth * 1.05) {
-    throw new ValidationError(`${where}: the measurements don't describe a head (pupillaryDistance < bizygomaticBreadth, bitragionBreadth ≲ breadth and bigonialBreadth ≲ bizygomaticBreadth).`);
+  if (Number.isNaN(m.bitragionBreadth)) m.bitragionBreadth = Math.round(0.97 * m.breadth * 10) / 10;
+  if (m.pupillaryDistance >= m.bizygomaticBreadth || m.bitragionBreadth > m.breadth * 1.1
+    || m.bigonialBreadth >= m.bizygomaticBreadth * 1.05 || m.noseBreadth >= m.pupillaryDistance
+    || m.noseProtrusion >= m.noseLength || m.noseLength >= 0.6 * m.faceHeight) {
+    throw new ValidationError(`${where}: the measurements don't describe a head (pupillaryDistance < bizygomaticBreadth, bitragionBreadth ≲ breadth, bigonialBreadth ≲ bizygomaticBreadth, noseBreadth < pupillaryDistance, noseProtrusion < noseLength < 0.6 × faceHeight).`);
   }
   return { measurements: m, neck: o.neck !== false, edgeLength: (o.edgeLength as number | undefined) ?? 3 };
 }
@@ -142,23 +168,33 @@ function resolve(opts: unknown, where: string): Resolved {
 function landmarksOf(m: HeadformMeasurements): HeadformLandmarks {
   const L = m.length, F = m.faceHeight;
   const sellionZ = 0.18 * F;
+  const sellionY = -0.475 * L;
+  // The nose from its measurements: the subnasale sits noseLength from the
+  // sellion (slightly forward of it), and the tip noseProtrusion from the
+  // subnasale, forward and tilted up (the columella rises ~25°).
+  const subY = -0.525 * L;
+  const subZ = sellionZ - Math.sqrt(Math.max(m.noseLength ** 2 - (sellionY - subY) ** 2, 1));
+  const tilt = 25 * Math.PI / 180;
+  const alare = (sgn: number): Vec3 => [sgn * m.noseBreadth / 2, subY + 0.25 * m.noseProtrusion, subZ + 0.12 * m.noseLength + 3];
   return {
     tragionL: [m.bitragionBreadth / 2, 0, 0],
     tragionR: [-m.bitragionBreadth / 2, 0, 0],
     vertex: [0, 0.02 * L, m.vertexHeight],
     glabella: [0, -0.51 * L, 0.3 * F],
     opisthocranion: [0, 0.49 * L, 0.25 * F],
-    sellion: [0, -0.475 * L, sellionZ],
+    sellion: [0, sellionY, sellionZ],
     pupilL: [m.pupillaryDistance / 2, -0.425 * L, 0.12 * F],
     pupilR: [-m.pupillaryDistance / 2, -0.425 * L, 0.12 * F],
-    pronasale: [0, -0.585 * L, sellionZ - 0.4 * F],
-    subnasale: [0, -0.525 * L, sellionZ - 0.47 * F],
-    stomion: [0, -0.51 * L, sellionZ - 0.66 * F],
+    pronasale: [0, subY - m.noseProtrusion * Math.cos(tilt), subZ + m.noseProtrusion * Math.sin(tilt)],
+    subnasale: [0, subY, subZ],
+    stomion: [0, subY - 3, sellionZ - 0.66 * F],
     menton: [0, -0.44 * L, sellionZ - F],
     zygionL: [m.bizygomaticBreadth / 2, -0.3 * L, 0.02 * F],
     zygionR: [-m.bizygomaticBreadth / 2, -0.3 * L, 0.02 * F],
     gonionL: [m.bigonialBreadth / 2, -0.07 * L, sellionZ - 0.66 * F],
     gonionR: [-m.bigonialBreadth / 2, -0.07 * L, sellionZ - 0.66 * F],
+    alareL: alare(1),
+    alareR: alare(-1),
   };
 }
 
@@ -191,13 +227,23 @@ function headformSdf(sdf: any, m: HeadformMeasurements, neck: boolean): SdfNode 
   const kf = 0.17 * F; // face masses blend wide so they read as one surface
   // Cheekbones out to the zygions.
   head = head.smoothUnion(at(sdf.ellipsoid(m.bizygomaticBreadth / 2 - 3.5, 0.17 * L, 0.19 * F), [0, -0.3 * L, p.zygionL[2]]), kf);
-  // Midface (maxilla), behind the nose and upper lip.
-  head = head.smoothUnion(at(sdf.ellipsoid(0.47 * m.bizygomaticBreadth, 0.2 * L, 0.34 * F), [0, -0.315 * L, p.sellion[2] - 0.4 * F]), kf);
+  // Midface (maxilla), behind the nose and upper lip: its front sits well
+  // behind the subnasale, so the nose stands proud of the cheeks beside it.
+  const midRy = 0.2 * L;
+  head = head.smoothUnion(at(sdf.ellipsoid(0.47 * m.bizygomaticBreadth, midRy, 0.34 * F), [0, p.subnasale[1] + 0.6 * m.noseProtrusion + midRy, p.sellion[2] - 0.4 * F]), kf);
   // Mouth and chin as ONE tall, gently curved mass: its front passes the
   // stomion and its underside the menton, so lips and chin are not blobs.
   const mouthRy = 0.12 * L, mouthRz = 0.22 * F;
   head = head.smoothUnion(
-    at(sdf.ellipsoid(0.24 * F + 8, mouthRy, mouthRz), [0, p.stomion[1] + mouthRy + 7, p.stomion[2] - 0.08 * F]),
+    at(sdf.ellipsoid(0.24 * F + 8, mouthRy, mouthRz), [0, p.stomion[1] + mouthRy + 7, p.stomion[2] - 0.055 * F]),
+    kf,
+  );
+  // Upper lip: from the stomion up to the subnasale, where the nose meets it.
+  // A deep, broad mass blended wide, so it slopes back into the cheeks
+  // instead of standing out as a disc; its top stays below the nose.
+  const lipH = p.subnasale[2] - p.stomion[2], lipRy = 0.08 * L;
+  head = head.smoothUnion(
+    at(sdf.ellipsoid(0.32 * F, lipRy, 0.55 * lipH), [0, p.subnasale[1] + lipRy - 6, p.stomion[2] + 0.4 * lipH]),
     kf,
   );
   // Jaw: a fill to the jaw angles, then the jaw lines from just inside each
@@ -210,11 +256,14 @@ function headformSdf(sdf: any, m: HeadformMeasurements, neck: boolean): SdfNode 
       .union(sdf.capsule([p.gonionR[0] + jawR + 4.5, p.gonionR[1], p.gonionR[2]], chin, jawR)),
     kf,
   );
-  // Under the chin, a slope back to the neck (the submental region).
-  head = head.smoothUnion(
-    sdf.capsule([0, p.menton[1] + 26, p.menton[2] + 12], [0, 0.1 * L, p.menton[2] - 30], 0.14 * F),
-    1.2 * kf,
-  );
+  // Under the chin, a slope back to the neck (the submental region); without
+  // a neck it would stick out as a tube.
+  if (neck) {
+    head = head.smoothUnion(
+      sdf.capsule([0, p.menton[1] + 26, p.menton[2] + 12], [0, 0.1 * L, p.menton[2] - 30], 0.14 * F),
+      1.2 * kf,
+    );
+  }
   // Eye sockets, then the eyes (front of each eye at its pupil landmark).
   const eyeR = 0.1 * F;
   head = head.smoothSubtract(
@@ -229,13 +278,34 @@ function headformSdf(sdf: any, m: HeadformMeasurements, neck: boolean): SdfNode 
     k * 0.4,
   );
   head = head.union(pair(() => sdf.sphere(eyeR), [m.pupillaryDistance / 2, p.pupilL[1] + eyeR, p.pupilL[2]]));
-  // Nose: the bridge-to-tip ridge, then the base (alae).
-  const noseR = 0.05 * F;
-  head = head.smoothUnion(
-    sdf.capsule([0, p.sellion[1] + noseR + 4, p.sellion[2] - 4], [p.pronasale[0], p.pronasale[1] + noseR, p.pronasale[2] + 2], noseR),
-    k * 0.3,
+  // Nose, from its measurements: a dorsum ridge from the bridge to the tip, a
+  // rounded tip whose front is the pronasale, the wings (alae) out to the
+  // alare points, and the columella down to the subnasale.
+  const nb = m.noseBreadth, np = m.noseProtrusion, nl = m.noseLength;
+  const tipR = 0.27 * nb;
+  const tip: Vec3 = [0, p.pronasale[1] + tipR, p.pronasale[2]];
+  // The dorsum widens from the bridge (~16 mm, the nasal root breadth) toward
+  // the tip: a chain of spheres blended into one wedge.
+  let nose: SdfNode = at(sdf.sphere(tipR), tip);
+  const top: Vec3 = [0, p.sellion[1] + 8, p.sellion[2] - 3];
+  for (let i = 0; i <= 4; i++) {
+    const t = i / 5, r = 8 + (tipR - 8) * t;
+    nose = nose.smoothUnion(at(sdf.sphere(r), [0, top[1] + (tip[1] - top[1]) * t, top[2] + (tip[2] + 0.3 * tipR - top[2]) * t]), 6);
+  }
+  // The base spans wing to wing and reaches forward under the tip, so the
+  // nose is one solid with no gap (or tunnel) behind the tip. Both stop above
+  // the subnasale, where the nose meets the lip. The wings' widest point (the
+  // alare) sits in front of the cheek, as on a real face.
+  nose = nose.smoothUnion(
+    at(sdf.ellipsoid(nb / 2, 0.55 * np, 0.12 * nl), [0, p.alareL[1], p.alareL[2]]),
+    6,
   );
-  head = head.smoothUnion(at(sdf.ellipsoid(0.15 * F, 0.045 * L, 0.075 * F), [0, p.subnasale[1] + 0.03 * L, p.subnasale[2] + 0.06 * F]), k * 0.5);
+  nose = nose.smoothUnion(
+    at(sdf.ellipsoid(0.3 * nb, 0.45 * np, 0.12 * nl), [0, (tip[1] + p.alareL[1]) / 2, p.subnasale[2] + 0.2 * nl]),
+    6,
+  );
+  // A tight blend keeps a crease where the wings meet the cheeks.
+  head = head.smoothUnion(nose, 3);
   // Ears: flat ovals standing out from the tragions.
   head = head.smoothUnion(pair(() => sdf.ellipsoid(0.05 * F, 0.1 * L, 0.27 * F), [m.bitragionBreadth / 2 + 3, 0.1 * L + 2, 0.05 * F]), k * 0.4);
   if (neck) {
@@ -254,6 +324,7 @@ const OUTWARD: Record<keyof HeadformLandmarks, Vec3> = {
   sellion: [0, -1, 0], pupilL: [0, -1, 0], pupilR: [0, -1, 0],
   pronasale: [0, -1, 0], subnasale: [0, -1, 0], stomion: [0, -1, 0], menton: [0, 0, -1],
   zygionL: [1, 0, 0], zygionR: [-1, 0, 0], gonionL: [1, 0, 0], gonionR: [-1, 0, 0],
+  alareL: [1, 0, 0], alareR: [-1, 0, 0],
 };
 
 /** The landmarks moved onto the proxy's actual surface (the blend shifts it a
@@ -267,13 +338,16 @@ function surfaceLandmarks(node: SdfNode, m: HeadformMeasurements): HeadformLandm
     const at = (t: number): Vec3 => [p[0] + d[0] * t, p[1] + d[1] * t, p[2] + d[2] * t];
     const f = (t: number) => { const q = at(t); return node.evaluate(q[0], q[1], q[2]); };
     // Step out from inside until the sign flips, then bisect.
-    let lo = -reach, hi = NaN;
-    for (let t = -reach; t <= reach; t += 0.5) {
+    // The wings are found walking out from the middle of the nose, not from
+    // the far cheek.
+    const start = key === 'alareL' || key === 'alareR' ? -m.noseBreadth / 2 + 1 : -reach;
+    let lo = start, hi = NaN;
+    for (let t = start; t <= reach; t += 0.5) {
       if (f(t) > 0) { hi = t; break; }
       lo = t;
     }
     // No crossing, or already outside at the start: no surface to snap to.
-    if (Number.isNaN(hi) || hi === -reach) {
+    if (Number.isNaN(hi) || hi === start) {
       throw new ValidationError(`headform: couldn't place the ${key} landmark on the surface — these measurements are too far apart to make one head.`);
     }
     for (let i = 0; i < 30; i++) {
@@ -318,6 +392,9 @@ function achievedMeasurements(node: SdfNode, m: HeadformMeasurements, p: Headfor
     vertexHeight: r(p.vertex[2]),
     bizygomaticBreadth: r(p.zygionL[0] - p.zygionR[0]),
     bigonialBreadth: r(p.gonionL[0] - p.gonionR[0]),
+    noseBreadth: r(p.alareL[0] - p.alareR[0]),
+    noseProtrusion: r(Math.hypot(p.pronasale[1] - p.subnasale[1], p.pronasale[2] - p.subnasale[2])),
+    noseLength: r(Math.hypot(p.sellion[1] - p.subnasale[1], p.sellion[2] - p.subnasale[2])),
   };
 }
 

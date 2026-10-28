@@ -67,9 +67,43 @@ describe('headform', () => {
     }
     // A longer head is a bigger girth, whatever `circumference` says.
     const long = headform.landmarks({ length: 215 });
-    expect(long.measurements.circumference).toBe(560);
-    expect(long.achieved.circumference).toBeGreaterThan(590);
+    expect(long.measurements.circumference).toBe(567.8);
+    expect(long.achieved.circumference).toBeGreaterThan(long.measurements.circumference + 25);
     expect(Math.abs(long.achieved.length - 215)).toBeLessThan(4);
+  });
+
+  it('uses the survey means: ANSUR II for the head, NIOSH 2003 for the nose and jaw', () => {
+    const male = headform.landmarks({ sex: 'male' }).measurements;
+    const female = headform.landmarks({ sex: 'female' }).measurements;
+    // ANSUR II (2012) public data, means.
+    expect(male).toMatchObject({ circumference: 574.4, length: 199.5, breadth: 154.3, faceHeight: 122.6, pupillaryDistance: 64 });
+    expect(female).toMatchObject({ circumference: 561.1, length: 189.8, breadth: 147.8, faceHeight: 113.1, pupillaryDistance: 61.7 });
+    // NIOSH head-and-face survey (Zhuang & Bradtmiller 2005, Table VI), means.
+    expect(male).toMatchObject({ bigonialBreadth: 120.4, noseBreadth: 36.6, noseProtrusion: 21.1, noseLength: 52 });
+    expect(female).toMatchObject({ bigonialBreadth: 110.1, noseBreadth: 33.2, noseProtrusion: 19.8, noseLength: 48.2 });
+    // Neutral is the mean of the two.
+    expect(headform.landmarks().measurements.noseBreadth).toBeCloseTo((36.6 + 33.2) / 2, 1);
+  });
+
+  it('builds a nose that stands proud of the cheeks', () => {
+    const { resolve, surfaceLandmarks, headformSdf } = __headformTestables__;
+    const r = resolve({}, 't');
+    const node = headformSdf(sdf, r.measurements, true);
+    const p = surfaceLandmarks(node, r.measurements);
+    // Depth of the face surface at (x, z), walking in from the front.
+    const front = (x: number, z: number) => {
+      let lo = -30, hi = -180;
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (node.evaluate(x, mid, z) > 0) hi = mid; else lo = mid;
+      }
+      return lo;
+    };
+    const midNose = (p.sellion[2] + p.subnasale[2]) / 2;
+    // Mid-nose, the dorsum is well in front of the cheek 20 mm to the side;
+    // at the tip, the nose stands ~25 mm proud of it.
+    expect(front(20, midNose) - front(0, midNose)).toBeGreaterThan(10);
+    expect(front(25, p.pronasale[2]) - p.pronasale[1]).toBeGreaterThan(20);
   });
 
   it('refuses to report a landmark it cannot put on the surface', () => {
@@ -81,8 +115,8 @@ describe('headform', () => {
   it('sizes, sexes and overrides change the measurements; landmarks follow the frame', () => {
     const m = headform.landmarks().measurements;
     expect(headform.landmarks({ size: 'L' }).measurements.length).toBeCloseTo(m.length * 1.05, 0);
-    expect(headform.landmarks({ sex: 'female' }).measurements.circumference).toBe(549);
-    expect(headform.landmarks({ circumference: 600 }).measurements.length).toBeCloseTo(m.length * 600 / 560, 0);
+    expect(headform.landmarks({ sex: 'female' }).measurements.circumference).toBe(561.1);
+    expect(headform.landmarks({ circumference: 600 }).measurements.length).toBeCloseTo(m.length * 600 / m.circumference, 0);
     expect(headform.landmarks({ pupillaryDistance: 70 }).measurements.pupillaryDistance).toBe(70);
     const p = headform.landmarks().points;
     expect(p.pupilL[0]).toBeGreaterThan(0);          // +X is the wearer's left

@@ -2,8 +2,7 @@
 
 `api.headform(opts?)` returns a **real-size adult head in millimetres**: a smooth,
 featureless mannequin head (skull, brow, eyes, nose, cheekbones, jaw, ears, neck)
-whose landmarks sit where adult anthropometry puts them (approximate ANSUR II
-means). Use it to design things a person wears, such as masks, helmets, glasses,
+built from survey means (see **Data** below). Use it to design things a person wears, such as masks, helmets, glasses,
 headphones, hats and visors, and to check they fit.
 
 It's a fit proxy, not a portrait: the presets land within a few percent of
@@ -37,26 +36,48 @@ api.headform({
   // the whole head (in place of `size`); the others change one dimension each.
   circumference, length, breadth, bitragionBreadth, faceHeight, pupillaryDistance,
   vertexHeight, bizygomaticBreadth, bigonialBreadth, neckCircumference,
+  noseBreadth, noseProtrusion, noseLength,
 });
 ```
 
-| Measurement | What it is | neutral M (mm) |
-|---|---|---|
-| `circumference` | head girth just above the brow | 560 |
-| `length` | glabella (between the brows) to the back of the head | 192 |
-| `breadth` | widest skull breadth, above the ears | 148 |
-| `bitragionBreadth` | ear notch to ear notch | 141 |
-| `faceHeight` | nose bridge (sellion) to the bottom of the chin (menton) | 118 |
-| `pupillaryDistance` | pupil to pupil | 63 |
-| `vertexHeight` | top of the head above the ear notches | 129 |
-| `bizygomaticBreadth` | cheekbone to cheekbone | 137 |
-| `bigonialBreadth` | jaw angle to jaw angle | 106 |
-| `neckCircumference` | neck girth (the neck is a cylinder of this girth) | 362 |
+| Measurement | What it is | male | female | neutral M | source |
+|---|---|---|---|---|---|
+| `circumference` | head girth just above the brow | 574.4 | 561.1 | 567.8 | ANSUR II |
+| `length` | glabella (between the brows) to the back of the head | 199.5 | 189.8 | 194.7 | ANSUR II |
+| `breadth` | widest skull breadth, above the ears | 154.3 | 147.8 | 151.1 | ANSUR II |
+| `faceHeight` | nose bridge (sellion) to the bottom of the chin (menton) | 122.6 | 113.1 | 117.9 | ANSUR II |
+| `pupillaryDistance` | pupil to pupil | 64.0 | 61.7 | 62.9 | ANSUR II |
+| `vertexHeight` | top of the head above the ear notches | 131.1 | 126.5 | 128.8 | ANSUR II |
+| `bizygomaticBreadth` | cheekbone to cheekbone | 142.6 | 133.8 | 138.2 | ANSUR II |
+| `neckCircumference` | neck girth (the neck is a cylinder of this girth) | 397.6 | 329.8 | 363.7 | ANSUR II |
+| `bigonialBreadth` | jaw angle to jaw angle | 120.4 | 110.1 | 115.3 | NIOSH 2003 |
+| `noseBreadth` | nose wing to nose wing (alare to alare) | 36.6 | 33.2 | 34.9 | NIOSH 2003 |
+| `noseProtrusion` | nose tip to where the nose meets the lip (pronasale–subnasale) | 21.1 | 19.8 | 20.5 | NIOSH 2003 |
+| `noseLength` | nose bridge to where the nose meets the lip (sellion–subnasale) | 52.0 | 48.2 | 50.1 | NIOSH 2003 |
+| `bitragionBreadth` | ear notch to ear notch | 149.7 | 143.4 | 146.6 | derived: 0.97 × `breadth` |
 
-`female` and `male` presets use the respective means (e.g. 549 / 572 mm
-circumference). A few impossible combinations are rejected (pupils wider than
-the cheekbones, ears wider than the skull, jaw wider than the cheekbones), and
-so are measurements too far apart to make one surface.
+All values in mm. Ear-to-ear breadth has no source in either survey: its default
+follows the skull's side at ear level, and you can override it if you know it. A
+few impossible combinations are rejected (pupils wider than the cheekbones, ears
+wider than the skull, jaw wider than the cheekbones, a nose wider than the
+pupils or longer than 0.6 × the face), and so are measurements too far apart to
+make one surface.
+
+### Data
+
+- **ANSUR II**: the 2012 US Army anthropometric survey, public data (4,082
+  men, 1,986 women). Means computed from `ANSUR II MALE/FEMALE Public.csv`.
+- **NIOSH 2003**: the head-and-face survey of US respirator users, built for
+  respirator fit (Zhuang & Bradtmiller, *J. Occup. Environ. Hyg.* 2:567–576,
+  2005, Table VI; 2,543 men, 1,454 women). It supplies the nose and jaw
+  measurements, which ANSUR II doesn't take.
+- `neutral` is the mean of the male and female values. The size presets scale
+  them by ±5%, which spans roughly the 5th to 95th percentile of head
+  circumference in both surveys.
+
+Both are US adult samples. Faces vary by population (e.g. NIOSH's survey of
+Chinese workers found shorter, wider faces with less nose protrusion), so
+override measurements when you're designing for a specific group.
 
 **Requested vs achieved.** The shape is a smooth blend, so the mesh doesn't hit
 every requested number exactly, and overriding one measurement moves others
@@ -68,9 +89,9 @@ built head actually measures. Size a hat band, liner or strap from
 
 ```js
 const lm = api.headform.landmarks({ size: 'L' });   // pure data — no geometry built
-lm.points.pupilL      // [33.1, -86.2, 14.9]  — on the surface, mm
+lm.points.pupilL      // [33, -87.6, 14.9]  — on the surface, mm
 lm.measurements       // what you asked for (preset + overrides)
-lm.achieved           // what the built head measures: girth above the brow, length, ear to ear, …
+lm.achieved           // what the built head measures: girth above the brow, length, ear to ear, nose, …
 lm.frame              // the frame, in words
 ```
 
@@ -87,6 +108,7 @@ touches the skin). Pass the same options to `landmarks` as to `headform`.
 | `pupilL` / `pupilR` | front of each eye |
 | `pronasale` | nose tip |
 | `subnasale` | where the nose meets the upper lip |
+| `alareL` / `alareR` | nose wings, widest point (where a mask's nose bridge seals) |
 | `stomion` | mouth (between the lips) |
 | `menton` | bottom of the chin |
 | `zygionL` / `zygionR` | cheekbones, widest point |
