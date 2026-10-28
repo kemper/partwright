@@ -1027,6 +1027,16 @@ export function applyWorkerAiConfig(ai: AppConfig['ai']): void {
   cachedConfig = { ...base, ai: { ...base.ai, ...ai } };
 }
 
+/** Seed the engine Worker's config with the main thread's `import` overrides
+ *  that model code reads inside the Worker (e.g. `voxelSdfMaxSamples`, the
+ *  `v.sdf` sampling budget) — the same gap as applyWorkerAiConfig, closed by
+ *  the execute message. No-op outside a Worker. */
+export function applyWorkerImportConfig(overrides: Partial<AppConfig['import']>): void {
+  if (!isWorkerContext()) return;
+  const base = loadAppConfig();
+  cachedConfig = { ...base, import: { ...base.import, ...overrides } };
+}
+
 /** Subscribe to config changes (saved overrides or a reset). Returns an
  *  unsubscribe function. Fires with the new config after every persist. */
 export function onConfigChange(fn: (cfg: AppConfig) => void): () => void {

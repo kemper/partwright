@@ -43,7 +43,9 @@ await partwright.previewPartPresets({ algorithm: 'auto-merge' })   // -> { prese
 await partwright.applyPartPreset(0)
 
 // 2. Fused shell: place named seeds. Get points by clicking in your own
-//    renders: renderViews → probePixel(view, [px, py]) → .point
+//    renders: renderView(view) → probePixel({ pixel: [px, py], view }) → .point
+//    (probe a single renderView — renderViews composites tiles + labels, so its
+//    pixel coordinates don't map to one camera)
 //    An optional seed `color` becomes that part's colour (and its model colour on
 //    accept). listPartDetectors().labelPresets has the panel's default colours.
 await partwright.detectParts({

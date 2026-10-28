@@ -60,7 +60,7 @@ import { lockdownGlobalScope, enumerateChain } from './workerLockdown';
 import { formatLockdownRefusal } from './lockdownRefusal';
 import { enableSesSandbox } from './sesSandbox';
 import { modelCompilerName } from './modelEval';
-import { getConfig } from '../config/appConfig';
+import { applyWorkerImportConfig, getConfig } from '../config/appConfig';
 import { createModelLog, withLogs } from './modelConsole';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -327,7 +327,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog, voxelSdfMaxSamples } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -339,7 +339,11 @@ self.onmessage = async (event: MessageEvent) => {
       manifoldFactsMinTriangles?: number;
       containmentSamples?: number;
       modelLog?: { maxLines?: unknown; maxChars?: unknown };
+      voxelSdfMaxSamples?: number;
     };
+    // The Worker has no localStorage: apply the user's saved v.sdf budget
+    // before model code reads getConfig().import.voxelSdfMaxSamples.
+    if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
     // This run's console capture (modelConsole.ts), with the main thread's
     // caps. Each JS engine call below runs inside log.run(...), which only
     // redirects the console for that synchronous call — model code never
@@ -778,7 +782,10 @@ self.onmessage = async (event: MessageEvent) => {
   // Voxel Studio activation when the main thread has no up-to-date grid from
   // the last render. The main thread never evaluates model code (#1090).
   if (msg.type === 'voxel_grid') {
-    const { callId, code, params } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null };
+    const { callId, code, params, voxelSdfMaxSamples } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null; voxelSdfMaxSamples?: number };
+    // Same v.sdf budget seed as `execute` — a respawned Worker may never have
+    // seen an execute message before its first voxel_grid.
+    if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
     try {
       const r = runVoxelGrid(code, params ?? undefined);
       if (!r.ok) {
