@@ -211,7 +211,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getGeometryData',
-    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution. Returns `stale: true` when the editor code changed since the last run (setCode without a subsequent run) — call runAndSave/run first if you need fresh stats. Returns `containedComponents: N` when N components are fully enclosed inside another solid and excluded from the floater check.',
+    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution. Returns `stale: true` when the editor code changed since the last run (setCode without a subsequent run) — call runAndSave/run first if you need fresh stats. Returns `containedComponents: N` when N components are fully enclosed inside another solid and excluded from the floater check. Includes `logs` — what the last run\'s model code printed with console.log/warn/error — even when the user started that run (Run button, auto-run).',
     input_schema: { type: 'object', properties: {} },
   },
   {

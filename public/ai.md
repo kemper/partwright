@@ -246,7 +246,7 @@ Call `partwright.help()` for a full method list, or `partwright.help('methodName
 
 ```js
 partwright.run(code?)          // Run code, update views, return geometry stats (+ `logs`: the model code's console output)
-partwright.getGeometryData()   // Current stats (same as #geometry-data)
+partwright.getGeometryData()   // Current stats (same as #geometry-data) + `logs`: what the last run printed, even one the user started
 partwright.validate(code)      // Check code without rendering -> {valid, error?}
 partwright.getCode()           // Read editor contents
 partwright.setCode(code)       // Set editor contents (no auto-run)
@@ -670,7 +670,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
+**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
 
 ```js
 const head = Manifold.ofMesh(api.imports[0]);

@@ -377,6 +377,7 @@ import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
+import { createModelConsolePanel, type ModelConsolePanel } from './ui/modelConsolePanel';
 import { isEngineSandboxMode, isRemovedEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin, engineSandboxOriginAvailable, defaultEngineSandboxMode } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
@@ -1434,6 +1435,8 @@ function revealCodeRange(from: number, to: number): void {
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+/** The viewport drawer showing what the last run's model code printed. */
+let modelConsolePanel: ModelConsolePanel | null = null;
 let fastPreviewPillEl: HTMLElement | null = null;
 /** True while the viewport shows the coarse fast-preview pass of an SDF model
  *  and the full-quality render is still in flight. Used to gate mesh-altering
@@ -8544,6 +8547,8 @@ async function main() {
   // Engine-sandbox status pill: persistent while the sandbox is unavailable
   // (model code blocked — fail closed) or bypassed for this tab.
   mountEngineSandboxPill(viewportPane);
+  modelConsolePanel = createModelConsolePanel();
+  viewportPane.appendChild(modelConsolePanel.el);
 
   // Fast-preview pill — shown while the viewport is displaying the rough coarse
   // pass of a slow SDF model (figures) and the full-quality render is still
@@ -13695,6 +13700,9 @@ async function main() {
         printability: computePrintability(geo),
         ...(stale ? { stale: true } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
+        // What the last run printed, whoever started it (Run button, auto-run,
+        // an API call) — so an agent can read a UI-triggered run's output.
+        ...lastRunLogsField(),
       };
     },
 
@@ -21782,7 +21790,7 @@ async function main() {
       const methods: Record<string, { signature: string; docs: string }> = {
         // Core
         'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats (+ logs: the model code console output)', docs: '/ai.md#console-api--windowpartwright' },
-        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object', docs: '/ai.md#geometry-data' },
+        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object (+ logs?: what the last run printed)', docs: '/ai.md#geometry-data' },
         'validate':        { signature: 'validate(code) -- Check code without rendering -> {valid, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
@@ -23458,6 +23466,7 @@ async function main() {
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
     lastRunLogs = result.logs;
+    modelConsolePanel?.setLogs(result.logs);
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
