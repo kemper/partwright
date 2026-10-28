@@ -918,3 +918,12 @@ partwright.setPaletteConstrained(true)          // snap paint to the loaded slot
 
 Aim for a region count within `capacity` for a single-pass multi-material print; beyond it the UI flags the model over-budget.
 
+## UI brush settings
+
+The Paint panel's brush settings (the user's interactive brush), readable and settable from the console:
+
+```js
+partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
+partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
+partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
+```
