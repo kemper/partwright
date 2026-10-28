@@ -332,3 +332,62 @@ export function layFlatRotation(
   const deg = (v: number): number => (Math.abs(v) < 1e-9 ? 0 : v * 180 / Math.PI);
   return [deg(rx), deg(ry), 0];
 }
+
+/** `vertProperties` with stride `numProp` reduced to xyz (stride 3); the
+ *  array itself when it already is. */
+export function xyzPositions(vertProperties: Float32Array, numProp: number): Float32Array {
+  if (numProp === 3) return vertProperties;
+  const n = Math.floor(vertProperties.length / numProp);
+  const out = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    out[i * 3] = vertProperties[i * numProp];
+    out[i * 3 + 1] = vertProperties[i * numProp + 1];
+    out[i * 3 + 2] = vertProperties[i * numProp + 2];
+  }
+  return out;
+}
+
+/** The lowest z of triangle set `tris` after turning it by Euler degrees `deg`
+ *  (x first, matrix Rz·Ry·Rx) about its bounding-box centre — where a
+ *  `rotatePart` leaves the part's bottom, so the caller can drop it back onto
+ *  the plate. `positions` is xyz with stride 3. */
+export function rotatedMinZ(positions: Float32Array, triVerts: Uint32Array, tris: Iterable<number>, deg: Vec3): number {
+  const verts = new Set<number>();
+  for (const t of tris) for (let k = 0; k < 3; k++) verts.add(triVerts[t * 3 + k]);
+  if (verts.size === 0) return 0;
+  const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const v of verts) {
+    for (let a = 0; a < 3; a++) {
+      const x = positions[v * 3 + a];
+      if (x < min[a]) min[a] = x;
+      if (x > max[a]) max[a] = x;
+    }
+  }
+  const c = [0, 1, 2].map(a => (min[a] + max[a]) / 2);
+  const [ax, ay] = [deg[0], deg[1]].map(d => d * Math.PI / 180);
+  // Row z of Rz·Ry·Rx: [-sin y, cos y sin x, cos y cos x] (independent of the z turn).
+  const r0 = -Math.sin(ay), r1 = Math.cos(ay) * Math.sin(ax), r2 = Math.cos(ay) * Math.cos(ax);
+  let lo = Infinity;
+  for (const v of verts) {
+    const z = r0 * (positions[v * 3] - c[0]) + r1 * (positions[v * 3 + 1] - c[1]) + r2 * (positions[v * 3 + 2] - c[2]);
+    if (z < lo) lo = z;
+  }
+  return lo + c[2];
+}
+
+/** Where a copy of `box` can go without touching any of `obstacles` (on X/Y):
+ *  the first free slot stepping right in copy-widths (plus `gap`), then the
+ *  rows behind it. Returns the offset from `box`. */
+export function freeOffset(box: PartBox, obstacles: PartBox[], gap: number, maxTries = 64): Vec3 {
+  const w = box.max[0] - box.min[0], d = box.max[1] - box.min[1];
+  const hits = (dx: number, dy: number) => obstacles.some(o =>
+    box.min[0] + dx < o.max[0] + gap - 1e-9 && o.min[0] < box.max[0] + dx + gap - 1e-9
+    && box.min[1] + dy < o.max[1] + gap - 1e-9 && o.min[1] < box.max[1] + dy + gap - 1e-9);
+  for (let row = 0; row < maxTries; row++) {
+    for (let k = row === 0 ? 1 : 0; k < maxTries; k++) {
+      const dx = k * (w + gap), dy = row * (d + gap);
+      if (!hits(dx, dy)) return [dx, dy, 0];
+    }
+  }
+  return [w + gap, 0, 0];
+}

@@ -1658,6 +1658,35 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'partAction',
+    description: "Arrange, copy, group or re-orient the open object's named parts (JavaScript objects). Each action writes api.movePart / rotatePart / scalePart / mirrorPart / copyPart / groupParts / cutWithPart lines into the code (applied after the code runs, by moving the part's own triangles), then runs and saves. Only parts that are separate solids can move. Acts on `parts` when given, else the parts the user selected, else every part. Actions: grid / pack (lay out on the plate, `gap`), bed (pack onto the printer bed, overflow onto more plates), align (`axis`, `mode` min|center|max; 2+ parts), distribute (`axis`; 3+ parts), drop (onto z=0), center (on the origin), snap (`step`), move (`offset`), rotate (`degrees` [x,y,z] about the part's centre), layFlat (largest face down), mirror (`axis`), scale (`factor`), duplicate (`offset`), array (`count` in total, `step` [x,y,z]), gridArray (`cols`, `rows`, `step` [x,y]), group (`name`; 2+ parts → one part), ungroup, rename (`pattern`, {n} = 1,2,3…), cut (exactly one part, subtracted from the rest). Undo with undoPartEdit.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['grid', 'pack', 'bed', 'align', 'distribute', 'drop', 'center', 'snap', 'move', 'rotate', 'layFlat', 'mirror', 'scale', 'duplicate', 'array', 'gridArray', 'group', 'ungroup', 'rename', 'cut'] },
+        parts: { type: 'array', items: { type: 'string' }, description: 'Part names (listObjectParts). Omit to use the selection, else every part.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'] },
+        mode: { type: 'string', enum: ['min', 'center', 'max'] },
+        gap: { type: 'number', description: 'Space between parts (default: a fifth of their mean width).' },
+        step: { type: 'array', items: { type: 'number' }, description: 'array: [x,y,z] between copies; gridArray: [x,y]. For snap pass a single-element array [step].' },
+        offset: { type: 'array', items: { type: 'number' }, description: '[x,y,z] for move / duplicate.' },
+        degrees: { type: 'array', items: { type: 'number' }, description: '[x,y,z] Euler degrees for rotate (x applied first).' },
+        factor: { type: 'number', description: 'Uniform scale factor (> 0).' },
+        count: { type: 'integer', description: 'array: how many in the row, the original included.' },
+        cols: { type: 'integer' },
+        rows: { type: 'integer' },
+        name: { type: 'string', description: 'group: the new part name.' },
+        pattern: { type: 'string', description: "rename: e.g. 'leg {n}'." },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'undoPartEdit',
+    description: 'Undo the open object\'s last partAction (puts the code back as it was before it, runs and saves).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'bakeObjectPartColor',
     description: "Write a part's current drawn colour into the code as api.paint.label(name, '#rrggbb') (JavaScript/manifold-js objects only) and drop the paint overlay that filled it — the colour then lives in the model and survives any code change. Runs and saves.",
     input_schema: {
@@ -2593,7 +2622,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   // #1085 PR5: per-object repair, paint and section tools.
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
-  'extractObjectPiece', 'extractObjectParts', 'reassignPaint',
+  'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -2898,7 +2927,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4010,6 +4039,14 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setObjectPartColor(input.part, input.color);
     case 'renameObjectPart':
       return api.renameObjectPart(input.from, input.to);
+    case 'partAction': {
+      const { action, ...opts } = input as Record<string, unknown>;
+      // snap takes one number; the schema's `step` is an array.
+      if (action === 'snap' && Array.isArray(opts.step)) opts.step = opts.step[0];
+      return api.partAction(action, opts);
+    }
+    case 'undoPartEdit':
+      return api.undoPartEdit();
     case 'bakeObjectPartColor':
       return api.bakeObjectPartColor(input.part);
     case 'extractObjectPiece':

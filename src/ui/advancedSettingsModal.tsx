@@ -1803,6 +1803,56 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={50} max={1_000_000} integer
           onChange={v => set('ui', 'partBoxSelectSamples', v)}
         />
+        <Field cfgKey="ui.partArrangeGapRatio"
+          label="Part arrange gap"
+          unit="× size"
+          hint="Gap between parts when the Parts panel arranges or copies them."
+          tooltip="Grid, pack, bed packing and copies leave this much space between parts, as a fraction of the parts' average footprint (0.2 = a fifth of a part's width). The Parts panel's gap box overrides it for one action."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partArrangeGapRatio}
+          value={c.ui.partArrangeGapRatio}
+          min={0} max={5} step={0.05}
+          onChange={v => set('ui', 'partArrangeGapRatio', v)}
+        />
+        <Field cfgKey="ui.partSnapStep"
+          label="Part snap step"
+          unit="units"
+          hint="Grid step for the Parts panel's “Snap to grid”."
+          tooltip="“Snap to grid” moves each part's lower corner onto the nearest multiple of this step on X and Y."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partSnapStep}
+          value={c.ui.partSnapStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partSnapStep', v)}
+        />
+        <Field cfgKey="ui.partNudgeStep"
+          label="Part nudge step"
+          unit="units"
+          hint="How far an arrow key moves the selected parts."
+          tooltip="With the Parts panel open, the arrow keys move the selected parts by this much on X and Y (PageUp/PageDown on Z). Hold Shift for ten times the step."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeStep}
+          value={c.ui.partNudgeStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partNudgeStep', v)}
+        />
+        <Field cfgKey="ui.partEditUndoDepth"
+          label="Part edit undo depth"
+          unit="edits"
+          hint="How many part edits the Parts panel can undo."
+          tooltip="Each arrange, copy or group action remembers the code before it so Undo can put it back. Past this many, the oldest are forgotten."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partEditUndoDepth}
+          value={c.ui.partEditUndoDepth}
+          min={1} max={500} integer
+          onChange={v => set('ui', 'partEditUndoDepth', v)}
+        />
+        <Field cfgKey="ui.partMaxCopies"
+          label="Max part copies"
+          unit="copies"
+          hint="Most copies one duplicate or array action makes."
+          tooltip="Duplicate, array and grid array refuse to make more copies than this in one step, so a typo can't freeze the app."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partMaxCopies}
+          value={c.ui.partMaxCopies}
+          min={1} max={10_000} integer
+          onChange={v => set('ui', 'partMaxCopies', v)}
+        />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"
           unit="notes"

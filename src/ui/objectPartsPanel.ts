@@ -1,23 +1,21 @@
 // The open object's expandable PARTS / PIECES section in the Objects rail, and
 // the part actions it offers (#1003).
 //
-// Shift/Ctrl/⌘-click selects several parts (or several pieces); the drawer then
-// offers the group actions — move them to a new object, split them into one
-// object each, isolate, hide, delete, ask the AI.
+// Shift-click selects a range of parts (or pieces), Ctrl/⌘-click adds or
+// removes one. The actions on the selection live in the Parts panel
+// (src/ui/partsPanel.ts), which the selected row's ⋯ opens.
 //
 // Design rule: the rail is a SELECTOR, not a second editor. Clicking a part
 // selects it (src/ui/partSelection.ts) and the existing tools — Paint, Image
 // stamp, Surface textures, the AI — confine themselves to it. The only edits
-// that live here are the ones that are about the part itself: its colour (the
-// swatch = fill the whole part), isolate/info/go-to-code, rename, bake its
-// colour into code, and the piece actions (extract / export / delete). Paint
+// that live here are a row's own controls: its colour (the swatch = fill the
+// whole part), hide (eye) and delete (✕); everything else is in the Parts
+// panel. Paint
 // that no longer matches the code ("unmatched paint") is surfaced and fixed
 // here too, because the rail is where the parts it should match are listed.
 
 import { createColorSwatch } from './colorPickerModal';
-import { promptDialog } from './dialogs';
 import { eyeIconSVG, eyeOffIconSVG } from './icons';
-import { describePartKeys, partSelectionSignature } from './partSelection';
 import { showToast } from './toast';
 
 /** What the section lists. Mirrors `partwright.listObjectParts()` (minus the
@@ -101,15 +99,12 @@ export interface ObjectPartsActions {
   keepPaint(regionId: number): void;
   deletePaint(regionId: number): void;
   acceptRename(from: string, to: string): void;
+  /** Open the Parts panel (the selected row's ⋯). */
+  openPartsPanel(): void;
 }
 
 function compactCount(n: number): string {
   return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-function fmt(n: number): string {
-  const a = Math.abs(n);
-  return a >= 100 ? n.toFixed(0) : a >= 10 ? n.toFixed(1) : n.toFixed(2);
 }
 
 /** A small icon button for a row (eye / ✕). 28px hit target — the dense rail's
@@ -128,40 +123,10 @@ function rowIconBtn(glyph: string, title: string): HTMLButtonElement {
  *  phone): while on, tapping a row adds it to / takes it out of the
  *  selection. Turns itself off when the selection is cleared. */
 let extendTaps = false;
+export function getExtendTaps(): boolean { return extendTaps; }
+export function setExtendTaps(on: boolean): void { extendTaps = on; }
 /** The row a Shift-click range runs from: the last row clicked without Shift. */
 let rangeAnchor: string | null = null;
-
-const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
-
-/** One action button in a drawer's grid. */
-function drawerButton(grid: HTMLElement, action: string, text: string, title: string, onClick: () => void, opts: { disabled?: boolean; pressed?: boolean } = {}): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.dataset.partAction = action;
-  b.className = ACTION_BTN + (opts.pressed ? ' !bg-amber-400/20 !text-amber-100 !border-amber-400/40' : '');
-  b.textContent = text;
-  b.title = title;
-  if (opts.pressed !== undefined) b.setAttribute('aria-pressed', String(opts.pressed));
-  b.disabled = !!opts.disabled;
-  b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
-  grid.appendChild(b);
-  return b;
-}
-
-/** The "☐ Add" toggle (see extendTaps). Updated in place — toggling it
- *  doesn't change the selection, so nothing rebuilds the drawer. */
-function selectMoreButton(grid: HTMLElement): HTMLButtonElement {
-  const label = () => (extendTaps ? '☑ Adding' : '☐ Add');
-  const b = drawerButton(grid, 'select-more', label(), 'Click (or tap) other rows to add them to the selection — the same as Shift-click', () => {
-    extendTaps = !extendTaps;
-    b.textContent = label();
-    b.setAttribute('aria-pressed', String(extendTaps));
-    b.classList.toggle('!bg-amber-400/20', extendTaps);
-    b.classList.toggle('!text-amber-100', extendTaps);
-    b.classList.toggle('!border-amber-400/40', extendTaps);
-  }, { pressed: extendTaps });
-  return b;
-}
 
 /** The keys from `from` to `to` inclusive, in list order, when both are rows
  *  of the same kind (parts, or pieces); null otherwise. */
@@ -184,7 +149,6 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
   const selectedKeys = a.getSelectedKeys();
   const multi = selectedKeys.length > 1;
   if (selectedKeys.length === 0) extendTaps = false;
-  const isolated = a.getIsolatedKey();
   // The multi-selection drawer sits under the last selected row in list order.
   let lastSelectedRow: string | null = null;
   if (multi && view) {
@@ -314,9 +278,14 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
       });
       row.appendChild(del);
     }
+    // The selected row's "⋯" opens the Parts panel, where its actions live.
+    if (on && (!multi || key === lastSelectedRow)) {
+      const more = rowIconBtn('⋯', 'Open the Parts panel — rename, colour, isolate, arrange, copy, group…');
+      more.dataset.openPartsPanel = key;
+      more.addEventListener('click', (e) => { e.stopPropagation(); a.openPartsPanel(); });
+      row.insertBefore(more, row.children[2] ?? null);
+    }
     section.appendChild(row);
-    if (on && view && !multi) section.appendChild(buildDrawer(a, key, view, isolated === key));
-    if (multi && view && key === lastSelectedRow) section.appendChild(buildMultiDrawer(a, selectedKeys, view, isolated === partSelectionSignature(selectedKeys)));
   };
 
   heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid. Select one and Paint, Surface and the AI act on just that part. Shift-click selects a range, Ctrl/⌘-click adds or removes one, and the Parts panel (Tools) works on the selection.');
@@ -372,143 +341,6 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     }
   }
   return section;
-}
-
-/** The action drawer under the selected part / piece / unlabeled row. */
-function buildDrawer(a: ObjectPartsActions, key: string, view: ObjectPartsView, isolated: boolean): HTMLElement {
-  const drawer = document.createElement('div');
-  drawer.id = 'object-part-drawer';
-  drawer.dataset.key = key;
-  drawer.className = 'ml-4 mr-0.5 mb-1 mt-0.5 p-1.5 rounded border border-zinc-700/70 bg-zinc-900/50 flex flex-col gap-1';
-
-  const grid = document.createElement('div');
-  grid.className = 'grid grid-cols-2 gap-1';
-  const btn = (action: string, text: string, title: string, onClick: () => void, opts: { disabled?: boolean; pressed?: boolean } = {}) =>
-    drawerButton(grid, action, text, title, onClick, opts);
-
-  const isolateBtn = () => btn('isolate', isolated ? '◑ Show all' : '◐ Isolate', isolated ? 'Show the whole object again' : 'Ghost everything else so only this is drawn solid', () => a.isolate(isolated ? null : [key]), { pressed: isolated });
-
-  if (key.startsWith('part:')) {
-    const name = key.slice(5);
-    const part = view.parts.find(p => p.name === name);
-    if (part?.colorSource === 'painted') {
-      const row = document.createElement('div');
-      row.className = 'flex items-center gap-1 text-[10px] text-zinc-500';
-      const t = document.createElement('span');
-      t.className = 'flex-1';
-      t.textContent = 'Painted over the code colour';
-      row.appendChild(t);
-      const reset = document.createElement('button');
-      reset.type = 'button';
-      reset.dataset.partAction = 'reset-color';
-      reset.className = 'px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700';
-      reset.textContent = '↺ Reset';
-      reset.title = `Remove the paint that fills "${name}" and go back to the colour the code gives it`;
-      reset.addEventListener('click', (e) => { e.stopPropagation(); a.resetPartColor(name); });
-      row.appendChild(reset);
-      drawer.appendChild(row);
-    }
-    isolateBtn();
-    btn('go-to-code', '⌖ Code', `Show where "${name}" is labelled in the code`, () => a.goToCode(name));
-    btn('rename', '✎ Rename', `Rename "${name}" in the code, its paint and its texture scopes`, () => {
-      void promptDialog(`Rename part "${name}" to:`, { title: 'Rename part', initialValue: name, confirmLabel: 'Rename' }).then((next) => {
-        const v = next?.trim();
-        if (v && v !== name) void a.renamePart(name, v);
-      });
-    });
-    btn('bake-color', '⤓ Bake', view.codeActions
-      ? `Write "${name}"’s current colour into the code (api.paint.label) so it’s part of the model, not an overlay`
-      : 'Baking a colour into code needs a JavaScript (manifold-js) object', () => { void a.bakePartColor(name); }, { disabled: !view.codeActions || !part?.color });
-    btn('edit-with-ai', '✦ Ask AI', `Ask the AI to change "${name}"`, () => a.editWithAI([key]));
-    btn('extract-part', '⤴ Extract', view.codeActions
-      ? `Move "${name}" into its own new object (the original's version history keeps the code as it is now)`
-      : 'Moving a part to another object rewrites the code, which needs a JavaScript (manifold-js) object', () => { void a.moveSelection([key], false); }, { disabled: !view.codeActions || view.parts.length < 2 });
-    if (a.canArrange(name)) btn('arrange', '⧉ Arrange', `Move, resize or align "${name}" in arrange mode`, () => a.arrange(name));
-    if (view.parts.length > 1) selectMoreButton(grid);
-  } else if (key.startsWith('piece:')) {
-    const index = Number(key.slice(6));
-    isolateBtn();
-    const noCode = !view.codeActions;
-    const why = 'Rewriting the code to split pieces needs a JavaScript (manifold-js) object';
-    btn('extract-piece', '⤴ Extract', noCode ? why : 'Move this piece into its own new object (both objects’ code gets a piece filter; version history keeps the original)', () => { void a.extractPiece(index); }, { disabled: noCode || view.pieces.length < 2 });
-    btn('export-piece', '⤓ STL', 'Download just this piece as an STL', () => a.exportPiece(index));
-    btn('edit-with-ai', '✦ Ask AI', 'Ask the AI about this piece', () => a.editWithAI([key]));
-    selectMoreButton(grid);
-  } else {
-    isolateBtn();
-    btn('edit-with-ai', '✦ Ask AI', 'Ask the AI to label or change the unlabeled geometry', () => a.editWithAI([key]));
-  }
-  drawer.appendChild(grid);
-
-  const info = a.info(key);
-  if (info) {
-    const line = document.createElement('div');
-    line.dataset.partInfo = '';
-    line.className = 'px-0.5 text-[10px] text-zinc-500 tabular-nums leading-snug';
-    const parts = [`${fmt(info.size[0])} × ${fmt(info.size[1])} × ${fmt(info.size[2])}`, `area ${fmt(info.area)}`];
-    if (info.pieces.length > 1) parts.push(`spans pieces ${info.pieces.join(', ')}`);
-    else if (info.pieces.length === 1 && view.pieces.length > 1 && !key.startsWith('piece:')) parts.push(`piece ${info.pieces[0]}`);
-    line.textContent = parts.join(' · ');
-    line.title = 'Bounding-box size, surface area and the separate solids this touches';
-    drawer.appendChild(line);
-  }
-  if (key.startsWith('part:')) {
-    const hint = document.createElement('div');
-    hint.className = 'px-0.5 text-[10px] text-zinc-600 leading-snug';
-    hint.textContent = 'Paint, Surface and the AI now act on this part only.';
-    drawer.appendChild(hint);
-  }
-  return drawer;
-}
-
-/** The drawer for a multi-selection (Shift/Ctrl/⌘-click): the group actions. */
-function buildMultiDrawer(a: ObjectPartsActions, keys: string[], view: ObjectPartsView, isolated: boolean): HTMLElement {
-  const drawer = document.createElement('div');
-  drawer.id = 'object-part-drawer';
-  drawer.dataset.keys = keys.join('\n');
-  drawer.className = 'ml-4 mr-0.5 mb-1 mt-0.5 p-1.5 rounded border border-amber-400/30 bg-zinc-900/50 flex flex-col gap-1';
-  const pieces = keys[0].startsWith('piece:');
-  const noun = pieces ? 'pieces' : 'parts';
-
-  const head = document.createElement('div');
-  head.className = 'flex items-center gap-1 px-0.5 text-[10px] text-amber-100';
-  const count = document.createElement('span');
-  count.dataset.selectionCount = String(keys.length);
-  count.className = 'flex-1 min-w-0 truncate';
-  count.textContent = `${keys.length} ${noun} selected`;
-  count.title = describePartKeys(keys);
-  head.appendChild(count);
-  const clear = document.createElement('button');
-  clear.type = 'button';
-  clear.dataset.partAction = 'clear-selection';
-  clear.className = 'shrink-0 px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] text-zinc-400 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:bg-zinc-700';
-  clear.textContent = 'Clear';
-  clear.title = 'Clear the selection';
-  clear.addEventListener('click', (e) => { e.stopPropagation(); a.select(null); });
-  head.appendChild(clear);
-  drawer.appendChild(head);
-
-  const grid = document.createElement('div');
-  grid.className = 'grid grid-cols-2 gap-1';
-  const btn = (action: string, text: string, title: string, onClick: () => void, opts: { disabled?: boolean; pressed?: boolean } = {}) =>
-    drawerButton(grid, action, text, title, onClick, opts);
-  const noCode = !view.codeActions;
-  const why = `Moving ${noun} to other objects rewrites the code, which needs a JavaScript (manifold-js) object`;
-  btn('move-selection', '⤴ Move', noCode ? why : `Move these ${keys.length} ${noun} together into one new object`, () => { void a.moveSelection(keys, false); }, { disabled: noCode });
-  btn('split-selection', '⫶ Split', noCode ? why : `Move each of these ${keys.length} ${noun} into its own new object`, () => { void a.moveSelection(keys, true); }, { disabled: noCode });
-  btn('isolate', isolated ? '◑ Show all' : '◐ Isolate', isolated ? 'Show the whole object again' : `Ghost everything else so only these ${noun} are drawn solid`, () => a.isolate(isolated ? null : keys), { pressed: isolated });
-  btn('hide-selection', '◌ Hide', `Hide these ${noun} in the viewport (view only — the code and exports keep them)`, () => a.hideMany(keys));
-  const blocked = keys.map(k => a.getDelete(k)).find(d => !d.show || d.reason);
-  btn('delete-selection', '✕ Delete', blocked?.reason ?? `Delete these ${noun} — adds removal lines to the top of the code (recoverable)`, () => { void a.deleteMany(keys); }, { disabled: !!blocked });
-  btn('edit-with-ai', '✦ Ask AI', `Ask the AI about these ${noun}`, () => a.editWithAI(keys));
-  selectMoreButton(grid);
-  drawer.appendChild(grid);
-
-  const hint = document.createElement('div');
-  hint.className = 'px-0.5 text-[10px] text-zinc-600 leading-snug';
-  hint.textContent = `Shift-click (or turn on ☐ Add) to add or remove ${noun}.`;
-  drawer.appendChild(hint);
-  return drawer;
 }
 
 /** "Unmatched paint (N)": paint keyed to parts the code no longer has. */

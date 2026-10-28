@@ -470,6 +470,17 @@ export interface AppConfig {
      *  per part when testing which parts the box touches (a part counts once
      *  one sample lands inside). Higher catches thin slivers of huge parts. */
     partBoxSelectSamples: number;
+    /** Parts panel arrange/copy: gap between parts as a fraction of their mean
+     *  footprint size (0.2 = a fifth of a part's width). */
+    partArrangeGapRatio: number;
+    /** Parts panel "Snap to grid" step (model units). */
+    partSnapStep: number;
+    /** Parts panel arrow-key nudge step (model units; Shift = ×10). */
+    partNudgeStep: number;
+    /** Parts panel Undo: part edits remembered per tab. */
+    partEditUndoDepth: number;
+    /** Most copies one Parts panel duplicate/array action may make. */
+    partMaxCopies: number;
     /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
      *  tool; the oldest drop past this). */
     maxPendingAppliedNotes: number;
@@ -832,6 +843,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paintAdjacencyWorkerMinTriangles: 300_000,
     paintAdjacencyWorkerTimeoutMs: 60_000,
     partBoxSelectSamples: 4000,
+    partArrangeGapRatio: 0.2,
+    partSnapStep: 5,
+    partNudgeStep: 1,
+    partEditUndoDepth: 30,
+    partMaxCopies: 100,
     maxPendingAppliedNotes: 6,
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,

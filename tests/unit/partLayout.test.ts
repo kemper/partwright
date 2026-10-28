@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   alignLayout, arrayOffsets, bedLayout, centerOnOrigin, distributeLayout, dropToPlate, gridArrayOffsets,
-  gridLayout, layFlatRotation, packLayout, shelfPack, snapToGrid, type PartBox, type Vec3,
+  freeOffset, gridLayout, layFlatRotation, packLayout, rotatedMinZ, shelfPack, snapToGrid, xyzPositions, type PartBox, type Vec3,
 } from '../../src/insert/partLayout';
 
 const box = (name: string, min: Vec3, max: Vec3): PartBox => ({ name, min, max });
@@ -305,5 +305,38 @@ describe('layFlatRotation', () => {
   it('only considers the given triangles, and survives an empty list', () => {
     const m = boxMesh(10, 10, 2, [0, 0, 0]);
     expect(layFlatRotation(m.positions, m.triVerts, [])).toEqual([0, 0, 0]);
+  });
+});
+
+describe('rotatedMinZ / xyzPositions', () => {
+  // A 2×2×4 box standing on the plate (z 0..4), centred on x/y.
+  const pos = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0, -1, -1, 4, 1, -1, 4, 1, 1, 4, -1, 1, 4]);
+  const tv = new Uint32Array([0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5]);
+  const all = Array.from({ length: 12 }, (_, i) => i);
+  it('finds the bottom after a turn about the box centre', () => {
+    expect(rotatedMinZ(pos, tv, all, [0, 0, 0])).toBeCloseTo(0);
+    // Tipped onto its side: 2 tall about centre z = 2 → bottom at 1.
+    expect(rotatedMinZ(pos, tv, all, [90, 0, 0])).toBeCloseTo(1);
+    expect(rotatedMinZ(pos, tv, all, [0, 90, 0])).toBeCloseTo(1);
+    // A z turn never changes the bottom.
+    expect(rotatedMinZ(pos, tv, all, [0, 0, 37])).toBeCloseTo(0);
+  });
+  it('strips extra vertex properties', () => {
+    expect(Array.from(xyzPositions(new Float32Array([1, 2, 3, 9, 4, 5, 6, 9]), 4))).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+describe('freeOffset', () => {
+  const box = (name: string, x0: number, x1: number, y0 = 0, y1 = 10): PartBox => ({ name, min: [x0, y0, 0], max: [x1, y1, 10] });
+  it('steps right past neighbours', () => {
+    const a = box('a', 0, 10);
+    expect(freeOffset(a, [a], 2)).toEqual([12, 0, 0]);
+    // b sits where the first slot would be → next slot.
+    expect(freeOffset(a, [a, box('b', 15, 25)], 2)).toEqual([36, 0, 0]);
+  });
+  it('falls back to a row behind when the row is full', () => {
+    const a = box('a', 0, 10);
+    const wall = box('wall', 11, 2000);
+    expect(freeOffset(a, [a, wall], 2, 4)).toEqual([0, 12, 0]);
   });
 });
