@@ -399,6 +399,13 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.pruneStaleToolPayloads}
           onChange={v => set('ai', 'pruneStaleToolPayloads', v)}
         />
+        <ToggleField cfgKey="ai.onDemandToolGroups"
+          label="Load AI tools on demand"
+          hint="Start the agent with a core tool set (about a quarter of the full list) and let it load the rest in groups such as paint or part detection when the task needs them. Off sends every tool from the first message, which costs about 50K more tokens of context."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.onDemandToolGroups}
+          value={c.ai.onDemandToolGroups}
+          onChange={v => set('ai', 'onDemandToolGroups', v)}
+        />
         <Field cfgKey="ai.keepRecentCodeBodies"
           label="Recent code bodies kept in context"
           unit="copies"

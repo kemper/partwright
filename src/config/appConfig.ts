@@ -127,6 +127,10 @@ export interface AppConfig {
      *  results, and large inputs of failed calls. Stored history and the
      *  transcript are untouched. */
     pruneStaleToolPayloads: boolean;
+    /** Send hosted models a core tool set and let them load the rest in named
+     *  groups (loadTools / readDoc / calling a tool), instead of every tool
+     *  schema from turn 0. Off sends all of them. See src/ai/toolGroups.ts. */
+    onDemandToolGroups: boolean;
     /** How many of the newest code bodies (runAndSave / setCode / runCode …
      *  `code` arguments, and getCode results) stay verbatim in the request;
      *  older ones become a one-line stub. */
@@ -752,6 +756,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     customParamDescriptionChars: 80,
     customContextProbeTimeoutMs: 3000,
     pruneStaleToolPayloads: true,
+    onDemandToolGroups: true,
     keepRecentCodeBodies: 1,
     codeBodyTrimBatch: 3,
     failedCallInputTurns: 3,
