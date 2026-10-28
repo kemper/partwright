@@ -141,7 +141,7 @@ import {
   geometryOnlyRefusalMessage,
 } from './import/urlImport';
 import { fetchRemoteBytes } from './import/remoteFetch';
-import { showImportTargetModal } from './ui/importTargetModal';
+import { showImportTargetModal, pickImportTarget } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
 import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
 import { alreadyImportedItems, buildMultiFileSource, layoutMultiFileSource, suggestMultiFileLayout, type ImportSignature, type MultiFileInput, type MultiFileLayout, type MultiFileSource } from './import/multiFileImport';
@@ -158,6 +158,7 @@ import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
+import { besideOffset, composeImportIntoCode, importAsParts, translatedVerts, vertexBox } from './import/composeIntoCode';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
@@ -5040,9 +5041,9 @@ async function main() {
       await applyImportWrapper([parsed.mesh], parsed.isManifold);
     } else {
       if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
-      await preserveCurrentEditsIfNeeded();
+      const cur = getState().currentPart;
       // Silent: the API caller gets the failure as an { error } instead of a toast.
-      if (!(await composeMeshIntoCurrentPart(parsed.mesh, undefined, { silent: true }))) {
+      if (!cur || !(await addImportToObject(cur.id, parsed.mesh, sessionName, undefined, { silent: true }))) {
         return { error: `${caller}: couldn't read the current object's geometry to combine.` };
       }
     }
@@ -5517,7 +5518,7 @@ async function main() {
       modes: platesInUse(result) > 1 ? ['object', 'plate', 'none'] : ['object', 'none'],
       baseName: base,
       maxObjects: getConfig().import.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
@@ -5526,7 +5527,7 @@ async function main() {
     if (!built) return false;
     const { entries, infos } = built;
     if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
-    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base);
+    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base, choice.objectId);
     if (ids.length > 0) {
       const info = ids.length === 1 ? infos[0] : mergeColorInfos(infos);
       showToast(describe3MFImport(filename, result, info, ids.length, entries[0].probe.mesh.numTri), { variant: 'success', source: 'import' });
@@ -5623,6 +5624,8 @@ async function main() {
     layout: MultiFileLayout;
     convert: boolean;
     destination: MeshImportDestination | 'reuse-current';
+    /** destination 'current-object': the object to add to (default: the open one). */
+    objectId?: string;
   }
 
   /** The name for what a multi-file import makes as a whole (its session, or
@@ -5700,7 +5703,7 @@ async function main() {
     if (!built) return null;
     const { entries } = built;
     if (opts.confirmRenderOnly !== false && !(await confirmRenderOnlyObjects('the selected files', entries))) return null;
-    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name);
+    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name, choice.objectId);
     let converted = 0;
     const convertNotes: string[] = [];
     const stopped = ids.some(id => !id);
@@ -5862,7 +5865,7 @@ async function main() {
       offerConvert: true,
       baseName: multiFileImportName(source, source.items.map((_, i) => i)),
       maxObjects: cfg.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const destination = multiImportDestination(protect, empty, choice.destination);
@@ -5872,6 +5875,7 @@ async function main() {
       layout: choice.layout ?? suggested,
       convert: !!choice.convert,
       destination,
+      ...(choice.objectId ? { objectId: choice.objectId } : {}),
     });
     if (!placed) { cancelledMsg(); return false; }
     const made = placed.ids.filter(Boolean).length;
@@ -5946,26 +5950,27 @@ async function main() {
    *  Entries sharing a `group` are threaded under it in the object list, and
    *  the first object is left open. Cancel on the progress modal stops after
    *  the object being built. Returns the ids of the objects written. */
-  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<string[]> {
-    return (await placeImportedObjectsAligned(entries, destination, sessionName)).filter((id): id is string => !!id);
+  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<string[]> {
+    return (await placeImportedObjectsAligned(entries, destination, sessionName, targetObjectId)).filter((id): id is string => !!id);
   }
 
   /** `placeImportedObjects`, returning one id per entry (null where the
    *  object wasn't made — cancelled, or it failed). */
-  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<(string | null)[]> {
+  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<(string | null)[]> {
     if (entries.length === 0) return [];
-    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     if (destination === 'current-object') {
       const cur = getState().currentPart;
       if (entries.length === 1 && entries[0].probe.isManifold && cur) {
-        await preserveCurrentEditsIfNeeded();
-        return [(await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? cur.id : null];
+        // Into an existing object (the open one unless one was picked).
+        const id = targetObjectId && getState().parts.some(p => p.id === targetObjectId) ? targetObjectId : cur.id;
+        return [(await addImportToObject(id, entries[0].probe.mesh, entries[0].name, entries[0].seed)) ? id : null];
       }
       if (entries.length === 1 && !entries[0].probe.isManifold) {
         showToast('Render-only meshes can’t be combined into an existing object — added it as a new object instead.', { variant: 'neutral', source: 'import' });
       }
       destination = 'this-session';
     }
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const ids: (string | null)[] = [];
     let cancelled = false;
     const progressId = entries.length > 1
@@ -6567,17 +6572,67 @@ async function main() {
     return true;
   }
 
+  /** Add an imported model to object `objectId` (opening it) as named parts —
+   *  the mesh's own parts, else one part called `name` — placed beside the
+   *  object's geometry. A JavaScript object keeps its code: it is wrapped and
+   *  composed with `api.importWithParts(i)` (src/import/composeIntoCode.ts),
+   *  so the Parts panel can arrange the new parts. Other engines, or code
+   *  that won't compose, fall back to baking the object into a mesh
+   *  (composeMeshIntoCurrentPart). Selects the new parts on success. */
+  async function addImportToObject(objectId: string, mesh: ImportedMesh, name: string, seedRegions?: SeedRegionsInput, opts: { silent?: boolean } = {}): Promise<boolean> {
+    if (getState().currentPart?.id !== objectId) await selectPart(objectId);
+    else await preserveCurrentEditsIfNeeded();
+    if (getState().currentPart?.id !== objectId) return false;
+    const baseMesh = currentMeshData;
+    // The object's own language (an import may have switched the editor's).
+    const { currentVersion, session } = getState();
+    const lang = currentVersion ? effectiveVersionLanguage(currentVersion, session) : getActiveLanguage();
+    if (lang !== 'manifold-js' || getActiveLanguage() !== 'manifold-js' || !baseMesh || currentPartIsExpendable()) return composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+    const parts = importAsParts(mesh, name, currentObjectPartsSummary()?.parts.map(p => p.name) ?? []);
+    const base = vertexBox(baseMesh.vertProperties, baseMesh.numProp);
+    const add = vertexBox(mesh.vertProperties, mesh.numProp);
+    const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
+    const d = base && add ? besideOffset(base, add, gap) : [0, 0, 0] as [number, number, number];
+    const placed: ImportedMesh = { ...mesh, vertProperties: translatedVerts(mesh.vertProperties, mesh.numProp, d), parts };
+    const previousCode = getValue();
+    const previousImports = getActiveImports();
+    const imports = [...previousImports, placed];
+    const code = composeImportIntoCode(previousCode, imports.length - 1);
+    setActiveImports(imports);
+    setValue(code);
+    const ran = await runCodeSync(code);
+    const geo = getGeometryDataObj() as { status?: string } | null;
+    if (!ran || geo?.status === 'error' || !currentMeshData) {
+      setActiveImports(previousImports);
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      if (!opts.silent) showToast(`Couldn’t add ${name} to this object’s code — combined it as a mesh instead.`, { variant: 'neutral', source: 'import' });
+      return composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+    }
+    // Colour seeds match the import's triangles by position, at the file's
+    // position: shift the result back for the match.
+    if (typeof seedRegions === 'function') {
+      const out = currentMeshData;
+      seedImportRegions(seedRegions({ ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) }));
+    }
+    await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    selectObjectParts(parts.names.map(n => `part:${n}`));
+    return true;
+  }
+
   /** Decide where a freshly-parsed STL mesh lands. With no session open it
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
-    const placed = await placeImportedMeshInner(parsed, filename, seedRegions);
-    // Post-import ask. Interactive path only (importMeshData / console imports
+    const placedAs = await placeImportedMeshInner(parsed, filename, seedRegions);
+    const placed = placedAs !== false;
+    // Post-import ask. Not after adding to an existing object: converting would
+    // rebuild that object's own code too. Interactive path only (importMeshData / console imports
     // stay prompt-free for agents); render-only meshes skip it — they can't
     // carry parts or convert (their slices don't close).
     // Not awaited: the automatic part pass runs in the background so the
     // import itself (and its Recent Imports entry) completes immediately.
-    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
+    if (placedAs === true && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
     return placed;
   }
 
@@ -6653,7 +6708,7 @@ async function main() {
     });
   }
 
-  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean | 'added'> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -6677,7 +6732,7 @@ async function main() {
     // "current part" means compose-into, never replace, and the default is a
     // new part so an import never silently overwrites it.
     const empty = currentPartIsExpendable();
-    const target = await showImportTargetModal({
+    const pick = await pickImportTarget({
       filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: !!state.currentPart && (empty || parsed.isManifold),
@@ -6686,8 +6741,11 @@ async function main() {
         ? 'Render-only meshes can’t be combined into an existing object.'
         : undefined,
       recommend: empty ? 'current-part' : 'new-part',
+      objects: state.parts.map(p => ({ id: p.id, name: p.name })),
+      currentObjectId: state.currentPart?.id,
     });
-    if (!target) return false;
+    if (!pick) return false;
+    const target = pick.target;
     if (target === 'current-part' && empty) {
       await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions);
       await nameFilledObject(sessionName);
@@ -6703,9 +6761,11 @@ async function main() {
       await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
       return true;
     }
-    // current-part: compose the imported mesh into the existing real work.
-    await preserveCurrentEditsIfNeeded();
-    return composeMeshIntoCurrentPart(parsed.mesh, seedRegions);
+    // current-part: add it to the picked object (the open one by default) as
+    // named parts, keeping that object's code where it can.
+    const objectId = pick.objectId && getState().parts.some(p => p.id === pick.objectId) ? pick.objectId : getState().currentPart?.id;
+    if (!objectId) return false;
+    return (await addImportToObject(objectId, parsed.mesh, sessionName, seedRegions)) ? 'added' : false;
   }
 
   /** Place an imported code file (JS / SCAD) into the session, showing a target

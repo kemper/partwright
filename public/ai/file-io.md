@@ -191,7 +191,7 @@ API twin of the import-target dialog:
 |---|---|
 | `'new-session'` (default) | a fresh session named after the file (`sessionName` overrides) |
 | `'new-object'` | a new object in the current session; it becomes current |
-| `'current-object'` | combined into the current object: a mesh / voxel import is composed with its geometry (a blank starter object is replaced instead). A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
+| `'current-object'` | added to the current object (`changeObject(name)` first to pick another): a mesh becomes a **named part** of it, placed beside its geometry. A JavaScript object **keeps its code** — it is wrapped in `const __partwrightBase = (() => { … })();` and composed with `api.importWithParts(i)`, so the Parts panel / `partAction` can arrange the new part; SCAD/BREP/voxel objects (or code that won't compose) are baked into a mesh and composed instead. A voxel import is composed with its geometry; a blank starter object is replaced. A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
 
 Targets other than `'new-session'` need an open session. Unsaved work on the current
 object is saved as a version first, exactly as in the dialog.
@@ -296,8 +296,11 @@ await partwright.importMeshFiles([
   a new session).
 - **`current-object`:** an EMPTY current object (untouched starter code, no
   saved version — e.g. one just made with `createObject()`) is filled by the
-  import rather than combined with. Otherwise the models are combined into it,
-  and `convert: true` is refused (it would rebuild the object's own code too).
+  import rather than combined with. Otherwise each model becomes a named part
+  of it, beside its geometry (a JavaScript object keeps its code — see the
+  target table above), and `convert: true` is refused (it would rebuild the
+  object's own code too). The import dialogs let the user pick which object
+  ("Add to object"); from the console, `changeObject(name)` first.
 - In `object` mode, a 3MF's objects are grouped under its file name in the
   object list. Colours from 3MF files carry over through one merged palette.
 - Capped by **Advanced settings → Import → Max files per import** (default 50),
