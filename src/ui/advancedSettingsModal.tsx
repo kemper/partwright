@@ -859,6 +859,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={1_000_000} step={1000} integer
           onChange={v => set('renderer', 'modelLogMaxChars', v)}
         />
+        <Field cfgKey="renderer.thicknessMapMaxTriangles"
+          label="Thickness map limit"
+          unit="triangles"
+          hint="Biggest mesh thicknessMap measures; simplify bigger ones first."
+          tooltip="thicknessMap casts one ray through the solid for every triangle on the main thread, about 1.5 s per 250k triangles. Above this limit it asks for a simplified model (simplifyModel) instead of freezing the tab."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.thicknessMapMaxTriangles}
+          value={c.renderer.thicknessMapMaxTriangles}
+          min={1_000} max={50_000_000} step={100_000} integer
+          onChange={v => set('renderer', 'thicknessMapMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -1818,6 +1828,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paintAdjacencyWorkerTimeoutMs}
           min={5_000} max={600_000} step={5_000} integer
           onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
+        />
+        <Field cfgKey="ui.paintBrushSliverPx"
+          label="Brush sliver catch"
+          unit="px"
+          hint="Paint thin triangles the brush can't see (0 = off)."
+          tooltip="With smooth edges off, the brush paints the triangles visible under it on screen. Very thin triangles along a seam can be narrower than a pixel and get skipped, leaving a fine line of the old colour. Triangles thinner than this many pixels next to the painted area are painted too."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintBrushSliverPx}
+          value={c.ui.paintBrushSliverPx}
+          min={0} max={10} step={0.5}
+          onChange={v => set('ui', 'paintBrushSliverPx', v)}
         />
         <Field cfgKey="ui.partBoxSelectSamples"
           label="Box-select samples per part"

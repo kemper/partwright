@@ -70,7 +70,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group, arrange/copy parts (partAction), export split options',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group; arrange/copy/group parts in code (partAction); what each object splits into for export',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
@@ -114,8 +114,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'printing',
-    summary: 'printer settings and model units',
-    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits'],
+    summary: 'printer settings, model units, and the per-triangle wall-thickness map',
+    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits', 'thicknessMap'],
   },
   {
     id: 'versions',

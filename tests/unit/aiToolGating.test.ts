@@ -34,6 +34,22 @@ function toggles(partial: Parameters<typeof setToggles>[1] = {}): ChatToggles {
 }
 const names = (t: ChatToggles) => new Set(buildToolList(t).map(d => d.name));
 
+describe('thicknessMap and the Views toggle', () => {
+  const schema = (t: ChatToggles) => buildToolList(t).find(d => d.name === 'thicknessMap');
+  test('offered either way; the heatmap options only when Views is on', () => {
+    for (const planFirst of [false, true]) {
+      const on = schema(toggles({ scope: ALL_ON, vision: { views: true }, planFirst }));
+      const off = schema(toggles({ scope: ALL_ON, vision: { views: false }, planFirst }));
+      expect(on?.input_schema.properties).toHaveProperty('render');
+      expect(off).toBeDefined();
+      expect(off?.input_schema.properties).not.toHaveProperty('render');
+      expect(off?.input_schema.properties).not.toHaveProperty('views');
+      expect(off?.input_schema.properties).toHaveProperty('threshold');
+      expect(off?.description).not.toMatch(/heatmap image/);
+    }
+  });
+});
+
 describe('AI tool gating invariants', () => {
   test('every tool in the schema list is offered when every toggle is on', () => {
     // Plan-only tools (proposePlan) are offered in plan mode, not with it off.
