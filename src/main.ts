@@ -160,7 +160,8 @@ import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLPro
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
-import { generateImportCode } from './import/codegen';
+import { generateImportCode, rewriteImportsWithParts } from './import/codegen';
+import { partsFromLabels } from './import/importParts';
 import { besideOffset, composeImportIntoCode, importAsParts, translatedVerts, vertexBox } from './import/composeIntoCode';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { VoxelGrid } from './geometry/voxel/grid';
@@ -13422,6 +13423,21 @@ async function main() {
       ? (result.mesh.triColors != null ? result.mesh
         : (preserveColor && result.colorSource?.triColors != null ? result.colorSource : null))
       : null;
+    // The model's parts (api.label regions, or an import's detected parts)
+    // would otherwise vanish with the code that declared them: carry them onto
+    // the baked mesh as import parts, loaded back as labels by
+    // api.importWithParts (#1025). Read before the commit replaces the run.
+    // A part keeps the colour its code gave it (api.label's colour) when the
+    // bake keeps colour, so the rail and later paint scopes still show it.
+    const partColors = new Map<string, string>();
+    if (preserveColor) {
+      for (const r of getModelRegions()) {
+        if (r.descriptor?.kind === 'byLabel' && !partColors.has(r.descriptor.label)) partColors.set(r.descriptor.label, rgbToHexStr(r.color));
+      }
+    }
+    const carriedParts = result.kind === 'manifold' && currentLabelMap && currentLabelMap.size > 0 && currentLabelMesh && currentMeshData
+      ? partsFromLabels(currentLabelMap, currentLabelMesh, currentMeshData, result.mesh, partColors)
+      : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -13435,13 +13451,15 @@ async function main() {
         numVert: result.mesh.numVert,
         numTri: result.mesh.numTri,
         numProp: 3,
+        ...(carriedParts ? { parts: carriedParts } : {}),
       };
+      const code = carriedParts ? rewriteImportsWithParts(result.code, 0).code : result.code;
       setActiveImports([comp]);
-      setValue(result.code);
+      setValue(code);
       // A surface modifier decorates the existing model in place (same bounds),
       // so keep the user's camera angle instead of snapping back to the default
       // framing when the baked result renders.
-      const ok = await runCodeSync(result.code, { preserveCamera: true });
+      const ok = await runCodeSync(code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -13454,7 +13472,7 @@ async function main() {
         }
       }
       const thumbnail = await captureThumbnail();
-      await saveVersion(result.code, geoData, thumbnail, result.label, undefined, {
+      await saveVersion(code, geoData, thumbnail, result.label, undefined, {
         force: true,
         importedMeshes: [comp],
       });
@@ -13476,6 +13494,7 @@ async function main() {
         label: result.label,
         geometry: getGeometryDataObj(),
         colorsCarried: carried,
+        ...(carriedParts ? { partsCarried: carriedParts.names } : {}),
         ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
       };
     }
