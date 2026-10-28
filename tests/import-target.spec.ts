@@ -179,4 +179,41 @@ test.describe('Import target modal', () => {
     expect(code).toContain('Manifold.ofMesh(api.imports[0])');
     expect(code).not.toContain('compose');
   });
+
+  test('"Add to object" keeps a JS object\'s code and adds the model as a named part, into the object picked', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await setupHostSession(page, "const { Manifold } = api; return api.label(Manifold.cube([10, 10, 10], true), 'body');");
+    await pw(page)(async () => {
+      const p = (window as unknown as { partwright: ImportAPI & { runAndSave: (c: string, l?: string) => Promise<unknown> } }).partwright;
+      await p.createObject('other');
+      await p.runAndSave("const { Manifold } = api; return api.label(Manifold.sphere(6, 24), 'ball');", 'ball');
+    });
+    const fileInput = page.locator('#import-wrapper input[type="file"]');
+    await fileInput.setInputFiles({ name: 'bolt.stl', mimeType: 'application/octet-stream', buffer: buildCubeSTL(0) });
+    const dialog = page.getByRole('dialog');
+    // Pick the first object ("host"), not the open one.
+    const objects = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.listParts());
+    await dialog.locator('[data-import-object]').selectOption(objects[0].id);
+    await expect(dialog.locator('[data-target="current-part"]')).toContainText(`Add to object — "${objects[0].name}"`);
+    await page.mouse.move(10, 10);
+    await page.screenshot({ path: 'test-results/import-add-to-object.png' });
+    await dialog.locator('[data-target="current-part"]').click();
+
+    await expect.poll(() => pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getCode())).toContain('api.importWithParts(0)');
+    const code = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getCode());
+    // The object's own code is kept, wrapped and composed with the import.
+    expect(code).toContain("api.label(Manifold.cube([10, 10, 10], true), 'body')");
+    expect(code).toContain('return api.Manifold.compose([__partwrightBase, api.importWithParts(0)]);');
+    const parts = await pw(page)(() => ((window as unknown as { partwright: { listObjectParts: () => { object: { name: string }; parts: { name: string }[]; selected?: unknown } } }).partwright.listObjectParts()));
+    expect(parts.object.name).toBe(objects[0].name);
+    expect(parts.parts.map(p => p.name).sort()).toEqual(['body', 'bolt']);
+    const geo = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getGeometryData());
+    expect(geo.componentCount).toBe(2);
+    // The new part is selected, so the Parts panel is up to arrange it.
+    await expect(page.locator('#parts-panel')).toBeVisible();
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: 'test-results/import-added-part.png' });
+  });
 });

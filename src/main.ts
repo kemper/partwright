@@ -23,6 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { selectTriangles, type LabelLookup } from './geometry/selector';
 import { meshDiff, deviationColors } from './geometry/meshDiff';
+import { thicknessField, summarizeThickness, thicknessColors } from './geometry/thicknessMap';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
@@ -43,13 +44,14 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession, listSessionImportSignatures } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
+import { getReferenceMesh } from './renderer/referenceMesh';
 import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
-import { registerCommands, listCommands, runCommandById } from './ui/commandPalette';
+import { registerCommands, listCommands, runCommandById, isCommandPaletteOpen } from './ui/commandPalette';
 import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, notifyToolApplied, type ToolSpec } from './ui/toolRegistry';
 import { registerHostTools } from './ui/hostTools';
 import { getActiveMode } from './ui/modeExclusion';
@@ -83,7 +85,7 @@ import { summarizeObjectParts, triangleSetStats, extractSubMesh, computeMeshPiec
 import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, parsePieceFilter, type PieceBox } from './geometry/objectPartCode';
 import { planObjectPartsMove, checkMoveExpectation } from './geometry/objectPartMove';
 import { getSelectedPartKey, getSelectedPartKeys, getSelectedPartName, setSelectedPartKeys, onPartSelectionChange, describePartKey, describePartKeys, extendPartSelection, partSelectionSignature } from './ui/partSelection';
-import type { PartInfo } from './ui/objectPartsPanel';
+import type { ObjectPartsActions, PartInfo } from './ui/objectPartsPanel';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive, showIsolation, clearIsolation, isIsolationActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
@@ -107,8 +109,9 @@ import { export3MF, build3MF } from './export/threemf';
 import { collectExportColors, suggestColorMerges, applyColorRemap, normalizeColorRemap, composeColorRemaps, countRemappedColors, type ColorRemap } from './export/exportColors';
 import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
-import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy, type PartExport } from './export/threemfProject';
+import { showExportPartsModal, WHOLE_ITEM_KEY, type ExportPartChoice, type ExportObjectSplitInfo } from './ui/exportPartsModal';
+import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplitMode, splitItemName, splitItems, EXPORT_SPLIT_MODES, type ExportSplitMode, type ObjectSplitAnalysis } from './export/exportSplit';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
@@ -141,7 +144,7 @@ import {
   geometryOnlyRefusalMessage,
 } from './import/urlImport';
 import { fetchRemoteBytes } from './import/remoteFetch';
-import { showImportTargetModal } from './ui/importTargetModal';
+import { showImportTargetModal, pickImportTarget } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
 import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
 import { alreadyImportedItems, buildMultiFileSource, layoutMultiFileSource, suggestMultiFileLayout, type ImportSignature, type MultiFileInput, type MultiFileLayout, type MultiFileSource } from './import/multiFileImport';
@@ -158,6 +161,7 @@ import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
+import { besideOffset, composeImportIntoCode, importAsParts, translatedVerts, vertexBox } from './import/composeIntoCode';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
@@ -220,7 +224,7 @@ import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour
 import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
-import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, onPaintOpenChange, setPatternPaintEntry, getPaintToolState } from './color/paintUI';
+import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu, onPaintOpenChange, setPatternPaintEntry, getPaintToolState, syncPaintControls } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
@@ -231,7 +235,13 @@ import { analyzePrintability, type PrintabilityReport } from './geometry/printab
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
+import { Vector3 } from 'three';
+import { gridLayout, packLayout, bedLayout, alignLayout, distributeLayout, dropToPlate, centerOnOrigin, snapToGrid, arrayOffsets, gridArrayOffsets, freeOffset, layFlatRotation, rotatedMinZ, xyzPositions, type PartBox } from './insert/partLayout';
+import { addPartOps, findPartOpLines, renamePartInOps, partOpNames, reservedPartNames, ungroupInCode, derivedParts } from './editor/partOpCode';
+import type { PartOp } from './geometry/partOps';
 import { pickFace } from './color/facePicker';
+import { initPartsPanel, openPartsPanel, refreshPartsPanel, isPartsPanelOpen } from './ui/partsPanel';
+import { installPartBoxSelect } from './ui/partBoxSelect';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu, setAnnotateSubMode, getAnnotateSubMode } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -259,11 +269,12 @@ import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, canRedoRegion, canUndoClear, undoClear, clearRegionsBySource, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles, buildPatternContext, defaultPatternMaxEdge, patternSupportsSmooth, COLOR_PATTERN_KINDS, SMOOTH_PATTERN_KINDS, SOCCER_MAX_COVERAGE, type ColorPatternKind, type PatternContext, type PatternScope } from './color/colorPattern';
-import { collectRefineRegions, descriptorRefines } from './color/refinePipeline';
+import { buildBrushStrokeFromDescriptor, collectRefineRegions, descriptorRefines } from './color/refinePipeline';
 import { setPaintLabels } from './color/labels';
 import { getPaintScope, setPaintScope, onPaintScopeChange } from './color/paintScope';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, type BrushStroke, type BrushShape } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushAlign as setPaintBrushAlign, getBrushAlign as getPaintBrushAlign, setBrushFrontOnly as setPaintBrushFrontOnly, isBrushFrontOnly as isPaintBrushFrontOnly, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { isSmoothFill, smoothFillFor, resolveSmoothFillTriangles, fillSmoothness, primeBaseAdjacency, DEFAULT_FILL_SMOOTHNESS, MAX_FILL_SMOOTHNESS } from './color/smoothFill';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, strokeFootprintTriangles, childrenByParent, densifyStrokePath, propagateTriColors, REFINE_ALGO_VERSION, FRONT_FACE_MAX_DEG, type BrushStroke, type BrushShape, type BrushAlign, type BrushSurface, type BrushView } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
@@ -304,7 +315,7 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { applyRegionEdit, type RegionEditOptions } from './color/regionEdit';
-import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, resolveConnectedFromSeed, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
 import { findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -376,7 +387,8 @@ import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
-import { isEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin } from './sandbox/engineSandboxSetting';
+import { createModelConsolePanel, type ModelConsolePanel } from './ui/modelConsolePanel';
+import { isEngineSandboxMode, isRemovedEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin, engineSandboxOriginAvailable, defaultEngineSandboxMode } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
 /** Bumped by every setReferenceGeometry / clearReferenceGeometry so an async
@@ -668,6 +680,19 @@ let lastVoxelPieceCount: number | undefined;
  *  returned as `logs` by run / runAndSave / setParams so agents can debug
  *  without throwing. Not part of the geometry data (never saved). */
 let lastRunLogs: string[] | undefined;
+/** How a section through each axis is shown: manifold-3d slices only along
+ *  Z, so x/y cuts rotate that axis onto Z first; `map` turns the rotated
+ *  slice's 2D point into image (right, up) so each cut reads like the
+ *  matching renderView — y from the front (+X right, +Z up), x from the right
+ *  (+Y right, +Z up), z from above (+X right, +Y up). */
+const SECTION_FRAMES: Record<'x' | 'y' | 'z', { rotate: [number, number, number] | null; map: (p: [number, number]) => [number, number]; right: string; up: string; from: string }> = {
+  // rotate([0,-90,0]) sends (x, y, z) → (−z, y, x): slice point (−z, y).
+  x: { rotate: [0, -90, 0], map: ([a, b]) => [b, -a], right: '+Y', up: '+Z', from: '+X (right)' },
+  // rotate([90,0,0]) sends (x, y, z) → (x, −z, y): slice point (x, −z).
+  y: { rotate: [90, 0, 0], map: ([a, b]) => [a, -b], right: '+X', up: '+Z', from: '−Y (front)' },
+  z: { rotate: null, map: (p) => p, right: '+X', up: '+Y', from: '+Z (above)' },
+};
+
 /** `{ logs }` for an API result, or nothing when the last run printed nothing. */
 function lastRunLogsField(): { logs?: string[] } {
   return lastRunLogs ? { logs: lastRunLogs } : {};
@@ -867,6 +892,9 @@ type PartMeshCacheEntry = {
   /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
    *  cache hit can defer the Manifold rebuild too. */
   manifoldFacts: ManifoldFacts | null;
+  /** What the run that made this mesh printed, so a cache hit restores the
+   *  console (and getGeometryData().logs) along with the geometry. */
+  logs: string[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -1160,6 +1188,53 @@ function hiddenKeysForCurrentObject(): Set<string> {
   return (id && hiddenObjectParts.get(id)) || new Set<string>();
 }
 
+/** The parts (or, for an object without parts, the pieces) with geometry
+ *  inside a client-space rectangle of the viewport — the Shift-drag box
+ *  select. Samples up to `ui.partBoxSelectSamples` triangle centres per part
+ *  and projects them through the camera; hidden parts don't count. */
+function partKeysInScreenRect(rect: { left: number; top: number; right: number; bottom: number }): string[] {
+  const summary = currentObjectPartsSummary();
+  const mesh = objectPartsMesh();
+  if (!summary || !mesh) return [];
+  const canvasRect = getCanvas().getBoundingClientRect();
+  const camera = getCamera();
+  const hidden = hiddenKeysForCurrentObject();
+  const cap = Math.max(1, getConfig().ui.partBoxSelectSamples);
+  const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+  const v = new Vector3();
+  const inside = (tris: Iterable<number>, size: number): boolean => {
+    const stride = Math.max(1, Math.floor(size / cap));
+    let i = 0;
+    for (const t of tris) {
+      if (i++ % stride !== 0) continue;
+      let x = 0, y = 0, z = 0;
+      for (let k = 0; k < 3; k++) {
+        const o = tv[t * 3 + k] * np;
+        x += vp[o]; y += vp[o + 1]; z += vp[o + 2];
+      }
+      v.set(x / 3, y / 3, z / 3).project(camera);
+      if (v.z < -1 || v.z > 1) continue;
+      const sx = canvasRect.left + (v.x + 1) / 2 * canvasRect.width;
+      const sy = canvasRect.top + (1 - v.y) / 2 * canvasRect.height;
+      if (sx >= rect.left && sx <= rect.right && sy >= rect.top && sy <= rect.bottom) return true;
+    }
+    return false;
+  };
+  const keys: string[] = [];
+  if (summary.parts.length > 0) {
+    for (const p of summary.parts) {
+      const key = `part:${p.name}`;
+      if (p.triangles.size > 0 && !hidden.has(key) && inside(p.triangles, p.triangles.size)) keys.push(key);
+    }
+  } else if (summary.pieces.length > 1) {
+    for (const p of summary.pieces) {
+      const key = `piece:${p.index}`;
+      if (!hidden.has(key) && inside(p.triangles, p.triangles.length)) keys.push(key);
+    }
+  }
+  return keys;
+}
+
 /** Hide the current object's hidden parts/pieces in the displayed mesh (and
  *  show everything else). Called after every mesh update, since each one builds
  *  fresh geometry. Returns the number of displayed triangles hidden. */
@@ -1433,6 +1508,8 @@ function revealCodeRange(from: number, to: number): void {
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+/** The viewport drawer showing what the last run's model code printed. */
+let modelConsolePanel: ModelConsolePanel | null = null;
 let fastPreviewPillEl: HTMLElement | null = null;
 /** True while the viewport shows the coarse fast-preview pass of an SDF model
  *  and the full-quality render is still in flight. Used to gate mesh-altering
@@ -2026,6 +2103,14 @@ interface ResolveContext {
   colorsBelow?: (numTri: number, selfId?: number) => Uint8Array | null;
 }
 
+/** The pristine base a smooth fill re-floods and blurs on: the live paint base,
+ *  or — when resolving ANOTHER object's mesh for a multi-object export bake
+ *  (`ctx`) — that object's own mesh. (The bake has no refine step, so there the
+ *  fill resolves at that mesh's triangle resolution, unclipped.) */
+function smoothFillBase(mesh: MeshData, ctx?: ResolveContext): MeshData {
+  return ctx ? mesh : (paintBaseMesh ?? mesh);
+}
+
 /** The triangles of label `name` on `mesh` (empty when the label is unknown). */
 function labelTrianglesOnMesh(name: string, mesh: MeshData, ctx?: ResolveContext): Set<number> {
   const labels = ctx ? ctx.labels : currentLabelMap;
@@ -2079,6 +2164,7 @@ function resolveDescriptorTrianglesRaw(
       return { triangles: out };
     }
     case 'coplanar': {
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, smoothFillBase(mesh, ctx), mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
@@ -2129,38 +2215,9 @@ function resolveDescriptorTrianglesRaw(
       return { triangles: ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>() };
     }
     case 'connectedFromSeed': {
+      if (isSmoothFill(descriptor)) return { triangles: resolveSmoothFillTriangles(descriptor, smoothFillBase(mesh, ctx), mesh, adjacency) };
       if (!adjacency) return { triangles: new Set<number>() };
-      const { seedPoint, seedNormal, maxDeviationDeg, clampMin, clampMax } = descriptor;
-      // Find the closest triangle to the seed point — robust across re-runs
-      // because triangle indices are unstable but world-space points are not.
-      // Then BFS-flood gated by deviation from the stored seed normal.
-      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
-      if (nearest.triIndex < 0) return { triangles: new Set<number>() };
-      const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
-      // Restore the original clamp predicate so re-resolution after a
-      // geometry edit walks the same bounded region the user painted.
-      const predicate = (clampMin || clampMax)
-        ? (cx: number, cy: number, cz: number) =>
-            cx >= (clampMin?.[0] ?? -Infinity) && cx <= (clampMax?.[0] ?? Infinity) &&
-            cy >= (clampMin?.[1] ?? -Infinity) && cy <= (clampMax?.[1] ?? Infinity) &&
-            cz >= (clampMin?.[2] ?? -Infinity) && cz <= (clampMax?.[2] ?? Infinity)
-        : undefined;
-      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, predicate);
-      const sNorm = adjacency.normals;
-      const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
-                    + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
-                    + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
-      if (dotSeed < cos) {
-        // Surface re-orientation between runs — re-filter conservatively.
-        const filtered = new Set<number>();
-        for (const t of triangles) {
-          const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
-          const d = seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz;
-          if (d >= cos) filtered.add(t);
-        }
-        triangles = filtered;
-      }
-      return { triangles };
+      return { triangles: resolveConnectedFromSeed(descriptor, mesh, adjacency) };
     }
     case 'brushStroke':
       return { triangles: strokeFootprintTriangles(mesh, descriptorToStroke(descriptor)) };
@@ -2200,41 +2257,60 @@ function resolveDescriptorTrianglesRaw(
 // code run). WeakMap so dropped regions are collected automatically.
 const strokeCache = new WeakMap<object, { base: MeshData; stroke: BrushStroke }>();
 
+/** Validate a paint call's brush-direction options (`align`, `viewDir`,
+ *  `frontFacesOnly`) and resolve them to brushStroke descriptor fields. The
+ *  camera is `viewDir` (parallel rays) or, when omitted, the live viewport
+ *  camera. Shared by paintStroke and paintAirbrush. */
+function parseBrushViewOpts(
+  opts: { align?: unknown; viewDir?: unknown; frontFacesOnly?: unknown },
+  fn: string,
+): { error: string } | { fields: { align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number } } {
+  const { align, viewDir, frontFacesOnly } = opts;
+  if (align !== undefined && align !== 'surface' && align !== 'area' && align !== 'view') {
+    return { error: `${fn}: align must be 'surface', 'area' or 'view' when provided` };
+  }
+  if (frontFacesOnly !== undefined && typeof frontFacesOnly !== 'boolean') {
+    return { error: `${fn}: frontFacesOnly must be a boolean when provided` };
+  }
+  const needsView = align === 'view' || frontFacesOnly === true;
+  if (viewDir !== undefined) {
+    if (!Array.isArray(viewDir) || viewDir.length !== 3 || viewDir.some(n => typeof n !== 'number' || !Number.isFinite(n)) || Math.hypot(viewDir[0], viewDir[1], viewDir[2]) === 0) {
+      return { error: `${fn}: viewDir must be a non-zero [x,y,z] direction (camera → model) when provided` };
+    }
+    if (!needsView) return { error: `${fn}: viewDir only applies with align: 'view' or frontFacesOnly: true` };
+  }
+  let view: BrushView | undefined;
+  if (needsView) {
+    if (Array.isArray(viewDir)) {
+      const l = Math.hypot(viewDir[0], viewDir[1], viewDir[2]);
+      view = { dir: [viewDir[0] / l, viewDir[1] / l, viewDir[2] / l] };
+    } else {
+      const { position: o, target: t } = getCameraPose();
+      const d = [t[0] - o[0], t[1] - o[1], t[2] - o[2]];
+      const l = Math.hypot(d[0], d[1], d[2]) || 1;
+      view = { dir: [d[0] / l, d[1] / l, d[2] / l], origin: [o[0], o[1], o[2]] };
+    }
+  }
+  return {
+    fields: {
+      ...(align !== undefined ? { align: align as BrushAlign } : {}),
+      ...(view ? { view } : {}),
+      ...(frontFacesOnly === true ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
+    },
+  };
+}
+
 function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
   const cacheBase = paintBaseMesh ?? currentMeshData;
   const cached = strokeCache.get(d);
   if (cached && cached.base === cacheBase) return cached.stroke;
-  // Surface mode is whatever the stroke was painted with (slab by default);
-  // old descriptors without the field — and old geodesic-forced sprays —
-  // resolve from their stored `surface`, falling back to slab for back-compat.
-  const surface = d.surface ?? 'slab';
-  const stroke: BrushStroke = {
-    samples: d.samples,
-    radius: d.radius,
-    shape: d.shape,
-    maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256,
-    surface,
-    depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
-    spray: d.spray,
-  };
-  // Wrap tolerance: a finite gate (< 180°) needs the geodesic reachability field
-  // even in slab mode (built alongside the prism's normals). Absent ⇒ 180° (no
-  // gate) for strokes saved before the slider — kept byte-identical.
-  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
-  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   const base = paintBaseMesh ?? currentMeshData;
-  if (base) {
-    if (surface === 'geodesic') {
-      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
-    } else {
-      stroke.sampleNormals = deriveSampleNormals(d.samples, base);
-      stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
-      if (wrapAngleDeg < 180) {
-        stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
-      }
-    }
-    strokeCache.set(d, { base, stroke });
+  if (!base) {
+    // No mesh yet: nothing to derive normals from, so a bare 3D footprint.
+    return { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256, surface: d.surface ?? 'slab', spray: d.spray };
   }
+  const stroke = buildBrushStrokeFromDescriptor(d, base);
+  strokeCache.set(d, { base, stroke });
   return stroke;
 }
 
@@ -2904,6 +2980,51 @@ function withSyncReconcile<T>(action: () => T): T {
   }
 }
 
+/** Validate the `smooth` / `smoothness` options shared by the bucket-fill APIs
+ *  (paintRegion, paintConnected). Returns an error string or null. */
+function validateFillSmoothOpts(opts: { smooth?: unknown; smoothness?: unknown }): string | null {
+  if (opts.smooth !== undefined && typeof opts.smooth !== 'boolean') return 'smooth must be a boolean';
+  if (opts.smoothness !== undefined) {
+    const s = opts.smoothness;
+    if (typeof s !== 'number' || !Number.isInteger(s) || s < 0 || s > MAX_FILL_SMOOTHNESS) {
+      return `smoothness must be an integer 0..${MAX_FILL_SMOOTHNESS} (blur passes; default 4)`;
+    }
+    if (!opts.smooth) return 'smoothness only applies with smooth: true';
+  }
+  return null;
+}
+
+/** Commit a bucket-fill region (coplanar / connectedFromSeed). Plain fills add
+ *  their whole-triangle set directly; smooth fills go through the refine
+ *  pipeline synchronously (it clips the mesh along the blurred boundary and
+ *  re-resolves the region), refusing up front when the blur would leave the
+ *  fill empty. */
+function addBucketFillRegion(
+  name: string,
+  color: [number, number, number],
+  source: ColorRegion['source'],
+  descriptor: Extract<RegionDescriptor, { kind: 'coplanar' | 'connectedFromSeed' }>,
+  triangles: Set<number>,
+  /** Adjacency the caller built for `currentMeshData` (reused when unrefined). */
+  adjacency?: AdjacencyGraph,
+): { region: ColorRegion } | { error: string } {
+  if (!isSmoothFill(descriptor)) {
+    const region = addRegion(name, color, source, descriptor, triangles);
+    updateMesh(applyTriColorsIfVisible(currentMeshData!), { skipAutoFrame: true });
+    syncLockState();
+    return { region };
+  }
+  const base = paintBaseMesh ?? currentMeshData!;
+  if (adjacency && currentMeshData === base) primeBaseAdjacency(base, adjacency);
+  if (smoothFillFor(descriptor, base).empty) {
+    return { error: `smooth: blurring the fill boundary ${fillSmoothness(descriptor)} times left nothing painted — the fill is thinner than the blur. Lower smoothness, or paint it without smooth.` };
+  }
+  const region = withSyncReconcile(() => addRegion(name, color, source, descriptor, new Set<number>()));
+  paintedColorRefresh();
+  syncLockState();
+  return { region };
+}
+
 /** Add a brushStroke region and synchronously refine the mesh under it. */
 function paintBrushStrokeSync(
   name: string,
@@ -3292,7 +3413,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  window.partwright.saveVersion() API and the mod+S keyboard shortcut.
  *  Returns `{ id, index, label }` on success, `{ error }` when no session is
  *  active, or `{ skipped }` when nothing changed since the current version. */
-async function saveCurrentVersion(label?: string): Promise<
+async function saveCurrentVersion(label?: string, opts: { importedMeshes?: ImportedMesh[] } = {}): Promise<
   | { error: string }
   | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
@@ -3307,7 +3428,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), ...(opts.importedMeshes ? { importedMeshes: opts.importedMeshes } : {}) });
   if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
@@ -3327,6 +3448,7 @@ async function saveCurrentVersion(label?: string): Promise<
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
         manifoldFacts: manifoldFactsFor(meshToCache),
+        logs: lastRunLogs,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -4961,9 +5083,9 @@ async function main() {
       await applyImportWrapper([parsed.mesh], parsed.isManifold);
     } else {
       if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
-      await preserveCurrentEditsIfNeeded();
+      const cur = getState().currentPart;
       // Silent: the API caller gets the failure as an { error } instead of a toast.
-      if (!(await composeMeshIntoCurrentPart(parsed.mesh, undefined, { silent: true }))) {
+      if (!cur || !(await addImportToObject(cur.id, parsed.mesh, sessionName, undefined, { silent: true }))) {
         return { error: `${caller}: couldn't read the current object's geometry to combine.` };
       }
     }
@@ -5438,7 +5560,7 @@ async function main() {
       modes: platesInUse(result) > 1 ? ['object', 'plate', 'none'] : ['object', 'none'],
       baseName: base,
       maxObjects: getConfig().import.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
@@ -5447,7 +5569,7 @@ async function main() {
     if (!built) return false;
     const { entries, infos } = built;
     if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
-    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base);
+    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base, choice.objectId);
     if (ids.length > 0) {
       const info = ids.length === 1 ? infos[0] : mergeColorInfos(infos);
       showToast(describe3MFImport(filename, result, info, ids.length, entries[0].probe.mesh.numTri), { variant: 'success', source: 'import' });
@@ -5544,6 +5666,8 @@ async function main() {
     layout: MultiFileLayout;
     convert: boolean;
     destination: MeshImportDestination | 'reuse-current';
+    /** destination 'current-object': the object to add to (default: the open one). */
+    objectId?: string;
   }
 
   /** The name for what a multi-file import makes as a whole (its session, or
@@ -5621,7 +5745,7 @@ async function main() {
     if (!built) return null;
     const { entries } = built;
     if (opts.confirmRenderOnly !== false && !(await confirmRenderOnlyObjects('the selected files', entries))) return null;
-    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name);
+    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name, choice.objectId);
     let converted = 0;
     const convertNotes: string[] = [];
     const stopped = ids.some(id => !id);
@@ -5783,7 +5907,7 @@ async function main() {
       offerConvert: true,
       baseName: multiFileImportName(source, source.items.map((_, i) => i)),
       maxObjects: cfg.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const destination = multiImportDestination(protect, empty, choice.destination);
@@ -5793,6 +5917,7 @@ async function main() {
       layout: choice.layout ?? suggested,
       convert: !!choice.convert,
       destination,
+      ...(choice.objectId ? { objectId: choice.objectId } : {}),
     });
     if (!placed) { cancelledMsg(); return false; }
     const made = placed.ids.filter(Boolean).length;
@@ -5867,26 +5992,27 @@ async function main() {
    *  Entries sharing a `group` are threaded under it in the object list, and
    *  the first object is left open. Cancel on the progress modal stops after
    *  the object being built. Returns the ids of the objects written. */
-  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<string[]> {
-    return (await placeImportedObjectsAligned(entries, destination, sessionName)).filter((id): id is string => !!id);
+  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<string[]> {
+    return (await placeImportedObjectsAligned(entries, destination, sessionName, targetObjectId)).filter((id): id is string => !!id);
   }
 
   /** `placeImportedObjects`, returning one id per entry (null where the
    *  object wasn't made — cancelled, or it failed). */
-  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<(string | null)[]> {
+  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<(string | null)[]> {
     if (entries.length === 0) return [];
-    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     if (destination === 'current-object') {
       const cur = getState().currentPart;
       if (entries.length === 1 && entries[0].probe.isManifold && cur) {
-        await preserveCurrentEditsIfNeeded();
-        return [(await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? cur.id : null];
+        // Into an existing object (the open one unless one was picked).
+        const id = targetObjectId && getState().parts.some(p => p.id === targetObjectId) ? targetObjectId : cur.id;
+        return [(await addImportToObject(id, entries[0].probe.mesh, entries[0].name, entries[0].seed)) ? id : null];
       }
       if (entries.length === 1 && !entries[0].probe.isManifold) {
         showToast('Render-only meshes can’t be combined into an existing object — added it as a new object instead.', { variant: 'neutral', source: 'import' });
       }
       destination = 'this-session';
     }
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const ids: (string | null)[] = [];
     let cancelled = false;
     const progressId = entries.length > 1
@@ -6090,9 +6216,13 @@ async function main() {
     // concurrent applyCodeToCurrentPart already saved a version with companions
     // (avoids the "new-part import + navigate away" phantom second version).
     const companionFiles = getActiveLanguage() === 'scad' ? getCompanionFiles() : undefined;
-    if (!currentPartIsDirty(code, geometryData, { companionFiles })) return;
+    // Pass the live Customizer overrides too, as the explicit save path does:
+    // omitting them made a version saved WITH overrides look dirty on every
+    // object switch, saving a duplicate that drops the overrides (#1131).
+    const paramValues = currentParamValues;
+    if (!currentPartIsDirty(code, geometryData, { paramValues, companionFiles })) return;
     const thumbnail = await captureThumbnail();
-    await saveVersion(code, geometryData, thumbnail, undefined, undefined, { companionFiles });
+    await saveVersion(code, geometryData, thumbnail, undefined, undefined, { paramValues, companionFiles, surfaceTexture: currentSurfaceTextureForSave() });
   }
 
   /** Drop an import wrapper for `components` into the current part: set the
@@ -6164,9 +6294,15 @@ async function main() {
     partId: string,
     name: string,
     opts: { onStart?: () => void } = {},
-  ): Promise<{ name: string; mesh: MeshData } | null> {
+  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
-      return { name, mesh: coloredMeshForExport(currentMeshData) };
+      // The label map indexes the run's mesh; a texture / paint subdivision /
+      // simplify pass may have swapped the displayed mesh since, so carry the
+      // labels over to the triangles actually exported.
+      const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
+        ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
+        : currentLabelMap;
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6244,11 +6380,13 @@ async function main() {
     }
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
-    return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null };
   }
 
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
+  /** One object's baked, coloured mesh (plus its part labels, for splitting). */
+  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string }
 
   // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
   // process-wide singleton and each batch sizes + disposes it, so two concurrent
@@ -6279,7 +6417,7 @@ async function main() {
       onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
       cancel?: { cancelled: boolean };
     } = {},
-  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+  ): Promise<{ baked: BakedExportObject[] }> {
     // Wait for any in-flight export bake, then claim the pool for this one.
     const prior = exportBakeMutex;
     let release!: () => void;
@@ -6287,9 +6425,10 @@ async function main() {
     await prior.catch(() => { /* a prior bake's failure must not block this one */ });
 
     try {
+      if (opts.cancel?.cancelled) return { baked: [] };
       const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
       setEnginePoolSize(desired);
-      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      const slots: (BakedExportObject | null)[] = new Array(parts.length).fill(null);
       try {
         await Promise.all(parts.map(async (part, i) => {
           if (opts.cancel?.cancelled) return;
@@ -6299,7 +6438,7 @@ async function main() {
             });
             if (opts.cancel?.cancelled) return;
             if (result) {
-              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              slots[i] = { ...result, id: part.id, ...(part.group ? { group: part.group } : {}) };
               opts.onStatus?.(part.id, 'done');
             } else {
               opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
@@ -6313,10 +6452,169 @@ async function main() {
       } finally {
         disposeEnginePool('Export bake finished');
       }
-      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
+      return { baked: slots.filter((s): s is BakedExportObject => s !== null) };
     } finally {
       release();
     }
+  }
+
+  /** Bake + split-analysis cache for one export: the picker measures each
+   *  ticked object through it (to offer Split → Pieces / Parts), and the
+   *  export that follows reuses those bakes instead of building again.
+   *  Requests made close together bake as one pool batch. */
+  function createExportSplitSession() {
+    const pending = new Map<string, Promise<BakedExportObject | null>>();
+    const ready = new Map<string, BakedExportObject>();
+    const analyses = new Map<string, ObjectSplitAnalysis>();
+    let queue: { part: ExportBakePart; resolve: (b: BakedExportObject | null) => void }[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // One batch at a time: requests that arrive while a batch bakes join the
+    // next one, so ticking objects one by one doesn't cold-start a pool each.
+    let running = false;
+    const cancelState = { cancelled: false };
+    const flush = async () => {
+      timer = null;
+      if (running || queue.length === 0) return;
+      running = true;
+      const batch = queue;
+      queue = [];
+      try {
+        const { baked } = await bakePartsParallel(batch.map(b => b.part), { cancel: cancelState });
+        const byId = new Map(baked.map(b => [b.id, b]));
+        for (const b of batch) b.resolve(byId.get(b.part.id) ?? null);
+      } catch {
+        for (const b of batch) b.resolve(null);
+      } finally {
+        running = false;
+        if (queue.length > 0 && !cancelState.cancelled) void flush();
+      }
+    };
+    /** Stop: drop queued bakes (they resolve null) and skip unstarted parts of
+     *  the batch in flight, so a dismissed picker or a cancelled export stops
+     *  holding the export pool. */
+    const cancel = () => {
+      cancelState.cancelled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const dropped = queue;
+      queue = [];
+      for (const b of dropped) b.resolve(null);
+    };
+    const bake = (id: string): Promise<BakedExportObject | null> => {
+      let p = pending.get(id);
+      if (p) return p;
+      const part = getState().parts.find(x => x.id === id);
+      if (!part) return Promise.resolve(null);
+      const bakePart: ExportBakePart = { id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) };
+      p = id === getState().currentPart?.id && currentMeshData
+        // The open object is already on screen — no pool round-trip.
+        ? bakeColoredMeshForPart(id, part.name).then(r => (r ? { ...r, id, ...(part.group ? { group: part.group } : {}) } : null))
+        : new Promise<BakedExportObject | null>(resolve => {
+          if (cancelState.cancelled) { resolve(null); return; }
+          queue.push({ part: bakePart, resolve });
+          if (!running) timer ??= setTimeout(() => { void flush(); }, 30);
+        });
+      p = p.then(b => { if (b) ready.set(id, b); return b; }, () => null);
+      pending.set(id, p);
+      return p;
+    };
+    const analysisOf = (b: BakedExportObject): ObjectSplitAnalysis => {
+      let a = analyses.get(b.id);
+      if (!a) {
+        a = analyzeObjectSplit(b.mesh, b.labels ?? null, { maxItems: getConfig().renderer.exportMaxSplitItems });
+        analyses.set(b.id, a);
+      }
+      return a;
+    };
+    const analyze = async (id: string): Promise<ExportObjectSplitInfo | null> => {
+      const b = await bake(id);
+      if (!b) return null;
+      const a = analysisOf(b);
+      const info = (items: ReturnType<typeof splitItems>) => items?.map(it => ({ key: it.key, name: it.name, size: it.size, fused: it.fused, labels: it.labels })) ?? null;
+      return { size: a.size, pieceCount: a.pieceCount, pieces: info(a.pieces), parts: info(a.parts) };
+    };
+    const thumbnail = (id: string, mode: ExportSplitMode, key: string): HTMLCanvasElement | null => {
+      const b = ready.get(id);
+      if (!b) return null;
+      const it = splitItems(analysisOf(b), mode)?.find(x => x.key === key);
+      if (!it) return null;
+      return renderSingleViewCanvas(extractItemMesh(b.mesh, it.triangles), {
+        elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
+        ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
+      });
+    };
+    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
+  }
+  type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
+
+  /** The picker's split choice (by object id → item key) for buildExportItems. */
+  interface ExportItemChoice {
+    splits?: Record<string, ExportSplitMode>;
+    excluded?: Record<string, string[]>;
+    plates?: Record<string, Record<string, number>>;
+  }
+
+  /** Turn baked objects + a split choice into the items one file holds: a
+   *  whole object stays one item; a split object becomes one item per piece
+   *  or part (named "<object> · <item>"), minus the excluded ones. */
+  function buildExportItems(baked: BakedExportObject[], session: ExportSplitSession, choice: ExportItemChoice): PartExport[] {
+    const out: PartExport[] = [];
+    for (const b of baked) {
+      const mode = choice.splits?.[b.id] ?? 'whole';
+      const items = mode === 'whole' ? null : splitItems(session.analysisOf(b), mode);
+      const plates = choice.plates?.[b.id];
+      if (!items) {
+        const plate = plates?.[WHOLE_ITEM_KEY];
+        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}) });
+        continue;
+      }
+      const skip = new Set(choice.excluded?.[b.id] ?? []);
+      for (const it of items) {
+        if (skip.has(it.key)) continue;
+        const plate = plates?.[it.key];
+        out.push({
+          name: splitItemName(b.name, it.name),
+          mesh: extractItemMesh(b.mesh, it.triangles),
+          ...(b.group ? { group: b.group } : {}),
+          splitOf: b.id,
+          ...(plate !== undefined ? { plate } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Bake the picker's selection through its session (already-measured objects
+   *  are instant), reporting each object's state to the export progress modal. */
+  async function bakeSelectionForExport(
+    bakeParts: ExportBakePart[],
+    session: ExportSplitSession,
+    progress: { setStatus: (id: string, status: 'rendering' | 'done' | 'failed') => void },
+    cancel: { cancelled: boolean },
+  ): Promise<BakedExportObject[]> {
+    const out = await Promise.all(bakeParts.map(async p => {
+      if (!session.isReady(p.id)) progress.setStatus(p.id, 'rendering');
+      const b = await session.bake(p.id);
+      if (cancel.cancelled) return null;
+      progress.setStatus(p.id, b ? 'done' : 'failed');
+      return b;
+    }));
+    return out.filter((b): b is BakedExportObject => b !== null);
+  }
+
+  /** The export picker's Split hooks for one session. */
+  const splitPickerOptions = (session: ExportSplitSession) => ({ analyze: session.analyze, thumbnail: session.thumbnail });
+
+  /** True when the open object is the session's only object and is made of
+   *  several separate pieces — then a single-object export still opens the
+   *  picker so the pieces can be split. Voxel objects keep the direct export
+   *  (their greedy-meshed file mesh doesn't come from the picker's bake). */
+  function singleObjectCanSplit(): boolean {
+    const st = getState();
+    if (!st.session || st.parts.length !== 1 || !st.currentPart || !currentMeshData) return false;
+    if (getActiveLanguage() === 'voxel') return false;
+    const gd = getGeometryDataObj();
+    return typeof gd?.componentCount === 'number' && gd.componentCount >= 2
+      && gd.componentCount <= getConfig().renderer.exportMaxSplitItems;
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -6484,17 +6782,74 @@ async function main() {
     return true;
   }
 
+  /** Add an imported model to object `objectId` (opening it) as named parts —
+   *  the mesh's own parts, else one part called `name` — placed beside the
+   *  object's geometry. A JavaScript object keeps its code: it is wrapped and
+   *  composed with `api.importWithParts(i)` (src/import/composeIntoCode.ts),
+   *  so the Parts panel can arrange the new parts. Other engines, or code
+   *  that won't compose, fall back to baking the object into a mesh
+   *  (composeMeshIntoCurrentPart). Selects the new parts on success. */
+  async function addImportToObject(objectId: string, mesh: ImportedMesh, name: string, seedRegions?: SeedRegionsInput, opts: { silent?: boolean } = {}): Promise<boolean> {
+    if (getState().currentPart?.id !== objectId) await selectPart(objectId);
+    else await preserveCurrentEditsIfNeeded();
+    if (getState().currentPart?.id !== objectId) return false;
+    const baseMesh = currentMeshData;
+    // The object's own language (an import may have switched the editor's).
+    const { currentVersion, session } = getState();
+    const lang = currentVersion ? effectiveVersionLanguage(currentVersion, session) : getActiveLanguage();
+    if (lang !== 'manifold-js' || getActiveLanguage() !== 'manifold-js' || !baseMesh || currentPartIsExpendable()) {
+      const ok = await composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+      const warn = ok && lang !== 'manifold-js' ? engineBakeWarning(lang, 'manifold-js') : null;
+      if (warn && !opts.silent) showToast(`${warn} (Adding ${name} combined it into a mesh; the version history keeps the code.)`, { variant: 'warn', source: 'import' });
+      return ok;
+    }
+    // Names the code deletes (api.removePart) or edit lines create are taken too.
+    const parts = importAsParts(mesh, name, [...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue())]);
+    const base = vertexBox(baseMesh.vertProperties, baseMesh.numProp);
+    const add = vertexBox(mesh.vertProperties, mesh.numProp);
+    const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
+    const d = base && add ? besideOffset(base, add, gap) : [0, 0, 0] as [number, number, number];
+    const placed: ImportedMesh = { ...mesh, vertProperties: translatedVerts(mesh.vertProperties, mesh.numProp, d), parts };
+    const previousCode = getValue();
+    const previousImports = getActiveImports();
+    const imports = [...previousImports, placed];
+    const code = composeImportIntoCode(previousCode, imports.length - 1);
+    setActiveImports(imports);
+    setValue(code);
+    const ran = await runCodeSync(code);
+    const geo = getGeometryDataObj() as { status?: string } | null;
+    if (!ran || geo?.status === 'error' || !currentMeshData) {
+      setActiveImports(previousImports);
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      if (!opts.silent) showToast(`Couldn’t add ${name} to this object’s code — combined it as a mesh instead.`, { variant: 'neutral', source: 'import' });
+      return composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+    }
+    // Colour seeds match the import's triangles by position, at the file's
+    // position: shift the result back for the match.
+    if (typeof seedRegions === 'function') {
+      const out = currentMeshData;
+      seedImportRegions(seedRegions({ ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) }));
+    }
+    const saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    if ('error' in saved && !opts.silent) showToast(`Added ${name}, but saving the version failed: ${saved.error}`, { variant: 'warn', source: 'import' });
+    selectObjectParts(parts.names.map(n => `part:${n}`));
+    return true;
+  }
+
   /** Decide where a freshly-parsed STL mesh lands. With no session open it
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
-    const placed = await placeImportedMeshInner(parsed, filename, seedRegions);
-    // Post-import ask. Interactive path only (importMeshData / console imports
+    const placedAs = await placeImportedMeshInner(parsed, filename, seedRegions);
+    const placed = placedAs !== false;
+    // Post-import ask. Not after adding to an existing object: converting would
+    // rebuild that object's own code too. Interactive path only (importMeshData / console imports
     // stay prompt-free for agents); render-only meshes skip it — they can't
     // carry parts or convert (their slices don't close).
     // Not awaited: the automatic part pass runs in the background so the
     // import itself (and its Recent Imports entry) completes immediately.
-    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
+    if (placedAs === true && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
     return placed;
   }
 
@@ -6570,7 +6925,7 @@ async function main() {
     });
   }
 
-  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean | 'added'> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -6594,7 +6949,7 @@ async function main() {
     // "current part" means compose-into, never replace, and the default is a
     // new part so an import never silently overwrites it.
     const empty = currentPartIsExpendable();
-    const target = await showImportTargetModal({
+    const pick = await pickImportTarget({
       filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: !!state.currentPart && (empty || parsed.isManifold),
@@ -6603,8 +6958,11 @@ async function main() {
         ? 'Render-only meshes can’t be combined into an existing object.'
         : undefined,
       recommend: empty ? 'current-part' : 'new-part',
+      objects: state.parts.map(p => ({ id: p.id, name: p.name })),
+      currentObjectId: state.currentPart?.id,
     });
-    if (!target) return false;
+    if (!pick) return false;
+    const target = pick.target;
     if (target === 'current-part' && empty) {
       await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions);
       await nameFilledObject(sessionName);
@@ -6620,9 +6978,11 @@ async function main() {
       await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
       return true;
     }
-    // current-part: compose the imported mesh into the existing real work.
-    await preserveCurrentEditsIfNeeded();
-    return composeMeshIntoCurrentPart(parsed.mesh, seedRegions);
+    // current-part: add it to the picked object (the open one by default) as
+    // named parts, keeping that object's code where it can.
+    const objectId = pick.objectId && getState().parts.some(p => p.id === pick.objectId) ? pick.objectId : getState().currentPart?.id;
+    if (!objectId) return false;
+    return (await addImportToObject(objectId, parsed.mesh, sessionName, seedRegions)) ? 'added' : false;
   }
 
   /** Place an imported code file (JS / SCAD) into the session, showing a target
@@ -7188,15 +7548,18 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
-    try {
-      assertFiniteMesh(currentMeshData);
-      notifyMultiPartExport();
-      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
-      showToast(`Exported ${filename}`, { variant: 'success' });
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-    }
+    const direct = async () => {
+      try {
+        assertFiniteMesh(currentMeshData!);
+        notifyMultiPartExport();
+        const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData!));
+        showToast(`Exported ${filename}`, { variant: 'success' });
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+      }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob, direct); return; }
+    await direct();
   };
   // Animation exports: record the live viewport into a downloadable video.
   const actionExportTurntable = async () => {
@@ -7216,25 +7579,31 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob, direct); return; }
+    direct();
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
     // Multi-part session → pick parts and emit named objects in one .obj.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob, direct); return; }
+    direct();
   };
   /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
    *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
    *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
-  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+  async function export3MFMultiPartFlow(bambu: boolean, direct?: () => void | Promise<void>): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
     // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
@@ -7243,14 +7612,15 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : 'Export objects to 3MF',
+      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : `Export ${parts.length > 1 ? 'objects ' : ''}to 3MF`,
       description: bambu
         ? 'Choose which objects to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which objects to include. Each selected object is added as a separate 3MF object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
       bambu: bambu ? {
-        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label, bed: p.bed })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
         nozzles: [...BAMBU_NOZZLES],
         defaultNozzle: DEFAULT_BAMBU_NOZZLE,
@@ -7260,8 +7630,12 @@ async function main() {
       // Generic 3MF gets the packing-strategy pane too (Bambu implies it). Both use
       // the two-pane layout so the arrangement control is always visible.
       ...(bambu ? {} : { packing: true }),
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7269,28 +7643,28 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: 'Preparing 3MF…',
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       // Filament colours: merge near-identical shades before writing (export-only).
       progress.end();
       const onlyActive = baked.length === 1 && selectedIds.length === 1 && selectedIds[0] === activeId;
-      const remap = await chooseExportColors(baked.map(b => b.mesh), onlyActive);
+      const remap = await chooseExportColors(items.map(b => b.mesh), onlyActive);
       if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      const toWrite = baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
+      const toWrite = items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(toWrite, {
@@ -7299,14 +7673,22 @@ async function main() {
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
       progress.end();
     }
+  }
+
+  /** "3 objects", or "12 items from 2 objects" when objects were split, plus
+   *  a note for objects that produced no geometry. */
+  function exportedSummary(asked: number, baked: number, items: PartExport[]): string {
+    const objs = `${baked} object${baked === 1 ? '' : 's'}`;
+    const n = items.length;
+    const main = items.some(i => i.splitOf) ? `${n} item${n === 1 ? '' : 's'} from ${objs}` : objs;
+    const skipped = asked - baked;
+    return skipped > 0 ? `${main} (${skipped} skipped — no geometry)` : main;
   }
 
   /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
@@ -7317,6 +7699,7 @@ async function main() {
     formatTag: string,
     description: string,
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    direct?: () => void | Promise<void>,
   ): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
@@ -7325,12 +7708,17 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: `Export objects to ${formatTag}`,
+      title: `Export ${parts.length > 1 ? 'objects ' : ''}to ${formatTag}`,
       description,
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7338,29 +7726,27 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: `Preparing ${formatTag}…`,
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       progress.setTitle(`Writing ${formatTag}…`);
 
-      const built = await build(baked);
+      const built = await build(items);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
@@ -7368,33 +7754,130 @@ async function main() {
     }
   }
 
-  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
-   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
-   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
-   *  builder, so the per-format API twins just supply the builder. */
-  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+  /** Split options shared by the console/AI multi-object exports. */
+  interface ApiExportSplitOpts {
+    /** Object name or id → 'whole' | 'pieces' | 'parts'. */
+    split?: Record<string, string>;
+    /** Items to leave out, by export name ("<object> · <item>"). */
+    exclude?: string[];
+    /** Bambu `plateLayout: 'custom'`: export name (an item, or a whole object's
+     *  name) → 1-based plate number. */
+    plates?: Record<string, number>;
+  }
+  type ApiExportOpts = { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> } & ApiExportSplitOpts;
+
+  /** Shape-check the split options before anything bakes. */
+  function checkApiSplitShape(fn: string, opts: ApiExportSplitOpts | undefined, customPlates: boolean): string | null {
+    if (!opts) return null;
+    const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+    if (opts.split !== undefined) {
+      if (!isObj(opts.split)) return `${fn}: split must be an object of object name or id → ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(' | ')}.`;
+      for (const [k, v] of Object.entries(opts.split)) {
+        if (!isExportSplitMode(v)) return `${fn}: split["${k}"] must be one of ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(', ')} (got ${JSON.stringify(v)}).`;
+      }
+    }
+    if (opts.exclude !== undefined && (!Array.isArray(opts.exclude) || opts.exclude.some(x => typeof x !== 'string' || !x))) {
+      return `${fn}: exclude must be an array of item names ("<object> · <item>", see listExportItems()).`;
+    }
+    if (opts.plates !== undefined) {
+      if (!customPlates) return `${fn}: plates needs { bambu: true, plateLayout: "custom" }.`;
+      if (!isObj(opts.plates)) return `${fn}: plates must be an object of item or object name → plate number.`;
+      for (const [k, v] of Object.entries(opts.plates)) {
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return `${fn}: plates["${k}"] must be a whole number ≥ 1 (got ${JSON.stringify(v)}).`;
+      }
+    }
+    return null;
+  }
+
+  /** Resolve the split options against the baked objects into the choice
+   *  buildExportItems reads. Strict: a mode an object can't use, or a name
+   *  that matches nothing, is an error (with the valid names). */
+  function resolveApiSplit(fn: string, baked: BakedExportObject[], session: ExportSplitSession, opts: ApiExportSplitOpts | undefined): { choice: ExportItemChoice } | { error: string } {
+    const choice: ExportItemChoice = {};
+    const lower = (x: string) => x.trim().toLowerCase();
+    if (opts?.split) {
+      const splits: Record<string, ExportSplitMode> = {};
+      for (const [want, mode] of Object.entries(opts.split)) {
+        const b = baked.find(x => x.id === want) ?? baked.find(x => lower(x.name) === lower(want));
+        if (!b) return { error: `${fn}: split names "${want}", which isn't one of the exported objects (${baked.map(x => `"${x.name}"`).join(', ')}).` };
+        const m = mode as ExportSplitMode;
+        if (m === 'whole') continue;
+        const a = session.analysisOf(b);
+        if (!splitItems(a, m)) {
+          const why = m === 'pieces'
+            ? (a.pieceCount < 2 ? `it is one solid piece` : `it has ${a.pieceCount} pieces, over the ${getConfig().renderer.exportMaxSplitItems}-item split limit`)
+            : 'its labelled parts don’t make two or more separable items';
+          return { error: `${fn}: object "${b.name}" can't split by ${m} — ${why}. Splits it supports: ${availableSplitModes(a).join(', ')}.` };
+        }
+        splits[b.id] = m;
+      }
+      choice.splits = splits;
+    }
+    // Every exported name → [object id, item key] (whole objects use their own name).
+    const names = new Map<string, [string, string]>();
+    for (const b of baked) {
+      const m = choice.splits?.[b.id];
+      const items = m ? splitItems(session.analysisOf(b), m) : null;
+      if (!items) { names.set(lower(b.name), [b.id, WHOLE_ITEM_KEY]); continue; }
+      for (const it of items) names.set(lower(splitItemName(b.name, it.name)), [b.id, it.key]);
+    }
+    const listed = () => [...names.keys()].slice(0, 20).map(n => `"${n}"`).join(', ') + (names.size > 20 ? ', …' : '');
+    if (opts?.exclude) {
+      const excluded: Record<string, string[]> = {};
+      for (const want of opts.exclude) {
+        const hit = names.get(lower(want));
+        if (!hit || hit[1] === WHOLE_ITEM_KEY) return { error: `${fn}: exclude names "${want}", which isn't an item of a split object. Items: ${listed()}.` };
+        (excluded[hit[0]] ??= []).push(hit[1]);
+      }
+      choice.excluded = excluded;
+    }
+    if (opts?.plates) {
+      const plates: Record<string, Record<string, number>> = {};
+      for (const [want, n] of Object.entries(opts.plates)) {
+        const hit = names.get(lower(want));
+        if (!hit) return { error: `${fn}: plates names "${want}", which isn't an exported item. Items: ${listed()}.` };
+        (plates[hit[0]] ??= {})[hit[1]] = n;
+      }
+      choice.plates = plates;
+    }
+    return { choice };
+  }
+
+  /** Console/AI core for the multi-object exports: validate the object ids
+   *  (default: all), bake each object's coloured mesh off-editor, and turn
+   *  them into the file's items per the split options. */
+  async function bakeItemsForExport(fn: string, partIds: string[] | undefined, opts: ApiExportSplitOpts | undefined): Promise<{ items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
     if (ids !== undefined) {
       if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'objectIds must be an array of object-id strings.' };
+        return { error: `${fn}(objectIds): objectIds must be an array of object-id strings.` };
       }
     } else {
       ids = allParts.map(p => p.id);
     }
-    const byId = new Map(allParts.map(p => [p.id, p]));
+    const known = new Set(allParts.map(p => p.id));
     // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `Unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name });
-    }
-    const { baked } = await bakePartsParallel(bakeParts);
+    for (const id of ids) if (!known.has(id)) return { error: `${fn}: unknown object id "${id}".` };
+    const session = createExportSplitSession();
+    const baked = (await Promise.all(ids.map(id => session.bake(id)))).filter((b): b is BakedExportObject => b !== null);
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    return { baked };
+    const r = resolveApiSplit(fn, baked, session, opts);
+    if ('error' in r) return r;
+    const items = buildExportItems(baked, session, r.choice);
+    if (items.length === 0) return { error: `${fn}: nothing left to export — every item was excluded.` };
+    return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0 };
   }
+
+  /** The result fields every multi-object export reports: `objects` counts
+   *  the session objects exported (as before splitting existed); a split adds
+   *  `items` (the names written, one per file object) and `itemCount`. */
+  const exportCounts = (r: { items: PartExport[]; baked: BakedExportObject[]; split: boolean }) => ({
+    objects: r.baked.length,
+    parts: r.baked.length,
+    ...(r.split ? { items: r.items.map(i => i.name), itemCount: r.items.length } : {}),
+  });
 
   /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
    *  (default: all) and DOWNLOADS the bundled file. */
@@ -7403,15 +7886,19 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}Objects`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     downloadBlob(built.blob, built.filename, formatTag);
-    return { ok: true as const, filename: built.filename, objects: r.baked.length, parts: r.baked.length };
+    return { ok: true as const, filename: built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
@@ -7421,21 +7908,55 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}ObjectsData`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     return {
       filename: built.filename,
       mimeType: built.mimeType,
       sizeBytes: built.blob.size,
       base64: await blobToBase64(built.blob),
-      objects: r.baked.length,
-      parts: r.baked.length,
+      ...exportCounts(r),
     };
+  }
+
+  /** What each object can split into for an export — the picker's Split
+   *  menu as data, so an agent can name items for `exclude` / `plates`. */
+  async function listExportItemsApi(partIds?: string[]): Promise<{ objects: Record<string, unknown>[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'listExportItems: no objects in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) return { error: 'listExportItems(objectIds): objectIds must be an array of object-id strings.' };
+      for (const id of ids) if (!allParts.some(p => p.id === id)) return { error: `listExportItems: unknown object id "${id}".` };
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const session = createExportSplitSession();
+    const baked = await Promise.all(ids.map(id => session.bake(id)));
+    const round = (v: [number, number, number]) => v.map(x => Math.round(x * 100) / 100);
+    const objects = ids.map((id, i) => {
+      const part = allParts.find(p => p.id === id)!;
+      const b = baked[i];
+      if (!b) return { id, name: part.name, error: 'no geometry' };
+      const a = session.analysisOf(b);
+      const list = (items: ReturnType<typeof splitItems>) => items?.map(it => ({
+        name: splitItemName(part.name, it.name), size: round(it.size), labels: it.labels, ...(it.fused ? { fused: true } : {}),
+      })) ?? null;
+      return {
+        id, name: part.name, size: round(a.size), pieceCount: a.pieceCount,
+        splits: availableSplitModes(a), pieces: list(a.pieces), parts: list(a.parts),
+      };
+    });
+    return { objects };
   }
 
   // Per-format builder bound to a custom filename, shared by the menu flow + API.
@@ -7452,7 +7973,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -7474,41 +7995,25 @@ async function main() {
     // validate it regardless of `bambu`.
     if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
       return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
-    const allParts = getState().parts;
-    if (allParts.length === 0) return { error: 'No objects in this session.' };
-    let ids = partIds;
-    if (ids !== undefined) {
-      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'export3MFObjects(objectIds): objectIds must be an array of object-id strings.' };
-      }
-    } else {
-      ids = allParts.map(p => p.id);
-    }
-    const byId = new Map(allParts.map(p => [p.id, p]));
-    // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
-    }
+    const shape = checkApiSplitShape('export3MFObjects', opts, bambu && opts?.plateLayout === 'custom');
+    if (shape) return { error: shape };
     // Validate the colour options before baking (no meshes → no merge computed).
     const colorOptsCheck = resolveApiColorRemap([], opts, 'export3MFObjects');
     if ('error' in colorOptsCheck) return colorOptsCheck;
-    const { baked } = await bakePartsParallel(bakeParts);
-    if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    const merge = resolveApiColorRemap(baked.map(b => b.mesh), opts, 'export3MFObjects');
+    const r = await bakeItemsForExport('export3MFObjects', partIds, opts);
+    if ('error' in r) return r;
+    const merge = resolveApiColorRemap(r.items.map(b => b.mesh), opts, 'export3MFObjects');
     if ('error' in merge) return merge;
     const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
+      const built = build3MFProject(r.items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
-      return { built, parts: baked.length };
+      return { built, items: r.items, baked: r.baked, split: r.split };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -7517,19 +8022,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, objects: r.parts, parts: r.parts };
+    return { ok: true as const, filename: r.built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -7539,8 +8044,7 @@ async function main() {
       mimeType: r.built.mimeType,
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
-      objects: r.parts,
-      parts: r.parts,
+      ...exportCounts(r),
     };
   }
 
@@ -7548,17 +8052,21 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    // Multi-part session → offer the part picker and emit a GENERIC multi-object
-    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // Multi-part session (or one object of several separate pieces, which the
+    // picker can split) → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Otherwise the original
     // single-object export.
-    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
-    try {
-      const mesh = fileExportMesh(true)!;
-      const remap = await chooseExportColors([mesh]);
-      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
-    }
-    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    const direct = async () => {
+      try {
+        const mesh = fileExportMesh(true)!;
+        const remap = await chooseExportColors([mesh]);
+        if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+        showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
+      }
+      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await export3MFMultiPartFlow(false, direct); return; }
+    await direct();
   };
   // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
   // Opens the part picker and bundles the chosen parts into one Bambu project
@@ -7694,11 +8202,13 @@ async function main() {
     }
 
     const sessionId = state.session!.id;
-    // Single-version, lean payload: no chat, no notes. Name the shared session
-    // after the current part when the session is multi-part so the preview reads
-    // sensibly (the share covers only the current part's current version).
+    // Single-version, lean payload: no chat, no notes, and only the current
+    // object (the preview and Fork read `versions[0]`, so the other objects'
+    // histories must not ride along). Name the shared session after the current
+    // part when the session is multi-part so the preview reads sensibly.
     const exported = await exportSession(sessionId, {
       versionIndices: [versionIndex],
+      onlyCurrentPart: true,
       includeChat: false,
       includeNotes: false,
     });
@@ -8024,6 +8534,26 @@ async function main() {
     return null;
   }
 
+  /** `targets` with each group made by an `api.groupParts` line replaced by
+   *  its members (recursively); the member names go into `members`. */
+  function expandGroupTargets(code: string, targets: ({ part: string } | { piece: number })[], members: Set<string>): ({ part: string } | { piece: number })[] {
+    const groups = new Map<string, string[]>();
+    for (const { op } of findPartOpLines(code)) if (op.kind === 'group') groups.set(op.as, op.parts);
+    if (groups.size === 0) return targets;
+    const out: ({ part: string } | { piece: number })[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, depth: number) => {
+      const inner = depth < 32 ? groups.get(name) : undefined;
+      if (inner) { for (const m of inner) { members.add(m); add(m, depth + 1); } return; }
+      if (!seen.has(name)) { seen.add(name); out.push({ part: name }); }
+    };
+    for (const t of targets) {
+      if ('part' in t) add(t.part, 0);
+      else out.push(t);
+    }
+    return out;
+  }
+
   /** Delete one part (an `api.label` / `label()` / `BREP.label` region, or a
    *  part detected on an import) or one piece (a separate solid) of the open
    *  object. Writes a removal line at the top of the code (`api.removePart` /
@@ -8065,6 +8595,19 @@ async function main() {
     const removed: string[] = [];
     const previousCode = getValue();
     let nextCode = previousCode;
+    // A group made in the Parts panel (api.groupParts) is deleted through its
+    // members: once they're all removed the engine drops the group too.
+    const members = new Set<string>();
+    if (lang === 'manifold-js') {
+      targets = expandGroupTargets(previousCode, targets, members);
+      // Copies and groups made from a part go with it — say so rather than
+      // dropping them silently; deleting them too (select them all) is fine.
+      const names = targets.flatMap(x => ('part' in x ? [x.part] : []));
+      const extra = derivedParts(previousCode, names).filter(n => !names.includes(n));
+      if (extra.length > 0) {
+        return { error: `${extra.map(n => `"${n}"`).join(', ')} ${extra.length === 1 ? 'was' : 'were'} made from ${names.length === 1 ? `"${names[0]}"` : 'these parts'} (a copy or group) and would go too — select ${extra.length === 1 ? 'it' : 'them'} as well to delete them together.` };
+      }
+    }
     const pieceTargets = targets.filter((x): x is { piece: number } => 'piece' in x);
     if (pieceTargets.length > 0 && summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
     if (pieceTargets.length > 0 && new Set(pieceTargets.map(x => x.piece)).size >= summary.pieces.length) {
@@ -8076,10 +8619,10 @@ async function main() {
       let what: string;
       if ('part' in target) {
         const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
-        if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
-        call = removePartCall(part.name, syntax);
+        if (!part && !members.has(target.part)) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
+        call = removePartCall(target.part, syntax);
         line = call;
-        what = `part "${part.name}"`;
+        what = `part "${target.part}"`;
       } else {
         const piece = summary.pieces.find(p => p.index === target.piece);
         if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
@@ -8123,6 +8666,416 @@ async function main() {
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
     };
+  }
+
+  // === Part edits (the Parts panel: arrange, copies, grouping) ===
+  // Each action writes `api.movePart(…)`-style lines into the code
+  // (src/editor/partOpCode.ts), runs, and saves a version; the engine applies
+  // them after the run (src/geometry/partOps.ts). The previous code is kept for
+  // the panel's Undo.
+
+  const PART_ACTIONS = ['grid', 'pack', 'bed', 'align', 'distribute', 'drop', 'center', 'snap', 'move', 'rotate', 'layFlat', 'mirror', 'scale', 'duplicate', 'array', 'gridArray', 'group', 'ungroup', 'rename', 'cut'] as const;
+  type PartActionOpts = {
+    parts?: string[];
+    axis?: 'x' | 'y' | 'z';
+    mode?: 'min' | 'center' | 'max';
+    gap?: number;
+    step?: number | Vec3;
+    offset?: Vec3;
+    degrees?: Vec3;
+    factor?: number | Vec3;
+    count?: number;
+    cols?: number;
+    rows?: number;
+    name?: string;
+    pattern?: string;
+    /** Internal (the Parts panel's arrow keys): hold the version save until
+     *  the keys go idle. */
+    nudge?: boolean;
+  };
+  type PartActionResult = { ok: true; message: string; parts: string[]; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string };
+
+  /** Undo stack of part edits: the code (and imports) before each one. */
+  type PaintRekey = { id: number; before: RegionDescriptor; after: RegionDescriptor; triangles: Set<number>; perTriColors: ReturnType<typeof getRegions>[number]['perTriColors'] };
+  const partEditUndo: { objectId: string; code: string; imports: ImportedMesh[]; label: string; after: string; rekeys?: PaintRekey[] }[] = [];
+
+  /** The parts an action applies to: `parts` when given, else every part of
+   *  the open object. (The Parts panel passes the user's selection; a UI
+   *  selection never narrows an API call on its own.) */
+  function partActionTargets(parts: string[] | undefined): string[] | { error: string } {
+    const summary = currentObjectPartsSummary();
+    if (!summary) return { error: 'No geometry loaded — run the code first.' };
+    const existing = summary.parts.filter(p => p.triangles.size > 0).map(p => p.name);
+    if (existing.length === 0) return { error: 'This object has no named parts. Import files as parts, detect parts, or wrap shapes in api.label(shape, "name").' };
+    if (parts) {
+      const missing = parts.filter(n => !existing.includes(n));
+      if (missing.length > 0) return { error: `No part named ${missing.map(n => `"${n}"`).join(', ')} — see listObjectParts().` };
+      return [...new Set(parts)];
+    }
+    return existing;
+  }
+
+  /** The parts' bounding boxes on the label mesh. */
+  function partBoxesOf(names: string[]): PartBox[] {
+    const summary = currentObjectPartsSummary()!;
+    const mesh = objectPartsMesh()!;
+    const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+    return names.map((name) => {
+      const tris = summary.parts.find(p => p.name === name)!.triangles;
+      const min: Vec3 = [Infinity, Infinity, Infinity];
+      const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+      for (const t of tris) {
+        for (let k = 0; k < 3; k++) {
+          const o = tv[t * 3 + k] * np;
+          for (let a = 0; a < 3; a++) {
+            const x = vp[o + a];
+            if (x < min[a]) min[a] = x;
+            if (x > max[a]) max[a] = x;
+          }
+        }
+      }
+      return { name, min, max };
+    });
+  }
+
+  /** Parts that share a solid with other geometry (so they can't move on
+   *  their own): some piece holds both their triangles and others. */
+  function jointParts(names: string[]): string[] {
+    const summary = currentObjectPartsSummary()!;
+    const out: string[] = [];
+    for (const name of names) {
+      const tris = summary.parts.find(p => p.name === name)!.triangles;
+      if (summary.pieces.length <= 1 && summary.parts.filter(p => p.triangles.size > 0).length > 1) { out.push(name); continue; }
+      for (const piece of summary.pieces) {
+        let inside = 0;
+        for (const t of piece.triangles) if (tris.has(t)) inside++;
+        if (inside > 0 && inside < piece.triangles.length) { out.push(name); break; }
+      }
+    }
+    return out;
+  }
+
+  /** A part name not yet used in the object (or by `taken`). */
+  function freshPartName(base: string, taken: Set<string>, start = 2): string {
+    const used = new Set([...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue()), ...taken]);
+    const stem = base.replace(/ \d+$/, '');
+    for (let n = start; ; n++) {
+      const name = `${stem} ${n}`;
+      if (!used.has(name)) { taken.add(name); return name; }
+    }
+  }
+
+  /** The mean footprint size of `boxes` times the arrange gap ratio. */
+  function arrangeGap(boxes: PartBox[], gap?: number): number {
+    if (gap !== undefined) return gap;
+    const mean = boxes.reduce((s, b) => s + ((b.max[0] - b.min[0]) + (b.max[1] - b.min[1])) / 2, 0) / Math.max(1, boxes.length);
+    return mean * getConfig().ui.partArrangeGapRatio;
+  }
+
+  /** Write `next` (code, and optionally imports) for the open object, run it,
+   *  and save a version labelled `label`. Restores the previous code when the
+   *  run fails. */
+  /** A part edit whose version save is held back (arrow-key nudges): saved
+   *  once the keys go idle, or before the next edit. */
+  let pendingPartSave: { objectId: string; label: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  async function flushPartSave(): Promise<void> {
+    const p = pendingPartSave;
+    if (!p) return;
+    pendingPartSave = null;
+    clearTimeout(p.timer);
+    // Switched away meanwhile: the switch already saved the object's edits.
+    if (getState().currentPart?.id === p.objectId) await saveCurrentVersion(p.label);
+  }
+
+  async function commitPartEdit(next: string, label: string, imports?: ImportedMesh[], extra: { rekeys?: PaintRekey[]; deferSave?: boolean } = {}): Promise<{ ok: true; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string }> {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (!extra.deferSave) await flushPartSave();
+    const objectId = getState().currentPart?.id;
+    if (!objectId) return { error: 'No object is open.' };
+    const previousCode = getValue();
+    const previousImports = getActiveImports();
+    if (next === previousCode && !imports) return { error: 'Nothing to change.' };
+    if (imports) setActiveImports(imports);
+    setValue(next);
+    const restore = async (why: string) => {
+      setActiveImports(previousImports);
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `${why} The code was restored.` };
+    };
+    if (!(await runCodeSync(next))) return restore(runFailedMessage());
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') return restore(`That didn't work: ${geo.error ?? 'run error'}.`);
+    const last = partEditUndo[partEditUndo.length - 1];
+    if (extra.deferSave && pendingPartSave?.objectId === objectId && last?.objectId === objectId && last.label === label && last.after === previousCode) {
+      // The same burst of nudges: one undo step and one version for all of it.
+      last.after = next;
+    } else {
+      partEditUndo.push({ objectId, code: previousCode, imports: previousImports, label, after: next, ...(extra.rekeys ? { rekeys: extra.rekeys } : {}) });
+      if (partEditUndo.length > getConfig().ui.partEditUndoDepth) partEditUndo.shift();
+    }
+    if (extra.deferSave) {
+      if (pendingPartSave) clearTimeout(pendingPartSave.timer);
+      pendingPartSave = { objectId, label, timer: setTimeout(() => { void flushPartSave(); }, getConfig().ui.partNudgeSaveDelayMs) };
+      refreshPartsPanel();
+      return { ok: true };
+    }
+    const saved = await saveCurrentVersion(label, imports ? { importedMeshes: imports } : {});
+    refreshPartsPanel();
+    return {
+      ok: true,
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+    };
+  }
+
+  /** Undo the open object's last part edit (its code before it). Refused when
+   *  the code changed since (a hand edit, the AI, another tool) — putting the
+   *  old code back would throw that away; the version history still can. */
+  async function undoPartEdit(): Promise<{ ok: true; undone: string } | { error: string }> {
+    const objectId = getState().currentPart?.id;
+    const i = partEditUndo.map(u => u.objectId).lastIndexOf(objectId ?? '');
+    if (!objectId || i < 0) return { error: 'No part edit to undo in this object.' };
+    await flushPartSave();
+    const entry = partEditUndo[i];
+    if (getValue() !== entry.after) return { error: `The code changed since “${entry.label}”, so Undo would lose that change — go back with the version history (Versions) instead.` };
+    partEditUndo.splice(i, 1);
+    for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
+    const r = await commitPartEdit(entry.code, `Undo ${entry.label}`, entry.imports);
+    if ('error' in r) {
+      for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.after, k.triangles, k.perTriColors);
+      partEditUndo.splice(i, 0, entry);
+      return r;
+    }
+    // commitPartEdit pushed the undone state; an undo isn't itself undoable here.
+    partEditUndo.pop();
+    return { ok: true, undone: entry.label };
+  }
+
+  /** Rename part `from` → `to` everywhere it is named: its label in the code,
+   *  the part-edit lines, and an import's committed parts. */
+  function renamePartEverywhere(code: string, imports: ImportedMesh[], from: string, to: string): { code: string; imports: ImportedMesh[]; importsChanged: boolean; found: boolean } {
+    const labelled = renameLabelInCode(code, from, to);
+    const next = renamePartInOps(labelled.code, from, to);
+    const importsChanged = imports.some(m => m.parts?.names.includes(from));
+    const nextImports = importsChanged
+      ? imports.map(m => (m.parts?.names.includes(from) ? { ...m, parts: { ...m.parts, names: m.parts.names.map(n => (n === from ? to : n)) } } : m))
+      : imports;
+    return { code: next, imports: nextImports, importsChanged, found: labelled.count > 0 || next !== labelled.code || importsChanged };
+  }
+
+  /** The Parts panel's actions — `partwright.partAction(action, opts)`. */
+  async function runPartAction(action: string, opts: PartActionOpts = {}): Promise<PartActionResult> {
+    if (getActiveLanguage() !== 'manifold-js') {
+      return { error: `Part edits are written as JavaScript (api.movePart & co.), so they work on JS objects — this one is ${getActiveLanguage()}.` };
+    }
+    const targets = partActionTargets(opts.parts);
+    if ('error' in targets) return targets;
+    const code = getValue();
+    const what = targets.length === 1 ? `"${targets[0]}"` : `${targets.length} parts`;
+    const needFree = (verb: string): { error: string } | null => {
+      const joint = jointParts(targets);
+      return joint.length > 0
+        ? { error: `Can't ${verb} ${joint.map(n => `"${n}"`).join(', ')}: ${joint.length === 1 ? 'it is' : 'they are'} joined to other geometry, so ${joint.length === 1 ? 'it' : 'they'} can't move on ${joint.length === 1 ? 'its' : 'their'} own — only parts that are separate solids can. Move ${joint.length === 1 ? 'it' : 'them'} in the code instead.` }
+        : null;
+    };
+    const moves = (map: Map<string, Vec3>): PartOp[] => [...map].filter(([, d]) => d.some(v => Math.abs(v) > 1e-9)).map(([part, offset]) => ({ kind: 'move', part, offset }));
+    const finish = async (ops: PartOp[], label: string, message: string, next = addPartOps(code, ops), imports?: ImportedMesh[], rekeys?: PaintRekey[]): Promise<PartActionResult> => {
+      if (ops.length === 0 && next === code && !imports) return { ok: true, message: `${message} — already in place.`, parts: targets };
+      const r = await commitPartEdit(next, label, imports, { rekeys, deferSave: opts.nudge === true });
+      return 'error' in r ? r : { ...r, message, parts: targets };
+    };
+    const boxes = () => partBoxesOf(targets);
+    const axisOf = (): 'x' | 'y' | 'z' | { error: string } => (opts.axis === 'x' || opts.axis === 'y' || opts.axis === 'z' ? opts.axis : { error: `${action} needs axis 'x', 'y' or 'z'.` });
+
+    switch (action) {
+      case 'grid': case 'pack': case 'bed': {
+        const blocked = needFree('arrange'); if (blocked) return blocked;
+        const b = boxes();
+        const gap = arrangeGap(b, opts.gap);
+        if (action === 'grid') return finish(moves(gridLayout(b, { gap })), 'Arrange parts in a grid', `Arranged ${what} in a grid`);
+        if (action === 'pack') return finish(moves(packLayout(b, { gap })), 'Pack parts', `Packed ${what}`);
+        const bed = loadPrinterSettings().bed;
+        const laid = bedLayout(b, { gap, bed: [bed[0], bed[1]] });
+        const ops: PartOp[] = [
+          ...laid.rotateToFit.map((part): PartOp => ({ kind: 'rotate', part, degrees: [0, 0, 90] })),
+          ...moves(laid.moves),
+        ];
+        const notes = [laid.plates > 1 ? `${laid.plates} plates` : 'one plate', ...(laid.tooBig.length > 0 ? [`${laid.tooBig.map(n => `"${n}"`).join(', ')} won't fit the ${bed[0]}×${bed[1]} bed`] : [])];
+        return finish(ops, 'Pack parts onto the bed', `Packed ${what} onto the bed (${notes.join('; ')})`);
+      }
+      case 'align': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        const mode = opts.mode ?? 'center';
+        if (mode !== 'min' && mode !== 'center' && mode !== 'max') return { error: "align needs mode 'min', 'center' or 'max'." };
+        if (targets.length < 2) return { error: 'Select 2 or more parts to align them.' };
+        const blocked = needFree('align'); if (blocked) return blocked;
+        return finish(moves(alignLayout(boxes(), axis, mode)), `Align parts ${mode} ${axis}`, `Aligned ${what} (${axis} ${mode})`);
+      }
+      case 'distribute': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        if (targets.length < 3) return { error: 'Select 3 or more parts to distribute them.' };
+        const blocked = needFree('distribute'); if (blocked) return blocked;
+        return finish(moves(distributeLayout(boxes(), axis)), `Distribute parts along ${axis}`, `Spaced ${what} evenly along ${axis}`);
+      }
+      case 'drop': {
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(dropToPlate(boxes())), 'Drop parts to the plate', `Dropped ${what} onto the plate`);
+      }
+      case 'center': {
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(centerOnOrigin(boxes())), 'Centre parts on the origin', `Centred ${what} on the origin`);
+      }
+      case 'snap': {
+        const step = typeof opts.step === 'number' ? opts.step : getConfig().ui.partSnapStep;
+        if (!(step > 0)) return { error: 'snap needs a step greater than 0.' };
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(snapToGrid(boxes(), step)), `Snap parts to a ${step} grid`, `Snapped ${what} to a ${step} grid`);
+      }
+      case 'move': {
+        const off = opts.offset;
+        if (!off || off.length !== 3 || off.some(v => !Number.isFinite(v))) return { error: 'move needs offset [x, y, z].' };
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'move', part, offset: off })), 'Move parts', `Moved ${what} by [${off.join(', ')}]`);
+      }
+      case 'rotate': {
+        const deg = opts.degrees;
+        if (!deg || deg.length !== 3 || deg.some(v => !Number.isFinite(v))) return { error: 'rotate needs degrees [x, y, z].' };
+        const blocked = needFree('rotate'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'rotate', part, degrees: deg })), 'Rotate parts', `Turned ${what}`);
+      }
+      case 'layFlat': {
+        const blocked = needFree('lay flat'); if (blocked) return blocked;
+        const summary = currentObjectPartsSummary()!;
+        const mesh = objectPartsMesh()!;
+        const positions = xyzPositions(mesh.vertProperties, mesh.numProp);
+        const ops: PartOp[] = [];
+        for (const part of targets) {
+          const tris = summary.parts.find(p => p.name === part)!.triangles;
+          const deg = layFlatRotation(positions, mesh.triVerts, [...tris]);
+          if (deg.some(v => Math.abs(v) > 1e-6)) ops.push({ kind: 'rotate', part, degrees: deg });
+          // Drop it onto the plate in its new orientation.
+          const dz = -rotatedMinZ(positions, mesh.triVerts, tris, deg);
+          if (Math.abs(dz) > 1e-6) ops.push({ kind: 'move', part, offset: [0, 0, dz] });
+        }
+        return finish(ops, 'Lay parts flat', `Laid ${what} flat on ${targets.length === 1 ? 'its' : 'their'} largest face`);
+      }
+      case 'mirror': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        const blocked = needFree('mirror'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'mirror', part, axis })), `Mirror parts in ${axis}`, `Mirrored ${what} in ${axis}`);
+      }
+      case 'scale': {
+        const f = typeof opts.factor === 'number' ? [opts.factor, opts.factor, opts.factor] as Vec3 : opts.factor;
+        if (!f || f.length !== 3 || f.some(v => !(v > 0) || !Number.isFinite(v))) return { error: 'scale needs a factor > 0 (a number, or [x, y, z]).' };
+        const blocked = needFree('scale'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'scale', part, factor: f })), 'Scale parts', `Scaled ${what} by ${f[0] === f[1] && f[1] === f[2] ? f[0] : `[${f.join(', ')}]`}`);
+      }
+      case 'duplicate': case 'array': case 'gridArray': {
+        const blocked = needFree('copy'); if (blocked) return blocked;
+        const b = boxes();
+        const taken = new Set<string>();
+        const ops: PartOp[] = [];
+        const made: string[] = [];
+        // A duplicate goes into free space, clear of every part and earlier copy.
+        const obstacles = partBoxesOf(currentObjectPartsSummary()!.parts.filter(p => p.triangles.size > 0).map(p => p.name));
+        for (const box of b) {
+          const w = box.max[0] - box.min[0], d = box.max[1] - box.min[1];
+          const gap = arrangeGap([box], opts.gap);
+          let offsets: Vec3[];
+          if (action === 'duplicate') {
+            const off = opts.offset ?? freeOffset(box, obstacles, gap);
+            offsets = [off];
+            obstacles.push({ name: '', min: [box.min[0] + off[0], box.min[1] + off[1], box.min[2] + off[2]], max: [box.max[0] + off[0], box.max[1] + off[1], box.max[2] + off[2]] });
+          } else if (action === 'array') {
+            const count = opts.count ?? 3;
+            if (!Number.isInteger(count) || count < 2) return { error: 'array needs count ≥ 2 (copies in total, the original included).' };
+            const step = Array.isArray(opts.step) ? opts.step : [w + gap, 0, 0] as Vec3;
+            offsets = arrayOffsets(count - 1, step);
+          } else {
+            const cols = opts.cols ?? 2, rows = opts.rows ?? 2;
+            if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols * rows < 2) return { error: 'gridArray needs whole cols and rows making 2+ cells.' };
+            const step: [number, number] = Array.isArray(opts.step) ? [opts.step[0], opts.step[1]] : [w + gap, d + gap];
+            offsets = gridArrayOffsets(cols, rows, step);
+          }
+          const max = getConfig().ui.partMaxCopies;
+          if (made.length + offsets.length > max) return { error: `That makes more than ${max} copies (Advanced settings → UI → Max part copies).` };
+          for (const offset of offsets) {
+            const as = freshPartName(box.name, taken);
+            ops.push({ kind: 'copy', part: box.name, as, offset });
+            made.push(as);
+          }
+        }
+        return finish(ops, action === 'duplicate' ? 'Duplicate parts' : 'Array parts', `Made ${made.length} cop${made.length === 1 ? 'y' : 'ies'} of ${what}`);
+      }
+      case 'group': {
+        if (targets.length < 2) return { error: 'Select 2 or more parts to group them.' };
+        const name = opts.name?.trim() || freshPartName('Group', new Set(), 1);
+        if (!targets.includes(name) && (currentObjectPartsSummary()!.parts.some(p => p.name === name) || reservedPartNames(code).has(name))) return { error: `The name "${name}" is taken (a part, or one the code deletes or creates) — pick another.` };
+        // The members' own labels give way to the group's: paint, colours and
+        // texture scopes keyed to a member stop matching.
+        const keyed = targets.filter(n => getRegions().some(r => descriptorPartLabel(r.descriptor) === n));
+        const note = keyed.length > 0 ? ` — paint on ${keyed.map(n => `"${n}"`).join(', ')} now shows under Unmatched paint (reassign it to "${name}")` : '';
+        const r = await finish([{ kind: 'group', parts: targets, as: name }], `Group parts as ${name}`, `Grouped ${what} as "${name}"${note}`);
+        if ('ok' in r) selectObjectParts([`part:${name}`]);
+        return r;
+      }
+      case 'ungroup': {
+        const groups = targets.filter(n => findPartOpLines(code).some(x => x.op.kind === 'group' && x.op.as === n));
+        if (groups.length === 0) return { error: `${what} ${targets.length === 1 ? 'isn’t a group' : 'aren’t groups'} made in the Parts panel (api.groupParts).` };
+        let next = code;
+        for (const g of groups) {
+          const r = ungroupInCode(next, g);
+          if (r && typeof r === 'object') return r;
+          if (typeof r === 'string') next = r;
+        }
+        return finish([], 'Ungroup parts', `Ungrouped ${groups.map(n => `"${n}"`).join(', ')}`, next);
+      }
+      case 'rename': {
+        const pattern = opts.pattern?.trim();
+        if (!pattern) return { error: "rename needs a pattern, e.g. 'bracket {n}' ({n} = 1, 2, 3…; without {n} a number is appended)." };
+        const names = targets.map((_, i) => (pattern.includes('{n}') ? pattern.split('{n}').join(String(i + 1)) : targets.length === 1 ? pattern : `${pattern} ${i + 1}`));
+        if (new Set(names).size !== names.length) return { error: 'The pattern gives two parts the same name — add {n}.' };
+        const others = [...currentObjectPartsSummary()!.parts.map(p => p.name), ...reservedPartNames(code)].filter(n => !targets.includes(n));
+        const clash = names.find(n => others.includes(n));
+        if (clash) return { error: `There's already a part named "${clash}".` };
+        // Through temporary names, so a → b, b → c can't collide midway.
+        let next = code;
+        let imports = getActiveImports();
+        let importsChanged = false;
+        const tmp = targets.map((_, i) => `\u0000rename${i}`);
+        for (const [from, to] of [...targets.map((n, i) => [n, tmp[i]]), ...tmp.map((n, i) => [n, names[i]])]) {
+          const r = renamePartEverywhere(next, imports, from, to);
+          if (!r.found && !from.startsWith('\u0000')) return { error: `Couldn't find "${from}" by name in the code or the import — it may be built dynamically. Rename it in the code.` };
+          next = r.code;
+          imports = r.imports;
+          importsChanged ||= r.importsChanged;
+        }
+        // Paint keyed to a part follows its new name (put back if the run fails).
+        const rekeyed: PaintRekey[] = [];
+        targets.forEach((from, i) => {
+          for (const reg of getRegions()) {
+            const d = reg.descriptor;
+            if (descriptorPartLabel(d) !== from) continue;
+            const nd: RegionDescriptor = d.kind === 'byLabel' ? { ...d, label: names[i] } : { ...d, withinPart: names[i] };
+            rekeyed.push({ id: reg.id, before: d, after: nd, triangles: reg.triangles, perTriColors: reg.perTriColors });
+            setRegionDescriptor(reg.id, nd, reg.triangles, reg.perTriColors);
+          }
+        });
+        const r = await finish([], 'Rename parts', `Renamed ${what}`, next, importsChanged ? imports : undefined, rekeyed);
+        if ('ok' in r) selectObjectParts(names.map(n => `part:${n}`));
+        else for (const k of rekeyed) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
+        return r;
+      }
+      case 'cut': {
+        if (targets.length !== 1) return { error: 'Select exactly one part to cut with — it is subtracted from the rest of the object.' };
+        const blocked = needFree('cut with'); if (blocked) return blocked;
+        return finish([{ kind: 'cut', part: targets[0] }], `Cut with ${targets[0]}`, `Cut the rest of the object with "${targets[0]}"`);
+      }
+      default:
+        return { error: `Unknown part action "${action}". Actions: grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut.` };
+    }
   }
 
   // === Recover deleted ===
@@ -8514,6 +9467,8 @@ async function main() {
   // Engine-sandbox status pill: persistent while the sandbox is unavailable
   // (model code blocked — fail closed) or bypassed for this tab.
   mountEngineSandboxPill(viewportPane);
+  modelConsolePanel = createModelConsolePanel();
+  viewportPane.appendChild(modelConsolePanel.el);
 
   // Fast-preview pill — shown while the viewport is displaying the rough coarse
   // pass of a slow SDF model (figures) and the full-quality render is still
@@ -8631,6 +9586,145 @@ async function main() {
   surfaceReapplyEl.addEventListener('click', () => { void reapplySurfaceTextures(); });
   viewportPane.appendChild(surfaceReapplyEl);
 
+  // The open object's parts/pieces actions (the object list's part rows and
+  // the Parts panel). Each goes through the same window.partwright method an
+  // agent would call (UI ↔ API parity); failures surface as a toast.
+  const objectPartsActions: ObjectPartsActions = {
+    getView: () => currentObjectPartsView(),
+    getSelectedKeys: () => getSelectedPartKeys(),
+    getIsolatedKey: () => isolatedPartKey,
+    select: (key, opts) => {
+      const r = key !== null && opts?.extend ? toggleObjectPartInSelection(key) : selectObjectPart(key);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    selectKeys: (keys) => {
+      const r = selectObjectParts(keys);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    isolate: (keys) => {
+      const r = isolateObjectParts(keys);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    info: (key) => objectPartInfo(key),
+    setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
+    resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
+    goToCode: (name) => { railResult(partwrightAPI.goToObjectPart(name)); },
+    renamePart: async (name, next) => {
+      if (isReadOnlyViewer()) return;
+      if (railResult(await partwrightAPI.renameObjectPart(name, next))) showToast(`Renamed part "${name}" → "${next}"`, { variant: 'success' });
+    },
+    bakePartColor: async (name) => {
+      if (isReadOnlyViewer()) return;
+      if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
+    },
+    editWithAI: (keys) => {
+      if (partSelectionSignature(getSelectedPartKeys()) !== partSelectionSignature(keys)) selectObjectParts(keys);
+      prefillAiInput(`Change ${describePartKeys(keys)}: `);
+    },
+    canArrange: (name) => {
+      // Parsed from the code; cached per code string (the drawer redraws on
+      // every mesh update).
+      const code = getValue();
+      if (arrangeNamesCache?.code !== code) {
+        let names: string[] = [];
+        try { names = apiListParts().map(p => p.name); } catch { /* unparseable code → nothing arrangeable */ }
+        arrangeNamesCache = { code, names };
+      }
+      return arrangeNamesCache.names.includes(name);
+    },
+    arrange: (name) => {
+      const r = apiEnterArrange();
+      if (!r.ok) { showToast(r.reason ?? 'Arrange mode isn’t available for this object.', { variant: 'warn' }); return; }
+      apiSetSelection([name]);
+    },
+    extractPiece: async (index) => {
+      if (isReadOnlyViewer()) return;
+      if (!(await confirmDialog(`Move piece ${index + 1} into its own new object? Both objects get a piece filter around their code — the original's version history keeps the unfiltered code.`, { title: 'Extract piece', confirmLabel: 'Extract' }))) return;
+      const r = await partwrightAPI.extractObjectPiece(index);
+      if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
+    },
+    moveSelection: async (keys, separate) => {
+      if (isReadOnlyViewer()) return;
+      const what = describePartKeys(keys);
+      const many = separate && keys.length > 1;
+      const ok = await confirmDialog(many
+        ? `Split ${what} into ${keys.length} new objects, one each? The original's code is rewritten to leave them out — its version history keeps the code as it is now.`
+        : `Move ${what} into a new object? The original's code is rewritten to leave ${keys.length > 1 ? 'them' : 'it'} out — its version history keeps the code as it is now.`,
+      { title: many ? 'Split into objects' : 'Move to new object', confirmLabel: many ? 'Split' : 'Move' });
+      if (!ok) return;
+      const r = await moveObjectSelection(keys, separate, many ? 'Split into objects' : 'Move to new object');
+      if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+      showToast(r.objects.length === 1 ? `Moved ${what} to "${r.objects[0].name}"` : `Split ${what} into ${r.objects.length} objects`, { variant: 'success' });
+    },
+    hideMany: (keys) => { railResult(partwrightAPI.setObjectPartHidden(keys.map(k => (k.startsWith('part:') ? k.slice(5) : { piece: Number(k.slice(6)) })), true)); },
+    deleteMany: async (keys) => {
+      const targets = keys.map(k => (k.startsWith('part:') ? { part: k.slice(5) } : { piece: Number(k.slice(6)) }));
+      selectObjectPart(null);
+      const objectId = getState().currentPart?.id;
+      const r = await deleteObjectPartsOrPieces(targets);
+      if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+      showToast(`Deleted ${describePartKeys(keys)} — added ${r.calls.length} removal lines to the code.`, {
+        variant: 'success',
+        action: {
+          label: 'Undo',
+          run: () => {
+            void restoreObjectPartsOrPieces(r.calls, objectId).then((u) => {
+              if ('error' in u) showToast(u.error, { variant: 'warn' });
+            });
+          },
+        },
+      });
+    },
+    exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
+    setHidden: (key, hide) => {
+      const r = setObjectPartHidden(key, hide);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    getDelete: (key) => (isReadOnlyViewer() || isSharedPreview()
+      ? { show: false }
+      : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
+    deletePart: async (key) => {
+      if (getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
+      const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+      const objectId = getState().currentPart?.id;
+      const r = await deleteObjectPartOrPiece(target);
+      if ('error' in r) showToast(r.error, { variant: 'warn' });
+      else {
+        showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
+          variant: 'success',
+          action: {
+            label: 'Undo',
+            run: () => {
+              void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
+                if ('error' in u) showToast(u.error, { variant: 'warn' });
+              });
+            },
+          },
+        });
+      }
+    },
+    reassignPaint: (regionId, label) => { railResult(partwrightAPI.reassignPaint(regionId, label)); },
+    keepPaint: (regionId) => { railResult(partwrightAPI.keepUnmatchedPaint(regionId)); },
+    deletePaint: (regionId) => { removeRegion(regionId); refreshObjectParts(); },
+    acceptRename: (from, to) => {
+      for (const r of getRegions().filter(x => descriptorPartLabel(x.descriptor) === from)) partwrightAPI.reassignPaint(r.id, to);
+      renameSuggestions = renameSuggestions.filter(s => s.from !== from);
+      refreshObjectParts();
+    },
+    openPartsPanel: () => openPartsPanel(),
+  };
+  initPartsPanel({
+    parts: objectPartsActions,
+    run: (action, opts) => runPartAction(action, opts as PartActionOpts),
+    undo: () => undoPartEdit(),
+    canUndo: () => partEditUndo.some(u => u.objectId === getState().currentPart?.id),
+    canEditParts: () => getActiveLanguage() === 'manifold-js' && !isReadOnlyViewer() && !isSharedPreview(),
+    groups: () => new Set(findPartOpLines(getValue()).flatMap(x => (x.op.kind === 'group' ? [x.op.as] : []))),
+    nudgeStep: () => getConfig().ui.partNudgeStep,
+    snapStep: () => getConfig().ui.partSnapStep,
+    suggestGroupName: () => freshPartName('Group', new Set(), 1),
+  });
+
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: (partId: string) => {
@@ -8706,125 +9800,7 @@ async function main() {
     // The open object's parts/pieces section. Each action goes through the
     // same window.partwright method an agent would call (UI ↔ API parity);
     // failures surface as a toast.
-    objectParts: {
-      getView: () => currentObjectPartsView(),
-      getSelectedKeys: () => getSelectedPartKeys(),
-      getIsolatedKey: () => isolatedPartKey,
-      select: (key, opts) => {
-        const r = key !== null && opts?.extend ? toggleObjectPartInSelection(key) : selectObjectPart(key);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      isolate: (keys) => {
-        const r = isolateObjectParts(keys);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      info: (key) => objectPartInfo(key),
-      setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
-      resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
-      goToCode: (name) => { railResult(partwrightAPI.goToObjectPart(name)); },
-      renamePart: async (name, next) => {
-        if (isReadOnlyViewer()) return;
-        if (railResult(await partwrightAPI.renameObjectPart(name, next))) showToast(`Renamed part "${name}" → "${next}"`, { variant: 'success' });
-      },
-      bakePartColor: async (name) => {
-        if (isReadOnlyViewer()) return;
-        if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
-      },
-      editWithAI: (keys) => {
-        if (partSelectionSignature(getSelectedPartKeys()) !== partSelectionSignature(keys)) selectObjectParts(keys);
-        prefillAiInput(`Change ${describePartKeys(keys)}: `);
-      },
-      canArrange: (name) => {
-        // Parsed from the code; cached per code string (the drawer redraws on
-        // every mesh update).
-        const code = getValue();
-        if (arrangeNamesCache?.code !== code) {
-          let names: string[] = [];
-          try { names = apiListParts().map(p => p.name); } catch { /* unparseable code → nothing arrangeable */ }
-          arrangeNamesCache = { code, names };
-        }
-        return arrangeNamesCache.names.includes(name);
-      },
-      arrange: (name) => {
-        const r = apiEnterArrange();
-        if (!r.ok) { showToast(r.reason ?? 'Arrange mode isn’t available for this object.', { variant: 'warn' }); return; }
-        apiSetSelection([name]);
-      },
-      extractPiece: async (index) => {
-        if (isReadOnlyViewer()) return;
-        if (!(await confirmDialog(`Move piece ${index + 1} into its own new object? Both objects get a piece filter around their code — the original's version history keeps the unfiltered code.`, { title: 'Extract piece', confirmLabel: 'Extract' }))) return;
-        const r = await partwrightAPI.extractObjectPiece(index);
-        if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
-      },
-      moveSelection: async (keys, separate) => {
-        if (isReadOnlyViewer()) return;
-        const what = describePartKeys(keys);
-        const many = separate && keys.length > 1;
-        const ok = await confirmDialog(many
-          ? `Split ${what} into ${keys.length} new objects, one each? The original's code is rewritten to leave them out — its version history keeps the code as it is now.`
-          : `Move ${what} into a new object? The original's code is rewritten to leave ${keys.length > 1 ? 'them' : 'it'} out — its version history keeps the code as it is now.`,
-        { title: many ? 'Split into objects' : 'Move to new object', confirmLabel: many ? 'Split' : 'Move' });
-        if (!ok) return;
-        const r = await moveObjectSelection(keys, separate, many ? 'Split into objects' : 'Move to new object');
-        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
-        showToast(r.objects.length === 1 ? `Moved ${what} to "${r.objects[0].name}"` : `Split ${what} into ${r.objects.length} objects`, { variant: 'success' });
-      },
-      hideMany: (keys) => { railResult(partwrightAPI.setObjectPartHidden(keys.map(k => (k.startsWith('part:') ? k.slice(5) : { piece: Number(k.slice(6)) })), true)); },
-      deleteMany: async (keys) => {
-        const targets = keys.map(k => (k.startsWith('part:') ? { part: k.slice(5) } : { piece: Number(k.slice(6)) }));
-        selectObjectPart(null);
-        const objectId = getState().currentPart?.id;
-        const r = await deleteObjectPartsOrPieces(targets);
-        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
-        showToast(`Deleted ${describePartKeys(keys)} — added ${r.calls.length} removal lines to the code.`, {
-          variant: 'success',
-          action: {
-            label: 'Undo',
-            run: () => {
-              void restoreObjectPartsOrPieces(r.calls, objectId).then((u) => {
-                if ('error' in u) showToast(u.error, { variant: 'warn' });
-              });
-            },
-          },
-        });
-      },
-      exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
-      setHidden: (key, hide) => {
-        const r = setObjectPartHidden(key, hide);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      getDelete: (key) => (isReadOnlyViewer() || isSharedPreview()
-        ? { show: false }
-        : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
-      deletePart: async (key) => {
-        if (getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
-        const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
-        const objectId = getState().currentPart?.id;
-        const r = await deleteObjectPartOrPiece(target);
-        if ('error' in r) showToast(r.error, { variant: 'warn' });
-        else {
-          showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
-            variant: 'success',
-            action: {
-              label: 'Undo',
-              run: () => {
-                void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
-                  if ('error' in u) showToast(u.error, { variant: 'warn' });
-                });
-              },
-            },
-          });
-        }
-      },
-      reassignPaint: (regionId, label) => { railResult(partwrightAPI.reassignPaint(regionId, label)); },
-      keepPaint: (regionId) => { railResult(partwrightAPI.keepUnmatchedPaint(regionId)); },
-      deletePaint: (regionId) => { removeRegion(regionId); refreshObjectParts(); },
-      acceptRename: (from, to) => {
-        for (const r of getRegions().filter(x => descriptorPartLabel(x.descriptor) === from)) partwrightAPI.reassignPaint(r.id, to);
-        renameSuggestions = renameSuggestions.filter(s => s.from !== from);
-        refreshObjectParts();
-      },
-    },
+    objectParts: objectPartsActions,
     onReorderParts: async (layout) => {
       if (isReadOnlyViewer()) return;
       await reorderParts(layout);
@@ -9189,21 +10165,12 @@ async function main() {
 
   // Init session list
   initSessionList(
-    async (code: string) => {
-      // Restore the engine to the loaded version's language. The opened
-      // session's current-version pointer was just refreshed by openSession,
-      // so currentVersion.language (with session-level fallback) is the
-      // right signal here — not session.language alone, which would miss
-      // mixed-language sessions where the active version uses the other
-      // engine.
-      const st = getState();
-      const versionLang = effectiveVersionLanguage(st.currentVersion, st.session);
-      if (versionLang !== getActiveLanguage()) {
-        await switchLanguage(versionLang);
-      }
-      setValue(code);
-      runCode(code);
-    },
+    // The full version load (language, imports, params, paint, annotations),
+    // the same path the URL router uses — so the outgoing session's paint and
+    // annotations never carry over into the one just opened.
+    // `switchedSession`: the editor buffer still holds the outgoing session,
+    // so it must not be stashed as a draft of the opened one.
+    (version, switchedSession) => loadPartIntoEditor(version, { skipDraftSave: switchedSession }),
     async (code: string, importedMeshes) => {
       // Seed this version's imported meshes so `api.imports[0]` resolves to its
       // own geometry when the thumbnail is regenerated (else a stale capture).
@@ -9378,6 +10345,8 @@ async function main() {
       syncParamsPanel(cachedEntry.paramsSchema);
       // The grid behind a cached voxel mesh (null for other engines).
       lastVoxelRun = cachedEntry.voxelRun;
+      lastRunLogs = cachedEntry.logs;
+      modelConsolePanel?.setLogs(cachedEntry.logs);
       // Show the geometry; colours (model underlay + any user paint) are applied
       // by the single rehydrateColorRegions pass below, which both load branches
       // share — so this branch no longer hand-rolls its own colour stamp (the
@@ -9469,7 +10438,14 @@ async function main() {
         // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
         // _runGeneration past the one our call started): that newer run owns the
         // store and must not be clobbered with this version's descriptors.
-        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        if (_runGeneration === genBeforeRun + 1) {
+          stageUnresolvedColorRegions(version.geometryData);
+          // Annotations and attachments don't need the mesh — apply them, or a
+          // cancelled render of a newly opened session keeps the previous
+          // session's live (and a later save/attach would persist them here).
+          applyVersionAnnotations(version);
+        }
+        await restoreAttachmentsForActiveSession();
         return;
       }
       // Store the freshly compiled result so the next switch back is instant.
@@ -9484,6 +10460,7 @@ async function main() {
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
           manifoldFacts: manifoldFactsFor(currentMeshData),
+          logs: lastRunLogs,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -10147,7 +11124,9 @@ async function main() {
       if (needsSessionLoad || needsPartLoad || needsVersionLoad) {
         const version = await openSession(sessionId, versionIndex ?? undefined, partId ?? undefined);
         if (version) {
-          await loadVersionIntoEditor(version);
+          // A session switch (e.g. Back from B to A): the buffer is the other
+          // session's, so it must not be stashed as this one's language draft.
+          await loadVersionIntoEditor(version, { skipDraftSave: needsSessionLoad });
           // restoreDraftIfNewer self-gates: it only acts when this is the
           // latest version (the tip the user edits), not an older one they
           // navigated back to.
@@ -10855,6 +11834,9 @@ async function main() {
     resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
+    // Not the output of a code run, so no run's console output describes it.
+    lastRunLogs = undefined;
+    modelConsolePanel?.setLogs(undefined);
     releaseCurrentManifold();
     const mod = getModule();
     const facts = prebuilt.facts ?? (mesh === simplifyBaselineMesh ? simplifyBaselineFacts : null);
@@ -11539,6 +12521,7 @@ async function main() {
     exports: {
       canExport: () => currentMeshData !== null && !isSharedPreview(),
       objectCount: () => getState().parts.length,
+      singleObjectCanSplit: () => singleObjectCanSplit(),
       objects: () => getState().parts.map(o => ({ id: o.id, name: o.name, ...(o.group ? { group: o.group } : {}) })),
       bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: [...BAMBU_NOZZLES], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
       versionIndices: async () => (await listCurrentVersions()).map(v => v.index),
@@ -11641,25 +12624,17 @@ async function main() {
     refreshPartSelectionVisual();
     refreshObjectParts();
   });
-  // Double-click the model to select the part under the cursor (or the piece,
-  // when that geometry isn't labelled); double-click empty space to clear.
-  // Shift/Ctrl/⌘-double-click adds it to (or takes it out of) the selection.
-  // Skipped while a click-driven tool owns the viewport.
-  getCanvas().addEventListener('dblclick', (e) => {
-    // Click-driven tools own the viewport while they're on.
-    if (isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()) return;
-    const extend = e.shiftKey || e.ctrlKey || e.metaKey;
+  /** The selection key of the part under the pointer — the most specific
+   *  (smallest) part containing the hit triangle, or its piece when that
+   *  geometry isn't labelled. Null on empty space. */
+  const partKeyAtEvent = (e: MouseEvent): string | null => {
     const hit = pickFace(e);
-    if (!hit) {
-      if (!extend && getSelectedPartKeys().length > 0) selectObjectPart(null);
-      return;
-    }
+    if (!hit) return null;
     const shown = lastDisplayedMesh ?? currentMeshData;
     const base = objectPartsMesh();
     const summary = currentObjectPartsSummary();
-    if (!shown || !base || !summary) return;
+    if (!shown || !base || !summary) return null;
     const baseTri = shown.triVerts === base.triVerts ? hit.triangleIndex : baseTriangleOf(shown, base, hit.triangleIndex);
-    // The most specific (smallest) part containing the triangle.
     let key: string | null = null;
     let best = Infinity;
     for (const p of summary.parts) {
@@ -11669,9 +12644,96 @@ async function main() {
       const piece = summary.pieces.find(p => p.triangles.includes(baseTri));
       if (piece) key = `piece:${piece.index}`;
     }
-    if (!key) return;
+    return key;
+  };
+  // Click-driven tools own the viewport while they're on.
+  // Click-driven tools own Shift-clicks, Shift-drags and keys while they're on —
+  // and so may any docked tool panel other than Parts (Part Detection's
+  // Shift-drag selection, Surface's pick mode…), so those block part selection.
+  const viewportToolActive = () => isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()
+    || getMeasureState().active || (!!getActiveViewportPanel() && !isPartsPanelOpen());
+  // Double-click the model to select the part under the cursor (or the piece,
+  // when that geometry isn't labelled); double-click empty space to clear.
+  // Ctrl/⌘-double-click adds it to (or takes it out of) the selection; a
+  // Shift-click (below) already does, so Shift-double-click is left to it.
+  getCanvas().addEventListener('dblclick', (e) => {
+    if (viewportToolActive() || e.shiftKey) return;
+    const extend = e.ctrlKey || e.metaKey;
+    const key = partKeyAtEvent(e);
+    if (!key) {
+      if (!extend && !pickFace(e) && getSelectedPartKeys().length > 0) selectObjectPart(null);
+      return;
+    }
     if (extend) toggleObjectPartInSelection(key);
     else selectObjectPart(getSelectedPartKey() === key ? null : key);
+  });
+  // Shift-click toggles the part under the cursor; Shift-drag box-selects.
+  installPartBoxSelect({
+    canvas: getCanvas(),
+    isBlocked: viewportToolActive,
+    keyAt: partKeyAtEvent,
+    keysInRect: (rect) => partKeysInScreenRect(rect),
+    toggle: (key) => { toggleObjectPartInSelection(key); },
+    add: (keys) => {
+      const current = getSelectedPartKeys();
+      // A box adds to a selection of the same kind (parts or pieces); a
+      // different kind starts over.
+      const kind = (k: string) => k.split(':')[0];
+      const keep = current.length > 0 && kind(current[0]) === kind(keys[0]) ? current : [];
+      selectObjectParts([...keep, ...keys]);
+    },
+  });
+
+  // Part-selection keys, for when the viewport or the object list has focus
+  // (never while typing, inside a dialog, or with a click-driven tool on):
+  // ⌘/Ctrl-A selects every part, Esc clears the selection, Delete/Backspace
+  // deletes the selection, H hides it, Shift-H shows every hidden part.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.altKey || isCommandPaletteOpen() || viewportToolActive()) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('.cm-editor'))) return;
+    if (document.querySelector('[aria-modal="true"]')) return;
+    // Only with focus on the page itself, the viewport, the object list or the
+    // Parts panel — not a button in the AI panel or another tab.
+    const viewportPane = getCanvas().parentElement;
+    if (t && t !== document.body && !(viewportPane?.contains(t) || t.closest('#parts-rail, #parts-panel'))) return;
+    if (!getCanvas().isConnected || getCanvas().offsetParent === null) return;
+    const mod = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    const selected = getSelectedPartKeys();
+    if (mod && !e.shiftKey && key === 'a') {
+      const summary = currentObjectPartsSummary();
+      if (!summary) return;
+      const hidden = hiddenKeysForCurrentObject();
+      const all = summary.parts.length > 0
+        ? summary.parts.filter(p => p.triangles.size > 0).map(p => `part:${p.name}`)
+        : summary.pieces.length > 1 ? summary.pieces.map(p => `piece:${p.index}`) : [];
+      const visible = all.filter(k => !hidden.has(k));
+      if (visible.length === 0) return;
+      e.preventDefault();
+      selectObjectParts(visible);
+      return;
+    }
+    if (!mod && e.shiftKey && key === 'h') {
+      const hidden = [...hiddenKeysForCurrentObject()];
+      if (hidden.length === 0) return;
+      e.preventDefault();
+      for (const k of hidden) objectPartsActions.setHidden(k, false);
+      return;
+    }
+    if (mod || selected.length === 0) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      selectObjectPart(null);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (selected.some(k => k === 'unlabeled' || !objectPartsActions.getDelete(k).show)) return;
+      e.preventDefault();
+      if (selected.length === 1) void objectPartsActions.deletePart(selected[0]);
+      else void objectPartsActions.deleteMany(selected);
+    } else if (key === 'h' && !e.shiftKey) {
+      e.preventDefault();
+      for (const k of selected) objectPartsActions.setHidden(k, true);
+    }
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
@@ -13665,6 +14727,9 @@ async function main() {
         printability: computePrintability(geo),
         ...(stale ? { stale: true } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
+        // What the last run printed, whoever started it (Run button, auto-run,
+        // an API call) — so an agent can read a UI-triggered run's output.
+        ...lastRunLogsField(),
       };
     },
 
@@ -13962,10 +15027,15 @@ async function main() {
      *  part's latest version is baked WITH its colours. `{ plateLayout }` (Bambu
      *  only) controls plate distribution: `'separate'` (default, one part per
      *  plate), `'grid'` (all parts on one plate), or `'group'` (each part group on
-     *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
-     *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
-     *  `{ ok, filename, parts }` or `{ error }`. */
-    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+     *  its own plate — and each split object on its own), or `'custom'` (with
+     *  `{ plates: { '<item or object name>': n } }`). `{ packStrategy }` (both
+     *  modes) shapes the arrangement: `'grid'` (default, compact centred
+     *  cluster), `'horizontal'`, or `'vertical'`. `{ split: { '<object>':
+     *  'pieces' | 'parts' } }` writes one 3MF object per separate piece or per
+     *  labelled part (modelled orientation kept); `{ exclude: ['<object> ·
+     *  <item>'] }` leaves items out — see listExportItems() for the names.
+     *  `{ ok, filename, objects, items? }` or `{ error }`. */
+    export3MFObjects(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -13975,7 +15045,7 @@ async function main() {
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
      *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
-    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFObjectsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -13985,13 +15055,13 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportOBJObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
      *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
-    exportOBJObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
@@ -13999,33 +15069,42 @@ async function main() {
      *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
      *  an array of part ids (default: every part). `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportSTLObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportSTLParts}. */
-    exportSTLObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
      *  scene, grid-arranged; painted parts export as vertex colours. The UI
      *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
      *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
-    exportGLBObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportGLBParts}. */
-    exportGLBObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
+    },
+
+    /** What each object can split into for an export (the export picker's
+     *  Split menu as data): per object `{ id, name, size, pieceCount, splits,
+     *  pieces, parts }`, where `pieces` / `parts` list the items (by export
+     *  name, "<object> · <item>") or are null when that split doesn't apply.
+     *  Use the names with the multi-object exports' `exclude` / `plates`. */
+    listExportItems(objectIds?: string[]) {
+      return listExportItemsApi(objectIds);
     },
 
     // Deprecated pre-rename aliases — "parts" were renamed to "objects" (a part
     // is now a labelled piece inside one object). Kept so older prompts, agents,
     // and scripts keep working; prefer the *Objects* names.
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjects(partIds, filename, opts);
     },
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjectsData(partIds, filename, opts);
     },
     exportOBJParts(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjects(partIds, filename); },
@@ -15013,11 +16092,12 @@ async function main() {
      *  edges: edge overlay — 'none' (plain shaded), 'crease' (feature edges
      *  only), or 'wireframe' (every triangle). Default: 'crease' for
      *  uncolored meshes, 'none' for painted ones. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }): string | null | { error: string } {
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode; reference?: boolean }): string | null | { error: string } {
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderView(options)')!;
-          assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'renderView(options)');
+          assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges', 'reference'], 'renderView(options)');
+          assertBoolean(o.reference, 'renderView(options).reference', { optional: true });
           assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
           assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
           assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
@@ -15030,7 +16110,9 @@ async function main() {
       // Default image size follows the spending-mode resolution budget when the
       // caller omits size; an explicit size still wins (e.g. a final hi-res check).
       const size = options?.size ?? getRenderBudget().defaultPx;
-      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
+      // The setReferenceGeometry ghost shows by default — it was set to check a fit.
+      const reference = options?.reference ?? hasPhantom();
+      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size, reference });
     },
 
     /** Text-only likeness score: how close the CURRENT model is to a reference
@@ -15238,11 +16320,12 @@ async function main() {
      *  Bump `size` for a higher-resolution final inspection. `edges`
      *  ('none' | 'crease' | 'wireframe', default 'crease' for uncolored
      *  meshes) sets the edge overlay on every tile. */
-    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode }): Promise<string | null | { error: string }> {
+    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode; reference?: boolean }): Promise<string | null | { error: string }> {
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderViews(options)')!;
-          assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges'], 'renderViews(options)');
+          assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges', 'reference'], 'renderViews(options)');
+          assertBoolean(o.reference, 'renderViews(options).reference', { optional: true });
           if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
           if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderViews(options).edges');
           if (o.angles !== undefined) {
@@ -15267,6 +16350,8 @@ async function main() {
       const which = options?.views ?? budget.angles;
       const tileSize = options?.size ?? budget.defaultPx;
       const colored = applyTriColorsIfVisible(currentMeshData);
+      // The setReferenceGeometry ghost shows by default — it was set to check a fit.
+      const reference = options?.reference ?? hasPhantom();
       const explicit = options?.angles;
       const angles = explicit && explicit.length > 0
         ? explicit.map((a) => ({
@@ -15275,30 +16360,7 @@ async function main() {
           }))
         : chooseRenderAngles(which);
 
-      const labelHeight = 24;
-      const cellHeight = tileSize + labelHeight;
-      const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
-      const rows = Math.ceil(angles.length / cols);
-      const composite = document.createElement('canvas');
-      composite.width = tileSize * cols;
-      composite.height = cellHeight * rows;
-      const ctx = composite.getContext('2d');
-      if (!ctx) return null;
-      ctx.fillStyle = '#f4f4f5';
-      ctx.fillRect(0, 0, composite.width, composite.height);
-
-      // Render each angle to a data URL via renderSingleView (each call
-      // reuses the same offscreen WebGLRenderer), decode each to an
-      // HTMLImageElement, then stamp into the composite grid.
-      for (let i = 0; i < angles.length; i++) {
-        const { label, opts } = angles[i];
-        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize, edges: options?.edges });
-        if (!dataUrl) continue;
-        const img = await loadImageFromDataUrl(dataUrl);
-        if (!img) continue;
-        drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
-      }
-      return composite.toDataURL('image/png');
+      return composeViews(colored, angles, tileSize, { edges: options?.edges, reference });
     },
 
     /** Pin the thumbnail camera angle for the active session so captured
@@ -15358,7 +16420,11 @@ async function main() {
       if (!liveManifold()) return null;
       const s = sliceAtZ(liveManifold(), z);
       if (!s) return null;
-      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox);
+      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox, 400, {
+        title: `z = ${Number(z.toFixed(4))} · seen from ${SECTION_FRAMES.z.from}`,
+        right: SECTION_FRAMES.z.right,
+        up: SECTION_FRAMES.z.up,
+      });
       return { svg, area: s.area, contours: s.polygons.length };
     },
 
@@ -15369,22 +16435,33 @@ async function main() {
      *  - `axis`: 'x' | 'y' | 'z' (default 'z')
      *  - `offset`: where along the axis to cut. If omitted, defaults to the
      *    midpoint of the model's bounding box along that axis.
-     *  - `size`: pixel size of the rendered SVG (default 400). The result is
+     *  - `size`: pixel width of the rendered SVG (default 400). The result is
      *    a data URL the agent can drop straight into setImages or display.
+     *  - `reference`: outline the setReferenceGeometry ghost's section (dashed);
+     *    default true when one is set.
+     *
+     *  The image reads like the matching renderView: a y cut is seen from the
+     *  front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z
+     *  cut from above (+X right, +Y up). It carries a caption, labelled axis
+     *  arrows, a scale bar and the section's extents; `view` and `boundingBox`
+     *  (in those image axes) say the same in data.
      *
      *  Works for any engine (manifold-js or SCAD) — it operates on the rendered
      *  manifold, not the source code. */
-    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number }):
-      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null | { error: string } {
+    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number; reference?: boolean }):
+      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number; view: { right: string; up: string; from: string }; boundingBox: { min: [number, number]; max: [number, number] } | null; referenceContours?: number } | null | { error: string } {
       // Widened explicitly: the closure below assigns these, which TS's
       // control-flow narrowing doesn't see.
       let axis = 'z' as 'x' | 'y' | 'z';
       let offset: number | undefined;
       let size = 400;
+      let reference: boolean | undefined;
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderSection(options)')!;
-          assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
+          assertNoUnknownKeys(o, ['axis', 'offset', 'size', 'reference'], 'renderSection(options)');
+          assertBoolean(o.reference, 'renderSection(options).reference', { optional: true });
+          reference = o.reference as boolean | undefined;
           if (o.axis !== undefined) {
             assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
             axis = o.axis as 'x' | 'y' | 'z';
@@ -15398,37 +16475,61 @@ async function main() {
       if (bad) return bad;
       if (!liveManifold()) return null;
 
-      // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
-      // the manifold so that axis points along Z, slice, then label the result
-      // with the original axis and the un-rotated offset.
       const bb = liveManifold().boundingBox();
       const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
       const lo = bb.min[axisIdx];
       const hi = bb.max[axisIdx];
       const actualOffset = offset ?? (lo + hi) / 2;
+      const frame = SECTION_FRAMES[axis];
 
-      let sliceTarget = liveManifold();
-      let zHeight = actualOffset;
-      let unrotate = false;
-      if (axis === 'x') {
-        // Rotate +X to +Z (rotation around Y by -90°).
-        sliceTarget = liveManifold().rotate([0, -90, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      } else if (axis === 'y') {
-        // Rotate +Y to +Z (rotation around X by 90°).
-        sliceTarget = liveManifold().rotate([90, 0, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      }
-
-      const result = sliceAtZ(sliceTarget, zHeight);
-      if (unrotate && typeof sliceTarget.delete === 'function') {
-        try { sliceTarget.delete(); } catch { /* already gone */ }
-      }
+      // Slice `m` through the cut plane, in image (right, up) coordinates.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sectionOf = (m: any) => {
+        const target = frame.rotate ? m.rotate(frame.rotate) : m;
+        const s = sliceAtZ(target, actualOffset);
+        if (frame.rotate) { try { target.delete(); } catch { /* already gone */ } }
+        if (!s) return null;
+        return { polygons: (s.polygons as [number, number][][]).map(c => c.map(frame.map)), area: s.area };
+      };
+      const result = sectionOf(liveManifold());
       if (!result) return null;
 
-      const svg = renderSliceSVG(result.polygons as [number, number][][], result.boundingBox, size);
+      let minR = Infinity, minU = Infinity, maxR = -Infinity, maxU = -Infinity;
+      for (const c of result.polygons) for (const [r, u] of c) {
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (u < minU) minU = u; if (u > maxU) maxU = u;
+      }
+      const hasSection = result.polygons.length > 0;
+      // An empty cut is framed by the model's extent on the image axes (the
+      // frames' right/up are all positive world axes), so the caption fits.
+      const worldIdx = (a: string) => 'XYZ'.indexOf(a[1]);
+      const ri = worldIdx(frame.right), ui = worldIdx(frame.up);
+      const box2d = hasSection
+        ? { minX: minR, maxX: maxR, minY: minU, maxY: maxU }
+        : { minX: bb.min[ri], maxX: bb.max[ri], minY: bb.min[ui], maxY: bb.max[ui] };
+
+      // The reference ghost through the same plane, rebuilt from its mesh
+      // (pure data — no model code runs here).
+      let referencePolys: [number, number][][] | undefined;
+      const ref = (reference ?? hasPhantom()) ? getReferenceMesh() : null;
+      if (ref) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let rm: any = null;
+        try {
+          rm = getModule().Manifold.ofMesh(ref.mesh);
+          referencePolys = sectionOf(rm)?.polygons;
+        } catch { /* a non-manifold reference can't be sliced */ }
+        try { rm?.delete?.(); } catch { /* ignore */ }
+      }
+
+      const offsetText = Number(actualOffset.toFixed(4));
+      const svg = renderSliceSVG(result.polygons, box2d, size, {
+        title: `${axis} = ${offsetText} · seen from ${frame.from}`,
+        ...(hasSection ? {} : { note: 'no section here — the plane misses the model' }),
+        right: frame.right,
+        up: frame.up,
+        reference: referencePolys,
+      });
       const dataUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
       return {
         dataUrl,
@@ -15437,6 +16538,9 @@ async function main() {
         offset: actualOffset,
         area: result.area,
         contours: result.polygons.length,
+        view: { right: frame.right, up: frame.up, from: frame.from },
+        boundingBox: hasSection ? { min: [minR, minU], max: [maxR, maxU] } : null,
+        ...(referencePolys ? { referenceContours: referencePolys.length } : {}),
       };
     },
 
@@ -15797,19 +16901,14 @@ async function main() {
     async openSession(id: string) {
       const check = guard(() => assertString(id, 'openSession(id)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const prevSessionId = getState().session?.id;
       const version = await openSession(id);
-      if (version) {
-        // Restore engine to the loaded version's language (per-version since
-        // schema 1.8, with session-level fallback for older data).
-        const lang = effectiveVersionLanguage(version, getState().session);
-        if (lang !== getActiveLanguage()) {
-          await switchLanguage(lang);
-        }
-        setValue(version.code);
-        await runCodeSync(version.code, { preserveCamera: true });
-      }
-      // Attachments are session-level — restore regardless of whether a version loaded.
-      await restoreAttachmentsForActiveSession();
+      // Full version load (language, imports, params, paint, annotations,
+      // attachments), so the previous session's paint and annotations don't
+      // carry over. An empty session gets its starter, as on the URL path.
+      // The editor buffer still holds the OUTGOING session, so never stash it
+      // as a language draft of the one just opened.
+      if (getState().session?.id === id) await loadPartIntoEditor(version, { skipDraftSave: prevSessionId !== id });
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
 
@@ -16330,6 +17429,14 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (from === to) return { error: 'renameObjectPart: the new name is the same as the old one.' };
       if ((currentLabelMap?.get(to)?.size ?? 0) > 0) return { error: `renameObjectPart: there's already a part named "${to}".` };
+      // A part named by part-edit lines (a copy, a group) or an import's parts
+      // is renamed there too — the Parts panel's rename does all of it.
+      if (getActiveLanguage() === 'manifold-js'
+        && (findPartOpLines(getValue()).some(x => partOpNames(x.op).includes(from))
+          || getActiveImports().some(m => m.parts?.names.includes(from)))) {
+        const r = await runPartAction('rename', { parts: [from], pattern: to });
+        return 'error' in r ? { error: `renameObjectPart: ${r.error}` } : { ...r, renamed: { from, to } };
+      }
       const { code, count } = renameLabelInCode(getValue(), from, to);
       if (count === 0) return { error: `renameObjectPart: couldn't find "${from}" as a label string in the code — it may be built dynamically. Rename it in the code by hand.` };
       const pre = await preflightRewrite(code, 'renameObjectPart');
@@ -16347,6 +17454,39 @@ async function main() {
       if (failed) return { ...res, error: `renameObjectPart: ${failed}` };
       if (wasSelected && (currentLabelMap?.get(to)?.size ?? 0) > 0) selectObjectPart(`part:${to}`);
       return { ...res, renamed: { from, to, occurrences: count } };
+    },
+
+    /** The Parts panel's layout / copy / group actions on the open object's
+     *  parts (opts.parts, else the selected parts, else every part). Each
+     *  writes `api.movePart(…)`-style lines into the code, runs, and saves a
+     *  version. -> { ok, message, parts, version? } or { error } */
+    async partAction(action: string, opts: Record<string, unknown> = {}) {
+      const check = guard(() => {
+        assertEnum(action, PART_ACTIONS, 'partAction(action)');
+        assertObject(opts, 'partAction(opts)');
+        assertNoUnknownKeys(opts, ['parts', 'axis', 'mode', 'gap', 'step', 'offset', 'degrees', 'factor', 'count', 'cols', 'rows', 'name', 'pattern'], 'partAction(opts)');
+        if (opts.parts !== undefined) assertArray(opts.parts, 'partAction(opts.parts)').forEach((n, i) => assertString(n, `partAction(opts.parts[${i}])`, { allowEmpty: false }));
+        if (opts.axis !== undefined) assertEnum(opts.axis, ['x', 'y', 'z'] as const, 'partAction(opts.axis)');
+        if (opts.mode !== undefined) assertEnum(opts.mode, ['min', 'center', 'max'] as const, 'partAction(opts.mode)');
+        for (const k of ['gap', 'count', 'cols', 'rows'] as const) if (opts[k] !== undefined) assertNumber(opts[k], `partAction(opts.${k})`);
+        if (typeof opts.gap === 'number' && opts.gap < 0) throw new ValidationError('partAction(opts.gap): must be 0 or more.');
+        for (const k of ['offset', 'degrees'] as const) if (opts[k] !== undefined) assertNumberTuple(opts[k], 3, `partAction(opts.${k})`);
+        // step: a number for snap, [x, y] for gridArray, [x, y, z] for array.
+        if (opts.step !== undefined && !(action === 'snap' && typeof opts.step === 'number')) assertNumberTuple(opts.step, action === 'gridArray' ? 2 : 3, 'partAction(opts.step)');
+        if (opts.factor !== undefined && typeof opts.factor !== 'number') assertNumberTuple(opts.factor, 3, 'partAction(opts.factor)');
+        for (const k of ['name', 'pattern'] as const) if (opts[k] !== undefined) assertString(opts[k], `partAction(opts.${k})`, { allowEmpty: false });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const o = { ...opts } as PartActionOpts;
+      // gridArray's step is [x, y]; pad it to the shared Vec3 shape.
+      if (Array.isArray(opts.step) && opts.step.length === 2) o.step = [opts.step[0] as number, opts.step[1] as number, 0];
+      return runPartAction(action, o);
+    },
+
+    /** Undo the open object's last part edit (partAction / the Parts panel). -> { ok, undone } or { error } */
+    async undoPartEdit() {
+      return undoPartEdit();
     },
 
     /** Write part `name`'s current drawn colour into the code as
@@ -17239,7 +18379,8 @@ async function main() {
       if (meshData) {
         try {
           if (view) {
-            thumbnail = renderSingleView(meshData, view);
+            // Same default size as renderView / probePixel, so a probe of this view lines up.
+            thumbnail = renderSingleView(meshData, { ...view, size: view.size ?? getRenderBudget().defaultPx });
           } else {
             const canvas = renderCompositeCanvas(meshData);
             thumbnail = canvas.toDataURL('image/png');
@@ -17556,6 +18697,46 @@ async function main() {
       });
     },
 
+    /** Wall-thickness map of the current model: every triangle's distance
+     *  straight through the solid to the opposite wall (exact, via the mesh's
+     *  BVH — not checkPrintability's sampled estimate). Returns the thinnest
+     *  wall and where, the area-weighted median, how much surface is below
+     *  `threshold` (default 2 × the printer's nozzle width), and the thin
+     *  SPOTS — connected thin areas, thinnest first, each with its centre,
+     *  thinnest point, thickness and area. `render: true` adds a heatmap image
+     *  (red ≤ ½·threshold → yellow at threshold → grey ≥ 2·threshold). */
+    async thicknessMap(opts?: { threshold?: number; limit?: number; render?: boolean; views?: RenderViewMode; size?: number }) {
+      const bad = argError(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'thicknessMap(opts)')!;
+          assertNoUnknownKeys(o, ['threshold', 'limit', 'render', 'views', 'size'], 'thicknessMap(opts)');
+          assertNumber(o.threshold, 'thicknessMap(opts).threshold', { optional: true, min: 0 });
+          assertNumber(o.limit, 'thicknessMap(opts).limit', { optional: true, min: 1, max: 1000, integer: true });
+          assertBoolean(o.render, 'thicknessMap(opts).render', { optional: true });
+          if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'thicknessMap(opts).views');
+          assertNumber(o.size, 'thicknessMap(opts).size', { optional: true, min: 16, max: 2048, integer: true });
+        }
+      });
+      if (bad) return bad;
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const mesh = currentMeshData;
+      const maxTris = getConfig().renderer.thicknessMapMaxTriangles;
+      if (mesh.numTri > maxTris) {
+        return { error: `thicknessMap: the model has ${mesh.numTri.toLocaleString()} triangles, over the ${maxTris.toLocaleString()} limit (one ray per triangle on the main thread). Simplify it first — partwright.simplifyModel({ targetTris: ${Math.min(maxTris, 500_000)} }) — or raise renderer.thicknessMapMaxTriangles.` };
+      }
+      const threshold = opts?.threshold ?? loadPrinterSettings().nozzleWidth * 2;
+      const t0 = performance.now();
+      const field = thicknessField(mesh);
+      const summary = summarizeThickness(mesh, field, threshold, opts?.limit ?? 10);
+      const ms = Math.round(performance.now() - t0);
+      let image: string | null = null;
+      if (opts?.render) {
+        const colored = { ...mesh, triColors: thicknessColors(field, threshold) };
+        image = await composeViews(colored, chooseRenderAngles(opts.views ?? 'all'), opts.size ?? getRenderBudget().defaultPx, { edges: 'none' });
+      }
+      return { ...summary, ms, ...(image ? { image } : {}) };
+    },
+
 
     /** Create a session and populate it with multiple versions in one call */
     async createSessionWithVersions(name: string, versions: { code: string; label?: string }[]) {
@@ -17716,7 +18897,8 @@ async function main() {
       });
       if (bad) return bad;
       if (!currentMeshData) return null;
-      const size = (v.size as number | undefined) ?? 500;
+      // Same default as renderView, so an omitted size probes the image it rendered.
+      const size = (v.size as number | undefined) ?? getRenderBudget().defaultPx;
       const [px, py] = opts.pixel;
       if (px < 0 || px >= size || py < 0 || py >= size) {
         return { error: `probePixel.pixel [${px}, ${py}] is outside the ${size}×${size} viewport. Pixel (0,0) is top-left, (${size - 1},${size - 1}) is bottom-right.` };
@@ -17771,7 +18953,7 @@ async function main() {
         const elevation = assertNumber(v.elevation, 'probePixels(pixels, view).elevation', { optional: true, min: -90, max: 90 });
         const azimuth = assertNumber(v.azimuth, 'probePixels(pixels, view).azimuth', { optional: true });
         const ortho = assertBoolean(v.ortho, 'probePixels(pixels, view).ortho', { optional: true });
-        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? 500;
+        const size = assertNumber(v.size, 'probePixels(pixels, view).size', { optional: true, min: 1, integer: true }) ?? getRenderBudget().defaultPx;
         const pts: [number, number][] = list.map((p, i) => {
           let xy: number[];
           if (Array.isArray(p)) xy = assertNumberTuple(p, 2, `probePixels(pixels)[${i}]`);
@@ -17854,10 +19036,18 @@ async function main() {
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
       withinPart?: string;
+      /** Smooth the fill's boundary: re-flood on the base mesh, blur the
+       *  triangle coverage `smoothness` times (default 4) and clip the mesh
+       *  along the blurred edge — a clean line instead of the triangle
+       *  sawtooth. Adds triangles only along the boundary. */
+      smooth?: boolean;
+      smoothness?: number;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
       const scopeErr = validateWithinPart(opts.withinPart, 'paintConnected');
       if (scopeErr) return { error: scopeErr };
+      const smoothErr = validateFillSmoothOpts(opts);
+      if (smoothErr) return { error: `paintConnected: ${smoothErr}` };
       if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
       if (!Array.isArray(opts.seed.point) || opts.seed.point.length !== 3) return { error: 'paintConnected.seed.point must be [x,y,z]' };
       for (const c of opts.seed.point) {
@@ -17936,7 +19126,8 @@ async function main() {
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
-      const region = addRegion(
+      const smoothFields = opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {};
+      const added = addBucketFillRegion(
         regionName,
         opts.color as [number, number, number],
         'paintbrush',
@@ -17952,16 +19143,18 @@ async function main() {
             clampMin: boxMin,
             clampMax: boxMax,
           } : {}),
+          ...smoothFields,
         }, opts.withinPart),
         triangles,
+        adjacency,
       );
+      if ('error' in added) return { error: `paintConnected: ${added.error}` };
+      const { region } = added;
       const emptyErr = emptyScopeError(region, opts.withinPart, 'paintConnected');
       if (emptyErr) return emptyErr;
-      const colored = applyTriColorsIfVisible(mesh);
-      updateMesh(colored, { skipAutoFrame: true });
-      syncLockState();
-      const stats = regionTriangleStats(region.triangles, mesh);
-      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
+      // A smooth fill re-tessellated the working mesh; report against it.
+      const stats = regionTriangleStats(region.triangles, currentMeshData ?? mesh);
+      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex, ...smoothFields };
     },
 
     /** Check if any component is fully contained inside another (invisible geometry) */
@@ -18321,19 +19514,21 @@ async function main() {
      *  (`pendingAfterReload`), and whether the frame / Worker reported
      *  cross-origin isolation. -> { requested, active, state,
      *  pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated,
-     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, modes } */
+     *  frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, defaultMode, modes } */
     getEngineSandboxStatus() {
-      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), modes: [...ENGINE_SANDBOX_MODES] };
+      return { ...getEngineSandboxStatus(), sandboxOrigin: configuredSandboxOrigin(), defaultMode: defaultEngineSandboxMode(), modes: [...ENGINE_SANDBOX_MODES] };
     },
 
-    /** Choose the engine-sandbox mode for this browser ('off' | 'opaque' |
-     *  'origin'). Persists; takes effect on the next page reload (the
+    /** Choose the engine-sandbox mode for this browser ('origin' | 'off').
+     *  'origin' is the default wherever this site has a sandbox host; 'off' is
+     *  the kill switch. Persists; takes effect on the next page reload (the
      *  geometry Worker is created at boot). Deliberately NOT an in-app AI
      *  tool: a prompt-injected session must not be able to switch it off.
      *  -> { mode, previous, note } or { error } */
     setEngineSandboxMode(mode: string) {
+      if (isRemovedEngineSandboxMode(mode)) return { error: `setEngineSandboxMode('${mode}'): the '${mode}' mode was removed — use 'origin' (the default where this site has a sandbox host) or 'off'` };
       if (!isEngineSandboxMode(mode)) return { error: `setEngineSandboxMode(mode): mode must be one of ${ENGINE_SANDBOX_MODES.join(', ')}` };
-      if (mode === 'origin' && !configuredSandboxOrigin()) return { error: "setEngineSandboxMode('origin'): this build has no VITE_SANDBOX_ORIGIN configured" };
+      if (mode === 'origin' && !engineSandboxOriginAvailable()) return { error: "setEngineSandboxMode('origin'): this site has no sandbox host configured (VITE_SANDBOX_ORIGIN, with this origin in VITE_APP_ORIGIN)" };
       const previous = getEngineSandboxMode();
       setEngineSandboxMode(mode);
       return { mode, previous, note: 'Reload the page to apply.' };
@@ -18759,7 +19954,7 @@ async function main() {
      *  includes a diagnostic — the nearest hit point, its normal, the angle
      *  off the requested normal, and a suggested tolerance value that would
      *  include it. Pair with `probeRay` to get a known-on-surface seed. */
-    paintRegion(opts: { point: [number, number, number]; normal?: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number; withinPart?: string }) {
+    paintRegion(opts: { point: [number, number, number]; normal?: [number, number, number]; color: [number, number, number]; name?: string; tolerance?: number; withinPart?: string; smooth?: boolean; smoothness?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintRegion requires {point, normal?, color}' };
       const scopeErr = validateWithinPart(opts.withinPart, 'paintRegion');
@@ -18769,6 +19964,8 @@ async function main() {
       if (!Array.isArray(point) || point.length !== 3) return { error: 'point must be [x,y,z]' };
       if (normal !== undefined && (!Array.isArray(normal) || normal.length !== 3)) return { error: 'normal must be [nx,ny,nz] when provided' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const smoothErr = validateFillSmoothOpts(opts);
+      if (smoothErr) return { error: `paintRegion: ${smoothErr}` };
       if (tolerance !== undefined && (typeof tolerance !== 'number' || !Number.isFinite(tolerance) || tolerance < -1 || tolerance > 1)) {
         return { error: `tolerance must be a cosine in [-1, 1] (got ${String(tolerance)}). It is cos(max bend angle between adjacent faces): 0.9995 ≈ 1.8°, 0.98 ≈ 11°, -1 = whole connected mesh. To think in degrees, pass Math.cos(deg * Math.PI / 180).` };
       }
@@ -18790,22 +19987,22 @@ async function main() {
 
       const triangles = findCoplanarRegion(seedTri, adjacency, normalTolerance);
       const regionName = name ?? `Region ${getRegions().length + 1}`;
-      const region = addRegion(
+      const added = addBucketFillRegion(
         regionName,
         color as [number, number, number],
         'face-pick',
-        scopedDescriptor({ kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance }, opts.withinPart),
+        scopedDescriptor({
+          kind: 'coplanar', seedPoint: point as [number, number, number], seedNormal: normal as [number, number, number], normalTolerance,
+          ...(opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {}),
+        }, opts.withinPart),
         triangles,
+        adjacency,
       );
-
-      // Re-render with colors
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
-      syncLockState();
-
+      if ('error' in added) return { error: `paintRegion: ${added.error}` };
+      const { region } = added;
       const emptyErr = emptyScopeError(region, opts.withinPart, 'paintRegion');
       if (emptyErr) return emptyErr;
-      return { id: region.id, name: region.name, triangles: region.triangles.size };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, ...(opts.smooth ? { smooth: true, smoothness: opts.smoothness ?? DEFAULT_FILL_SMOOTHNESS } : {}) };
     },
 
     /** Paint a coplanar region by snapping the seed point to the nearest face on
@@ -20336,7 +21533,7 @@ async function main() {
         return { error: 'setBrushSize(radius): radius must be a non-negative finite number (mesh units)' };
       }
       const previous = getPaintBrushRadius();
-      setPaintBrushRadius(radius);
+      setPaintBrushRadius(radius); syncPaintControls();
       return { previous, radius };
     },
 
@@ -20348,17 +21545,38 @@ async function main() {
       return { surface: getPaintBrushSurface(), depth: getPaintBrushDepth() };
     },
     setBrushSurface(mode: string) {
-      if (mode !== 'geodesic' && mode !== 'slab') {
-        return { error: "setBrushSurface(mode): mode must be 'geodesic' or 'slab'" };
+      if (mode !== 'geodesic' && mode !== 'slab' && mode !== 'sphere') {
+        return { error: "setBrushSurface(mode): mode must be 'geodesic', 'slab' or 'sphere'" };
       }
       setPaintBrushSurface(mode);
+      syncPaintControls();
       return { surface: getPaintBrushSurface() };
+    },
+    getBrushAlign() {
+      return { align: getPaintBrushAlign() };
+    },
+    setBrushAlign(mode: string) {
+      if (mode !== 'view' && mode !== 'surface' && mode !== 'area') {
+        return { error: "setBrushAlign(mode): mode must be 'view', 'surface' or 'area'" };
+      }
+      setPaintBrushAlign(mode);
+      syncPaintControls();
+      return { align: getPaintBrushAlign() };
+    },
+    getBrushFrontFacesOnly() {
+      return { frontFacesOnly: isPaintBrushFrontOnly() };
+    },
+    setBrushFrontFacesOnly(on: boolean) {
+      if (typeof on !== 'boolean') return { error: 'setBrushFrontFacesOnly(on): on must be a boolean' };
+      setPaintBrushFrontOnly(on);
+      syncPaintControls();
+      return { frontFacesOnly: isPaintBrushFrontOnly() };
     },
     setBrushDepth(depth: number) {
       if (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0) {
         return { error: 'setBrushDepth(depth): depth must be a non-negative finite number (mesh units; 0 = auto)' };
       }
-      setPaintBrushDepth(depth);
+      setPaintBrushDepth(depth); syncPaintControls();
       return { depth: getPaintBrushDepth() };
     },
 
@@ -20373,7 +21591,7 @@ async function main() {
       if (typeof deg !== 'number' || !Number.isFinite(deg)) {
         return { error: `setBrushWrapAngle(deg): deg must be a finite number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX}` };
       }
-      setPaintBrushWrapAngle(deg);
+      setPaintBrushWrapAngle(deg); syncPaintControls();
       return { wrapAngleDeg: getPaintBrushWrapAngle() };
     },
 
@@ -20395,7 +21613,7 @@ async function main() {
       if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
         return { error: `setBrushSmoothDivisor(divisor): divisor must be a finite number in ${SMOOTH_DIVISOR_MIN}..${SMOOTH_DIVISOR_MAX}` };
       }
-      setPaintBrushSmoothDivisor(divisor);
+      setPaintBrushSmoothDivisor(divisor); syncPaintControls();
       return { divisor: getPaintBrushSmoothDivisor() };
     },
 
@@ -20425,6 +21643,13 @@ async function main() {
       surface?: string;
       depth?: number;
       wrapAngleDeg?: number;
+      /** Slab prism direction: 'surface' (default) | 'area' | 'view'. */
+      align?: string;
+      /** Camera forward vector for align 'view' / frontFacesOnly (parallel
+       *  rays); omitted → the live viewport camera. */
+      viewDir?: number[];
+      /** Skip triangles facing away from the camera. */
+      frontFacesOnly?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -20457,9 +21682,11 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintStroke: maxEdge must be a positive finite number (mesh units) when provided' };
       }
-      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
-        return { error: "paintStroke: surface must be 'geodesic' or 'slab' when provided" };
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab' && surface !== 'sphere') {
+        return { error: "paintStroke: surface must be 'geodesic', 'slab' or 'sphere' when provided" };
       }
+      const viewOpts = parseBrushViewOpts(opts, 'paintStroke');
+      if ('error' in viewOpts) return viewOpts;
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
@@ -20482,10 +21709,11 @@ async function main() {
       // continuous however sparsely the caller sampled it.
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
+        surface: (surface as BrushSurface) ?? 'slab', depth: depth ?? 0,
         // Default to no gate (180°) for the console API so a paintStroke without
         // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
         wrapAngleDeg: wrapAngleDeg ?? 180,
+        ...viewOpts.fields,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -20529,6 +21757,9 @@ async function main() {
       maxEdge?: number;
       surface?: string;
       depth?: number;
+      align?: string;
+      viewDir?: number[];
+      frontFacesOnly?: boolean;
       name?: string;
       /** Clip the paint to one part (an api.label region, or a detected part
        *  of an import) so it cannot bleed across the part's edge. */
@@ -20569,9 +21800,11 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
       }
-      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
-        return { error: "paintAirbrush: surface must be 'geodesic' or 'slab' when provided" };
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab' && surface !== 'sphere') {
+        return { error: "paintAirbrush: surface must be 'geodesic', 'slab' or 'sphere' when provided" };
       }
+      const viewOpts = parseBrushViewOpts(opts, 'paintAirbrush');
+      if ('error' in viewOpts) return viewOpts;
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintAirbrush: depth must be a non-negative finite number (mesh units) when provided' };
       }
@@ -20585,7 +21818,8 @@ async function main() {
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples: densifyStrokePath(samples, radius * getConfig().ui.paintStrokePathSpacing), radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
+        surface: (surface as BrushSurface) ?? 'slab', depth: depth ?? 0, spray,
+        ...viewOpts.fields,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -20899,8 +22133,11 @@ async function main() {
       name?: string;
       /** Inherits the same topOnly shortcut as paintInBox. */
       topOnly?: boolean;
+      withinPart?: string;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintComponent requires { index, color }' };
+      const scopeErr = validateWithinPart(opts.withinPart, 'paintComponent');
+      if (scopeErr) return { error: scopeErr };
       if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintComponent.index must be a non-negative integer (from listComponents)' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
       if (!liveManifold()) return { error: 'No geometry loaded — run code first.' };
@@ -20921,7 +22158,7 @@ async function main() {
           min: [bb.min[0] - pad, bb.min[1] - pad, bb.min[2] - pad] as [number, number, number],
           max: [bb.max[0] + pad, bb.max[1] + pad, bb.max[2] + pad] as [number, number, number],
         };
-        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly });
+        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly, withinPart: opts.withinPart });
       } catch (err) {
         return { error: `paintComponent failed: ${err instanceof Error ? err.message : String(err)}` };
       } finally {
@@ -21737,7 +22974,7 @@ async function main() {
       const methods: Record<string, { signature: string; docs: string }> = {
         // Core
         'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats (+ logs: the model code console output)', docs: '/ai.md#console-api--windowpartwright' },
-        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object', docs: '/ai.md#geometry-data' },
+        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object (+ logs?: what the last run printed)', docs: '/ai.md#geometry-data' },
         'validate':        { signature: 'validate(code) -- Check code without rendering -> {valid, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
@@ -21827,6 +23064,8 @@ async function main() {
         'setObjectPartColor': { signature: "setObjectPartColor(name, '#rrggbb' | [r,g,b]) -- Fill a whole part (recolours its fill in place, else adds a byLabel region) -> {id, name, triangles}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'resetObjectPartColor': { signature: 'resetObjectPartColor(name) -- Remove the paint filling a part (back to its code colour) -> {ok, removed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'goToObjectPart': { signature: 'goToObjectPart(name) -- Reveal the part\'s label in the code editor -> {ok, line}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'partAction': { signature: "await partAction(action, {parts?, axis?, mode?, gap?, step?, offset?, degrees?, factor?, count?, cols?, rows?, name?, pattern?}) -- Arrange / copy / group parts as api.movePart-style code lines (grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut); parts = opts.parts, else every part; runAndSave -> {ok, message, parts, version}", docs: '/ai.md#arranging-copying-and-grouping-parts' },
+        'undoPartEdit': { signature: 'await undoPartEdit() -- Undo the open object\'s last partAction -> {ok, undone}', docs: '/ai.md#arranging-copying-and-grouping-parts' },
         'renameObjectPart': { signature: 'await renameObjectPart(from, to) -- Rename a part in code literals + its paint, then runAndSave -> {...runAndSave, renamed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'bakeObjectPartColor': { signature: "await bakeObjectPartColor(name) -- Write the part's colour into code as api.paint.label (manifold-js), drop its paint fill, runAndSave -> {...runAndSave, baked}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'extractObjectPiece': { signature: 'await extractObjectPiece(index) -- Move a piece into a new object (piece filters on both; manifold-js) -> {ok, object, original}', docs: '/ai.md#editing-parts-from-the-objects-list' },
@@ -21868,14 +23107,14 @@ async function main() {
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'sliceAtZVisual': { signature: 'sliceAtZVisual(z) -- Cross-section at height z as an SVG string -> {svg, area, contours}, null when no geometry, or {error} (contours > 1 = hollow / multi-piece)', docs: '/ai/visual-verification.md' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderSection':   { signature: 'renderSection({axis?, offset?, size?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'renderSection':   { signature: 'renderSection({axis?, offset?, size?, reference?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}; captioned image with axis arrows + scale bar, reference ghost outlined. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'componentBounds': { signature: 'componentBounds() -- Per-connected-component info: [{index, volume, triangleCount, bbox}], largest first. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'checkContainment': { signature: 'checkContainment() -- Components fully inside another (invisible, wasted geometry) -> ContainmentWarning[] (empty = none) or null when no geometry', docs: '/ai/visual-verification.md#stat-based-verification' },
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
-        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
+        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe", reference?}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease"; reference draws the setReferenceGeometry ghost, default on when one is set)', docs: '/ai.md#visual-verification' },
         'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, bgMode?: "auto"|"border"|"grabcut", mask?, exclude?: [part], merge?: [[part,…]], ignore?: [part], bands?, fit?: "height"|"box", pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, crop?, bg?, mask?, pixelAspect?, label?}]}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, band widths + left/right edge offsets, outline[] diff ("photo-only at bands 2–4 left … → grow"), per-part IoU/area/offset/colour (lowConfidence when the photo cannot separate parts), worst[] findings. views[] scores several photos/angles at once (mean silhouetteIoU + per-view results). mask = manual silhouette (white = subject); bgMode grabcut for busy backdrops; merge/ignore parts the photo cannot tell apart. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
-        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
+        'renderViews':     { signature: 'await renderViews({views?: "auto"|"tri"|"all"|"box", angles?, size?, edges?: "none"|"crease"|"wireframe", reference?}) -- labeled multi-angle composite -> data URL (reference: draw the setReferenceGeometry ghost; default on when one is set). Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'setThumbnailCamera': { signature: "await setThumbnailCamera({azimuth, elevation} | 'current' | null) -- Pin the session thumbnail/catalog-tile camera (degrees; az 0 = front -Y, el -90..90); 'current' pins the live viewport angle; null clears -> {thumbCamera} or {error}", docs: '/ai.md#console-api--windowpartwright' },
         'getThumbnailCamera': { signature: 'getThumbnailCamera() -- Pinned thumbnail camera -> {azimuth, elevation} or null (unpinned = default iso)', docs: '/ai.md#console-api--windowpartwright' },
         // Spending mode (AI budget)
@@ -21958,8 +23197,8 @@ async function main() {
         'reorderObjects':      { signature: 'await reorderObjects([nameOrId | {id|name, group?}, ...]) -- Reorder the object list (first = top), optionally regrouping -> {order}', docs: '/ai.md#objects-parts-and-pieces' },
         'getAppConfig':        { signature: 'getAppConfig() -- Advanced Settings values {section: {key: {value, default, min?, max?, integer?, modified?}}}', docs: '/ai.md#console-api--windowpartwright' },
         'setAppConfig':        { signature: 'setAppConfig(section, key, value) -- Change one Advanced Settings value (validated like the field: type, min/max, integer) -> {section, key, value, previous}', docs: '/ai.md#console-api--windowpartwright' },
-        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
-        'setEngineSandboxMode': { signature: "setEngineSandboxMode('off'|'opaque'|'origin') -- Run model code in a cross-origin iframe sandbox (this browser; reload to apply) -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
+        'getEngineSandboxStatus': { signature: 'getEngineSandboxStatus() -- Engine sandbox mode requested/active/default, frame + Worker cross-origin isolation, unavailable reason (fail-closed) -> {requested, active, state, pendingAfterReload, defaultMode, unavailableReason, ...}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEngineSandboxMode': { signature: "setEngineSandboxMode('origin'|'off') -- Run model code in a separate-origin iframe sandbox ('origin', the default where configured) or not ('off', the kill switch); this browser, reload to apply -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
         'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
@@ -21983,14 +23222,15 @@ async function main() {
         'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?) -- Bundle objects into a .zip of one .stl per object -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. split: {"<object>": "pieces"|"parts"} writes one 3MF object per separate piece / labelled part (orientation kept); exclude: ["<object> · <item>"] leaves items out (names from listExportItems). plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group, and each split object, on its own plate) | "custom" (plates: {"<item or object name>": n}). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'listExportItems': { signature: 'await listExportItems(objectIds?) -- What each object can split into for an export: [{id, name, size, pieceCount, splits, pieces, parts}] where pieces/parts list item names ("<object> · <item>", fused parts flagged) for the export split/exclude/plates options -> {objects}', docs: '/ai/file-io.md' },
+        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into a .zip of one .stl per object. split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(...) -- DEPRECATED alias of export3MFObjects()', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(...) -- DEPRECATED alias of export3MFObjectsData()', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(...) -- DEPRECATED alias of exportOBJObjects()', docs: '/ai/file-io.md' },
@@ -22029,7 +23269,7 @@ async function main() {
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Color regions
-        'paintRegion':     { signature: 'paintRegion({point, normal?, color, name?, withinPart?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). tolerance is a COSINE (default 0.9995 ≈ 1.8°). normal omitted = nearest face. Diagnostic error on failure.', docs: '/ai/colors.md' },
+        'paintRegion':     { signature: 'paintRegion({point, normal?, color, name?, withinPart?, tolerance?, smooth?, smoothness?}) -- Paint coplanar face region (flood-fill, edge-bounded). tolerance is a COSINE (default 0.9995 ≈ 1.8°). normal omitted = nearest face. smooth = clean (non-sawtooth) boundary. Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, withinPart?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?, withinPart?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
@@ -22050,8 +23290,8 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors({kind?: "all"|"image"}?) -- Remove ALL color regions, or only image stamps (undoClearColors restores; undoLastPaint reverses just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?, withinPart?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
-        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
+        'paintStroke':     { signature: 'paintStroke({points, radius, color, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- SMOOTH brush stroke along surface points (subdivides under the stroke for a rounded painted edge)', docs: '/ai/colors.md' },
+        'paintAirbrush':   { signature: 'paintAirbrush({points, radius, color, strength?, softness?, seed?, shape?, resolution?, maxEdge?, surface?, depth?, align?, viewDir?, frontFacesOnly?, name?, withinPart?}) -- Soft speckled spray along surface points', docs: '/ai/colors.md' },
         'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?, withinPart?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
@@ -22063,13 +23303,13 @@ async function main() {
         'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
         'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
-        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?, withinPart?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
         'getLabelNames': { signature: 'getLabelNames() -- Just the label names registered by the current run -> string[] (empty when none; lighter than listLabels)', docs: '/ai/colors.md' },
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
-        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?, smooth?, smoothness?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
         'growRegion':      { signature: 'growRegion({region, steps?, withinBox?, zMin?, zMax?}) -- Grow a region by N rings of neighbouring triangles (clamp so it cannot leak). Undoable.', docs: '/ai/colors.md' },
@@ -22089,8 +23329,12 @@ async function main() {
         'setBucketMode': { signature: "setBucketMode(mode) -- Set the bucket flood-fill mode: 'color' (magic-wand by RGB) or 'geometry' (coplanar by bend angle).", docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
-        'getBrushSurface': { signature: "getBrushSurface() -- UI brush surface mode + depth -> {surface: 'geodesic'|'slab', depth} (depth 0 = auto = half the radius)", docs: '/ai/colors.md' },
-        'setBrushSurface': { signature: "setBrushSurface('geodesic'|'slab') -- UI brush surface mode: slab keeps paint a thin shell on the picked surface; geodesic floods the connected surface -> {surface} or {error}", docs: '/ai/colors.md' },
+        'getBrushSurface': { signature: "getBrushSurface() -- UI brush surface mode + depth -> {surface: 'geodesic'|'slab'|'sphere', depth} (depth 0 = auto: half the radius, or radius·tan 70° along the ray when aligned to view)", docs: '/ai/colors.md' },
+        'setBrushSurface': { signature: "setBrushSurface('geodesic'|'slab'|'sphere') -- UI brush volume: slab = prism limited by paint depth; geodesic floods the connected surface; sphere = plain 3D ball -> {surface} or {error}", docs: '/ai/colors.md' },
+        'getBrushAlign':   { signature: 'getBrushAlign() -- UI brush alignment -> {align}', docs: '/ai/colors.md' },
+        'setBrushAlign':   { signature: "setBrushAlign('view'|'surface'|'area') -- Which way a slab brush points: view = camera ray (stays a circle on screen; default), surface = triangle under the cursor, area = normal averaged over the brush -> {align} or {error}", docs: '/ai/colors.md' },
+        'getBrushFrontFacesOnly': { signature: 'getBrushFrontFacesOnly() -- UI brush front-faces-only toggle -> {frontFacesOnly}', docs: '/ai/colors.md' },
+        'setBrushFrontFacesOnly': { signature: 'setBrushFrontFacesOnly(on) -- Only paint triangles facing the camera (UI brush; default on) -> {frontFacesOnly} or {error}', docs: '/ai/colors.md' },
         'setBrushDepth': { signature: 'setBrushDepth(depth) -- How far UI slab paint reaches through a wall (mesh units, >= 0; 0 = auto) -> {depth} or {error}', docs: '/ai/colors.md' },
         'getBrushWrapAngle': { signature: 'getBrushWrapAngle() -- UI brush wrap tolerance (max edge bend paint may cross, degrees) -> {wrapAngleDeg}', docs: '/ai/colors.md' },
         'setBrushWrapAngle': { signature: 'setBrushWrapAngle(deg) -- Set the UI brush wrap tolerance (clamped to 0..180; 90 stops at right-angle corners) -> {wrapAngleDeg} or {error}', docs: '/ai/colors.md' },
@@ -22150,6 +23394,7 @@ async function main() {
         'getPrinterSettings': { signature: 'getPrinterSettings() -- Printer / build-volume settings -> {bed: [x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)', docs: '/ai/printing.md#printer-settings' },
         'setPrinterSettings': { signature: 'setPrinterSettings({bed?: [x,y,z], nozzleWidth? >= 0.05, overhangAngleDeg? 1..89, clearance? >= 0}) -- Update any subset -> merged settings or {error}', docs: '/ai/printing.md#printer-settings' },
         'checkPrintability': { signature: 'checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) -- Bed fit, overhangs, thin walls, small features, tip-over and watertight report, pass/warn/fail per check (defaults from printer settings) -> report or {error}', docs: '/ai/printing.md#checkprintabilityopts' },
+        'thicknessMap':    { signature: 'await thicknessMap({threshold?, limit?, render?, views?, size?}?) -- Exact wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[{center, thinnest, thickness, area, triangleCount}], spotCount, image?} (threshold default 2 × nozzle; render adds a red→grey heatmap)', docs: '/ai/printing.md#thicknessmapopts' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },
@@ -22271,6 +23516,38 @@ async function main() {
 
   // === Internal functions ===
 
+  /** Render `angles` of `mesh` into one labelled composite PNG data URL
+   *  (renderViews, the thickness heatmap). Each angle renders through
+   *  renderSingleView (one shared offscreen WebGLRenderer), is decoded, then
+   *  stamped into the grid. */
+  async function composeViews(
+    mesh: MeshData,
+    angles: { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[],
+    tileSize: number,
+    render: { edges?: EdgeMode; reference?: boolean },
+  ): Promise<string | null> {
+    const labelHeight = 24;
+    const cellHeight = tileSize + labelHeight;
+    const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
+    const rows = Math.ceil(angles.length / cols);
+    const composite = document.createElement('canvas');
+    composite.width = tileSize * cols;
+    composite.height = cellHeight * rows;
+    const ctx = composite.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#f4f4f5';
+    ctx.fillRect(0, 0, composite.width, composite.height);
+    for (let i = 0; i < angles.length; i++) {
+      const { label, opts } = angles[i];
+      const dataUrl = renderSingleView(mesh, { ...opts, size: tileSize, ...render });
+      if (!dataUrl) continue;
+      const img = await loadImageFromDataUrl(dataUrl);
+      if (!img) continue;
+      drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
+    }
+    return composite.toDataURL('image/png');
+  }
+
   /** Draw one rendered angle into the renderViews composite grid:
    *  the rendered tile occupies the top of the cell, with a labelled
    *  footer band beneath it identifying the angle. `cols` controls
@@ -22351,7 +23628,7 @@ async function main() {
   ): string | null {
     const triColors = buildTriColors(mesh.numTri) ?? createEmptyTriColors(mesh.numTri);
     overlayPainted(triColors, highlightTriangles, [1, 230 / 255, 0]);
-    return renderSingleView({ ...mesh, triColors }, viewOpts);
+    return renderSingleView({ ...mesh, triColors }, { ...viewOpts, size: viewOpts.size ?? getRenderBudget().defaultPx });
   }
 
   /** For a triangle set, compute total surface area, the largest single-
@@ -23298,7 +24575,6 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     lastRunRejection = null;
-    lastRunLogs = undefined;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -23413,6 +24689,7 @@ async function main() {
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
     lastRunLogs = result.logs;
+    modelConsolePanel?.setLogs(result.logs);
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

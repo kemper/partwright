@@ -132,7 +132,8 @@ describe('api.paint.* recorder parity', () => {
   // rejected `pattern`, breaking api.paint.pattern in-app).
   it('the recorder emits exactly the shared API_PAINT_DESCRIPTOR_KINDS, and each validates', () => {
     const src = readFileSync(new URL('../../src/geometry/engines/manifoldJs.ts', import.meta.url), 'utf8');
-    const recorder = src.slice(src.indexOf('const paintOps'));
+    // (Minus the part-edit recorder, api.movePart & co., whose ops also carry a `kind`.)
+    const recorder = src.slice(src.indexOf('const paintOps')).split('\n').filter(l => !l.includes('partOps.push(')).join('\n');
     const kinds = new Set([...recorder.matchAll(/kind:\s*'([A-Za-z]+)'/g)].map(m => m[1]));
     expect([...kinds].sort()).toEqual([...API_PAINT_DESCRIPTOR_KINDS].sort());
     expect(Object.keys(VALID_DESCRIPTORS).sort()).toEqual([...API_PAINT_DESCRIPTOR_KINDS].sort());

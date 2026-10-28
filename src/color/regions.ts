@@ -2,7 +2,7 @@
 
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
-import type { BrushShape } from './subdivide';
+import type { BrushShape, BrushSurface, BrushAlign, BrushView } from './subdivide';
 import type { ColorPatternKind, PatternScope } from './colorPattern';
 
 export interface ColorRegion {
@@ -52,7 +52,14 @@ export interface ColorRegion {
 export type RegionDescriptor = RegionDescriptorKind & { withinPart?: string };
 
 type RegionDescriptorKind =
-  | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
+  // Bucket fills (`coplanar` = paintRegion, `connectedFromSeed` =
+  // paintConnected) take optional boundary smoothing: when `smooth` is set the
+  // fill is re-flooded on the pristine base mesh, its triangle coverage is
+  // blurred `smoothness` times across the surface, and the mesh is clipped
+  // along the blurred 0.5 contour (see smoothFill.ts) — a clean edge instead
+  // of the triangle sawtooth. Absent on descriptors saved before smoothing
+  // existed (no subdivision, original blocky edge).
+  | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number; smooth?: boolean; smoothness?: number }
   // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
   // is set, the mesh is locally subdivided near the region's boundary until
   // boundary triangles fall below `maxEdge`, so the painted edge follows the
@@ -98,7 +105,8 @@ type RegionDescriptorKind =
       // (e.g. paint the dome of an e-stop without bleeding into the collar).
       // Persisted so a re-resolve after geometry edit walks the same path;
       // descriptors saved before the clamp existed omit both fields.
-      clampMin?: [number, number, number]; clampMax?: [number, number, number] }
+      clampMin?: [number, number, number]; clampMax?: [number, number, number];
+      smooth?: boolean; smoothness?: number }
   // Smooth paintbrush stroke: surface samples + brush footprint, plus a target
   // edge length. Resolving it locally refines the mesh under the stroke until
   // boundary triangles are below `maxEdge`, so the painted edge follows the
@@ -112,7 +120,15 @@ type RegionDescriptorKind =
   // edge when the faces bend by ≤ this angle, so a stroke stops at sharp corners
   // (≥90°) but flows over gentle curves. Omitted ⇒ 180° (no gate) for back-compat
   // with strokes saved before the slider existed.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number } }
+  // `align` points a slab stroke's prism along each sample's surface normal
+  // ('surface', the default and the only behaviour before the field), the
+  // normal averaged over the brush ('area'), or the camera ray ('view', using
+  // the stored `view`). `surface: 'sphere'` is a plain 3D ball (cube/octahedron
+  // for square/diamond) with no depth or wrap gate. `frontFaceMaxDeg` keeps only
+  // triangles facing the stored `view` camera within that angle. All optional:
+  // strokes saved without them resolve exactly as before.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: BrushSurface; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number };
+      align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number }
   // Image projection: per-triangle colors computed at apply-time by projecting
   // an image onto the mesh from a chosen axis direction. The projected result is
   // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region

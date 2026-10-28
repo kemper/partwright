@@ -34,6 +34,22 @@ function toggles(partial: Parameters<typeof setToggles>[1] = {}): ChatToggles {
 }
 const names = (t: ChatToggles) => new Set(buildToolList(t).map(d => d.name));
 
+describe('thicknessMap and the Views toggle', () => {
+  const schema = (t: ChatToggles) => buildToolList(t).find(d => d.name === 'thicknessMap');
+  test('offered either way; the heatmap options only when Views is on', () => {
+    for (const planFirst of [false, true]) {
+      const on = schema(toggles({ scope: ALL_ON, vision: { views: true }, planFirst }));
+      const off = schema(toggles({ scope: ALL_ON, vision: { views: false }, planFirst }));
+      expect(on?.input_schema.properties).toHaveProperty('render');
+      expect(off).toBeDefined();
+      expect(off?.input_schema.properties).not.toHaveProperty('render');
+      expect(off?.input_schema.properties).not.toHaveProperty('views');
+      expect(off?.input_schema.properties).toHaveProperty('threshold');
+      expect(off?.description).not.toMatch(/heatmap image/);
+    }
+  });
+});
+
 describe('AI tool gating invariants', () => {
   test('every tool in the schema list is offered when every toggle is on', () => {
     // Plan-only tools (proposePlan) are offered in plan mode, not with it off.
@@ -453,6 +469,14 @@ describe('AI tool dispatch', () => {
     expect(unknown.error).toMatch(/"Nope"/);
     const vox = JSON.parse((await executeTool('exportModel', { format: 'vox', objects: ['Base'] })).content);
     expect(vox.error).toMatch(/only the current object/);
+    // split / exclude route a single-object export through the multi-object
+    // exporter for the current object.
+    await executeTool('exportModel', { format: '3mf', split: { Base: 'pieces' }, exclude: ['Base · Piece 2'] });
+    expect(calls.filter(c => c.method === 'export3MFObjects')[2].args).toEqual([['o1'], undefined, { bambu: false, split: { Base: 'pieces' }, exclude: ['Base · Piece 2'] }]);
+    const badSplit = JSON.parse((await executeTool('exportModel', { format: 'stl', split: { Base: 'halves' } })).content);
+    expect(badSplit.error).toMatch(/"pieces", "parts" or "whole"/);
+    const stepSplit = JSON.parse((await executeTool('exportModel', { format: 'step', split: { Base: 'pieces' } })).content);
+    expect(stepSplit.error).toMatch(/can't split/);
   });
 
   test('confirm labels name the export format + objects and the voxel image', async () => {

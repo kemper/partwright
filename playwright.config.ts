@@ -55,22 +55,20 @@ if (shard) {
 const port = Number(process.env.E2E_PORT || 5173);
 // Engine-sandbox 'origin' mode (tests/engine-sandbox.spec.ts) needs the frame
 // served from a DIFFERENT origin: a second dev server of this same checkout on
-// another port. The app server is told about it via VITE_SANDBOX_ORIGIN; with
-// the sandbox off (the default) that variable is inert.
+// another port. The app server is told about it via VITE_SANDBOX_ORIGIN /
+// VITE_APP_ORIGIN — which would make 'origin' the default mode — so the suite
+// pins the build default to 'off' (VITE_ENGINE_SANDBOX) and the sandbox specs
+// opt in per page. `VITE_ENGINE_SANDBOX=origin npx playwright test …` runs any
+// spec with the origin sandbox on.
 // port+1000 (not +1): parallel worktrees take neighbouring E2E_PORTs.
 const sandboxPort = Number(process.env.E2E_SANDBOX_PORT || port + 1000);
 const devCommand = (p: number) => (p === 5173 ? 'npm run dev' : `npm run dev -- --port ${p} --strictPort`);
 const devEnv = {
-  // The app default is the opaque sandbox; the broad suite stays on the plain
-  // Worker so only the sandbox specs (which pick a mode via localStorage) pay for it.
-  VITE_ENGINE_SANDBOX: 'off',
   VITE_SANDBOX_ORIGIN: `http://localhost:${sandboxPort}`,
   // The app origin the 'origin'-mode frame accepts spawn requests from (and
   // its CSP frame-ancestors).
   VITE_APP_ORIGIN: `http://localhost:${port}`,
-  // Opaque-mode frames load modules cross-origin (Origin: null); the dev
-  // server only answers those with CORS when this opt-in is set (vite.config.ts).
-  PARTWRIGHT_SANDBOX_DEV_CORS: '1',
+  VITE_ENGINE_SANDBOX: process.env.VITE_ENGINE_SANDBOX ?? 'off',
 };
 
 export default defineConfig({

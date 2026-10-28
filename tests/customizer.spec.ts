@@ -37,6 +37,9 @@ type PW = {
   getParams: () => { schema: Array<{ key: string; type: string }>; values: Record<string, unknown> };
   setParams: (v: Record<string, unknown>) => Promise<Record<string, unknown>>;
   getGeometryData: () => Record<string, unknown>;
+  createPart: (name?: string) => Promise<{ id: string } | { error: string }>;
+  listParts: () => { id: string; name: string }[];
+  listVersions: () => Promise<{ index: number; label: string }[]>;
 };
 function xDim(geo: Record<string, unknown>): number {
   const bb = geo.boundingBox as { dimensions?: number[] } | null;
@@ -316,6 +319,49 @@ return v;`;
     // v1 came back at the model defaults.
     expect(out.v1.params).toMatchObject({ width: 20, hollow: false });
     expect(xDim(out.v1.geo)).toBeCloseTo(20, 0);
+  });
+
+  // #1131: switching objects from the rail used to dedup-check without the live
+  // overrides, so a version saved WITH overrides looked dirty and every switch
+  // away saved a duplicate that dropped them.
+  test('switching objects does not duplicate a version saved with overrides', async ({ page }) => {
+    const ids = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PW }).partwright;
+      await api.createSession('customizer-switch');
+      const first = api.listParts()[0].id;
+      await api.runAndSave(code, 'default');
+      await api.setParams({ width: 80 });
+      await api.saveVersion('wide');
+      const lid = await api.createPart('Lid');
+      await api.runAndSave(`const { Manifold } = api; return Manifold.cube([5, 5, 5], true);`, 'lid');
+      return { first, lid: (lid as { id: string }).id };
+    }, PARAM_MODEL);
+
+    const versionCount = () => page.evaluate(async () =>
+      (await (window as unknown as { partwright: PW }).partwright.listVersions()).length);
+    // The rail click runs the preserve-on-switch path (the console changePart
+    // does not), so drive the switch through the UI.
+    const clickPart = async (id: string) => {
+      await page.locator(`#parts-list [data-part-id="${id}"]`).click();
+      await page.waitForFunction(
+        (want) => (window as unknown as { partwright: { getSessionState: () => { currentPart: { id: string } | null } } })
+          .partwright.getSessionState().currentPart?.id === want,
+        id,
+      );
+      await page.waitForTimeout(1500); // load + recompile settle
+    };
+
+    await clickPart(ids.first);
+    const before = await versionCount();
+    expect(before).toBe(2);
+    for (let i = 0; i < 2; i++) {
+      await clickPart(ids.lid);
+      await clickPart(ids.first);
+    }
+    expect(await versionCount()).toBe(before);
+    const params = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getParams().values);
+    expect(params).toMatchObject({ width: 80 });
+    expect(await currentXDim(page)).toBeCloseTo(80, 0);
   });
 
   test('the panel header is a drag handle that repositions it (and keeps it on-screen)', async ({ page }) => {

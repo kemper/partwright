@@ -1,5 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
-import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { compileModelCode, hardenModelShared } from '../modelEval';
+import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { createParamCapture } from '../params';
@@ -27,6 +28,7 @@ import { wasmFaultHint } from '../workerFaults';
 import { assertModelCodeRealm } from '../workerLockdown';
 import { MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS, type ApiPaintDescriptorKind } from '../apiPaintSpec';
 import { withoutPiecesAt } from '../removePieces';
+import { applyPartOps, PartOpError, type PartOp } from '../partOps';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -101,17 +103,28 @@ export function getManifoldModule(): any {
 // `Manifold.compose([Manifold.ofMesh(a), Manifold.ofMesh(b)])` allocates
 // intermediate Manifolds that would otherwise leak on every run; because the
 // editor auto-runs on each edit/undo, that heap growth eventually faults the
-// module ("memory access out of bounds" / "null function"). To contain it we
-// wrap the Manifold/CrossSection factory + instance methods for the duration of
-// one run, record every object they hand back, and delete them all (except the
-// value the user returned) once the result mesh has been extracted. The wrapping
-// is scoped to the run and restored afterwards so other callers that share the
-// same module on the main thread (stats, slicing, simplify) are unaffected.
+// module ("memory access out of bounds" / "null function"). To contain it the
+// Manifold/CrossSection factory + instance methods are wrapped so that, while a
+// run is active, every object they hand back is recorded, and all of them
+// (except the value the user returned) are deleted once the result mesh has
+// been extracted.
+//
+// The wrappers are installed ONCE, on the first run in this realm (the engine
+// Worker, or Node for `model:preview`), and read the active run's tracker from
+// `activeRun` — outside a run they pass straight through. Installing once
+// (instead of patching and restoring the classes around every run, as before
+// #1127) is what lets the SES sandbox harden `Manifold`, `CrossSection` and
+// their prototypes (hardenModelShared): nothing writes to them after the first
+// run, so one run's model code can't patch a method a later run calls. The
+// main thread never runs model code, so its manifold-3d instance is never
+// wrapped.
 
-type SavedMethod = [target: Record<string, unknown>, name: string, fn: unknown];
+/** The active run's allocation tracker, or null between runs. */
+let activeRun: { track: (v: unknown) => void } | null = null;
+let trackingInstalledOn: unknown = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function wrapMethodsForTracking(target: any, track: (v: unknown) => void, saved: SavedMethod[]): void {
+function wrapMethodsForTracking(target: any): void {
   if (!target) return;
   for (const name of Object.getOwnPropertyNames(target)) {
     if (name === 'constructor' || name === 'delete' || name === 'isDeleted') continue;
@@ -121,18 +134,82 @@ function wrapMethodsForTracking(target: any, track: (v: unknown) => void, saved:
     try {
       target[name] = function (this: unknown, ...args: unknown[]) {
         const out = (orig as (...a: unknown[]) => unknown).apply(this, args);
-        track(out);
+        const run = activeRun;
+        if (run !== null) run.track(out);
         return out;
       };
-      saved.push([target, name, orig]);
     } catch { /* non-writable Embind member — skip (rare; just won't be tracked) */ }
   }
 }
 
-function restoreMethods(saved: SavedMethod[]): void {
-  for (const [target, name, fn] of saved) {
-    try { target[name] = fn; } catch { /* ignore */ }
+/** Install the argument guards and the allocation-tracking wrappers on the
+ *  manifold-3d classes, once per module instance (see above). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function installRunWrappersOnce(Manifold: any, CrossSection: any): void {
+  if (trackingInstalledOn === Manifold) return;
+  trackingInstalledOn = Manifold;
+  // Guards first, so the tracking wrapper sits outside them (validation runs
+  // before the allocation it would reject, and the tracked value is the
+  // guarded call's result).
+  installPrimitiveGuards(Manifold, CrossSection);
+  wrapMethodsForTracking(Manifold);
+  wrapMethodsForTracking(Manifold.prototype);
+  wrapMethodsForTracking(CrossSection);
+  wrapMethodsForTracking(CrossSection.prototype);
+  hardenInstanceReachables(Manifold, CrossSection);
+}
+
+/** Under SES, harden the shared objects model code reaches through the
+ *  INSTANCES it gets back rather than through `api` (which each run hardens):
+ *  manifold-3d's JS `Mesh` class (`getMesh()` results) and embind's per-class
+ *  pointer descriptors (`instance.$$.ptrType` → its RegisteredClass and the
+ *  shared RegisteredPointer prototype), which embind reads on every call that
+ *  marshals an instance. Probe instances are built to reach them and freed.
+ *  No-op without SES. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hardenInstanceReachables(Manifold: any, CrossSection: any): void {
+  if (manifoldModule?.Mesh) hardenModelShared(manifoldModule.Mesh);
+  // The error classes the glue throws at model code (embind's extendError
+  // classes and manifold-3d's ManifoldError): their constructors assign
+  // `this.stack = this.toString() + …` / `this.code = …`, so a prototype patched
+  // by one run would run inside later runs. Harden the module's exports, and
+  // the classes actually thrown (provoked once below), in case one isn't
+  // exported.
+  for (const name of ['ManifoldError', 'BindingError', 'InternalError', 'UnboundTypeError']) {
+    const cls = manifoldModule?.[name];
+    if (typeof cls === 'function') hardenModelShared(cls);
   }
+  const hardenThrown = (provoke: () => unknown): void => {
+    try { provoke(); } catch (e) {
+      const ctor = (e as { constructor?: unknown } | null)?.constructor;
+      if (typeof ctor === 'function' && ctor !== Error && ctor !== TypeError && ctor !== RangeError) hardenModelShared(ctor);
+    }
+  };
+  const probes: Array<{ $$?: { ptrType?: unknown }; delete?: () => void }> = [];
+  try {
+    const cube = Manifold.cube([1, 1, 1]);
+    probes.push(cube, cube.translate([0, 0, 0]), new Manifold(cube.getMesh()));
+    const sq = CrossSection.square([1, 1]);
+    probes.push(sq, sq.translate([0, 0]), new CrossSection(sq.toPolygons()));
+    hardenThrown(() => cube.add(5)); // embind BindingError (bad argument type)
+    hardenThrown(() => new Manifold({})); // ManifoldError (invalid mesh)
+    const dead = Manifold.cube([1, 1, 1]);
+    dead.delete();
+    hardenThrown(() => dead.volume()); // BindingError (deleted object)
+  } catch { /* best-effort: tests/engine-ses.spec.ts "no shared mutable state" is the check */ }
+  for (const p of probes) {
+    const ptrType = p?.$$?.ptrType;
+    if (ptrType && typeof ptrType === 'object') hardenModelShared(ptrType);
+    try { p.delete?.(); } catch { /* already freed */ }
+  }
+}
+
+/** Install the run wrappers on this realm's manifold-3d classes before any
+ *  engine hardens them. The replicad engine exposes `Manifold` too and calls
+ *  this first: hardening happens per run, and a frozen class can't be wrapped
+ *  later (a replicad run followed by a manifold-js run in the same Worker). */
+export function ensureManifoldRunWrappers(): void {
+  if (manifoldModule) installRunWrappersOnce(manifoldModule.Manifold, manifoldModule.CrossSection);
 }
 
 // Argument guards for the dimension-taking primitive constructors. Several of
@@ -150,14 +227,14 @@ function restoreMethods(saved: SavedMethod[]): void {
 // degenerate bounds as a backstop; this layer turns the common authoring
 // mistake into a clear message at its source.
 //
-// Installed before `wrapMethodsForTracking` and restored after it (reverse
-// order) so the validation and allocation-tracking wrappers compose cleanly.
+// Installed once with the tracking wrappers (installRunWrappersOnce), inside
+// them, and — like the tracking — only active while a model-code run is (the
+// engine's own calls between runs are unaffected, as before).
 function installPrimitiveGuards(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Manifold: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   CrossSection: any,
-  saved: SavedMethod[],
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrap = (target: any, name: string, validate: (args: unknown[]) => void): void => {
@@ -165,10 +242,9 @@ function installPrimitiveGuards(
     if (typeof orig !== 'function') return;
     try {
       target[name] = function (this: unknown, ...args: unknown[]) {
-        validate(args);
+        if (activeRun !== null) validate(args);
         return (orig as (...a: unknown[]) => unknown).apply(this, args);
       };
-      saved.push([target, name, orig]);
     } catch { /* non-writable Embind member — skip */ }
   };
 
@@ -349,6 +425,51 @@ export const manifoldJsEngine: Engine = {
         throw new Error('api.removePiece(point): point must be [x, y, z] — a point on or inside the separate piece to remove.');
       }
       removedPieces.push(point as [number, number, number]);
+    };
+
+    // Part edits declared in code — what the Parts panel writes (arrange,
+    // copies, grouping): `api.movePart('a', [x, y, z])`, `rotatePart`,
+    // `scalePart`, `mirrorPart`, `copyPart`, `groupParts`, `cutWithPart`.
+    // Recorded in order and applied to the returned model AFTER the code
+    // runs (src/geometry/partOps.ts), by moving the part's own triangles — so
+    // they work on any labelled part (api.label, an import's parts, BREP
+    // labels) that is a separate solid, wherever the lines sit in the code.
+    const partOps: PartOp[] = [];
+    const partName = (fn: string, name: unknown): string => {
+      if (typeof name !== 'string' || name.length === 0) throw new Error(`api.${fn}(name, …): name must be a non-empty string naming a part (see listObjectParts).`);
+      return name;
+    };
+    const vec3 = (fn: string, v: unknown, what: string): [number, number, number] => {
+      if (!Array.isArray(v) || v.length !== 3 || v.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error(`api.${fn}: ${what} must be [x, y, z] (three finite numbers).`);
+      }
+      return [v[0], v[1], v[2]];
+    };
+    const movePart = (name: unknown, offset: unknown): void => {
+      partOps.push({ kind: 'move', part: partName('movePart', name), offset: vec3('movePart', offset, 'offset') });
+    };
+    const rotatePart = (name: unknown, degrees: unknown): void => {
+      partOps.push({ kind: 'rotate', part: partName('rotatePart', name), degrees: vec3('rotatePart', degrees, 'degrees') });
+    };
+    const scalePart = (name: unknown, factor: unknown): void => {
+      const f = typeof factor === 'number' ? [factor, factor, factor] : factor;
+      const v = vec3('scalePart', f, 'factor (a number, or [x, y, z])');
+      if (v.some(n => n <= 0)) throw new Error('api.scalePart: factors must be greater than 0 (use mirrorPart to flip).');
+      partOps.push({ kind: 'scale', part: partName('scalePart', name), factor: v });
+    };
+    const mirrorPart = (name: unknown, axis: unknown): void => {
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') throw new Error("api.mirrorPart(name, axis): axis must be 'x', 'y' or 'z'.");
+      partOps.push({ kind: 'mirror', part: partName('mirrorPart', name), axis });
+    };
+    const copyPart = (name: unknown, as: unknown, offset: unknown = [0, 0, 0]): void => {
+      partOps.push({ kind: 'copy', part: partName('copyPart', name), as: partName('copyPart', as), offset: vec3('copyPart', offset, 'offset') });
+    };
+    const groupParts = (names: unknown, as: unknown): void => {
+      if (!Array.isArray(names) || names.length < 2) throw new Error("api.groupParts(names, as): names must be an array of 2+ part names, e.g. api.groupParts(['lid', 'hinge'], 'lid assembly').");
+      partOps.push({ kind: 'group', parts: names.map(n => partName('groupParts', n)), as: partName('groupParts', as) });
+    };
+    const cutWithPart = (name: unknown): void => {
+      partOps.push({ kind: 'cut', part: partName('cutWithPart', name) });
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -868,6 +989,13 @@ export const manifoldJsEngine: Engine = {
       labeledUnion,
       removePart,
       removePiece,
+      movePart,
+      rotatePart,
+      scalePart,
+      mirrorPart,
+      copyPart,
+      groupParts,
+      cutWithPart,
       paint,
       surface,
       material,
@@ -912,9 +1040,8 @@ export const manifoldJsEngine: Engine = {
 
     // Track every Manifold/CrossSection the user's code creates so the
     // intermediates can be freed afterwards (see the memory-management note
-    // above). Wrapping is installed now and reverted in `finally`.
+    // above). The tracker is live from here until `finally`.
     const allocated: Array<{ delete?: () => void }> = [];
-    const savedMethods: SavedMethod[] = [];
     const isTrackable = (v: unknown): boolean =>
       v != null && typeof v === 'object' && (v instanceof Manifold || v instanceof CrossSection);
     const track = (v: unknown): void => {
@@ -924,19 +1051,20 @@ export const manifoldJsEngine: Engine = {
         allocated.push(v as { delete?: () => void });
       }
     };
-    // Validate primitive dimensions before the tracking wrap so a degenerate
-    // `Manifold.sphere()` / `cylinder()` / `circle()` fails with a clear error
-    // instead of building a viewport-freezing zero-size solid. Restored after
-    // the tracking wrap in `finally` (reverse install order).
-    const savedGuards: SavedMethod[] = [];
-    installPrimitiveGuards(Manifold, CrossSection, savedGuards);
-    wrapMethodsForTracking(Manifold, track, savedMethods);
-    wrapMethodsForTracking(Manifold.prototype, track, savedMethods);
-    wrapMethodsForTracking(CrossSection, track, savedMethods);
-    wrapMethodsForTracking(CrossSection.prototype, track, savedMethods);
+    // The primitive-dimension guards (a degenerate `Manifold.sphere()` /
+    // `cylinder()` / `circle()` fails with a clear error instead of building a
+    // viewport-freezing zero-size solid) and the tracking wrappers are
+    // installed once; this run's tracker is live from here to `finally`.
+    installRunWrappersOnce(Manifold, CrossSection);
+    activeRun = { track };
 
     try {
-      const fn = new Function('api', `"use strict";\n${jsCode}`);
+      // Under SES, deep-freeze everything this run's `api` reaches — the
+      // embind classes (wrapped once above), the namespace singletons, BREP —
+      // so nothing model code does to them outlives the run. No-op without SES.
+      hardenModelShared(api);
+      hardenModelShared(SdfNode);
+      const fn = compileModelCode(jsCode);
       // BREP.label honours api.removePart too (Phase C: BREP inside a JS run).
       setBrepRemovedParts(removedParts);
       // Selector `label` terms (sculpt / deform / scatter `select:`) resolve
@@ -981,6 +1109,49 @@ export const manifoldJsEngine: Engine = {
       // provenance (through any booleans) exactly like `api.label` ones.
       for (const registry of consumeBrepToManifoldLabels()) {
         for (const [id, name] of registry) labelRegistry.set(id, name);
+      }
+
+      // Part edits (api.movePart & co.): move the parts' own triangles, then
+      // subtract any cutter parts. Copies and groups keep their source's colour.
+      // An edit of a part deleted with api.removePart (or of a copy / group
+      // made from one) has nothing left to act on: skip it rather than fail.
+      const gone = new Set(removedParts);
+      const liveOps: PartOp[] = [];
+      for (const op of partOps) {
+        if (op.kind === 'group') {
+          const parts = op.parts.filter(n => !gone.has(n));
+          if (parts.length < 2) gone.add(op.as);
+          else liveOps.push(parts.length === op.parts.length ? op : { ...op, parts });
+        } else if (gone.has(op.part) || (op.kind === 'copy' && gone.has(op.as))) {
+          // (A removed copy: api.removePart names the copy itself.)
+          if (op.kind === 'copy') gone.add(op.as);
+        } else {
+          liveOps.push(op);
+        }
+      }
+      if (liveOps.length > 0) {
+        const mg = result.getMesh();
+        let edited;
+        try {
+          edited = applyPartOps(
+            { numProp: mg.numProp, vertProperties: mg.vertProperties, triVerts: mg.triVerts, runIndex: mg.runIndex, runOriginalID: mg.runOriginalID, mergeFromVert: mg.mergeFromVert, mergeToVert: mg.mergeToVert },
+            labelRegistry, liveOps, (n) => Manifold.reserveIDs(n),
+          );
+        } catch (e) {
+          if (e instanceof PartOpError) throw new Error(e.message);
+          throw e;
+        }
+        labelRegistry.clear();
+        for (const [id, name] of edited.labels) labelRegistry.set(id, name);
+        for (const op of liveOps) {
+          if (op.kind === 'copy' && labelColors.has(op.part) && !labelColors.has(op.as)) labelColors.set(op.as, labelColors.get(op.part)!);
+          if (op.kind === 'group' && !labelColors.has(op.as)) {
+            const first = op.parts.find(n => labelColors.has(n));
+            if (first) labelColors.set(op.as, labelColors.get(first)!);
+          }
+        }
+        result = Manifold.ofMesh(edited.mesh);
+        for (const cutter of edited.cutters) result = result.subtract(Manifold.ofMesh(cutter));
       }
 
       // Labels present before api.removePiece drops pieces — a label that lived
@@ -1040,7 +1211,6 @@ export const manifoldJsEngine: Engine = {
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
-      const isSyntaxError = e instanceof SyntaxError;
       let hint: string | undefined;
 
       // Enhance common WASM error messages with actionable hints
@@ -1064,7 +1234,7 @@ export const manifoldJsEngine: Engine = {
         mesh: null,
         manifold: null,
         error: msg,
-        diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
+        diagnostics: modelCodeDiagnostics(jsCode, msg, e, hint),
         paramsSchema: paramCapture.collectSchema(),
       };
     } finally {
@@ -1074,8 +1244,7 @@ export const manifoldJsEngine: Engine = {
       // the user returned (`result`) is spared — its lifecycle belongs to the
       // caller (the worker frees it after extracting the mesh; the sync path in
       // main.ts deletes it after querying volume/bbox).
-      restoreMethods(savedMethods);
-      restoreMethods(savedGuards);
+      activeRun = null;
       disposeAllExcept(allocated, result);
       // BREP shapes don't pass through Manifold.* / CrossSection.* method
       // wrapping (they're created by `BREP.box(...).fillet(...)` chains
@@ -1098,9 +1267,9 @@ export const manifoldJsEngine: Engine = {
   },
 
   validate(jsCode: string): ValidateResult {
-    // Cheap parse check — try to construct the Function without executing.
+    // Cheap parse check — compile without executing.
     try {
-      new Function('api', `"use strict";\n${jsCode}`);
+      compileModelCode(jsCode);
       return { valid: true };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

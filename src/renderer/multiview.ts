@@ -7,7 +7,9 @@ import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegist
 import { presetIndex } from '../storage/db';
 import type { SessionAttachment, AttachedImage } from '../storage/attachment';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+import { creaseEdgeSegments } from './creaseEdges';
 import { getConfig } from '../config/appConfig';
+import { getReferenceMesh } from './referenceMesh';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
@@ -115,17 +117,30 @@ function disposeScene(scene: THREE.Scene): void {
 
 /** Add the chosen edge overlay on top of a scene that already holds the
  *  solid mesh. `wireframe` draws every triangle edge; `crease` draws only
- *  feature edges (via EdgesGeometry past CREASE_ANGLE_DEG); `none` adds
- *  nothing. The overlay shares the solid mesh's geometry for the wireframe
- *  case, and builds a throwaway EdgesGeometry for the crease case —
- *  disposeScene releases both. Crease edges are skipped past
- *  `renderer.creaseEdgeMaxTriangles`: EdgesGeometry is a synchronous
- *  main-thread pass that froze the app for seconds on a dense import. */
+ *  feature edges (past CREASE_ANGLE_DEG, minus micro-steps — see
+ *  creaseEdges.ts); `none` adds nothing. The overlay shares the solid mesh's
+ *  geometry for the wireframe case, and builds a throwaway segment geometry
+ *  for the crease case — disposeScene releases both. Crease edges are
+ *  skipped past `renderer.creaseEdgeMaxTriangles`: the extraction is a
+ *  synchronous main-thread pass that froze the app for seconds on a dense
+ *  import. */
 function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode: EdgeMode): void {
   if (mode === 'wireframe') {
     scene.add(new THREE.Mesh(geometry, createBlackWireframeMaterial()));
   } else if (mode === 'crease' && triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
-    const edges = new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG);
+    // EdgesGeometry's creases, minus sub-voxel steps (a scoped round's seam)
+    // that would otherwise outline the edit as if it were a defect (#1112).
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox!;
+    const diag = box.max.distanceTo(box.min);
+    const segments = creaseEdgeSegments(
+      geometry.getAttribute('position').array,
+      geometry.index ? geometry.index.array : null,
+      CREASE_ANGLE_DEG,
+      getConfig().renderer.creaseMinStep * diag,
+    );
+    const edges = new THREE.BufferGeometry();
+    edges.setAttribute('position', new THREE.BufferAttribute(segments, 3));
     scene.add(new THREE.LineSegments(edges, createCreaseEdgeMaterial()));
   }
 }
@@ -295,6 +310,11 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, e
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
  *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
+/** Camera defaults for an omitted elevation / azimuth — shared by renders,
+ *  pixel probes and the AI tool's view label so they can't disagree. */
+export const DEFAULT_VIEW_ELEVATION = 30;
+export const DEFAULT_VIEW_AZIMUTH = 315;
+
 /** Build the same THREE.Camera that `renderSingleView` would render
  *  through for these options. Exported so `probePixel` (in
  *  geometry/rayCast.ts) can replay the camera exactly and unproject
@@ -310,8 +330,8 @@ export function buildViewCamera(meshData: MeshData, options: {
    *  The rest of the mesh still renders — anything in front occludes. */
   frame?: { min: [number, number, number]; max: [number, number, number] };
 }): THREE.Camera {
-  const elevation = (options.elevation ?? 30) * Math.PI / 180;
-  const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
+  const elevation = (options.elevation ?? DEFAULT_VIEW_ELEVATION) * Math.PI / 180;
+  const azimuth = (options.azimuth ?? DEFAULT_VIEW_AZIMUTH) * Math.PI / 180;
 
   // Bounding box from the raw vertProperties — same numbers
   // renderSingleView computes after constructing the BufferGeometry.
@@ -374,6 +394,36 @@ export function buildViewCamera(meshData: MeshData, options: {
   return camera;
 }
 
+/** Add the reference ("ghost") geometry to an offscreen scene, drawn like the
+ *  viewport's: translucent, depth-tested (so it hides where it passes behind
+ *  the model and shows where it pokes through), plus its crease edges so the
+ *  outline reads on a white background. Returns false when there is none. */
+function addReferenceGhost(scene: THREE.Scene): boolean {
+  const ref = getReferenceMesh();
+  if (!ref) return false;
+  const color = ref.style.color ?? 0x00ff88;
+  const opacity = ref.style.opacity ?? 0.25;
+  const geometry = indexedGeometry(ref.mesh);
+  if (ref.style.wireframe) {
+    scene.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: Math.max(opacity, 0.35), wireframe: true })));
+    return true;
+  }
+  const solid = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+    color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false,
+  }));
+  solid.renderOrder = 1; // after the opaque model
+  scene.add(solid);
+  if (triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: Math.min(1, opacity * 2.5) }),
+    );
+    edges.renderOrder = 2;
+    scene.add(edges);
+  }
+  return true;
+}
+
 export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
@@ -385,15 +435,22 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
    *  proxy (see previewProxy.ts). For version thumbnails only — renders an
    *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
   thumbnail?: boolean;
+  /** Draw the reference ("ghost") geometry from setReferenceGeometry, when
+   *  one is set. The camera still frames the model. */
+  reference?: boolean;
+  /** Draw the open object's annotations over the render (default true). Off
+   *  for previews of something other than the open object. */
+  annotations?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
   const geometry = meshDataToGeometry(options.thumbnail ? previewProxy(meshData, getConfig().renderer.thumbnailMaxTriangles) : meshData);
   const scene = createElevationScene(geometry, 0xffffff, options.edges);
+  if (options.reference) addReferenceGhost(scene);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildOffscreenOverlay(viewSize);
+  const annotations = options.annotations === false ? null : buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   renderer.render(scene, camera);
@@ -496,34 +553,121 @@ export function renderSingleView(meshData: MeshData, options: {
   ortho?: boolean;
   size?: number;
   edges?: EdgeMode;
+  reference?: boolean;
 } = {}): string {
   return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }
 
 /** Render a cross-section at a given Z height as an SVG string */
-export function renderSliceSVG(polygons: [number, number][][], boundingBox: { minX: number; maxX: number; minY: number; maxY: number }, size: number = 400): string {
-  const { minX, maxX, minY, maxY } = boundingBox;
+export interface SliceAnnotations {
+  /** Caption across the top, e.g. "y = 0 · seen from −Y (front)". */
+  title: string;
+  /** World directions pointing right and up in the image, e.g. '+X' / '+Z'. */
+  right: string;
+  up: string;
+  /** Shown in the middle of the frame instead of the section's extents —
+   *  e.g. that the plane misses the model. */
+  note?: string;
+  /** Section of the reference ("ghost") geometry through the same plane, in
+   *  the same 2D frame — drawn as a dashed outline. */
+  reference?: [number, number][][];
+}
+
+/** A round length (1, 2 or 5 × 10ⁿ) close to `target`, for a scale bar. */
+function niceLength(target: number): number {
+  if (!(target > 0)) return 1;
+  const pow = 10 ** Math.floor(Math.log10(target));
+  const m = target / pow;
+  return (m >= 5 ? 5 : m >= 2 ? 2 : 1) * pow;
+}
+
+function formatLength(n: number): string {
+  return Number(n.toPrecision(6)).toString();
+}
+
+function contourPath(contour: [number, number][]): string {
+  // Flip Y for SVG (SVG Y goes down, our Y goes up).
+  return contour.map((pt, i) => `${i === 0 ? 'M' : 'L'}${pt[0].toFixed(3)},${(-pt[1]).toFixed(3)}`).join(' ') + ' Z';
+}
+
+/** Render a cross-section (2D contours, +x right / +y up) as an SVG string.
+ *  With `annotations` the image also carries a caption, labelled right/up
+ *  axis arrows, a scale bar, the section's extents, and the reference
+ *  geometry's outline (dashed) — so a reader can tell which way is which and
+ *  how big things are without the call's arguments in front of them. */
+export function renderSliceSVG(polygons: [number, number][][], boundingBox: { minX: number; maxX: number; minY: number; maxY: number }, size: number = 400, annotations?: SliceAnnotations): string {
+  // Frame the model's section plus any reference outline.
+  let { minX, maxX, minY, maxY } = boundingBox;
+  for (const contour of annotations?.reference ?? []) {
+    for (const [x, y] of contour) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
   const w = maxX - minX;
   const h = maxY - minY;
-  const maxDim = Math.max(w, h);
+  const maxDim = Math.max(w, h) || 1;
   const padding = maxDim * 0.1;
-  const vbX = minX - padding;
+  // Annotated images keep a band above (caption) and below (axes, scale).
+  const top = annotations ? maxDim * 0.12 : 0;
+  const bottom = annotations ? maxDim * 0.16 : 0;
   const vbW = maxDim + padding * 2;
-  const vbH = maxDim + padding * 2;
+  const vbH = maxDim + padding * 2 + top + bottom;
+  // Centre the section in the square-ish frame.
+  const vbX = (minX + maxX) / 2 - vbW / 2;
+  const vbY = -(minY + maxY) / 2 - (maxDim / 2 + padding) - top;
+  const stroke = maxDim * 0.005;
 
-  let paths = '';
-  for (const contour of polygons) {
-    if (contour.length < 2) continue;
-    // Flip Y for SVG (SVG Y goes down, our Y goes up)
-    const d = contour.map((pt, i) => {
-      const cmd = i === 0 ? 'M' : 'L';
-      return `${cmd}${pt[0].toFixed(2)},${(-pt[1]).toFixed(2)}`;
-    }).join(' ') + ' Z';
-    paths += `<path d="${d}" fill="#4a9eff" fill-opacity="0.3" stroke="#2563eb" stroke-width="${maxDim * 0.005}"/>`;
+  // One path, even-odd: a hole contour (a hollow wall's inside) stays empty
+  // whichever way the slicer wound it.
+  const d = polygons.filter(c => c.length >= 2).map(contourPath).join(' ');
+  const paths = d ? `<path d="${d}" fill="#4a9eff" fill-opacity="0.3" fill-rule="evenodd" stroke="#2563eb" stroke-width="${stroke}"/>` : '';
+
+  let overlay = '';
+  if (annotations) {
+    const font = maxDim * 0.045;
+    const textAttrs = (size = font) => `font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="#e4e4e7"`;
+    // Monospace glyphs are ~0.6 em wide: shrink a long caption to fit the width.
+    const fit = (text: string) => Math.min(font, (vbW - padding) / (text.length * 0.6));
+    for (const contour of annotations.reference ?? []) {
+      if (contour.length < 2) continue;
+      overlay += `<path d="${contourPath(contour)}" fill="none" stroke="#34d399" stroke-width="${stroke * 1.5}" stroke-dasharray="${stroke * 6},${stroke * 4}"/>`;
+    }
+    overlay += `<text x="${vbX + padding * 0.5}" y="${vbY + top * 0.7}" ${textAttrs(fit(annotations.title))}>${escapeXml(annotations.title)}</text>`;
+    if (annotations.note) {
+      overlay += `<text x="${vbX + vbW / 2}" y="${-(minY + maxY) / 2}" text-anchor="middle" ${textAttrs(fit(annotations.note))} fill-opacity="0.8">${escapeXml(annotations.note)}</text>`;
+    }
+    // Axis arrows, bottom-left.
+    const ox = vbX + padding * 0.5;
+    const oy = vbY + vbH - padding * 0.5;
+    const len = maxDim * 0.1;
+    const head = len * 0.25;
+    const axisStroke = `stroke="#e4e4e7" stroke-width="${stroke * 1.5}" fill="none"`;
+    overlay += `<path d="M${ox},${oy} L${ox + len},${oy} M${ox + len - head},${oy - head * 0.6} L${ox + len},${oy} L${ox + len - head},${oy + head * 0.6}" ${axisStroke}/>`;
+    overlay += `<path d="M${ox},${oy} L${ox},${oy - len} M${ox - head * 0.6},${oy - len + head} L${ox},${oy - len} L${ox + head * 0.6},${oy - len + head}" ${axisStroke}/>`;
+    overlay += `<text x="${ox + len + font * 0.3}" y="${oy + font * 0.35}" ${textAttrs()}>${escapeXml(annotations.right)}</text>`;
+    overlay += `<text x="${ox - font * 0.6}" y="${oy - len - font * 0.4}" ${textAttrs()}>${escapeXml(annotations.up)}</text>`;
+    // Scale bar, bottom-right.
+    const bar = niceLength(maxDim * 0.25);
+    const bx1 = vbX + vbW - padding * 0.5;
+    const bx0 = bx1 - bar;
+    const by = oy;
+    const tick = font * 0.35;
+    overlay += `<path d="M${bx0},${by - tick} L${bx0},${by} L${bx1},${by} L${bx1},${by - tick}" ${axisStroke}/>`;
+    overlay += `<text x="${(bx0 + bx1) / 2}" y="${by - tick - font * 0.3}" text-anchor="middle" ${textAttrs()}>${formatLength(bar)}</text>`;
+    // Section extents, bottom-centre (a note replaces them: no section).
+    if (!annotations.note) {
+      const ext = `${formatLength(Number((boundingBox.maxX - boundingBox.minX).toFixed(3)))} × ${formatLength(Number((boundingBox.maxY - boundingBox.minY).toFixed(3)))}`;
+      overlay += `<text x="${vbX + vbW / 2}" y="${by + font * 0.35}" text-anchor="middle" ${textAttrs()} fill-opacity="0.7">${escapeXml(ext)}</text>`;
+    }
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${vbX} ${-maxY - padding} ${vbW} ${vbH}" style="background:#1e1e2e">
-    <rect x="${vbX}" y="${-maxY - padding}" width="${vbW}" height="${vbH}" fill="#1e1e2e"/>
-    ${paths}
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${Math.round(size * vbH / vbW)}" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" style="background:#1e1e2e">
+    <rect x="${vbX}" y="${vbY}" width="${vbW}" height="${vbH}" fill="#1e1e2e"/>
+    ${paths}${overlay}
   </svg>`;
+}
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
