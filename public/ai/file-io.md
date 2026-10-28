@@ -211,6 +211,39 @@ await partwright.importFromUrl('https://…/#share=…')   // share link: decode
 // -> { kind: 'remote'|'share', source?, filename?, sessionId, target?, object? } or { error }
 ```
 
+### Big imports — decimate ONCE, first
+
+A scanned or sculpted import is often 500k–1M+ triangles. Every run re-builds
+it (`Manifold.ofMesh(api.imports[0])`) and every boolean, shell or offset pays
+for all of those triangles, so iteration slows to 30–70 s per run and the engine
+memory climbs. Decimating inside the model code (`.simplify(tol)` on the import)
+does not help: it re-runs every time too. Do it once, as a version:
+
+```js
+const imp = await partwright.importMeshData(base64, 'head.stl')
+// imp.triangleCount — over ~200k? decimate before modelling:
+await partwright.simplifyModel({ targetTris: 200000 })   // bakes a lighter copy as a NEW version
+// or tie it to the print: drop detail finer than the nozzle can make
+await partwright.simplifyModel({ targetEdge: 0.3 })
+```
+
+Every later run starts from the light version, and the full-resolution import
+stays in the version history to compare against or go back to. Paint carries
+across (`preserveColor`, on by default). 150k–300k triangles keeps a scanned
+face's detail at print scale while making each run several times faster.
+Also check:
+
+- **`isManifold: false`** in the import result means a welded render-only mesh:
+  it displays and exports, but booleans, `api.shell`/`offset`, paint and
+  sections need a solid, and `healCurrent()` can't help (there is no solid to
+  clean). Ask the user to re-export a watertight mesh from their sculpting
+  tool (a "make solid" / voxel-remesh step) before modelling on it.
+- **Orientation**: read `getBoundingBox()` and one `renderViews()` before
+  building on an import. Many sculpts face +Z or +Y, while Partwright's front
+  is −Y; rotate once (`rotateModel`) rather than working around it in every cut.
+- **Debugging intermediate steps**: `console.log(...)` in the model code comes
+  back as `logs` on the run result. Use it rather than re-running variations.
+
 **Where an import lands — `target`.** Every byte/URL import takes `opts.target`, the
 API twin of the import-target dialog:
 

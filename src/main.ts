@@ -23,6 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { selectTriangles, type LabelLookup } from './geometry/selector';
 import { meshDiff, deviationColors } from './geometry/meshDiff';
+import { thicknessField, summarizeThickness, thicknessColors } from './geometry/thicknessMap';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
@@ -43,6 +44,7 @@ import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, render
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail, getPaintRefineCache, putPaintRefineCache, getSession as dbGetSession, listSessionImportSignatures } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
+import { getReferenceMesh } from './renderer/referenceMesh';
 import { initEditor, setValue, getValue, formatAsEditorWould, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, revealRange, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
@@ -385,6 +387,7 @@ import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
 import { parseLockdownRefusal } from './geometry/lockdownRefusal';
 import { mountEngineSandboxPill } from './ui/engineSandboxPill';
+import { createModelConsolePanel, type ModelConsolePanel } from './ui/modelConsolePanel';
 import { isEngineSandboxMode, isRemovedEngineSandboxMode, setEngineSandboxMode, getEngineSandboxMode, ENGINE_SANDBOX_MODES, configuredSandboxOrigin, engineSandboxOriginAvailable, defaultEngineSandboxMode } from './sandbox/engineSandboxSetting';
 import { getWorkerHealth, getWorkerRuns } from './diagnostics/workerStats';
 
@@ -677,6 +680,19 @@ let lastVoxelPieceCount: number | undefined;
  *  returned as `logs` by run / runAndSave / setParams so agents can debug
  *  without throwing. Not part of the geometry data (never saved). */
 let lastRunLogs: string[] | undefined;
+/** How a section through each axis is shown: manifold-3d slices only along
+ *  Z, so x/y cuts rotate that axis onto Z first; `map` turns the rotated
+ *  slice's 2D point into image (right, up) so each cut reads like the
+ *  matching renderView — y from the front (+X right, +Z up), x from the right
+ *  (+Y right, +Z up), z from above (+X right, +Y up). */
+const SECTION_FRAMES: Record<'x' | 'y' | 'z', { rotate: [number, number, number] | null; map: (p: [number, number]) => [number, number]; right: string; up: string; from: string }> = {
+  // rotate([0,-90,0]) sends (x, y, z) → (−z, y, x): slice point (−z, y).
+  x: { rotate: [0, -90, 0], map: ([a, b]) => [b, -a], right: '+Y', up: '+Z', from: '+X (right)' },
+  // rotate([90,0,0]) sends (x, y, z) → (x, −z, y): slice point (x, −z).
+  y: { rotate: [90, 0, 0], map: ([a, b]) => [a, -b], right: '+X', up: '+Z', from: '−Y (front)' },
+  z: { rotate: null, map: (p) => p, right: '+X', up: '+Y', from: '+Z (above)' },
+};
+
 /** `{ logs }` for an API result, or nothing when the last run printed nothing. */
 function lastRunLogsField(): { logs?: string[] } {
   return lastRunLogs ? { logs: lastRunLogs } : {};
@@ -876,6 +892,9 @@ type PartMeshCacheEntry = {
   /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
    *  cache hit can defer the Manifold rebuild too. */
   manifoldFacts: ManifoldFacts | null;
+  /** What the run that made this mesh printed, so a cache hit restores the
+   *  console (and getGeometryData().logs) along with the geometry. */
+  logs: string[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -1489,6 +1508,8 @@ function revealCodeRange(from: number, to: number): void {
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+/** The viewport drawer showing what the last run's model code printed. */
+let modelConsolePanel: ModelConsolePanel | null = null;
 let fastPreviewPillEl: HTMLElement | null = null;
 /** True while the viewport shows the coarse fast-preview pass of an SDF model
  *  and the full-quality render is still in flight. Used to gate mesh-altering
@@ -3431,6 +3452,7 @@ async function saveCurrentVersion(label?: string, opts: { importedMeshes?: Impor
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
         manifoldFacts: manifoldFactsFor(meshToCache),
+        logs: lastRunLogs,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -9449,6 +9471,8 @@ async function main() {
   // Engine-sandbox status pill: persistent while the sandbox is unavailable
   // (model code blocked — fail closed) or bypassed for this tab.
   mountEngineSandboxPill(viewportPane);
+  modelConsolePanel = createModelConsolePanel();
+  viewportPane.appendChild(modelConsolePanel.el);
 
   // Fast-preview pill — shown while the viewport is displaying the rough coarse
   // pass of a slow SDF model (figures) and the full-quality render is still
@@ -10325,6 +10349,8 @@ async function main() {
       syncParamsPanel(cachedEntry.paramsSchema);
       // The grid behind a cached voxel mesh (null for other engines).
       lastVoxelRun = cachedEntry.voxelRun;
+      lastRunLogs = cachedEntry.logs;
+      modelConsolePanel?.setLogs(cachedEntry.logs);
       // Show the geometry; colours (model underlay + any user paint) are applied
       // by the single rehydrateColorRegions pass below, which both load branches
       // share — so this branch no longer hand-rolls its own colour stamp (the
@@ -10438,6 +10464,7 @@ async function main() {
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
           manifoldFacts: manifoldFactsFor(currentMeshData),
+          logs: lastRunLogs,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -11811,6 +11838,9 @@ async function main() {
     resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
+    // Not the output of a code run, so no run's console output describes it.
+    lastRunLogs = undefined;
+    modelConsolePanel?.setLogs(undefined);
     releaseCurrentManifold();
     const mod = getModule();
     const facts = prebuilt.facts ?? (mesh === simplifyBaselineMesh ? simplifyBaselineFacts : null);
@@ -14701,6 +14731,9 @@ async function main() {
         printability: computePrintability(geo),
         ...(stale ? { stale: true } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
+        // What the last run printed, whoever started it (Run button, auto-run,
+        // an API call) — so an agent can read a UI-triggered run's output.
+        ...lastRunLogsField(),
       };
     },
 
@@ -16063,11 +16096,12 @@ async function main() {
      *  edges: edge overlay — 'none' (plain shaded), 'crease' (feature edges
      *  only), or 'wireframe' (every triangle). Default: 'crease' for
      *  uncolored meshes, 'none' for painted ones. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }): string | null | { error: string } {
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode; reference?: boolean }): string | null | { error: string } {
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderView(options)')!;
-          assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'renderView(options)');
+          assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges', 'reference'], 'renderView(options)');
+          assertBoolean(o.reference, 'renderView(options).reference', { optional: true });
           assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
           assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
           assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
@@ -16080,7 +16114,9 @@ async function main() {
       // Default image size follows the spending-mode resolution budget when the
       // caller omits size; an explicit size still wins (e.g. a final hi-res check).
       const size = options?.size ?? getRenderBudget().defaultPx;
-      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
+      // The setReferenceGeometry ghost shows by default — it was set to check a fit.
+      const reference = options?.reference ?? hasPhantom();
+      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size, reference });
     },
 
     /** Text-only likeness score: how close the CURRENT model is to a reference
@@ -16288,11 +16324,12 @@ async function main() {
      *  Bump `size` for a higher-resolution final inspection. `edges`
      *  ('none' | 'crease' | 'wireframe', default 'crease' for uncolored
      *  meshes) sets the edge overlay on every tile. */
-    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode }): Promise<string | null | { error: string }> {
+    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode; reference?: boolean }): Promise<string | null | { error: string }> {
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderViews(options)')!;
-          assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges'], 'renderViews(options)');
+          assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges', 'reference'], 'renderViews(options)');
+          assertBoolean(o.reference, 'renderViews(options).reference', { optional: true });
           if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
           if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderViews(options).edges');
           if (o.angles !== undefined) {
@@ -16317,6 +16354,8 @@ async function main() {
       const which = options?.views ?? budget.angles;
       const tileSize = options?.size ?? budget.defaultPx;
       const colored = applyTriColorsIfVisible(currentMeshData);
+      // The setReferenceGeometry ghost shows by default — it was set to check a fit.
+      const reference = options?.reference ?? hasPhantom();
       const explicit = options?.angles;
       const angles = explicit && explicit.length > 0
         ? explicit.map((a) => ({
@@ -16325,30 +16364,7 @@ async function main() {
           }))
         : chooseRenderAngles(which);
 
-      const labelHeight = 24;
-      const cellHeight = tileSize + labelHeight;
-      const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
-      const rows = Math.ceil(angles.length / cols);
-      const composite = document.createElement('canvas');
-      composite.width = tileSize * cols;
-      composite.height = cellHeight * rows;
-      const ctx = composite.getContext('2d');
-      if (!ctx) return null;
-      ctx.fillStyle = '#f4f4f5';
-      ctx.fillRect(0, 0, composite.width, composite.height);
-
-      // Render each angle to a data URL via renderSingleView (each call
-      // reuses the same offscreen WebGLRenderer), decode each to an
-      // HTMLImageElement, then stamp into the composite grid.
-      for (let i = 0; i < angles.length; i++) {
-        const { label, opts } = angles[i];
-        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize, edges: options?.edges });
-        if (!dataUrl) continue;
-        const img = await loadImageFromDataUrl(dataUrl);
-        if (!img) continue;
-        drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
-      }
-      return composite.toDataURL('image/png');
+      return composeViews(colored, angles, tileSize, { edges: options?.edges, reference });
     },
 
     /** Pin the thumbnail camera angle for the active session so captured
@@ -16408,7 +16424,11 @@ async function main() {
       if (!liveManifold()) return null;
       const s = sliceAtZ(liveManifold(), z);
       if (!s) return null;
-      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox);
+      const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox, 400, {
+        title: `z = ${Number(z.toFixed(4))} · seen from ${SECTION_FRAMES.z.from}`,
+        right: SECTION_FRAMES.z.right,
+        up: SECTION_FRAMES.z.up,
+      });
       return { svg, area: s.area, contours: s.polygons.length };
     },
 
@@ -16419,22 +16439,33 @@ async function main() {
      *  - `axis`: 'x' | 'y' | 'z' (default 'z')
      *  - `offset`: where along the axis to cut. If omitted, defaults to the
      *    midpoint of the model's bounding box along that axis.
-     *  - `size`: pixel size of the rendered SVG (default 400). The result is
+     *  - `size`: pixel width of the rendered SVG (default 400). The result is
      *    a data URL the agent can drop straight into setImages or display.
+     *  - `reference`: outline the setReferenceGeometry ghost's section (dashed);
+     *    default true when one is set.
+     *
+     *  The image reads like the matching renderView: a y cut is seen from the
+     *  front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z
+     *  cut from above (+X right, +Y up). It carries a caption, labelled axis
+     *  arrows, a scale bar and the section's extents; `view` and `boundingBox`
+     *  (in those image axes) say the same in data.
      *
      *  Works for any engine (manifold-js or SCAD) — it operates on the rendered
      *  manifold, not the source code. */
-    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number }):
-      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null | { error: string } {
+    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number; reference?: boolean }):
+      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number; view: { right: string; up: string; from: string }; boundingBox: { min: [number, number]; max: [number, number] } | null; referenceContours?: number } | null | { error: string } {
       // Widened explicitly: the closure below assigns these, which TS's
       // control-flow narrowing doesn't see.
       let axis = 'z' as 'x' | 'y' | 'z';
       let offset: number | undefined;
       let size = 400;
+      let reference: boolean | undefined;
       const bad = argError(() => {
         if (options !== undefined) {
           const o = assertObject(options, 'renderSection(options)')!;
-          assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
+          assertNoUnknownKeys(o, ['axis', 'offset', 'size', 'reference'], 'renderSection(options)');
+          assertBoolean(o.reference, 'renderSection(options).reference', { optional: true });
+          reference = o.reference as boolean | undefined;
           if (o.axis !== undefined) {
             assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
             axis = o.axis as 'x' | 'y' | 'z';
@@ -16448,37 +16479,61 @@ async function main() {
       if (bad) return bad;
       if (!liveManifold()) return null;
 
-      // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
-      // the manifold so that axis points along Z, slice, then label the result
-      // with the original axis and the un-rotated offset.
       const bb = liveManifold().boundingBox();
       const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
       const lo = bb.min[axisIdx];
       const hi = bb.max[axisIdx];
       const actualOffset = offset ?? (lo + hi) / 2;
+      const frame = SECTION_FRAMES[axis];
 
-      let sliceTarget = liveManifold();
-      let zHeight = actualOffset;
-      let unrotate = false;
-      if (axis === 'x') {
-        // Rotate +X to +Z (rotation around Y by -90°).
-        sliceTarget = liveManifold().rotate([0, -90, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      } else if (axis === 'y') {
-        // Rotate +Y to +Z (rotation around X by 90°).
-        sliceTarget = liveManifold().rotate([90, 0, 0]);
-        zHeight = actualOffset;
-        unrotate = true;
-      }
-
-      const result = sliceAtZ(sliceTarget, zHeight);
-      if (unrotate && typeof sliceTarget.delete === 'function') {
-        try { sliceTarget.delete(); } catch { /* already gone */ }
-      }
+      // Slice `m` through the cut plane, in image (right, up) coordinates.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sectionOf = (m: any) => {
+        const target = frame.rotate ? m.rotate(frame.rotate) : m;
+        const s = sliceAtZ(target, actualOffset);
+        if (frame.rotate) { try { target.delete(); } catch { /* already gone */ } }
+        if (!s) return null;
+        return { polygons: (s.polygons as [number, number][][]).map(c => c.map(frame.map)), area: s.area };
+      };
+      const result = sectionOf(liveManifold());
       if (!result) return null;
 
-      const svg = renderSliceSVG(result.polygons as [number, number][][], result.boundingBox, size);
+      let minR = Infinity, minU = Infinity, maxR = -Infinity, maxU = -Infinity;
+      for (const c of result.polygons) for (const [r, u] of c) {
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (u < minU) minU = u; if (u > maxU) maxU = u;
+      }
+      const hasSection = result.polygons.length > 0;
+      // An empty cut is framed by the model's extent on the image axes (the
+      // frames' right/up are all positive world axes), so the caption fits.
+      const worldIdx = (a: string) => 'XYZ'.indexOf(a[1]);
+      const ri = worldIdx(frame.right), ui = worldIdx(frame.up);
+      const box2d = hasSection
+        ? { minX: minR, maxX: maxR, minY: minU, maxY: maxU }
+        : { minX: bb.min[ri], maxX: bb.max[ri], minY: bb.min[ui], maxY: bb.max[ui] };
+
+      // The reference ghost through the same plane, rebuilt from its mesh
+      // (pure data — no model code runs here).
+      let referencePolys: [number, number][][] | undefined;
+      const ref = (reference ?? hasPhantom()) ? getReferenceMesh() : null;
+      if (ref) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let rm: any = null;
+        try {
+          rm = getModule().Manifold.ofMesh(ref.mesh);
+          referencePolys = sectionOf(rm)?.polygons;
+        } catch { /* a non-manifold reference can't be sliced */ }
+        try { rm?.delete?.(); } catch { /* ignore */ }
+      }
+
+      const offsetText = Number(actualOffset.toFixed(4));
+      const svg = renderSliceSVG(result.polygons, box2d, size, {
+        title: `${axis} = ${offsetText} · seen from ${frame.from}`,
+        ...(hasSection ? {} : { note: 'no section here — the plane misses the model' }),
+        right: frame.right,
+        up: frame.up,
+        reference: referencePolys,
+      });
       const dataUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
       return {
         dataUrl,
@@ -16487,6 +16542,9 @@ async function main() {
         offset: actualOffset,
         area: result.area,
         contours: result.polygons.length,
+        view: { right: frame.right, up: frame.up, from: frame.from },
+        boundingBox: hasSection ? { min: [minR, minU], max: [maxR, maxU] } : null,
+        ...(referencePolys ? { referenceContours: referencePolys.length } : {}),
       };
     },
 
@@ -18641,6 +18699,46 @@ async function main() {
         isManifold: stats.isManifold === true,
         renderOnly: stats.manifoldStatus === 'render-only (not manifold)',
       });
+    },
+
+    /** Wall-thickness map of the current model: every triangle's distance
+     *  straight through the solid to the opposite wall (exact, via the mesh's
+     *  BVH — not checkPrintability's sampled estimate). Returns the thinnest
+     *  wall and where, the area-weighted median, how much surface is below
+     *  `threshold` (default 2 × the printer's nozzle width), and the thin
+     *  SPOTS — connected thin areas, thinnest first, each with its centre,
+     *  thinnest point, thickness and area. `render: true` adds a heatmap image
+     *  (red ≤ ½·threshold → yellow at threshold → grey ≥ 2·threshold). */
+    async thicknessMap(opts?: { threshold?: number; limit?: number; render?: boolean; views?: RenderViewMode; size?: number }) {
+      const bad = argError(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'thicknessMap(opts)')!;
+          assertNoUnknownKeys(o, ['threshold', 'limit', 'render', 'views', 'size'], 'thicknessMap(opts)');
+          assertNumber(o.threshold, 'thicknessMap(opts).threshold', { optional: true, min: 0 });
+          assertNumber(o.limit, 'thicknessMap(opts).limit', { optional: true, min: 1, max: 1000, integer: true });
+          assertBoolean(o.render, 'thicknessMap(opts).render', { optional: true });
+          if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'thicknessMap(opts).views');
+          assertNumber(o.size, 'thicknessMap(opts).size', { optional: true, min: 16, max: 2048, integer: true });
+        }
+      });
+      if (bad) return bad;
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const mesh = currentMeshData;
+      const maxTris = getConfig().renderer.thicknessMapMaxTriangles;
+      if (mesh.numTri > maxTris) {
+        return { error: `thicknessMap: the model has ${mesh.numTri.toLocaleString()} triangles, over the ${maxTris.toLocaleString()} limit (one ray per triangle on the main thread). Simplify it first — partwright.simplifyModel({ targetTris: ${Math.min(maxTris, 500_000)} }) — or raise renderer.thicknessMapMaxTriangles.` };
+      }
+      const threshold = opts?.threshold ?? loadPrinterSettings().nozzleWidth * 2;
+      const t0 = performance.now();
+      const field = thicknessField(mesh);
+      const summary = summarizeThickness(mesh, field, threshold, opts?.limit ?? 10);
+      const ms = Math.round(performance.now() - t0);
+      let image: string | null = null;
+      if (opts?.render) {
+        const colored = { ...mesh, triColors: thicknessColors(field, threshold) };
+        image = await composeViews(colored, chooseRenderAngles(opts.views ?? 'all'), opts.size ?? getRenderBudget().defaultPx, { edges: 'none' });
+      }
+      return { ...summary, ms, ...(image ? { image } : {}) };
     },
 
 
@@ -22883,7 +22981,7 @@ async function main() {
       const methods: Record<string, { signature: string; docs: string }> = {
         // Core
         'run':             { signature: 'run(code?) -- Run code, update views, return geometry stats (+ logs: the model code console output)', docs: '/ai.md#console-api--windowpartwright' },
-        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object', docs: '/ai.md#geometry-data' },
+        'getGeometryData': { signature: 'getGeometryData() -- Current stats as JSON object (+ logs?: what the last run printed)', docs: '/ai.md#geometry-data' },
         'validate':        { signature: 'validate(code) -- Check code without rendering -> {valid, error?}', docs: '/ai.md#console-api--windowpartwright' },
         'getCode':         { signature: 'getCode() -- Read editor contents', docs: '/ai.md#console-api--windowpartwright' },
         'setCode':         { signature: 'setCode(code) -- Set editor contents (no auto-run)', docs: '/ai.md#console-api--windowpartwright' },
@@ -23016,14 +23114,14 @@ async function main() {
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'sliceAtZVisual': { signature: 'sliceAtZVisual(z) -- Cross-section at height z as an SVG string -> {svg, area, contours}, null when no geometry, or {error} (contours > 1 = hollow / multi-piece)', docs: '/ai/visual-verification.md' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderSection':   { signature: 'renderSection({axis?, offset?, size?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'renderSection':   { signature: 'renderSection({axis?, offset?, size?, reference?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}; captioned image with axis arrows + scale bar, reference ghost outlined. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'componentBounds': { signature: 'componentBounds() -- Per-connected-component info: [{index, volume, triangleCount, bbox}], largest first. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'checkContainment': { signature: 'checkContainment() -- Components fully inside another (invisible, wasted geometry) -> ContainmentWarning[] (empty = none) or null when no geometry', docs: '/ai/visual-verification.md#stat-based-verification' },
         'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
-        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
+        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe", reference?}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease"; reference draws the setReferenceGeometry ghost, default on when one is set)', docs: '/ai.md#visual-verification' },
         'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, bgMode?: "auto"|"border"|"grabcut", mask?, exclude?: [part], merge?: [[part,…]], ignore?: [part], bands?, fit?: "height"|"box", pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, crop?, bg?, mask?, pixelAspect?, label?}]}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, band widths + left/right edge offsets, outline[] diff ("photo-only at bands 2–4 left … → grow"), per-part IoU/area/offset/colour (lowConfidence when the photo cannot separate parts), worst[] findings. views[] scores several photos/angles at once (mean silhouetteIoU + per-view results). mask = manual silhouette (white = subject); bgMode grabcut for busy backdrops; merge/ignore parts the photo cannot tell apart. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
-        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
+        'renderViews':     { signature: 'await renderViews({views?: "auto"|"tri"|"all"|"box", angles?, size?, edges?: "none"|"crease"|"wireframe", reference?}) -- labeled multi-angle composite -> data URL (reference: draw the setReferenceGeometry ghost; default on when one is set). Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'setThumbnailCamera': { signature: "await setThumbnailCamera({azimuth, elevation} | 'current' | null) -- Pin the session thumbnail/catalog-tile camera (degrees; az 0 = front -Y, el -90..90); 'current' pins the live viewport angle; null clears -> {thumbCamera} or {error}", docs: '/ai.md#console-api--windowpartwright' },
         'getThumbnailCamera': { signature: 'getThumbnailCamera() -- Pinned thumbnail camera -> {azimuth, elevation} or null (unpinned = default iso)', docs: '/ai.md#console-api--windowpartwright' },
         // Spending mode (AI budget)
@@ -23303,6 +23401,7 @@ async function main() {
         'getPrinterSettings': { signature: 'getPrinterSettings() -- Printer / build-volume settings -> {bed: [x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)', docs: '/ai/printing.md#printer-settings' },
         'setPrinterSettings': { signature: 'setPrinterSettings({bed?: [x,y,z], nozzleWidth? >= 0.05, overhangAngleDeg? 1..89, clearance? >= 0}) -- Update any subset -> merged settings or {error}', docs: '/ai/printing.md#printer-settings' },
         'checkPrintability': { signature: 'checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) -- Bed fit, overhangs, thin walls, small features, tip-over and watertight report, pass/warn/fail per check (defaults from printer settings) -> report or {error}', docs: '/ai/printing.md#checkprintabilityopts' },
+        'thicknessMap':    { signature: 'await thicknessMap({threshold?, limit?, render?, views?, size?}?) -- Exact wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[{center, thinnest, thickness, area, triangleCount}], spotCount, image?} (threshold default 2 × nozzle; render adds a red→grey heatmap)', docs: '/ai/printing.md#thicknessmapopts' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },
@@ -23423,6 +23522,38 @@ async function main() {
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
 
   // === Internal functions ===
+
+  /** Render `angles` of `mesh` into one labelled composite PNG data URL
+   *  (renderViews, the thickness heatmap). Each angle renders through
+   *  renderSingleView (one shared offscreen WebGLRenderer), is decoded, then
+   *  stamped into the grid. */
+  async function composeViews(
+    mesh: MeshData,
+    angles: { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[],
+    tileSize: number,
+    render: { edges?: EdgeMode; reference?: boolean },
+  ): Promise<string | null> {
+    const labelHeight = 24;
+    const cellHeight = tileSize + labelHeight;
+    const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
+    const rows = Math.ceil(angles.length / cols);
+    const composite = document.createElement('canvas');
+    composite.width = tileSize * cols;
+    composite.height = cellHeight * rows;
+    const ctx = composite.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#f4f4f5';
+    ctx.fillRect(0, 0, composite.width, composite.height);
+    for (let i = 0; i < angles.length; i++) {
+      const { label, opts } = angles[i];
+      const dataUrl = renderSingleView(mesh, { ...opts, size: tileSize, ...render });
+      if (!dataUrl) continue;
+      const img = await loadImageFromDataUrl(dataUrl);
+      if (!img) continue;
+      drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
+    }
+    return composite.toDataURL('image/png');
+  }
 
   /** Draw one rendered angle into the renderViews composite grid:
    *  the rendered tile occupies the top of the cell, with a labelled
@@ -24451,7 +24582,6 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     lastRunRejection = null;
-    lastRunLogs = undefined;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).
@@ -24566,6 +24696,7 @@ async function main() {
     lastVoxelCount = result.voxelCount;
     lastVoxelPieceCount = result.voxelPieceCount;
     lastRunLogs = result.logs;
+    modelConsolePanel?.setLogs(result.logs);
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

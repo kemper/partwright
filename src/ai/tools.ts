@@ -211,7 +211,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getGeometryData',
-    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution. Returns `stale: true` when the editor code changed since the last run (setCode without a subsequent run) — call runAndSave/run first if you need fresh stats. Returns `containedComponents: N` when N components are fully enclosed inside another solid and excluded from the floater check.',
+    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution. Returns `stale: true` when the editor code changed since the last run (setCode without a subsequent run) — call runAndSave/run first if you need fresh stats. Returns `containedComponents: N` when N components are fully enclosed inside another solid and excluded from the floater check. Includes `logs` — what the last run\'s model code printed with console.log/warn/error — even when the user started that run (Run button, auto-run).',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -507,6 +507,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         ortho: { type: 'boolean', description: 'true = orthographic (technical drawing), false = perspective. Default false.' },
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
+        reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
     },
   },
@@ -520,6 +521,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         angles: { type: 'array', description: 'Explicit list of camera angles; overrides `views`. Same angle semantics as renderView. Use to put specific suspect angles side-by-side in one composite.', items: { type: 'object', properties: { elevation: { type: 'number', description: '0 = side, 90 = top, -90 = bottom.' }, azimuth: { type: 'number', description: '0 = front, 90 = right, 180 = back, 270 = left.' }, ortho: { type: 'boolean', description: 'true = orthographic. Default false.' }, label: { type: 'string', description: 'Optional caption for the cell.' } }, required: ['elevation', 'azimuth'] } },
         size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
+        reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
     },
   },
@@ -1831,6 +1833,20 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'thicknessMap',
+    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        threshold: { type: 'number', description: 'Walls thinner than this are "thin". Default 2 × the printer nozzle width.' },
+        limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Most thin spots to list (thinnest first). Default 10.' },
+        render: { type: 'boolean', description: 'Attach a heatmap image of the thickness. Default false.' },
+        views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: 'Heatmap angles, as renderViews. Default "all".' },
+        size: { type: 'integer', minimum: 16, maximum: 2048, description: 'Heatmap tile size in pixels.' },
+      },
+    },
+  },
+  {
     name: 'checkPrintability',
     description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, use the Resize tool to fit the bed, or use the Split tool when it is simply too big for the bed. The same check runs automatically on STL / OBJ / 3MF / GLB export and warns via a toast.',
     input_schema: {
@@ -2307,19 +2323,20 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). Returns the section as an image plus { axis, offset, area, contours } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
     input_schema: {
       type: 'object',
       properties: {
         axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Cut axis. Default 'z'." },
         offset: { type: 'number', description: 'Cut position along the axis, in model units. Default: bounding-box midpoint.' },
-        size: { type: 'integer', minimum: 16, maximum: 1024, description: 'Image size in pixels. Default 320.' },
+        size: { type: 'integer', minimum: 16, maximum: 1024, description: 'Image width in pixels. Default 320.' },
+        reference: { type: 'boolean', description: 'Outline the setReferenceGeometry ghost\'s section (dashed). Default true when one is set.' },
       },
     },
   },
   {
     name: 'setReferenceGeometry',
-    description: "Show a translucent REFERENCE (ghost) shape in the user's viewport, overlaid on their model — for fitment: \"will a 30 mm bolt clear this hole?\", a phone outline inside a case. `code` is manifold-js code returning a Manifold (run in isolation, never saved, never exported, never merged into the model). Replaces any previous ghost. Optional color \"#rrggbb\", opacity 0..1, wireframe. Returns { success, boundingBox, volume } or { success: false, error }. Clear it with clearReferenceGeometry when done.",
+    description: "Show a translucent REFERENCE (ghost) shape in the user's viewport, overlaid on their model — for fitment: \"will a 30 mm bolt clear this hole?\", a phone outline inside a case. `code` is manifold-js code returning a Manifold (run in isolation, never saved, never exported, never merged into the model). Replaces any previous ghost. Optional color \"#rrggbb\", opacity 0..1, wireframe. Returns { success, boundingBox, volume } or { success: false, error }. The ghost also appears in renderView / renderViews images (pass reference: false to hide it) and as a dashed outline in renderSection, so you can check the fit visually. Clear it with clearReferenceGeometry when done.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2633,7 +2650,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion',
-  'clearColors', 'undoClearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'clearColors', 'undoClearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
   'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
@@ -2744,6 +2761,7 @@ const ALWAYS_AVAILABLE = new Set([
   'sliceAtZVisual',
   'paintInCylinder',
   'checkPrintability',
+  'thicknessMap',
   'getPrinterSettings',
   'setPrinterSettings',
   'importImageAsRelief',
@@ -2883,7 +2901,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -2915,7 +2933,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'listExportItems', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'listExportItems', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -3067,6 +3085,19 @@ function withUiToolIds(def: ToolDefinition, catalog: UiToolCatalogEntry[]): Tool
   };
 }
 
+/** thicknessMap stays available with vision off (its numbers are the point),
+ *  but its heatmap is an image, so the Views toggle removes the render
+ *  options from the schema the model sees. */
+function gateThicknessRender(t: ToolDefinition, toggles: ChatToggles): ToolDefinition {
+  if (t.name !== 'thicknessMap' || toggles.vision.views) return t;
+  const { render: _render, views: _views, size: _size, ...properties } = t.input_schema.properties as Record<string, unknown>;
+  return {
+    ...t,
+    description: t.description.replace(/ render: true adds a heatmap image[^.]*\./, ''),
+    input_schema: { ...t.input_schema, properties },
+  } as ToolDefinition;
+}
+
 /** `uiTools` is the UI tool catalogue (see buildUiToolCatalog) — pass it when
  *  building inside the agent Worker; on the main thread it defaults to the
  *  live registry. */
@@ -3082,7 +3113,7 @@ export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry
       if (!PLAN_MODE_TOOLS.has(t.name)) return false;
       if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
       return true;
-    });
+    }).map(t => gateThicknessRender(t, toggles));
   }
 
   return ALL_TOOLS.filter(t => {
@@ -3105,7 +3136,7 @@ export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
-  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : t));
+  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : gateThicknessRender(t, toggles)));
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;
@@ -3351,6 +3382,7 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     // dispatch — they need the data-URL → multimodal-image wrapping.
     if (name === 'renderView') return executeRenderView(api, input);
     if (name === 'renderViews') return await executeRenderViews(api, input);
+    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
     if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
@@ -3612,11 +3644,11 @@ async function executeSliceAtZVisual(api: PartwrightAPI, input: Record<string, u
   }
 }
 
+/** Rasterize an SVG to a PNG `size` px wide, keeping its aspect ratio (an
+ *  annotated section is taller than wide). */
 function rasterizeSvg(svg: string, size: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
     const ctx = canvas.getContext('2d');
     if (!ctx) { reject(new Error('no canvas context')); return; }
     const blob = new Blob([svg], { type: 'image/svg+xml' });
@@ -3624,9 +3656,12 @@ function rasterizeSvg(svg: string, size: number): Promise<string> {
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
+      const aspect = img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalHeight / img.naturalWidth : 1;
+      canvas.width = size;
+      canvas.height = Math.round(size * aspect);
       ctx.fillStyle = '#1c1c1c';
-      ctx.fillRect(0, 0, size, size);
-      ctx.drawImage(img, 0, 0, size, size);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL('image/png');
       resolve(dataUrl.replace(/^data:image\/png;base64,/, ''));
     };
@@ -4503,17 +4538,29 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
   return { ok: true, format };
 }
 
+async function executeThicknessMap(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const result = await api.thicknessMap(input) as (Record<string, unknown> & { image?: string; error?: string }) | null;
+  if (!result) return { content: 'thicknessMap: no geometry loaded — run the code first.', isError: true };
+  if (typeof result.error === 'string') return { content: result.error, isError: true };
+  const { image, ...summary } = result;
+  const content = JSON.stringify(summary);
+  const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+  return img
+    ? { content: `${content}\n\nThickness heatmap attached: red is thinnest, yellow is at the threshold, grey is comfortably thick.`, isError: false, image: { ...img, label: 'thickness heatmap' } }
+    : { content, isError: false };
+}
+
 async function executeRenderSection(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
-  const unknown = Object.keys(input).filter(k => k !== 'axis' && k !== 'offset' && k !== 'size');
-  if (unknown.length > 0) return { content: `renderSection: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: axis, offset, size.`, isError: true };
+  const unknown = Object.keys(input).filter(k => k !== 'axis' && k !== 'offset' && k !== 'size' && k !== 'reference');
+  if (unknown.length > 0) return { content: `renderSection: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: axis, offset, size, reference.`, isError: true };
   const size = typeof input.size === 'number' && Number.isFinite(input.size) ? Math.min(1024, Math.max(16, Math.round(input.size))) : 320;
-  const result = api.renderSection({ ...input, size }) as { svg: string; axis: string; offset: number; area: number; contours: number; error?: string } | null;
+  const result = api.renderSection({ ...input, size }) as { svg: string; axis: string; offset: number; area: number; contours: number; view?: unknown; boundingBox?: unknown; referenceContours?: number; error?: string } | null;
   if (!result) return { content: 'renderSection: no geometry loaded — run the code first.', isError: true };
   if (result.error) return { content: result.error, isError: true };
   if (typeof result.svg !== 'string' || typeof result.area !== 'number') return { content: 'renderSection returned an unexpected value', isError: true };
   const kind = result.contours === 1 ? 'solid' : result.contours > 1 ? 'hollow/multi-piece' : 'empty';
   const summary = `Cross-section ${result.axis}=${Number(result.offset.toFixed(4))}: area=${result.area.toFixed(3)}, contours=${result.contours} (${kind})`;
-  const data = { axis: result.axis, offset: result.offset, area: result.area, contours: result.contours };
+  const data = { axis: result.axis, offset: result.offset, area: result.area, contours: result.contours, view: result.view, boundingBox: result.boundingBox, ...(result.referenceContours !== undefined ? { referenceContours: result.referenceContours } : {}) };
   try {
     const pngBase64 = await rasterizeSvg(result.svg, size);
     return {

@@ -859,6 +859,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={1_000_000} step={1000} integer
           onChange={v => set('renderer', 'modelLogMaxChars', v)}
         />
+        <Field cfgKey="renderer.thicknessMapMaxTriangles"
+          label="Thickness map limit"
+          unit="triangles"
+          hint="Biggest mesh thicknessMap measures; simplify bigger ones first."
+          tooltip="thicknessMap casts one ray through the solid for every triangle on the main thread, about 1.5 s per 250k triangles. Above this limit it asks for a simplified model (simplifyModel) instead of freezing the tab."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.thicknessMapMaxTriangles}
+          value={c.renderer.thicknessMapMaxTriangles}
+          min={1_000} max={50_000_000} step={100_000} integer
+          onChange={v => set('renderer', 'thicknessMapMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"

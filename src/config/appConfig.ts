@@ -230,6 +230,10 @@ export interface AppConfig {
     modelLogMaxLines: number;
     /** Most characters of model-code console output kept per run. */
     modelLogMaxChars: number;
+    /** Most triangles `thicknessMap` measures — it casts one ray per triangle
+     *  on the main thread (≈1.5 s per 250k), so a bigger mesh is refused with
+     *  a pointer to simplifyModel instead of freezing the tab. */
+    thicknessMapMaxTriangles: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -792,6 +796,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     containmentSamples: 12,
     modelLogMaxLines: 200,
     modelLogMaxChars: 20_000,
+    thicknessMapMaxTriangles: 1_000_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,

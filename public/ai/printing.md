@@ -39,7 +39,8 @@ What it inspects:
   from horizontal) that will need support. Re-orient with `rotateModel` /
   `layFlatModel` to remove them.
 - **Thin walls** — a *sampled* interior-ray estimate of the thinnest wall vs the
-  nozzle (fail < 1 nozzle width, warn < 2). It's an estimate, not exact.
+  nozzle (fail < 1 nozzle width, warn < 2). It's an estimate, not exact — to
+  see **where** the walls are thin, use [`thicknessMap()`](#thicknessmapopts).
 - **Small features** — smallest overall dimension near the nozzle limit.
 - **Stability** — centre of mass vs the base footprint (warn = may tip over).
 - **Watertight** — non-manifold / render-only geometry won't slice (fail).
@@ -48,6 +49,34 @@ What it inspects:
 const r = partwright.checkPrintability();
 // r.ok === false → read r.checks, fix the `fail` items, re-check.
 ```
+
+## thicknessMap(opts?)
+
+The exact counterpart of the thin-wall check: it measures the wall under
+**every** triangle (a ray straight through the solid to the opposite wall), so
+you learn *where* the walls are thin, not just that some sample was.
+
+```js
+const t = await partwright.thicknessMap();          // threshold = 2 × nozzle width
+// t.minThickness, t.thinnest        — thinnest wall and where it is
+// t.medianThickness                 — typical wall
+// t.thinArea, t.thinFraction        — how much surface is below threshold
+// t.spots[]                         — connected thin areas, thinnest first:
+//   { center, thinnest, thickness, area, triangleCount }
+const h = await partwright.thicknessMap({ threshold: 1.2, render: true });
+// h.image — heatmap: red ≤ ½·threshold, yellow at threshold, grey ≥ 2·threshold
+```
+
+Thicken exactly the spots it lists (e.g. `api.shell` with a larger
+`thickness`, or add material near `spot.center`), then re-run it. "Thickness"
+is the local wall of a shell, or the through-diameter of a solid. Each
+triangle is measured at its centroid, so a part made of a few huge triangles
+(a flat box face) reads as that face's middle; organic and remeshed surfaces
+have plenty of triangles. Triangles whose ray finds no opposite wall (an open
+mesh) count as `unmeasured`. A sharp edge (a shell cut off at an angle, a
+blade) correctly reads as thin: it is fragile in print. The first call costs
+about 1.5 s per 250k triangles; later calls on the same mesh (a new
+`threshold`, `render`) reuse the measurement.
 
 Then fix problems at the source: thicken walls, edit the dimension constants in
 the model code (preferred for parametric models), or apply a transform directly.
