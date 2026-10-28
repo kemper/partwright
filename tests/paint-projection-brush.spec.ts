@@ -13,6 +13,43 @@
 
 import { test, expect } from 'playwright/test';
 
+// A 40×40 slab whose top face has a seam of 120 short sliver quads 0.01 wide at
+// x ≈ 0 (the kind a smooth-edge or part-boundary cut leaves), fanned to the
+// outer edges. Each sliver is far thinner than a pixel, so it usually covers no
+// pixel centre in the projection's id buffer.
+const SLIVER_SEAM_SLAB = `
+const { Manifold } = api;
+const W = 0.005, N = 120, ys = [];
+for (let i = 0; i <= N; i++) ys.push(-20 + 40 * i / N);
+const verts = [], idx = {};
+const vid = (x, y, z) => { const k = x + ',' + y + ',' + z; if (idx[k] === undefined) { idx[k] = verts.length / 3; verts.push(x, y, z); } return idx[k]; };
+const tris = [];
+const P = i => [verts[i*3], verts[i*3+1], verts[i*3+2]];
+const tri = (a, b, c, n) => {
+  const pa = P(a), pb = P(b), pc = P(c);
+  const u = [pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2]], v = [pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2]];
+  const cr = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+  if (cr[0]*n[0] + cr[1]*n[1] + cr[2]*n[2] < 0) tris.push(a, c, b); else tris.push(a, b, c);
+};
+const quad = (a, b, c, d, n) => { tri(a, b, c, n); tri(a, c, d, n); };
+for (const [z, n] of [[3, [0,0,1]], [0, [0,0,-1]]]) {
+  // Strip: N short sliver quads between x = -W and x = +W.
+  for (let i = 0; i < N; i++) quad(vid(-W, ys[i], z), vid(W, ys[i], z), vid(W, ys[i+1], z), vid(-W, ys[i+1], z), n);
+  // Big halves: fan from the outer edge to every strip vertex.
+  for (const [xo, xi] of [[-20, -W], [20, W]]) {
+    for (let i = 0; i < N; i++) tri(vid(xo, ys[i] < 0 ? -20 : 20, z), vid(xi, ys[i], z), vid(xi, ys[i+1], z), n);
+    tri(vid(xo, -20, z), vid(xo, 20, z), vid(xi, 0, z), n);
+  }
+}
+for (const [x0, x1] of [[-20, -W], [-W, W], [W, 20]]) {
+  quad(vid(x0,-20,0), vid(x1,-20,0), vid(x1,-20,3), vid(x0,-20,3), [0,-1,0]);
+  quad(vid(x0,20,0), vid(x1,20,0), vid(x1,20,3), vid(x0,20,3), [0,1,0]);
+}
+quad(vid(-20,-20,0), vid(-20,20,0), vid(-20,20,3), vid(-20,-20,3), [-1,0,0]);
+quad(vid(20,-20,0), vid(20,20,0), vid(20,20,3), vid(20,-20,3), [1,0,0]);
+return Manifold.ofMesh({ numProp: 3, vertProperties: new Float32Array(verts), triVerts: new Uint32Array(tris) });
+`;
+
 async function openSlabEditor(page: import('playwright/test').Page) {
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
@@ -196,5 +233,50 @@ test.describe('projection paintbrush', () => {
     // A localized cap on a radius-20 sphere; a smear would approach the sphere's
     // ~40-unit extent (and the bbox would also balloon in Z).
     expect(span).toBeLessThan(18);
+  });
+  test('sub-pixel slivers along a seam under the brush get painted (no leftover hairline)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async (code) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(code);
+      pw.setBrushSize(4);
+      pw.setBrushSmooth(false);
+      pw.setBrushWrapAngle(180);
+    }, SLIVER_SEAM_SLAB);
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+    await page.waitForTimeout(200);
+
+    // A drag across the seam from left of centre to right of it.
+    await dragBrush(page, -30, 0);
+
+    // Centroid y of every painted seam sliver (top face, |x| < 0.01).
+    const ys = await page.evaluate(async () => {
+      const { getCurrentMesh } = await import('/src/color/paintMode.ts');
+      const { getRegions } = await import('/src/color/regions.ts');
+      const m = getCurrentMesh()!;
+      const out: number[] = [];
+      for (const t of getRegions()[0]?.triangles ?? []) {
+        let mx = 0, y = 0, z = 0;
+        for (let k = 0; k < 3; k++) {
+          const o = m.triVerts[t * 3 + k] * m.numProp;
+          mx = Math.max(mx, Math.abs(m.vertProperties[o]));
+          y += m.vertProperties[o + 1];
+          z += m.vertProperties[o + 2];
+        }
+        if (mx < 0.01 && z > 8.9) out.push(y / 3);
+      }
+      return out.sort((a, b) => a - b);
+    });
+    // Without sliver absorption only the odd sliver that happened to cover a
+    // pixel centre was painted — a scattered handful with long unpainted gaps.
+    // Now the seam under the stroke is painted as one contiguous run.
+    expect(ys.length).toBeGreaterThan(10);
+    let maxGap = 0;
+    for (let i = 1; i < ys.length; i++) maxGap = Math.max(maxGap, ys[i] - ys[i - 1]);
+    expect(maxGap).toBeLessThan(0.3); // segments are 0.33 long, 2 slivers each
   });
 });

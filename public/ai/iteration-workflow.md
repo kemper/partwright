@@ -300,6 +300,11 @@ await partwright.simplifyModel({ mode: 'enhance', targetEdge: 1, amount: 2 }) //
 // -> {ok, mode, before, after, version:{index,label}, message, warnings?} or {error}
 ```
 
+**Simplify a big import FIRST, not last.** For a scan or sculpt in the hundreds of
+thousands of triangles, `simplifyModel({ targetTris: 200000 })` right after the import
+is the single biggest speed-up for everything that follows; see
+[/ai/file-io.md → Big imports](/ai/file-io.md#big-imports--decimate-once-first).
+
 Pass exactly one of `targetTris` / `targetEdge`. `amount` (1..6, only with `targetEdge`)
 strengthens it: simplify multiplies the tolerance, enhance halves the edge length per step.
 `preserveColor` (default true) carries paint across. Enhance refuses a projected result over
