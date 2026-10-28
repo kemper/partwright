@@ -106,3 +106,20 @@ The collapsed state is a per-viewer localStorage convenience.
 - Also a `thicknessMap` chat tool, placed in the same gating lists as
   `checkPrintability`. It routes through the image-returning early dispatch,
   so the heatmap comes back as a multimodal image.
+
+## Assistant
+
+## Big-import guidance (docs)
+
+- **Decimate once, as a version**: `simplifyModel({ targetTris: 200000 })`
+  (or a `targetEdge` tied to the nozzle) right after import. `.simplify()`
+  inside model code re-runs every time. The new section in
+  `/ai/file-io.md` is linked from ai.md's common mistakes and from the
+  iteration-workflow Simplify section.
+- Also covers checking the import's orientation once (sculpts often face
+  +Z or +Y), and using `console.log` → `logs` while iterating.
+- **Corrected a claim before committing**: I first wrote "try
+  `healCurrent()`" for `isManifold: false` imports, but `healCurrent` needs a
+  live Manifold and returns null for render-only meshes. The docs now say to
+  re-export a watertight mesh, and the missing in-app repair is filed as
+  kemper/partwright#1181.
