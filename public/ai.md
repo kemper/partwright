@@ -341,7 +341,7 @@ await partwright.exportSTLObjects(objectIds?, filename?)        // STL: a .zip o
 await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named nodes in one scene, grid-arranged
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
-await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
+await partwright.exportSessionData(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeLatestMeshes?})    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object itself (default: current; thumbnails and latest meshes off by default), null if none, or {error}. includeLatestMeshes embeds each object's newest mesh as saved -- see /ai/file-io.md#built-differently-than-saved
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
@@ -444,6 +444,7 @@ await partwright.saveVersion(label?)     // Save current state as version
 partwright.getModelDrift()              // Does the open version's code now build a different model than saved (an app update, or random code)? -> {changed:false} | {changed:true, version, savedWith, running, differences[], canRestore, …}. loadVersion reports it as builtDifferently. See /ai/file-io.md#built-differently-than-saved
 await partwright.restoreSavedModel()    // Commit the drifted version's saved mesh as a new version (newest versions keep one: canRestore) -> {ok, label, geometry} | {error}. Ask the user first
 await partwright.keepRebuiltModel()     // Save the drifted version's newly built model as a new version -> {ok, id, index, label} | {error}. Ask the user first
+partwright.dismissModelDrift()          // Stop the drift notice for the open version on this device (the dialog's Ignore) -> {ok, version} | {error}
 await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]

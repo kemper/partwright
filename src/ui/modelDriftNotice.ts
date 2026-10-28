@@ -40,7 +40,7 @@ const PILL_TITLE = 'This version’s code now builds a different model than the 
 export function mountModelDriftPill(parent: HTMLElement, onOpen: () => void): { show(): void; hide(): void } {
   const el = document.createElement('button');
   el.type = 'button';
-  el.className = 'absolute top-14 left-2 z-20 text-xs text-violet-200 font-mono bg-zinc-900/85 px-2 py-0.5 rounded border border-violet-600/60 cursor-pointer hover:bg-zinc-800/90 transition-colors';
+  el.className = 'absolute top-14 left-2 z-20 text-xs text-violet-200 font-mono bg-zinc-900/85 px-2 py-0.5 rounded border border-violet-600/60 cursor-pointer [@media(hover:hover)]:hover:bg-zinc-800/90 transition-colors';
   el.textContent = PILL_TEXT;
   el.title = PILL_TITLE;
   el.dataset.testid = 'model-drift-pill';
@@ -116,9 +116,14 @@ export function showModelDriftDialog(info: ModelDriftInfo, actions: ModelDriftAc
   const buttons: HTMLButtonElement[] = [];
   const run = async (fn: () => Promise<{ error?: string }>) => {
     for (const b of buttons) b.disabled = true;
-    const r = await fn();
-    if (r.error) {
-      status.textContent = r.error;
+    let error: string | undefined;
+    try {
+      error = (await fn()).error;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    if (error) {
+      status.textContent = error;
       status.classList.remove('hidden');
       for (const b of buttons) b.disabled = false;
       return;

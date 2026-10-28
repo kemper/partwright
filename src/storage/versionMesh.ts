@@ -54,15 +54,26 @@ export function isMeshBackedVersion(v: MeshBackingProbe): boolean {
   return false;
 }
 
-/** A copy-free SavedMesh view of a mesh, without the engine-only fields (merge
- *  vectors, label runs) that a stored snapshot doesn't need. */
+/** A SavedMesh of a mesh: positions only (x, y, z per vertex — a mesh with
+ *  extra vertex properties is compacted, since a restore re-imports it as a
+ *  3-property mesh), triangles and colours, without the engine-only fields
+ *  (merge vectors, label runs). Shares the arrays when nothing needs copying. */
 export function toSavedMesh(mesh: SavedMesh): SavedMesh {
+  let vertProperties = mesh.vertProperties;
+  if (mesh.numProp !== 3) {
+    vertProperties = new Float32Array(mesh.numVert * 3);
+    for (let i = 0; i < mesh.numVert; i++) {
+      vertProperties[i * 3] = mesh.vertProperties[i * mesh.numProp];
+      vertProperties[i * 3 + 1] = mesh.vertProperties[i * mesh.numProp + 1];
+      vertProperties[i * 3 + 2] = mesh.vertProperties[i * mesh.numProp + 2];
+    }
+  }
   return {
-    vertProperties: mesh.vertProperties,
+    vertProperties,
     triVerts: mesh.triVerts,
     numVert: mesh.numVert,
     numTri: mesh.numTri,
-    numProp: mesh.numProp,
+    numProp: 3,
     ...(mesh.triColors ? { triColors: mesh.triColors } : {}),
   };
 }
@@ -76,13 +87,16 @@ export function parseSavedMesh(raw: unknown): SavedMesh | null {
   if (!(m.vertProperties instanceof Float32Array) || !(m.triVerts instanceof Uint32Array)) return null;
   if (!int(m.numVert) || !int(m.numTri) || !int(m.numProp) || m.numProp < 3) return null;
   if (m.vertProperties.length < m.numVert * m.numProp || m.triVerts.length < m.numTri * 3) return null;
+  // Every triangle must reference a real vertex: a file can carry anything.
+  const nv = m.numVert, tv = m.triVerts;
+  for (let i = 0, n = m.numTri * 3; i < n; i++) if (tv[i] >= nv) return null;
   const triColors = m.triColors instanceof Uint8Array && m.triColors.length >= m.numTri * 3 ? m.triColors : undefined;
-  return {
+  return toSavedMesh({
     vertProperties: m.vertProperties,
     triVerts: m.triVerts,
     numVert: m.numVert,
     numTri: m.numTri,
     numProp: m.numProp,
     ...(triColors ? { triColors } : {}),
-  };
+  });
 }

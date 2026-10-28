@@ -317,11 +317,13 @@ await partwright.importMeshFiles([
 A saved version stores its **code**; opening it re-runs that code on the current
 engine. When a Partwright update changes a builder (a figure, a texture, a
 default) — or the code uses random numbers — the same code can build a different
-model. Every save records a small **geometry fingerprint**, and opening a version
-compares the rebuilt model with it (versions saved before fingerprints are
-compared on their saved stats). When they differ, the viewport shows a
-**"⟲ Built differently than saved"** pill; clicking it shows the saved thumbnail
-and offers to restore the saved model or keep the new one.
+model. Every save records a small **geometry fingerprint** (with the curvature
+quality it was built at), and opening a version compares the rebuilt model with
+it — at the same quality only, since quality isn't saved with a version.
+Versions saved before fingerprints aren't checked. When they differ, the
+viewport shows a **"⟲ Built differently than saved"** pill; clicking it shows
+the saved thumbnail and offers to restore the saved model, keep the new one, or
+ignore it (remembered for that version on this device).
 
 Each object's **newest** version also keeps the mesh it displayed (colours
 included), so it can be restored exactly. Older versions drop theirs when a newer
@@ -341,13 +343,14 @@ partwright.getModelDrift()
 
 await partwright.restoreSavedModel()  // commit the saved mesh as a new version (needs canRestore)
 await partwright.keepRebuiltModel()   // save the newly built model as a new version
+partwright.dismissModelDrift()        // stop the notice for this version on this device
 ```
 
 Both add a new version and leave the drifted one as it was. A restored model is
 a stored mesh (`Manifold.ofMesh(api.imports[0])`), no longer editable as the
 original code — that stays in the old version. **Ask the user before resolving:**
 it's their model. The in-app AI's tools are `getModelDrift` and
-`resolveModelDrift({ choice: 'restore' | 'keep' })`.
+`resolveModelDrift({ choice: 'restore' | 'keep' | 'ignore' })`.
 
 ## Recent Exports inbox
 Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.

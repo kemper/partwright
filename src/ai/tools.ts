@@ -603,11 +603,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'resolveModelDrift',
-    description: 'Resolve a version that builds differently than saved (see getModelDrift). choice "restore" commits the version\'s SAVED mesh (colours included) as a new version — only when getModelDrift().canRestore (each object\'s newest version keeps its mesh); the model then becomes a stored mesh, no longer editable as code. choice "keep" saves the newly built model as a new version. Either way the drifted version itself is left untouched. Only do this when the user has said which they want.',
+    description: 'Resolve a version that builds differently than saved (see getModelDrift). choice "restore" commits the version\'s SAVED mesh (colours included) as a new version — only when getModelDrift().canRestore (each object\'s newest version keeps its mesh); the model then becomes a stored mesh, no longer editable as code. choice "keep" saves the newly built model as a new version. choice "ignore" leaves everything as it is and stops the notice for this version on this device. The drifted version itself is never changed. Only do this when the user has said which they want.',
     input_schema: {
       type: 'object',
       properties: {
-        choice: { type: 'string', enum: ['restore', 'keep'], description: '"restore" = bring back the saved mesh; "keep" = keep the newly built model.' },
+        choice: { type: 'string', enum: ['restore', 'keep', 'ignore'], description: '"restore" = bring back the saved mesh; "keep" = keep the newly built model; "ignore" = stop the notice.' },
       },
       required: ['choice'],
     },
@@ -3663,7 +3663,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'resolveModelDrift':
       if (input.choice === 'restore') return api.restoreSavedModel();
       if (input.choice === 'keep') return api.keepRebuiltModel();
-      return { error: `resolveModelDrift: choice must be "restore" or "keep" (got ${JSON.stringify(input.choice)})` };
+      if (input.choice === 'ignore') return api.dismissModelDrift();
+      return { error: `resolveModelDrift: choice must be "restore", "keep" or "ignore" (got ${JSON.stringify(input.choice)})` };
     case 'addSessionNote':
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':

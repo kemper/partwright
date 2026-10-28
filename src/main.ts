@@ -27,7 +27,7 @@ import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
 import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
-import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
+import { onQualitySettingsChange, loadQualitySettings, getDefaultCircularSegments, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
 import { queryDiagnosticLog, LOG_LEVELS, LOG_SOURCES } from './diagnostics/logQuery';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
@@ -373,7 +373,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
-import { computeModelFingerprint, compareModelFingerprints, fingerprintFromStats, parseModelFingerprint, type FingerprintComparison } from './geometry/modelFingerprint';
+import { computeModelFingerprint, compareModelFingerprints, parseModelFingerprint, type ModelFingerprint } from './geometry/modelFingerprint';
 import { toSavedMesh, parseSavedMesh, type SavedMesh, type VersionSnapshot } from './storage/versionMesh';
 import { mountModelDriftPill, showModelDriftDialog } from './ui/modelDriftNotice';
 import { buildInfo } from './buildInfo';
@@ -601,25 +601,63 @@ let currentMeshData: MeshData | null = null;
 type VoxelRunCache = { code: string; paramsKey: string; grid: unknown };
 let lastVoxelRun: VoxelRunCache | null = null;
 /** The last successful mesh-producing run: the code + Customizer values it ran
- *  with, the mesh the ENGINE built (before api.surface.* textures — what a
- *  version's fingerprint describes), and the mesh it displayed (`shown`, the
- *  textured one when a texture applied). A save of that same code records a
- *  snapshot from it (versionSnapshotFor); a version load compares against it. */
-let lastEngineRun: { code: string; paramsKey: string; mesh: MeshData; shown: MeshData } | null = null;
+ *  with, what else fed it (the object, its imports and companion files, the
+ *  curvature quality), the mesh the ENGINE built (before api.surface.*
+ *  textures — what a version's fingerprint describes) and the mesh it
+ *  displayed (`shown`, the textured one when a texture applied). A save of that
+ *  same model records a snapshot from it (versionSnapshotFor); a version load
+ *  compares against it (checkVersionDrift). Null after a failed run and at the
+ *  start of every version load, so it never describes another model. */
+type EngineRunRecord = {
+  code: string;
+  paramsKey: string;
+  partId: string | null;
+  inputsKey: string;
+  segments: number;
+  mesh: MeshData;
+  shown: MeshData;
+  /** The engine mesh's fingerprint, computed on first use. */
+  print?: ModelFingerprint;
+};
+let lastEngineRun: EngineRunRecord | null = null;
+
+/** Identity of a run's non-code inputs: the active imports and companion files. */
+function runInputsKey(): string {
+  const companions = getCompanionFiles();
+  return `${getActiveImports().map(m => m.id).join(',')}|${Object.keys(companions).length ? simpleHash(JSON.stringify(companions)) : ''}`;
+}
+
+/** Whether two code strings are the same model source. A caller may run the
+ *  raw string (partwright.run / runAndSave) while the editor holds, and saves,
+ *  its auto-formatted form. */
+function sameModelCode(a: string, b: string): boolean {
+  return a === b || formatAsEditorWould(a) === b || formatAsEditorWould(b) === a;
+}
+
+/** The fingerprint of a run's engine mesh, tagged with the quality it ran at. */
+function runFingerprint(run: EngineRunRecord): ModelFingerprint {
+  run.print ??= { ...computeModelFingerprint(run.mesh), segments: run.segments };
+  return run.print;
+}
 
 /** The model snapshot a save of `code` with `paramValues` records, or null
- *  when the live model wasn't built from exactly that code and those values
- *  (some save paths commit code that isn't on screen). The fingerprint is of
- *  the engine's mesh; the stored mesh is what the viewport shows (paint
- *  refinement and colours included), capped by versionMeshMaxTriangles. */
+ *  when the live model wasn't built from exactly that code, those values and
+ *  this object's inputs (some save paths commit code that isn't on screen).
+ *  The fingerprint is of the engine's mesh; the stored mesh is what the
+ *  viewport shows (paint refinement and colours included), capped by
+ *  versionMeshMaxTriangles (and, for a textured mesh, by the texture cap). */
 function versionSnapshotFor(code: string, paramValues: Record<string, unknown> | undefined): VersionSnapshot | null {
   const run = lastEngineRun;
-  if (!run || run.code !== code || run.paramsKey !== voxelParamsKey(paramValues)) return null;
-  const snapshot: VersionSnapshot = { fingerprint: computeModelFingerprint(run.mesh) };
+  if (!run || run.paramsKey !== voxelParamsKey(paramValues) || !sameModelCode(run.code, code)) return null;
+  if (run.partId !== (getState().currentPart?.id ?? null) || run.inputsKey !== runInputsKey()) return null;
+  const snapshot: VersionSnapshot = { fingerprint: runFingerprint(run) };
   // paintBaseMesh is the displayed run mesh until another run or a bake
-  // replaces it; currentMeshData is that mesh or its paint-refined version.
+  // replaces it; currentMeshData is that mesh or its paint-refined version. A
+  // parked (cancelled or failed) texture means the shown mesh isn't the model.
   const shown = currentMeshData;
-  if (shown && paintBaseMesh === run.shown && shown.numTri <= getConfig().renderer.versionMeshMaxTriangles) {
+  const cfg = getConfig().renderer;
+  const cap = run.shown === run.mesh ? cfg.versionMeshMaxTriangles : Math.min(cfg.versionMeshMaxTriangles, cfg.surfaceTexturePersistMaxTriangles);
+  if (shown && paintBaseMesh === run.shown && !pendingSurface && shown.numTri <= cap) {
     snapshot.mesh = toSavedMesh(hasColorRegions() || hasModelColorRegions() ? applyTriColors(shown) : shown);
   }
   return snapshot;
@@ -636,6 +674,9 @@ let modelDrift: {
   versionIndex: number;
   versionLabel: string;
   code: string;
+  /** The run the comparison was made on (Customizer values, quality). */
+  paramsKey: string;
+  segments: number;
   savedWith: string | null;
   diffs: string[];
   /** The version's stored mesh, when it kept one (newest versions only). */
@@ -934,6 +975,9 @@ type PartMeshCacheEntry = {
   /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
    *  cache hit can defer the Manifold rebuild too. */
   manifoldFacts: ManifoldFacts | null;
+  /** The run that built this mesh (see `lastEngineRun`), so a save after a
+   *  cache hit still records the model's fingerprint and mesh. */
+  engineRun: EngineRunRecord | null;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -3419,6 +3463,7 @@ async function saveCurrentVersion(label?: string, opts?: { force?: boolean }): P
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
         manifoldFacts: manifoldFactsFor(meshToCache),
+        engineRun: lastEngineRun?.shown === meshToCache ? lastEngineRun : null,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -9410,6 +9455,9 @@ async function main() {
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
     clearModelDrift();
+    // The previous run describes the outgoing model; the cache hit below
+    // restores this version's own, and a cache miss records a fresh one.
+    lastEngineRun = null;
     // Preserve the user's interactive camera angle across version switches
     // *within* a session. Loading a version re-renders the geometry, whose
     // updateMesh auto-frames the camera back to the default 3/4 view — undoing
@@ -9473,6 +9521,7 @@ async function main() {
       }
       currentLabelMap = cachedEntry.labelMap;
       currentLabelMesh = currentMeshData;
+      lastEngineRun = cachedEntry.engineRun;
       currentLostLabels = cachedEntry.lostLabels;
       setPaintLabels(currentLabelMap);
       noteLabelMapChanged();
@@ -9587,6 +9636,9 @@ async function main() {
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
           manifoldFacts: manifoldFactsFor(currentMeshData),
+          // (Cast: TS keeps lastEngineRun narrowed to the null set above, but
+          // runCodeSync assigned it since.)
+          engineRun: (lastEngineRun as EngineRunRecord | null)?.shown === currentMeshData ? lastEngineRun : null,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -9608,40 +9660,32 @@ async function main() {
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     await restoreAttachmentsForActiveSession();
-    if (ranVersionCode) checkVersionDrift(version, opts);
+    if (ranVersionCode) checkVersionDrift(version);
   }
 
   /** After a version load re-ran its code: compare what it built with the
-   *  fingerprint saved with it — or, for a version saved before fingerprints,
-   *  with the stats saved with it — and raise the "Built differently than
-   *  saved" pill when they differ. */
-  function checkVersionDrift(version: Version, opts: { skipSurface?: boolean }): void {
+   *  fingerprint saved with the version and raise the "Built differently than
+   *  saved" pill when they differ. Versions saved before fingerprints aren't
+   *  compared: their stored stats can come from another quality setting or a
+   *  bake on another machine, which reads as a change that isn't one. */
+  function checkVersionDrift(version: Version): void {
     const run = lastEngineRun;
-    if (!run || run.code !== version.code || getValue() !== version.code) return;
-    let cmp: FingerprintComparison;
+    if (!run || !sameModelCode(run.code, version.code)) return;
+    if (run.partId !== version.partId) return;
     const savedPrint = parseModelFingerprint(version.fingerprint);
-    if (savedPrint) {
-      cmp = compareModelFingerprints(savedPrint, computeModelFingerprint(run.mesh));
-    } else {
-      // Saved before fingerprints: the stats saved with it describe the mesh
-      // shown at save time. Skip when they can't describe this run: stats for
-      // other code, or a texture that didn't apply this time (skipped,
-      // cancelled or failed). Triangle counts are left out — paint refinement
-      // can change them without changing the shape.
-      const gd = version.geometryData as Record<string, unknown> | null;
-      if (!gd || (typeof gd.codeHash === 'string' && gd.codeHash !== simpleHash(version.code))) return;
-      if (opts.skipSurface || pendingSurface) return;
-      const saved = fingerprintFromStats(gd);
-      const now = fingerprintFromStats(getGeometryDataObj());
-      if (!saved || !now) return;
-      cmp = compareModelFingerprints(saved, { ...now, tris: saved.tris });
-    }
+    if (!savedPrint) return;
+    // A different curvature quality (not persisted across reloads) changes
+    // every curved surface; that is the user's setting, not a changed model.
+    if (savedPrint.segments !== undefined && savedPrint.segments !== run.segments) return;
+    const cmp = compareModelFingerprints(savedPrint, runFingerprint(run));
     if (!cmp.changed) return;
     modelDrift = {
       versionId: version.id,
       versionIndex: version.index,
       versionLabel: version.label,
       code: version.code,
+      paramsKey: run.paramsKey,
+      segments: run.segments,
       savedWith: version.appVersion ?? null,
       diffs: cmp.diffs,
       savedMesh: parseSavedMesh(version.latestMesh),
@@ -9677,38 +9721,78 @@ async function main() {
     };
   }
 
+  /** Why a drift action can't write from this tab, or null when it can. */
+  function driftWriteBlocked(): string | null {
+    if (isSharedPreview()) return 'This is a read-only shared preview. Fork it first to make edits you can save.';
+    if (isReadOnlyViewer()) return 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.';
+    return null;
+  }
+
   /** Bring back the model as saved: the version's stored mesh, committed as a
-   *  new version (the same path as a baked surface modifier, colours carried). */
+   *  new version (the same path as a baked surface modifier, colours carried).
+   *  A mesh that isn't a closed solid (render-only output) comes back
+   *  render-only rather than failing. */
   async function restoreSavedModel(): Promise<Record<string, unknown>> {
+    const blocked = driftWriteBlocked();
+    if (blocked) return { error: blocked };
     const d = modelDrift;
     if (!d) return { error: 'Nothing to restore: the open version builds the same model it was saved with.' };
     if (!d.savedMesh) {
       return { error: `v${d.versionIndex} has no saved mesh to restore: only each object's newest version keeps one. Use keepRebuiltModel() to keep the new model instead.` };
     }
-    const label = `v${d.versionIndex} as saved`;
+    const mesh = d.savedMesh as MeshData;
+    let solid = false;
+    try {
+      const m = getModule()?.Manifold.ofMesh(mesh);
+      solid = !!m;
+      m?.delete?.();
+    } catch {
+      solid = false;
+    }
+    const priorLang = getActiveLanguage();
     const result = await commitSurfaceModifier({
       kind: 'manifold',
-      label,
-      mesh: d.savedMesh as MeshData,
+      label: `v${d.versionIndex} as saved`,
+      mesh,
       code: `// v${d.versionIndex} restored as it was saved${d.savedWith ? ` (Partwright v${d.savedWith})` : ''}, on ${new Date().toISOString().slice(0, 10)}.\n` +
         `// Its code now builds a different model; this is the mesh saved with it,\n// baked onto api.imports[0]. The original code is in v${d.versionIndex}.\n` +
-        `const { Manifold } = api;\nreturn Manifold.ofMesh(api.imports[0]);\n`,
+        (solid
+          ? `const { Manifold } = api;\nreturn Manifold.ofMesh(api.imports[0]);\n`
+          : `// It isn't a closed solid, so it is shown render-only (no booleans, slicing or paint by part).\nreturn api.renderMesh(api.imports[0]);\n`),
     }, true);
-    if (!result.error) clearModelDrift();
+    if (result.error) return result;
+    clearModelDrift();
+    if (priorLang === 'voxel') {
+      const warning = `Restored v${d.versionIndex} as a mesh: it is no longer a voxel model, so VOX export and voxel editing don't apply. Its voxel code stays in v${d.versionIndex}.`;
+      showToast(warning, { variant: 'warn', source: 'engine' });
+      const prior = Array.isArray(result.warnings) ? result.warnings as string[] : [];
+      return { ...result, warnings: [...prior, warning] };
+    }
     return result;
   }
 
   /** Accept the rebuilt model: save it as a new version, which records the new
    *  fingerprint (and newest mesh). */
   async function keepRebuiltModel(): Promise<Record<string, unknown>> {
+    const blocked = driftWriteBlocked();
+    if (blocked) return { error: blocked };
     const d = modelDrift;
     if (!d) return { error: 'Nothing to keep: the open version builds the same model it was saved with.' };
-    if (getValue() !== d.code) return { error: 'The code has been edited since the version was opened; save it normally instead.' };
+    if (!sameModelCode(d.code, getValue())) return { error: 'The code has been edited since the version was opened; save it normally instead.' };
     const running = buildInfo.version !== 'unknown' ? ` on v${buildInfo.version}` : '';
     const r = await saveCurrentVersion(`v${d.versionIndex} rebuilt${running}`, { force: true });
     if ('error' in r) return r;
     clearModelDrift();
     return { ok: true, ...r };
+  }
+
+  /** Stop showing the drift notice for the open version on this device. */
+  function dismissModelDrift(): Record<string, unknown> {
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to dismiss: the open version builds the same model it was saved with.' };
+    dismissedDrift.add(d.versionId);
+    driftPill?.hide();
+    return { ok: true, version: d.versionIndex };
   }
 
   function openModelDriftDialog(): void {
@@ -9725,10 +9809,7 @@ async function main() {
     }, {
       restore: restoreSavedModel,
       keep: keepRebuiltModel,
-      dismiss: () => {
-        dismissedDrift.add(d.versionId);
-        driftPill?.hide();
-      },
+      dismiss: () => { dismissModelDrift(); },
     });
   }
 
@@ -12586,6 +12667,9 @@ async function main() {
       // framing when the baked result renders.
       const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
+      // runCodeSync reports a run that errored as applied; never save one.
+      const ran = getGeometryDataObj();
+      if (ran?.status !== 'ok') return { error: `Failed to apply ${result.label}: ${typeof ran?.error === 'string' ? ran.error : 'the baked mesh did not build'}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
       if (colorMesh && currentMeshData && geoData) {
@@ -12632,6 +12716,8 @@ async function main() {
     // bounds, so preserve the user's camera angle across the render.
     const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
+    const ranVoxel = getGeometryDataObj();
+    if (ranVoxel?.status !== 'ok') return { error: `Failed to apply ${result.label}: ${typeof ranVoxel?.error === 'string' ? ranVoxel.error : 'the baked grid did not build'}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
     const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
@@ -16283,15 +16369,19 @@ async function main() {
      *  committed as a new version — when it builds differently now. Only each
      *  object's newest version keeps a mesh (`getModelDrift().canRestore`). */
     async restoreSavedModel() {
-      if (isReadOnlyViewer()) return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
       return restoreSavedModel();
     },
 
     /** Keep the rebuilt model of a version that builds differently now: save
      *  it as a new version (recording its new fingerprint). */
     async keepRebuiltModel() {
-      if (isReadOnlyViewer()) return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
       return keepRebuiltModel();
+    },
+
+    /** Stop showing the "Built differently than saved" notice for the open
+     *  version on this device (the dialog's Ignore). The version is unchanged. */
+    dismissModelDrift() {
+      return dismissModelDrift();
     },
 
     /** Save every part in the active session that has unsaved changes, in one
@@ -16917,10 +17007,11 @@ async function main() {
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
       clearModelDrift();
+      lastEngineRun = null;
       const ran = await runCodeSync(version.code, { preserveCamera: true });
       await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
-      if (ran) checkVersionDrift(version, {});
+      if (ran) checkVersionDrift(version);
       // Labels are runtime state from the just-executed code. Surface
       // whether any were registered so callers can decide between
       // paintByLabel (when available) and paintComponent / paintInBox
@@ -22035,6 +22126,7 @@ async function main() {
         'getModelDrift':   { signature: 'getModelDrift() -- Does the open version build differently than saved? -> {changed:false} | {changed:true, version, label, savedWith, running, differences[], canRestore, dismissed}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'restoreSavedModel': { signature: 'await restoreSavedModel() -- Commit the open version\'s saved mesh as a new version (newest versions only; see getModelDrift().canRestore) -> {ok, label, geometry} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'keepRebuiltModel': { signature: 'await keepRebuiltModel() -- Save the rebuilt model of a drifted version as a new version -> {ok, id, index, label} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'dismissModelDrift': { signature: 'dismissModelDrift() -- Stop showing the drift notice for the open version on this device (the dialog\'s Ignore) -> {ok, version} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'commitWithColors': { signature: 'await commitWithColors({code?, label?, assertions?}) -- Commit, routing for you: code given and different from the editor -> full runAndSave; otherwise a saveVersion snapshot -> {routed: "run"|"snapshot", ...that result} or {error}', docs: '/ai.md#assert--save-in-one-call' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -23644,6 +23736,10 @@ async function main() {
     // The Customizer values this run was REQUESTED with (they can change while
     // it's in flight) — what a cached voxel grid must be keyed on.
     let runParamsKey = '';
+    // What else feeds this run, for the fingerprint snapshot (lastEngineRun).
+    const runPartId = getState().currentPart?.id ?? null;
+    const runInputs = runInputsKey();
+    const runSegments = getDefaultCircularSegments();
     try {
       runParamsKey = voxelParamsKey(currentParamValues);
       result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
@@ -23697,6 +23793,7 @@ async function main() {
 
     if (result.error) {
       undoImportPreview();
+      lastEngineRun = null;
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
@@ -23762,8 +23859,11 @@ async function main() {
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
       currentMeshData = result.mesh;
-      lastEngineRun = { code: src, paramsKey: runParamsKey, mesh: engineMesh, shown: result.mesh };
-      if (modelDrift && src !== modelDrift.code) clearModelDrift();
+      lastEngineRun = { code: src, paramsKey: runParamsKey, partId: runPartId, inputsKey: runInputs, segments: runSegments, mesh: engineMesh, shown: result.mesh };
+      // A run of anything other than the drifted version's model (other code,
+      // Customizer values or quality) means the notice no longer describes
+      // what's on screen.
+      if (modelDrift && (!sameModelCode(src, modelDrift.code) || runParamsKey !== modelDrift.paramsKey || runSegments !== modelDrift.segments)) clearModelDrift();
       lastVoxelRun = result.voxelGrid
         ? { code: src, paramsKey: runParamsKey, grid: result.voxelGrid }
         : null;

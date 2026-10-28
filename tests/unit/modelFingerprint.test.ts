@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   computeModelFingerprint,
   compareModelFingerprints,
-  fingerprintFromStats,
   parseModelFingerprint,
 } from '../../src/geometry/modelFingerprint';
 import type { MeshData } from '../../src/geometry/types';
@@ -111,37 +110,9 @@ describe('compareModelFingerprints', () => {
   });
 });
 
-describe('fingerprintFromStats', () => {
-  const stats = {
-    status: 'ok',
-    triangleCount: 12,
-    vertexCount: 8,
-    volume: 1,
-    surfaceArea: 6,
-    boundingBox: { x: [0, 1], y: [0, 1], z: [0, 1], dimensions: [1, 1, 1] },
-  };
-
-  it('reads the stats every version stores', () => {
-    expect(fingerprintFromStats(stats)).toEqual({ v: 1, tris: 12, verts: 8, volume: 1, area: 6, bbox: [0, 0, 0, 1, 1, 1] });
-  });
-
-  it('returns null for failed or incomplete stats', () => {
-    expect(fingerprintFromStats(null)).toBeNull();
-    expect(fingerprintFromStats({ status: 'error' })).toBeNull();
-    expect(fingerprintFromStats({ ...stats, boundingBox: null })).toBeNull();
-  });
-
-  it('compares two stats prints on the shared fields', () => {
-    const a = fingerprintFromStats(stats)!;
-    const b = fingerprintFromStats({ ...stats, volume: 1.05 })!;
-    expect(compareModelFingerprints(a, a).changed).toBe(false);
-    expect(compareModelFingerprints(a, b).diffs).toEqual(['volume +5.0%']);
-  });
-});
-
 describe('parseModelFingerprint', () => {
   it('round-trips a computed fingerprint through JSON', () => {
-    const f = computeModelFingerprint(box(2, 1, 1));
+    const f = { ...computeModelFingerprint(box(2, 1, 1)), segments: 64 };
     expect(parseModelFingerprint(JSON.parse(JSON.stringify(f)))).toEqual(f);
   });
 

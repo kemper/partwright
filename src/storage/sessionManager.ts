@@ -572,6 +572,8 @@ function serializeSavedMesh(raw: unknown): ExportedMesh | undefined {
 function deserializeSavedMesh(raw: ExportedMesh | undefined): SavedMesh | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   if (typeof raw.vertProperties !== 'string' || typeof raw.triVerts !== 'string') return undefined;
+  // The same cap a local save applies (a file can claim anything).
+  if (typeof raw.numTri !== 'number' || raw.numTri > getConfig().renderer.versionMeshMaxTriangles) return undefined;
   try {
     return parseSavedMesh({
       numVert: raw.numVert,
@@ -1651,7 +1653,9 @@ export async function saveVersion(
   const language = getActiveLanguage();
   let snapshot: VersionSnapshot | null = null;
   try {
-    snapshot = versionSnapshotProvider?.(code, paramValues) ?? null;
+    // An import-backed model is stored mesh data already: no fingerprint or
+    // mesh (and no hashing a multi-million-triangle import on every save).
+    if (nextImports.length === 0) snapshot = versionSnapshotProvider?.(code, paramValues) ?? null;
   } catch (e) {
     console.warn('[partwright] model snapshot failed; saving without it', e);
   }
@@ -1832,7 +1836,17 @@ export async function deleteVersion(versionId: string): Promise<DeleteVersionRes
  */
 export async function restoreVersion(version: Version, makeCurrent: boolean): Promise<void> {
   if (!currentState.session || !currentState.currentPart || version.partId !== currentState.currentPart.id) return;
-  await dbPutVersion(version);
+  // Only the newest version keeps a stored mesh: if a newer one was saved
+  // since the delete, the restored version comes back without its mesh.
+  let toPut = version;
+  if (version.latestMesh !== undefined) {
+    const others = await dbListVersions(currentState.currentPart.id);
+    if (others.some(v => v.index > version.index)) {
+      const { latestMesh: _superseded, ...rest } = version;
+      toPut = rest;
+    }
+  }
+  await dbPutVersion(toPut);
   const versions = await dbListVersions(currentState.currentPart.id);
   currentState = {
     ...currentState,
@@ -2227,20 +2241,11 @@ const DEFAULT_EXPORT_OPTIONS: Required<Omit<ExportOptions, 'versionIndices'>> = 
 };
 
 /** The mesh to embed for an object's newest version with includeLatestMeshes:
- *  its stored `latestMesh`, else — for the open object's version saved before
- *  meshes were stored — the live mesh when the editor still shows exactly that
- *  version's model. Null for mesh-backed versions (their imports or surface
- *  texture already carry the mesh) and when nothing matching is available. */
+ *  its stored `latestMesh` (absent on versions saved before meshes were
+ *  stored, and on mesh-backed versions, whose imports or surface texture
+ *  already carry the mesh). */
 function latestMeshForExport(v: Version): SavedMesh | null {
-  const stored = parseSavedMesh(v.latestMesh);
-  if (stored) return stored;
-  if (isMeshBackedVersion(v)) return null;
-  if (currentState.currentVersion?.id !== v.id) return null;
-  try {
-    return versionSnapshotProvider?.(v.code, v.paramValues)?.mesh ?? null;
-  } catch {
-    return null;
-  }
+  return parseSavedMesh(v.latestMesh);
 }
 
 /** Read a Blob as a base64 data URL (e.g. "data:image/png;base64,..."). */

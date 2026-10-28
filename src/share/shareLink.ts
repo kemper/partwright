@@ -330,6 +330,9 @@ export function validateSharePayloadShape(raw: unknown): ExportedSession {
     assertStringCap(v.code, MAX_CODE_CHARS, 'version code');
     assertStringCap(v.label, MAX_LABEL_CHARS, 'version label');
     capVersionAnnotations(v);
+    // A share link never carries a stored mesh (trimForShare drops it on the
+    // sending side); drop one a hand-built payload smuggles in.
+    delete v.latestMesh;
   }
 
   // Drop an unsafe leading thumbnail rather than rejecting the whole payload —

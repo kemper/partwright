@@ -14,9 +14,8 @@
 //    between browsers (a `Math.sin` that differs in the last bit) never reads
 //    as a change, while a real edit does.
 //
-// Versions saved before fingerprints existed are compared on the stats every
-// version already stores (`fingerprintFromStats`), so drift detection also
-// covers old saves.
+// Versions saved before fingerprints existed are not compared: their stored
+// stats can come from another curvature quality or another machine's bake.
 //
 // Pure and dependency-free (unit-tested in tests/unit/modelFingerprint.test.ts).
 
@@ -31,13 +30,17 @@ export interface ModelFingerprint {
   area: number;
   /** [minX, minY, minZ, maxX, maxY, maxZ]. */
   bbox: [number, number, number, number, number, number];
-  /** Area-weighted centroid of the surface. Absent on stats-derived prints. */
+  /** Area-weighted centroid of the surface. */
   centroid?: [number, number, number];
   /** Area-weighted second moments of the surface about its centroid, divided
-   *  by the total area: [xx, yy, zz, xy, xz, yz]. Absent on stats-derived. */
+   *  by the total area: [xx, yy, zz, xy, xz, yz]. */
   spread?: [number, number, number, number, number, number];
-  /** Exact content hash of positions + triangles. Absent on stats-derived. */
+  /** Exact content hash of positions + triangles. */
   hash?: string;
+  /** The default circular segment count (curvature quality) the model was
+   *  built at. Quality isn't saved with a version, so a different quality
+   *  isn't a changed model; callers compare only at equal quality. */
+  segments?: number;
 }
 
 /** Relative tolerance for scalar measurements (volume, area, spread). Float
@@ -47,9 +50,11 @@ const REL_TOL = 1e-5;
  *  are treated as noise: a level-set sign flip can add or drop a sliver. */
 const TRI_TOL = 1e-4;
 
-function fnv(h: number, bytes: Uint8Array): number {
-  for (let i = 0; i < bytes.length; i++) {
-    h ^= bytes[i];
+/** FNV-1a over 32-bit words (4× fewer steps than per byte; the hash only
+ *  has to tell identical buffers from different ones). */
+function fnv(h: number, words: Uint32Array): number {
+  for (let i = 0; i < words.length; i++) {
+    h ^= words[i];
     h = Math.imul(h, 0x01000193);
   }
   return h;
@@ -105,8 +110,8 @@ export function computeModelFingerprint(mesh: MeshData): ModelFingerprint {
   ];
 
   let h = 0x811c9dc5;
-  h = fnv(h, new Uint8Array(vp.buffer, vp.byteOffset, vp.byteLength));
-  h = fnv(h, new Uint8Array(tv.buffer, tv.byteOffset, tv.byteLength));
+  h = fnv(h, new Uint32Array(vp.buffer, vp.byteOffset, vp.length));
+  h = fnv(h, tv);
 
   return {
     v: 1,
@@ -119,23 +124,6 @@ export function computeModelFingerprint(mesh: MeshData): ModelFingerprint {
     spread,
     hash: `${(h >>> 0).toString(36)}-${mesh.numVert}-${mesh.numTri}`,
   };
-}
-
-/** A partial fingerprint from a version's stored geometry stats (the
- *  `geometryData` every version has had since long before fingerprints), or
- *  null when the stats are missing or from a failed run. Volume and area here
- *  come from Manifold, so compare a stats print only with another stats print. */
-export function fingerprintFromStats(stats: Record<string, unknown> | null | undefined): ModelFingerprint | null {
-  if (!stats || stats.status !== 'ok') return null;
-  const tris = stats.triangleCount, verts = stats.vertexCount;
-  const volume = stats.volume, area = stats.surfaceArea;
-  const bb = stats.boundingBox as { x?: unknown; y?: unknown; z?: unknown } | null | undefined;
-  if (typeof tris !== 'number' || typeof verts !== 'number' || typeof volume !== 'number' || typeof area !== 'number') return null;
-  const axis = (v: unknown): [number, number] | null =>
-    Array.isArray(v) && v.length >= 2 && typeof v[0] === 'number' && typeof v[1] === 'number' ? [v[0], v[1]] : null;
-  const x = axis(bb?.x), y = axis(bb?.y), z = axis(bb?.z);
-  if (!x || !y || !z) return null;
-  return { v: 1, tris, verts, volume, area, bbox: [x[0], y[0], z[0], x[1], y[1], z[1]] };
 }
 
 /** Validate a fingerprint read back from storage or a file; null when it isn't
@@ -156,6 +144,7 @@ export function parseModelFingerprint(raw: unknown): ModelFingerprint | null {
     ...(nums(r.centroid, 3) ? { centroid: r.centroid as ModelFingerprint['centroid'] } : {}),
     ...(nums(r.spread, 6) ? { spread: r.spread as ModelFingerprint['spread'] } : {}),
     ...(typeof r.hash === 'string' ? { hash: r.hash } : {}),
+    ...(num(r.segments) ? { segments: r.segments } : {}),
   };
 }
 
@@ -174,8 +163,8 @@ function pct(saved: number, now: number): string {
   return `${p >= 0 ? '+' : '−'}${shown}%`;
 }
 
-/** Compare a saved fingerprint with the rebuilt one. Only fields both carry are
- *  compared, so a stats-derived print works against another stats print. */
+/** Compare a saved fingerprint with the rebuilt one. Optional fields are
+ *  compared only when both carry them. */
 export function compareModelFingerprints(saved: ModelFingerprint, now: ModelFingerprint): FingerprintComparison {
   if (saved.hash && now.hash && saved.hash === now.hash) return { changed: false, diffs: [] };
   const diag = Math.max(

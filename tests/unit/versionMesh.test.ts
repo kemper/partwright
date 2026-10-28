@@ -44,6 +44,17 @@ describe('parseSavedMesh / toSavedMesh', () => {
     expect(parseSavedMesh({ ...mesh(), numProp: 2 })).toBeNull();
   });
 
+  it('rejects triangles that reference missing vertices', () => {
+    expect(parseSavedMesh({ ...mesh(), triVerts: new Uint32Array([0, 1, 3]) })).toBeNull();
+  });
+
+  it('compacts extra vertex properties to x, y, z', () => {
+    const wide = { ...mesh(), numProp: 4, vertProperties: new Float32Array([0, 0, 0, 9, 1, 0, 0, 9, 0, 1, 0, 9]) };
+    const saved = toSavedMesh(wide);
+    expect(saved.numProp).toBe(3);
+    expect(Array.from(saved.vertProperties)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  });
+
   it('drops a colour buffer that is too short', () => {
     expect(parseSavedMesh({ ...mesh(), triColors: new Uint8Array(1) })).not.toHaveProperty('triColors');
   });

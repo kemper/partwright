@@ -124,7 +124,7 @@ test.describe('Built differently than saved (model drift)', () => {
     expect(after.drift.changed).toBe(false);
   });
 
-  test('keeping the new model saves it with a fresh fingerprint; stats catch older saves', async ({ page }) => {
+  test('keeping the new model saves it with a fresh fingerprint; no false alarms', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
     const seeded = await seedDriftedVersion(page);
@@ -144,19 +144,52 @@ test.describe('Built differently than saved (model drift)', () => {
         listVersions(p: string): Promise<(Record<string, unknown> & { id: string })[]>;
         putVersion(v: Record<string, unknown>): Promise<void>;
       };
-      const kept = await pw.loadVersion({ index: 3 }) as { builtDifferently?: unknown };
-      // A version saved before fingerprints: drop its fingerprint and make its
-      // saved stats disagree with what the code builds.
+      const keptDrift = (await pw.loadVersion({ index: 3 }) as { builtDifferently?: unknown }).builtDifferently ?? null;
+      // A version saved before fingerprints (and with stats that disagree)
+      // isn't compared at all.
       const versions = await db.listVersions(partId);
       const legacy = { ...versions[2] };
       delete legacy.fingerprint;
       legacy.geometryData = { ...(legacy.geometryData as Record<string, unknown>), volume: 1000 };
       await db.putVersion(legacy);
-      const old = await pw.loadVersion({ index: 3 }) as { builtDifferently?: { differences: string[] } };
-      return { keptDrift: kept.builtDifferently ?? null, legacyDiffs: old.builtDifferently?.differences ?? [] };
+      const legacyDrift = (await pw.loadVersion({ index: 3 }) as { builtDifferently?: unknown }).builtDifferently ?? null;
+      // A sphere at the default quality, reopened at another one: quality
+      // isn't saved with a version, so that is not a changed model.
+      const saved = await pw.runAndSave('const { Manifold } = api;\nreturn Manifold.sphere(8);\n', 'default quality') as { version?: { index: number } };
+      const trisSaved = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      await pw.setCurvatureQuality({ quality: 'low' });
+      const otherQuality = (await pw.loadVersion({ index: 4 }) as { builtDifferently?: unknown }).builtDifferently ?? null;
+      const trisLow = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      return { keptDrift, legacyDrift, otherQuality, trisSaved, trisLow, savedIndex: saved.version?.index ?? null };
     }, seeded.partId);
     expect(reopened.keptDrift).toBeNull();
-    expect(reopened.legacyDiffs.join(' ')).toMatch(/volume/);
+    expect(reopened.legacyDrift).toBeNull();
+    expect(reopened.savedIndex).toBe(4);
+    // The quality change really did rebuild it differently…
+    expect(reopened.trisLow).not.toBe(reopened.trisSaved);
+    // …and that isn't reported as drift.
+    expect(reopened.otherQuality).toBeNull();
+  });
+
+  test('code saved unformatted still records its snapshot', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => Promise<unknown>> }).partwright;
+      const db = await import('/src/storage/db') as unknown as {
+        listParts(s: string): Promise<{ id: string }[]>;
+        listVersions(p: string): Promise<Record<string, unknown>[]>;
+      };
+      const session = await pw.createSession('model-drift-format') as { id: string };
+      // The editor auto-formats this; the save stores the formatted text.
+      await pw.runAndSave('const {Manifold}=api;return Manifold.cube([5,5,5]);', 'squashed');
+      await pw.run('const {Manifold}=api;return Manifold.cube([6,6,6]);');
+      await pw.saveVersion('after run');
+      const [part] = await db.listParts(session.id);
+      const versions = await db.listVersions(part.id);
+      return versions.map(v => ({ print: !!v.fingerprint, mesh: !!v.latestMesh }));
+    });
+    expect(out).toEqual([{ print: true, mesh: false }, { print: true, mesh: true }]);
   });
 
   test('export can embed the newest meshes and import restores them', async ({ page }) => {
