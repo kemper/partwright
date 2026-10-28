@@ -1076,6 +1076,8 @@ const sheathed = F.hangFrom(scabbard, hip, { tilt: 15 }).label('scabbard');
 eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up, lateral }`
 (all tracking head pose): build a lens ring at `eyeL`/`eyeR` pushed out along
 `forward`, a `bridge` between them, and temple arms back to `templeL`/`templeR`.
+The figure is unitless; for a wearable that must fit a real person, design
+against the metric `api.headform()` instead (`/ai/headform.md`).
 
 > **Thin accessory features (glasses temples, chains, straps, blades) FRAGMENT on
 > the coarse march, and the `detail` REFINE pass FRAYS them** (the same failure as
