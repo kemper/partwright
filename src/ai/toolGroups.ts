@@ -70,12 +70,13 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group, arrange or copy parts, what an export can split into',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
       'isolateObjectPart', 'getObjectPartInfo', 'renameObjectPart', 'extractObjectPiece',
       'extractObjectParts', 'mergeObjects', 'reorderObjects', 'saveAllObjects', 'setObjectGroup',
+      'partAction', 'undoPartEdit', 'listExportItems',
     ],
   },
   {
@@ -118,8 +119,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'versions',
-    summary: 'compare, rename and delete saved versions',
-    tools: ['diffVersions', 'renameVersion', 'deleteVersion'],
+    summary: 'compare, rename and delete saved versions; a version that now builds differently than saved (getModelDrift / resolveModelDrift)',
+    tools: ['diffVersions', 'renameVersion', 'deleteVersion', 'getModelDrift', 'resolveModelDrift'],
   },
   {
     id: 'ui',

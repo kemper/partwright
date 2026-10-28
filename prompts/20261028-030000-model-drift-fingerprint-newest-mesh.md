@@ -91,3 +91,12 @@ A review pass found false alarms and unsafe edges. All are fixed in this PR:
 - **Cost.** Import-backed saves skip the snapshot, the content hash runs over
   32-bit words, and the fingerprint is memoised per run.
 - **Export.** The live-mesh fallback is gone, since it could embed unsaved paint.
+
+## Merge with main: tool groups
+
+Main added on-demand AI tool groups (#1175), and every tool must sit in core or
+in exactly one group. Main itself was red on that check: `listExportItems`,
+`partAction` and `undoPartEdit` had merged without a group. This PR ports the
+fix: those go in `objects`, and the drift tools go in `versions`. The drift
+tools stay out of core, so the turn-0 tool budget holds; `loadVersion` (core)
+still reports drift.
