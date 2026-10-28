@@ -19,3 +19,9 @@ from main, PR-checks e2e shard 6 failed in `multi-tab-lock.spec.ts`.
 on a slow runner. The test passes locally on the same commit and the gate
 passed on main. Switched to the auto-retrying `expect(page).not.toHaveURL`,
 which still fails if the param is never removed.
+
+**Main's unit tier went red under the PR.** Three PRs merged at once left
+four AI tools outside every tool group and ai.md over its turn-0 budget.
+The fix already existed as a standalone commit on kemper/partwright#1191
+(81cea60), so it was cherry-picked here verbatim (minus that PR's own
+prompt log). It no-ops once main carries it.
