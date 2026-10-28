@@ -76,8 +76,14 @@ function positionsOf(mesh: MeshLike): Float32Array {
  *  through the sample centres collects triangle crossings; parity fills between
  *  pairs. Sample centres are jittered half a cell off the lattice planes so
  *  rays never graze triangle edges exactly (watertight input ⇒ even crossing
- *  counts). */
-export function rasterizeOccupancy(mesh: MeshLike, spec: GridSpec): Uint8Array {
+ *  counts).
+ *
+ *  `fillRule: 'nonzero'` instead tracks each crossing's direction (entering
+ *  through a −X-facing triangle, leaving through a +X-facing one) and fills
+ *  wherever the winding number is non-zero — so a closed surface that passes
+ *  through itself (skin folded into skin at a deep bend) stays solid where
+ *  parity would cancel the overlap into a hole. */
+export function rasterizeOccupancy(mesh: MeshLike, spec: GridSpec, fillRule: 'parity' | 'nonzero' = 'parity'): Uint8Array {
   const { nx, ny, nz, origin, voxel } = spec;
   const occ = new Uint8Array(nx * ny * nz);
   if (mesh.numTri === 0) return occ;
@@ -87,6 +93,9 @@ export function rasterizeOccupancy(mesh: MeshLike, spec: GridSpec): Uint8Array {
   // Per-row crossing lists, keyed j + k*ny. Stored flat-ish: a Map of arrays is
   // fine at these sizes (rows with no triangles never allocate).
   const rows = new Map<number, number[]>();
+  // Crossing directions (+1 entering, −1 leaving), parallel to `rows` — only
+  // collected for the nonzero rule.
+  const dirs = fillRule === 'nonzero' ? new Map<number, number[]>() : null;
   // Tiny fixed jitter keeps ray targets off shared edges/vertices without
   // breaking determinism.
   const jy = 0.5000731, jz = 0.5001177;
@@ -102,6 +111,8 @@ export function rasterizeOccupancy(mesh: MeshLike, spec: GridSpec): Uint8Array {
     const j1 = Math.min(ny - 1, Math.floor((maxY - origin[1]) / voxel - jy + 1));
     const k0 = Math.max(0, Math.ceil((minZ - origin[2]) / voxel - jz));
     const k1 = Math.min(nz - 1, Math.floor((maxZ - origin[2]) / voxel - jz + 1));
+    // X component of the triangle normal: negative ⇒ it faces −X, so a +X ray enters.
+    const dir = (by - ay) * (cz - az) - (bz - az) * (cy - ay) < 0 ? 1 : -1;
     for (let k = k0; k <= k1; k++) {
       const rayZ = origin[2] + k * voxel + (jz - 0.5) * voxel;
       for (let j = j0; j <= j1; j++) {
@@ -122,8 +133,35 @@ export function rasterizeOccupancy(mesh: MeshLike, spec: GridSpec): Uint8Array {
         let list = rows.get(key);
         if (!list) { list = []; rows.set(key, list); }
         list.push(x);
+        if (dirs) {
+          let d = dirs.get(key);
+          if (!d) { d = []; dirs.set(key, d); }
+          d.push(dir);
+        }
       }
     }
+  }
+
+  if (dirs) {
+    for (const [key, xs] of rows) {
+      const ds = dirs.get(key)!;
+      const order = xs.map((_, i) => i).sort((p, q) => xs[p] - xs[q]);
+      const j = key % ny;
+      const k = (key - j) / ny;
+      const rowBase = j * nx + k * nx * ny;
+      let wind = 0, x0 = 0;
+      for (const m of order) {
+        const prev = wind;
+        wind += ds[m];
+        if (prev === 0 && wind !== 0) x0 = xs[m];
+        else if (prev !== 0 && wind === 0) {
+          const i0 = Math.max(0, Math.ceil((x0 - origin[0]) / voxel));
+          const i1 = Math.min(nx - 1, Math.floor((xs[m] - origin[0]) / voxel));
+          for (let i = i0; i <= i1; i++) occ[rowBase + i] = 1;
+        }
+      }
+    }
+    return occ;
   }
 
   for (const [key, xs] of rows) {
